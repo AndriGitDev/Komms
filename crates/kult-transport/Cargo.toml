@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-kult-protocol = { path = "../kult-protocol" }
+kult-protocol = { version = "0.1.0", path = "../kult-protocol" }
 async-trait = "0.1"
 tokio = { version = "1", features = ["fs", "sync"] }
 
