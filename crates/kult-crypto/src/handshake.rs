@@ -20,6 +20,7 @@ use crate::{util, CryptoError, Identity, IdentityPublic, Result};
 const PQXDH_INFO: &[u8] = b"KommsKult-PQXDH-v1";
 const INFO_HKA: &[u8] = b"KK-hka";
 const INFO_NHKB: &[u8] = b"KK-nhkb";
+const INFO_MAILBOX: &[u8] = b"KK-mailbox";
 
 /// The initiator's first flight: everything the responder needs to derive the
 /// session, plus the first Double-Ratchet message.
@@ -175,7 +176,9 @@ pub fn initiate(
         b.opk.map(|(_, p)| p).as_ref(),
     );
 
-    let mut session = Session::init_initiator(rng, session_id, &sk_root, &b.spk, &hka, &nhkb);
+    let mailbox = util::hkdf32(None, sk_root.as_ref(), INFO_MAILBOX);
+    let mut session =
+        Session::init_initiator(rng, session_id, &sk_root, &b.spk, &hka, &nhkb, *mailbox);
     let first = session.encrypt(rng, now_secs, first_payload, &[]);
 
     let msg = InitialMessage {
@@ -233,7 +236,9 @@ pub fn respond(
     );
 
     let spk_priv = spk.to_bytes();
-    let mut session = Session::init_responder(session_id, &sk_root, &spk_priv, &hka, &nhkb);
+    let mailbox = util::hkdf32(None, sk_root.as_ref(), INFO_MAILBOX);
+    let mut session =
+        Session::init_responder(session_id, &sk_root, &spk_priv, &hka, &nhkb, *mailbox);
     let first = RatchetMessage::decode(&msg.first)?;
     let payload = session.decrypt(rng, now_secs, &first, &[])?;
     Ok((session, payload))

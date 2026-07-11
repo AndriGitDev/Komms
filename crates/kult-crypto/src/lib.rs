@@ -20,6 +20,7 @@
 
 extern crate alloc;
 
+mod anonbox;
 mod error;
 mod fingerprint;
 mod handshake;
@@ -30,6 +31,7 @@ mod ratchet;
 mod sealed;
 mod util;
 
+pub use anonbox::{open_anonymous, seal_anonymous};
 pub use error::CryptoError;
 pub use fingerprint::{safety_number, SafetyNumber};
 pub use handshake::{initiate, respond, InitialMessage};

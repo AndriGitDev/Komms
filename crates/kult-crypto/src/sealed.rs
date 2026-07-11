@@ -31,6 +31,23 @@ impl StorageKey {
     pub(crate) fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
+
+    /// Derive a labeled subkey (HKDF-SHA-256) — the per-domain key hierarchy
+    /// of docs/07-storage.md §2.
+    pub fn derive(&self, label: &[u8]) -> StorageKey {
+        StorageKey(*util::hkdf32(None, &self.0, label))
+    }
+
+    /// AEAD-seal arbitrary bytes under this key (random 24-byte nonce,
+    /// caller-chosen associated data). Output: `nonce || ciphertext+tag`.
+    pub fn seal(&self, ad: &[u8], plaintext: &[u8], rng: &mut impl CryptoRngCore) -> Vec<u8> {
+        util::aead_seal(&self.0, ad, plaintext, rng)
+    }
+
+    /// Open a [`StorageKey::seal`] buffer. Uniform error on any failure.
+    pub fn open(&self, ad: &[u8], sealed: &[u8]) -> Result<Vec<u8>> {
+        util::aead_open(&self.0, ad, sealed)
+    }
 }
 
 pub(crate) fn seal_session(

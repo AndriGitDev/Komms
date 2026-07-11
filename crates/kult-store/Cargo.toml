@@ -1,6 +1,6 @@
 [package]
 name = "kult-store"
-description = "Encrypted local-first storage. Implemented in M2. Spec: docs/07-storage.md"
+description = "KommsKult encrypted local-first storage: every blob individually AEAD-sealed under an Argon2id-rooted key hierarchy. Spec: docs/07-storage.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,3 +8,14 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+kult-crypto = { path = "../kult-crypto" }
+kult-protocol = { path = "../kult-protocol" }
+rusqlite = { version = "0.31", features = ["bundled"] }
+rand_core = "0.6"
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["alloc"] }
+zeroize = "1"
+
+[dev-dependencies]
+rand = "0.8"
+tempfile = "3"
