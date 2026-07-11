@@ -8,8 +8,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-kult-crypto = { path = "../kult-crypto" }
-kult-protocol = { path = "../kult-protocol" }
+kult-crypto = { version = "0.1.0", path = "../kult-crypto" }
+kult-protocol = { version = "0.1.0", path = "../kult-protocol" }
 rusqlite = { version = "0.31", features = ["bundled"] }
 rand_core = "0.6"
 serde = { version = "1", features = ["derive"] }
