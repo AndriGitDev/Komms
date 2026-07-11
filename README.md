@@ -49,7 +49,8 @@ Layout in [Architecture §7](docs/03-architecture.md). Implemented so far:
 `kult-crypto` (hybrid PQXDH, Double Ratchet with encrypted headers, anonymous sealed
 boxes, sealed state), `kult-protocol` (envelopes, padding buckets, fragmentation +
 NACKs, delivery tokens, `.kkb` bundles), and `kult-store` (encrypted SQLite, key
-hierarchy, persistent queue). `kult-node`/`kult-transport`/`kult-ffi` land in M3+.
+hierarchy, persistent queue), and `kult-transport` (the `Transport` contract plus the
+sneakernet spool-directory carrier). `kult-node` and `kult-ffi` land in M3+.
 
 ```sh
 cargo test --workspace          # KATs, property tests, 10k-message soak
