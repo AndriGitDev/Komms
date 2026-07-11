@@ -2,6 +2,17 @@
 
 **Sovereign messaging: end-to-end encrypted, serverless, and functional off the grid.**
 
+*Messages nobody in the middle can read, scan, or block — because there is no middle.
+Works over the internet, commodity LoRa radios, or a USB stick in a pocket.*
+
+**New here?** Read [Start Here](docs/00-start-here.md) — the whole idea in plain words,
+no cryptography knowledge required. Then try the demo:
+
+```sh
+git clone https://github.com/AndriGitDev/KommsKult && cd KommsKult
+cargo run --example sneakernet_demo
+```
+
 > Status: **M2 — protocol & storage.** The design framework (M0), the crypto core (M1),
 > and the protocol/storage layer (M2: sealed envelopes, LoRa-sized fragmentation with
 > NACK retransmission, encrypted local store, sneakernet bundles) are implemented and
@@ -30,6 +41,7 @@ out plainly in [Why KommsKult](docs/01-why.md).
 
 | Doc | Contents |
 |---|---|
+| [00 — Start Here](docs/00-start-here.md) | The whole project in plain words, for any knowledge level |
 | [01 — Why](docs/01-why.md) | Motivation, position, commitments |
 | [02 — Threat Model](docs/02-threat-model.md) | Adversaries, security goals, honest limits |
 | [03 — Architecture](docs/03-architecture.md) | Layers, crates, message lifecycle, store-and-forward |
