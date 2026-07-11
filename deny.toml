@@ -24,7 +24,9 @@ yanked = "deny"
 
 [bans]
 multiple-versions = "warn"
+# Deny wildcard *registry* deps; workspace path deps carry no version by design.
 wildcards = "deny"
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"
