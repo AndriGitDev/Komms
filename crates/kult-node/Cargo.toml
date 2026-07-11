@@ -1,0 +1,10 @@
+[package]
+name = "kult-node"
+description = "Runtime composing crypto, protocol, storage and transports. Implemented in M3. Spec: docs/03-architecture.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

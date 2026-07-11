@@ -1,0 +1,32 @@
+# cargo-deny configuration — spec §11 obligation 5 and
+# docs/09-implementation-guide.md §1. CI fails on violations.
+
+[graph]
+all-features = true
+
+[licenses]
+allow = [
+    "AGPL-3.0",            # this workspace
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "CC0-1.0",
+    "Unicode-3.0",
+]
+
+[advisories]
+yanked = "deny"
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# No git dependencies, period (docs/09-implementation-guide.md §1).
+allow-git = []

@@ -2,8 +2,9 @@
 
 **Sovereign messaging: end-to-end encrypted, serverless, and functional off the grid.**
 
-> Status: **M0 — design phase.** This repository currently contains the complete design
-> framework; implementation milestones are specified in the [roadmap](docs/08-roadmap.md).
+> Status: **M1 — cryptographic core.** The design framework (M0) is complete and the
+> crypto core `kult-crypto` is implemented with its full test suite; remaining milestones
+> are specified in the [roadmap](docs/08-roadmap.md).
 
 KommsKult is a decentralized messenger built on four principles:
 
@@ -39,11 +40,19 @@ out plainly in [Why KommsKult](docs/01-why.md).
 | [09 — Implementation Guide](docs/09-implementation-guide.md) | Build order, API sketches, standards, review gates |
 | [ADRs](docs/adr/) | Recorded decisions and the alternatives they beat |
 
-## Planned stack
+## Stack
 
-Rust core (`kult-crypto` / `kult-protocol` / `kult-transport` / `kult-store` /
-`kult-node`), UniFFI bindings, Tauri desktop app, native mobile shells. Target layout in
-[Architecture §7](docs/03-architecture.md).
+Rust workspace (`kult-crypto` / `kult-protocol` / `kult-transport` / `kult-store` /
+`kult-node` / `kult-ffi`), UniFFI bindings, Tauri desktop app, native mobile shells.
+Layout in [Architecture §7](docs/03-architecture.md). `kult-crypto` is implemented
+(hybrid PQXDH, Double Ratchet with encrypted headers, XChaCha20-Poly1305, sealed state);
+the other crates are placeholders until their milestones.
+
+```sh
+cargo test --workspace          # KATs, property tests, 10k-message soak
+cargo build -p kult-crypto --no-default-features   # no_std build
+cargo fuzz run envelope_decode  # fuzzing (nightly, from crates/kult-crypto)
+```
 
 ## Contributing
 
