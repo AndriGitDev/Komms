@@ -1,5 +1,10 @@
 # KommsKult
 
+[![CI](https://github.com/AndriGitDev/KommsKult/actions/workflows/ci.yml/badge.svg)](https://github.com/AndriGitDev/KommsKult/actions/workflows/ci.yml)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+![No servers](https://img.shields.io/badge/servers-none-success)
+![Post-quantum](https://img.shields.io/badge/key_agreement-X25519_%2B_ML--KEM--768-blueviolet)
+
 **Sovereign messaging: end-to-end encrypted, serverless, and functional off the grid.**
 
 *Messages nobody in the middle can read, scan, or block — because there is no middle.
