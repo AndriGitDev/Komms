@@ -1,6 +1,6 @@
 [package]
 name = "kult-transport"
-description = "Transport trait and internet/proximity/Meshtastic/sneakernet implementations. Implemented in M2-M4. Spec: docs/05-transports.md"
+description = "KommsKult transport layer: the Transport trait every carrier implements, and the sneakernet (spool-directory) transport. Spec: docs/05-transports.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,3 +8,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+kult-protocol = { path = "../kult-protocol" }
+async-trait = "0.1"
+tokio = { version = "1", features = ["fs", "sync"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["fs", "sync", "rt", "macros"] }
+tempfile = "3"
