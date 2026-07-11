@@ -1,0 +1,10 @@
+[package]
+name = "kult-protocol"
+description = "Envelope wire format, padding, fragmentation, groups. Implemented in M2. Spec: docs/04-cryptography.md §5-7, docs/05-transports.md §4"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

@@ -1,0 +1,10 @@
+[package]
+name = "kult-ffi"
+description = "UniFFI bindings exposing kult-node to Kotlin/Swift/desktop. Implemented in M5."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

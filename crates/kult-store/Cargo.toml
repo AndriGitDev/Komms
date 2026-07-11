@@ -1,0 +1,10 @@
+[package]
+name = "kult-store"
+description = "Encrypted local-first storage. Implemented in M2. Spec: docs/07-storage.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

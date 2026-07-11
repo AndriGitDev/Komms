@@ -1,0 +1,4 @@
+/target
+crates/*/fuzz/target
+crates/*/fuzz/corpus
+crates/*/fuzz/artifacts

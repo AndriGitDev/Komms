@@ -1,0 +1,33 @@
+[package]
+name = "kult-crypto"
+description = "KommsKult cryptographic core: hybrid PQXDH handshake, Double Ratchet with header encryption, XChaCha20-Poly1305. Spec: docs/04-cryptography.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+x25519-dalek = { version = "2", default-features = false, features = ["static_secrets", "zeroize"] }
+ed25519-dalek = { version = "2", default-features = false, features = ["alloc", "rand_core", "zeroize"] }
+ml-kem = { version = "0.2", default-features = false }
+hkdf = { version = "0.12", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+hmac = { version = "0.12", default-features = false }
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
+blake3 = { version = "1", default-features = false }
+zeroize = { version = "1", default-features = false, features = ["alloc", "zeroize_derive"] }
+subtle = { version = "2", default-features = false }
+rand_core = { version = "0.6", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+rand = "0.8"
+proptest = "1"
+hex = "0.4"
+
+[features]
+default = ["std"]
+std = []
