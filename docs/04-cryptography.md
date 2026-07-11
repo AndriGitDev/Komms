@@ -104,15 +104,19 @@ hot path — every byte counts on LoRa). One envelope per message or fragment:
 
 ```
 byte    0      : version (0x01)
-byte    1      : type (0x01 msg | 0x02 handshake-msg | 0x03 receipt | 0x04 fragment)
+byte    1      : type (0x01 msg | 0x02 handshake | 0x03 receipt | 0x04 fragment)
 bytes   2..34  : delivery token (32 B, §7)
-bytes  34..58  : XChaCha20 nonce (24 B)
-bytes  58..N   : ciphertext (encrypted header ‖ payload ‖ Poly1305 tag)
+bytes  34..N   : body (type-specific, always ciphertext)
 ```
 
-Fragments (type `0x04`) insert an 8-byte fragment header (message id hash 4 B, index 2 B,
-count 2 B) before the ciphertext slice; reassembly precedes decryption. Fragmentation
-policy and MTU tables: [05 — Transports §4](05-transports.md).
+Bodies by type — `msg`/`receipt`: an encoded ratchet message
+(`version ‖ encrypted header(80) ‖ nonce(24) ‖ ciphertext+tag`); `handshake`: an
+anonymous-boxed first flight (`ephemeral X25519 pub(32) ‖ nonce(24) ‖ ciphertext+tag`),
+so the initiator's identity travels only inside AEAD; `fragment`: an 8-byte fragment
+header (message id hash 4 B = truncated BLAKE3 of the whole payload, index 2 B LE,
+count 2 B LE) followed by the payload slice — reassembly precedes decryption and
+re-verifies the id hash over the assembled bytes. Fragmentation policy and MTU tables:
+[05 — Transports §4](05-transports.md).
 
 **Padding**: plaintext is padded (ISO/IEC 7816-4) to size buckets
 {192 B, 512 B, 1 KiB, 4 KiB, 16 KiB, 64 KiB} before encryption; larger payloads (media)

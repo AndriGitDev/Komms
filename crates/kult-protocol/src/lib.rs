@@ -1,5 +1,41 @@
-//! Envelope wire format, padding, fragmentation, groups. Implemented in M2. Spec: docs/04-cryptography.md §5-7, docs/05-transports.md §4
+//! KommsKult protocol layer.
 //!
-//! Placeholder crate: the workspace structure is fixed in M0/M1; this crate's
-//! implementation lands in M2 per docs/08-roadmap.md.
+//! Everything between the crypto core and the transports:
+//!
+//! - [`Envelope`] — the only unit transports ever carry (spec §5),
+//! - [`pad`] / [`unpad`] — size-bucket padding (spec §5),
+//! - [`fragment`] / [`Reassembler`] — small-MTU links (LoRa ≈ 200 B,
+//!   docs/05-transports.md §4.2),
+//! - [`delivery_token`] / [`intro_token`] — sealed-sender addressing (spec §7),
+//! - [`bundle_export`] / [`bundle_import`] — `.kkb` sneakernet bundles
+//!   (docs/05-transports.md §5),
+//! - [`ReceiptPayload`] — end-to-end encrypted delivery receipts and
+//!   fragment NACKs.
+//!
+//! This crate never touches key material directly — only opaque values
+//! handed over by `kult-crypto` — and performs no I/O.
+
+#![cfg_attr(not(feature = "std"), no_std)]
 #![forbid(unsafe_code)]
+#![deny(missing_docs)]
+
+extern crate alloc;
+
+mod bundle;
+mod envelope;
+mod error;
+mod fragmentation;
+mod padding;
+mod receipt;
+mod token;
+
+pub use bundle::{bundle_export, bundle_import, BUNDLE_MAGIC};
+pub use envelope::{Envelope, EnvelopeKind};
+pub use error::ProtocolError;
+pub use fragmentation::{fragment, Reassembler, FRAG_HEADER_LEN, REASSEMBLY_WINDOW_SECS};
+pub use padding::{pad, unpad, PAD_BUCKETS};
+pub use receipt::ReceiptPayload;
+pub use token::{delivery_token, epoch_day, intro_token, MailboxKey};
+
+/// Convenience alias for fallible operations in this crate.
+pub type Result<T> = core::result::Result<T, ProtocolError>;

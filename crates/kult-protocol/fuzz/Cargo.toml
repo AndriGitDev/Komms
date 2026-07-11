@@ -1,0 +1,37 @@
+[package]
+name = "kult-protocol-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "AGPL-3.0-only"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+kult-protocol = { path = ".." }
+
+[[bin]]
+name = "protocol_envelope_decode"
+path = "fuzz_targets/protocol_envelope_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bundle_import"
+path = "fuzz_targets/bundle_import.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "reassembler_insert"
+path = "fuzz_targets/reassembler_insert.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

@@ -2,9 +2,10 @@
 
 **Sovereign messaging: end-to-end encrypted, serverless, and functional off the grid.**
 
-> Status: **M1 — cryptographic core.** The design framework (M0) is complete and the
-> crypto core `kult-crypto` is implemented with its full test suite; remaining milestones
-> are specified in the [roadmap](docs/08-roadmap.md).
+> Status: **M2 — protocol & storage.** The design framework (M0), the crypto core (M1),
+> and the protocol/storage layer (M2: sealed envelopes, LoRa-sized fragmentation with
+> NACK retransmission, encrypted local store, sneakernet bundles) are implemented and
+> tested; remaining milestones are specified in the [roadmap](docs/08-roadmap.md).
 
 KommsKult is a decentralized messenger built on four principles:
 
@@ -44,9 +45,11 @@ out plainly in [Why KommsKult](docs/01-why.md).
 
 Rust workspace (`kult-crypto` / `kult-protocol` / `kult-transport` / `kult-store` /
 `kult-node` / `kult-ffi`), UniFFI bindings, Tauri desktop app, native mobile shells.
-Layout in [Architecture §7](docs/03-architecture.md). `kult-crypto` is implemented
-(hybrid PQXDH, Double Ratchet with encrypted headers, XChaCha20-Poly1305, sealed state);
-the other crates are placeholders until their milestones.
+Layout in [Architecture §7](docs/03-architecture.md). Implemented so far:
+`kult-crypto` (hybrid PQXDH, Double Ratchet with encrypted headers, anonymous sealed
+boxes, sealed state), `kult-protocol` (envelopes, padding buckets, fragmentation +
+NACKs, delivery tokens, `.kkb` bundles), and `kult-store` (encrypted SQLite, key
+hierarchy, persistent queue). `kult-node`/`kult-transport`/`kult-ffi` land in M3+.
 
 ```sh
 cargo test --workspace          # KATs, property tests, 10k-message soak

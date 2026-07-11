@@ -8,7 +8,7 @@ members = [
     "crates/kult-node",
     "crates/kult-ffi",
 ]
-exclude = ["crates/kult-crypto/fuzz"]
+exclude = ["crates/kult-crypto/fuzz", "crates/kult-protocol/fuzz"]
 
 [workspace.package]
 version = "0.1.0"

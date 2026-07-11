@@ -132,6 +132,7 @@ pub struct Session {
     ns: u32,
     nr: u32,
     pn: u32,
+    mailbox: [u8; 32],
     skipped: Vec<SkippedKey>,
 }
 
@@ -177,6 +178,7 @@ impl Session {
         their_ratchet_pub: &[u8; 32],
         shared_hka: &[u8; 32],
         shared_nhkb: &[u8; 32],
+        mailbox: [u8; 32],
     ) -> Self {
         let mut priv_bytes = [0u8; 32];
         rng.fill_bytes(&mut priv_bytes);
@@ -199,6 +201,7 @@ impl Session {
             ns: 0,
             nr: 0,
             pn: 0,
+            mailbox,
             skipped: Vec::new(),
         }
     }
@@ -211,6 +214,7 @@ impl Session {
         ratchet_priv: &[u8; 32],
         shared_hka: &[u8; 32],
         shared_nhkb: &[u8; 32],
+        mailbox: [u8; 32],
     ) -> Self {
         let dhs = StaticSecret::from(*ratchet_priv);
         let dhs_pub = *PublicKey::from(&dhs).as_bytes();
@@ -229,6 +233,7 @@ impl Session {
             ns: 0,
             nr: 0,
             pn: 0,
+            mailbox,
             skipped: Vec::new(),
         }
     }
@@ -236,6 +241,13 @@ impl Session {
     /// Stable identifier derived from the handshake transcript.
     pub fn session_id(&self) -> &[u8; 32] {
         &self.session_id
+    }
+
+    /// The per-pair mailbox secret for delivery-token derivation
+    /// (spec §7). Both parties hold the identical value; `kult-protocol`
+    /// turns it into rotating tokens.
+    pub fn mailbox_key(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(self.mailbox)
     }
 
     fn base_ad(&self) -> [u8; 33] {

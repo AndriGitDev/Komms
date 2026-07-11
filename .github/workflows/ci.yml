@@ -46,9 +46,15 @@ jobs:
           workspaces: crates/kult-crypto/fuzz
       - name: install cargo-fuzz
         run: cargo install cargo-fuzz --locked
-      - name: fuzz each target briefly
+      - name: fuzz kult-crypto targets
         working-directory: crates/kult-crypto
         run: |
           for t in envelope_decode handshake_decode bundle_decode; do
+            cargo +nightly fuzz run "$t" -- -max_total_time=60
+          done
+      - name: fuzz kult-protocol targets
+        working-directory: crates/kult-protocol
+        run: |
+          for t in protocol_envelope_decode bundle_import reassembler_insert; do
             cargo +nightly fuzz run "$t" -- -max_total_time=60
           done

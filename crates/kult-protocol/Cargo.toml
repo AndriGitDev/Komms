@@ -1,6 +1,6 @@
 [package]
 name = "kult-protocol"
-description = "Envelope wire format, padding, fragmentation, groups. Implemented in M2. Spec: docs/04-cryptography.md §5-7, docs/05-transports.md §4"
+description = "KommsKult protocol layer: sealed envelopes, padding buckets, fragmentation for small-MTU links, delivery tokens, sneakernet bundles. Spec: docs/04-cryptography.md §5-7, docs/05-transports.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,3 +8,18 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+kult-crypto = { path = "../kult-crypto", default-features = false }
+blake3 = { version = "1", default-features = false }
+hmac = { version = "0.12", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+zeroize = { version = "1", default-features = false, features = ["alloc", "zeroize_derive"] }
+
+[dev-dependencies]
+rand = "0.8"
+proptest = "1"
+
+[features]
+default = ["std"]
+std = ["kult-crypto/std"]
