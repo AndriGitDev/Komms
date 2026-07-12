@@ -5,7 +5,7 @@
 
 ## Context
 
-[05 — Transports §4.2 rule 5](../05-transports.md) specifies that any KommsKult node
+[05 — Transports §4.2 rule 5](../05-transports.md) specifies that any Komms node
 attached to both the LoRa mesh and the internet acts as a store-and-forward bridge in
 both directions — the "village with one Starlink terminal" property, and the escape
 hatch for mesh partitions in the threat model (A4). The rule says *that* bridging

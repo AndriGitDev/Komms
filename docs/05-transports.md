@@ -1,6 +1,6 @@
 # 05 — Transports
 
-KommsKult treats connectivity as hostile and intermittent by default. The same sealed
+Komms treats connectivity as hostile and intermittent by default. The same sealed
 envelope ([04 — Cryptography §5](04-cryptography.md)) travels over every link; transports
 are interchangeable carriers with different cost/latency/MTU profiles, and the node uses
 several at once.
@@ -24,7 +24,7 @@ Rules every implementation must obey:
 
 1. **Ciphertext only.** A transport never sees plaintext or key material.
 2. **No identity leakage.** Transports address peers by `DeliveryHint` (multiaddr, mesh
-   node id, mailbox token) — never by KommsKult identity keys.
+   node id, mailbox token) — never by Komms identity keys.
 3. **Link encryption is additive, not load-bearing.** Noise/TLS on the link protects
    against A2/A3 traffic tampering, but all security guarantees hold even over a
    plaintext link — the envelope is self-protecting.
@@ -80,10 +80,10 @@ The flagship fallback: when networks are shut down, envelopes ride LoRa.
 
 ```mermaid
 flowchart LR
-    App["KommsKult app<br/>(phone / desktop)"]
+    App["Komms app<br/>(phone / desktop)"]
     Radio["Meshtastic radio<br/>(T-Beam, Heltec, RAK…)"]
     Mesh(("LoRa mesh<br/>(other radios)"))
-    Peer["Recipient's<br/>KommsKult app"]
+    Peer["Recipient's<br/>Komms app"]
     App -- "BLE / USB-serial<br/>(Meshtastic client protobufs)" --> Radio
     Radio -- "LoRa" --> Mesh -- "LoRa" --> Peer
 ```
@@ -91,8 +91,8 @@ flowchart LR
 - The app speaks the standard Meshtastic client API (protobuf over BLE/serial/TCP) to a
   stock Meshtastic device — **no custom firmware required**. Owning any supported ~30€
   board is the only hardware requirement.
-- KommsKult envelopes are carried as Meshtastic packets on a **dedicated private app
-  port** (`PortNum` from the private range), so KommsKult traffic coexists with normal
+- Komms envelopes are carried as Meshtastic packets on a **dedicated private app
+  port** (`PortNum` from the private range), so Komms traffic coexists with normal
   Meshtastic use.
 - Meshtastic's own channel encryption (AES) is treated as an untrusted outer wrapper:
   nice against casual observers, irrelevant to our security claims. All guarantees come
@@ -118,9 +118,9 @@ Consequences, all normative:
    refused above 4 KiB with honest UI feedback ("will send when a faster link exists")
    rather than silently hogging the mesh.
 4. **Addressing**: mesh delivery uses the current **delivery token** (§7 of the crypto
-   spec) as the filter — radios/nodes flood within normal Meshtastic routing; KommsKult
+   spec) as the filter — radios/nodes flood within normal Meshtastic routing; Komms
    nodes pick up envelopes whose tokens they recognize. No identity appears on air.
-5. **Bridging**: any KommsKult node attached to both the mesh and the internet acts as a
+5. **Bridging**: any Komms node attached to both the mesh and the internet acts as a
    store-and-forward bridge in both directions — a village with one Starlink terminal
    gives the whole mesh asynchronous global reach. Implemented (M4) as token-blind
    transit forwarding (ADR-0009): the bridge claims traffic by delivery token like any

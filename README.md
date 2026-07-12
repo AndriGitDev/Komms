@@ -1,6 +1,10 @@
-# KommsKult
+<p align="center">
+  <img src="docs/assets/komms-logo.png" alt="Komms Protocol Logo" width="200">
+</p>
 
-[![CI](https://github.com/AndriGitDev/KommsKult/actions/workflows/ci.yml/badge.svg)](https://github.com/AndriGitDev/KommsKult/actions/workflows/ci.yml)
+# Komms
+
+[![CI](https://github.com/AndriGitDev/Komms/actions/workflows/ci.yml/badge.svg)](https://github.com/AndriGitDev/Komms/actions/workflows/ci.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 ![No servers](https://img.shields.io/badge/servers-none-success)
 ![Post-quantum](https://img.shields.io/badge/key_agreement-X25519_%2B_ML--KEM--768-blueviolet)
@@ -14,7 +18,7 @@ Works over the internet, commodity LoRa radios, or a USB stick in a pocket.*
 no cryptography knowledge required. Then try the demo:
 
 ```sh
-git clone https://github.com/AndriGitDev/KommsKult && cd KommsKult
+git clone https://github.com/AndriGitDev/Komms && cd Komms
 cargo run --example sneakernet_demo
 ```
 
@@ -44,7 +48,7 @@ cargo run --example sneakernet_demo
 > exchange verified-delivery messages through one volunteer bridge. Next per
 > the [roadmap](docs/08-roadmap.md): the hardware-in-loop nightly.
 
-KommsKult is a decentralized messenger built on four principles:
+Komms is a decentralized messenger built on four principles:
 
 1. **No one in the middle.** No servers, no accounts, no company operating your
    communications. Peers talk directly, via volunteer relays holding only sealed
@@ -61,7 +65,7 @@ KommsKult is a decentralized messenger built on four principles:
    deletable for real.
 
 Why this project exists — including its answer to the EU's ChatControl regime — is set
-out plainly in [Why KommsKult](docs/01-why.md).
+out plainly in [Why Komms](docs/01-why.md).
 
 ## Design documents
 

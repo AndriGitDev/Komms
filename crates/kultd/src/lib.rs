@@ -1,4 +1,4 @@
-//! KommsKult headless daemon (docs/03-architecture.md, application A3).
+//! Komms headless daemon (docs/03-architecture.md, application A3).
 //!
 //! `kultd` runs a full [`kult_node::Node`] over the libp2p internet carrier
 //! — delivery engine ticking, DHT bootstrap and prekey-bundle publication,

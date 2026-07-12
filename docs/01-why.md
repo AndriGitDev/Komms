@@ -1,4 +1,4 @@
-# 01 — Why KommsKult Exists
+# 01 — Why Komms Exists
 
 ## The moment
 
@@ -14,7 +14,7 @@ for the good guys.** A backdoor is a backdoor; a scanner is a wiretap; infrastru
 built for one purpose is repurposed by the next government, the next breach, the next
 mission-creep amendment.
 
-KommsKult's answer is architectural rather than rhetorical: build a messenger with **no
+Komms's answer is architectural rather than rhetorical: build a messenger with **no
 service provider to compel**. You cannot order a checkpoint installed where no
 intermediary exists. See [02 — Threat Model](02-threat-model.md), adversary A1.
 
@@ -38,7 +38,7 @@ single operating organization that can be pressured, blocked, or banned from app
 Matrix federates but leaks metadata generously and still assumes servers. Briar proved
 serverless mesh messaging is possible but stops at the phone's own radios.
 
-The empty niche KommsKult targets:
+The empty niche Komms targets:
 
 1. **Serverless by architecture**, not by promise — DHT + friend relays + mesh, no
    component the project must run ([03 — Architecture](03-architecture.md)).
@@ -68,5 +68,5 @@ and the privacy comes with it.
 2. No servers we run, no accounts, no identifiers, no telemetry. Nothing to subpoena.
 3. No custom crypto primitives; published constructions only; external audit before any
    "stable" label ([08 — Roadmap](08-roadmap.md), M6).
-4. Honest limits, in writing: what KommsKult cannot protect against is documented as
+4. Honest limits, in writing: what Komms cannot protect against is documented as
    carefully as what it can ([02 — Threat Model §4](02-threat-model.md)).

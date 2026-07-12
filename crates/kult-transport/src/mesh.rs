@@ -44,7 +44,7 @@ use crate::{
 };
 
 /// The Meshtastic broadcast node number. `DeliveryHint::MeshNode(MESH_BROADCAST)`
-/// floods within normal Meshtastic routing; KommsKult recipients pick out
+/// floods within normal Meshtastic routing; Komms recipients pick out
 /// envelopes whose delivery tokens they recognize (§4.2 rule 4).
 pub const MESH_BROADCAST: u32 = u32::MAX;
 

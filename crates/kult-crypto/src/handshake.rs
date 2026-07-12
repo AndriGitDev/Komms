@@ -17,7 +17,7 @@ use crate::prekeys::{
 use crate::ratchet::{RatchetMessage, Session};
 use crate::{util, CryptoError, Identity, IdentityPublic, Result};
 
-const PQXDH_INFO: &[u8] = b"KommsKult-PQXDH-v1";
+const PQXDH_INFO: &[u8] = b"Komms-PQXDH-v1";
 const INFO_HKA: &[u8] = b"KK-hka";
 const INFO_NHKB: &[u8] = b"KK-nhkb";
 const INFO_MAILBOX: &[u8] = b"KK-mailbox";

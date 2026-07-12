@@ -1,10 +1,10 @@
-# Start Here — KommsKult in Plain Words
+# Start Here — Komms in Plain Words
 
 *No cryptography knowledge needed. Five minutes.*
 
 ## What is this?
 
-KommsKult is a messenger being built so that **nobody between you and the person
+Komms is a messenger being built so that **nobody between you and the person
 you're writing to can read, scan, or block your messages** — not a company, not a
 government scanner, not the network itself. Not because a policy promises it, but
 because the system is built without any middleman who *could*.
@@ -13,7 +13,7 @@ Three things make it different from the messengers you know:
 
 1. **There is no company in the middle.** WhatsApp, Telegram, even Signal run servers
    your messages pass through, operated by an organization that can be pressured,
-   banned, or ordered to install scanning. KommsKult has no servers. Messages travel
+   banned, or ordered to install scanning. Komms has no servers. Messages travel
    directly between devices, through volunteers, or over radio.
 2. **It works when the internet doesn't.** Messages can travel over small,
    ~€30 [Meshtastic](https://meshtastic.org) radios (kilometres of range, no SIM card,
@@ -54,7 +54,7 @@ comfortable with a terminal you can watch two devices exchange encrypted message
 through a file right now:
 
 ```sh
-git clone https://github.com/AndriGitDev/KommsKult && cd KommsKult
+git clone https://github.com/AndriGitDev/Komms && cd Komms
 cargo run --example sneakernet_demo
 ```
 
@@ -73,4 +73,4 @@ cargo run --example sneakernet_demo
 
 Because private conversation is a human right, and rights need infrastructure, not
 just arguments. The longer version — including our answer to the EU's ChatControl
-law — is in [Why KommsKult](01-why.md).
+law — is in [Why Komms](01-why.md).

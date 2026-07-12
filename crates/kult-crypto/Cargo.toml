@@ -1,6 +1,6 @@
 [package]
 name = "kult-crypto"
-description = "KommsKult cryptographic core: hybrid PQXDH handshake, Double Ratchet with header encryption, XChaCha20-Poly1305. Spec: docs/04-cryptography.md"
+description = "Komms cryptographic core: hybrid PQXDH handshake, Double Ratchet with header encryption, XChaCha20-Poly1305. Spec: docs/04-cryptography.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

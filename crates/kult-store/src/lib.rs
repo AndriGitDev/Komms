@@ -1,4 +1,4 @@
-//! KommsKult encrypted local-first storage (docs/07-storage.md).
+//! Komms encrypted local-first storage (docs/07-storage.md).
 //!
 //! SQLite as the container, but **every stored blob is individually
 //! AEAD-sealed** (XChaCha20-Poly1305, random nonce, table-domain associated
@@ -32,7 +32,7 @@ pub enum StoreError {
     Crypto(CryptoError),
     /// Protocol-level decode failure on a stored envelope.
     Protocol(kult_protocol::ProtocolError),
-    /// The database is missing required metadata (not a KommsKult store).
+    /// The database is missing required metadata (not a Komms store).
     NotAStore,
     /// (De)serialization of a stored record failed.
     Serialization,
@@ -44,7 +44,7 @@ impl std::fmt::Display for StoreError {
             Self::Db(e) => write!(f, "database error: {e}"),
             Self::Crypto(e) => write!(f, "crypto error: {e}"),
             Self::Protocol(e) => write!(f, "protocol error: {e}"),
-            Self::NotAStore => f.write_str("not a KommsKult store"),
+            Self::NotAStore => f.write_str("not a Komms store"),
             Self::Serialization => f.write_str("record serialization failure"),
         }
     }
@@ -161,7 +161,7 @@ CREATE TABLE IF NOT EXISTS prekeys  (id INTEGER PRIMARY KEY CHECK (id = 1), blob
 CREATE TABLE IF NOT EXISTS pending  (seq INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
 ";
 
-/// An open, unlocked KommsKult store.
+/// An open, unlocked Komms store.
 pub struct Store {
     conn: Connection,
     k_identity: StorageKey,

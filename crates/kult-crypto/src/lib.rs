@@ -1,4 +1,4 @@
-//! KommsKult cryptographic core.
+//! Komms cryptographic core.
 //!
 //! Implements the normative specification in `docs/04-cryptography.md`:
 //!

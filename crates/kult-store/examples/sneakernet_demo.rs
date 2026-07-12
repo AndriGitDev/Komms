@@ -36,10 +36,10 @@ fn main() {
         .duration_since(UNIX_EPOCH)
         .expect("system clock")
         .as_secs();
-    let dir = std::env::temp_dir().join(format!("kommskult-demo-{now}"));
+    let dir = std::env::temp_dir().join(format!("komms-demo-{now}"));
     std::fs::create_dir_all(&dir).expect("temp dir");
     println!(
-        "KommsKult sneakernet demo — working dir: {}\n",
+        "Komms sneakernet demo — working dir: {}\n",
         dir.display()
     );
 
