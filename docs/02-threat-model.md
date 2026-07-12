@@ -1,6 +1,6 @@
 # 02 — Threat Model
 
-This document defines who KommsKult defends against, what it protects, and — just as
+This document defines who Komms defends against, what it protects, and — just as
 importantly — what it does *not* claim to protect. Every design decision in
 [03 — Architecture](03-architecture.md) and [04 — Cryptography](04-cryptography.md) traces
 back to a row in this document.
@@ -25,7 +25,7 @@ Listed roughly in ascending order of capability.
 An actor with legal or technical leverage over *service providers*, compelling them to scan,
 filter, or report message content (client-side or server-side).
 
-**Defense**: there is no service provider to compel. No KommsKult component ever has access
+**Defense**: there is no service provider to compel. No Komms component ever has access
 to plaintext other than the endpoints. There is no server operator who can be ordered to
 insert scanning, because there are no servers — see [03 — Architecture](03-architecture.md).
 
@@ -97,7 +97,7 @@ user sees — no messenger can prevent that (§5).
 
 ## 4. Non-goals and accepted limitations
 
-Honesty here is a security feature. KommsKult does **not** claim to provide:
+Honesty here is a security feature. Komms does **not** claim to provide:
 
 1. **Anonymity against a global passive adversary.** Correlating traffic across the whole
    internet can link endpoints. Mitigations (Tor/arti integration, cover traffic) are

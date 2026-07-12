@@ -58,7 +58,7 @@ pub type MailboxContents = Vec<([u8; 32], Vec<Vec<u8>>)>;
 /// drained across successive check-ins.
 const CHECKIN_BATCH_BYTES: usize = 4 * 1024 * 1024;
 
-/// Wire request on `/kommskult/mailbox/1`.
+/// Wire request on `/komms/mailbox/1`.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum MailboxRequest {
     /// Register these tokens as accept-filters (refreshing their TTL) and
@@ -68,7 +68,7 @@ pub(crate) enum MailboxRequest {
     Deposit { envelope: Vec<u8> },
 }
 
-/// Wire response on `/kommskult/mailbox/1`.
+/// Wire response on `/komms/mailbox/1`.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum MailboxResponse {
     /// `serving` is false when this node runs no mailbox service — an honest

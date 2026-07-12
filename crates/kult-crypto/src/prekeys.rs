@@ -13,11 +13,11 @@ use zeroize::Zeroizing;
 use crate::{identity::Identity, identity::IdentityPublic, util, CryptoError, Result};
 
 /// Signing domain for X25519 signed prekeys.
-const SPK_DOMAIN: &[u8] = b"KommsKult-spk-v1";
+const SPK_DOMAIN: &[u8] = b"Komms-spk-v1";
 /// Signing domain for ML-KEM-768 signed prekeys.
-const PQSPK_DOMAIN: &[u8] = b"KommsKult-pqspk-v1";
+const PQSPK_DOMAIN: &[u8] = b"Komms-pqspk-v1";
 /// Signing domain for the whole-bundle signature.
-const BUNDLE_DOMAIN: &[u8] = b"KommsKult-bundle-v1";
+const BUNDLE_DOMAIN: &[u8] = b"Komms-bundle-v1";
 
 /// ML-KEM-768 encapsulation-key size in bytes.
 pub const MLKEM768_EK_LEN: usize = 1184;

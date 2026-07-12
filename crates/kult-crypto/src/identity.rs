@@ -15,7 +15,7 @@ use crate::{util, CryptoError, Result};
 
 /// Domain separator for the cross-signature binding the X25519 key to the
 /// Ed25519 identity.
-const CROSS_SIGN_DOMAIN: &[u8] = b"KommsKult-cross-sign-v1";
+const CROSS_SIGN_DOMAIN: &[u8] = b"Komms-cross-sign-v1";
 
 /// A user's full identity: long-term signing and agreement secrets.
 ///

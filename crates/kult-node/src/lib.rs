@@ -1,4 +1,4 @@
-//! KommsKult runtime (docs/03-architecture.md §2): composes the crypto core,
+//! Komms runtime (docs/03-architecture.md §2): composes the crypto core,
 //! protocol layer, encrypted store and transports into one event-driven node.
 //!
 //! Responsibilities, and nothing else:
@@ -260,7 +260,7 @@ impl Bridge {
     }
 }
 
-/// The KommsKult runtime: one identity, one store, any number of transports.
+/// The Komms runtime: one identity, one store, any number of transports.
 pub struct Node {
     store: Store,
     identity: Identity,

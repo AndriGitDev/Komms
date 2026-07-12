@@ -18,7 +18,7 @@ edition = "2021"
 # needs 1.83 (older libp2p pins the unmaintained ring 0.16).
 rust-version = "1.85"
 license = "AGPL-3.0-only"
-repository = "https://github.com/AndriGitDev/KommsKult"
+repository = "https://github.com/AndriGitDev/Komms"
 
 # Crypto tests are unusably slow without optimization (curve/KEM arithmetic).
 [profile.test]

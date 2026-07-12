@@ -1,4 +1,4 @@
-//! The KommsKult headless daemon binary. `kultd --help` for usage.
+//! The Komms headless daemon binary. `kultd --help` for usage.
 
 #![forbid(unsafe_code)]
 
@@ -9,7 +9,7 @@ use std::time::Duration;
 use kultd::{Daemon, DaemonConfig};
 
 const USAGE: &str = "\
-kultd — KommsKult headless daemon
+kultd — Komms headless daemon
 
 USAGE:
     kultd --data-dir DIR [OPTIONS]

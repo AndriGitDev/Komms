@@ -1,6 +1,6 @@
 [package]
 name = "kultd"
-description = "KommsKult headless daemon: runs a node over the internet transport and exposes the command/event API as local RPC on a Unix socket. Spec: docs/03-architecture.md (application layer A3)"
+description = "Komms headless daemon: runs a node over the internet transport and exposes the command/event API as local RPC on a Unix socket. Spec: docs/03-architecture.md (application layer A3)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

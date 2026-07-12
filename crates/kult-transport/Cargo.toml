@@ -1,6 +1,6 @@
 [package]
 name = "kult-transport"
-description = "KommsKult transport layer: the Transport trait every carrier implements, and the sneakernet (spool-directory) transport. Spec: docs/05-transports.md"
+description = "Komms transport layer: the Transport trait every carrier implements, and the sneakernet (spool-directory) transport. Spec: docs/05-transports.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

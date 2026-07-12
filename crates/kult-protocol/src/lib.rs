@@ -1,4 +1,4 @@
-//! KommsKult protocol layer.
+//! Komms protocol layer.
 //!
 //! Everything between the crypto core and the transports:
 //!

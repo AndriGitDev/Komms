@@ -1,6 +1,6 @@
 # 04 — Cryptography Specification
 
-This is the normative specification of KommsKult's cryptographic core (`kult-crypto`).
+This is the normative specification of Komms's cryptographic core (`kult-crypto`).
 Design rationale lives in the ADRs; this document says *what* is built.
 Threat mapping: [02 — Threat Model](02-threat-model.md).
 
@@ -68,7 +68,7 @@ DH4 = DH(EK_A,        OPK_B)          # if an OPK was available
 SK_root = HKDF-SHA-256(
     ikm  = 0xFF*32 || DH1 || DH2 || DH3 || DH4 || KEM_ss,
     salt = 0*32,
-    info = "KommsKult-PQXDH-v1"
+    info = "Komms-PQXDH-v1"
 )
 ```
 
