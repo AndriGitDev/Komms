@@ -92,6 +92,16 @@ const DHT_TIMEOUT: Duration = Duration::from_secs(60);
 /// DHT.
 const RECORD_NAMESPACE: &[u8] = b"/kk/prekeys/1/";
 
+/// Per-envelope size cap for bridge-transit deposits: anything larger could
+/// never ride an airtime-budgeted link anyway (docs/05-transports.md §4.2
+/// rule 3), so refusing it here is the honest answer.
+const BRIDGE_DEPOSIT_MAX_BYTES: usize = 4 * 1024;
+
+/// Bridge-transit buffer caps (ADR-0009): strangers may fill this, so both
+/// axes are bounded and overflow is an honest refusal.
+const BRIDGE_BUFFER_MAX_ITEMS: usize = 256;
+const BRIDGE_BUFFER_MAX_BYTES: usize = 512 * 1024;
+
 /// First AutoNAT probe fires this soon after start; kept short because the
 /// answer gates whether a node should go reserve a relay slot.
 const AUTONAT_BOOT_DELAY: Duration = Duration::from_secs(2);
@@ -223,6 +233,47 @@ pub struct TransportOptions {
     /// (docs/05-transports.md §3). Discovered peers seed the Kademlia
     /// routing table, so LAN-only operation needs no bootstrap peers.
     pub lan_discovery: bool,
+    /// Accept mailbox deposits for **unregistered** tokens into a bounded
+    /// transit buffer instead of refusing them, surfaced via
+    /// [`Transport::recv_transit`] for a bridging delivery engine to flood
+    /// onto its mesh carriers (docs/05-transports.md §4.2 rule 5,
+    /// ADR-0009). Off by default: only a node that actually bridges should
+    /// relax the mailbox accept rule.
+    pub bridge_deposits: bool,
+}
+
+/// The bounded internet→mesh transit buffer (ADR-0009). Deposits land here
+/// when their token is registered nowhere locally; overflow refuses the
+/// deposit — an honest signal the depositor's delivery engine retries on.
+struct BridgeBuffer {
+    queue: Vec<Envelope>,
+    bytes: usize,
+}
+
+impl BridgeBuffer {
+    fn new() -> Self {
+        Self {
+            queue: Vec::new(),
+            bytes: 0,
+        }
+    }
+
+    fn push(&mut self, envelope: Envelope, encoded_len: usize) -> bool {
+        if encoded_len > BRIDGE_DEPOSIT_MAX_BYTES
+            || self.queue.len() >= BRIDGE_BUFFER_MAX_ITEMS
+            || self.bytes + encoded_len > BRIDGE_BUFFER_MAX_BYTES
+        {
+            return false;
+        }
+        self.bytes += encoded_len;
+        self.queue.push(envelope);
+        true
+    }
+
+    fn drain(&mut self) -> Vec<Envelope> {
+        self.bytes = 0;
+        std::mem::take(&mut self.queue)
+    }
 }
 
 struct Shared {
@@ -239,6 +290,7 @@ pub struct Libp2pTransport {
     inbox: Arc<Mutex<Vec<Envelope>>>,
     shared: Arc<Shared>,
     mailbox: Option<Arc<Mutex<MailboxStore>>>,
+    bridge: Option<Arc<Mutex<BridgeBuffer>>>,
 }
 
 impl Libp2pTransport {
@@ -271,6 +323,7 @@ impl Libp2pTransport {
         let TransportOptions {
             mailbox,
             lan_discovery,
+            bridge_deposits,
         } = options;
         let mut swarm = libp2p::SwarmBuilder::with_new_identity()
             .with_tokio()
@@ -366,6 +419,7 @@ impl Libp2pTransport {
         });
         let inbox = Arc::new(Mutex::new(Vec::new()));
         let mailbox = mailbox.map(|config| Arc::new(Mutex::new(MailboxStore::new(config))));
+        let bridge = bridge_deposits.then(|| Arc::new(Mutex::new(BridgeBuffer::new())));
         let (cmds, cmd_rx) = mpsc::unbounded_channel();
 
         // The mDNS task rides two channels: listen addresses flow out to it
@@ -397,7 +451,10 @@ impl Libp2pTransport {
             cmd_rx,
             Arc::clone(&inbox),
             Arc::clone(&shared),
-            mailbox.clone(),
+            Services {
+                mailbox: mailbox.clone(),
+                bridge: bridge.clone(),
+            },
             addr_tx,
             found_rx,
         ));
@@ -407,6 +464,7 @@ impl Libp2pTransport {
             inbox,
             shared,
             mailbox,
+            bridge,
         })
     }
 
@@ -678,6 +736,26 @@ impl Transport for Libp2pTransport {
             _ => return Err(TransportError::UnsupportedHint),
         };
         let (addr, peer) = parse_addr(s).ok_or(TransportError::UnsupportedHint)?;
+        // A deposit aimed at our own mailbox goes straight into the local
+        // store instead of self-dialing — how a bridge that serves the
+        // community mailbox hands mesh-heard transit to its internet-side
+        // collectors (ADR-0009). Deliberately *not* falling back to the
+        // bridge buffer: that would loop transit back onto the mesh.
+        if deposit && peer == self.shared.local_peer_id {
+            let Some(store) = &self.mailbox else {
+                return Err(io_other("own relay hint but no mailbox service"));
+            };
+            let accepted =
+                store
+                    .lock()
+                    .expect("lock")
+                    .deposit(envelope.token, envelope.encode(), unix_now());
+            return if accepted {
+                Ok(SendReceipt::AckedByNextHop)
+            } else {
+                Err(io_other("local mailbox refused the deposit"))
+            };
+        }
         let (ack_tx, ack_rx) = oneshot::channel();
         let op = if deposit {
             PendingOp::Deposit(envelope.encode(), ack_tx)
@@ -699,10 +777,26 @@ impl Transport for Libp2pTransport {
     async fn recv(&self) -> Result<Vec<Envelope>> {
         Ok(self.inbox.lock().expect("lock").drain(..).collect())
     }
+
+    async fn recv_transit(&self) -> Result<Vec<Envelope>> {
+        Ok(self
+            .bridge
+            .as_ref()
+            .map(|buffer| buffer.lock().expect("lock").drain())
+            .unwrap_or_default())
+    }
 }
 
 /// Requests parked per peer, then issued the moment its connection is up.
 type Parked = HashMap<PeerId, Vec<PendingOp>>;
+
+/// The local store-and-forward services the swarm task serves, both
+/// optional: the mailbox store (docs/05-transports.md §2) and the
+/// bridge-transit buffer (ADR-0009).
+struct Services {
+    mailbox: Option<Arc<Mutex<MailboxStore>>>,
+    bridge: Option<Arc<Mutex<BridgeBuffer>>>,
+}
 
 /// Hand a peer-directed request to the right behaviour, tracking the waiter
 /// by the request id it gets back.
@@ -743,10 +837,11 @@ async fn run_swarm(
     mut cmd_rx: mpsc::UnboundedReceiver<Cmd>,
     inbox: Arc<Mutex<Vec<Envelope>>>,
     shared: Arc<Shared>,
-    mailbox: Option<Arc<Mutex<MailboxStore>>>,
+    services: Services,
     addr_tx: watch::Sender<Vec<Multiaddr>>,
     mut found_rx: mpsc::UnboundedReceiver<DiscoveredPeer>,
 ) {
+    let Services { mailbox, bridge } = &services;
     // Whether the mDNS side is still alive; with discovery off its sender
     // was never handed out, so the first recv settles this immediately.
     let mut mdns_open = true;
@@ -960,16 +1055,41 @@ async fn run_swarm(
                 SwarmEvent::Behaviour(KultBehaviourEvent::Mailbox(ev)) => match ev {
                     request_response::Event::Message { message, .. } => match message {
                         request_response::Message::Request { request, channel, .. } => {
-                            let response = match (request, &mailbox) {
-                                // Serving: deposits are validated as sealed
-                                // envelopes (a mailbox stores nothing else)
-                                // and filed under their delivery token.
-                                (MailboxRequest::Deposit { envelope }, Some(store)) => {
+                            let response = match (request, mailbox) {
+                                // Serving or bridging: deposits are validated
+                                // as sealed envelopes (a mailbox stores
+                                // nothing else) and filed under their
+                                // delivery token; with bridging enabled, a
+                                // token registered nowhere locally goes to
+                                // the bounded transit buffer for the mesh
+                                // side instead of being refused (ADR-0009).
+                                (MailboxRequest::Deposit { envelope }, store) => {
                                     let accepted = match Envelope::decode(&envelope) {
-                                        Ok(env) => store
-                                            .lock()
-                                            .expect("lock")
-                                            .deposit(env.token, envelope, unix_now()),
+                                        Ok(env) => {
+                                            let now = unix_now();
+                                            let mut store =
+                                                store.as_ref().map(|s| s.lock().expect("lock"));
+                                            // A *registered* token's mail
+                                            // belongs to a libp2p collector:
+                                            // it never diverts to the mesh,
+                                            // even when its queue refuses.
+                                            let registered = store
+                                                .as_mut()
+                                                .is_some_and(|s| s.is_registered(&env.token, now));
+                                            if registered {
+                                                store
+                                                    .as_mut()
+                                                    .expect("registered implies serving")
+                                                    .deposit(env.token, envelope, now)
+                                            } else {
+                                                bridge.as_ref().is_some_and(|buffer| {
+                                                    buffer
+                                                        .lock()
+                                                        .expect("lock")
+                                                        .push(env, envelope.len())
+                                                })
+                                            }
+                                        }
                                         Err(_) => false,
                                     };
                                     MailboxResponse::Deposit { accepted }
@@ -984,9 +1104,6 @@ async fn run_swarm(
                                     }
                                 }
                                 // Not serving: honest refusals.
-                                (MailboxRequest::Deposit { .. }, None) => {
-                                    MailboxResponse::Deposit { accepted: false }
-                                }
                                 (MailboxRequest::Checkin { .. }, None) => {
                                     MailboxResponse::Checkin {
                                         serving: false,

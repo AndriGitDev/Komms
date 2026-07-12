@@ -271,6 +271,10 @@ impl Transport for MeshtasticTransport {
         Ok(SendReceipt::HandedToLink)
     }
 
+    fn broadcast_hint(&self) -> Option<DeliveryHint> {
+        Some(DeliveryHint::MeshNode(MESH_BROADCAST))
+    }
+
     async fn recv(&self) -> Result<Vec<Envelope>> {
         let mut incoming = self.incoming.lock().await;
         let mut out = Vec::new();
