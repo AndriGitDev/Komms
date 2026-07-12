@@ -33,6 +33,10 @@ OPTIONS:
     --meshtastic-serial DEV attach a Meshtastic radio on this USB-serial port
                             (/dev/ttyUSB0, /dev/ttyACM0, …) as an off-grid carrier
     --meshtastic-tcp ADDR   attach a Meshtastic radio via its network API (host:4403)
+    --bridge-mesh           forward sealed envelopes that aren't ours onto the mesh
+                            (the internet→mesh half of a village bridge, ADR-0009)
+    --bridge-relay ADDR     deposit sealed envelopes that aren't ours at this mailbox
+                            relay, repeatable (the mesh→internet half)
     --kdf desktop|mobile    Argon2id profile for store creation [default: desktop]
     --tick-secs N           delivery-engine heartbeat [default: 0.5s granularity]
     --checkin-secs N        mailbox check-in cadence  [default: 300]
@@ -52,6 +56,8 @@ fn parse_args() -> Result<DaemonConfig, String> {
     let mut spool: Option<PathBuf> = None;
     let mut meshtastic_serial: Option<String> = None;
     let mut meshtastic_tcp: Option<String> = None;
+    let mut bridge_mesh = false;
+    let mut bridge_relays: Vec<String> = Vec::new();
     let mut kdf = kult_crypto::KDF_PROFILE_DESKTOP;
     let mut tick_secs: Option<u64> = None;
     let mut checkin_secs: Option<u64> = None;
@@ -74,6 +80,8 @@ fn parse_args() -> Result<DaemonConfig, String> {
             "--spool" => spool = Some(value("--spool")?.into()),
             "--meshtastic-serial" => meshtastic_serial = Some(value("--meshtastic-serial")?),
             "--meshtastic-tcp" => meshtastic_tcp = Some(value("--meshtastic-tcp")?),
+            "--bridge-mesh" => bridge_mesh = true,
+            "--bridge-relay" => bridge_relays.push(value("--bridge-relay")?),
             "--kdf" => {
                 kdf = match value("--kdf")?.as_str() {
                     "desktop" => kult_crypto::KDF_PROFILE_DESKTOP,
@@ -139,6 +147,8 @@ fn parse_args() -> Result<DaemonConfig, String> {
     cfg.spool = spool;
     cfg.meshtastic_serial = meshtastic_serial;
     cfg.meshtastic_tcp = meshtastic_tcp;
+    cfg.bridge_mesh = bridge_mesh;
+    cfg.bridge_relays = bridge_relays;
     if let Some(secs) = tick_secs {
         cfg.tick_interval = Duration::from_secs(secs.max(1));
     }

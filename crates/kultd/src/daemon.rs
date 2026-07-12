@@ -27,7 +27,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use kult_crypto::KdfProfile;
-use kult_node::{Node, NodeError};
+use kult_node::{BridgeConfig, Node, NodeError};
 use kult_transport::{
     DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, MeshtasticOptions,
     MeshtasticTransport, NatStatus, Transport, TransportOptions,
@@ -72,6 +72,14 @@ pub struct DaemonConfig {
     pub meshtastic_serial: Option<String>,
     /// Attach a Meshtastic radio via its network API (`host:4403`).
     pub meshtastic_tcp: Option<String>,
+    /// Bridge mode (ADR-0009): forward inbound sealed envelopes that
+    /// provably aren't ours onto the mesh (broadcast). The internet→mesh
+    /// half of a village bridge.
+    pub bridge_mesh: bool,
+    /// Bridge mode (ADR-0009): deposit inbound sealed envelopes that
+    /// provably aren't ours at these mailbox relays (multiaddrs with
+    /// `/p2p/…`). The mesh→internet half of a village bridge.
+    pub bridge_relays: Vec<String>,
     /// Delivery-engine heartbeat.
     pub tick_interval: Duration,
     /// Mailbox check-in cadence.
@@ -101,6 +109,8 @@ impl DaemonConfig {
             spool: None,
             meshtastic_serial: None,
             meshtastic_tcp: None,
+            bridge_mesh: false,
+            bridge_relays: Vec::new(),
             tick_interval: Duration::from_millis(500),
             checkin_interval: Duration::from_secs(300),
             nat_interval: Duration::from_secs(30),
@@ -224,6 +234,14 @@ impl Daemon {
                 radio.node_num()
             );
             node.add_transport(Arc::new(radio));
+        }
+        let mut forward_to: Vec<DeliveryHint> = Vec::new();
+        if cfg.bridge_mesh {
+            forward_to.push(DeliveryHint::MeshNode(kult_transport::MESH_BROADCAST));
+        }
+        forward_to.extend(cfg.bridge_relays.iter().cloned().map(DeliveryHint::Relay));
+        if !forward_to.is_empty() {
+            node.enable_bridge(BridgeConfig { forward_to });
         }
 
         let address = node.address();

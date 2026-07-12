@@ -121,8 +121,16 @@ carrier (an unreachable configured radio is a hard startup error), `kult …
 --mesh broadcast` sets mesh delivery hints, and an end-to-end test drives
 two daemons — mDNS off, no bootstrap, mesh hints only — to verified
 delivery through their RPC sockets with the (fake) radios as the sole
-shared medium. Remaining: internet↔mesh bridging and the hardware-in-loop
-nightly.
+shared medium. Internet↔mesh bridging is in (ADR-0009): bridge mode is an
+opt-in destination-blind forwarder — envelopes that provably aren't the
+node's own (unknown delivery token, unopenable handshake) are forwarded
+once to each configured hint (mesh broadcast on the radio side, mailbox
+relays on the internet side; `kultd --bridge-mesh` / `--bridge-relay`),
+bounded, own-traffic-first, with the airtime ceiling applied to third-party
+bytes too — and the village topology (radio-only node ↔ bridge ↔
+internet-only node) is pinned by a test carrying handshake, message,
+receipt, and reply across both directions while the bridge holds zero
+contacts or sessions. Remaining: the hardware-in-loop nightly.
 
 **Acceptance**:
 - Two phones/laptops with stock-firmware Meshtastic radios, all other networking

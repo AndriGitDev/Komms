@@ -114,9 +114,59 @@ const MAX_FRAG_CACHE: usize = 256;
 /// receipt (the shape of [`ReceiptPayload::nacks`]).
 type FragNacks = Vec<([u8; 4], Vec<u16>)>;
 
+/// Cap on the bridge's in-memory forward queue (ADR-0009): beyond it the
+/// oldest third-party envelope is dropped — senders' retries make that a
+/// latency cost, never a loss.
+const MAX_BRIDGE_QUEUE: usize = 1024;
+/// Cap on remembered already-forwarded content ids (bridge loop
+/// prevention). Oldest entries evict first.
+const MAX_BRIDGE_SEEN: usize = 4096;
+
 struct Backoff {
     attempts: u32,
     next_ok: u64,
+}
+
+/// Bridge-mode configuration (ADR-0009): where envelopes that provably
+/// aren't ours get forwarded. Mesh-broadcast hints flood the radio side;
+/// mailbox relay hints deposit on the internet side — the bridge never
+/// learns who anything is for (sealed sender), it only moves sealed bytes
+/// between carriers.
+#[derive(Clone, Debug, Default)]
+pub struct BridgeConfig {
+    /// Every queued third-party envelope is sent once to each hint here.
+    pub forward_to: Vec<DeliveryHint>,
+}
+
+/// One third-party envelope awaiting forwarding: the hints it has not yet
+/// reached, with the delivery engine's usual exponential backoff.
+struct BridgeItem {
+    envelope: Envelope,
+    remaining: Vec<DeliveryHint>,
+    attempts: u32,
+    next_ok: u64,
+}
+
+/// Bridge-mode state: a bounded forward queue plus the forwarded-once set.
+struct BridgeState {
+    forward_to: Vec<DeliveryHint>,
+    queue: VecDeque<BridgeItem>,
+    forwarded: HashSet<[u8; 16]>,
+    forwarded_order: VecDeque<[u8; 16]>,
+}
+
+impl BridgeState {
+    /// Record `id` as forwarded, evicting the oldest beyond the cap.
+    fn remember(&mut self, id: [u8; 16]) {
+        if self.forwarded.insert(id) {
+            self.forwarded_order.push_back(id);
+            while self.forwarded_order.len() > MAX_BRIDGE_SEEN {
+                if let Some(old) = self.forwarded_order.pop_front() {
+                    self.forwarded.remove(&old);
+                }
+            }
+        }
+    }
 }
 
 /// Receiver-side bookkeeping for one in-flight partial message: enough to
@@ -158,6 +208,7 @@ pub struct Node {
     frag_meta: HashMap<[u8; 4], PartialMeta>,
     frag_cache: HashMap<[u8; 4], SentFragments>,
     held_notified: HashSet<i64>,
+    bridge: Option<BridgeState>,
     events: VecDeque<Event>,
 }
 
@@ -207,6 +258,7 @@ impl Node {
             frag_meta: HashMap::new(),
             frag_cache: HashMap::new(),
             held_notified: HashSet::new(),
+            bridge: None,
             events: VecDeque::new(),
         })
     }
@@ -222,6 +274,21 @@ impl Node {
     /// only (QR, file), exactly as in M2.
     pub fn add_discovery(&mut self, discovery: Arc<dyn Discovery>) {
         self.discoveries.push(discovery);
+    }
+
+    /// Turn on bridge mode (ADR-0009, docs/05-transports.md §4.2 rule 5):
+    /// inbound envelopes that provably aren't ours — unknown delivery
+    /// token, or a handshake we cannot open — are forwarded once to each
+    /// hint in the config, moving sealed traffic between carriers this
+    /// node spans (mesh↔internet). Destination-blind by construction: the
+    /// bridge never learns recipients, only that a token isn't its own.
+    pub fn enable_bridge(&mut self, config: BridgeConfig) {
+        self.bridge = Some(BridgeState {
+            forward_to: config.forward_to,
+            queue: VecDeque::new(),
+            forwarded: HashSet::new(),
+            forwarded_order: VecDeque::new(),
+        });
     }
 
     // ---- identity ----------------------------------------------------------
@@ -650,8 +717,10 @@ impl Node {
             self.queue_receipt(&peer, acks, nacks, now, rng)?;
         }
 
-        // 4. Flush the outbound queue.
+        // 4. Flush the outbound queue, then (bridge mode) forward
+        //    third-party traffic — own traffic always goes first.
         self.flush(now, rng).await?;
+        self.flush_bridge(now).await?;
 
         Ok(self.drain_events())
     }
@@ -678,6 +747,14 @@ impl Node {
                 if depth > 0 {
                     self.store.mark_seen(&env.content_id())?;
                     return Ok(Consumed::Done);
+                }
+                // A fragment whose token no session recognizes is (as far
+                // as this node can ever tell) someone else's traffic —
+                // bridge it onward (ADR-0009). It still feeds the
+                // reassembler below: it may equally be ours, arrived ahead
+                // of its handshake.
+                if self.bridge.is_some() && self.match_session(&env.token, now).is_none() {
+                    self.bridge_note(env);
                 }
                 // Remember which delivery token this partial rides under so
                 // the NACK for its missing pieces (selective retransmission,
@@ -730,7 +807,10 @@ impl Node {
         };
 
         let Ok(init_bytes) = open_anonymous(&self.identity, HS_AD, &env.body) else {
-            return done(self); // not addressed to us
+            // Not addressed to us — the one provable case for a handshake.
+            // A bridge forwards it onward (ADR-0009); everyone else drops.
+            self.bridge_note(env);
+            return done(self);
         };
         let Ok(init) = InitialMessage::decode(&init_bytes) else {
             return done(self);
@@ -796,8 +876,11 @@ impl Node {
         acks: &mut Vec<([u8; 32], [u8; 16])>,
     ) -> Result<Consumed> {
         // No session recognizes this token yet → it may be for a session a
-        // later handshake establishes. Stash, don't drop.
+        // later handshake establishes. Stash, don't drop — and a bridge
+        // additionally forwards it onward (ADR-0009): for third-party
+        // traffic the stash never resolves, the forward is what delivers.
         let Some(peer) = self.match_session(&env.token, now) else {
+            self.bridge_note(env);
             return Ok(Consumed::Later);
         };
         let done = |node: &mut Self| -> Result<Consumed> {
@@ -1085,6 +1168,110 @@ impl Node {
                 entry.next_ok = now + delay;
             }
         }
+        Ok(())
+    }
+
+    /// Queue an envelope that provably isn't ours for bridge forwarding
+    /// (ADR-0009). No-op unless bridge mode is on; each content id is
+    /// queued at most once (loop prevention — a forwarded envelope heard
+    /// back on another carrier is not forwarded again); the queue is
+    /// bounded drop-oldest.
+    fn bridge_note(&mut self, env: &Envelope) {
+        let Some(bridge) = &mut self.bridge else {
+            return;
+        };
+        let id = env.content_id();
+        if bridge.forwarded.contains(&id) {
+            return;
+        }
+        bridge.remember(id);
+        while bridge.queue.len() >= MAX_BRIDGE_QUEUE {
+            bridge.queue.pop_front();
+        }
+        bridge.queue.push_back(BridgeItem {
+            envelope: env.clone(),
+            remaining: bridge.forward_to.clone(),
+            attempts: 0,
+            next_ok: 0,
+        });
+    }
+
+    /// Forward queued third-party envelopes: once to every configured
+    /// hint, through the ordinary transport scheduler — fragmentation,
+    /// airtime budgets and the airtime ceiling apply exactly as for our
+    /// own traffic. Over-ceiling envelopes are dropped for airtime-only
+    /// hints rather than held (a bridge does not hold other people's
+    /// media); unreachable hints retry with the usual backoff.
+    async fn flush_bridge(&mut self, now: u64) -> Result<()> {
+        if self.bridge.is_none() {
+            return Ok(());
+        }
+        let transports = self.transports.clone();
+        let mut queue = std::mem::take(&mut self.bridge.as_mut().expect("checked").queue);
+        let mut retained = VecDeque::new();
+
+        for mut item in queue.drain(..) {
+            if now < item.next_ok {
+                retained.push_back(item);
+                continue;
+            }
+            let oversize = item.envelope.encode().len() > AIRTIME_CEILING_BYTES;
+            let mut still_pending = Vec::new();
+
+            for hint in std::mem::take(&mut item.remaining) {
+                // Rank the transports that can carry this hint, skipping
+                // airtime links for over-ceiling envelopes.
+                let mut candidates = Vec::new();
+                let mut skipped_airtime = false;
+                for transport in &transports {
+                    let profile = transport.profile();
+                    let rank = match transport.reachable(&hint).await {
+                        Reachability::Now => 0u8,
+                        Reachability::StoreAndForward => 1,
+                        Reachability::Unreachable => continue,
+                    };
+                    if oversize && profile.cost == CostClass::Airtime {
+                        skipped_airtime = true;
+                        continue;
+                    }
+                    candidates.push(((rank, profile.latency, profile.cost), Arc::clone(transport)));
+                }
+                candidates.sort_by_key(|(rank, _)| *rank);
+
+                if candidates.is_empty() {
+                    if !skipped_airtime {
+                        still_pending.push(hint); // unreachable — retry later
+                    }
+                    // else: airtime-only hint for an over-ceiling envelope —
+                    // dropped, per ADR-0009.
+                    continue;
+                }
+                let mut sent = false;
+                for (_, transport) in &candidates {
+                    if send_via(transport.as_ref(), &hint, &item.envelope)
+                        .await
+                        .is_ok()
+                    {
+                        sent = true;
+                        break;
+                    }
+                }
+                if !sent {
+                    still_pending.push(hint);
+                }
+            }
+
+            if still_pending.is_empty() {
+                continue; // forwarded everywhere it can go — done
+            }
+            item.remaining = still_pending;
+            let delay = (RETRY_BASE_SECS << item.attempts.min(7)).min(RETRY_CAP_SECS);
+            item.attempts = item.attempts.saturating_add(1);
+            item.next_ok = now + delay;
+            retained.push_back(item);
+        }
+
+        self.bridge.as_mut().expect("checked").queue = retained;
         Ok(())
     }
 
