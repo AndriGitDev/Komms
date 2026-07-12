@@ -1,0 +1,42 @@
+# Hardware-in-loop nightly (roadmap M4): the `kultd` HIL acceptance test on a
+# self-hosted bench runner with two USB Meshtastic radios attached.
+#
+# Bench setup — hardware, radio prep, runner registration, security posture —
+# is documented in docs/10-hil-bench.md. Until a bench exists the job is
+# skipped (not queued forever): arm it by setting the repository variable
+# HIL_BENCH=armed once a runner labeled `meshtastic-hil` is online.
+#
+# Deliberately NOT triggered by pull_request: a self-hosted runner must never
+# execute unreviewed third-party code. Schedule and manual dispatch only.
+
+name: HIL nightly
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mesh-roundtrip:
+    name: two-radio mesh roundtrip
+    if: github.repository == 'AndriGitDev/Komms' && vars.HIL_BENCH == 'armed'
+    runs-on: [self-hosted, meshtastic-hil]
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTFLAGS: "-D warnings"
+      # Prefer /dev/serial/by-id/… paths (stable across replugs) via repo
+      # variables; the ttyUSB defaults only fit a bench with exactly two
+      # USB-serial devices.
+      KOMMS_HIL_SERIAL_A: ${{ vars.HIL_SERIAL_A || '/dev/ttyUSB0' }}
+      KOMMS_HIL_SERIAL_B: ${{ vars.HIL_SERIAL_B || '/dev/ttyUSB1' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: radios present
+        run: ls -l "$KOMMS_HIL_SERIAL_A" "$KOMMS_HIL_SERIAL_B"
+      - name: hardware-in-loop acceptance
+        run: cargo test -p kultd --test hil -- --ignored --nocapture
