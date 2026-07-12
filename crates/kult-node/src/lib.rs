@@ -69,6 +69,11 @@ const TOKEN_LOOKBACK_EPOCHS: u64 = 35;
 /// Future epochs tolerated (sender clock ahead of ours).
 const TOKEN_LOOKAHEAD_EPOCHS: u64 = 2;
 
+/// Future epochs of tokens handed to mailbox relays at check-in — how long
+/// this node may stay offline while senders' deposits still match a
+/// registered filter.
+const MAILBOX_AHEAD_EPOCHS: u64 = 35;
+
 /// Retention for inbound envelopes that cannot be consumed yet (arrived
 /// before their session). Matches the bundle TTL: after a month the
 /// handshake that would unlock them can no longer arrive either.
@@ -309,6 +314,34 @@ impl Node {
         best
     }
 
+    /// The "accept mail for these" filter set (docs/04-cryptography.md §7)
+    /// this node hands its chosen mailbox relays via
+    /// [`kult_transport::Libp2pTransport::mailbox_checkin`]: introduction
+    /// tokens (so first-contact handshakes can be deposited) plus every
+    /// session's delivery tokens, over a window reaching
+    /// `TOKEN_LOOKBACK_EPOCHS` back (deposits may be old) and
+    /// `MAILBOX_AHEAD_EPOCHS` forward (deposits keep landing while this node
+    /// is offline). Every token is scoped to this node as recipient
+    /// (ADR-0007), so a check-in can only ever drain mail addressed to us.
+    pub fn mailbox_tokens(&self, now: u64) -> Vec<[u8; 32]> {
+        let me = self.identity.public().ed;
+        let today = epoch_day(now);
+        let lo = today.saturating_sub(TOKEN_LOOKBACK_EPOCHS);
+        let hi = today + MAILBOX_AHEAD_EPOCHS;
+        let mut tokens = Vec::new();
+        for epoch in lo..=hi {
+            tokens.push(intro_token(&me, epoch));
+            for session in self.sessions.values() {
+                tokens.push(delivery_token(
+                    &MailboxKey::from_bytes(*session.mailbox_key()),
+                    epoch,
+                    &me,
+                ));
+            }
+        }
+        tokens
+    }
+
     // ---- contacts ----------------------------------------------------------
 
     /// Add (or replace) a contact from their encoded prekey bundle. The
@@ -444,6 +477,7 @@ impl Node {
             let token = delivery_token(
                 &MailboxKey::from_bytes(*session.mailbox_key()),
                 epoch_day(now),
+                peer,
             );
             self.store.put_session(peer, session, rng)?;
             Envelope::new(EnvelopeKind::Message, token, msg.encode())
@@ -770,15 +804,18 @@ impl Node {
     }
 
     /// Which session (if any) recognizes this delivery token, scanning a
-    /// window of daily epochs so long-latency carriers still route.
+    /// window of daily epochs so long-latency carriers still route. Tokens
+    /// are recipient-scoped (ADR-0007), so only envelopes addressed to *this*
+    /// node match — never multipath echoes of our own outbound.
     fn match_session(&self, token: &[u8; 32], now: u64) -> Option<[u8; 32]> {
+        let me = self.identity.public().ed;
         let today = epoch_day(now);
         let lo = today.saturating_sub(TOKEN_LOOKBACK_EPOCHS);
         let hi = today + TOKEN_LOOKAHEAD_EPOCHS;
         for (peer, session) in &self.sessions {
             let key = MailboxKey::from_bytes(*session.mailbox_key());
             for epoch in lo..=hi {
-                if bool::from(delivery_token(&key, epoch).ct_eq(token)) {
+                if bool::from(delivery_token(&key, epoch, &me).ct_eq(token)) {
                     return Some(*peer);
                 }
             }
@@ -805,6 +842,7 @@ impl Node {
         let token = delivery_token(
             &MailboxKey::from_bytes(*session.mailbox_key()),
             epoch_day(now),
+            peer,
         );
         self.store.put_session(peer, session, rng)?;
         self.store.queue_push(

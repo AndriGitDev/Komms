@@ -146,11 +146,15 @@ delivered to all members (single ciphertext — critical for mesh bandwidth).
 Goal: intermediaries learn neither sender nor recipient identity
 ([02 — Threat Model §5](02-threat-model.md), adversary A5).
 
-- **Delivery token**: `token_i = HMAC-SHA-256(K_mailbox, epoch_i)` truncated to 32 B, where
-  `K_mailbox` is a per-contact-pair secret derived from the session root and `epoch_i`
-  rotates daily. Only sender and recipient can compute or recognize the sequence; a relay
-  sees uncorrelatable 32-byte values. The recipient hands current tokens to its chosen
-  relays as "accept mail for these" filters.
+- **Delivery token**: `token_i = HMAC-SHA-256(K_mailbox, epoch_i ‖ IK_recipient)` truncated
+  to 32 B, where `K_mailbox` is a per-contact-pair secret derived from the session root,
+  `epoch_i` rotates daily, and `IK_recipient` (the addressee's Ed25519 identity key) splits
+  each pair's tokens into two disjoint per-direction sequences — so when both parties use
+  the same collect-and-delete relay, neither's check-in can drain mail addressed to the
+  other ([ADR-0007](adr/0007-recipient-scoped-delivery-tokens.md)). Only sender and
+  recipient can compute or recognize the sequence; a relay sees uncorrelatable 32-byte
+  values. The recipient hands current tokens to its chosen relays as "accept mail for
+  these" filters.
 - **Sender anonymity**: the envelope contains no sender field at all; sender identity is
   established *inside* the AEAD (encrypted header / handshake data). Transport-level
   anonymity is bounded per the threat model's residual-risk table.

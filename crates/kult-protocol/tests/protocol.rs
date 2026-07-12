@@ -61,11 +61,19 @@ fn envelope_roundtrip_and_garbage() {
 #[test]
 fn tokens_rotate_and_differ() {
     let k = MailboxKey::from_bytes([3u8; 32]);
+    let alice = [7u8; 32];
+    let bob = [9u8; 32];
     let e = epoch_day(NOW);
-    let t1 = delivery_token(&k, e);
-    let t2 = delivery_token(&k, e + 1);
+    let t1 = delivery_token(&k, e, &bob);
+    let t2 = delivery_token(&k, e + 1, &bob);
     assert_ne!(t1, t2);
-    assert_eq!(t1, delivery_token(&MailboxKey::from_bytes([3u8; 32]), e));
+    assert_eq!(
+        t1,
+        delivery_token(&MailboxKey::from_bytes([3u8; 32]), e, &bob)
+    );
+    // The two directions of a pair never share a token (ADR-0007): a shared
+    // relay must not let one party collect the other's mail.
+    assert_ne!(t1, delivery_token(&k, e, &alice));
     // Intro tokens are distinct from mailbox tokens even with related input.
     assert_ne!(intro_token(&[3u8; 32], e), t1);
 }
