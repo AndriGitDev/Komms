@@ -22,6 +22,7 @@ COMMANDS:
     status                          daemon and node status
     bundle                          export a fresh prekey bundle (hex)
     add-contact NAME BUNDLE_HEX [--hint MULTIADDR]... [--relay MULTIADDR]...
+                                [--mesh NODE|broadcast]...
                                     add a contact from an out-of-band bundle
     add NAME ADDRESS                add a contact from a kult address (DHT)
     send PEER_HEX TEXT...           queue a message
@@ -30,13 +31,14 @@ COMMANDS:
     safety PEER_HEX                 safety number for out-of-band verification
     verify PEER_HEX                 mark a contact verified
     set-hints PEER_HEX [--hint MULTIADDR]... [--relay MULTIADDR]...
+                       [--mesh NODE|broadcast]...
                                     replace a contact's delivery hints
     publish                         publish the prekey bundle on the DHT now
     watch                           stream events until interrupted
     -h, --help                      this text
 ";
 
-/// Collect `--hint`/`--relay` pairs from the remaining arguments.
+/// Collect `--hint`/`--relay`/`--mesh` pairs from the remaining arguments.
 fn parse_hints(args: &[String]) -> Result<Vec<Value>, String> {
     let mut hints = Vec::new();
     let mut it = args.iter();
@@ -45,6 +47,16 @@ fn parse_hints(args: &[String]) -> Result<Vec<Value>, String> {
         match flag.as_str() {
             "--hint" => hints.push(json!({ "multiaddr": value })),
             "--relay" => hints.push(json!({ "relay": value })),
+            "--mesh" => {
+                // "broadcast" floods the whole mesh — the normal mode;
+                // recipients recognize their envelopes by delivery token.
+                let node: u32 = if value == "broadcast" {
+                    u32::MAX
+                } else {
+                    value.parse().map_err(|_| "bad --mesh node number")?
+                };
+                hints.push(json!({ "mesh": node }));
+            }
             other => return Err(format!("unknown flag: {other}")),
         }
     }

@@ -46,7 +46,7 @@ serde = { version = "1", features = ["derive"] }
 # socket2 for the mDNS socket only: port 5353 must be shared (SO_REUSEADDR
 # and SO_REUSEPORT) and multicast-joined — tokio's plain bind can do neither.
 socket2 = "0.6"
-tokio = { version = "1", features = ["fs", "net", "sync", "rt", "time", "macros"] }
+tokio = { version = "1", features = ["fs", "io-util", "net", "sync", "rt", "time", "macros"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["fs", "sync", "rt", "rt-multi-thread", "macros", "time"] }

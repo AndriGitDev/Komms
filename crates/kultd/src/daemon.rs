@@ -29,7 +29,8 @@ use tokio::task::JoinHandle;
 use kult_crypto::KdfProfile;
 use kult_node::{Node, NodeError};
 use kult_transport::{
-    DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, NatStatus, Transport, TransportOptions,
+    DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, MeshtasticOptions,
+    MeshtasticTransport, NatStatus, Transport, TransportOptions,
 };
 
 use crate::wire::{self, Hint, Op, Request};
@@ -66,6 +67,11 @@ pub struct DaemonConfig {
     pub mdns: bool,
     /// Also receive from a sneakernet spool directory.
     pub spool: Option<PathBuf>,
+    /// Attach a Meshtastic radio on this USB-serial port (`/dev/ttyUSB0`,
+    /// `/dev/ttyACM0`, …) as an off-grid carrier.
+    pub meshtastic_serial: Option<String>,
+    /// Attach a Meshtastic radio via its network API (`host:4403`).
+    pub meshtastic_tcp: Option<String>,
     /// Delivery-engine heartbeat.
     pub tick_interval: Duration,
     /// Mailbox check-in cadence.
@@ -93,6 +99,8 @@ impl DaemonConfig {
             serve_mailbox: false,
             mdns: true,
             spool: None,
+            meshtastic_serial: None,
+            meshtastic_tcp: None,
             tick_interval: Duration::from_millis(500),
             checkin_interval: Duration::from_secs(300),
             nat_interval: Duration::from_secs(30),
@@ -192,6 +200,30 @@ impl Daemon {
         if let Some(spool) = &cfg.spool {
             let sneaker = kult_transport::SneakernetTransport::new(spool)?;
             node.add_transport(Arc::new(sneaker));
+        }
+        // A radio that was asked for but cannot be reached is a hard startup
+        // error, matching the spool: silently running without the configured
+        // off-grid carrier would be a lie about coverage.
+        if let Some(port) = &cfg.meshtastic_serial {
+            let radio =
+                MeshtasticTransport::connect_serial(port, None, MeshtasticOptions::default())
+                    .await
+                    .map_err(|e| DaemonError::Io(io::Error::other(e.to_string())))?;
+            eprintln!(
+                "kultd: meshtastic radio on {port} is node {}",
+                radio.node_num()
+            );
+            node.add_transport(Arc::new(radio));
+        }
+        if let Some(addr) = &cfg.meshtastic_tcp {
+            let radio = MeshtasticTransport::connect_tcp(addr, MeshtasticOptions::default())
+                .await
+                .map_err(|e| DaemonError::Io(io::Error::other(e.to_string())))?;
+            eprintln!(
+                "kultd: meshtastic radio at {addr} is node {}",
+                radio.node_num()
+            );
+            node.add_transport(Arc::new(radio));
         }
 
         let address = node.address();

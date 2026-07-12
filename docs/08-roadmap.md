@@ -115,8 +115,14 @@ link exists") and go out the first tick a faster carrier appears, and
 selective retransmission works end to end — a receiver stuck missing
 fragment indices NACKs them (inside an ordinary encrypted receipt, paced to
 respect airtime), and the sender retransmits exactly the missing fragments,
-never the whole message. Remaining: `kultd` wiring (serial device flag),
-internet↔mesh bridging, and the hardware-in-loop nightly.
+never the whole message. The daemon is wired: `kultd --meshtastic-serial
+/dev/ttyUSB0` (or `--meshtastic-tcp host:4403`) attaches a stock radio as a
+carrier (an unreachable configured radio is a hard startup error), `kult …
+--mesh broadcast` sets mesh delivery hints, and an end-to-end test drives
+two daemons — mDNS off, no bootstrap, mesh hints only — to verified
+delivery through their RPC sockets with the (fake) radios as the sole
+shared medium. Remaining: internet↔mesh bridging and the hardware-in-loop
+nightly.
 
 **Acceptance**:
 - Two phones/laptops with stock-firmware Meshtastic radios, all other networking

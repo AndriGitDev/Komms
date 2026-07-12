@@ -111,10 +111,38 @@ impl MeshtasticTransport {
     where
         S: AsyncReadExt + AsyncWriteExt + Send + 'static,
     {
+        Self::connect_handle(StreamHandle::from_stream(stream), options).await
+    }
+
+    /// Connect to a radio on a USB-serial port (e.g. `/dev/ttyUSB0`,
+    /// `/dev/ttyACM0`). `baud` defaults to the standard Meshtastic serial
+    /// rate when `None`.
+    pub async fn connect_serial(
+        port: &str,
+        baud: Option<u32>,
+        options: MeshtasticOptions,
+    ) -> Result<Self> {
+        let handle =
+            meshtastic::utils::stream::build_serial_stream(port.to_owned(), baud, None, None)
+                .map_err(link_error)?;
+        Self::connect_handle(handle, options).await
+    }
+
+    /// Connect to a radio's network API (`host:4403` on Wi-Fi/Ethernet
+    /// radios, or anything speaking the same framed protocol).
+    pub async fn connect_tcp(address: &str, options: MeshtasticOptions) -> Result<Self> {
+        let handle = meshtastic::utils::stream::build_tcp_stream(address.to_owned())
+            .await
+            .map_err(link_error)?;
+        Self::connect_handle(handle, options).await
+    }
+
+    async fn connect_handle<S>(handle: StreamHandle<S>, options: MeshtasticOptions) -> Result<Self>
+    where
+        S: AsyncReadExt + AsyncWriteExt + Send + 'static,
+    {
         let started = Instant::now();
-        let (mut packets, api) = StreamApi::new()
-            .connect(StreamHandle::from_stream(stream))
-            .await;
+        let (mut packets, api) = StreamApi::new().connect(handle).await;
         let config_id: u32 = generate_rand_id();
         let api = api.configure(config_id).await.map_err(link_error)?;
 
@@ -330,6 +358,183 @@ fn link_error(e: meshtastic::errors::Error) -> TransportError {
 
 fn handshake_failed(msg: &'static str) -> TransportError {
     TransportError::Io(std::io::Error::other(msg))
+}
+
+/// A faithful in-memory fake radio for tests: speaks the framed Meshtastic
+/// client protocol on any byte stream, answers the `want_config_id`
+/// handshake, and floods packets over a shared "air" hub. Used by this
+/// crate's integration tests and by `kultd`'s mesh end-to-end test; not
+/// part of the supported API.
+#[doc(hidden)]
+pub mod testutil {
+    use meshtastic::protobufs::{self, config, from_radio, to_radio};
+    use meshtastic::Message as _;
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
+    use tokio::sync::broadcast;
+
+    /// The shared RF medium: (transmitting radio's node number, packet).
+    pub type Air = broadcast::Sender<(u32, protobufs::MeshPacket)>;
+
+    /// What the fake radio reports in its configuration handshake.
+    #[derive(Clone, Copy, Debug)]
+    pub struct RadioSpec {
+        /// The radio's node number.
+        pub node_num: u32,
+        /// LoRa modem preset (`ModemPreset` as i32).
+        pub modem_preset: i32,
+        /// Regulatory region (`RegionCode` as i32).
+        pub region: i32,
+    }
+
+    impl RadioSpec {
+        /// The common test radio: LongFast in the US region (no duty-cycle
+        /// budget), so tests exercise delivery, not airtime limits.
+        pub fn unbudgeted(node_num: u32) -> Self {
+            use config::lo_ra_config::{ModemPreset, RegionCode};
+            Self {
+                node_num,
+                modem_preset: ModemPreset::LongFast as i32,
+                region: RegionCode::Us as i32,
+            }
+        }
+    }
+
+    /// Frame one `FromRadio` for the wire: `0x94 0xc3 len_msb len_lsb body`.
+    pub fn frame(msg: &protobufs::FromRadio) -> Vec<u8> {
+        let body = msg.encode_to_vec();
+        let mut out = vec![
+            0x94,
+            0xc3,
+            (body.len() >> 8) as u8,
+            (body.len() & 0xff) as u8,
+        ];
+        out.extend_from_slice(&body);
+        out
+    }
+
+    /// Extract one framed payload from `buf`, resyncing on the magic bytes
+    /// the way real firmware does.
+    fn next_frame(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
+        loop {
+            while !buf.is_empty() && buf[0] != 0x94 {
+                buf.remove(0);
+            }
+            if buf.len() >= 2 && buf[1] != 0xc3 {
+                buf.remove(0);
+                continue;
+            }
+            if buf.len() < 4 {
+                return None;
+            }
+            let len = usize::from(buf[2]) << 8 | usize::from(buf[3]);
+            if buf.len() < 4 + len {
+                return None;
+            }
+            let body = buf[4..4 + len].to_vec();
+            buf.drain(..4 + len);
+            return Some(body);
+        }
+    }
+
+    fn handshake_replies(spec: &RadioSpec, config_id: u32) -> Vec<protobufs::FromRadio> {
+        let lora = config::LoRaConfig {
+            use_preset: true,
+            modem_preset: spec.modem_preset,
+            region: spec.region,
+            tx_enabled: true,
+            ..Default::default()
+        };
+        [
+            from_radio::PayloadVariant::MyInfo(protobufs::MyNodeInfo {
+                my_node_num: spec.node_num,
+                ..Default::default()
+            }),
+            from_radio::PayloadVariant::Config(protobufs::Config {
+                payload_variant: Some(config::PayloadVariant::Lora(lora)),
+            }),
+            from_radio::PayloadVariant::ConfigCompleteId(config_id),
+        ]
+        .into_iter()
+        .map(|payload_variant| protobufs::FromRadio {
+            id: 0,
+            payload_variant: Some(payload_variant),
+        })
+        .collect()
+    }
+
+    /// Serve one client connection as a stock-firmware-shaped radio:
+    /// answers the config handshake, transmits client packets onto the
+    /// `air` hub, and delivers other radios' packets up to the client.
+    /// Runs until the stream closes.
+    pub async fn serve_stream<S>(spec: RadioSpec, air: Air, stream: S)
+    where
+        S: AsyncRead + AsyncWrite + Send + 'static,
+    {
+        let mut from_air = air.subscribe();
+        let (mut rx, mut tx) = tokio::io::split(stream);
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            tokio::select! {
+                read = rx.read(&mut chunk) => {
+                    let Ok(n) = read else { return };
+                    if n == 0 {
+                        return;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    while let Some(body) = next_frame(&mut buf) {
+                        let Ok(to_radio) = protobufs::ToRadio::decode(&body[..]) else {
+                            continue;
+                        };
+                        match to_radio.payload_variant {
+                            Some(to_radio::PayloadVariant::WantConfigId(id)) => {
+                                for msg in handshake_replies(&spec, id) {
+                                    if tx.write_all(&frame(&msg)).await.is_err() {
+                                        return;
+                                    }
+                                }
+                            }
+                            Some(to_radio::PayloadVariant::Packet(packet)) => {
+                                // Errors just mean nobody is listening on air.
+                                let _ = air.send((spec.node_num, packet));
+                            }
+                            _ => {} // Heartbeats etc.
+                        }
+                    }
+                }
+                received = from_air.recv() => {
+                    let Ok((from_node, packet)) = received else { return };
+                    if from_node == spec.node_num {
+                        continue; // A radio does not hear its own transmission.
+                    }
+                    let msg = protobufs::FromRadio {
+                        id: 0,
+                        payload_variant: Some(from_radio::PayloadVariant::Packet(packet)),
+                    };
+                    if tx.write_all(&frame(&msg)).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Spawn a fake radio on an in-memory duplex; returns the client side.
+    pub fn spawn_duplex(spec: RadioSpec, air: Air) -> DuplexStream {
+        let (client_side, radio_side) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(serve_stream(spec, air, radio_side));
+        client_side
+    }
+
+    /// Spawn a fake radio serving connections on a TCP listener (what
+    /// `MeshtasticTransport::connect_tcp` dials in tests).
+    pub fn spawn_tcp(spec: RadioSpec, air: Air, listener: tokio::net::TcpListener) {
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(serve_stream(spec, air.clone(), stream));
+            }
+        });
+    }
 }
 
 #[cfg(test)]
