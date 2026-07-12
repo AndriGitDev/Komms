@@ -1,158 +1,25 @@
-//! Meshtastic carrier integration tests (docs/08-roadmap.md M4): a faithful
-//! in-memory fake radio speaking the framed Meshtastic client protocol, a
-//! broadcast hub standing in for the RF medium, and the acceptance pin that
-//! a ratcheted 192-bucket message crosses the mesh in ≤ 2 LoRa frames.
+//! Meshtastic carrier integration tests (docs/08-roadmap.md M4), driving the
+//! in-memory fake radio from `kult_transport::mesh_testutil`: handshake and
+//! runtime profile, flooding between radios, noise tolerance, duty-cycle
+//! enforcement, and the acceptance pin that a ratcheted 192-bucket message
+//! crosses the mesh in ≤ 2 LoRa frames.
 #![cfg(feature = "meshtastic")]
 
 use std::time::Duration;
 
 use meshtastic::protobufs::config::lo_ra_config::{ModemPreset, RegionCode};
-use meshtastic::protobufs::{self, config, from_radio, mesh_packet, to_radio, PortNum};
-use meshtastic::Message as _;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
+use meshtastic::protobufs::{self, mesh_packet, PortNum};
 use tokio::sync::broadcast;
 
 use kult_protocol::{fragment, Envelope, EnvelopeKind, Reassembler, ENVELOPE_HEADER_LEN};
+use kult_transport::mesh_testutil::{spawn_duplex, Air, RadioSpec};
 use kult_transport::{
     DeliveryHint, MeshtasticOptions, MeshtasticTransport, Reachability, SendReceipt, Transport,
     TransportError, MESH_BROADCAST,
 };
 
-// ---- fake radio ------------------------------------------------------------
-
-#[derive(Clone, Copy)]
-struct RadioSpec {
-    node_num: u32,
-    preset: ModemPreset,
-    region: RegionCode,
-}
-
-fn frame(msg: &protobufs::FromRadio) -> Vec<u8> {
-    let body = msg.encode_to_vec();
-    let mut out = vec![
-        0x94,
-        0xc3,
-        (body.len() >> 8) as u8,
-        (body.len() & 0xff) as u8,
-    ];
-    out.extend_from_slice(&body);
-    out
-}
-
-/// Spawn a stock-firmware-shaped fake radio: answers the `want_config_id`
-/// handshake with its node info and LoRa config, transmits client packets
-/// onto the shared hub ("the air"), and delivers hub packets from other
-/// radios up to its client. Returns the stream the client connects over.
-fn spawn_fake_radio(
-    spec: RadioSpec,
-    hub: broadcast::Sender<(u32, protobufs::MeshPacket)>,
-) -> DuplexStream {
-    let (client_side, radio_side) = tokio::io::duplex(64 * 1024);
-    let mut air = hub.subscribe();
-    tokio::spawn(async move {
-        let (mut rx, mut tx) = tokio::io::split(radio_side);
-        let mut buf = Vec::new();
-        let mut chunk = [0u8; 4096];
-        loop {
-            tokio::select! {
-                read = rx.read(&mut chunk) => {
-                    let Ok(n) = read else { return };
-                    if n == 0 {
-                        return;
-                    }
-                    buf.extend_from_slice(&chunk[..n]);
-                    while let Some(body) = next_frame(&mut buf) {
-                        let Ok(to_radio) = protobufs::ToRadio::decode(&body[..]) else {
-                            continue;
-                        };
-                        match to_radio.payload_variant {
-                            Some(to_radio::PayloadVariant::WantConfigId(id)) => {
-                                for msg in handshake_replies(&spec, id) {
-                                    if tx.write_all(&frame(&msg)).await.is_err() {
-                                        return;
-                                    }
-                                }
-                            }
-                            Some(to_radio::PayloadVariant::Packet(packet)) => {
-                                // Errors just mean nobody is listening on air.
-                                let _ = hub.send((spec.node_num, packet));
-                            }
-                            _ => {} // Heartbeats etc.
-                        }
-                    }
-                }
-                received = air.recv() => {
-                    let Ok((from_radio_num, packet)) = received else { return };
-                    if from_radio_num == spec.node_num {
-                        continue; // A radio does not hear its own transmission.
-                    }
-                    let msg = protobufs::FromRadio {
-                        id: 0,
-                        payload_variant: Some(from_radio::PayloadVariant::Packet(packet)),
-                    };
-                    if tx.write_all(&frame(&msg)).await.is_err() {
-                        return;
-                    }
-                }
-            }
-        }
-    });
-    client_side
-}
-
-/// Extract one framed payload from `buf`, resyncing on the magic bytes the
-/// way real firmware does.
-fn next_frame(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
-    while !buf.is_empty() && buf[0] != 0x94 {
-        buf.remove(0);
-    }
-    if buf.len() >= 2 && buf[1] != 0xc3 {
-        buf.remove(0);
-        return next_frame(buf);
-    }
-    if buf.len() < 4 {
-        return None;
-    }
-    let len = usize::from(buf[2]) << 8 | usize::from(buf[3]);
-    if buf.len() < 4 + len {
-        return None;
-    }
-    let body = buf[4..4 + len].to_vec();
-    buf.drain(..4 + len);
-    Some(body)
-}
-
-fn handshake_replies(spec: &RadioSpec, config_id: u32) -> Vec<protobufs::FromRadio> {
-    let lora = config::LoRaConfig {
-        use_preset: true,
-        modem_preset: spec.preset as i32,
-        region: spec.region as i32,
-        tx_enabled: true,
-        ..Default::default()
-    };
-    [
-        from_radio::PayloadVariant::MyInfo(protobufs::MyNodeInfo {
-            my_node_num: spec.node_num,
-            ..Default::default()
-        }),
-        from_radio::PayloadVariant::Config(protobufs::Config {
-            payload_variant: Some(config::PayloadVariant::Lora(lora)),
-        }),
-        from_radio::PayloadVariant::ConfigCompleteId(config_id),
-    ]
-    .into_iter()
-    .map(|payload_variant| protobufs::FromRadio {
-        id: 0,
-        payload_variant: Some(payload_variant),
-    })
-    .collect()
-}
-
-async fn connect(
-    spec: RadioSpec,
-    hub: &broadcast::Sender<(u32, protobufs::MeshPacket)>,
-) -> MeshtasticTransport {
-    let stream = spawn_fake_radio(spec, hub.clone());
+async fn connect(spec: RadioSpec, air: &Air) -> MeshtasticTransport {
+    let stream = spawn_duplex(spec, air.clone());
     MeshtasticTransport::connect(stream, MeshtasticOptions::default())
         .await
         .expect("fake radio handshake")
@@ -173,20 +40,18 @@ async fn recv_within(transport: &MeshtasticTransport, deadline: Duration) -> Vec
 fn spec(node_num: u32, region: RegionCode) -> RadioSpec {
     RadioSpec {
         node_num,
-        preset: ModemPreset::LongFast,
-        region,
+        modem_preset: ModemPreset::LongFast as i32,
+        region: region as i32,
     }
 }
-
-// ---- tests -----------------------------------------------------------------
 
 /// The handshake harvests the radio's identity and produces the documented
 /// link profile: 233-byte frames, seconds-class latency, airtime-class cost,
 /// broadcast medium.
 #[tokio::test]
 async fn handshake_yields_runtime_profile() {
-    let (hub, _keep) = broadcast::channel(64);
-    let transport = connect(spec(11, RegionCode::Us), &hub).await;
+    let (air, _keep) = broadcast::channel(64);
+    let transport = connect(spec(11, RegionCode::Us), &air).await;
 
     assert_eq!(transport.node_num(), 11);
     let profile = transport.profile();
@@ -216,9 +81,9 @@ async fn handshake_yields_runtime_profile() {
 /// other, and the sender does not hear its own transmission.
 #[tokio::test]
 async fn envelopes_flood_between_radios() {
-    let (hub, _keep) = broadcast::channel(64);
-    let alpha = connect(spec(1, RegionCode::Us), &hub).await;
-    let beta = connect(spec(2, RegionCode::Us), &hub).await;
+    let (air, _keep) = broadcast::channel(64);
+    let alpha = connect(spec(1, RegionCode::Us), &air).await;
+    let beta = connect(spec(2, RegionCode::Us), &air).await;
 
     let envelope = Envelope::new(EnvelopeKind::Message, [7u8; 32], vec![1, 2, 3, 4]);
     let receipt = alpha
@@ -237,8 +102,8 @@ async fn envelopes_flood_between_radios() {
 /// an error, and it does not block later valid envelopes.
 #[tokio::test]
 async fn foreign_ports_and_noise_are_ignored() {
-    let (hub, _keep) = broadcast::channel(64);
-    let transport = connect(spec(3, RegionCode::Us), &hub).await;
+    let (air, _keep) = broadcast::channel(64);
+    let transport = connect(spec(3, RegionCode::Us), &air).await;
 
     let noise = |portnum: i32, payload: Vec<u8>| protobufs::MeshPacket {
         from: 99,
@@ -251,19 +116,19 @@ async fn foreign_ports_and_noise_are_ignored() {
         ..Default::default()
     };
     // Ordinary Meshtastic text traffic, and garbage on the private port.
-    hub.send((
+    air.send((
         99,
         noise(PortNum::TextMessageApp as i32, b"hi mesh".to_vec()),
     ))
     .unwrap();
-    hub.send((99, noise(PortNum::PrivateApp as i32, vec![0xff; 40])))
+    air.send((99, noise(PortNum::PrivateApp as i32, vec![0xff; 40])))
         .unwrap();
 
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(transport.recv().await.unwrap().is_empty());
 
     let envelope = Envelope::new(EnvelopeKind::Receipt, [9u8; 32], vec![5, 6]);
-    hub.send((99, noise(PortNum::PrivateApp as i32, envelope.encode())))
+    air.send((99, noise(PortNum::PrivateApp as i32, envelope.encode())))
         .unwrap();
     assert_eq!(
         recv_within(&transport, Duration::from_secs(5)).await,
@@ -275,8 +140,8 @@ async fn foreign_ports_and_noise_are_ignored() {
 /// carrier refuses them honestly instead of truncating.
 #[tokio::test]
 async fn oversized_envelope_is_refused() {
-    let (hub, _keep) = broadcast::channel(64);
-    let transport = connect(spec(4, RegionCode::Us), &hub).await;
+    let (air, _keep) = broadcast::channel(64);
+    let transport = connect(spec(4, RegionCode::Us), &air).await;
     let envelope = Envelope::new(EnvelopeKind::Message, [0u8; 32], vec![0; 300]);
     assert!(matches!(
         transport
@@ -316,9 +181,9 @@ async fn ratcheted_192_bucket_message_needs_at_most_two_frames() {
     let msg = a_sess.encrypt(&mut rng, NOW, &padded, &[]);
     let envelope = Envelope::new(EnvelopeKind::Message, [3u8; 32], msg.encode());
 
-    let (hub, _keep) = broadcast::channel(64);
-    let alpha = connect(spec(1, RegionCode::Us), &hub).await;
-    let beta = connect(spec(2, RegionCode::Us), &hub).await;
+    let (air, _keep) = broadcast::channel(64);
+    let alpha = connect(spec(1, RegionCode::Us), &air).await;
+    let beta = connect(spec(2, RegionCode::Us), &air).await;
     let mtu = alpha.profile().mtu;
 
     // The delivery engine's fragmentation path (kult-node::send_via).
@@ -381,16 +246,16 @@ async fn ratcheted_192_bucket_message_needs_at_most_two_frames() {
 #[tokio::test]
 #[allow(deprecated)] // VeryLongSlow: deprecated in the protobufs, still deployed.
 async fn duty_cycle_budget_is_enforced() {
-    let (hub, _keep) = broadcast::channel(1024);
+    let (air, _keep) = broadcast::channel(1024);
     // VeryLongSlow in EU868: a full 255-byte frame is 28.59 s on air against
     // a 360 s/h budget → exactly 12 frames fit, the 13th must be refused.
     let transport = connect(
         RadioSpec {
             node_num: 5,
-            preset: ModemPreset::VeryLongSlow,
-            region: RegionCode::Eu868,
+            modem_preset: ModemPreset::VeryLongSlow as i32,
+            region: RegionCode::Eu868 as i32,
         },
-        &hub,
+        &air,
     )
     .await;
 

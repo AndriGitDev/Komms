@@ -30,6 +30,9 @@ OPTIONS:
     --serve-mailbox         volunteer bounded mailbox service for others
     --no-mdns               do not announce/discover peers on the local network
     --spool DIR             also receive sneakernet bundles from this directory
+    --meshtastic-serial DEV attach a Meshtastic radio on this USB-serial port
+                            (/dev/ttyUSB0, /dev/ttyACM0, …) as an off-grid carrier
+    --meshtastic-tcp ADDR   attach a Meshtastic radio via its network API (host:4403)
     --kdf desktop|mobile    Argon2id profile for store creation [default: desktop]
     --tick-secs N           delivery-engine heartbeat [default: 0.5s granularity]
     --checkin-secs N        mailbox check-in cadence  [default: 300]
@@ -47,6 +50,8 @@ fn parse_args() -> Result<DaemonConfig, String> {
     let mut serve_mailbox = false;
     let mut mdns = true;
     let mut spool: Option<PathBuf> = None;
+    let mut meshtastic_serial: Option<String> = None;
+    let mut meshtastic_tcp: Option<String> = None;
     let mut kdf = kult_crypto::KDF_PROFILE_DESKTOP;
     let mut tick_secs: Option<u64> = None;
     let mut checkin_secs: Option<u64> = None;
@@ -67,6 +72,8 @@ fn parse_args() -> Result<DaemonConfig, String> {
             "--serve-mailbox" => serve_mailbox = true,
             "--no-mdns" => mdns = false,
             "--spool" => spool = Some(value("--spool")?.into()),
+            "--meshtastic-serial" => meshtastic_serial = Some(value("--meshtastic-serial")?),
+            "--meshtastic-tcp" => meshtastic_tcp = Some(value("--meshtastic-tcp")?),
             "--kdf" => {
                 kdf = match value("--kdf")?.as_str() {
                     "desktop" => kult_crypto::KDF_PROFILE_DESKTOP,
@@ -130,6 +137,8 @@ fn parse_args() -> Result<DaemonConfig, String> {
     cfg.serve_mailbox = serve_mailbox;
     cfg.mdns = mdns;
     cfg.spool = spool;
+    cfg.meshtastic_serial = meshtastic_serial;
+    cfg.meshtastic_tcp = meshtastic_tcp;
     if let Some(secs) = tick_secs {
         cfg.tick_interval = Duration::from_secs(secs.max(1));
     }
