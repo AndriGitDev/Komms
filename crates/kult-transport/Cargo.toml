@@ -10,8 +10,25 @@ repository.workspace = true
 [dependencies]
 kult-protocol = { version = "0.1.0", path = "../kult-protocol" }
 async-trait = "0.1"
-tokio = { version = "1", features = ["fs", "sync"] }
+futures = "0.3"
+# NOTE: the "mdns" feature stays OFF until libp2p-mdns moves to
+# hickory-proto ≥ 0.26 (its 0.25 pin carries RUSTSEC-2026-0118/0119, and this
+# workspace ships zero ignored vulnerabilities). LAN delivery works via
+# explicit multiaddrs meanwhile; auto-discovery returns with the upgrade.
+libp2p = { version = "0.56", features = [
+    "tokio",
+    "quic",
+    "tcp",
+    "noise",
+    "yamux",
+    "request-response",
+    "cbor",
+    "macros",
+    "ed25519",
+] }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["fs", "sync", "rt", "time", "macros"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["fs", "sync", "rt", "macros"] }
+tokio = { version = "1", features = ["fs", "sync", "rt", "rt-multi-thread", "macros", "time"] }
 tempfile = "3"

@@ -1,9 +1,11 @@
 //! KommsKult transport layer (docs/05-transports.md).
 //!
-//! Defines the [`Transport`] contract that every carrier — internet (M3),
-//! BLE (M5), Meshtastic (M4), sneakernet — fulfills, and ships the first
-//! implementation: [`SneakernetTransport`], which moves sealed envelopes
-//! through spool directories (USB sticks, shared folders, any file channel).
+//! Defines the [`Transport`] contract that every carrier — internet, BLE
+//! (M5), Meshtastic (M4), sneakernet — fulfills, and ships two
+//! implementations: [`SneakernetTransport`], which moves sealed envelopes
+//! through spool directories (USB sticks, shared folders, any file channel),
+//! and [`Libp2pTransport`], the internet carrier (QUIC primary, TCP+Noise
+//! fallback).
 //!
 //! Contract rules (docs/05-transports.md §1, enforced by construction):
 //! transports carry **ciphertext only** ([`kult_protocol::Envelope`]s), never
@@ -19,8 +21,10 @@ use async_trait::async_trait;
 
 use kult_protocol::Envelope;
 
+mod internet;
 mod sneakernet;
 
+pub use internet::Libp2pTransport;
 pub use sneakernet::SneakernetTransport;
 
 /// Failures surfaced by transports.
@@ -98,8 +102,9 @@ pub struct LinkProfile {
 }
 
 /// How a transport addresses a peer. Deliberately **not** an identity key —
-/// hints are per-transport routing data only (contract rule 2).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// hints are per-transport routing data only (contract rule 2). Serializable
+/// so the runtime can persist hints (as opaque bytes) with contacts.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum DeliveryHint {
     /// A spool directory (sneakernet): envelopes are written into it.

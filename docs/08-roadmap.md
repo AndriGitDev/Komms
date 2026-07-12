@@ -3,7 +3,7 @@
 Milestones are strictly ordered by dependency; each has acceptance criteria that gate the
 next. Build order details per crate: [09 — Implementation Guide](09-implementation-guide.md).
 
-## M0 — Design framework *(this repository state)*
+## M0 — Design framework *(done)*
 
 **Deliverable**: the documentation set in `docs/` — threat model, architecture, crypto
 spec, transport spec, identity model, storage model, ADRs, implementation guide.
@@ -12,7 +12,7 @@ spec, transport spec, identity model, storage model, ADRs, implementation guide.
 implementation guide sufficient for a competent Rust developer (or coding agent) to start
 M1 without design questions.
 
-## M1 — Cryptographic core (`kult-crypto`)
+## M1 — Cryptographic core (`kult-crypto`) *(done)*
 
 Workspace scaffolding + the full crypto layer: primitives wiring, hybrid PQXDH handshake,
 Double Ratchet with header encryption, fingerprints, key serialization.
@@ -24,7 +24,7 @@ Double Ratchet with header encryption, fingerprints, key serialization.
 - Two in-memory parties complete handshake and exchange 10 000 messages under random
   loss/reorder within `MAX_SKIP`.
 
-## M2 — Protocol & storage (`kult-protocol`, `kult-store`)
+## M2 — Protocol & storage (`kult-protocol`, `kult-store`) *(done)*
 
 Envelope codec, padding buckets, fragmentation/reassembly, delivery tokens, sealed
 sender; encrypted SQLite storage with the full key hierarchy; sneakernet bundle
@@ -37,7 +37,19 @@ import/export (first working transport, needs no networking).
 - Fuzzers on envelope + bundle parsers; storage passes "copied DB file leaks nothing but
   sizes" review checklist.
 
-## M3 — Internet transport & headless node (`kult-transport`, `kult-node`)
+## M3 — Internet transport & headless node (`kult-transport`, `kult-node`) *(in progress)*
+
+The `kult-node` runtime is implemented per the build order in
+[09 — Implementation Guide §2](09-implementation-guide.md): delivery engine
+(queued→sent→delivered on encrypted receipts, retry with backoff, dedup,
+out-of-order stash), transport scheduler, session lifecycle, command/event API —
+running over the sneakernet carrier. The libp2p carrier's first slice is also in:
+QUIC (primary) and TCP+Noise+Yamux (fallback) with an envelope request-response
+protocol reporting honest next-hop acks; two nodes exchange messages and receipts
+over localhost, and the scheduler prefers it over slower carriers. Outstanding for
+M3: Kademlia prekey records, relay-v2 mailboxes, DCUtR, the headless daemon, and
+mDNS LAN auto-discovery (deferred until `libp2p-mdns` drops the RUSTSEC-flagged
+`hickory-proto 0.25`; explicit-multiaddr LAN delivery works today).
 
 libp2p integration (QUIC, TCP fallback, Kademlia, relay v2, DCUtR), prekey bundles on
 DHT, mailbox relays, transport scheduler, headless daemon with local RPC.
