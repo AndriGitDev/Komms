@@ -46,10 +46,15 @@ out-of-order stash), transport scheduler, session lifecycle, command/event API â
 running over the sneakernet carrier. The libp2p carrier's first slice is also in:
 QUIC (primary) and TCP+Noise+Yamux (fallback) with an envelope request-response
 protocol reporting honest next-hop acks; two nodes exchange messages and receipts
-over localhost, and the scheduler prefers it over slower carriers. Outstanding for
-M3: Kademlia prekey records, relay-v2 mailboxes, DCUtR, the headless daemon, and
-mDNS LAN auto-discovery (deferred until `libp2p-mdns` drops the RUSTSEC-flagged
-`hickory-proto 0.25`; explicit-multiaddr LAN delivery works today).
+over localhost, and the scheduler prefers it over slower carriers. The discovery
+plane is in: a Kademlia DHT (bootstrap from any user-supplied peer â€” nothing
+hardcoded) carrying whole-bundle-signed prekey records under the kult-address
+digest, so a node adds a contact from the address string alone and the delivery
+engine resolves missing return paths (sealed sender reveals none) from the
+peer's record. Outstanding for M3: relay-v2 mailboxes, DCUtR, the headless
+daemon, and mDNS LAN auto-discovery (deferred until `libp2p-mdns` drops the
+RUSTSEC-flagged `hickory-proto 0.25`; explicit-multiaddr LAN delivery works
+today).
 
 libp2p integration (QUIC, TCP fallback, Kademlia, relay v2, DCUtR), prekey bundles on
 DHT, mailbox relays, transport scheduler, headless daemon with local RPC.

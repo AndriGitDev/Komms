@@ -120,6 +120,95 @@ async fn nodes_exchange_over_localhost_quic() {
     assert_eq!(received_bodies(&events), vec![b"loud and clear".to_vec()]);
 }
 
+/// M3 acceptance slice: no manual configuration beyond sharing kult
+/// addresses. Bob publishes his prekey bundle (with his multiaddr riding in
+/// it) on the DHT; Alice — knowing only Bob's address string and a common
+/// bootstrap peer — fetches it, verifies it, and messages him. The message
+/// arriving over Alice's only transport proves the delivery hints came from
+/// the DHT record, not out-of-band.
+#[tokio::test]
+async fn contact_by_kult_address_alone_via_dht() {
+    let mut rng = StdRng::seed_from_u64(9);
+    let dir = tempfile::tempdir().unwrap();
+
+    // Any reachable peer bootstraps the DHT — here a bare transport with no
+    // node behind it, standing in for a community node.
+    let seed = Libp2pTransport::new(&["/ip4/127.0.0.1/udp/0/quic-v1"])
+        .await
+        .unwrap();
+    let seed_addr = seed.wait_listen_addr().await.unwrap();
+
+    let mut alice = Node::create(&dir.path().join("a.db"), b"a", TEST_KDF, &mut rng).unwrap();
+    let mut bob = Node::create(&dir.path().join("b.db"), b"b", TEST_KDF, &mut rng).unwrap();
+
+    let a_net = Arc::new(
+        Libp2pTransport::new(&["/ip4/127.0.0.1/udp/0/quic-v1"])
+            .await
+            .unwrap(),
+    );
+    let b_net = Arc::new(
+        Libp2pTransport::new(&["/ip4/127.0.0.1/udp/0/quic-v1"])
+            .await
+            .unwrap(),
+    );
+    a_net.bootstrap(&[seed_addr.as_str()]).await.unwrap();
+    b_net.bootstrap(&[seed_addr.as_str()]).await.unwrap();
+
+    // Bob publishes: bundle + where to reach him, keyed by his address.
+    let b_hints: Vec<DeliveryHint> = b_net
+        .listen_addrs()
+        .into_iter()
+        .map(DeliveryHint::Multiaddr)
+        .collect();
+    let a_hints: Vec<DeliveryHint> = a_net
+        .listen_addrs()
+        .into_iter()
+        .map(DeliveryHint::Multiaddr)
+        .collect();
+    alice.add_transport(Arc::clone(&a_net) as Arc<dyn kult_transport::Transport>);
+    alice.add_discovery(a_net);
+    bob.add_transport(Arc::clone(&b_net) as Arc<dyn kult_transport::Transport>);
+    bob.add_discovery(Arc::clone(&b_net) as Arc<dyn kult_transport::Discovery>);
+    bob.publish_bundle(&b_hints, NOW).await.unwrap();
+    // Alice publishes too: Bob learns her only through her (sealed-sender)
+    // handshake, which carries no return path — his receipt finds its way
+    // back via her DHT record.
+    alice.publish_bundle(&a_hints, NOW).await.unwrap();
+
+    // Alice knows nothing but the address string.
+    let bob_id = alice
+        .add_contact_by_address("bob", &bob.address(), NOW, &mut rng)
+        .await
+        .unwrap();
+    assert_eq!(bob_id, bob.peer_id());
+
+    let m1 = alice
+        .send_message(&bob_id, b"found you by address", NOW, &mut rng)
+        .unwrap();
+    alice.tick(NOW + 1, &mut rng).await.unwrap();
+    let events = bob.tick(NOW + 2, &mut rng).await.unwrap();
+    assert_eq!(
+        received_bodies(&events),
+        vec![b"found you by address".to_vec()]
+    );
+
+    // Bob's encrypted receipt drives Alice's record to Delivered.
+    let events = alice.tick(NOW + 3, &mut rng).await.unwrap();
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::DeliveryUpdated { id, state: DeliveryState::Delivered } if *id == m1
+    )));
+
+    // An address nobody published resolves to an honest BundleNotFound.
+    let ghost = Node::create(&dir.path().join("g.db"), b"g", TEST_KDF, &mut rng).unwrap();
+    assert!(matches!(
+        alice
+            .add_contact_by_address("ghost", &ghost.address(), NOW, &mut rng)
+            .await,
+        Err(kult_node::NodeError::BundleNotFound)
+    ));
+}
+
 #[tokio::test]
 async fn scheduler_prefers_fast_link_over_sneakernet() {
     let mut rng = StdRng::seed_from_u64(8);
