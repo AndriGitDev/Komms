@@ -51,7 +51,7 @@ trade for this project.)
   session-reset markers), sealed under a key derived from a BIP-39-style mnemonic via
   Argon2id. Restoring on a new device resumes identity; sessions re-handshake (ratchet
   states are deliberately *not* portable — importing stale ratchet state is a
-  correctness and security hazard).
+  correctness and security hazard). Format and mechanism: ADR-0011.
 - **Plaintext export**: JSON-lines + media directory, clearly warned as plaintext.
   The user's data is the user's.
 - **Panic wipe** (roadmap M6): duress passphrase unlocking a decoy profile while
