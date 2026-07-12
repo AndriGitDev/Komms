@@ -22,6 +22,10 @@ use zeroize::Zeroizing;
 use kult_crypto::{derive_kek, CryptoError, Identity, KdfProfile, Session, StorageKey};
 use kult_protocol::Envelope;
 
+mod backup;
+
+pub use backup::BACKUP_MAGIC;
+
 /// Failures surfaced by the store.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -34,6 +38,10 @@ pub enum StoreError {
     Protocol(kult_protocol::ProtocolError),
     /// The database is missing required metadata (not a Komms store).
     NotAStore,
+    /// The file is not a Komms backup (bad magic, truncated, or its sealed
+    /// payload fails to parse). A wrong mnemonic surfaces as
+    /// [`StoreError::Crypto`] instead — uniform AEAD failure, no oracle.
+    NotABackup,
     /// (De)serialization of a stored record failed.
     Serialization,
 }
@@ -45,6 +53,7 @@ impl std::fmt::Display for StoreError {
             Self::Crypto(e) => write!(f, "crypto error: {e}"),
             Self::Protocol(e) => write!(f, "protocol error: {e}"),
             Self::NotAStore => f.write_str("not a Komms store"),
+            Self::NotABackup => f.write_str("not a Komms backup file"),
             Self::Serialization => f.write_str("record serialization failure"),
         }
     }
@@ -159,6 +168,7 @@ CREATE TABLE IF NOT EXISTS seen     (id BLOB PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS contacts (peer BLOB PRIMARY KEY, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS prekeys  (id INTEGER PRIMARY KEY CHECK (id = 1), blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS pending  (seq INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS resets   (peer BLOB PRIMARY KEY);
 ";
 
 /// An open, unlocked Komms store.
@@ -221,6 +231,9 @@ impl Store {
     /// Open and unlock an existing store.
     pub fn open(path: &Path, passphrase: &[u8]) -> Result<Self> {
         let conn = Connection::open(path)?;
+        // Idempotent: also creates any table added since this store was —
+        // the only schema evolution so far is purely additive.
+        conn.execute_batch(SCHEMA)?;
         let get = |k: &str| -> Result<Vec<u8>> {
             conn.query_row("SELECT v FROM meta WHERE k = ?1", params![k], |r| r.get(0))
                 .optional()?

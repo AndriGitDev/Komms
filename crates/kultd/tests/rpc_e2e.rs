@@ -84,6 +84,23 @@ impl Client {
         self.call(request).await.expect("rpc ok")
     }
 
+    /// Wait until `n` events matching `pred` have arrived in total (the
+    /// running tally includes ones already collected on the side).
+    async fn wait_event_count(&mut self, pred: impl Fn(&Value) -> bool, n: usize) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        while self.events.iter().filter(|e| pred(e)).count() < n {
+            let line = tokio::time::timeout_at(deadline, self.lines.next_line())
+                .await
+                .expect("event timeout")
+                .expect("read")
+                .expect("eof");
+            let value: Value = serde_json::from_str(&line).expect("json");
+            if let Some(event) = value.get("event") {
+                self.events.push(event.clone());
+            }
+        }
+    }
+
     /// Wait until an event matching `pred` has arrived (drains the stream).
     async fn wait_event(&mut self, pred: impl Fn(&Value) -> bool) -> Value {
         if let Some(hit) = self.events.iter().find(|e| pred(e)) {
@@ -291,6 +308,136 @@ async fn daemon_restarts_with_history() {
     assert_eq!(messages["messages"][0]["body"], json!("before restart"));
     let contacts = a.ok(json!({ "op": "contacts" })).await;
     assert_eq!(contacts["contacts"][0]["name"], json!("bob"));
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+/// Backup over RPC, then a "lost device": a fresh daemon restores from the
+/// file + mnemonic alone, resumes the identity with contacts and history,
+/// and messaging works again in both directions (docs/07-storage.md §4).
+#[tokio::test(flavor = "multi_thread")]
+async fn backup_and_restore_via_rpc() {
+    let dir = tempfile::tempdir().unwrap();
+    let alice = Daemon::start(test_config(dir.path(), "alice"))
+        .await
+        .unwrap();
+    let bob = Daemon::start(test_config(dir.path(), "bob")).await.unwrap();
+
+    // Pair and converse, so the backup has a session to reset.
+    let mut a = Client::connect(&alice.socket_path).await;
+    let mut b = Client::connect(&bob.socket_path).await;
+    let a_addr = listen_addr(&mut a).await;
+    let b_addr = listen_addr(&mut b).await;
+    let a_bundle = a.ok(json!({ "op": "bundle" })).await["bundle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let b_bundle = b.ok(json!({ "op": "bundle" })).await["bundle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bob_peer = a
+        .ok(json!({
+            "op": "add_contact", "name": "bob", "bundle": b_bundle,
+            "hints": [{ "multiaddr": b_addr }],
+        }))
+        .await["peer"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let alice_peer = b
+        .ok(json!({
+            "op": "add_contact", "name": "alice", "bundle": a_bundle,
+            "hints": [{ "multiaddr": a_addr }],
+        }))
+        .await["peer"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut b_events = Client::connect(&bob.socket_path).await;
+    b_events.ok(json!({ "op": "subscribe" })).await;
+    a.ok(json!({ "op": "send", "peer": bob_peer, "body": "before the backup" }))
+        .await;
+    b_events.wait_event(|e| e["type"] == json!("message")).await;
+
+    // Backup over RPC: the file appears (0600, never clobbered), the
+    // mnemonic is returned exactly once.
+    let backup_path = dir.path().join("alice.kkr");
+    let backed = a
+        .ok(json!({ "op": "backup", "path": backup_path.display().to_string() }))
+        .await;
+    let mnemonic = backed["mnemonic"].as_str().unwrap().to_owned();
+    assert_eq!(mnemonic.split_whitespace().count(), 24);
+    assert!(backup_path.exists());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&backup_path)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    let err = a
+        .call(json!({ "op": "backup", "path": backup_path.display().to_string() }))
+        .await
+        .unwrap_err();
+    assert!(err.contains("backup write"), "got: {err}");
+
+    // The device is lost.
+    let address_before = alice.address.clone();
+    alice.shutdown().await;
+
+    // A fresh daemon restores from the backup (new data dir, new
+    // passphrase) — but never over an existing store.
+    let mut restored_cfg = test_config(dir.path(), "alice-new");
+    restored_cfg.passphrase = b"new-passphrase".to_vec();
+    restored_cfg.restore_from = Some(backup_path.clone());
+    restored_cfg.restore_mnemonic = Some(mnemonic.clone());
+    let mut over_existing = test_config(dir.path(), "alice");
+    over_existing.restore_from = Some(backup_path.clone());
+    over_existing.restore_mnemonic = Some(mnemonic);
+    assert!(Daemon::start(over_existing).await.is_err());
+    let alice = Daemon::start(restored_cfg).await.unwrap();
+    assert_eq!(alice.address, address_before);
+
+    // Contacts and history came back.
+    let mut a = Client::connect(&alice.socket_path).await;
+    let contacts = a.ok(json!({ "op": "contacts" })).await;
+    assert_eq!(contacts["contacts"][0]["name"], json!("bob"));
+    let messages = a.ok(json!({ "op": "messages", "peer": bob_peer })).await;
+    assert_eq!(messages["messages"][0]["body"], json!("before the backup"));
+
+    // The new device listens on a new address; Bob learns it the way any
+    // moved contact's address arrives (out-of-band here — the DHT bundle
+    // republish covers it in bootstrap deployments).
+    let a_addr_new = listen_addr(&mut a).await;
+    b.ok(json!({
+        "op": "set_hints", "peer": alice_peer,
+        "hints": [{ "multiaddr": a_addr_new }],
+    }))
+    .await;
+
+    // The tick loop re-handshakes Bob (session reset marker): a *second*
+    // session_established for the same contact — the first was the
+    // original pairing. Only then is Bob's ratchet the fresh one.
+    b_events
+        .wait_event_count(|e| e["type"] == json!("session_established"), 2)
+        .await;
+    let mut a_events = Client::connect(&alice.socket_path).await;
+    a_events.ok(json!({ "op": "subscribe" })).await;
+    b.ok(json!({ "op": "send", "peer": alice_peer, "body": "you're back" }))
+        .await;
+    let got = a_events.wait_event(|e| e["type"] == json!("message")).await;
+    assert_eq!(got["body"], json!("you're back"));
+    let sent = a
+        .ok(json!({ "op": "send", "peer": bob_peer, "body": "new device, same me" }))
+        .await;
+    let msg_id = sent["id"].as_str().unwrap().to_owned();
+    a_events
+        .wait_event(|e| e["id"] == json!(msg_id) && e["state"] == json!("delivered"))
+        .await;
 
     alice.shutdown().await;
     bob.shutdown().await;

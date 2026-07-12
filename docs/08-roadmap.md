@@ -173,8 +173,19 @@ fake success. The crate's e2e test drives two nodes through the public FFI
 surface alone — pairing by bundle exchange, verified `delivered` states via
 listener events, history, safety numbers, restart persistence, honest
 errors — and `cargo run -p kult-ffi --features bindgen --bin uniffi-bindgen`
-generates the Kotlin/Swift sources. Remaining: the Tauri desktop app and the
-mobile shells themselves, QR verification/sneakernet UX, and backup/restore.
+generates the Kotlin/Swift sources. Backup/restore is in (ADR-0011): one
+encrypted `KKR1` file carries identity + contacts + history + session-reset
+markers, sealed via Argon2id under a 24-word BIP-39 mnemonic (wordlist and
+codec in-tree in `kult-crypto`, KAT-tested against the reference vectors);
+ratchet sessions and prekey secrets are deliberately excluded, and a restored
+node — fresh store, fresh vault, resumed identity — turns each reset marker
+into a proactive OPK-less re-handshake on its first tick, so messaging
+resumes in both directions without the user sending first. Exposed at every
+front door: `kult backup` / `Op::Backup` (file written 0600, mnemonic shown
+exactly once), `kultd --restore` on first run, and `kult-ffi`'s
+`export_backup` + `restore` constructor — each pinned by its own layer's
+round-trip test (store, node, RPC, FFI). Remaining: the Tauri desktop app
+and the mobile shells themselves, and QR verification/sneakernet UX.
 
 **Acceptance**: a non-technical user can install desktop + mobile builds, exchange QR
 verification with a friend, and message over internet, LAN, and mesh with truthful

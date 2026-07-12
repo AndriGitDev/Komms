@@ -84,6 +84,15 @@ pub enum Op {
     /// Publish this node's prekey bundle on the DHT now (also done
     /// automatically at startup and after relay reservation).
     Publish,
+    /// Export an encrypted backup file (identity + contacts + history +
+    /// session-reset markers — docs/07-storage.md §4). The response carries
+    /// the one-time 24-word mnemonic that seals the file: show it to the
+    /// user once; the daemon does not keep it.
+    Backup {
+        /// Where to write the backup file (created 0600; an existing file
+        /// is never overwritten).
+        path: String,
+    },
     /// Turn this connection into an event stream.
     Subscribe,
 }

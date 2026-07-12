@@ -1,0 +1,241 @@
+//! Encrypted single-file backup (docs/07-storage.md §4,
+//! docs/06-identity-trust.md §5).
+//!
+//! One export carries identity + contacts + message history +
+//! session-reset markers, sealed under a key derived from a 24-word
+//! mnemonic ([`kult_crypto::mnemonic_from_entropy`]) via Argon2id. What it
+//! deliberately does **not** carry:
+//!
+//! - **Ratchet session state** — importing stale ratchet state is a
+//!   correctness and security hazard (old message keys resurrected, replay
+//!   windows confused). Instead, the peers that had live sessions at export
+//!   time are recorded as *reset markers*, and the restored node
+//!   re-handshakes them from the stored prekey bundles.
+//! - **Own prekey secrets** — a restored device mints a fresh vault; the
+//!   old device's one-time prekeys must never be honored twice.
+//! - **Queues and stashes** — in-flight envelopes belong to the old
+//!   device's sessions and are honestly lost; the *senders'* end-to-end
+//!   retries are the source of reliability.
+//!
+//! File layout (strict, all-or-nothing, like the sneakernet bundle format):
+//!
+//! ```text
+//! magic "KKR1" (4) ‖ m_cost_kib u32 LE ‖ t_cost u32 LE ‖ p_cost u32 LE
+//!   ‖ salt (16) ‖ sealed( postcard(BackupPayload) )
+//! ```
+//!
+//! The Argon2id cost parameters ride in the header so a backup written on
+//! one device class (mobile profile) restores on any other; the sealed
+//! blob is an ordinary [`kult_crypto::StorageKey`] AEAD envelope
+//! (XChaCha20-Poly1305, random 24-byte nonce). A wrong mnemonic and a
+//! corrupted file are deliberately indistinguishable — uniform AEAD
+//! failure, no oracle.
+
+use rand_core::CryptoRngCore;
+use rusqlite::params;
+use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, Zeroizing};
+
+use kult_crypto::{
+    derive_kek, mnemonic_from_entropy, mnemonic_to_entropy, Identity, KdfProfile, StorageKey,
+};
+
+use crate::{ContactRecord, MessageRecord, Result, Store, StoreError};
+
+/// Backup file magic: Komms recovery file, format 1.
+pub const BACKUP_MAGIC: [u8; 4] = *b"KKR1";
+
+const BACKUP_AD: &[u8] = b"KK-backup-v1";
+const HEADER_LEN: usize = 4 + 12 + 16;
+
+/// Everything a backup carries, sealed as one postcard blob.
+#[derive(Serialize, Deserialize)]
+struct BackupPayload {
+    /// Export time (Unix seconds) — display only, never trusted for crypto.
+    created_at: u64,
+    /// [`Identity::to_bytes`] output (64 bytes).
+    identity: Vec<u8>,
+    /// All contacts, verbatim (names, bundles, hints, verification state).
+    contacts: Vec<ContactRecord>,
+    /// Full message history, verbatim.
+    messages: Vec<MessageRecord>,
+    /// Session-reset markers: peers with a live ratchet session at export
+    /// time. The restored node re-handshakes exactly these.
+    reset_peers: Vec<[u8; 32]>,
+}
+
+impl Store {
+    /// Export this store as an encrypted backup file. Returns the file
+    /// bytes and the freshly minted 24-word mnemonic that seals them —
+    /// show it to the user once, then drop it; it is not stored anywhere.
+    ///
+    /// The backup key is derived with this store's own Argon2id profile
+    /// (recorded in the file header for restore).
+    pub fn export_backup(
+        &self,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<(Vec<u8>, Zeroizing<String>)> {
+        let identity = self.get_identity()?.ok_or(StoreError::NotAStore)?;
+        let payload = BackupPayload {
+            created_at: now,
+            identity: identity.to_bytes().to_vec(),
+            contacts: self.contacts()?,
+            messages: self.all_messages()?,
+            reset_peers: self.session_peers()?,
+        };
+        let plain =
+            Zeroizing::new(postcard::to_allocvec(&payload).map_err(|_| StoreError::Serialization)?);
+
+        let mut entropy = Zeroizing::new([0u8; 32]);
+        rng.fill_bytes(entropy.as_mut());
+        let mnemonic = mnemonic_from_entropy(&entropy);
+
+        let profile = self.kdf_profile()?;
+        let mut salt = [0u8; 16];
+        rng.fill_bytes(&mut salt);
+        let kek = derive_kek(&entropy[..], &salt, profile)?;
+        let key = StorageKey::from_bytes(*kek);
+
+        let mut out = Vec::with_capacity(HEADER_LEN + plain.len() + 40);
+        out.extend_from_slice(&BACKUP_MAGIC);
+        out.extend_from_slice(&profile.m_cost_kib.to_le_bytes());
+        out.extend_from_slice(&profile.t_cost.to_le_bytes());
+        out.extend_from_slice(&profile.p_cost.to_le_bytes());
+        out.extend_from_slice(&salt);
+        out.extend_from_slice(&key.seal(BACKUP_AD, &plain, rng));
+        Ok((out, mnemonic))
+    }
+
+    /// Restore a backup into a **new** store at `path` (refuses to clobber
+    /// an existing one), unlocked by `mnemonic` and re-encrypted at rest
+    /// under `passphrase` with the given Argon2id profile.
+    ///
+    /// The restored store resumes the exported identity with contacts and
+    /// history intact; sessions and prekeys are deliberately absent (the
+    /// node layer mints fresh prekeys and re-handshakes the reset-marker
+    /// peers). Any parse or authentication failure rejects the whole file.
+    pub fn restore_backup(
+        path: &std::path::Path,
+        backup: &[u8],
+        mnemonic: &str,
+        passphrase: &[u8],
+        profile: KdfProfile,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Self> {
+        if backup.len() <= HEADER_LEN || backup[..4] != BACKUP_MAGIC {
+            return Err(StoreError::NotABackup);
+        }
+        let word = |at: usize| -> u32 {
+            u32::from_le_bytes(backup[at..at + 4].try_into().expect("length checked"))
+        };
+        let file_profile = KdfProfile {
+            m_cost_kib: word(4),
+            t_cost: word(8),
+            p_cost: word(12),
+        };
+        let salt: [u8; 16] = backup[16..32].try_into().expect("length checked");
+
+        let entropy = mnemonic_to_entropy(mnemonic)?;
+        let kek = derive_kek(&entropy[..], &salt, file_profile)?;
+        let key = StorageKey::from_bytes(*kek);
+        let plain = Zeroizing::new(key.open(BACKUP_AD, &backup[HEADER_LEN..])?);
+        let mut payload: BackupPayload =
+            postcard::from_bytes(&plain).map_err(|_| StoreError::NotABackup)?;
+        let identity_bytes: Zeroizing<[u8; 64]> = Zeroizing::new(
+            payload.identity[..]
+                .try_into()
+                .map_err(|_| StoreError::NotABackup)?,
+        );
+        payload.identity.zeroize();
+
+        let store = Store::create(path, passphrase, profile, rng)?;
+        store.put_identity(&Identity::from_bytes(&identity_bytes), rng)?;
+        for contact in &payload.contacts {
+            store.put_contact(contact, rng)?;
+        }
+        for message in &payload.messages {
+            store.put_message(message, rng)?;
+        }
+        for peer in &payload.reset_peers {
+            store.put_reset_marker(peer)?;
+        }
+        Ok(store)
+    }
+
+    /// The Argon2id profile this store was created with.
+    fn kdf_profile(&self) -> Result<KdfProfile> {
+        let blob: Vec<u8> = self
+            .conn
+            .query_row("SELECT v FROM meta WHERE k = 'kdf'", [], |r| r.get(0))
+            .map_err(|_| StoreError::NotAStore)?;
+        let (m, t, p): (u32, u32, u32) =
+            postcard::from_bytes(&blob).map_err(|_| StoreError::NotAStore)?;
+        Ok(KdfProfile {
+            m_cost_kib: m,
+            t_cost: t,
+            p_cost: p,
+        })
+    }
+
+    /// Every stored message, in insertion order.
+    fn all_messages(&self) -> Result<Vec<MessageRecord>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT blob FROM messages ORDER BY rowid_")?;
+        let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let plain = self.k_messages.open(b"message", &row?)?;
+            out.push(postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?);
+        }
+        Ok(out)
+    }
+
+    /// Peers with a persisted ratchet session.
+    fn session_peers(&self) -> Result<Vec<[u8; 32]>> {
+        let mut stmt = self.conn.prepare("SELECT peer FROM sessions")?;
+        let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            if let Ok(peer) = <[u8; 32]>::try_from(row?) {
+                out.push(peer);
+            }
+        }
+        Ok(out)
+    }
+
+    // ---- session-reset markers ---------------------------------------------
+
+    /// Record that any pre-restore session with this peer is dead and must
+    /// be re-established (docs/07-storage.md §4).
+    pub fn put_reset_marker(&self, peer: &[u8; 32]) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO resets (peer) VALUES (?1)",
+            params![peer.as_slice()],
+        )?;
+        Ok(())
+    }
+
+    /// All pending session-reset markers.
+    pub fn reset_markers(&self) -> Result<Vec<[u8; 32]>> {
+        let mut stmt = self.conn.prepare("SELECT peer FROM resets")?;
+        let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            if let Ok(peer) = <[u8; 32]>::try_from(row?) {
+                out.push(peer);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Remove a session-reset marker (the re-handshake was queued).
+    pub fn clear_reset_marker(&self, peer: &[u8; 32]) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM resets WHERE peer = ?1",
+            params![peer.as_slice()],
+        )?;
+        Ok(())
+    }
+}

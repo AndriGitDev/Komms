@@ -178,6 +178,129 @@ fn two_nodes_message_via_ffi_only() {
 }
 
 #[test]
+fn backup_and_restore_via_ffi_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let a_rec = Recorder::default();
+    let b_rec = Recorder::default();
+    let alice = KultNode::start(test_config(dir.path(), "alice"), Box::new(a_rec.clone()))
+        .expect("alice starts");
+    let bob = KultNode::start(test_config(dir.path(), "bob"), Box::new(b_rec.clone()))
+        .expect("bob starts");
+
+    // Pair and converse, so the backup carries a contact, history, and a
+    // live session to reset.
+    let a_addr = listen_addr(&alice);
+    let b_addr = listen_addr(&bob);
+    let a_bundle = alice.handshake_bundle().unwrap();
+    let b_bundle = bob.handshake_bundle().unwrap();
+    let bob_peer = alice
+        .add_contact(
+            "bob".to_owned(),
+            b_bundle,
+            vec![Hint::Multiaddr { addr: b_addr }],
+        )
+        .unwrap();
+    let alice_peer = bob
+        .add_contact(
+            "alice".to_owned(),
+            a_bundle,
+            vec![Hint::Multiaddr { addr: a_addr }],
+        )
+        .unwrap();
+    let msg_id = alice
+        .send(bob_peer.clone(), "before the backup".to_owned())
+        .unwrap();
+    a_rec.wait("alice's delivered event", |e| {
+        matches!(e, Event::DeliveryUpdated { id, state: DeliveryState::Delivered } if *id == msg_id)
+    });
+
+    // Backup through the FFI: file appears, mnemonic comes back once, and
+    // an existing file is never clobbered.
+    let backup_path = dir.path().join("alice.kkr").display().to_string();
+    let mnemonic = alice.export_backup(backup_path.clone()).unwrap();
+    assert_eq!(mnemonic.split_whitespace().count(), 24);
+    let err = alice
+        .export_backup(backup_path.clone())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("backup write"), "got: {err}");
+
+    // The device is lost.
+    let address_before = alice.address();
+    alice.stop();
+
+    // A wrong mnemonic is refused at startup — never a half-running node.
+    let wrong = "abandon ".repeat(23) + "art";
+    assert!(KultNode::restore(
+        test_config(dir.path(), "alice-wrong"),
+        backup_path.clone(),
+        wrong,
+        Box::new(Recorder::default()),
+    )
+    .is_err());
+
+    // Restore onto a "new device" (new data dir, new passphrase).
+    let a_rec = Recorder::default();
+    let mut cfg = test_config(dir.path(), "alice-new");
+    cfg.passphrase = "new-passphrase".to_owned();
+    let alice = KultNode::restore(cfg, backup_path, mnemonic, Box::new(a_rec.clone()))
+        .expect("alice restores");
+
+    // Identity, contacts, and history came back.
+    assert_eq!(alice.address(), address_before);
+    let contacts = alice.contacts().unwrap();
+    assert_eq!(contacts.len(), 1);
+    assert_eq!(contacts[0].name, "bob");
+    let history = alice.messages_with(bob_peer.clone()).unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].body, "before the backup");
+
+    // The tick loop re-handshakes Bob: a *second* session establishment
+    // for the same contact (the first was the original pairing).
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let rekeys = b_rec
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| matches!(e, Event::SessionEstablished { peer } if *peer == alice_peer))
+            .count();
+        if rekeys >= 2 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for re-key");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // Bob learns the new device's address (out-of-band here), then traffic
+    // flows in both directions on the fresh ratchet.
+    let a_addr_new = listen_addr(&alice);
+    bob.set_hints(
+        alice_peer.clone(),
+        vec![Hint::Multiaddr { addr: a_addr_new }],
+    )
+    .unwrap();
+    bob.send(alice_peer, "glad you're back".to_owned()).unwrap();
+    let got = a_rec.wait("alice's message event", |e| {
+        matches!(e, Event::MessageReceived { .. })
+    });
+    match got {
+        Event::MessageReceived { body, .. } => assert_eq!(body, "glad you're back"),
+        other => panic!("wrong event: {other:?}"),
+    }
+    let reply_id = alice
+        .send(bob_peer, "new device, same me".to_owned())
+        .unwrap();
+    a_rec.wait("alice's delivered event", |e| {
+        matches!(e, Event::DeliveryUpdated { id, state: DeliveryState::Delivered } if *id == reply_id)
+    });
+
+    alice.stop();
+    bob.stop();
+}
+
+#[test]
 fn restart_persists_history_and_refuses_wrong_passphrase() {
     let dir = tempfile::tempdir().unwrap();
     let a_rec = Recorder::default();
