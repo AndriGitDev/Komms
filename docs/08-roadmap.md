@@ -151,11 +151,30 @@ criteria below.
 - A node with both mesh and internet bridges queued traffic in both directions.
 - Duty-cycle accounting respects EU868 limits (logged and enforced).
 
-## M5 — Applications (`kult-ffi`, desktop, mobile alpha)
+## M5 — Applications (`kult-ffi`, desktop, mobile alpha) *(in progress)*
 
 UniFFI bindings; Tauri desktop app; Android/iOS alpha shells. UX for verification
 (QR safety numbers), contact requests, delivery states, transport indicators,
 QR sneakernet.
+
+The bindings layer is in: `kult-ffi` exposes exactly the node's command/event
+API (implementation guide §3.5) through UniFFI proc-macros — typed records and
+enums for contacts, messages, delivery states, status, and events; blocking
+methods a shell dispatches off its UI thread; events pushed to an
+application-registered listener on a dedicated thread. Behind the surface sits
+an embedded in-process runtime (ADR-0010): one constructor opens the encrypted
+store and starts the same composition `kultd` runs — internet carrier with
+mDNS, DHT bootstrap and bundle publication, NAT probing with relay
+reservation, mailbox check-ins, optional sneakernet spool and (feature-gated)
+Meshtastic radio with bridging — so iOS/Android, where no separate daemon can
+run, get the full node from a library call. Ids cross the boundary as hex
+strings, prekey bundles as bytes (QR payloads), and errors verbatim — never a
+fake success. The crate's e2e test drives two nodes through the public FFI
+surface alone — pairing by bundle exchange, verified `delivered` states via
+listener events, history, safety numbers, restart persistence, honest
+errors — and `cargo run -p kult-ffi --features bindgen --bin uniffi-bindgen`
+generates the Kotlin/Swift sources. Remaining: the Tauri desktop app and the
+mobile shells themselves, QR verification/sneakernet UX, and backup/restore.
 
 **Acceptance**: a non-technical user can install desktop + mobile builds, exchange QR
 verification with a friend, and message over internet, LAN, and mesh with truthful
