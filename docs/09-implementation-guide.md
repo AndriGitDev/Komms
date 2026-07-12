@@ -124,7 +124,8 @@ pub struct Node { /* composes store + transports + sessions */ }
   conditions (latency, loss, partitions, MTU) — deterministic seed, replayable failures.
   This harness is how store-and-forward, NACK, and bridging logic get tested without
   radios on the desk.
-- **Hardware-in-loop** (M4): two USB Meshtastic radios in CI-adjacent nightly job.
+- **Hardware-in-loop** (M4): two USB Meshtastic radios in CI-adjacent nightly job —
+  bench runbook in [10 — HIL Bench](10-hil-bench.md).
 
 ## 5. Review gates
 

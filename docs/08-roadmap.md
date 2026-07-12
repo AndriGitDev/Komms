@@ -132,7 +132,17 @@ bridges by default whenever a radio is attached (`--no-bridge` opts out),
 and the acceptance test drives the full village topology — a mesh-only
 node, an internet-only node, and a token-blind bridge between them — to
 verified `delivered` states in both directions through RPC sockets alone.
-Remaining: the hardware-in-loop nightly.
+The hardware-in-loop nightly is in as code: an `#[ignore]`d acceptance test
+(`crates/kultd/tests/hil.rs`) drives two daemons attached to **real**
+stock-firmware radios on USB-serial — mDNS off, no bootstrap, radios the
+only shared medium — through handshake, delivery, receipts, and a ratcheted
+reply, failing loudly (never green) on a misconfigured bench; a nightly
+workflow runs it on a self-hosted bench runner, armed by the `HIL_BENCH`
+repository variable so it skips cleanly until the bench exists. The bench
+runbook — hardware, radio prep, runner registration, security posture — is
+[10 — HIL Bench](10-hil-bench.md). Remaining: standing up the physical
+two-radio bench and letting the nightly measure the on-air acceptance
+criteria below.
 
 **Acceptance**:
 - Two phones/laptops with stock-firmware Meshtastic radios, all other networking
