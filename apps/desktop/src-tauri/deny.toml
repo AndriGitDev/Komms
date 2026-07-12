@@ -1,0 +1,73 @@
+# cargo-deny configuration for the desktop app workspace. The core crates
+# keep their strict config at the repository root; this one covers the
+# Tauri/GTK dependency tree the app adds on top. Same posture: no ignored
+# vulnerabilities, no git dependencies, explicit license allow-list.
+
+[graph]
+all-features = true
+
+[licenses]
+allow = [
+    "AGPL-3.0-only",       # this workspace
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "CC0-1.0",
+    "Unicode-3.0",
+    # File-level copyleft, GPL-compatible per MPL-2.0 §3.3 — same waiver
+    # as the root config.
+    "MPL-2.0",
+    # The official Meshtastic Rust client, reached through kult-transport
+    # when the `meshtastic` feature is on. GPL-3.0 and AGPL-3.0 are
+    # mutually compatible via their respective §13 clauses (root config
+    # carries the identical allowance).
+    "GPL-3.0",
+]
+
+[advisories]
+yanked = "deny"
+# Every entry below is an *unmaintained* notice, not a vulnerability — the
+# posture of "no ignored vulnerabilities" holds. The GTK3 stack is what
+# Tauri's Linux backend (wry → webkit2gtk) is built on until it moves to
+# GTK4; the unic-* family comes via tauri-utils' `urlpattern`. Both are
+# tracked upstream and disappear with a Tauri update, at which point these
+# waivers turn into "unused ignore" warnings and get deleted.
+ignore = [
+    # Compile-time proc-macro, archived by its author with no successor
+    # risk; pulled in by if-watch (libp2p) — same waiver as the root config.
+    { id = "RUSTSEC-2024-0436", reason = "paste is an unmaintained build-time proc-macro, not a runtime dependency" },
+    # gtk-rs GTK3 bindings family (atk/gdk/gtk and their -sys crates).
+    { id = "RUSTSEC-2024-0411", reason = "GTK3 bindings: required by Tauri's Linux webview until its GTK4 move" },
+    { id = "RUSTSEC-2024-0412", reason = "GTK3 bindings: required by Tauri's Linux webview until its GTK4 move" },
+    { id = "RUSTSEC-2024-0413", reason = "GTK3 bindings: required by Tauri's Linux webview until its GTK4 move" },
+    { id = "RUSTSEC-2024-0414", reason = "GTK3 bindings: required by Tauri's Linux webview until its GTK4 move" },
+    { id = "RUSTSEC-2024-0415", reason = "GTK3 bindings: required by Tauri's Linux webview until its GTK4 move" },
+    { id = "RUSTSEC-2024-0416", reason = "GTK3 bindings: required by Tauri's Linux webview until its GTK4 move" },
+    { id = "RUSTSEC-2024-0417", reason = "GTK3 bindings: required by Tauri's Linux webview until its GTK4 move" },
+    { id = "RUSTSEC-2024-0418", reason = "GTK3 bindings: required by Tauri's Linux webview until its GTK4 move" },
+    { id = "RUSTSEC-2024-0419", reason = "GTK3 bindings: required by Tauri's Linux webview until its GTK4 move" },
+    { id = "RUSTSEC-2024-0420", reason = "GTK3 bindings: required by Tauri's Linux webview until its GTK4 move" },
+    # proc-macro-error, a build-time proc-macro helper via gtk3-macros.
+    { id = "RUSTSEC-2024-0370", reason = "unmaintained build-time proc-macro via gtk3-macros, not a runtime dependency" },
+    # unic-* Unicode property crates via tauri-utils → urlpattern.
+    { id = "RUSTSEC-2025-0075", reason = "unic-* is unmaintained but frozen Unicode tables; via tauri-utils' urlpattern" },
+    { id = "RUSTSEC-2025-0080", reason = "unic-* is unmaintained but frozen Unicode tables; via tauri-utils' urlpattern" },
+    { id = "RUSTSEC-2025-0081", reason = "unic-* is unmaintained but frozen Unicode tables; via tauri-utils' urlpattern" },
+    { id = "RUSTSEC-2025-0098", reason = "unic-* is unmaintained but frozen Unicode tables; via tauri-utils' urlpattern" },
+    { id = "RUSTSEC-2025-0100", reason = "unic-* is unmaintained but frozen Unicode tables; via tauri-utils' urlpattern" },
+]
+
+[bans]
+# The GUI tree is too wide to police duplicate minor versions usefully.
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = []

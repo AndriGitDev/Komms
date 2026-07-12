@@ -184,8 +184,31 @@ resumes in both directions without the user sending first. Exposed at every
 front door: `kult backup` / `Op::Backup` (file written 0600, mnemonic shown
 exactly once), `kultd --restore` on first run, and `kult-ffi`'s
 `export_backup` + `restore` constructor — each pinned by its own layer's
-round-trip test (store, node, RPC, FFI). Remaining: the Tauri desktop app
-and the mobile shells themselves, and QR verification/sneakernet UX.
+round-trip test (store, node, RPC, FFI). The desktop app is in
+(application A1, `apps/desktop`): a Tauri shell over `kult-ffi`'s embedded
+runtime — the exact surface the mobile shells will consume, dogfooded on
+the desktop — with a dependency-free HTML/CSS/JS frontend (no bundler, no
+npm) behind a strict CSP with zero plugins or webview capabilities. It
+covers the M5 UX list end to end: create/unlock/restore at the gate,
+out-of-band pairing by prekey-bundle QR or pasteable hex (interoperable
+with `kult bundle`/`kult add`; large bundles ride the QR alphanumeric
+mode) or by kult address via DHT lookup, conversations with the node's
+honest delivery ladder rendered verbatim (`queued` → `sent` → `delivered`
+plus the mesh "held — will send when a faster link exists" verdict),
+safety-number verification with matching digits + QR on both ends and a
+visible verified badge, key-change surfacing on session re-establishment,
+transport indicators (NAT verdict, mDNS LAN peers, queue and
+bridge-transit depths, live listen addresses), delivery-hint editing
+(multiaddr/relay/spool/mesh-broadcast), and backup export with the
+mnemonic shown exactly once. Network settings persist as secret-free
+`settings.json` (the same knobs as `kultd` flags, radios included). The
+app is its own cargo workspace so the GUI dependency tree stays out of
+the core's lockfile and cargo-deny surface (it carries its own, equally
+strict deny config, and its own CI job); all shell behavior lives in a
+webview-agnostic layer pinned by a two-node end-to-end test — pairing by
+scanned-style hex, events as the webview receives them, verification,
+and the backup → mnemonic → restore flow. Remaining: the mobile shells
+(Kotlin/Swift over the generated bindings) and mobile-side QR scanning.
 
 **Acceptance**: a non-technical user can install desktop + mobile builds, exchange QR
 verification with a friend, and message over internet, LAN, and mesh with truthful

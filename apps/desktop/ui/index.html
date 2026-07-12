@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Komms</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="main.js" defer></script>
+</head>
+<body>
+
+  <!-- ══ Gate: create / unlock / restore ══ -->
+  <section id="gate" class="screen">
+    <div class="gate-card">
+      <h1 class="brand">Komms</h1>
+      <p class="tagline">Serverless end-to-end encrypted messaging — internet, LAN, and LoRa mesh.</p>
+
+      <div class="tabs" id="gate-tabs" hidden>
+        <button class="tab active" data-tab="open">Create / Unlock</button>
+        <button class="tab" data-tab="restore">Restore backup</button>
+      </div>
+
+      <form id="gate-form" autocomplete="off">
+        <label>Data directory
+          <input type="text" id="gate-dir" spellcheck="false" />
+        </label>
+
+        <div id="restore-fields" hidden>
+          <label>Backup file (.kkr)
+            <input type="text" id="gate-backup" spellcheck="false" placeholder="/path/to/backup.kkr" />
+          </label>
+          <label>Recovery mnemonic (24 words)
+            <textarea id="gate-mnemonic" rows="3" spellcheck="false"></textarea>
+          </label>
+        </div>
+
+        <label><span id="gate-pass-label">Passphrase</span>
+          <input type="password" id="gate-pass" />
+        </label>
+
+        <details id="gate-advanced">
+          <summary>Network settings</summary>
+          <label class="check"><input type="checkbox" id="set-mdns" checked /> Discover peers on the local network (mDNS)</label>
+          <label>Listen addresses (one multiaddr per line; port 0 = OS-assigned)
+            <textarea id="set-listen" rows="2" spellcheck="false"></textarea>
+          </label>
+          <label>Bootstrap peers (one multiaddr per line)
+            <textarea id="set-bootstrap" rows="2" spellcheck="false" placeholder="/dns4/host/udp/4001/quic-v1/p2p/12D3…"></textarea>
+          </label>
+          <label>Relay (for NAT traversal; defaults to first bootstrap peer)
+            <input type="text" id="set-relay" spellcheck="false" />
+          </label>
+          <label>Mailbox relays (one multiaddr per line)
+            <textarea id="set-mailboxes" rows="2" spellcheck="false"></textarea>
+          </label>
+          <label class="check"><input type="checkbox" id="set-serve-mailbox" /> Volunteer mailbox service for others</label>
+          <label>Sneakernet spool directory
+            <input type="text" id="set-spool" spellcheck="false" />
+          </label>
+          <label>Meshtastic radio — USB serial port
+            <input type="text" id="set-mesh-serial" spellcheck="false" placeholder="/dev/ttyUSB0" />
+          </label>
+          <label>Meshtastic radio — network API (host:4403)
+            <input type="text" id="set-mesh-tcp" spellcheck="false" />
+          </label>
+          <label class="check"><input type="checkbox" id="set-bridge" checked /> Bridge mesh ↔ internet traffic when a radio is attached</label>
+        </details>
+
+        <p class="error" id="gate-error" hidden></p>
+        <button type="submit" class="primary" id="gate-go">Unlock</button>
+        <p class="hint" id="gate-note"></p>
+      </form>
+    </div>
+  </section>
+
+  <!-- ══ Main app ══ -->
+  <section id="app" class="screen" hidden>
+    <aside id="sidebar">
+      <header class="me">
+        <div class="me-name">Komms</div>
+        <div class="me-address" id="my-address" title="Your kult address"></div>
+        <div class="me-actions">
+          <button id="btn-copy-address" class="ghost" title="Copy address">Copy</button>
+          <button id="btn-share" class="ghost" title="Show pairing QR / bundle">Share</button>
+          <button id="btn-backup" class="ghost" title="Export encrypted backup">Backup</button>
+        </div>
+      </header>
+
+      <div class="contacts-head">
+        <span>Contacts</span>
+        <button id="btn-add-contact" class="ghost">+ Add</button>
+      </div>
+      <nav id="contact-list"></nav>
+
+      <footer id="status-bar" title="Transport status">
+        <span class="stat" id="stat-nat">NAT: …</span>
+        <span class="stat" id="stat-lan">LAN: 0</span>
+        <span class="stat" id="stat-queued">Queued: 0</span>
+        <span class="stat" id="stat-transit" hidden>Bridging: 0</span>
+        <button id="btn-lock" class="ghost" title="Stop the node and lock">Lock</button>
+      </footer>
+    </aside>
+
+    <main id="chat">
+      <div id="chat-empty">
+        <p>Select a contact — or share your bundle to pair with someone.</p>
+      </div>
+      <div id="chat-pane" hidden>
+        <header id="chat-head">
+          <div>
+            <span id="chat-name"></span>
+            <span id="chat-verified" class="badge" hidden>verified</span>
+          </div>
+          <div>
+            <button id="btn-verify" class="ghost">Verify</button>
+            <button id="btn-hints" class="ghost">Delivery</button>
+          </div>
+        </header>
+        <div id="messages"></div>
+        <form id="composer" autocomplete="off">
+          <input type="text" id="composer-input" placeholder="Message…" />
+          <button type="submit" class="primary">Send</button>
+        </form>
+      </div>
+    </main>
+  </section>
+
+  <!-- ══ Modals ══ -->
+  <div id="modal-backdrop" hidden>
+    <div class="modal" id="modal" role="dialog" aria-modal="true">
+      <header>
+        <span id="modal-title"></span>
+        <button id="modal-close" class="ghost">✕</button>
+      </header>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <div id="toasts"></div>
+
+  <!-- ══ Modal templates ══ -->
+  <template id="tpl-share">
+    <p class="modal-note">Someone adds you by scanning this bundle QR (or pasting the hex), or by your address if both of you can reach the DHT. A fresh bundle is exported every time this dialog opens.</p>
+    <div class="qr-tabs">
+      <button class="tab active" data-share="bundle">Bundle QR</button>
+      <button class="tab" data-share="address">Address QR</button>
+    </div>
+    <div class="qr-card" data-pane="bundle"></div>
+    <div class="qr-card" data-pane="address" hidden></div>
+    <label>Bundle (hex — paste into “Add contact” or <code>kult add</code>)
+      <textarea class="share-hex" rows="4" readonly></textarea>
+    </label>
+    <div class="row">
+      <button class="ghost" data-act="copy-hex">Copy bundle</button>
+      <button class="ghost" data-act="publish">Publish to DHT</button>
+    </div>
+  </template>
+
+  <template id="tpl-add">
+    <label>Name
+      <input type="text" data-f="name" />
+    </label>
+    <div class="tabs">
+      <button class="tab active" data-add="bundle">From bundle</button>
+      <button class="tab" data-add="address">From address</button>
+    </div>
+    <div data-pane="bundle">
+      <label>Their bundle (hex, pasted or scanned)
+        <textarea data-f="bundle" rows="4" spellcheck="false"></textarea>
+      </label>
+    </div>
+    <div data-pane="address" hidden>
+      <label>Their kult address (looked up on the DHT)
+        <input type="text" data-f="address" spellcheck="false" placeholder="kk1…" />
+      </label>
+    </div>
+    <fieldset class="hints" data-f="hints">
+      <legend>Delivery hints (how to reach them)</legend>
+      <div class="hint-rows"></div>
+      <button type="button" class="ghost" data-act="add-hint">+ hint</button>
+    </fieldset>
+    <p class="error" data-f="error" hidden></p>
+    <div class="row end">
+      <button class="primary" data-act="save">Add contact</button>
+    </div>
+  </template>
+
+  <template id="tpl-verify">
+    <p class="modal-note">Compare with your contact over a channel you trust — read the digits aloud or scan each other’s QR. Identical numbers mean nobody sits between you.</p>
+    <div class="safety-digits"></div>
+    <div class="qr-card safety-qr"></div>
+    <div class="row end">
+      <button class="primary" data-act="verified">We compared — mark verified</button>
+    </div>
+  </template>
+
+  <template id="tpl-hints">
+    <p class="modal-note">Replace how messages reach this contact: direct multiaddrs, mailbox relays, a sneakernet spool, or the LoRa mesh (<code>broadcast</code> floods; recipients recognize their own traffic).</p>
+    <fieldset class="hints" data-f="hints">
+      <div class="hint-rows"></div>
+      <button type="button" class="ghost" data-act="add-hint">+ hint</button>
+    </fieldset>
+    <p class="error" data-f="error" hidden></p>
+    <div class="row end">
+      <button class="primary" data-act="save">Save hints</button>
+    </div>
+  </template>
+
+  <template id="tpl-backup">
+    <p class="modal-note">Writes one encrypted file carrying your identity, contacts, and history — sealed under a 24-word recovery mnemonic shown <strong>exactly once</strong>. Ratchet sessions are excluded by design; peers re-handshake automatically after a restore.</p>
+    <label>Write backup to
+      <input type="text" data-f="path" spellcheck="false" />
+    </label>
+    <p class="error" data-f="error" hidden></p>
+    <div class="row end">
+      <button class="primary" data-act="export">Export backup</button>
+    </div>
+  </template>
+
+  <template id="tpl-mnemonic">
+    <p class="modal-note warn">Write these 24 words down and keep them offline. This is the only time they are shown; without them the backup file is irrecoverable noise.</p>
+    <ol class="mnemonic"></ol>
+    <div class="row end">
+      <button class="primary" data-act="done">I wrote them down</button>
+    </div>
+  </template>
+
+  <template id="tpl-hint-row">
+    <div class="hint-row">
+      <select data-f="kind">
+        <option value="multiaddr">multiaddr</option>
+        <option value="relay">mailbox relay</option>
+        <option value="mesh">mesh</option>
+        <option value="spool">spool dir</option>
+      </select>
+      <input type="text" data-f="value" spellcheck="false" placeholder="/ip4/…/quic-v1/p2p/… or broadcast" />
+      <button type="button" class="ghost" data-act="del-hint">✕</button>
+    </div>
+  </template>
+
+</body>
+</html>
