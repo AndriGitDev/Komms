@@ -38,10 +38,7 @@ fn main() {
         .as_secs();
     let dir = std::env::temp_dir().join(format!("komms-demo-{now}"));
     std::fs::create_dir_all(&dir).expect("temp dir");
-    println!(
-        "Komms sneakernet demo — working dir: {}\n",
-        dir.display()
-    );
+    println!("Komms sneakernet demo — working dir: {}\n", dir.display());
 
     // -- Two devices, two encrypted stores ---------------------------------
     println!("[alice] creating encrypted store (Argon2id 64 MiB)…");

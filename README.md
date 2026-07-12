@@ -45,8 +45,11 @@ cargo run --example sneakernet_demo
 > are NACKed and only those fragments resent); and a node with both a radio and
 > internet now bridges third-party sealed traffic between them, token-blind and
 > bounded (ADR-0009) — a mesh-only village and an internet-only correspondent
-> exchange verified-delivery messages through one volunteer bridge. Next per
-> the [roadmap](docs/08-roadmap.md): the hardware-in-loop nightly.
+> exchange verified-delivery messages through one volunteer bridge. The
+> hardware-in-loop nightly is in as code — an acceptance test drives two
+> daemons over real USB radios, run nightly on a self-hosted bench runner
+> ([bench runbook](docs/10-hil-bench.md)). Remaining per the
+> [roadmap](docs/08-roadmap.md): the physical two-radio bench itself.
 
 Komms is a decentralized messenger built on four principles:
 
@@ -81,6 +84,7 @@ out plainly in [Why Komms](docs/01-why.md).
 | [07 — Storage](docs/07-storage.md) | Local-first encrypted storage, backup, portability |
 | [08 — Roadmap](docs/08-roadmap.md) | Milestones M0–M6 with acceptance criteria |
 | [09 — Implementation Guide](docs/09-implementation-guide.md) | Build order, API sketches, standards, review gates |
+| [10 — HIL Bench](docs/10-hil-bench.md) | Hardware-in-loop nightly: two-radio bench runbook |
 | [ADRs](docs/adr/) | Recorded decisions and the alternatives they beat |
 
 ## Stack
