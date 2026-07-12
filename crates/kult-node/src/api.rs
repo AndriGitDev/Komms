@@ -79,4 +79,14 @@ pub enum Event {
         /// The peer (Ed25519 identity key bytes).
         peer: [u8; 32],
     },
+    /// An outbound message exceeds the airtime ceiling and only
+    /// duty-cycle-limited (LoRa) carriers currently reach the recipient, so
+    /// it was held rather than sent (docs/05-transports.md §4.2 rule 3).
+    /// Honest UI feedback: "will send when a faster link exists". The
+    /// message stays queued and goes out on the first tick after a faster
+    /// carrier can reach the peer. Emitted once per message, not per tick.
+    AwaitingFasterLink {
+        /// Message record id.
+        id: [u8; 16],
+    },
 }
