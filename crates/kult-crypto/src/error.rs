@@ -24,6 +24,8 @@ pub enum CryptoError {
     TooManySkipped,
     /// Key material had the wrong length or encoding.
     InvalidKey,
+    /// A kult address string failed to parse (prefix, base32, or multihash).
+    InvalidAddress,
     /// Handshake inputs are inconsistent (e.g. prekey ids do not match).
     HandshakeMismatch,
     /// (De)serialization of state or messages failed.
@@ -42,6 +44,7 @@ impl fmt::Display for CryptoError {
             Self::MessageAuthentication => "message authentication failed",
             Self::TooManySkipped => "skipped-message bound exceeded",
             Self::InvalidKey => "invalid key material",
+            Self::InvalidAddress => "malformed kult address",
             Self::HandshakeMismatch => "handshake inputs inconsistent",
             Self::Serialization => "serialization failure",
             Self::KdfParams => "invalid KDF parameters",
