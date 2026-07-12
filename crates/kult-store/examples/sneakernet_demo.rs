@@ -102,6 +102,7 @@ fn main() {
     let token = delivery_token(
         &MailboxKey::from_bytes(*a_session.mailbox_key()),
         epoch_day(now),
+        &bob.public().ed,
     );
     let m2 = a_session.encrypt(&mut rng, now, &pad(b"bring the radios").unwrap(), &[]);
     let msg_env = Envelope::new(EnvelopeKind::Message, token, m2.encode());

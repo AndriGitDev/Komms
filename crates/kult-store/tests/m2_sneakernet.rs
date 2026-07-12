@@ -102,6 +102,7 @@ fn sneakernet_end_to_end_with_restart() {
         let token = delivery_token(
             &MailboxKey::from_bytes(*session.mailbox_key()),
             epoch_day(NOW),
+            &bob_id_pub.ed,
         );
         let m2 = session.encrypt(&mut rng, NOW, &pad(MSG_A2).unwrap(), &[]);
         let msg_env = Envelope::new(EnvelopeKind::Message, token, m2.encode());
@@ -190,8 +191,11 @@ fn sneakernet_end_to_end_with_restart() {
                 EnvelopeKind::Message => {
                     let s = session.as_mut().expect("handshake precedes messages");
                     // Bob recognizes his own rotating token.
-                    let expect =
-                        delivery_token(&MailboxKey::from_bytes(*s.mailbox_key()), epoch_day(NOW));
+                    let expect = delivery_token(
+                        &MailboxKey::from_bytes(*s.mailbox_key()),
+                        epoch_day(NOW),
+                        &bob_id_pub.ed,
+                    );
                     assert_eq!(env.token, expect);
                     let m = RatchetMessage::decode(&env.body).unwrap();
                     let pt = s.decrypt(&mut rng, NOW, &m, &[]).unwrap();
@@ -209,7 +213,11 @@ fn sneakernet_end_to_end_with_restart() {
 
         // Bob persists state and queues a reply for the return courier.
         let mut s = session.unwrap();
-        let token = delivery_token(&MailboxKey::from_bytes(*s.mailbox_key()), epoch_day(NOW));
+        let token = delivery_token(
+            &MailboxKey::from_bytes(*s.mailbox_key()),
+            epoch_day(NOW),
+            &alice_id.ed,
+        );
         let reply = s.encrypt(&mut rng, NOW, &pad(MSG_B1).unwrap(), &[]);
         bob.queue_push(
             &QueueItem {
