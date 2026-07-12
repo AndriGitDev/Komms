@@ -17,6 +17,12 @@ allow = [
     "CC0-1.0",
     "Unicode-3.0",
     "Unicode-DFS-2016",
+    # The official Meshtastic Rust client (M4 mesh carrier). GPL-3.0 and
+    # AGPL-3.0 are mutually compatible via their respective §13 clauses.
+    "GPL-3.0",
+    # serialport (via meshtastic → tokio-serial). File-level copyleft,
+    # GPL-compatible per MPL-2.0 §3.3.
+    "MPL-2.0",
 ]
 
 [advisories]
