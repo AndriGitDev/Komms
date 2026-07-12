@@ -54,7 +54,7 @@ proptest! {
             // Drop a subset (bounded — far below MAX_SKIP).
             let mut idx = 0usize;
             batch.retain(|_| {
-                let keep = drop_pattern.get(idx).map_or(true, |d| d % 4 != 0);
+                let keep = drop_pattern.get(idx).is_none_or(|d| d % 4 != 0);
                 idx += 1;
                 keep
             });

@@ -21,6 +21,11 @@ allow = [
 
 [advisories]
 yanked = "deny"
+ignore = [
+    # Compile-time proc-macro, archived by its author with no successor risk;
+    # pulled in by if-watch (libp2p QUIC/TCP). Not a vulnerability.
+    { id = "RUSTSEC-2024-0436", reason = "paste is an unmaintained build-time proc-macro, not a runtime dependency" },
+]
 
 [bans]
 multiple-versions = "warn"

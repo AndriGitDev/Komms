@@ -43,7 +43,13 @@ The `kult-node` runtime is implemented per the build order in
 [09 — Implementation Guide §2](09-implementation-guide.md): delivery engine
 (queued→sent→delivered on encrypted receipts, retry with backoff, dedup,
 out-of-order stash), transport scheduler, session lifecycle, command/event API —
-running over the sneakernet carrier. The libp2p transport below completes M3.
+running over the sneakernet carrier. The libp2p carrier's first slice is also in:
+QUIC (primary) and TCP+Noise+Yamux (fallback) with an envelope request-response
+protocol reporting honest next-hop acks; two nodes exchange messages and receipts
+over localhost, and the scheduler prefers it over slower carriers. Outstanding for
+M3: Kademlia prekey records, relay-v2 mailboxes, DCUtR, the headless daemon, and
+mDNS LAN auto-discovery (deferred until `libp2p-mdns` drops the RUSTSEC-flagged
+`hickory-proto 0.25`; explicit-multiaddr LAN delivery works today).
 
 libp2p integration (QUIC, TCP fallback, Kademlia, relay v2, DCUtR), prekey bundles on
 DHT, mailbox relays, transport scheduler, headless daemon with local RPC.
