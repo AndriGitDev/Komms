@@ -51,10 +51,15 @@ plane is in: a Kademlia DHT (bootstrap from any user-supplied peer — nothing
 hardcoded) carrying whole-bundle-signed prekey records under the kult-address
 digest, so a node adds a contact from the address string alone and the delivery
 engine resolves missing return paths (sealed sender reveals none) from the
-peer's record. Outstanding for M3: relay-v2 mailboxes, DCUtR, the headless
-daemon, and mDNS LAN auto-discovery (deferred until `libp2p-mdns` drops the
-RUSTSEC-flagged `hickory-proto 0.25`; explicit-multiaddr LAN delivery works
-today).
+peer's record. Mailbox relays are in: any node can volunteer bounded
+store-and-forward on `/kommskult/mailbox/1`; recipients register rotating
+delivery tokens as accept-filters and collect on reconnect, senders deposit
+sealed envelopes the scheduler ranks below direct paths, and the "relay stores
+only sealed envelopes" acceptance criterion is pinned by an inspection test
+(collection-deletes required making tokens recipient-scoped — ADR-0007).
+Outstanding for M3: AutoNAT + DCUtR NAT traversal, the headless daemon, and
+mDNS LAN auto-discovery (deferred until `libp2p-mdns` drops the RUSTSEC-flagged
+`hickory-proto 0.25`; explicit-multiaddr LAN delivery works today).
 
 libp2p integration (QUIC, TCP fallback, Kademlia, relay v2, DCUtR), prekey bundles on
 DHT, mailbox relays, transport scheduler, headless daemon with local RPC.

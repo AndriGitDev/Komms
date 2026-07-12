@@ -22,9 +22,11 @@ use async_trait::async_trait;
 use kult_protocol::Envelope;
 
 mod internet;
+mod mailbox;
 mod sneakernet;
 
 pub use internet::Libp2pTransport;
+pub use mailbox::{MailboxConfig, MailboxContents};
 pub use sneakernet::SneakernetTransport;
 
 /// Failures surfaced by transports.
@@ -113,8 +115,10 @@ pub enum DeliveryHint {
     Multiaddr(String),
     /// A Meshtastic node number (M4).
     MeshNode(u32),
-    /// A relay mailbox identified by the current delivery token (M3).
-    Mailbox([u8; 32]),
+    /// A mailbox relay's multiaddr (with `/p2p/…`): sealed envelopes are
+    /// deposited there for the recipient to collect (M3). Which mailbox an
+    /// envelope belongs to is decided by its delivery token, not the hint.
+    Relay(String),
 }
 
 /// Reachability verdict for a peer on this transport.
