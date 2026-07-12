@@ -9,7 +9,13 @@ members = [
     "crates/kult-ffi",
     "crates/kultd",
 ]
-exclude = ["crates/kult-crypto/fuzz", "crates/kult-protocol/fuzz"]
+# The desktop app is its own workspace (apps/desktop/src-tauri): the Tauri
+# dependency tree stays out of the core lockfile and cargo-deny surface.
+exclude = [
+    "crates/kult-crypto/fuzz",
+    "crates/kult-protocol/fuzz",
+    "apps/desktop/src-tauri",
+]
 
 [workspace.package]
 version = "0.1.0"
