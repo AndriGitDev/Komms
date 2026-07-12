@@ -14,7 +14,7 @@ use kult_protocol::{
     bundle_export, bundle_import, delivery_token, epoch_day, intro_token, pad, unpad, Envelope,
     EnvelopeKind, MailboxKey,
 };
-use kult_store::{DeliveryState, Direction, MessageRecord, Store};
+use kult_store::{DeliveryState, Direction, MessageRecord, QueueItem, Store};
 
 const NOW: u64 = 1_800_000_000;
 const HS_AD: &[u8] = b"KK-handshake-v1";
@@ -87,7 +87,16 @@ fn sneakernet_end_to_end_with_restart() {
             intro_token(&bob_id_pub.ed, epoch_day(NOW)),
             seal_anonymous(&bob_id_pub, HS_AD, &init.encode(), &mut rng),
         );
-        alice.queue_push(&hs_env, &mut rng).unwrap();
+        alice
+            .queue_push(
+                &QueueItem {
+                    peer: bob_id_pub.ed,
+                    msg_id: Some([0u8; 16]),
+                    envelope: hs_env,
+                },
+                &mut rng,
+            )
+            .unwrap();
 
         // Second message rides the established session.
         let token = delivery_token(
@@ -96,7 +105,16 @@ fn sneakernet_end_to_end_with_restart() {
         );
         let m2 = session.encrypt(&mut rng, NOW, &pad(MSG_A2).unwrap(), &[]);
         let msg_env = Envelope::new(EnvelopeKind::Message, token, m2.encode());
-        alice.queue_push(&msg_env, &mut rng).unwrap();
+        alice
+            .queue_push(
+                &QueueItem {
+                    peer: bob_id_pub.ed,
+                    msg_id: Some([1u8; 16]),
+                    envelope: msg_env,
+                },
+                &mut rng,
+            )
+            .unwrap();
 
         // Persist everything; record both messages as Queued.
         alice
@@ -112,6 +130,7 @@ fn sneakernet_end_to_end_with_restart() {
                         state: DeliveryState::Queued,
                         timestamp: NOW,
                         body: body.to_vec(),
+                        wire_id: None,
                     },
                     &mut rng,
                 )
@@ -125,7 +144,7 @@ fn sneakernet_end_to_end_with_restart() {
         let alice = Store::open(&alice_db, b"alice-pass").unwrap();
         let queued = alice.queue_all().unwrap();
         assert_eq!(queued.len(), 2, "queue must survive restart");
-        let envs: Vec<Envelope> = queued.iter().map(|(_, e)| e.clone()).collect();
+        let envs: Vec<Envelope> = queued.iter().map(|(_, i)| i.envelope.clone()).collect();
         std::fs::write(&bundle_a_to_b, bundle_export(&envs)).unwrap();
         for (seq, _) in queued {
             alice.queue_ack(seq).unwrap(); // handed to the courier
@@ -193,7 +212,11 @@ fn sneakernet_end_to_end_with_restart() {
         let token = delivery_token(&MailboxKey::from_bytes(*s.mailbox_key()), epoch_day(NOW));
         let reply = s.encrypt(&mut rng, NOW, &pad(MSG_B1).unwrap(), &[]);
         bob.queue_push(
-            &Envelope::new(EnvelopeKind::Message, token, reply.encode()),
+            &QueueItem {
+                peer: alice_id.ed,
+                msg_id: None,
+                envelope: Envelope::new(EnvelopeKind::Message, token, reply.encode()),
+            },
             &mut rng,
         )
         .unwrap();
@@ -206,6 +229,7 @@ fn sneakernet_end_to_end_with_restart() {
                 state: DeliveryState::Received,
                 timestamp: NOW,
                 body: MSG_A1.to_vec(),
+                wire_id: None,
             },
             &mut rng,
         )
@@ -217,7 +241,7 @@ fn sneakernet_end_to_end_with_restart() {
         let bob = Store::open(&bob_db, b"bob-pass").unwrap();
         let queued = bob.queue_all().unwrap();
         assert_eq!(queued.len(), 1);
-        let envs: Vec<Envelope> = queued.iter().map(|(_, e)| e.clone()).collect();
+        let envs: Vec<Envelope> = queued.iter().map(|(_, i)| i.envelope.clone()).collect();
         std::fs::write(&bundle_b_to_a, bundle_export(&envs)).unwrap();
     }
     {

@@ -12,8 +12,10 @@ use crate::{ProtocolError, Result};
 /// Protocol version carried in byte 0.
 pub const ENVELOPE_VERSION: u8 = 1;
 
-/// Envelope header length: version + kind + token.
-const HEADER_LEN: usize = 1 + 1 + 32;
+/// Envelope header length: version + kind + token. Callers budgeting for a
+/// link MTU subtract this before fragmenting ([`crate::fragment`]).
+pub const ENVELOPE_HEADER_LEN: usize = 1 + 1 + 32;
+const HEADER_LEN: usize = ENVELOPE_HEADER_LEN;
 
 /// What an envelope carries (byte 1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

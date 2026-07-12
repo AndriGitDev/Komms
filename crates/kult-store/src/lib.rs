@@ -108,6 +108,44 @@ pub struct MessageRecord {
     pub timestamp: u64,
     /// Message body (plaintext — sealed at rest by the store).
     pub body: Vec<u8>,
+    /// Content id of the envelope this message left in (outbound only) —
+    /// what encrypted delivery receipts acknowledge.
+    pub wire_id: Option<[u8; 16]>,
+}
+
+/// A contact (sealed as one blob in the `contacts` table).
+///
+/// Delivery hints are opaque bytes to the store — the runtime serializes
+/// its transport addressing there; the store interprets nothing
+/// (docs/03-architecture.md §2).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContactRecord {
+    /// The contact's Ed25519 identity key bytes (conversation key).
+    pub peer: [u8; 32],
+    /// The contact's full encoded public identity (opaque bytes; the runtime
+    /// decodes it for safety numbers and handshakes).
+    pub identity: Vec<u8>,
+    /// Local display name.
+    pub name: String,
+    /// The contact's last known encoded prekey bundle (opaque bytes).
+    pub bundle: Vec<u8>,
+    /// Opaque per-transport delivery hints (runtime-serialized).
+    pub hints: Vec<Vec<u8>>,
+    /// Whether safety numbers were verified out-of-band.
+    pub verified: bool,
+}
+
+/// One outbound queue entry: a sealed envelope plus the routing context the
+/// delivery engine needs (which peer, and which message record to advance
+/// when the envelope is acknowledged).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueueItem {
+    /// The recipient's Ed25519 identity key bytes.
+    pub peer: [u8; 32],
+    /// The message record this envelope carries, if any (receipts carry none).
+    pub msg_id: Option<[u8; 16]>,
+    /// The sealed envelope to deliver.
+    pub envelope: Envelope,
 }
 
 const WRAP_AD: &[u8] = b"KK-store-wrap-v1";
@@ -118,6 +156,9 @@ CREATE TABLE IF NOT EXISTS sessions (peer BLOB PRIMARY KEY, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS messages (rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS queue    (seq INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS seen     (id BLOB PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS contacts (peer BLOB PRIMARY KEY, blob BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS prekeys  (id INTEGER PRIMARY KEY CHECK (id = 1), blob BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS pending  (seq INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
 ";
 
 /// An open, unlocked KommsKult store.
@@ -127,6 +168,9 @@ pub struct Store {
     k_sessions: StorageKey,
     k_messages: StorageKey,
     k_queue: StorageKey,
+    k_contacts: StorageKey,
+    k_prekeys: StorageKey,
+    k_pending: StorageKey,
 }
 
 impl Store {
@@ -206,6 +250,9 @@ impl Store {
             k_sessions: master.derive(b"KK-store-sessions"),
             k_messages: master.derive(b"KK-store-messages"),
             k_queue: master.derive(b"KK-store-queue"),
+            k_contacts: master.derive(b"KK-store-contacts"),
+            k_prekeys: master.derive(b"KK-store-prekeys"),
+            k_pending: master.derive(b"KK-store-pending"),
             conn,
         }
     }
@@ -302,18 +349,121 @@ impl Store {
         Ok(out)
     }
 
+    /// Replace the stored record with the same `id` as `rec`. Returns `true`
+    /// if a record was found and updated. (Records are sealed individually,
+    /// so lookup is a scan — fine at local-history scale.)
+    pub fn update_message(
+        &self,
+        rec: &MessageRecord,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<bool> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT rowid_, blob FROM messages ORDER BY rowid_")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+        for row in rows {
+            let (rowid, sealed) = row?;
+            let plain = self.k_messages.open(b"message", &sealed)?;
+            let stored: MessageRecord =
+                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
+            if stored.id == rec.id {
+                let plain = postcard::to_allocvec(rec).map_err(|_| StoreError::Serialization)?;
+                let sealed = self.k_messages.seal(b"message", &plain, rng);
+                self.conn.execute(
+                    "UPDATE messages SET blob = ?2 WHERE rowid_ = ?1",
+                    params![rowid, sealed],
+                )?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    // ---- contacts ----------------------------------------------------------
+
+    /// Insert or replace a contact (sealed).
+    pub fn put_contact(&self, rec: &ContactRecord, rng: &mut impl CryptoRngCore) -> Result<()> {
+        let plain = postcard::to_allocvec(rec).map_err(|_| StoreError::Serialization)?;
+        let sealed = self.k_contacts.seal(b"contact", &plain, rng);
+        self.conn.execute(
+            "INSERT OR REPLACE INTO contacts (peer, blob) VALUES (?1, ?2)",
+            params![rec.peer.as_slice(), sealed],
+        )?;
+        Ok(())
+    }
+
+    /// Load one contact.
+    pub fn get_contact(&self, peer: &[u8; 32]) -> Result<Option<ContactRecord>> {
+        let sealed: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT blob FROM contacts WHERE peer = ?1",
+                params![peer.as_slice()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match sealed {
+            Some(s) => {
+                let plain = self.k_contacts.open(b"contact", &s)?;
+                Ok(Some(
+                    postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?,
+                ))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// All contacts.
+    pub fn contacts(&self) -> Result<Vec<ContactRecord>> {
+        let mut stmt = self.conn.prepare("SELECT blob FROM contacts")?;
+        let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let plain = self.k_contacts.open(b"contact", &row?)?;
+            out.push(postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?);
+        }
+        Ok(out)
+    }
+
+    // ---- own prekey secrets -------------------------------------------------
+
+    /// Persist this device's prekey secrets as one opaque sealed blob (the
+    /// runtime owns the serialization; the store interprets nothing).
+    pub fn put_prekeys(&self, blob: &[u8], rng: &mut impl CryptoRngCore) -> Result<()> {
+        let sealed = self.k_prekeys.seal(b"prekeys", blob, rng);
+        self.conn.execute(
+            "INSERT OR REPLACE INTO prekeys (id, blob) VALUES (1, ?1)",
+            params![sealed],
+        )?;
+        Ok(())
+    }
+
+    /// Load this device's prekey secrets blob, if stored.
+    pub fn get_prekeys(&self) -> Result<Option<Zeroizing<Vec<u8>>>> {
+        let sealed: Option<Vec<u8>> = self
+            .conn
+            .query_row("SELECT blob FROM prekeys WHERE id = 1", [], |r| r.get(0))
+            .optional()?;
+        match sealed {
+            Some(s) => Ok(Some(Zeroizing::new(self.k_prekeys.open(b"prekeys", &s)?))),
+            None => Ok(None),
+        }
+    }
+
     // ---- outbound queue ---------------------------------------------------
 
     /// Enqueue an envelope for delivery (sealed at rest; survives restarts).
-    pub fn queue_push(&self, env: &Envelope, rng: &mut impl CryptoRngCore) -> Result<i64> {
-        let sealed = self.k_queue.seal(b"queue", &env.encode(), rng);
+    pub fn queue_push(&self, item: &QueueItem, rng: &mut impl CryptoRngCore) -> Result<i64> {
+        let plain = postcard::to_allocvec(&(item.peer, item.msg_id, item.envelope.encode()))
+            .map_err(|_| StoreError::Serialization)?;
+        let sealed = self.k_queue.seal(b"queue", &plain, rng);
         self.conn
             .execute("INSERT INTO queue (blob) VALUES (?1)", params![sealed])?;
         Ok(self.conn.last_insert_rowid())
     }
 
-    /// All queued envelopes with their sequence numbers.
-    pub fn queue_all(&self) -> Result<Vec<(i64, Envelope)>> {
+    /// All queued items with their sequence numbers.
+    pub fn queue_all(&self) -> Result<Vec<(i64, QueueItem)>> {
         let mut stmt = self
             .conn
             .prepare("SELECT seq, blob FROM queue ORDER BY seq")?;
@@ -322,7 +472,16 @@ impl Store {
         for row in rows {
             let (seq, sealed) = row?;
             let plain = self.k_queue.open(b"queue", &sealed)?;
-            out.push((seq, Envelope::decode(&plain)?));
+            let (peer, msg_id, env_bytes): ([u8; 32], Option<[u8; 16]>, Vec<u8>) =
+                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
+            out.push((
+                seq,
+                QueueItem {
+                    peer,
+                    msg_id,
+                    envelope: Envelope::decode(&env_bytes)?,
+                },
+            ));
         }
         Ok(out)
     }
@@ -332,6 +491,42 @@ impl Store {
         self.conn
             .execute("DELETE FROM queue WHERE seq = ?1", params![seq])?;
         Ok(())
+    }
+
+    // ---- inbound pending (envelopes that cannot be processed yet) ---------
+
+    /// Stash an inbound envelope that cannot be consumed yet (e.g. it arrived
+    /// before the handshake that establishes its session). Survives restarts
+    /// so out-of-order arrival across carriers never loses messages.
+    pub fn pending_push(
+        &self,
+        env: &Envelope,
+        first_seen: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let plain = postcard::to_allocvec(&(env.encode(), first_seen))
+            .map_err(|_| StoreError::Serialization)?;
+        let sealed = self.k_pending.seal(b"pending", &plain, rng);
+        self.conn
+            .execute("INSERT INTO pending (blob) VALUES (?1)", params![sealed])?;
+        Ok(())
+    }
+
+    /// Remove and return all stashed inbound envelopes with their
+    /// first-seen timestamps (the runtime re-stashes what it still can't
+    /// consume).
+    pub fn pending_drain(&self) -> Result<Vec<(Envelope, u64)>> {
+        let mut stmt = self.conn.prepare("SELECT blob FROM pending ORDER BY seq")?;
+        let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let plain = self.k_pending.open(b"pending", &row?)?;
+            let (env_bytes, first_seen): (Vec<u8>, u64) =
+                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
+            out.push((Envelope::decode(&env_bytes)?, first_seen));
+        }
+        self.conn.execute("DELETE FROM pending", [])?;
+        Ok(out)
     }
 
     // ---- dedup ------------------------------------------------------------
@@ -344,5 +539,18 @@ impl Store {
             params![content_id.as_slice()],
         )?;
         Ok(n == 1)
+    }
+
+    /// Has this envelope content id been consumed before?
+    pub fn is_seen(&self, content_id: &[u8; 16]) -> Result<bool> {
+        let found: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM seen WHERE id = ?1",
+                params![content_id.as_slice()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
     }
 }

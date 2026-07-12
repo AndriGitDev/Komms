@@ -30,6 +30,8 @@ HKDF per-domain keys.
 | `contacts` | Peer keys, verification state, petnames, relay hints | Never leaves the device |
 | `messages` | Envelope plaintexts post-decrypt, delivery state | Per-blob AEAD, random nonces |
 | `queue` | Outbound envelopes pending delivery per transport | Ciphertext only — survives crash/restart |
+| `prekeys` | Own signed/PQ/one-time prekey secrets | One-time prekeys deleted on use |
+| `pending` | Inbound envelopes not yet readable (arrived before their session) | Ciphertext only; TTL-bounded |
 | `media` | Attachment blobs, chunked | Each chunk sealed; keys stored in `messages` |
 
 Every blob is individually AEAD-sealed (XChaCha20-Poly1305, random 24-byte nonce, table
