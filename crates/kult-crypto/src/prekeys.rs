@@ -329,4 +329,14 @@ impl VerifiedBundle {
     pub fn bundle(&self) -> &PrekeyBundle {
         &self.0
     }
+
+    /// This bundle with its one-time prekey (if any) ignored — standard
+    /// OPK-less PQXDH, the same mode DHT-published bundles use. For
+    /// re-handshakes from an archived bundle: the peer deleted that OPK
+    /// secret when the original handshake consumed it, so referencing it
+    /// again would only get the flight dropped.
+    pub fn without_opk(mut self) -> Self {
+        self.0.opk = None;
+        self
+    }
 }

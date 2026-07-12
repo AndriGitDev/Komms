@@ -304,6 +304,41 @@ impl Node {
         Self::assemble(store, identity, vault)
     }
 
+    /// Restore a node from an encrypted backup file onto a **new** store at
+    /// `path` (docs/07-storage.md §4): the exported identity resumes with
+    /// contacts and history intact, prekeys are minted fresh (the old
+    /// device's one-time prekeys must never be honored twice), and every
+    /// peer that had a live session at export time re-handshakes on the
+    /// first [`Node::tick`] — ratchet state is deliberately not portable.
+    pub fn restore(
+        path: &std::path::Path,
+        backup: &[u8],
+        mnemonic: &str,
+        passphrase: &[u8],
+        profile: KdfProfile,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Self> {
+        let store = Store::restore_backup(path, backup, mnemonic, passphrase, profile, rng)?;
+        let identity = store.get_identity()?.ok_or(NodeError::CorruptState)?;
+        let vault = PrekeyVault::generate(rng);
+        store.put_prekeys(&vault.encode(), rng)?;
+        Self::assemble(store, identity, vault)
+    }
+
+    /// Export this node's encrypted backup (docs/07-storage.md §4):
+    /// identity + contacts + history + session-reset markers, sealed under
+    /// a freshly minted 24-word mnemonic. Returns the file bytes and the
+    /// mnemonic — show it to the user once; it is not stored anywhere.
+    /// Ratchet sessions and prekey secrets are deliberately excluded;
+    /// restoring re-handshakes instead ([`Node::restore`]).
+    pub fn export_backup(
+        &self,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<(Vec<u8>, zeroize::Zeroizing<String>)> {
+        Ok(self.store.export_backup(now, rng)?)
+    }
+
     fn assemble(store: Store, identity: Identity, vault: PrekeyVault) -> Result<Self> {
         let mut sessions = HashMap::new();
         for contact in store.contacts()? {
@@ -684,16 +719,7 @@ impl Node {
             if contact.bundle.is_empty() {
                 return Err(NodeError::NoSession);
             }
-            let bundle = PrekeyBundle::decode(&contact.bundle)?.verify(now)?;
-            let (session, init) = initiate(&self.identity, &bundle, &padded, now, rng)?;
-            let sealed = seal_anonymous(&bundle.bundle().identity, HS_AD, &init.encode(), rng);
-            self.store.put_session(peer, &session, rng)?;
-            self.sessions.insert(*peer, session);
-            Envelope::new(
-                EnvelopeKind::Handshake,
-                intro_token(peer, epoch_day(now)),
-                sealed,
-            )
+            self.initiate_session(peer, &contact.bundle, &padded, now, rng)?
         };
 
         record.wire_id = Some(envelope.content_id());
@@ -721,6 +747,11 @@ impl Node {
     /// receipts for consumed messages, then flush the outbound queue through
     /// the transport scheduler. Returns all events produced.
     pub async fn tick(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<Vec<Event>> {
+        // 0. Session-reset markers (a restore happened): queue fresh
+        //    handshakes so re-keyed traffic flows without waiting for the
+        //    user to send first.
+        self.rekey_reset_peers(now, rng)?;
+
         // 1. Gather: previously-stashed envelopes first, then fresh arrivals.
         //    When bridging, fresh arrivals with tokens this node does not
         //    recognize also enter the transit queue (ADR-0009): mesh-heard
@@ -827,6 +858,74 @@ impl Node {
         self.flush_transit(now).await;
 
         Ok(self.drain_events())
+    }
+
+    /// Establish a fresh outbound session from a contact's stored prekey
+    /// bundle, sealing the (already padded) first payload into the
+    /// anonymous handshake flight. A reset-marked peer (post-restore) gets
+    /// the OPK-less mode: the old device consumed the archived bundle's
+    /// one-time prekey, so referencing it again would only get the flight
+    /// dropped by the peer's vault.
+    fn initiate_session(
+        &mut self,
+        peer: &[u8; 32],
+        bundle_bytes: &[u8],
+        padded: &[u8],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Envelope> {
+        let mut bundle = PrekeyBundle::decode(bundle_bytes)?.verify(now)?;
+        if self.store.reset_markers()?.contains(peer) {
+            bundle = bundle.without_opk();
+        }
+        let (session, init) = initiate(&self.identity, &bundle, padded, now, rng)?;
+        let sealed = seal_anonymous(&bundle.bundle().identity, HS_AD, &init.encode(), rng);
+        self.store.put_session(peer, &session, rng)?;
+        self.sessions.insert(*peer, session);
+        Ok(Envelope::new(
+            EnvelopeKind::Handshake,
+            intro_token(peer, epoch_day(now)),
+            sealed,
+        ))
+    }
+
+    /// Queue a fresh handshake to every session-reset-marked peer
+    /// (docs/07-storage.md §4). A restored device's ratchets are gone;
+    /// waiting for the user to send first would leave inbound traffic dead
+    /// until then, so the reset markers the backup carried are turned into
+    /// proactive re-handshakes — empty first flights the receiver
+    /// recognizes as session maintenance, not messages. One attempt per
+    /// marker: peers whose bundle is missing or expired fall back to the
+    /// send-path auto-handshake once the user has a fresh bundle for them.
+    fn rekey_reset_peers(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<()> {
+        for peer in self.store.reset_markers()? {
+            if self.sessions.contains_key(&peer) {
+                // A send or an inbound handshake already re-keyed it.
+                self.store.clear_reset_marker(&peer)?;
+                continue;
+            }
+            let contact = self.store.get_contact(&peer)?;
+            let Some(contact) = contact.filter(|c| !c.bundle.is_empty()) else {
+                self.store.clear_reset_marker(&peer)?;
+                continue;
+            };
+            // The marker must still be set while initiating — it selects
+            // the OPK-less mode — and clears whatever the outcome.
+            let flight = self.initiate_session(&peer, &contact.bundle, &pad(&[])?, now, rng);
+            self.store.clear_reset_marker(&peer)?;
+            let Ok(envelope) = flight else {
+                continue; // e.g. the bundle expired since the backup
+            };
+            self.store.queue_push(
+                &QueueItem {
+                    peer,
+                    msg_id: None,
+                    envelope,
+                },
+                rng,
+            )?;
+        }
+        Ok(())
     }
 
     // ---- receive path ------------------------------------------------------
@@ -953,9 +1052,13 @@ impl Node {
         *established = true;
         self.events.push_back(Event::SessionEstablished { peer });
 
+        // An empty first flight is session maintenance (a re-handshake
+        // after restore), not a message — nothing to record or receipt.
         if let Ok(body) = unpad(&first_payload) {
-            self.record_inbound(peer, body, now, rng)?;
-            acks.push((peer, env.content_id()));
+            if !body.is_empty() {
+                self.record_inbound(peer, body, now, rng)?;
+                acks.push((peer, env.content_id()));
+            }
         }
         self.store.mark_seen(&env.content_id())?;
         Ok(Consumed::Done)

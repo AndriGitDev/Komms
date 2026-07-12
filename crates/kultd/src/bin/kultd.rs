@@ -36,6 +36,13 @@ OPTIONS:
     --no-bridge             with a radio attached, do NOT bridge third-party sealed
                             traffic between mesh and internet (bridging is otherwise
                             on whenever a radio is configured)
+    --restore FILE          first run only: restore the store from this encrypted
+                            backup instead of creating a fresh identity; the
+                            mnemonic comes from --restore-mnemonic-file or the
+                            KULTD_RESTORE_MNEMONIC environment variable (file
+                            wins). Refused if node.db already exists.
+    --restore-mnemonic-file PATH
+                            read the backup's 24-word mnemonic from this file
     --kdf desktop|mobile    Argon2id profile for store creation [default: desktop]
     --tick-secs N           delivery-engine heartbeat [default: 0.5s granularity]
     --checkin-secs N        mailbox check-in cadence  [default: 300]
@@ -56,6 +63,8 @@ fn parse_args() -> Result<DaemonConfig, String> {
     let mut meshtastic_serial: Option<String> = None;
     let mut meshtastic_tcp: Option<String> = None;
     let mut bridge = true;
+    let mut restore: Option<PathBuf> = None;
+    let mut restore_mnemonic_file: Option<PathBuf> = None;
     let mut kdf = kult_crypto::KDF_PROFILE_DESKTOP;
     let mut tick_secs: Option<u64> = None;
     let mut checkin_secs: Option<u64> = None;
@@ -79,6 +88,10 @@ fn parse_args() -> Result<DaemonConfig, String> {
             "--meshtastic-serial" => meshtastic_serial = Some(value("--meshtastic-serial")?),
             "--meshtastic-tcp" => meshtastic_tcp = Some(value("--meshtastic-tcp")?),
             "--no-bridge" => bridge = false,
+            "--restore" => restore = Some(value("--restore")?.into()),
+            "--restore-mnemonic-file" => {
+                restore_mnemonic_file = Some(value("--restore-mnemonic-file")?.into())
+            }
             "--kdf" => {
                 kdf = match value("--kdf")?.as_str() {
                     "desktop" => kult_crypto::KDF_PROFILE_DESKTOP,
@@ -128,8 +141,25 @@ fn parse_args() -> Result<DaemonConfig, String> {
         return Err("passphrase must not be empty".to_owned());
     }
 
+    let restore_mnemonic = if restore.is_some() {
+        let phrase = match restore_mnemonic_file {
+            Some(path) => {
+                std::fs::read_to_string(&path).map_err(|e| format!("restore mnemonic file: {e}"))?
+            }
+            None => std::env::var("KULTD_RESTORE_MNEMONIC").map_err(|_| {
+                "restore needs its mnemonic: set --restore-mnemonic-file or \
+                 KULTD_RESTORE_MNEMONIC"
+            })?,
+        };
+        Some(phrase.trim().to_owned())
+    } else {
+        None
+    };
+
     let mut cfg = DaemonConfig::new(&data_dir, passphrase);
     cfg.kdf = kdf;
+    cfg.restore_from = restore;
+    cfg.restore_mnemonic = restore_mnemonic;
     if let Some(socket) = socket {
         cfg.socket_path = socket;
     }

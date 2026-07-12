@@ -47,6 +47,12 @@ pub struct DaemonConfig {
     pub passphrase: Vec<u8>,
     /// Argon2id cost profile for store creation.
     pub kdf: KdfProfile,
+    /// First run only: restore the store from this encrypted backup file
+    /// instead of creating a fresh identity (docs/07-storage.md §4).
+    /// Refused when `db_path` already exists.
+    pub restore_from: Option<PathBuf>,
+    /// The 24-word mnemonic sealing `restore_from`.
+    pub restore_mnemonic: Option<String>,
     /// Multiaddrs to listen on.
     pub listen: Vec<String>,
     /// DHT bootstrap peers (multiaddrs with `/p2p/…`). Empty is fine —
@@ -96,6 +102,8 @@ impl DaemonConfig {
             socket_path: data_dir.join("kultd.sock"),
             passphrase,
             kdf: kult_crypto::KDF_PROFILE_DESKTOP,
+            restore_from: None,
+            restore_mnemonic: None,
             listen: vec![
                 "/ip4/0.0.0.0/udp/0/quic-v1".to_owned(),
                 "/ip4/0.0.0.0/tcp/0".to_owned(),
@@ -187,11 +195,38 @@ impl Daemon {
         // Argon2id is deliberately slow — keep it off the async threads.
         let mut node = {
             let cfg = cfg.clone();
-            tokio::task::spawn_blocking(move || -> Result<Node, NodeError> {
-                if cfg.db_path.exists() {
-                    Node::open(&cfg.db_path, &cfg.passphrase)
+            tokio::task::spawn_blocking(move || -> Result<Node, DaemonError> {
+                if let Some(backup_path) = &cfg.restore_from {
+                    // Restore is a first-run operation: an existing store
+                    // holds an identity, and silently replacing it would
+                    // destroy keys. Refuse; the operator moves it aside.
+                    if cfg.db_path.exists() {
+                        return Err(DaemonError::Io(io::Error::other(format!(
+                            "refusing to restore over the existing store {}",
+                            cfg.db_path.display()
+                        ))));
+                    }
+                    let mnemonic = cfg.restore_mnemonic.as_deref().ok_or_else(|| {
+                        DaemonError::Io(io::Error::other("restore needs its mnemonic"))
+                    })?;
+                    let backup = std::fs::read(backup_path)?;
+                    Ok(Node::restore(
+                        &cfg.db_path,
+                        &backup,
+                        mnemonic,
+                        &cfg.passphrase,
+                        cfg.kdf,
+                        &mut OsRng,
+                    )?)
+                } else if cfg.db_path.exists() {
+                    Ok(Node::open(&cfg.db_path, &cfg.passphrase)?)
                 } else {
-                    Node::create(&cfg.db_path, &cfg.passphrase, cfg.kdf, &mut OsRng)
+                    Ok(Node::create(
+                        &cfg.db_path,
+                        &cfg.passphrase,
+                        cfg.kdf,
+                        &mut OsRng,
+                    )?)
                 }
             })
             .await
@@ -325,6 +360,20 @@ fn now() -> u64 {
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Write a secret-bearing file: created 0600 from the first byte, and an
+/// existing file is never overwritten (pick a new name or remove it first).
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)?.write_all(bytes)
 }
 
 /// The hints this node publishes: every live listen address (circuit
@@ -507,6 +556,12 @@ async fn handle_op(
             let hints = own_hints(net, &cfg.mailboxes);
             node.publish_bundle(&hints, now()).await.map_err(fail)?;
             Ok(json!({}))
+        }
+        Op::Backup { path } => {
+            let (file, mnemonic) = node.export_backup(now(), &mut OsRng).map_err(fail)?;
+            write_private(std::path::Path::new(&path), &file)
+                .map_err(|e| format!("backup write: {e}"))?;
+            Ok(json!({ "path": path, "mnemonic": &*mnemonic }))
         }
         // Handled at the connection layer; reaching the actor is a bug.
         Op::Subscribe => Err("subscribe is connection-level".to_owned()),
