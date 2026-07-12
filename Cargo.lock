@@ -1494,6 +1494,7 @@ dependencies = [
  "kult-protocol",
  "libp2p",
  "serde",
+ "socket2 0.6.4",
  "tempfile",
  "tokio",
 ]
