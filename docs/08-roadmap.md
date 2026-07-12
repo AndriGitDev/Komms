@@ -88,10 +88,28 @@ DHT, mailbox relays, transport scheduler, headless daemon with local RPC.
   observably stores only sealed envelopes (verified by inspection test).
 - LAN-only (no internet) delivery works via mDNS.
 
-## M4 — Off-grid: Meshtastic bridge
+## M4 — Off-grid: Meshtastic bridge *(in progress)*
 
 BLE + USB-serial Meshtastic client integration, private app port, runtime MTU
 computation, priority classes, selective retransmission, internet↔mesh bridging.
+
+The carrier core is in: `MeshtasticTransport` (behind the `meshtastic` feature
+of `kult-transport`) speaks the standard client protocol to a stock-firmware
+radio over any byte stream — USB-serial, TCP, or an in-memory duplex in tests —
+via the official `meshtastic` crate (the published protobuf definitions through
+a generated client, per the implementation guide). Sealed envelopes ride the
+private application port; the frame budget is the protobuf-pinned 233-byte
+`Data.payload` cap, so the delivery engine's existing fragmentation path needs
+no mesh-specific logic, and a ratcheted 192-bucket text message crosses the
+mesh in ≤ 2 LoRa frames — pinned end-to-end (encrypt → fragment → framed
+client protocol → fake radio → reassemble → decrypt) by an integration test.
+Airtime is its own reviewed unit (`airtime`): the Semtech time-on-air formula
+under known-answer tests, and a rolling one-hour duty-cycle budget sized from
+the radio's reported region (EU868/EU433/UA433/UA868 → 10 %) that refuses
+over-budget sends honestly with a retry hint instead of silently hogging the
+mesh. Remaining: `kultd` wiring (serial device flag), scheduler priority
+classes, selective-retransmission NACKs, internet↔mesh bridging, and the
+hardware-in-loop nightly.
 
 **Acceptance**:
 - Two phones/laptops with stock-firmware Meshtastic radios, all other networking

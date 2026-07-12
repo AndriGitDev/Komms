@@ -7,10 +7,20 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# The Meshtastic LoRa carrier (M4). Off by default: it pulls the official
+# meshtastic client crate (generated protobufs + stream plumbing, and via it
+# tokio-serial), which consumers that never bridge a radio should not build.
+meshtastic = ["dep:meshtastic"]
+
 [dependencies]
 kult-protocol = { version = "0.1.0", path = "../kult-protocol" }
 async-trait = "0.1"
 futures = "0.3"
+# The official Meshtastic Rust client: the published protobuf definitions via
+# a generated client, per docs/09-implementation-guide.md §3.3 ("do not
+# hand-roll the serial framing").
+meshtastic = { version = "0.1.9", optional = true }
 # NOTE: no "mdns" feature — libp2p-mdns still pins hickory-proto 0.25
 # (RUSTSEC-2026-0118/0119, unpatched on that line) and this workspace ships
 # zero ignored vulnerabilities. LAN auto-discovery is instead the small
@@ -41,3 +51,7 @@ tokio = { version = "1", features = ["fs", "net", "sync", "rt", "time", "macros"
 [dev-dependencies]
 tokio = { version = "1", features = ["fs", "sync", "rt", "rt-multi-thread", "macros", "time"] }
 tempfile = "3"
+# For the M4 acceptance pin: a real ratcheted 192-bucket message must fit in
+# ≤ 2 LoRa frames (docs/08-roadmap.md M4).
+kult-crypto = { version = "0.1.0", path = "../kult-crypto" }
+rand = "0.8"
