@@ -25,6 +25,9 @@ libp2p = { version = "0.56", features = [
     "cbor",
     "kad",
     "identify",
+    "autonat",
+    "relay",
+    "dcutr",
     "macros",
     "ed25519",
 ] }
