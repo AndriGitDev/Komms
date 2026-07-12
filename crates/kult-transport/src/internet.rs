@@ -28,11 +28,21 @@
 //! reach a mailbox through [`DeliveryHint::Relay`] — a deposit the relay
 //! accepted is, honestly, [`SendReceipt::AckedByNextHop`] and nothing more.
 //!
-//! Remaining M3 pieces that layer on top of this carrier: AutoNAT + DCUtR
-//! hole punching, the headless daemon — and mDNS LAN auto-discovery, which
-//! is deliberately deferred until `libp2p-mdns` moves off the
-//! RUSTSEC-flagged `hickory-proto 0.25` (LAN delivery works today with
-//! explicit multiaddr hints).
+//! NAT traversal (docs/05-transports.md §2) is the pinned trio:
+//! **AutoNAT** probes tell a node whether it is publicly dialable
+//! ([`Libp2pTransport::nat_status`]); a private node reserves a **Circuit
+//! Relay v2** slot at any public peer ([`Libp2pTransport::reserve_relay`]
+//! — every node volunteers bounded relay service, mirroring the mailbox
+//! ethic) and hands out the returned circuit address as an ordinary
+//! [`DeliveryHint::Multiaddr`]; **DCUtR** then upgrades relayed
+//! connections to direct ones by hole punching, so the relay carries
+//! traffic only until the punch lands. Relays see what any hop sees:
+//! sealed envelopes between transport pseudonyms.
+//!
+//! Remaining M3 pieces that layer on top of this carrier: the headless
+//! daemon — and mDNS LAN auto-discovery, which is deliberately deferred
+//! until `libp2p-mdns` moves off the RUSTSEC-flagged `hickory-proto 0.25`
+//! (LAN delivery works today with explicit multiaddr hints).
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -41,13 +51,16 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::StreamExt;
+use libp2p::core::transport::ListenerId;
 use libp2p::kad::store::MemoryStore;
 use libp2p::kad::{self, GetRecordOk, Mode, QueryResult, Quorum, Record, RecordKey};
 use libp2p::multiaddr::Protocol;
 use libp2p::request_response::{self, ProtocolSupport};
 use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
 use libp2p::swarm::{DialError, NetworkBehaviour, SwarmEvent};
-use libp2p::{identify, noise, tcp, yamux, Multiaddr, PeerId, StreamProtocol};
+use libp2p::{
+    autonat, dcutr, identify, noise, relay, tcp, yamux, Multiaddr, PeerId, StreamProtocol,
+};
 use tokio::sync::{mpsc, oneshot};
 
 use kult_protocol::Envelope;
@@ -75,12 +88,39 @@ const DHT_TIMEOUT: Duration = Duration::from_secs(60);
 /// DHT.
 const RECORD_NAMESPACE: &[u8] = b"/kk/prekeys/1/";
 
+/// First AutoNAT probe fires this soon after start; kept short because the
+/// answer gates whether a node should go reserve a relay slot.
+const AUTONAT_BOOT_DELAY: Duration = Duration::from_secs(2);
+
+/// AutoNAT re-probe interval while the status is unknown or unconfirmed.
+const AUTONAT_RETRY_INTERVAL: Duration = Duration::from_secs(10);
+
+/// This node's reachability from the open internet, as measured by AutoNAT
+/// dial-back probes (docs/05-transports.md §2). Drives the relay decision:
+/// a [`NatStatus::Private`] node should reserve a circuit relay slot
+/// ([`Libp2pTransport::reserve_relay`]) and publish the returned address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NatStatus {
+    /// No probe has concluded yet.
+    Unknown,
+    /// A peer dialed one of our addresses back successfully — publicly
+    /// reachable, and a candidate relay/mailbox for others.
+    Public,
+    /// Dial-backs fail: behind NAT or firewall; direct inbound connections
+    /// require a relay reservation (DCUtR upgrades them once punched).
+    Private,
+}
+
 #[derive(NetworkBehaviour)]
 struct KultBehaviour {
     envelopes: request_response::cbor::Behaviour<Vec<u8>, ()>,
     mailbox: request_response::cbor::Behaviour<MailboxRequest, MailboxResponse>,
     kad: kad::Behaviour<MemoryStore>,
     identify: identify::Behaviour,
+    autonat: autonat::Behaviour,
+    relay: relay::Behaviour,
+    relay_client: relay::client::Behaviour,
+    dcutr: dcutr::Behaviour,
 }
 
 /// A request aimed at a specific peer, parked while its connection dials.
@@ -127,6 +167,16 @@ enum Cmd {
     GetRecord {
         key: RecordKey,
         done: oneshot::Sender<Vec<Vec<u8>>>,
+    },
+    /// Listen on a `/p2p-circuit` address (a relay reservation); resolves
+    /// with the circuit listen address once the relay accepts, `None` on
+    /// refusal or unreachable relay.
+    Reserve {
+        addr: Multiaddr,
+        done: oneshot::Sender<Option<Multiaddr>>,
+    },
+    NatStatus {
+        done: oneshot::Sender<NatStatus>,
     },
 }
 
@@ -201,7 +251,9 @@ impl Libp2pTransport {
             )
             .map_err(io_other)?
             .with_quic()
-            .with_behaviour(|key| {
+            .with_relay_client(noise::Config::new, yamux::Config::default)
+            .map_err(io_other)?
+            .with_behaviour(|key, relay_client| {
                 let envelopes = request_response::cbor::Behaviour::new(
                     [(
                         StreamProtocol::new("/kommskult/envelope/1"),
@@ -229,11 +281,35 @@ impl Libp2pTransport {
                     "/kommskult/1".into(),
                     key.public(),
                 ));
+                // `only_global_ips: false` — LAN and localhost reachability
+                // is first-class in kult (docs/05-transports.md), so a
+                // dial-back from a private-range peer is a real answer, not
+                // noise. Probes go to whatever peers we're connected to;
+                // nothing is hardcoded.
+                let autonat = autonat::Behaviour::new(
+                    peer_id,
+                    autonat::Config {
+                        boot_delay: AUTONAT_BOOT_DELAY,
+                        retry_interval: AUTONAT_RETRY_INTERVAL,
+                        only_global_ips: false,
+                        ..Default::default()
+                    },
+                );
+                // Every node volunteers bounded circuit-relay service, the
+                // same ethic as mailboxes: capacity comes from peers, never
+                // from project infrastructure. Default limits keep a circuit
+                // short-lived — DCUtR is expected to punch a direct path.
+                let relay = relay::Behaviour::new(peer_id, relay::Config::default());
+                let dcutr = dcutr::Behaviour::new(peer_id);
                 Ok(KultBehaviour {
                     envelopes,
                     mailbox,
                     kad,
                     identify,
+                    autonat,
+                    relay,
+                    relay_client,
+                    dcutr,
                 })
             })
             .map_err(io_other)?
@@ -241,8 +317,10 @@ impl Libp2pTransport {
             .build();
 
         // Every node serves DHT records — there is no client/server split to
-        // centralize around (docs/01-why.md). AutoNAT-driven auto mode can
-        // replace this once the NAT-traversal slice lands.
+        // centralize around (docs/01-why.md). Explicit server mode rather
+        // than AutoNAT-driven auto mode: LAN-only and air-gapped-adjacent
+        // deployments must keep serving records with no confirmed public
+        // address, and stale entries age out of peers' routing tables anyway.
         swarm.behaviour_mut().kad.set_mode(Some(Mode::Server));
 
         for addr in listen {
@@ -282,6 +360,8 @@ impl Libp2pTransport {
 
     /// Current listen addresses, each with the peer id appended — exactly
     /// the strings peers store as [`DeliveryHint::Multiaddr`] for us.
+    /// Includes circuit addresses once [`Libp2pTransport::reserve_relay`]
+    /// succeeds.
     pub fn listen_addrs(&self) -> Vec<String> {
         let id = self.shared.local_peer_id;
         self.shared
@@ -289,7 +369,7 @@ impl Libp2pTransport {
             .lock()
             .expect("lock")
             .iter()
-            .map(|a| format!("{a}/p2p/{id}"))
+            .map(|a| with_peer_id(a, id))
             .collect()
     }
 
@@ -369,6 +449,44 @@ impl Libp2pTransport {
             .as_ref()
             .map(|store| store.lock().expect("lock").contents())
     }
+
+    /// This node's NAT reachability as measured by AutoNAT dial-back probes.
+    /// Starts [`NatStatus::Unknown`] and settles within seconds of the first
+    /// peer connection. [`NatStatus::Private`] is the cue to call
+    /// [`Libp2pTransport::reserve_relay`] so peers can still dial in.
+    pub async fn nat_status(&self) -> Result<NatStatus> {
+        let (done, rx) = oneshot::channel();
+        self.cmds
+            .send(Cmd::NatStatus { done })
+            .map_err(|_| io_other("transport task stopped"))?;
+        rx.await.map_err(|_| io_other("transport task stopped"))
+    }
+
+    /// Reserve a Circuit Relay v2 slot at `relay` (a multiaddr with
+    /// `/p2p/…`) and return the resulting **circuit address** — publish it
+    /// like any listen address (peers use it as [`DeliveryHint::Multiaddr`]).
+    /// Dials through it arrive relayed and DCUtR then hole-punches a direct
+    /// connection, so the relay carries traffic only briefly. Errors are
+    /// honest: the relay was unreachable or refused the reservation — which
+    /// includes a relay that does not yet know its own dialable address
+    /// (vouchers advertise AutoNAT-confirmed addresses; a fresh relay
+    /// self-confirms seconds after its first peer connects).
+    pub async fn reserve_relay(&self, relay: &str) -> Result<String> {
+        let (addr, _) = parse_addr(relay).ok_or(TransportError::UnsupportedHint)?;
+        let (done, rx) = oneshot::channel();
+        self.cmds
+            .send(Cmd::Reserve {
+                addr: addr.with(Protocol::P2pCircuit),
+                done,
+            })
+            .map_err(|_| io_other("transport task stopped"))?;
+        match tokio::time::timeout(SEND_TIMEOUT, rx).await {
+            Ok(Ok(Some(circuit))) => Ok(with_peer_id(&circuit, self.shared.local_peer_id)),
+            Ok(Ok(None)) => Err(io_other("relay unreachable or refused the reservation")),
+            Ok(Err(_)) => Err(io_other("transport task stopped")),
+            Err(_) => Err(io_other("relay reservation timed out")),
+        }
+    }
 }
 
 #[async_trait]
@@ -417,13 +535,27 @@ fn io_other(e: impl std::fmt::Display) -> TransportError {
     TransportError::Io(io::Error::other(e.to_string()))
 }
 
+/// Render `addr` with `/p2p/<id>` appended exactly once — the swarm reports
+/// some listen addresses (circuit ones) already carrying the local peer id.
+fn with_peer_id(addr: &Multiaddr, id: PeerId) -> String {
+    match addr.iter().last() {
+        Some(Protocol::P2p(p)) if p == id => addr.to_string(),
+        _ => format!("{addr}/p2p/{id}"),
+    }
+}
+
 /// A usable address is a multiaddr carrying an explicit `/p2p/<peer-id>`.
+/// The **last** `/p2p` component is the target: a circuit address
+/// (`…/p2p/<relay>/p2p-circuit/p2p/<peer>`) names the relay first.
 fn parse_addr(s: &str) -> Option<(Multiaddr, PeerId)> {
     let addr: Multiaddr = s.parse().ok()?;
-    let peer = addr.iter().find_map(|p| match p {
-        Protocol::P2p(id) => Some(id),
-        _ => None,
-    })?;
+    let peer = addr
+        .iter()
+        .filter_map(|p| match p {
+            Protocol::P2p(id) => Some(id),
+            _ => None,
+        })
+        .last()?;
     Some((addr, peer))
 }
 
@@ -546,6 +678,8 @@ async fn run_swarm(
     let mut queries: HashMap<kad::QueryId, QueryWaiter> = HashMap::new();
     // Bootstrap joins waiting for their peer's connection to come up.
     let mut joining: HashMap<PeerId, Vec<oneshot::Sender<bool>>> = HashMap::new();
+    // Relay reservations waiting for their circuit listener to come up.
+    let mut reservations: HashMap<ListenerId, oneshot::Sender<Option<Multiaddr>>> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -593,6 +727,27 @@ async fn run_swarm(
                     let id = swarm.behaviour_mut().kad.get_record(key);
                     queries.insert(id, QueryWaiter::Get { values: Vec::new(), done });
                 }
+                Some(Cmd::Reserve { addr, done }) => {
+                    // The relay client transport dials the relay and asks
+                    // for the reservation; acceptance surfaces as this
+                    // listener's NewListenAddr.
+                    match swarm.listen_on(addr) {
+                        Ok(id) => {
+                            reservations.insert(id, done);
+                        }
+                        Err(_) => {
+                            let _ = done.send(None);
+                        }
+                    }
+                }
+                Some(Cmd::NatStatus { done }) => {
+                    let status = match swarm.behaviour().autonat.nat_status() {
+                        autonat::NatStatus::Public(_) => NatStatus::Public,
+                        autonat::NatStatus::Private => NatStatus::Private,
+                        autonat::NatStatus::Unknown => NatStatus::Unknown,
+                    };
+                    let _ = done.send(status);
+                }
                 Some(Cmd::Op { peer, addr, op }) => {
                     if swarm.is_connected(&peer) {
                         issue_op(&mut swarm, &mut inflight, &mut mb_inflight, &peer, op);
@@ -615,8 +770,24 @@ async fn run_swarm(
                 }
             },
             event = swarm.select_next_some() => match event {
-                SwarmEvent::NewListenAddr { address, .. } => {
-                    shared.listen_addrs.lock().expect("lock").push(address);
+                SwarmEvent::NewListenAddr { listener_id, address } => {
+                    shared.listen_addrs.lock().expect("lock").push(address.clone());
+                    if let Some(done) = reservations.remove(&listener_id) {
+                        let _ = done.send(Some(address));
+                    }
+                }
+                // A circuit listener that dies before producing an address
+                // is a refused/unreachable reservation; resolve its waiter
+                // honestly instead of letting the caller time out.
+                SwarmEvent::ListenerClosed { listener_id, .. } => {
+                    if let Some(done) = reservations.remove(&listener_id) {
+                        let _ = done.send(None);
+                    }
+                }
+                SwarmEvent::ListenerError { listener_id, .. } => {
+                    if let Some(done) = reservations.remove(&listener_id) {
+                        let _ = done.send(None);
+                    }
                 }
                 SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                     shared.connected.lock().expect("lock").insert(peer_id);

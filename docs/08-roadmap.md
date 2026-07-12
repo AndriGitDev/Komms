@@ -57,8 +57,14 @@ delivery tokens as accept-filters and collect on reconnect, senders deposit
 sealed envelopes the scheduler ranks below direct paths, and the "relay stores
 only sealed envelopes" acceptance criterion is pinned by an inspection test
 (collection-deletes required making tokens recipient-scoped — ADR-0007).
-Outstanding for M3: AutoNAT + DCUtR NAT traversal, the headless daemon, and
-mDNS LAN auto-discovery (deferred until `libp2p-mdns` drops the RUSTSEC-flagged
+NAT traversal is in as the pinned trio: AutoNAT dial-back probes report each
+node's reachability (`nat_status`), a private node reserves a Circuit Relay v2
+slot at any public peer (`reserve_relay` — every node volunteers bounded relay
+service, and a fresh relay self-confirms its own address via AutoNAT seconds
+after its first peer connects), the returned circuit address is handed out as
+an ordinary multiaddr hint, and DCUtR upgrades relayed connections to direct
+ones by hole punching. Outstanding for M3: the headless daemon, and mDNS LAN
+auto-discovery (deferred until `libp2p-mdns` drops the RUSTSEC-flagged
 `hickory-proto 0.25`; explicit-multiaddr LAN delivery works today).
 
 libp2p integration (QUIC, TCP fallback, Kademlia, relay v2, DCUtR), prekey bundles on
