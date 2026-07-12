@@ -1,9 +1,13 @@
 //! Delivery tokens (spec §7): rotating, unlinkable mailbox addresses.
 //!
-//! `token_i = HMAC-SHA-256(K_mailbox, "KK-token-v1" || epoch_i)`, where
-//! `K_mailbox` comes from the session ([`kult_crypto::Session::mailbox_key`])
-//! and `epoch_i` is the Unix day number. Only the two parties can compute or
-//! recognize the sequence; relays see uncorrelatable 32-byte values.
+//! `token_i = HMAC-SHA-256(K_mailbox, "KK-token-v1" || epoch_i || recipient)`,
+//! where `K_mailbox` comes from the session
+//! ([`kult_crypto::Session::mailbox_key`]), `epoch_i` is the Unix day number,
+//! and `recipient` is the addressee's Ed25519 identity key — giving each pair
+//! two disjoint per-direction sequences (ADR-0007), so a shared
+//! collect-and-delete relay can never hand one party the mail addressed to
+//! the other. Only the two parties can compute or recognize the sequence;
+//! relays see uncorrelatable 32-byte values.
 //!
 //! First contact has no session yet, so handshake envelopes use an
 //! *introduction token* derived from the recipient's public identity key —
@@ -35,11 +39,14 @@ pub fn epoch_day(now_secs: u64) -> u64 {
     now_secs / 86_400
 }
 
-/// The delivery token for a given epoch.
-pub fn delivery_token(key: &MailboxKey, epoch: u64) -> [u8; 32] {
+/// The delivery token for a given epoch, scoped to the addressee: each
+/// contact pair has two disjoint token sequences, one per direction
+/// (ADR-0007).
+pub fn delivery_token(key: &MailboxKey, epoch: u64, recipient_ed: &[u8; 32]) -> [u8; 32] {
     let mut mac = HmacSha256::new_from_slice(&key.0).expect("HMAC accepts any key length");
     mac.update(TOKEN_DOMAIN);
     mac.update(&epoch.to_le_bytes());
+    mac.update(recipient_ed);
     mac.finalize().into_bytes().into()
 }
 

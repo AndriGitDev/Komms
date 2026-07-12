@@ -20,11 +20,19 @@
 //! [`Libp2pTransport::bootstrap`] takes whatever peers the *user* configures
 //! — nothing is hardcoded, and any reachable peer will do.
 //!
-//! Remaining M3 pieces that layer on top of this carrier: relay-v2
-//! mailboxes, DCUtR hole punching — and mDNS LAN auto-discovery, which is
-//! deliberately deferred until `libp2p-mdns` moves off the RUSTSEC-flagged
-//! `hickory-proto 0.25` (LAN delivery works today with explicit multiaddr
-//! hints).
+//! Mailbox relays (docs/05-transports.md §2) ride a second request-response
+//! protocol (`/kommskult/mailbox/1`): any node started with
+//! [`Libp2pTransport::with_mailbox`] serves store-and-forward for offline
+//! recipients, who register rotating delivery tokens as accept-filters and
+//! collect on reconnect ([`Libp2pTransport::mailbox_checkin`]). Senders
+//! reach a mailbox through [`DeliveryHint::Relay`] — a deposit the relay
+//! accepted is, honestly, [`SendReceipt::AckedByNextHop`] and nothing more.
+//!
+//! Remaining M3 pieces that layer on top of this carrier: AutoNAT + DCUtR
+//! hole punching, the headless daemon — and mDNS LAN auto-discovery, which
+//! is deliberately deferred until `libp2p-mdns` moves off the
+//! RUSTSEC-flagged `hickory-proto 0.25` (LAN delivery works today with
+//! explicit multiaddr hints).
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -44,9 +52,10 @@ use tokio::sync::{mpsc, oneshot};
 
 use kult_protocol::Envelope;
 
+use crate::mailbox::{MailboxContents, MailboxRequest, MailboxResponse, MailboxStore};
 use crate::{
-    CostClass, DeliveryHint, Discovery, LatencyClass, LinkProfile, Reachability, Result,
-    SendReceipt, Transport, TransportError,
+    CostClass, DeliveryHint, Discovery, LatencyClass, LinkProfile, MailboxConfig, Reachability,
+    Result, SendReceipt, Transport, TransportError,
 };
 
 /// How long a send waits for the next hop's acknowledgment before reporting
@@ -69,16 +78,41 @@ const RECORD_NAMESPACE: &[u8] = b"/kk/prekeys/1/";
 #[derive(NetworkBehaviour)]
 struct KultBehaviour {
     envelopes: request_response::cbor::Behaviour<Vec<u8>, ()>,
+    mailbox: request_response::cbor::Behaviour<MailboxRequest, MailboxResponse>,
     kad: kad::Behaviour<MemoryStore>,
     identify: identify::Behaviour,
 }
 
+/// A request aimed at a specific peer, parked while its connection dials.
+enum PendingOp {
+    /// Direct envelope delivery; reports next-hop ack.
+    Envelope(Vec<u8>, oneshot::Sender<bool>),
+    /// Mailbox deposit of encoded envelope bytes; reports acceptance.
+    Deposit(Vec<u8>, oneshot::Sender<bool>),
+    /// Mailbox check-in; reports collected-envelope count, `None` on
+    /// refusal or link failure.
+    Checkin(Vec<[u8; 32]>, oneshot::Sender<Option<usize>>),
+}
+
+impl PendingOp {
+    /// Resolve the waiter with the failure outcome (dial failed, link died).
+    fn fail(self) {
+        match self {
+            Self::Envelope(_, ack) | Self::Deposit(_, ack) => {
+                let _ = ack.send(false);
+            }
+            Self::Checkin(_, done) => {
+                let _ = done.send(None);
+            }
+        }
+    }
+}
+
 enum Cmd {
-    Send {
+    Op {
         peer: PeerId,
         addr: Multiaddr,
-        bytes: Vec<u8>,
-        ack: oneshot::Sender<bool>,
+        op: PendingOp,
     },
     Bootstrap {
         peer: PeerId,
@@ -94,6 +128,26 @@ enum Cmd {
         key: RecordKey,
         done: oneshot::Sender<Vec<Vec<u8>>>,
     },
+}
+
+/// In-flight mailbox requests awaiting their response.
+enum MailboxWaiter {
+    Deposit(oneshot::Sender<bool>),
+    Checkin(oneshot::Sender<Option<usize>>),
+}
+
+impl MailboxWaiter {
+    /// Resolve with the failure outcome (link failure, malformed response).
+    fn fail(self) {
+        match self {
+            Self::Deposit(ack) => {
+                let _ = ack.send(false);
+            }
+            Self::Checkin(done) => {
+                let _ = done.send(None);
+            }
+        }
+    }
 }
 
 /// In-flight DHT queries awaiting their final `OutboundQueryProgressed`.
@@ -116,6 +170,7 @@ pub struct Libp2pTransport {
     cmds: mpsc::UnboundedSender<Cmd>,
     inbox: Arc<Mutex<Vec<Envelope>>>,
     shared: Arc<Shared>,
+    mailbox: Option<Arc<Mutex<MailboxStore>>>,
 }
 
 impl Libp2pTransport {
@@ -126,6 +181,17 @@ impl Libp2pTransport {
     /// The swarm keypair is generated fresh — a per-instance transport
     /// pseudonym, deliberately unlinked to any kult identity.
     pub async fn new(listen: &[&str]) -> Result<Self> {
+        Self::build(listen, None).await
+    }
+
+    /// Like [`Libp2pTransport::new`], but this node also serves mailboxes
+    /// (docs/05-transports.md §2): store-and-forward for offline recipients,
+    /// bounded by `config`. Any ordinary node can volunteer.
+    pub async fn with_mailbox(listen: &[&str], config: MailboxConfig) -> Result<Self> {
+        Self::build(listen, Some(config)).await
+    }
+
+    async fn build(listen: &[&str], mailbox: Option<MailboxConfig>) -> Result<Self> {
         let mut swarm = libp2p::SwarmBuilder::with_new_identity()
             .with_tokio()
             .with_tcp(
@@ -139,6 +205,13 @@ impl Libp2pTransport {
                 let envelopes = request_response::cbor::Behaviour::new(
                     [(
                         StreamProtocol::new("/kommskult/envelope/1"),
+                        ProtocolSupport::Full,
+                    )],
+                    request_response::Config::default(),
+                );
+                let mailbox = request_response::cbor::Behaviour::new(
+                    [(
+                        StreamProtocol::new("/kommskult/mailbox/1"),
                         ProtocolSupport::Full,
                     )],
                     request_response::Config::default(),
@@ -158,6 +231,7 @@ impl Libp2pTransport {
                 ));
                 Ok(KultBehaviour {
                     envelopes,
+                    mailbox,
                     kad,
                     identify,
                 })
@@ -182,6 +256,7 @@ impl Libp2pTransport {
             connected: Mutex::new(HashSet::new()),
         });
         let inbox = Arc::new(Mutex::new(Vec::new()));
+        let mailbox = mailbox.map(|config| Arc::new(Mutex::new(MailboxStore::new(config))));
         let (cmds, cmd_rx) = mpsc::unbounded_channel();
 
         tokio::spawn(run_swarm(
@@ -189,12 +264,14 @@ impl Libp2pTransport {
             cmd_rx,
             Arc::clone(&inbox),
             Arc::clone(&shared),
+            mailbox.clone(),
         ));
 
         Ok(Self {
             cmds,
             inbox,
             shared,
+            mailbox,
         })
     }
 
@@ -237,7 +314,7 @@ impl Libp2pTransport {
     pub async fn bootstrap(&self, peers: &[&str]) -> Result<()> {
         let mut joined = false;
         for entry in peers {
-            let Some((addr, peer)) = parse_hint(&DeliveryHint::Multiaddr((*entry).into())) else {
+            let Some((addr, peer)) = parse_addr(entry) else {
                 continue;
             };
             let (done, rx) = oneshot::channel();
@@ -253,6 +330,44 @@ impl Libp2pTransport {
         } else {
             Err(io_other("no bootstrap peer was reachable"))
         }
+    }
+
+    /// Check in with a mailbox relay (a multiaddr with `/p2p/…`): register
+    /// `tokens` as this node's accept-filters and collect everything queued
+    /// under them into the normal receive path ([`Transport::recv`]).
+    /// Returns how many envelopes were collected; a large backlog may take
+    /// several check-ins, so call until it returns 0. Errors are honest: the
+    /// relay was unreachable, or does not serve mailboxes.
+    ///
+    /// Build the token set with `kult-node`'s `mailbox_tokens` — every token
+    /// in it is scoped to the caller as recipient (ADR-0007), which is what
+    /// makes collect-and-delete safe on relays shared with one's peers.
+    pub async fn mailbox_checkin(&self, relay: &str, tokens: &[[u8; 32]]) -> Result<usize> {
+        let (addr, peer) = parse_addr(relay).ok_or(TransportError::UnsupportedHint)?;
+        let (done, rx) = oneshot::channel();
+        self.cmds
+            .send(Cmd::Op {
+                peer,
+                addr,
+                op: PendingOp::Checkin(tokens.to_vec(), done),
+            })
+            .map_err(|_| io_other("transport task stopped"))?;
+        match tokio::time::timeout(SEND_TIMEOUT, rx).await {
+            Ok(Ok(Some(count))) => Ok(count),
+            Ok(Ok(None)) => Err(io_other("relay unreachable or not serving mailboxes")),
+            Ok(Err(_)) => Err(io_other("transport task stopped")),
+            Err(_) => Err(io_other("mailbox check-in timed out")),
+        }
+    }
+
+    /// What this node's mailbox service currently stores, per token — relay
+    /// operator transparency, and the hook for the M3 inspection test
+    /// ("relay observably stores only sealed envelopes"). `None` when this
+    /// node serves no mailboxes.
+    pub fn mailbox_contents(&self) -> Option<MailboxContents> {
+        self.mailbox
+            .as_ref()
+            .map(|store| store.lock().expect("lock").contents())
     }
 }
 
@@ -302,17 +417,23 @@ fn io_other(e: impl std::fmt::Display) -> TransportError {
     TransportError::Io(io::Error::other(e.to_string()))
 }
 
-/// A usable hint is a multiaddr carrying an explicit `/p2p/<peer-id>`.
-fn parse_hint(hint: &DeliveryHint) -> Option<(Multiaddr, PeerId)> {
-    let DeliveryHint::Multiaddr(s) = hint else {
-        return None;
-    };
+/// A usable address is a multiaddr carrying an explicit `/p2p/<peer-id>`.
+fn parse_addr(s: &str) -> Option<(Multiaddr, PeerId)> {
     let addr: Multiaddr = s.parse().ok()?;
     let peer = addr.iter().find_map(|p| match p {
         Protocol::P2p(id) => Some(id),
         _ => None,
     })?;
     Some((addr, peer))
+}
+
+/// Current Unix time, for the mailbox service's TTL accounting. The mailbox
+/// lives at the I/O layer, so the wall clock is the right clock here.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 #[async_trait]
@@ -329,27 +450,37 @@ impl Transport for Libp2pTransport {
     }
 
     async fn reachable(&self, peer: &DeliveryHint) -> Reachability {
-        match parse_hint(peer) {
+        match peer {
             // Either already connected or dialable on demand — both are
             // immediate at internet latency; failures surface from send()
             // and feed the delivery engine's backoff.
-            Some(_) => Reachability::Now,
-            None => Reachability::Unreachable,
+            DeliveryHint::Multiaddr(s) if parse_addr(s).is_some() => Reachability::Now,
+            // A mailbox deposit reaches the recipient whenever it next
+            // checks in — so the scheduler ranks direct paths above it.
+            DeliveryHint::Relay(s) if parse_addr(s).is_some() => Reachability::StoreAndForward,
+            _ => Reachability::Unreachable,
         }
     }
 
     async fn send(&self, peer: &DeliveryHint, envelope: &Envelope) -> Result<SendReceipt> {
-        let (addr, peer) = parse_hint(peer).ok_or(TransportError::UnsupportedHint)?;
+        let (s, deposit) = match peer {
+            DeliveryHint::Multiaddr(s) => (s, false),
+            DeliveryHint::Relay(s) => (s, true),
+            _ => return Err(TransportError::UnsupportedHint),
+        };
+        let (addr, peer) = parse_addr(s).ok_or(TransportError::UnsupportedHint)?;
         let (ack_tx, ack_rx) = oneshot::channel();
+        let op = if deposit {
+            PendingOp::Deposit(envelope.encode(), ack_tx)
+        } else {
+            PendingOp::Envelope(envelope.encode(), ack_tx)
+        };
         self.cmds
-            .send(Cmd::Send {
-                peer,
-                addr,
-                bytes: envelope.encode(),
-                ack: ack_tx,
-            })
+            .send(Cmd::Op { peer, addr, op })
             .map_err(|_| io_other("transport task stopped"))?;
         match tokio::time::timeout(SEND_TIMEOUT, ack_rx).await {
+            // Both outcomes are the same honest signal: the next hop — the
+            // peer itself, or its mailbox relay — acknowledged receipt.
             Ok(Ok(true)) => Ok(SendReceipt::AckedByNextHop),
             Ok(_) => Err(io_other("peer unreachable or refused the envelope")),
             Err(_) => Err(io_other("send timed out")),
@@ -361,20 +492,55 @@ impl Transport for Libp2pTransport {
     }
 }
 
-/// Envelope bytes plus the channel that reports ack/failure to `send()`.
-type PendingSend = (Vec<u8>, oneshot::Sender<bool>);
+/// Requests parked per peer, then issued the moment its connection is up.
+type Parked = HashMap<PeerId, Vec<PendingOp>>;
+
+/// Hand a peer-directed request to the right behaviour, tracking the waiter
+/// by the request id it gets back.
+fn issue_op(
+    swarm: &mut libp2p::Swarm<KultBehaviour>,
+    inflight: &mut HashMap<request_response::OutboundRequestId, oneshot::Sender<bool>>,
+    mb_inflight: &mut HashMap<request_response::OutboundRequestId, MailboxWaiter>,
+    peer: &PeerId,
+    op: PendingOp,
+) {
+    match op {
+        PendingOp::Envelope(bytes, ack) => {
+            let id = swarm.behaviour_mut().envelopes.send_request(peer, bytes);
+            inflight.insert(id, ack);
+        }
+        PendingOp::Deposit(bytes, ack) => {
+            let id = swarm
+                .behaviour_mut()
+                .mailbox
+                .send_request(peer, MailboxRequest::Deposit { envelope: bytes });
+            mb_inflight.insert(id, MailboxWaiter::Deposit(ack));
+        }
+        PendingOp::Checkin(tokens, done) => {
+            let id = swarm
+                .behaviour_mut()
+                .mailbox
+                .send_request(peer, MailboxRequest::Checkin { tokens });
+            mb_inflight.insert(id, MailboxWaiter::Checkin(done));
+        }
+    }
+}
 
 /// The swarm task: owns the libp2p swarm, executes send commands, buffers
-/// inbound envelopes, and mirrors connection state into [`Shared`].
+/// inbound envelopes, serves the mailbox (when configured), and mirrors
+/// connection state into [`Shared`].
 async fn run_swarm(
     mut swarm: libp2p::Swarm<KultBehaviour>,
     mut cmd_rx: mpsc::UnboundedReceiver<Cmd>,
     inbox: Arc<Mutex<Vec<Envelope>>>,
     shared: Arc<Shared>,
+    mailbox: Option<Arc<Mutex<MailboxStore>>>,
 ) {
-    // Sends waiting for a connection to come up, then for the ack.
-    let mut pending: HashMap<PeerId, Vec<PendingSend>> = HashMap::new();
+    // Requests waiting for a connection to come up, then for the response.
+    let mut pending: Parked = HashMap::new();
     let mut inflight: HashMap<request_response::OutboundRequestId, oneshot::Sender<bool>> =
+        HashMap::new();
+    let mut mb_inflight: HashMap<request_response::OutboundRequestId, MailboxWaiter> =
         HashMap::new();
     // DHT queries waiting for their final progress event.
     let mut queries: HashMap<kad::QueryId, QueryWaiter> = HashMap::new();
@@ -427,12 +593,11 @@ async fn run_swarm(
                     let id = swarm.behaviour_mut().kad.get_record(key);
                     queries.insert(id, QueryWaiter::Get { values: Vec::new(), done });
                 }
-                Some(Cmd::Send { peer, addr, bytes, ack }) => {
+                Some(Cmd::Op { peer, addr, op }) => {
                     if swarm.is_connected(&peer) {
-                        let id = swarm.behaviour_mut().envelopes.send_request(&peer, bytes);
-                        inflight.insert(id, ack);
+                        issue_op(&mut swarm, &mut inflight, &mut mb_inflight, &peer, op);
                     } else {
-                        pending.entry(peer).or_default().push((bytes, ack));
+                        pending.entry(peer).or_default().push(op);
                         let opts = DialOpts::peer_id(peer)
                             .addresses(vec![addr])
                             .condition(PeerCondition::DisconnectedAndNotDialing)
@@ -441,8 +606,8 @@ async fn run_swarm(
                             // Already dialing: the pending entry rides along.
                             Ok(()) | Err(DialError::DialPeerConditionFalse(_)) => {}
                             Err(_) => {
-                                for (_, ack) in pending.remove(&peer).unwrap_or_default() {
-                                    let _ = ack.send(false);
+                                for op in pending.remove(&peer).unwrap_or_default() {
+                                    op.fail();
                                 }
                             }
                         }
@@ -455,9 +620,8 @@ async fn run_swarm(
                 }
                 SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                     shared.connected.lock().expect("lock").insert(peer_id);
-                    for (bytes, ack) in pending.remove(&peer_id).unwrap_or_default() {
-                        let id = swarm.behaviour_mut().envelopes.send_request(&peer_id, bytes);
-                        inflight.insert(id, ack);
+                    for op in pending.remove(&peer_id).unwrap_or_default() {
+                        issue_op(&mut swarm, &mut inflight, &mut mb_inflight, &peer_id, op);
                     }
                     if let Some(waiters) = joining.remove(&peer_id) {
                         let _ = swarm.behaviour_mut().kad.bootstrap();
@@ -472,8 +636,8 @@ async fn run_swarm(
                     }
                 }
                 SwarmEvent::OutgoingConnectionError { peer_id: Some(peer), .. } => {
-                    for (_, ack) in pending.remove(&peer).unwrap_or_default() {
-                        let _ = ack.send(false);
+                    for op in pending.remove(&peer).unwrap_or_default() {
+                        op.fail();
                     }
                     for done in joining.remove(&peer).unwrap_or_default() {
                         let _ = done.send(false);
@@ -498,6 +662,84 @@ async fn run_swarm(
                     request_response::Event::OutboundFailure { request_id, .. } => {
                         if let Some(ack) = inflight.remove(&request_id) {
                             let _ = ack.send(false);
+                        }
+                    }
+                    _ => {}
+                },
+                SwarmEvent::Behaviour(KultBehaviourEvent::Mailbox(ev)) => match ev {
+                    request_response::Event::Message { message, .. } => match message {
+                        request_response::Message::Request { request, channel, .. } => {
+                            let response = match (request, &mailbox) {
+                                // Serving: deposits are validated as sealed
+                                // envelopes (a mailbox stores nothing else)
+                                // and filed under their delivery token.
+                                (MailboxRequest::Deposit { envelope }, Some(store)) => {
+                                    let accepted = match Envelope::decode(&envelope) {
+                                        Ok(env) => store
+                                            .lock()
+                                            .expect("lock")
+                                            .deposit(env.token, envelope, unix_now()),
+                                        Err(_) => false,
+                                    };
+                                    MailboxResponse::Deposit { accepted }
+                                }
+                                (MailboxRequest::Checkin { tokens }, Some(store)) => {
+                                    MailboxResponse::Checkin {
+                                        serving: true,
+                                        envelopes: store
+                                            .lock()
+                                            .expect("lock")
+                                            .checkin(&tokens, unix_now()),
+                                    }
+                                }
+                                // Not serving: honest refusals.
+                                (MailboxRequest::Deposit { .. }, None) => {
+                                    MailboxResponse::Deposit { accepted: false }
+                                }
+                                (MailboxRequest::Checkin { .. }, None) => {
+                                    MailboxResponse::Checkin {
+                                        serving: false,
+                                        envelopes: Vec::new(),
+                                    }
+                                }
+                            };
+                            let _ = swarm.behaviour_mut().mailbox.send_response(channel, response);
+                        }
+                        request_response::Message::Response { request_id, response } => {
+                            match (mb_inflight.remove(&request_id), response) {
+                                (
+                                    Some(MailboxWaiter::Deposit(ack)),
+                                    MailboxResponse::Deposit { accepted },
+                                ) => {
+                                    let _ = ack.send(accepted);
+                                }
+                                (
+                                    Some(MailboxWaiter::Checkin(done)),
+                                    MailboxResponse::Checkin { serving, envelopes },
+                                ) => {
+                                    // Collected mail joins the normal receive
+                                    // path; parse failures are dropped, as on
+                                    // any link.
+                                    let mut count = 0;
+                                    let mut inbox = inbox.lock().expect("lock");
+                                    for bytes in envelopes {
+                                        if let Ok(env) = Envelope::decode(&bytes) {
+                                            inbox.push(env);
+                                            count += 1;
+                                        }
+                                    }
+                                    let _ = done.send(serving.then_some(count));
+                                }
+                                // A response of the wrong shape: fail the
+                                // waiter rather than hang its caller.
+                                (Some(waiter), _) => waiter.fail(),
+                                (None, _) => {}
+                            }
+                        }
+                    },
+                    request_response::Event::OutboundFailure { request_id, .. } => {
+                        if let Some(waiter) = mb_inflight.remove(&request_id) {
+                            waiter.fail();
                         }
                     }
                     _ => {}
