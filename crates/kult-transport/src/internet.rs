@@ -39,15 +39,18 @@
 //! traffic only until the punch lands. Relays see what any hop sees:
 //! sealed envelopes between transport pseudonyms.
 //!
-//! Remaining M3 pieces that layer on top of this carrier: the headless
-//! daemon — and mDNS LAN auto-discovery, which is deliberately deferred
-//! until `libp2p-mdns` moves off the RUSTSEC-flagged `hickory-proto 0.25`
-//! (LAN delivery works today with explicit multiaddr hints).
+//! mDNS LAN auto-discovery (docs/05-transports.md §3) completes the M3
+//! carrier: with [`TransportOptions::lan_discovery`] on, the in-tree mDNS
+//! responder (see [`crate::mdns`], ADR-0008) announces this node's listen
+//! addresses on the local network and feeds discovered peers into the
+//! Kademlia routing table — so two nodes on the same LAN find each other,
+//! and the whole discovery plane (prekey publish/lookup) works with zero
+//! configured bootstrap peers and no internet at all.
 
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -61,11 +64,12 @@ use libp2p::swarm::{DialError, NetworkBehaviour, SwarmEvent};
 use libp2p::{
     autonat, dcutr, identify, noise, relay, tcp, yamux, Multiaddr, PeerId, StreamProtocol,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use kult_protocol::Envelope;
 
 use crate::mailbox::{MailboxContents, MailboxRequest, MailboxResponse, MailboxStore};
+use crate::mdns::{self, DiscoveredPeer};
 use crate::{
     CostClass, DeliveryHint, Discovery, LatencyClass, LinkProfile, MailboxConfig, Reachability,
     Result, SendReceipt, Transport, TransportError,
@@ -209,10 +213,24 @@ enum QueryWaiter {
     },
 }
 
+/// How to build a [`Libp2pTransport`] beyond its listen addresses.
+#[derive(Debug, Default)]
+pub struct TransportOptions {
+    /// Serve bounded store-and-forward mailboxes for others
+    /// (docs/05-transports.md §2).
+    pub mailbox: Option<MailboxConfig>,
+    /// Announce on, and discover peers from, the local network over mDNS
+    /// (docs/05-transports.md §3). Discovered peers seed the Kademlia
+    /// routing table, so LAN-only operation needs no bootstrap peers.
+    pub lan_discovery: bool,
+}
+
 struct Shared {
     local_peer_id: PeerId,
     listen_addrs: Mutex<Vec<Multiaddr>>,
     connected: Mutex<HashSet<PeerId>>,
+    /// LAN peers seen via mDNS: address → when its announcement expires.
+    lan_peers: Mutex<HashMap<PeerId, HashMap<Multiaddr, Instant>>>,
 }
 
 /// Internet carrier: QUIC (primary) and TCP (fallback) via rust-libp2p.
@@ -231,17 +249,29 @@ impl Libp2pTransport {
     /// The swarm keypair is generated fresh — a per-instance transport
     /// pseudonym, deliberately unlinked to any kult identity.
     pub async fn new(listen: &[&str]) -> Result<Self> {
-        Self::build(listen, None).await
+        Self::with_options(listen, TransportOptions::default()).await
     }
 
     /// Like [`Libp2pTransport::new`], but this node also serves mailboxes
     /// (docs/05-transports.md §2): store-and-forward for offline recipients,
     /// bounded by `config`. Any ordinary node can volunteer.
     pub async fn with_mailbox(listen: &[&str], config: MailboxConfig) -> Result<Self> {
-        Self::build(listen, Some(config)).await
+        Self::with_options(
+            listen,
+            TransportOptions {
+                mailbox: Some(config),
+                ..TransportOptions::default()
+            },
+        )
+        .await
     }
 
-    async fn build(listen: &[&str], mailbox: Option<MailboxConfig>) -> Result<Self> {
+    /// Full-control constructor: see [`TransportOptions`].
+    pub async fn with_options(listen: &[&str], options: TransportOptions) -> Result<Self> {
+        let TransportOptions {
+            mailbox,
+            lan_discovery,
+        } = options;
         let mut swarm = libp2p::SwarmBuilder::with_new_identity()
             .with_tokio()
             .with_tcp(
@@ -332,10 +362,35 @@ impl Libp2pTransport {
             local_peer_id: *swarm.local_peer_id(),
             listen_addrs: Mutex::new(Vec::new()),
             connected: Mutex::new(HashSet::new()),
+            lan_peers: Mutex::new(HashMap::new()),
         });
         let inbox = Arc::new(Mutex::new(Vec::new()));
         let mailbox = mailbox.map(|config| Arc::new(Mutex::new(MailboxStore::new(config))));
         let (cmds, cmd_rx) = mpsc::unbounded_channel();
+
+        // The mDNS task rides two channels: listen addresses flow out to it
+        // (announce on change), discovered peers flow back into the swarm
+        // task. When discovery is off, its sender is simply dropped here.
+        let (addr_tx, addr_rx) = watch::channel(Vec::new());
+        let (found_tx, found_rx) = mpsc::unbounded_channel();
+        if lan_discovery {
+            // Honest failure over silent degradation: a host that cannot
+            // join the multicast group (no route, hardened container) gets
+            // an error naming the opt-out, not a node that quietly never
+            // discovers anyone.
+            let socket = mdns::mdns_socket().map_err(|e| {
+                io_other(format!(
+                    "mDNS socket setup failed (disable lan_discovery to run without): {e}"
+                ))
+            })?;
+            let socket = tokio::net::UdpSocket::from_std(socket)?;
+            tokio::spawn(mdns::run_mdns(
+                socket,
+                shared.local_peer_id,
+                addr_rx,
+                found_tx,
+            ));
+        }
 
         tokio::spawn(run_swarm(
             swarm,
@@ -343,6 +398,8 @@ impl Libp2pTransport {
             Arc::clone(&inbox),
             Arc::clone(&shared),
             mailbox.clone(),
+            addr_tx,
+            found_rx,
         ));
 
         Ok(Self {
@@ -370,6 +427,26 @@ impl Libp2pTransport {
             .expect("lock")
             .iter()
             .map(|a| with_peer_id(a, id))
+            .collect()
+    }
+
+    /// Peers currently visible on the local network via mDNS, as multiaddrs
+    /// with `/p2p/…` appended — ready to use as [`DeliveryHint::Multiaddr`].
+    /// Empty when [`TransportOptions::lan_discovery`] is off, when the LAN
+    /// is quiet, or once announcements have expired unrenewed.
+    pub fn lan_peers(&self) -> Vec<String> {
+        let now = Instant::now();
+        self.shared
+            .lan_peers
+            .lock()
+            .expect("lock")
+            .iter()
+            .flat_map(|(peer, addrs)| {
+                addrs
+                    .iter()
+                    .filter(move |(_, expires)| **expires > now)
+                    .map(move |(addr, _)| format!("{addr}/p2p/{peer}"))
+            })
             .collect()
     }
 
@@ -667,7 +744,12 @@ async fn run_swarm(
     inbox: Arc<Mutex<Vec<Envelope>>>,
     shared: Arc<Shared>,
     mailbox: Option<Arc<Mutex<MailboxStore>>>,
+    addr_tx: watch::Sender<Vec<Multiaddr>>,
+    mut found_rx: mpsc::UnboundedReceiver<DiscoveredPeer>,
 ) {
+    // Whether the mDNS side is still alive; with discovery off its sender
+    // was never handed out, so the first recv settles this immediately.
+    let mut mdns_open = true;
     // Requests waiting for a connection to come up, then for the response.
     let mut pending: Parked = HashMap::new();
     let mut inflight: HashMap<request_response::OutboundRequestId, oneshot::Sender<bool>> =
@@ -683,6 +765,37 @@ async fn run_swarm(
 
     loop {
         tokio::select! {
+            found = found_rx.recv(), if mdns_open => match found {
+                None => mdns_open = false,
+                Some(DiscoveredPeer { peer, addrs, ttl }) => {
+                    // A LAN announcement seeds the routing table (this is
+                    // what makes zero-bootstrap LAN-only DHT work) and is
+                    // remembered until its TTL runs out. Connecting right
+                    // away lets identify/AutoNAT/Kademlia converge before
+                    // anyone has a message to send; failures are just a
+                    // peer that left between announcing and now.
+                    let expires = Instant::now() + ttl;
+                    {
+                        let mut lan = shared.lan_peers.lock().expect("lock");
+                        lan.retain(|_, addrs| {
+                            addrs.retain(|_, expiry| *expiry > Instant::now());
+                            !addrs.is_empty()
+                        });
+                        let entry = lan.entry(peer).or_default();
+                        for addr in &addrs {
+                            entry.insert(addr.clone(), expires);
+                        }
+                    }
+                    for addr in &addrs {
+                        swarm.behaviour_mut().kad.add_address(&peer, addr.clone());
+                    }
+                    let opts = DialOpts::peer_id(peer)
+                        .addresses(addrs)
+                        .condition(PeerCondition::DisconnectedAndNotDialing)
+                        .build();
+                    let _ = swarm.dial(opts);
+                }
+            },
             cmd = cmd_rx.recv() => match cmd {
                 // All handles dropped: shut the swarm down.
                 None => break,
@@ -771,7 +884,14 @@ async fn run_swarm(
             },
             event = swarm.select_next_some() => match event {
                 SwarmEvent::NewListenAddr { listener_id, address } => {
-                    shared.listen_addrs.lock().expect("lock").push(address.clone());
+                    let addrs = {
+                        let mut addrs = shared.listen_addrs.lock().expect("lock");
+                        addrs.push(address.clone());
+                        addrs.clone()
+                    };
+                    // Mirror to the mDNS task so it announces the change
+                    // (no receiver when discovery is off — fine).
+                    let _ = addr_tx.send(addrs);
                     if let Some(done) = reservations.remove(&listener_id) {
                         let _ = done.send(Some(address));
                     }

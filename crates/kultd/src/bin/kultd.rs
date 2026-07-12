@@ -28,6 +28,7 @@ OPTIONS:
                             [default: first bootstrap peer]
     --mailbox MULTIADDR     mailbox relay to check in with, repeatable
     --serve-mailbox         volunteer bounded mailbox service for others
+    --no-mdns               do not announce/discover peers on the local network
     --spool DIR             also receive sneakernet bundles from this directory
     --kdf desktop|mobile    Argon2id profile for store creation [default: desktop]
     --tick-secs N           delivery-engine heartbeat [default: 0.5s granularity]
@@ -44,6 +45,7 @@ fn parse_args() -> Result<DaemonConfig, String> {
     let mut relay: Option<String> = None;
     let mut mailboxes: Vec<String> = Vec::new();
     let mut serve_mailbox = false;
+    let mut mdns = true;
     let mut spool: Option<PathBuf> = None;
     let mut kdf = kult_crypto::KDF_PROFILE_DESKTOP;
     let mut tick_secs: Option<u64> = None;
@@ -63,6 +65,7 @@ fn parse_args() -> Result<DaemonConfig, String> {
             "--relay" => relay = Some(value("--relay")?),
             "--mailbox" => mailboxes.push(value("--mailbox")?),
             "--serve-mailbox" => serve_mailbox = true,
+            "--no-mdns" => mdns = false,
             "--spool" => spool = Some(value("--spool")?.into()),
             "--kdf" => {
                 kdf = match value("--kdf")?.as_str() {
@@ -125,6 +128,7 @@ fn parse_args() -> Result<DaemonConfig, String> {
     cfg.relay = relay;
     cfg.mailboxes = mailboxes;
     cfg.serve_mailbox = serve_mailbox;
+    cfg.mdns = mdns;
     cfg.spool = spool;
     if let Some(secs) = tick_secs {
         cfg.tick_interval = Duration::from_secs(secs.max(1));

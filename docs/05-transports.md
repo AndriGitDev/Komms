@@ -58,6 +58,14 @@ is milestone M6 — tracked, not hand-waved.
 
 - **mDNS/LAN**: automatic discovery and direct QUIC on shared Wi-Fi. Covers the
   "internet is down but the building network works" case and makes local testing trivial.
+  Implemented (M3) as a small in-tree responder speaking the libp2p mDNS discovery
+  profile — `libp2p-mdns` itself is refused for its RUSTSEC-flagged DNS dependency
+  (ADR-0008). Discovered peers seed the Kademlia routing table, so a LAN-only site runs
+  the *whole* discovery plane (prekey publish/lookup, contact-by-address) with zero
+  bootstrap peers; announcements carry only the transport pseudonym and listen
+  addresses (rule 2 above), and honoring rule 3, sealed envelopes need nothing more
+  from the link. Off by default in the library (`TransportOptions::lan_discovery`),
+  on by default in `kultd` (`--no-mdns` opts out).
 - **BLE direct**: phone-to-phone exchange without any infrastructure, chunked over GATT
   (effective MTU ~180–500 B → uses the fragmentation layer, §4). Also the pairing channel
   for QR-less contact exchange at close range.

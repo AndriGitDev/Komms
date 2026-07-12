@@ -23,9 +23,10 @@ use kult_protocol::Envelope;
 
 mod internet;
 mod mailbox;
+mod mdns;
 mod sneakernet;
 
-pub use internet::{Libp2pTransport, NatStatus};
+pub use internet::{Libp2pTransport, NatStatus, TransportOptions};
 pub use mailbox::{MailboxConfig, MailboxContents};
 pub use sneakernet::SneakernetTransport;
 
