@@ -6,9 +6,9 @@ use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 
 use kult_crypto::{
-    initiate, respond, safety_number, CryptoError, Identity, InitialMessage, OneTimePrekeySecret,
-    PqPrekeySecret, PrekeyBundle, RatchetMessage, Session, SignedPrekeySecret, StorageKey,
-    MAX_SKIP,
+    initiate, parse_address, respond, safety_number, CryptoError, Identity, InitialMessage,
+    OneTimePrekeySecret, PqPrekeySecret, PrekeyBundle, RatchetMessage, Session, SignedPrekeySecret,
+    StorageKey, MAX_SKIP,
 };
 
 const NOW: u64 = 1_800_000_000;
@@ -102,6 +102,21 @@ fn tampered_bundle_is_rejected() {
         b.verify(NOW + 30 * 86_400),
         Err(CryptoError::InvalidBundle)
     ));
+
+    // Fields outside the per-key signatures are covered by the whole-bundle
+    // signature — a record server (DHT node, courier) cannot alter them
+    // (docs/06-identity-trust.md §2).
+    let mut b = bob.bundle(true);
+    b.relay_hints.push(b"attacker relay".to_vec()); // redirect delivery
+    assert!(matches!(b.verify(NOW), Err(CryptoError::InvalidSignature)));
+
+    let mut b = bob.bundle(true);
+    b.expires_at += 86_400; // extend lifetime
+    assert!(matches!(b.verify(NOW), Err(CryptoError::InvalidSignature)));
+
+    let mut b = bob.bundle(true);
+    b.opk = None; // strip the one-time prekey
+    assert!(matches!(b.verify(NOW), Err(CryptoError::InvalidSignature)));
 }
 
 #[test]
@@ -277,6 +292,46 @@ fn kult_address_format() {
     // 34-byte multihash → ceil(34*8/5) = 55 base32 chars.
     assert_eq!(addr.len(), 3 + 55);
     a.verify().unwrap();
+}
+
+#[test]
+fn kult_address_parses_back_to_digest() {
+    let mut rng = StdRng::seed_from_u64(13);
+    let a = Identity::generate(&mut rng).public();
+    assert_eq!(parse_address(&a.address()).unwrap(), a.address_digest());
+
+    let addr = a.address();
+    assert_eq!(
+        parse_address(&addr["kk1".len()..]).unwrap_err(),
+        CryptoError::InvalidAddress,
+        "missing prefix"
+    );
+    assert_eq!(
+        parse_address(&addr[..addr.len() - 1]).unwrap_err(),
+        CryptoError::InvalidAddress,
+        "truncated"
+    );
+    assert_eq!(
+        parse_address(&format!("{addr}a")).unwrap_err(),
+        CryptoError::InvalidAddress,
+        "trailing garbage"
+    );
+    assert_eq!(
+        parse_address(&addr.replace(&addr[10..11], "0")).unwrap_err(),
+        CryptoError::InvalidAddress,
+        "character outside the base32 alphabet"
+    );
+    // Non-canonical final symbol (nonzero padding bits) must be rejected,
+    // so every digest has exactly one accepted address string.
+    let mut tampered = addr.clone();
+    tampered.pop();
+    tampered.push('7');
+    if tampered != addr {
+        assert_eq!(
+            parse_address(&tampered).unwrap_err(),
+            CryptoError::InvalidAddress
+        );
+    }
 }
 
 /// M1 acceptance soak: two parties, 10 000 messages, random direction

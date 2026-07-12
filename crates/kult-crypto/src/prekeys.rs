@@ -16,6 +16,8 @@ use crate::{identity::Identity, identity::IdentityPublic, util, CryptoError, Res
 const SPK_DOMAIN: &[u8] = b"KommsKult-spk-v1";
 /// Signing domain for ML-KEM-768 signed prekeys.
 const PQSPK_DOMAIN: &[u8] = b"KommsKult-pqspk-v1";
+/// Signing domain for the whole-bundle signature.
+const BUNDLE_DOMAIN: &[u8] = b"KommsKult-bundle-v1";
 
 /// ML-KEM-768 encapsulation-key size in bytes.
 pub const MLKEM768_EK_LEN: usize = 1184;
@@ -201,6 +203,13 @@ pub struct PrekeyBundle {
     /// Opaque relay hints for higher layers (mailbox addresses); not
     /// interpreted by this crate.
     pub relay_hints: Vec<Vec<u8>>,
+    /// `Sign(IK, bundle-domain || canonical bundle contents)` — covers
+    /// *every* field above, so the bundle is self-authenticating in full
+    /// (docs/06-identity-trust.md §2): a record server (DHT node, courier)
+    /// can withhold a bundle but cannot alter its expiry, strip its
+    /// one-time prekey, or redirect its relay hints.
+    #[serde(with = "util::bytes64")]
+    pub bundle_sig: [u8; 64],
 }
 
 impl PrekeyBundle {
@@ -222,7 +231,7 @@ impl PrekeyBundle {
         pq_msg.extend_from_slice(&pqspk.id.to_le_bytes());
         pq_msg.extend_from_slice(pqspk.public());
 
-        Self {
+        let mut bundle = Self {
             identity: identity.public(),
             spk_id: spk.id,
             spk: spk_pub,
@@ -233,7 +242,39 @@ impl PrekeyBundle {
             opk: opk.map(|k| (k.id, k.public())),
             expires_at,
             relay_hints,
+            bundle_sig: [0u8; 64],
+        };
+        bundle.bundle_sig = identity.sign_domain(BUNDLE_DOMAIN, &bundle.signing_bytes());
+        bundle
+    }
+
+    /// The canonical byte string the whole-bundle signature covers: every
+    /// semantic field, length-prefixed where variable. The per-key
+    /// signatures are *not* included — they are attestations, not content,
+    /// and Ed25519 signatures are deterministic anyway.
+    fn signing_bytes(&self) -> Vec<u8> {
+        let mut msg = Vec::with_capacity(128 + MLKEM768_EK_LEN);
+        msg.extend_from_slice(&self.identity.ed);
+        msg.extend_from_slice(&self.identity.x);
+        msg.extend_from_slice(&self.spk_id.to_le_bytes());
+        msg.extend_from_slice(&self.spk);
+        msg.extend_from_slice(&self.pqspk_id.to_le_bytes());
+        msg.extend_from_slice(&self.pqspk);
+        match self.opk {
+            None => msg.push(0),
+            Some((id, key)) => {
+                msg.push(1);
+                msg.extend_from_slice(&id.to_le_bytes());
+                msg.extend_from_slice(&key);
+            }
         }
+        msg.extend_from_slice(&self.expires_at.to_le_bytes());
+        msg.extend_from_slice(&(self.relay_hints.len() as u32).to_le_bytes());
+        for hint in &self.relay_hints {
+            msg.extend_from_slice(&(hint.len() as u32).to_le_bytes());
+            msg.extend_from_slice(hint);
+        }
+        msg
     }
 
     /// Verify all signatures and structural invariants.
@@ -260,6 +301,9 @@ impl PrekeyBundle {
         pq_msg.extend_from_slice(&self.pqspk);
         self.identity
             .verify_domain(PQSPK_DOMAIN, &pq_msg, &self.pqspk_sig)?;
+
+        self.identity
+            .verify_domain(BUNDLE_DOMAIN, &self.signing_bytes(), &self.bundle_sig)?;
 
         Ok(VerifiedBundle(self.clone()))
     }

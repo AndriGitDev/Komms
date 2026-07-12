@@ -126,23 +126,48 @@ impl IdentityPublic {
             .map_err(|_| CryptoError::InvalidSignature)
     }
 
+    /// The 32-byte SHA-256 digest over `ed || x` that the kult address
+    /// encodes — also the DHT record key this identity's prekey bundles are
+    /// published under (docs/05-transports.md §2, docs/06-identity-trust.md §2).
+    pub fn address_digest(&self) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(self.ed);
+        h.update(self.x);
+        h.finalize().into()
+    }
+
     /// The kult address: `kk1` + base32(multihash(identity key material)).
     ///
     /// Multihash prefix `0x12 0x20` = SHA2-256, 32 bytes; digest is over
     /// `ed || x` so the address commits to both public keys.
     pub fn address(&self) -> String {
-        let mut h = Sha256::new();
-        h.update(self.ed);
-        h.update(self.x);
-        let digest = h.finalize();
         let mut mh = [0u8; 34];
         mh[0] = 0x12;
         mh[1] = 0x20;
-        mh[2..].copy_from_slice(&digest);
+        mh[2..].copy_from_slice(&self.address_digest());
         let mut out = String::from("kk1");
         out.push_str(&util::base32_lower_nopad(&mh));
         out
     }
+}
+
+/// Parse a kult address back into the 32-byte digest it encodes.
+///
+/// Accepts exactly what [`IdentityPublic::address`] produces: the `kk1`
+/// prefix, lowercase unpadded base32, multihash `0x12 0x20` (SHA2-256,
+/// 32 bytes). Anything else — wrong prefix, bad characters, non-canonical
+/// trailing bits, wrong length or hash code — is [`CryptoError::InvalidAddress`].
+pub fn parse_address(address: &str) -> Result<[u8; 32]> {
+    let encoded = address
+        .strip_prefix("kk1")
+        .ok_or(CryptoError::InvalidAddress)?;
+    let mh = util::base32_lower_nopad_decode(encoded).ok_or(CryptoError::InvalidAddress)?;
+    if mh.len() != 34 || mh[0] != 0x12 || mh[1] != 0x20 {
+        return Err(CryptoError::InvalidAddress);
+    }
+    let mut digest = [0u8; 32];
+    digest.copy_from_slice(&mh[2..]);
+    Ok(digest)
 }
 
 impl core::fmt::Debug for IdentityPublic {
