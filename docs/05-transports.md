@@ -100,10 +100,11 @@ flowchart LR
 
 ### 4.2 Fitting envelopes into LoRa frames
 
-Constraints: usable Meshtastic payload ≈ **~200 bytes** per packet (region/modem-preset
-dependent — the bridge queries the radio's config and computes the real budget at
-runtime); airtime is duty-cycle-limited (EU868: 1–10 % per sub-band); bandwidth is tens of
-bytes/second at long-range presets.
+Constraints: usable Meshtastic payload is **233 bytes** per packet (the
+protobuf-pinned `Data.payload` cap; the bridge reads the radio's config at runtime
+for the airtime math — region and modem preset change how *expensive* a frame is,
+not how big it can be); airtime is duty-cycle-limited (EU868: 1–10 % per sub-band);
+bandwidth is tens of bytes/second at long-range presets.
 
 Consequences, all normative:
 

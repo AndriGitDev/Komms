@@ -1,11 +1,12 @@
 //! KommsKult transport layer (docs/05-transports.md).
 //!
 //! Defines the [`Transport`] contract that every carrier — internet, BLE
-//! (M5), Meshtastic (M4), sneakernet — fulfills, and ships two
+//! (M5), Meshtastic, sneakernet — fulfills, and ships three
 //! implementations: [`SneakernetTransport`], which moves sealed envelopes
 //! through spool directories (USB sticks, shared folders, any file channel),
-//! and [`Libp2pTransport`], the internet carrier (QUIC primary, TCP+Noise
-//! fallback).
+//! [`Libp2pTransport`], the internet carrier (QUIC primary, TCP+Noise
+//! fallback), and — behind the `meshtastic` feature — `MeshtasticTransport`,
+//! the off-grid LoRa carrier riding stock-firmware Meshtastic radios (M4).
 //!
 //! Contract rules (docs/05-transports.md §1, enforced by construction):
 //! transports carry **ciphertext only** ([`kult_protocol::Envelope`]s), never
@@ -21,13 +22,19 @@ use async_trait::async_trait;
 
 use kult_protocol::Envelope;
 
+#[cfg(feature = "meshtastic")]
+pub mod airtime;
 mod internet;
 mod mailbox;
 mod mdns;
+#[cfg(feature = "meshtastic")]
+mod mesh;
 mod sneakernet;
 
 pub use internet::{Libp2pTransport, NatStatus, TransportOptions};
 pub use mailbox::{MailboxConfig, MailboxContents};
+#[cfg(feature = "meshtastic")]
+pub use mesh::{MeshtasticOptions, MeshtasticTransport, MESH_BROADCAST};
 pub use sneakernet::SneakernetTransport;
 
 /// Failures surfaced by transports.
@@ -40,6 +47,13 @@ pub enum TransportError {
     Protocol(kult_protocol::ProtocolError),
     /// The delivery hint is not addressable by this transport.
     UnsupportedHint,
+    /// The link's shared-medium budget (LoRa duty cycle) is exhausted;
+    /// retrying after the given duration can succeed. An honest refusal
+    /// (docs/05-transports.md §4.2 rule 3) — the envelope was not sent.
+    AirtimeExhausted {
+        /// How long until a retry can be accepted.
+        retry_after: std::time::Duration,
+    },
 }
 
 impl std::fmt::Display for TransportError {
@@ -48,6 +62,10 @@ impl std::fmt::Display for TransportError {
             Self::Io(e) => write!(f, "link i/o error: {e}"),
             Self::Protocol(e) => write!(f, "link protocol error: {e}"),
             Self::UnsupportedHint => f.write_str("delivery hint not supported by this transport"),
+            Self::AirtimeExhausted { retry_after } => write!(
+                f,
+                "airtime duty-cycle budget exhausted; retry in {retry_after:?}"
+            ),
         }
     }
 }
