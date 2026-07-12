@@ -15,7 +15,7 @@ use kult_crypto::{
     Identity, KdfProfile, OneTimePrekeySecret, PqPrekeySecret, PrekeyBundle, SignedPrekeySecret,
 };
 use kult_node::{Event, Node};
-use kult_protocol::Envelope;
+use kult_protocol::{Envelope, EnvelopeKind};
 use kult_store::DeliveryState;
 use kult_transport::{
     CostClass, DeliveryHint, LatencyClass, LinkProfile, Reachability, SendReceipt,
@@ -466,12 +466,18 @@ async fn out_of_order_arrival_survives_restart() {
         .unwrap();
     alice.tick(NOW + 1, &mut rng).await.unwrap();
 
-    // Intercept the two envelopes and deliver them in reverse order.
+    // Intercept the two envelopes and deliver the session message first.
+    // (Picked by kind: priority flushing sends the text-class envelope
+    // before the handshake, so wire order is not handshake-first.)
     let (handshake, session_msg) = {
         let mut locked = net.lock().unwrap();
         let queue = locked.get_mut(&2).unwrap();
         assert_eq!(queue.len(), 2);
-        let hs = queue.remove(0);
+        let hs_at = queue
+            .iter()
+            .position(|e| e.kind == EnvelopeKind::Handshake)
+            .unwrap();
+        let hs = queue.remove(hs_at);
         let sm = queue.remove(0);
         (hs, sm)
     };
