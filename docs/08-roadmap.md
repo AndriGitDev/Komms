@@ -121,8 +121,18 @@ carrier (an unreachable configured radio is a hard startup error), `kult …
 --mesh broadcast` sets mesh delivery hints, and an end-to-end test drives
 two daemons — mDNS off, no bootstrap, mesh hints only — to verified
 delivery through their RPC sockets with the (fake) radios as the sole
-shared medium. Remaining: internet↔mesh bridging and the hardware-in-loop
-nightly.
+shared medium. Internet↔mesh bridging is in (§4.2 rule 5, mechanism in
+ADR-0009): a node with both carriers forwards sealed envelopes it cannot
+claim by delivery token — mesh-heard foreign traffic becomes mailbox
+deposits at its configured relays (its own mailbox service deposited into
+locally), internet-side deposits for unregistered tokens enter a bounded
+transit buffer and are flooded over LoRa after the bridge's own traffic,
+with content-id dedup, split horizon, and caps on every axis; `kultd`
+bridges by default whenever a radio is attached (`--no-bridge` opts out),
+and the acceptance test drives the full village topology — a mesh-only
+node, an internet-only node, and a token-blind bridge between them — to
+verified `delivered` states in both directions through RPC sockets alone.
+Remaining: the hardware-in-loop nightly.
 
 **Acceptance**:
 - Two phones/laptops with stock-firmware Meshtastic radios, all other networking

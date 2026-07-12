@@ -175,6 +175,16 @@ impl MailboxStore {
         true
     }
 
+    /// Whether `token` is currently a registered accept-filter. Decides
+    /// where a refused deposit may go on a bridging node (ADR-0009): a
+    /// registered token's mail belongs to a libp2p collector even when its
+    /// queue is momentarily full, so only *unregistered* tokens fall through
+    /// to the mesh-transit buffer.
+    pub(crate) fn is_registered(&mut self, token: &[u8; 32], now: u64) -> bool {
+        self.sweep(now);
+        self.registered.contains_key(token)
+    }
+
     /// Everything currently stored, per token — relay-operator transparency,
     /// and how the M3 inspection test verifies the relay holds nothing but
     /// sealed envelopes.

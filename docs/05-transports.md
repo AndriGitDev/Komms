@@ -122,7 +122,12 @@ Consequences, all normative:
    nodes pick up envelopes whose tokens they recognize. No identity appears on air.
 5. **Bridging**: any KommsKult node attached to both the mesh and the internet acts as a
    store-and-forward bridge in both directions — a village with one Starlink terminal
-   gives the whole mesh asynchronous global reach.
+   gives the whole mesh asynchronous global reach. Implemented (M4) as token-blind
+   transit forwarding (ADR-0009): the bridge claims traffic by delivery token like any
+   recipient and forwards what it cannot claim — mesh-heard envelopes as mailbox
+   deposits toward its relay set, internet-side deposits for unregistered tokens as
+   bounded LoRa floods — deduplicated, split-horizon, capped on every axis, and always
+   behind the bridge's own traffic in the airtime queue.
 
 ### 4.3 Radio-layer honesty
 
