@@ -1,0 +1,47 @@
+[package]
+name = "komms-desktop"
+description = "Komms desktop application (Tauri shell over kult-ffi). Spec: docs/03-architecture.md (application A1), roadmap M5"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "AGPL-3.0-only"
+repository = "https://github.com/AndriGitDev/Komms"
+
+# Deliberately its own workspace: the Tauri dependency tree (GTK/WebKit
+# bindings, windowing) stays out of the core crates' lockfile and cargo-deny
+# surface. The core is reached through the path dependency on `kult-ffi`,
+# exactly the surface a mobile shell gets — nothing app-private leaks in.
+[workspace]
+
+[lib]
+name = "komms_desktop"
+
+[[bin]]
+name = "komms-desktop"
+path = "src/main.rs"
+
+[features]
+# Attach Meshtastic radios from the desktop UI (USB radio on the desk).
+# Off by default, mirroring kult-ffi: the dependency tree is heavy.
+meshtastic = ["kult-ffi/meshtastic"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+kult-ffi = { version = "0.1.0", path = "../../../crates/kult-ffi" }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+
+# Crypto without optimization is unusably slow (Argon2id, curve/KEM
+# arithmetic) — same rationale as the root workspace's test profile.
+[profile.test]
+opt-level = 2

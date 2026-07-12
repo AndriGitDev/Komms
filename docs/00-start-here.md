@@ -48,13 +48,18 @@ our full, frank list is in the [threat model](02-threat-model.md).
 
 ## Can I use it today?
 
-Not yet — the cryptographic engine, protocol, and storage layers are built and
-tested, but the apps are still to come (see the [roadmap](08-roadmap.md)). If you're
-comfortable with a terminal you can watch two devices exchange encrypted messages
-through a file right now:
+Almost — there are no installers to download yet, but the first desktop app
+exists and runs from source (phone apps are next; see the
+[roadmap](08-roadmap.md)). If you're comfortable with a terminal:
 
 ```sh
 git clone https://github.com/AndriGitDev/Komms && cd Komms
+cd apps/desktop/src-tauri && cargo run     # the desktop app (Linux deps: see apps/desktop/README.md)
+```
+
+Or watch two devices exchange encrypted messages through a file, no GUI at all:
+
+```sh
 cargo run --example sneakernet_demo
 ```
 
