@@ -7,6 +7,7 @@ members = [
     "crates/kult-store",
     "crates/kult-node",
     "crates/kult-ffi",
+    "crates/kultd",
 ]
 exclude = ["crates/kult-crypto/fuzz", "crates/kult-protocol/fuzz"]
 
