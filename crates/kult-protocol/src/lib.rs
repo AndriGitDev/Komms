@@ -30,7 +30,7 @@ mod receipt;
 mod token;
 
 pub use bundle::{bundle_export, bundle_import, BUNDLE_MAGIC};
-pub use envelope::{Envelope, EnvelopeKind};
+pub use envelope::{Envelope, EnvelopeKind, ENVELOPE_HEADER_LEN};
 pub use error::ProtocolError;
 pub use fragmentation::{fragment, Reassembler, FRAG_HEADER_LEN, REASSEMBLY_WINDOW_SECS};
 pub use padding::{pad, unpad, PAD_BUCKETS};

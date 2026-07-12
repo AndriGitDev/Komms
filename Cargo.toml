@@ -13,7 +13,8 @@ exclude = ["crates/kult-crypto/fuzz", "crates/kult-protocol/fuzz"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.81"
+# 1.83 required by libp2p ≥ 0.55 (older libp2p pins the unmaintained ring 0.16).
+rust-version = "1.83"
 license = "AGPL-3.0-only"
 repository = "https://github.com/AndriGitDev/KommsKult"
 
