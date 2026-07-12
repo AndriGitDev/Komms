@@ -34,6 +34,9 @@ mod sneakernet;
 pub use internet::{Libp2pTransport, NatStatus, TransportOptions};
 pub use mailbox::{MailboxConfig, MailboxContents};
 #[cfg(feature = "meshtastic")]
+#[doc(hidden)]
+pub use mesh::testutil as mesh_testutil;
+#[cfg(feature = "meshtastic")]
 pub use mesh::{MeshtasticOptions, MeshtasticTransport, MESH_BROADCAST};
 pub use sneakernet::SneakernetTransport;
 

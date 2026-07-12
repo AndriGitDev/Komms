@@ -98,6 +98,9 @@ pub enum Hint {
     Relay(String),
     /// A sneakernet spool directory.
     Spool(String),
+    /// A Meshtastic node number; `u32::MAX` floods the whole mesh (the
+    /// normal mode — recipients recognize their delivery tokens).
+    Mesh(u32),
 }
 
 impl Hint {
@@ -107,6 +110,7 @@ impl Hint {
             Self::Multiaddr(a) => DeliveryHint::Multiaddr(a.clone()),
             Self::Relay(a) => DeliveryHint::Relay(a.clone()),
             Self::Spool(p) => DeliveryHint::Spool(p.into()),
+            Self::Mesh(n) => DeliveryHint::MeshNode(*n),
         }
     }
 }
@@ -149,6 +153,10 @@ pub fn event_line(event: &Event) -> String {
         Event::SessionEstablished { peer } => json!({
             "type": "session_established",
             "peer": hex_encode(peer),
+        }),
+        Event::AwaitingFasterLink { id } => json!({
+            "type": "awaiting_faster_link",
+            "id": hex_encode(id),
         }),
         _ => json!({ "type": "unknown" }),
     };
