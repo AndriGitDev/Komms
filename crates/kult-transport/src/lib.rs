@@ -25,7 +25,7 @@ mod internet;
 mod mailbox;
 mod sneakernet;
 
-pub use internet::Libp2pTransport;
+pub use internet::{Libp2pTransport, NatStatus};
 pub use mailbox::{MailboxConfig, MailboxContents};
 pub use sneakernet::SneakernetTransport;
 
