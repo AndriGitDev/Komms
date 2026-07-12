@@ -18,19 +18,21 @@ git clone https://github.com/AndriGitDev/KommsKult && cd KommsKult
 cargo run --example sneakernet_demo
 ```
 
-> Status: **M3 in progress — runtime, internet carrier, discovery, mailboxes,
-> NAT traversal, and the headless daemon landed.** The design framework (M0), the crypto core (M1), the
-> protocol/storage layer (M2: sealed envelopes, LoRa-sized fragmentation with NACK
-> retransmission, encrypted local store, sneakernet bundles), the `kult-node` runtime
-> (delivery engine with honest queued→sent→delivered states, transport scheduler,
-> encrypted receipts, out-of-order stash), the libp2p internet transport (QUIC
-> primary, TCP+Noise fallback), Kademlia prekey discovery (whole-bundle-signed
-> records; add a contact from a kult address alone), volunteer mailbox relays
-> (store-and-forward of sealed envelopes for offline recipients), and NAT traversal
-> (AutoNAT reachability probes, Circuit Relay v2 reservations at any public peer,
-> DCUtR hole punching) are implemented and tested, and `kultd` runs it all headless
-> behind local JSON RPC on a Unix socket (with the `kult` CLI client); mDNS LAN
-> auto-discovery completes M3 per the [roadmap](docs/08-roadmap.md).
+> Status: **M3 complete — the full internet-era node is in.** The design framework
+> (M0), the crypto core (M1), the protocol/storage layer (M2: sealed envelopes,
+> LoRa-sized fragmentation with NACK retransmission, encrypted local store,
+> sneakernet bundles), the `kult-node` runtime (delivery engine with honest
+> queued→sent→delivered states, transport scheduler, encrypted receipts,
+> out-of-order stash), the libp2p internet transport (QUIC primary, TCP+Noise
+> fallback), Kademlia prekey discovery (whole-bundle-signed records; add a contact
+> from a kult address alone), volunteer mailbox relays (store-and-forward of
+> sealed envelopes for offline recipients), NAT traversal (AutoNAT reachability
+> probes, Circuit Relay v2 reservations at any public peer, DCUtR hole punching),
+> and mDNS LAN auto-discovery (an in-tree hardened responder: two nodes on one
+> Wi-Fi discover each other and deliver with zero configuration and no internet)
+> are implemented and tested, and `kultd` runs it all headless behind local JSON
+> RPC on a Unix socket (with the `kult` CLI client). Next per the
+> [roadmap](docs/08-roadmap.md): M4, the Meshtastic LoRa off-grid bridge.
 
 KommsKult is a decentralized messenger built on four principles:
 

@@ -29,7 +29,7 @@ use tokio::task::JoinHandle;
 use kult_crypto::KdfProfile;
 use kult_node::{Node, NodeError};
 use kult_transport::{
-    DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, NatStatus, Transport,
+    DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, NatStatus, Transport, TransportOptions,
 };
 
 use crate::wire::{self, Hint, Op, Request};
@@ -59,6 +59,11 @@ pub struct DaemonConfig {
     pub mailboxes: Vec<String>,
     /// Volunteer bounded mailbox service for others.
     pub serve_mailbox: bool,
+    /// Announce on, and discover peers from, the local network over mDNS.
+    /// On by default: it is what makes LAN-only operation configuration-free
+    /// (and it leaks nothing an internet listener doesn't — transport
+    /// pseudonym and listen addresses, never the kult identity).
+    pub mdns: bool,
     /// Also receive from a sneakernet spool directory.
     pub spool: Option<PathBuf>,
     /// Delivery-engine heartbeat.
@@ -86,6 +91,7 @@ impl DaemonConfig {
             relay: None,
             mailboxes: Vec::new(),
             serve_mailbox: false,
+            mdns: true,
             spool: None,
             tick_interval: Duration::from_millis(500),
             checkin_interval: Duration::from_secs(300),
@@ -173,12 +179,13 @@ impl Daemon {
         };
 
         let listen: Vec<&str> = cfg.listen.iter().map(String::as_str).collect();
-        let net = if cfg.serve_mailbox {
-            Libp2pTransport::with_mailbox(&listen, MailboxConfig::default()).await
-        } else {
-            Libp2pTransport::new(&listen).await
-        }
-        .map_err(|e| DaemonError::Io(io::Error::other(e.to_string())))?;
+        let options = TransportOptions {
+            mailbox: cfg.serve_mailbox.then(MailboxConfig::default),
+            lan_discovery: cfg.mdns,
+        };
+        let net = Libp2pTransport::with_options(&listen, options)
+            .await
+            .map_err(|e| DaemonError::Io(io::Error::other(e.to_string())))?;
         let net = Arc::new(net);
         node.add_transport(Arc::clone(&net) as Arc<dyn Transport>);
         node.add_discovery(Arc::clone(&net) as Arc<dyn Discovery>);
@@ -340,6 +347,7 @@ async fn handle_op(
                 "address": node.address(),
                 "peer": wire::hex_encode(&node.peer_id()),
                 "listen": net.listen_addrs(),
+                "lan_peers": net.lan_peers(),
                 "nat": nat,
                 "queued": node.queued().map_err(fail)?,
                 "contacts": node.contacts().map_err(fail)?.len(),

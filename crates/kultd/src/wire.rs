@@ -28,7 +28,8 @@ pub struct Request {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Op {
-    /// Daemon and node status: address, listen addrs, NAT verdict, queue.
+    /// Daemon and node status: address, listen addrs, LAN peers seen via
+    /// mDNS, NAT verdict, queue.
     Status,
     /// Export a fresh signed prekey bundle (hex) for out-of-band sharing.
     Bundle,
