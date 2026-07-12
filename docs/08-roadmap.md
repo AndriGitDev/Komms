@@ -107,9 +107,16 @@ Airtime is its own reviewed unit (`airtime`): the Semtech time-on-air formula
 under known-answer tests, and a rolling one-hour duty-cycle budget sized from
 the radio's reported region (EU868/EU433/UA433/UA868 → 10 %) that refuses
 over-budget sends honestly with a retry hint instead of silently hogging the
-mesh. Remaining: `kultd` wiring (serial device flag), scheduler priority
-classes, selective-retransmission NACKs, internet↔mesh bridging, and the
-hardware-in-loop nightly.
+mesh. The delivery engine's mesh policies are in (§4.2 rules 2–3 of the
+transport spec): the outbound queue flushes in priority order (text >
+receipts > handshakes), payloads over 4 KiB are held off airtime-budgeted
+links with honest feedback (`AwaitingFasterLink`, "will send when a faster
+link exists") and go out the first tick a faster carrier appears, and
+selective retransmission works end to end — a receiver stuck missing
+fragment indices NACKs them (inside an ordinary encrypted receipt, paced to
+respect airtime), and the sender retransmits exactly the missing fragments,
+never the whole message. Remaining: `kultd` wiring (serial device flag),
+internet↔mesh bridging, and the hardware-in-loop nightly.
 
 **Acceptance**:
 - Two phones/laptops with stock-firmware Meshtastic radios, all other networking

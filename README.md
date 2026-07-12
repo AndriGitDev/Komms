@@ -31,8 +31,14 @@ cargo run --example sneakernet_demo
 > and mDNS LAN auto-discovery (an in-tree hardened responder: two nodes on one
 > Wi-Fi discover each other and deliver with zero configuration and no internet)
 > are implemented and tested, and `kultd` runs it all headless behind local JSON
-> RPC on a Unix socket (with the `kult` CLI client). Next per the
-> [roadmap](docs/08-roadmap.md): M4, the Meshtastic LoRa off-grid bridge.
+> RPC on a Unix socket (with the `kult` CLI client). M4 (the Meshtastic LoRa
+> off-grid bridge) is under way: the carrier core is in — sealed envelopes ride
+> a private app port on stock-firmware radios with duty-cycle accounting — and
+> the delivery engine now enforces the mesh policies: priority classes (text >
+> receipts > handshakes), a 4 KiB airtime ceiling with honest "will send when a
+> faster link exists" feedback, and selective retransmission (missing fragment
+> indices are NACKed and only those fragments resent). Next per the
+> [roadmap](docs/08-roadmap.md): `kultd` mesh wiring and internet↔mesh bridging.
 
 KommsKult is a decentralized messenger built on four principles:
 
@@ -84,9 +90,11 @@ TCP+Noise+Yamux fallback, envelope request-response protocol with honest next-ho
 acks, a Kademlia discovery plane serving signed prekey-bundle records, volunteer
 mailbox relays storing only sealed envelopes, and NAT traversal via AutoNAT +
 Circuit Relay v2 + DCUtR), and `kult-node` (session lifecycle, delivery
-engine with per-message state machine and retry/backoff, transport scheduler,
-end-to-end encrypted delivery receipts, fragmentation over small-MTU links,
-contact-by-address via DHT lookup, command/event API), and `kultd` (headless
+engine with per-message state machine and retry/backoff, transport scheduler
+with mesh priority classes and the 4 KiB airtime ceiling, end-to-end
+encrypted delivery receipts, fragmentation over small-MTU links with
+selective-retransmission NACKs, contact-by-address via DHT lookup,
+command/event API), and `kultd` (headless
 daemon: tick loop, DHT bootstrap + bundle publication, automatic NAT/relay
 lifecycle, mailbox check-ins, local JSON RPC over a Unix socket, `kult` CLI).
 `kult-ffi` lands in M5.
