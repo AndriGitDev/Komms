@@ -63,9 +63,16 @@ slot at any public peer (`reserve_relay` — every node volunteers bounded relay
 service, and a fresh relay self-confirms its own address via AutoNAT seconds
 after its first peer connects), the returned circuit address is handed out as
 an ordinary multiaddr hint, and DCUtR upgrades relayed connections to direct
-ones by hole punching. Outstanding for M3: the headless daemon, and mDNS LAN
-auto-discovery (deferred until `libp2p-mdns` drops the RUSTSEC-flagged
-`hickory-proto 0.25`; explicit-multiaddr LAN delivery works today).
+ones by hole punching. The headless daemon is in: `kultd` (its own crate,
+application A3) runs the full node over the internet carrier — tick loop,
+DHT bootstrap and bundle publication, automatic NAT probing with relay
+reservation, mailbox check-ins, optional mailbox serving and sneakernet
+spool — and exposes the node's command/event API as newline-delimited JSON
+RPC on a mode-0600 local Unix socket, with `kult` as the matching CLI
+client; the RPC acceptance test drives two daemons to verified delivery
+through their sockets alone. Outstanding for M3: mDNS LAN auto-discovery
+(deferred until `libp2p-mdns` drops the RUSTSEC-flagged `hickory-proto
+0.25`; explicit-multiaddr LAN delivery works today).
 
 libp2p integration (QUIC, TCP fallback, Kademlia, relay v2, DCUtR), prekey bundles on
 DHT, mailbox relays, transport scheduler, headless daemon with local RPC.
