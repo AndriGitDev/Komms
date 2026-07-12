@@ -3,3 +3,5 @@ crates/*/fuzz/target
 crates/*/fuzz/corpus
 crates/*/fuzz/artifacts
 crates/*/fuzz/Cargo.lock
+apps/desktop/src-tauri/target
+apps/desktop/src-tauri/gen

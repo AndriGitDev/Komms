@@ -1,0 +1,617 @@
+//! The desktop shell's view of a running node: a thin, testable layer over
+//! `kult-ffi`'s [`KultNode`] that speaks the webview's language (serde JSON
+//! view-models, string errors) and nothing else.
+//!
+//! Everything the UI can do goes through [`Session`] — the Tauri commands
+//! in [`crate::commands`] are one-line wrappers. That keeps the whole
+//! behavior testable without a webview: the integration test drives two
+//! [`Session`]s through exactly these methods.
+//!
+//! The shell adds **no** protocol logic. Honesty rules from the core carry
+//! through verbatim: delivery states come from the node (`delivered` means
+//! an end-to-end encrypted receipt), errors are the node's own words, and
+//! the backup mnemonic is returned exactly once and never stored.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+
+use kult_ffi::{
+    default_config, Config, DeliveryState, Direction, Event, EventListener, Hint, KdfChoice,
+    KultNode, NatVerdict,
+};
+
+use crate::qr;
+
+/// Network configuration the user can edit on the unlock screen. Persisted
+/// as plain JSON next to the store — it holds the same information as
+/// `kultd`'s command-line flags and **no secrets** (the store passphrase
+/// and everything inside the store never touch this file).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetworkSettings {
+    /// Multiaddrs to listen on. The default binds QUIC + TCP on
+    /// OS-assigned ports; pin a port here for port-forwarding setups.
+    pub listen: Vec<String>,
+    /// DHT bootstrap peers (multiaddrs with `/p2p/…`). Empty is fine —
+    /// discovery then never leaves this node (mDNS still works).
+    pub bootstrap: Vec<String>,
+    /// Relay to reserve a circuit at when NAT-ed (defaults to the first
+    /// bootstrap peer when unset).
+    pub relay: Option<String>,
+    /// Mailbox relays to check in with.
+    pub mailboxes: Vec<String>,
+    /// Volunteer bounded mailbox service for others.
+    pub serve_mailbox: bool,
+    /// Announce/discover on the local network (zero-config LAN delivery).
+    pub mdns: bool,
+    /// Also receive from a sneakernet spool directory.
+    pub spool: Option<String>,
+    /// Attach a Meshtastic radio on this USB-serial port (needs a build
+    /// with the `meshtastic` feature).
+    pub meshtastic_serial: Option<String>,
+    /// Attach a Meshtastic radio via its network API (`host:4403`).
+    pub meshtastic_tcp: Option<String>,
+    /// Bridge third-party sealed traffic between mesh and internet
+    /// (ADR-0009); active only while a radio is attached.
+    pub bridge: bool,
+}
+
+impl Default for NetworkSettings {
+    fn default() -> Self {
+        Self {
+            listen: vec![
+                "/ip4/0.0.0.0/udp/0/quic-v1".to_owned(),
+                "/ip4/0.0.0.0/tcp/0".to_owned(),
+            ],
+            bootstrap: Vec::new(),
+            relay: None,
+            mailboxes: Vec::new(),
+            serve_mailbox: false,
+            mdns: true,
+            spool: None,
+            meshtastic_serial: None,
+            meshtastic_tcp: None,
+            bridge: true,
+        }
+    }
+}
+
+impl NetworkSettings {
+    /// The settings file inside a data directory.
+    fn path(data_dir: &Path) -> PathBuf {
+        data_dir.join("settings.json")
+    }
+
+    /// Load from `data_dir`, falling back to defaults when absent. A
+    /// present-but-corrupt file is an error — silently reverting a user's
+    /// network configuration would be a lie.
+    pub fn load(data_dir: &Path) -> Result<Self, String> {
+        match std::fs::read(Self::path(data_dir)) {
+            Ok(bytes) => {
+                serde_json::from_slice(&bytes).map_err(|e| format!("settings.json is corrupt: {e}"))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(format!("settings.json: {e}")),
+        }
+    }
+
+    /// Persist to `data_dir` (creating it if needed).
+    pub fn save(&self, data_dir: &Path) -> Result<(), String> {
+        std::fs::create_dir_all(data_dir).map_err(|e| format!("data dir: {e}"))?;
+        let json = serde_json::to_vec_pretty(self).expect("settings serialize");
+        std::fs::write(Self::path(data_dir), json).map_err(|e| format!("settings.json: {e}"))
+    }
+}
+
+/// A contact row for the UI.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiContact {
+    /// The contact's peer id (hex).
+    pub peer: String,
+    /// Local display name.
+    pub name: String,
+    /// Whether safety numbers were verified out-of-band.
+    pub verified: bool,
+}
+
+/// A message row for the UI. `state` is one of `queued`, `sent`,
+/// `delivered`, `received` — never anything the node didn't report.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiMessage {
+    /// Message record id (hex).
+    pub id: String,
+    /// The conversation peer (hex).
+    pub peer: String,
+    /// Sent by this device (vs. received).
+    pub outbound: bool,
+    /// Delivery state, verbatim from the node.
+    pub state: &'static str,
+    /// Unix seconds.
+    pub timestamp: u64,
+    /// Message text.
+    pub body: String,
+}
+
+/// A point-in-time node snapshot for the status bar.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiStatus {
+    /// This node's human-shareable kult address.
+    pub address: String,
+    /// This node's peer id (hex).
+    pub peer: String,
+    /// Live listen addresses (circuit addresses included once reserved).
+    pub listen: Vec<String>,
+    /// Peers currently visible on the LAN via mDNS.
+    pub lan_peers: Vec<String>,
+    /// `public`, `private`, or `unknown`.
+    pub nat: &'static str,
+    /// Outbound messages not yet delivered.
+    pub queued: u64,
+    /// Third-party envelopes buffered for mesh↔internet bridging.
+    pub transit: u64,
+    /// Stored contacts.
+    pub contacts: u64,
+}
+
+/// The safety number screen's payload: digits to read aloud, and a QR of
+/// the raw comparison value to scan.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiSafetyNumber {
+    /// 60 decimal digits.
+    pub digits: String,
+    /// The digits grouped 5-at-a-time for display.
+    pub display: String,
+    /// QR of the comparison value — identical on both ends.
+    pub qr_svg: String,
+}
+
+/// An exported prekey bundle: hex to paste (interoperable with
+/// `kult bundle` / `kult add`), QR carrying the same hex to scan.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiBundle {
+    /// The bundle bytes, lowercase hex.
+    pub hex: String,
+    /// QR carrying the same hex (uppercase, alphanumeric mode).
+    pub qr_svg: String,
+}
+
+/// A delivery hint as the UI edits it: a `kind` tag plus one string value.
+#[derive(Clone, Debug, Deserialize)]
+pub struct UiHint {
+    /// `multiaddr`, `relay`, `spool`, or `mesh`.
+    pub kind: String,
+    /// The multiaddr / path / mesh node number (`broadcast` floods).
+    pub value: String,
+}
+
+impl UiHint {
+    fn to_ffi(&self) -> Result<Hint, String> {
+        let value = self.value.trim();
+        if value.is_empty() {
+            return Err("hint value must not be empty".to_owned());
+        }
+        Ok(match self.kind.as_str() {
+            "multiaddr" => Hint::Multiaddr {
+                addr: value.to_owned(),
+            },
+            "relay" => Hint::Relay {
+                addr: value.to_owned(),
+            },
+            "spool" => Hint::Spool {
+                path: value.to_owned(),
+            },
+            "mesh" => Hint::Mesh {
+                node: if value.eq_ignore_ascii_case("broadcast") {
+                    u32::MAX
+                } else {
+                    value.parse().map_err(|_| {
+                        format!("mesh hint must be a node number or `broadcast`, got `{value}`")
+                    })?
+                },
+            },
+            other => return Err(format!("unknown hint kind `{other}`")),
+        })
+    }
+}
+
+/// A node event as the webview receives it (`type` tag plus fields).
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum UiEvent {
+    /// A message record changed delivery state.
+    DeliveryUpdated {
+        /// Message record id (hex).
+        id: String,
+        /// The new state (`queued`/`sent`/`delivered`).
+        state: &'static str,
+    },
+    /// An inbound message was decrypted and stored.
+    MessageReceived {
+        /// Sender peer id (hex).
+        peer: String,
+        /// Message record id (hex).
+        id: String,
+        /// Local receive time (Unix seconds).
+        timestamp: u64,
+        /// Decrypted body.
+        body: String,
+    },
+    /// An unknown peer completed a handshake; a contact stub exists now.
+    ContactAdded {
+        /// The new peer (hex).
+        peer: String,
+    },
+    /// A ratchet session was (re-)established from an inbound handshake —
+    /// for a known contact this means their key or device changed.
+    SessionEstablished {
+        /// The peer (hex).
+        peer: String,
+    },
+    /// An outbound message is held: only duty-cycle-limited (LoRa)
+    /// carriers currently reach the recipient.
+    AwaitingFasterLink {
+        /// Message record id (hex).
+        id: String,
+    },
+}
+
+impl UiEvent {
+    fn from_ffi(event: Event) -> Self {
+        match event {
+            Event::DeliveryUpdated { id, state } => Self::DeliveryUpdated {
+                id,
+                state: state_str(state),
+            },
+            Event::MessageReceived {
+                peer,
+                id,
+                timestamp,
+                body,
+            } => Self::MessageReceived {
+                peer,
+                id,
+                timestamp,
+                body,
+            },
+            Event::ContactAdded { peer } => Self::ContactAdded { peer },
+            Event::SessionEstablished { peer } => Self::SessionEstablished { peer },
+            Event::AwaitingFasterLink { id } => Self::AwaitingFasterLink { id },
+        }
+    }
+}
+
+fn state_str(state: DeliveryState) -> &'static str {
+    match state {
+        DeliveryState::Queued => "queued",
+        DeliveryState::Sent => "sent",
+        DeliveryState::Delivered => "delivered",
+        DeliveryState::Received => "received",
+    }
+}
+
+/// Where the shell delivers node events (the Tauri app emits them to the
+/// webview; tests collect them in a `Vec`).
+pub type EventSink = Box<dyn Fn(UiEvent) + Send + Sync>;
+
+/// Adapter: `kult-ffi`'s listener trait onto an [`EventSink`].
+struct Forwarder(EventSink);
+
+impl EventListener for Forwarder {
+    fn on_event(&self, event: Event) {
+        (self.0)(UiEvent::from_ffi(event));
+    }
+}
+
+/// A running node plus the shell-side conveniences the UI needs.
+pub struct Session {
+    node: Arc<KultNode>,
+}
+
+impl Session {
+    /// Open (or create on first run) the store in `data_dir` and start the
+    /// node. Blocking — call off the UI thread. `kdf` is the Argon2id cost
+    /// profile for store *creation* (the app passes the desktop profile;
+    /// tests pass the cheaper mobile one, exactly like the core's own).
+    pub fn open(
+        data_dir: &Path,
+        passphrase: String,
+        settings: &NetworkSettings,
+        kdf: KdfChoice,
+        sink: EventSink,
+    ) -> Result<Self, String> {
+        let config = build_config(data_dir, passphrase, settings, kdf);
+        let node = KultNode::start(config, Box::new(Forwarder(sink))).map_err(|e| e.to_string())?;
+        Ok(Self { node })
+    }
+
+    /// First run only: restore from an encrypted backup file instead of
+    /// creating a fresh identity, then start.
+    pub fn restore(
+        data_dir: &Path,
+        passphrase: String,
+        backup_path: String,
+        mnemonic: String,
+        settings: &NetworkSettings,
+        kdf: KdfChoice,
+        sink: EventSink,
+    ) -> Result<Self, String> {
+        let config = build_config(data_dir, passphrase, settings, kdf);
+        let node = KultNode::restore(config, backup_path, mnemonic, Box::new(Forwarder(sink)))
+            .map_err(|e| e.to_string())?;
+        Ok(Self { node })
+    }
+
+    /// This node's human-shareable kult address.
+    pub fn address(&self) -> String {
+        self.node.address()
+    }
+
+    /// A QR of the kult address (for adding this node by address).
+    pub fn address_qr(&self) -> Result<String, String> {
+        qr::svg(self.node.address().as_bytes())
+    }
+
+    /// Status snapshot for the UI's transport indicators.
+    pub fn status(&self) -> Result<UiStatus, String> {
+        let s = self.node.status().map_err(|e| e.to_string())?;
+        Ok(UiStatus {
+            address: s.address,
+            peer: s.peer,
+            listen: s.listen,
+            lan_peers: s.lan_peers,
+            nat: match s.nat {
+                NatVerdict::Public => "public",
+                NatVerdict::Private => "private",
+                NatVerdict::Unknown => "unknown",
+            },
+            queued: s.queued,
+            transit: s.transit,
+            contacts: s.contacts,
+        })
+    }
+
+    /// Export a fresh prekey bundle as pasteable hex plus a QR carrying
+    /// the same hex (uppercase, so the QR stays in its compact
+    /// alphanumeric mode; decoding is case-insensitive everywhere).
+    pub fn my_bundle(&self) -> Result<UiBundle, String> {
+        let bytes = self.node.handshake_bundle().map_err(|e| e.to_string())?;
+        let hex = hex_encode(&bytes);
+        let qr_svg = qr::svg(hex.to_uppercase().as_bytes())?;
+        Ok(UiBundle { hex, qr_svg })
+    }
+
+    /// Add a contact from pasted/scanned bundle hex, with delivery hints.
+    /// Returns the new contact's peer id.
+    pub fn add_contact(
+        &self,
+        name: String,
+        bundle_hex: &str,
+        hints: &[UiHint],
+    ) -> Result<String, String> {
+        let bundle = hex_decode(bundle_hex).ok_or("bundle must be hex")?;
+        let hints = hints
+            .iter()
+            .map(UiHint::to_ffi)
+            .collect::<Result<Vec<_>, _>>()?;
+        self.node
+            .add_contact(name, bundle, hints)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Add a contact from their kult address alone (DHT lookup).
+    pub fn add_contact_by_address(&self, name: String, address: String) -> Result<String, String> {
+        self.node
+            .add_contact_by_address(name, address)
+            .map_err(|e| e.to_string())
+    }
+
+    /// All stored contacts.
+    pub fn contacts(&self) -> Result<Vec<UiContact>, String> {
+        Ok(self
+            .node
+            .contacts()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|c| UiContact {
+                peer: c.peer,
+                name: c.name,
+                verified: c.verified,
+            })
+            .collect())
+    }
+
+    /// Message history with a peer.
+    pub fn messages(&self, peer: String) -> Result<Vec<UiMessage>, String> {
+        Ok(self
+            .node
+            .messages_with(peer)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|m| UiMessage {
+                id: m.id,
+                peer: m.peer,
+                outbound: m.direction == Direction::Outbound,
+                state: state_str(m.state),
+                timestamp: m.timestamp,
+                body: m.body,
+            })
+            .collect())
+    }
+
+    /// Queue a message; returns its id (progress arrives as events).
+    pub fn send(&self, peer: String, body: String) -> Result<String, String> {
+        self.node.send(peer, body).map_err(|e| e.to_string())
+    }
+
+    /// The safety number with a peer, plus a QR of the raw comparison
+    /// value (uppercase hex — both sides render the identical code).
+    pub fn safety_number(&self, peer: String) -> Result<UiSafetyNumber, String> {
+        let sn = self.node.safety_number(peer).map_err(|e| e.to_string())?;
+        let qr_svg = qr::svg(hex_encode(&sn.qr).to_uppercase().as_bytes())?;
+        Ok(UiSafetyNumber {
+            digits: sn.digits,
+            display: sn.display,
+            qr_svg,
+        })
+    }
+
+    /// Record an out-of-band verification.
+    pub fn mark_verified(&self, peer: String) -> Result<(), String> {
+        self.node.mark_verified(peer).map_err(|e| e.to_string())
+    }
+
+    /// Replace a contact's delivery hints.
+    pub fn set_hints(&self, peer: String, hints: &[UiHint]) -> Result<(), String> {
+        let hints = hints
+            .iter()
+            .map(UiHint::to_ffi)
+            .collect::<Result<Vec<_>, _>>()?;
+        self.node.set_hints(peer, hints).map_err(|e| e.to_string())
+    }
+
+    /// Publish the prekey bundle on the DHT now.
+    pub fn publish(&self) -> Result<(), String> {
+        self.node.publish().map_err(|e| e.to_string())
+    }
+
+    /// Write an encrypted backup file; returns the one-time 24-word
+    /// mnemonic. The shell shows it exactly once and keeps no copy.
+    pub fn export_backup(&self, path: String) -> Result<String, String> {
+        self.node.export_backup(path).map_err(|e| e.to_string())
+    }
+
+    /// Stop the node (idempotent).
+    pub fn stop(&self) {
+        self.node.stop();
+    }
+}
+
+/// The FFI config for this data dir + settings: `kult-ffi`'s desktop
+/// baseline (QUIC + TCP on OS ports, desktop KDF, bridging armed) with the
+/// user's network settings on top.
+fn build_config(
+    data_dir: &Path,
+    passphrase: String,
+    settings: &NetworkSettings,
+    kdf: KdfChoice,
+) -> Config {
+    let mut config = default_config(data_dir.display().to_string(), passphrase);
+    config.kdf = kdf;
+    // An emptied-out listen list falls back to the baseline rather than
+    // silently starting a node nothing can dial.
+    if !settings.listen.is_empty() {
+        config.listen = settings.listen.clone();
+    }
+    config.bootstrap = settings.bootstrap.clone();
+    config.relay = settings.relay.clone();
+    config.mailboxes = settings.mailboxes.clone();
+    config.serve_mailbox = settings.serve_mailbox;
+    config.mdns = settings.mdns;
+    config.spool = settings.spool.clone();
+    config.meshtastic_serial = settings.meshtastic_serial.clone();
+    config.meshtastic_tcp = settings.meshtastic_tcp.clone();
+    config.bridge = settings.bridge;
+    config
+}
+
+/// Lowercase hex encoding.
+pub fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push(char::from_digit((b >> 4) as u32, 16).expect("nibble"));
+        out.push(char::from_digit((b & 0xf) as u32, 16).expect("nibble"));
+    }
+    out
+}
+
+/// Hex decoding: case-insensitive, whitespace-tolerant (QR scanners and
+/// terminals both like to wrap long strings). `None` on odd length or
+/// non-hex input.
+pub fn hex_decode(s: &str) -> Option<Vec<u8>> {
+    let digits: Vec<u32> = s
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| c.to_digit(16))
+        .collect::<Option<_>>()?;
+    if digits.len() % 2 != 0 {
+        return None;
+    }
+    Some(
+        digits
+            .chunks(2)
+            .map(|pair| ((pair[0] << 4) | pair[1]) as u8)
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hex_round_trips_and_tolerates_noise() {
+        let bytes = [0x00, 0x7f, 0xab, 0xff];
+        let hex = hex_encode(&bytes);
+        assert_eq!(hex, "007fabff");
+        assert_eq!(hex_decode(&hex).unwrap(), bytes);
+        assert_eq!(hex_decode("00 7F\nAB\tff").unwrap(), bytes);
+        assert!(hex_decode("007").is_none());
+        assert!(hex_decode("zz").is_none());
+    }
+
+    #[test]
+    fn hints_convert_and_reject_garbage() {
+        let hint = |kind: &str, value: &str| UiHint {
+            kind: kind.to_owned(),
+            value: value.to_owned(),
+        };
+        assert!(matches!(
+            hint("multiaddr", "/ip4/1.2.3.4/tcp/1").to_ffi().unwrap(),
+            Hint::Multiaddr { .. }
+        ));
+        assert!(matches!(
+            hint("mesh", "broadcast").to_ffi().unwrap(),
+            Hint::Mesh { node: u32::MAX }
+        ));
+        assert!(matches!(
+            hint("mesh", "42").to_ffi().unwrap(),
+            Hint::Mesh { node: 42 }
+        ));
+        assert!(hint("mesh", "not-a-number").to_ffi().is_err());
+        assert!(hint("teleport", "x").to_ffi().is_err());
+        assert!(hint("relay", "  ").to_ffi().is_err());
+    }
+
+    #[test]
+    fn settings_round_trip_and_default_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let loaded = NetworkSettings::load(dir.path()).unwrap();
+        assert!(loaded.mdns && loaded.bridge && loaded.bootstrap.is_empty());
+
+        let mut edited = loaded;
+        edited.bootstrap = vec!["/dns4/example.org/udp/4001/quic-v1/p2p/xyz".to_owned()];
+        edited.mdns = false;
+        edited.save(dir.path()).unwrap();
+        let back = NetworkSettings::load(dir.path()).unwrap();
+        assert_eq!(back.bootstrap, edited.bootstrap);
+        assert!(!back.mdns);
+
+        std::fs::write(dir.path().join("settings.json"), b"{ nope").unwrap();
+        assert!(NetworkSettings::load(dir.path())
+            .unwrap_err()
+            .contains("corrupt"));
+    }
+
+    #[test]
+    fn events_serialize_with_type_tags() {
+        let json = serde_json::to_value(UiEvent::DeliveryUpdated {
+            id: "ab".to_owned(),
+            state: "delivered",
+        })
+        .unwrap();
+        assert_eq!(json["type"], "delivery_updated");
+        assert_eq!(json["state"], "delivered");
+    }
+}
