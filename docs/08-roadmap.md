@@ -37,7 +37,7 @@ import/export (first working transport, needs no networking).
 - Fuzzers on envelope + bundle parsers; storage passes "copied DB file leaks nothing but
   sizes" review checklist.
 
-## M3 — Internet transport & headless node (`kult-transport`, `kult-node`) *(in progress)*
+## M3 — Internet transport & headless node (`kult-transport`, `kult-node`) *(done)*
 
 The `kult-node` runtime is implemented per the build order in
 [09 — Implementation Guide §2](09-implementation-guide.md): delivery engine
@@ -70,9 +70,13 @@ reservation, mailbox check-ins, optional mailbox serving and sneakernet
 spool — and exposes the node's command/event API as newline-delimited JSON
 RPC on a mode-0600 local Unix socket, with `kult` as the matching CLI
 client; the RPC acceptance test drives two daemons to verified delivery
-through their sockets alone. Outstanding for M3: mDNS LAN auto-discovery
-(deferred until `libp2p-mdns` drops the RUSTSEC-flagged `hickory-proto
-0.25`; explicit-multiaddr LAN delivery works today).
+through their sockets alone. mDNS LAN auto-discovery closes out M3: since
+`libp2p-mdns` still pins the RUSTSEC-flagged `hickory-proto 0.25` (and this
+workspace ignores no vulnerabilities), the libp2p mDNS discovery profile is
+implemented in-tree (ADR-0008) — a strict, bounded DNS responder whose
+discoveries seed the Kademlia routing table, so two nodes on one LAN
+deliver messages *and* run the whole discovery plane (prekey
+publish/lookup) with zero bootstrap configuration and no internet at all.
 
 libp2p integration (QUIC, TCP fallback, Kademlia, relay v2, DCUtR), prekey bundles on
 DHT, mailbox relays, transport scheduler, headless daemon with local RPC.

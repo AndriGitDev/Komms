@@ -11,10 +11,11 @@ repository.workspace = true
 kult-protocol = { version = "0.1.0", path = "../kult-protocol" }
 async-trait = "0.1"
 futures = "0.3"
-# NOTE: the "mdns" feature stays OFF until libp2p-mdns moves to
-# hickory-proto ≥ 0.26 (its 0.25 pin carries RUSTSEC-2026-0118/0119, and this
-# workspace ships zero ignored vulnerabilities). LAN delivery works via
-# explicit multiaddrs meanwhile; auto-discovery returns with the upgrade.
+# NOTE: no "mdns" feature — libp2p-mdns still pins hickory-proto 0.25
+# (RUSTSEC-2026-0118/0119, unpatched on that line) and this workspace ships
+# zero ignored vulnerabilities. LAN auto-discovery is instead the small
+# in-tree responder in src/mdns.rs (ADR-0008), speaking the same libp2p
+# mDNS discovery profile.
 libp2p = { version = "0.56", features = [
     "tokio",
     "quic",
@@ -32,7 +33,10 @@ libp2p = { version = "0.56", features = [
     "ed25519",
 ] }
 serde = { version = "1", features = ["derive"] }
-tokio = { version = "1", features = ["fs", "sync", "rt", "time", "macros"] }
+# socket2 for the mDNS socket only: port 5353 must be shared (SO_REUSEADDR
+# and SO_REUSEPORT) and multicast-joined — tokio's plain bind can do neither.
+socket2 = "0.6"
+tokio = { version = "1", features = ["fs", "net", "sync", "rt", "time", "macros"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["fs", "sync", "rt", "rt-multi-thread", "macros", "time"] }
