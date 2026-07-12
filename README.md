@@ -32,13 +32,17 @@ cargo run --example sneakernet_demo
 > Wi-Fi discover each other and deliver with zero configuration and no internet)
 > are implemented and tested, and `kultd` runs it all headless behind local JSON
 > RPC on a Unix socket (with the `kult` CLI client). M4 (the Meshtastic LoRa
-> off-grid bridge) is under way: the carrier core is in — sealed envelopes ride
-> a private app port on stock-firmware radios with duty-cycle accounting — and
-> the delivery engine now enforces the mesh policies: priority classes (text >
-> receipts > handshakes), a 4 KiB airtime ceiling with honest "will send when a
-> faster link exists" feedback, and selective retransmission (missing fragment
-> indices are NACKed and only those fragments resent). Next per the
-> [roadmap](docs/08-roadmap.md): `kultd` mesh wiring and internet↔mesh bridging.
+> off-grid bridge) is nearly complete: sealed envelopes ride a private app port
+> on stock-firmware radios with duty-cycle accounting (`kultd
+> --meshtastic-serial /dev/ttyUSB0` attaches a radio as a carrier); the delivery
+> engine enforces the mesh policies — priority classes (text > receipts >
+> handshakes), a 4 KiB airtime ceiling with honest "will send when a faster
+> link exists" feedback, and selective retransmission (missing fragment indices
+> are NACKed and only those fragments resent); and a node with both a radio and
+> internet now bridges third-party sealed traffic between them, token-blind and
+> bounded (ADR-0009) — a mesh-only village and an internet-only correspondent
+> exchange verified-delivery messages through one volunteer bridge. Next per
+> the [roadmap](docs/08-roadmap.md): the hardware-in-loop nightly.
 
 KommsKult is a decentralized messenger built on four principles:
 

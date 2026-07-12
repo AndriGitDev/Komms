@@ -110,6 +110,48 @@ const NACK_INTERVAL_SECS: u64 = 900;
 /// longer be selectively repaired, only fully resent.
 const MAX_FRAG_CACHE: usize = 256;
 
+// ---- bridging (docs/05-transports.md §4.2 rule 5, ADR-0009) ----------------
+
+/// How long a transit envelope may wait for a sink before it is dropped.
+/// Sized like the other store-and-forward windows: human-scale, but transit
+/// lives in memory — the end-to-end retry machinery, not the bridge, is the
+/// source of reliability.
+const TRANSIT_TTL_SECS: u64 = 3 * 86_400;
+
+/// Caps on the transit queue. Third parties fill it, so both axes bound it;
+/// an envelope refused here is simply not bridged — the sealed traffic's own
+/// retries may find another path or a later slot.
+const MAX_TRANSIT_ITEMS: usize = 256;
+const MAX_TRANSIT_BYTES: usize = 512 * 1024;
+
+/// Remembered transit content ids (dedup across multipath echoes and
+/// multi-bridge loops). Oldest forgotten first.
+const MAX_TRANSIT_SEEN: usize = 4096;
+
+/// Mesh→internet transit: how many deposit rounds before an envelope no
+/// relay recognizes is dropped. Mesh-internal chatter matches no internet
+/// registration ever; this bounds what such traffic can cost.
+const TRANSIT_DEPOSIT_ATTEMPTS: u32 = 8;
+
+/// Base retry delay for refused transit deposits, doubling per attempt. A
+/// gentler schedule than the delivery engine's own queue: a refusal is one
+/// tiny request on a metered link, and the common transient cause — the
+/// recipient's *fresh* session tokens missing their first mailbox check-in
+/// by seconds — clears quickly.
+const TRANSIT_DEPOSIT_RETRY_BASE_SECS: u64 = 5;
+
+/// Internet→mesh transit: total floods per envelope, and the base spacing
+/// between them (doubling each round). Receipts are end-to-end and opaque
+/// to the bridge, so there is no feedback channel — bounded blind
+/// repetition stands in for retransmission (ADR-0009).
+const TRANSIT_MESH_FLOODS: u32 = 3;
+const TRANSIT_REFLOOD_BASE_SECS: u64 = 300;
+
+/// Internet→mesh transit envelopes flooded per tick, so a deep transit
+/// backlog never starves the bridge's own outbound queue of airtime (which
+/// always flushes first).
+const TRANSIT_MESH_PER_TICK: usize = 4;
+
 /// Missing fragment indices per in-flight message id — the NACK half of a
 /// receipt (the shape of [`ReceiptPayload::nacks`]).
 type FragNacks = Vec<([u8; 4], Vec<u16>)>;
@@ -145,6 +187,79 @@ enum Consumed {
     Later,
 }
 
+/// One third-party envelope in transit across the bridge (ADR-0009).
+struct TransitItem {
+    envelope: Envelope,
+    /// Which side it arrived on — transit never returns to the carrier
+    /// class it came from (split horizon).
+    from_mesh: bool,
+    first_seen: u64,
+    attempts: u32,
+    next_ok: u64,
+}
+
+/// Bridging state (docs/05-transports.md §4.2 rule 5, ADR-0009): the
+/// bounded transit queue plus the internet-side deposit targets. The bridge
+/// handles nothing but sealed envelopes and rotating tokens — the same view
+/// any relay already has.
+struct Bridge {
+    /// Internet-side sinks for mesh-heard transit: mailbox relays to offer
+    /// deposits to (the node's own mailbox service reachable among them).
+    relays: Vec<DeliveryHint>,
+    queue: VecDeque<TransitItem>,
+    queue_bytes: usize,
+    /// Content ids ever admitted — multipath echoes and multi-bridge loops
+    /// die here. Insertion-ordered so the oldest forgets first.
+    seen: HashSet<[u8; 16]>,
+    seen_order: VecDeque<[u8; 16]>,
+}
+
+impl Bridge {
+    fn new(relays: Vec<DeliveryHint>) -> Self {
+        Self {
+            relays,
+            queue: VecDeque::new(),
+            queue_bytes: 0,
+            seen: HashSet::new(),
+            seen_order: VecDeque::new(),
+        }
+    }
+
+    /// Admit one foreign envelope, if it is new and fits every cap.
+    fn admit(&mut self, envelope: &Envelope, from_mesh: bool, now: u64) {
+        let encoded_len = ENVELOPE_HEADER_LEN + envelope.body.len();
+        // Anything over the airtime ceiling could neither ride the mesh nor
+        // have come off it whole — never transit (§4.2 rule 3).
+        if encoded_len > AIRTIME_CEILING_BYTES {
+            return;
+        }
+        let id = envelope.content_id();
+        if self.seen.contains(&id) {
+            return;
+        }
+        if self.queue.len() >= MAX_TRANSIT_ITEMS
+            || self.queue_bytes + encoded_len > MAX_TRANSIT_BYTES
+        {
+            return; // full: not remembered, so a later copy may still get in
+        }
+        self.seen.insert(id);
+        self.seen_order.push_back(id);
+        while self.seen_order.len() > MAX_TRANSIT_SEEN {
+            if let Some(old) = self.seen_order.pop_front() {
+                self.seen.remove(&old);
+            }
+        }
+        self.queue_bytes += encoded_len;
+        self.queue.push_back(TransitItem {
+            envelope: envelope.clone(),
+            from_mesh,
+            first_seen: now,
+            attempts: 0,
+            next_ok: now,
+        });
+    }
+}
+
 /// The KommsKult runtime: one identity, one store, any number of transports.
 pub struct Node {
     store: Store,
@@ -158,6 +273,7 @@ pub struct Node {
     frag_meta: HashMap<[u8; 4], PartialMeta>,
     frag_cache: HashMap<[u8; 4], SentFragments>,
     held_notified: HashSet<i64>,
+    bridge: Option<Bridge>,
     events: VecDeque<Event>,
 }
 
@@ -207,6 +323,7 @@ impl Node {
             frag_meta: HashMap::new(),
             frag_cache: HashMap::new(),
             held_notified: HashSet::new(),
+            bridge: None,
             events: VecDeque::new(),
         })
     }
@@ -222,6 +339,32 @@ impl Node {
     /// only (QR, file), exactly as in M2.
     pub fn add_discovery(&mut self, discovery: Arc<dyn Discovery>) {
         self.discoveries.push(discovery);
+    }
+
+    /// Enable, reconfigure, or (`None`) disable internet↔mesh bridging
+    /// (docs/05-transports.md §4.2 rule 5, ADR-0009). While enabled, sealed
+    /// envelopes heard on airtime-class carriers whose delivery tokens this
+    /// node does not recognize are offered as mailbox deposits to `relays`
+    /// (a relay accepts exactly when the recipient registered that token
+    /// there), and third-party envelopes surfaced by carriers via
+    /// `recv_transit` are flooded on broadcast (mesh) carriers — after this
+    /// node's own traffic, bounded in every axis. Off by default: bridging
+    /// spends the operator's airtime and bandwidth on strangers' sealed
+    /// traffic, so it is a deliberate choice.
+    pub fn set_bridge(&mut self, relays: Option<Vec<DeliveryHint>>) {
+        match relays {
+            Some(relays) => match &mut self.bridge {
+                Some(bridge) => bridge.relays = relays,
+                None => self.bridge = Some(Bridge::new(relays)),
+            },
+            None => self.bridge = None,
+        }
+    }
+
+    /// Third-party envelopes currently queued for bridging (0 when bridging
+    /// is off) — observability for daemon status, nothing more.
+    pub fn transit_queued(&self) -> usize {
+        self.bridge.as_ref().map_or(0, |b| b.queue.len())
     }
 
     // ---- identity ----------------------------------------------------------
@@ -579,13 +722,41 @@ impl Node {
     /// the transport scheduler. Returns all events produced.
     pub async fn tick(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<Vec<Event>> {
         // 1. Gather: previously-stashed envelopes first, then fresh arrivals.
+        //    When bridging, fresh arrivals with tokens this node does not
+        //    recognize also enter the transit queue (ADR-0009): mesh-heard
+        //    foreignness heads for the internet, carrier-surfaced transit
+        //    (bridge mailbox deposits) heads for the mesh. Every arrival
+        //    still joins the normal receive path — "foreign" and "ours, but
+        //    the unlocking handshake hasn't arrived yet" are indistinguishable
+        //    by design, and downstream dedup absorbs the overlap.
         let mut work: Vec<(Envelope, u64)> = self.store.pending_drain()?;
         let transports = self.transports.clone();
         for transport in &transports {
+            let airtime = transport.profile().cost == CostClass::Airtime;
             // A dead link must not stall the others; its envelopes will
             // arrive via retry or another path.
             if let Ok(envelopes) = transport.recv().await {
-                work.extend(envelopes.into_iter().map(|e| (e, now)));
+                for envelope in envelopes {
+                    if airtime && self.bridge.is_some() && !self.token_is_mine(&envelope.token, now)
+                    {
+                        if let Some(bridge) = &mut self.bridge {
+                            bridge.admit(&envelope, true, now);
+                        }
+                    }
+                    work.push((envelope, now));
+                }
+            }
+            if self.bridge.is_some() {
+                if let Ok(envelopes) = transport.recv_transit().await {
+                    for envelope in envelopes {
+                        if !self.token_is_mine(&envelope.token, now) {
+                            if let Some(bridge) = &mut self.bridge {
+                                bridge.admit(&envelope, false, now);
+                            }
+                        }
+                        work.push((envelope, now));
+                    }
+                }
             }
         }
 
@@ -650,8 +821,10 @@ impl Node {
             self.queue_receipt(&peer, acks, nacks, now, rng)?;
         }
 
-        // 4. Flush the outbound queue.
+        // 4. Flush the outbound queue, then — only with whatever airtime and
+        //    attention is left — third-party transit (ADR-0009).
         self.flush(now, rng).await?;
+        self.flush_transit(now).await;
 
         Ok(self.drain_events())
     }
@@ -942,6 +1115,21 @@ impl Node {
         None
     }
 
+    /// Whether this delivery token addresses *this* node at all: a session
+    /// token some ratchet recognizes, or one of our own introduction tokens
+    /// (an inbound handshake) over the same epoch window. The bridging
+    /// foreignness test (ADR-0009) — everything it cannot claim is transit.
+    fn token_is_mine(&self, token: &[u8; 32], now: u64) -> bool {
+        if self.match_session(token, now).is_some() {
+            return true;
+        }
+        let me = self.identity.public().ed;
+        let today = epoch_day(now);
+        let lo = today.saturating_sub(TOKEN_LOOKBACK_EPOCHS);
+        let hi = today + TOKEN_LOOKAHEAD_EPOCHS;
+        (lo..=hi).any(|epoch| bool::from(intro_token(&me, epoch).ct_eq(token)))
+    }
+
     /// Partials incomplete for at least [`NACK_AFTER_SECS`] (and not NACKed
     /// within [`NACK_INTERVAL_SECS`]), with their missing indices — the
     /// batch worth requesting selective retransmission for this tick. Also
@@ -1086,6 +1274,123 @@ impl Node {
             }
         }
         Ok(())
+    }
+
+    /// Move third-party transit toward its other side (ADR-0009): mesh-heard
+    /// envelopes become mailbox deposits at the bridge relays (any
+    /// acceptance means the recipient registered that token there — done);
+    /// carrier-surfaced (internet-origin) envelopes flood the broadcast
+    /// carriers a bounded number of times. Runs after [`Node::flush`], so
+    /// the node's own traffic always claims airtime first. Transit failures
+    /// are paced with the same backoff as the delivery engine and dropped
+    /// at their attempt caps or TTL — the *senders'* end-to-end retries and
+    /// receipts remain the source of reliability, never the bridge.
+    async fn flush_transit(&mut self, now: u64) {
+        let Some(bridge) = &mut self.bridge else {
+            return;
+        };
+        bridge
+            .queue
+            .retain(|item| now.saturating_sub(item.first_seen) <= TRANSIT_TTL_SECS);
+        if bridge.queue.is_empty() {
+            bridge.queue_bytes = 0;
+            return;
+        }
+        let relays = bridge.relays.clone();
+        let mut queue = std::mem::take(&mut bridge.queue);
+        let transports = self.transports.clone();
+
+        let mut mesh_floods = 0usize;
+        let mut kept = VecDeque::new();
+        for mut item in queue.drain(..) {
+            if now < item.next_ok {
+                kept.push_back(item);
+                continue;
+            }
+            if item.from_mesh {
+                // Mesh → internet: offer the deposit around; the first
+                // acceptance hands custody to a store-and-forward hop that
+                // recognized the token.
+                let mut accepted = false;
+                let mut attempted = false;
+                'relays: for relay in &relays {
+                    for transport in &transports {
+                        // Split horizon: transit never returns to the mesh.
+                        if transport.profile().cost == CostClass::Airtime {
+                            continue;
+                        }
+                        if transport.reachable(relay).await == Reachability::Unreachable {
+                            continue;
+                        }
+                        attempted = true;
+                        if transport.send(relay, &item.envelope).await.is_ok() {
+                            accepted = true;
+                            break 'relays;
+                        }
+                    }
+                }
+                if accepted {
+                    continue; // done — drop from the queue
+                }
+                if !attempted {
+                    // No relay was even reachable (none configured yet, or
+                    // the internet side is down): held, not failed.
+                    item.next_ok = now + RETRY_BASE_SECS;
+                    kept.push_back(item);
+                    continue;
+                }
+                let delay =
+                    (TRANSIT_DEPOSIT_RETRY_BASE_SECS << item.attempts.min(7)).min(RETRY_CAP_SECS);
+                item.attempts += 1;
+                if item.attempts >= TRANSIT_DEPOSIT_ATTEMPTS {
+                    continue; // no relay ever recognized it — bounded honesty
+                }
+                item.next_ok = now + delay;
+                kept.push_back(item);
+            } else {
+                // Internet → mesh: flood on the broadcast carriers, paced
+                // per tick and re-flooded on a fixed short schedule (no
+                // feedback channel exists — receipts are end-to-end).
+                if mesh_floods >= TRANSIT_MESH_PER_TICK {
+                    kept.push_back(item);
+                    continue;
+                }
+                let mut flooded = false;
+                for transport in &transports {
+                    let Some(hint) = transport.broadcast_hint() else {
+                        continue;
+                    };
+                    // Fragment bodies are not retained: the bridge cannot
+                    // serve NACKs for traffic it cannot read.
+                    if send_via(transport.as_ref(), &hint, &item.envelope)
+                        .await
+                        .is_ok()
+                    {
+                        flooded = true;
+                    }
+                }
+                if flooded {
+                    mesh_floods += 1;
+                    item.attempts += 1;
+                    if item.attempts >= TRANSIT_MESH_FLOODS {
+                        continue; // flood budget spent — drop
+                    }
+                    item.next_ok = now + (TRANSIT_REFLOOD_BASE_SECS << item.attempts.min(7));
+                } else {
+                    // No broadcast carrier took it (airtime exhausted, radio
+                    // gone): try again shortly, without spending a flood.
+                    item.next_ok = now + RETRY_BASE_SECS;
+                }
+                kept.push_back(item);
+            }
+        }
+
+        let bridge = self.bridge.as_mut().expect("bridge unchanged during flush");
+        bridge.queue_bytes = kept
+            .iter()
+            .map(|i| ENVELOPE_HEADER_LEN + i.envelope.body.len())
+            .sum();
+        bridge.queue = kept;
     }
 
     /// Remember a just-sent envelope's fragment bodies so an inbound NACK
