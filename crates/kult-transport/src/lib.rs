@@ -207,4 +207,22 @@ pub trait Transport: Send + Sync {
     /// Duplicates are permitted (multipath is normal); dedup is the
     /// delivery engine's job via content ids.
     async fn recv(&self) -> Result<Vec<Envelope>>;
+
+    /// Drain envelopes this carrier holds **in transit for third parties**
+    /// (docs/05-transports.md §4.2 rule 5, ADR-0009): sealed envelopes that
+    /// arrived addressed to no local token and should be forwarded onto
+    /// other carriers by a bridging delivery engine. Most carriers hold
+    /// none; [`Libp2pTransport`] surfaces mesh-bound bridge deposits here
+    /// when built with [`TransportOptions::bridge_deposits`].
+    async fn recv_transit(&self) -> Result<Vec<Envelope>> {
+        Ok(Vec::new())
+    }
+
+    /// The delivery hint that floods an envelope to every reachable peer on
+    /// this carrier — `Some` only on broadcast media (the Meshtastic carrier
+    /// answers its mesh-wide broadcast address). How a bridging delivery
+    /// engine addresses internet→mesh transit without knowing any recipient.
+    fn broadcast_hint(&self) -> Option<DeliveryHint> {
+        None
+    }
 }

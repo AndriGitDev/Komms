@@ -72,6 +72,13 @@ pub struct DaemonConfig {
     pub meshtastic_serial: Option<String>,
     /// Attach a Meshtastic radio via its network API (`host:4403`).
     pub meshtastic_tcp: Option<String>,
+    /// Bridge third-party sealed traffic between mesh and internet
+    /// (docs/05-transports.md §4.2 rule 5, ADR-0009). Takes effect only
+    /// when a Meshtastic radio is attached — a bridge needs both sides.
+    /// On by default: a node with both carriers is exactly the "village
+    /// with one Starlink terminal" the spec promises; `--no-bridge` opts
+    /// out.
+    pub bridge: bool,
     /// Delivery-engine heartbeat.
     pub tick_interval: Duration,
     /// Mailbox check-in cadence.
@@ -101,6 +108,7 @@ impl DaemonConfig {
             spool: None,
             meshtastic_serial: None,
             meshtastic_tcp: None,
+            bridge: true,
             tick_interval: Duration::from_millis(500),
             checkin_interval: Duration::from_secs(300),
             nat_interval: Duration::from_secs(30),
@@ -152,6 +160,10 @@ enum NodeMsg {
     },
     /// Publish the prekey bundle with the current hints (best-effort).
     Publish,
+    /// Replace the bridge's internet-side deposit targets (sent by the
+    /// lifecycle task once listen addresses are known, so a bridge serving
+    /// its own mailbox can deposit mesh transit there locally).
+    BridgeRelays(Vec<DeliveryHint>),
 }
 
 /// A running daemon. Dropping it does **not** stop the tasks — call
@@ -186,10 +198,16 @@ impl Daemon {
             .map_err(|e| DaemonError::Io(io::Error::other(e)))??
         };
 
+        // Bridging needs both sides: it activates only when a radio is
+        // configured (and startup fails hard if that radio is unreachable,
+        // so "bridging" is never claimed without a mesh).
+        let bridging =
+            cfg.bridge && (cfg.meshtastic_serial.is_some() || cfg.meshtastic_tcp.is_some());
         let listen: Vec<&str> = cfg.listen.iter().map(String::as_str).collect();
         let options = TransportOptions {
             mailbox: cfg.serve_mailbox.then(MailboxConfig::default),
             lan_discovery: cfg.mdns,
+            bridge_deposits: bridging,
         };
         let net = Libp2pTransport::with_options(&listen, options)
             .await
@@ -224,6 +242,13 @@ impl Daemon {
                 radio.node_num()
             );
             node.add_transport(Arc::new(radio));
+        }
+        if bridging {
+            // Mesh-heard transit is offered to the same relays this node
+            // checks in with; once a listen address is bound, the lifecycle
+            // task adds this node's own mailbox service to the set.
+            node.set_bridge(Some(bridge_relays(&cfg, None)));
+            eprintln!("kultd: bridging mesh↔internet (--no-bridge to opt out)");
         }
 
         let address = node.address();
@@ -315,6 +340,24 @@ fn own_hints(net: &Libp2pTransport, mailboxes: &[String]) -> Vec<DeliveryHint> {
     hints
 }
 
+/// The internet-side deposit targets for mesh-heard transit (ADR-0009):
+/// the configured mailbox relays, plus this node's own mailbox service
+/// (as a relay hint on its own listen address) once one is bound.
+fn bridge_relays(cfg: &DaemonConfig, own_addr: Option<&str>) -> Vec<DeliveryHint> {
+    let mut relays: Vec<DeliveryHint> = cfg
+        .mailboxes
+        .iter()
+        .cloned()
+        .map(DeliveryHint::Relay)
+        .collect();
+    if cfg.serve_mailbox {
+        if let Some(addr) = own_addr {
+            relays.push(DeliveryHint::Relay(addr.to_owned()));
+        }
+    }
+    relays
+}
+
 /// The actor task: sole owner of the [`Node`]. Alternates between serving
 /// channel messages and the delivery-engine heartbeat.
 async fn actor(
@@ -351,6 +394,9 @@ async fn actor(
                         eprintln!("kultd: bundle publish failed: {e}");
                     }
                 }
+                Some(NodeMsg::BridgeRelays(relays)) => {
+                    node.set_bridge(Some(relays));
+                }
                 Some(NodeMsg::Op { op, resp }) => {
                     let result = handle_op(&mut node, &cfg, &net, op).await;
                     let _ = resp.send(result);
@@ -382,6 +428,7 @@ async fn handle_op(
                 "lan_peers": net.lan_peers(),
                 "nat": nat,
                 "queued": node.queued().map_err(fail)?,
+                "transit": node.transit_queued(),
                 "contacts": node.contacts().map_err(fail)?.len(),
             }))
         }
@@ -478,6 +525,16 @@ async fn lifecycle(
 ) {
     if net.wait_listen_addr().await.is_err() {
         eprintln!("kultd: no listen address bound");
+    }
+    let bridging = cfg.bridge && (cfg.meshtastic_serial.is_some() || cfg.meshtastic_tcp.is_some());
+    if bridging && cfg.serve_mailbox {
+        // Now that an address is bound, mesh-heard transit can also be
+        // deposited into this node's own mailbox service (resolved locally
+        // by the transport — no self-dial).
+        if let Some(addr) = net.listen_addrs().into_iter().next() {
+            let relays = bridge_relays(&cfg, Some(&addr));
+            let _ = node_tx.send(NodeMsg::BridgeRelays(relays)).await;
+        }
     }
     if !cfg.bootstrap.is_empty() {
         let peers: Vec<&str> = cfg.bootstrap.iter().map(String::as_str).collect();
