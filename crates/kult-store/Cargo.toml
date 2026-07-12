@@ -1,6 +1,6 @@
 [package]
 name = "kult-store"
-description = "KommsKult encrypted local-first storage: every blob individually AEAD-sealed under an Argon2id-rooted key hierarchy. Spec: docs/07-storage.md"
+description = "Komms encrypted local-first storage: every blob individually AEAD-sealed under an Argon2id-rooted key hierarchy. Spec: docs/07-storage.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

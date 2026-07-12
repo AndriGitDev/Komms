@@ -1,4 +1,4 @@
-# Contributing to KommsKult
+# Contributing to Komms
 
 The project is in **M0 (design phase)** — the most valuable contributions are adversarial
 reads of the design documents, not code (yet).

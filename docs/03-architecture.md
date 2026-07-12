@@ -1,6 +1,6 @@
 # 03 — Architecture
 
-KommsKult is a **local-first, serverless** messaging system. Every installation is a full
+Komms is a **local-first, serverless** messaging system. Every installation is a full
 peer: it holds its own keys, stores its own history, and can relay for others. There is no
 component in the system that must be operated by the project or any single party.
 
@@ -91,7 +91,7 @@ Peers are rarely online at the same moment — especially off-grid. Delivery use
 mechanisms, in preference order:
 
 1. **Direct**: recipient reachable on some transport now → deliver immediately.
-2. **Mailbox relays**: any KommsKult node may volunteer relay capacity. The sender deposits
+2. **Mailbox relays**: any Komms node may volunteer relay capacity. The sender deposits
    the sealed envelope with one or more relays chosen by the *recipient* (advertised in
    their signed prekey bundle, [06 — Identity & Trust](06-identity-trust.md)). Relays store
    ciphertext-only, TTL-bounded, size-capped queues keyed by delivery token. Users
@@ -128,7 +128,7 @@ RFC 9420) are a documented later milestone — see decision record
 ## 7. Repository layout (target)
 
 ```
-kommskult/
+komms/
 ├── Cargo.toml            # workspace
 ├── crates/
 │   ├── kult-crypto/

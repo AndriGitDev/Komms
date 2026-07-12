@@ -1,6 +1,6 @@
 # 06 — Identity & Trust
 
-KommsKult has no accounts, no registration, and no mandatory identifiers. **The keypair is
+Komms has no accounts, no registration, and no mandatory identifiers. **The keypair is
 the identity.** Everything in this document follows from that.
 
 ## 1. Identity

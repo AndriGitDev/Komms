@@ -1,6 +1,6 @@
 [package]
 name = "kult-protocol"
-description = "KommsKult protocol layer: sealed envelopes, padding buckets, fragmentation for small-MTU links, delivery tokens, sneakernet bundles. Spec: docs/04-cryptography.md §5-7, docs/05-transports.md"
+description = "Komms protocol layer: sealed envelopes, padding buckets, fragmentation for small-MTU links, delivery tokens, sneakernet bundles. Spec: docs/04-cryptography.md §5-7, docs/05-transports.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

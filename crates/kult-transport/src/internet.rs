@@ -2,7 +2,7 @@
 //! as the primary link protocol and TCP+Noise+Yamux as the fallback.
 //!
 //! Envelopes travel over a dedicated request-response protocol
-//! (`/kommskult/envelope/1`); the response is an empty acknowledgment, so a
+//! (`/komms/envelope/1`); the response is an empty acknowledgment, so a
 //! successful send honestly reports [`SendReceipt::AckedByNextHop`] — never
 //! end-to-end delivery (only encrypted receipts prove that).
 //!
@@ -12,7 +12,7 @@
 //! (QUIC-TLS / Noise) is additive, not load-bearing.
 //!
 //! The discovery plane (docs/05-transports.md §2) also lives here: a
-//! Kademlia DHT (`/kommskult/kad/1`) storing prekey-bundle records, exposed
+//! Kademlia DHT (`/komms/kad/1`) storing prekey-bundle records, exposed
 //! through the transport-agnostic [`Discovery`] trait. Records are served
 //! as untrusted bytes — bundles are self-authenticating and verified by the
 //! caller, so a malicious DHT node can at worst withhold, never forge.
@@ -21,7 +21,7 @@
 //! — nothing is hardcoded, and any reachable peer will do.
 //!
 //! Mailbox relays (docs/05-transports.md §2) ride a second request-response
-//! protocol (`/kommskult/mailbox/1`): any node started with
+//! protocol (`/komms/mailbox/1`): any node started with
 //! [`Libp2pTransport::with_mailbox`] serves store-and-forward for offline
 //! recipients, who register rotating delivery tokens as accept-filters and
 //! collect on reconnect ([`Libp2pTransport::mailbox_checkin`]). Senders
@@ -339,14 +339,14 @@ impl Libp2pTransport {
             .with_behaviour(|key, relay_client| {
                 let envelopes = request_response::cbor::Behaviour::new(
                     [(
-                        StreamProtocol::new("/kommskult/envelope/1"),
+                        StreamProtocol::new("/komms/envelope/1"),
                         ProtocolSupport::Full,
                     )],
                     request_response::Config::default(),
                 );
                 let mailbox = request_response::cbor::Behaviour::new(
                     [(
-                        StreamProtocol::new("/kommskult/mailbox/1"),
+                        StreamProtocol::new("/komms/mailbox/1"),
                         ProtocolSupport::Full,
                     )],
                     request_response::Config::default(),
@@ -355,13 +355,13 @@ impl Libp2pTransport {
                 let kad = kad::Behaviour::with_config(
                     peer_id,
                     MemoryStore::new(peer_id),
-                    kad::Config::new(StreamProtocol::new("/kommskult/kad/1")),
+                    kad::Config::new(StreamProtocol::new("/komms/kad/1")),
                 );
                 // Identify carries only the transport pseudonym and listen
                 // addresses — it is how DHT peers learn where to reach each
                 // other; the kult identity never appears on this layer.
                 let identify = identify::Behaviour::new(identify::Config::new(
-                    "/kommskult/1".into(),
+                    "/komms/1".into(),
                     key.public(),
                 ));
                 // `only_global_ips: false` — LAN and localhost reachability

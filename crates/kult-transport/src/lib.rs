@@ -1,4 +1,4 @@
-//! KommsKult transport layer (docs/05-transports.md).
+//! Komms transport layer (docs/05-transports.md).
 //!
 //! Defines the [`Transport`] contract that every carrier — internet, BLE
 //! (M5), Meshtastic, sneakernet — fulfills, and ships three
