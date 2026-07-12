@@ -35,7 +35,7 @@ use tokio::sync::oneshot;
 
 use kult_transport::DeliveryHint;
 
-use runtime::{Msg, Runtime, RuntimeConfig};
+use runtime::{Msg, RestoreSource, Runtime, RuntimeConfig};
 
 uniffi::setup_scaffolding!();
 
@@ -403,42 +403,27 @@ impl KultNode {
     /// is a startup error — never a broken half-running node.
     #[uniffi::constructor]
     pub fn start(config: Config, listener: Box<dyn EventListener>) -> Result<Arc<Self>, FfiError> {
-        let data_dir = PathBuf::from(&config.data_dir);
-        std::fs::create_dir_all(&data_dir).map_err(|e| FfiError::Startup {
-            message: format!("data dir: {e}"),
+        Self::boot(runtime_config(config, None)?, listener)
+    }
+
+    /// First run only: restore the node from an encrypted backup file
+    /// (docs/07-storage.md §4) instead of creating a fresh identity, then
+    /// start it exactly like [`KultNode::start`]. The exported identity
+    /// resumes with contacts and history intact; every peer that had a
+    /// live session at export time is re-handshaked automatically.
+    /// Refused when the data directory already holds a store.
+    #[uniffi::constructor]
+    pub fn restore(
+        config: Config,
+        backup_path: String,
+        mnemonic: String,
+        listener: Box<dyn EventListener>,
+    ) -> Result<Arc<Self>, FfiError> {
+        let backup = std::fs::read(&backup_path).map_err(|e| FfiError::Startup {
+            message: format!("backup file: {e}"),
         })?;
-        let cfg = RuntimeConfig {
-            db_path: data_dir.join("node.db"),
-            passphrase: config.passphrase.into_bytes(),
-            kdf: match config.kdf {
-                KdfChoice::Desktop => kult_crypto::KDF_PROFILE_DESKTOP,
-                KdfChoice::Mobile => kult_crypto::KDF_PROFILE_MOBILE,
-            },
-            listen: config.listen,
-            bootstrap: config.bootstrap,
-            relay: config.relay,
-            mailboxes: config.mailboxes,
-            serve_mailbox: config.serve_mailbox,
-            mdns: config.mdns,
-            spool: config.spool.map(PathBuf::from),
-            meshtastic_serial: config.meshtastic_serial,
-            meshtastic_tcp: config.meshtastic_tcp,
-            bridge: config.bridge,
-            tick_interval: Duration::from_millis(config.tick_ms.max(10)),
-            checkin_interval: Duration::from_secs(config.checkin_secs.max(1)),
-            nat_interval: Duration::from_secs(config.nat_secs.max(1)),
-        };
-        let sink: Box<dyn Fn(kult_node::Event) + Send> = Box::new(move |event| {
-            if let Some(event) = Event::from_node(event) {
-                listener.on_event(event);
-            }
-        });
-        let rt = Runtime::start(cfg, sink).map_err(|message| FfiError::Startup { message })?;
-        Ok(Arc::new(Self {
-            address: rt.address.clone(),
-            peer: hex_encode(&rt.peer),
-            inner: Mutex::new(Some(rt)),
-        }))
+        let restore = RestoreSource { backup, mnemonic };
+        Self::boot(runtime_config(config, Some(restore))?, listener)
     }
 
     /// This node's human-shareable kult address.
@@ -588,6 +573,18 @@ impl KultNode {
         self.call(|resp| Msg::Publish { resp })
     }
 
+    /// Write an encrypted backup file (identity + contacts + history +
+    /// session-reset markers — docs/07-storage.md §4) to `path`, created
+    /// 0600 and never overwriting an existing file. Returns the one-time
+    /// 24-word mnemonic that seals it: show it to the user exactly once;
+    /// it is not stored anywhere. Restore with [`KultNode::restore`].
+    pub fn export_backup(&self, path: String) -> Result<String, FfiError> {
+        self.call(|resp| Msg::Backup {
+            path: PathBuf::from(path),
+            resp,
+        })
+    }
+
     /// Stop the node and release everything. Idempotent; every later call
     /// on this handle fails with [`FfiError::Stopped`].
     pub fn stop(&self) {
@@ -598,6 +595,21 @@ impl KultNode {
 }
 
 impl KultNode {
+    /// Shared tail of the constructors: start the runtime and wrap it.
+    fn boot(cfg: RuntimeConfig, listener: Box<dyn EventListener>) -> Result<Arc<Self>, FfiError> {
+        let sink: Box<dyn Fn(kult_node::Event) + Send> = Box::new(move |event| {
+            if let Some(event) = Event::from_node(event) {
+                listener.on_event(event);
+            }
+        });
+        let rt = Runtime::start(cfg, sink).map_err(|message| FfiError::Startup { message })?;
+        Ok(Arc::new(Self {
+            address: rt.address.clone(),
+            peer: hex_encode(&rt.peer),
+            inner: Mutex::new(Some(rt)),
+        }))
+    }
+
     /// Send one typed operation to the actor and wait for its reply.
     /// The channel handle is cloned out of the lock first, so slow
     /// operations don't serialize callers or block [`KultNode::stop`].
@@ -616,6 +628,40 @@ impl KultNode {
             .map_err(|_| FfiError::Stopped)?
             .map_err(|message| FfiError::Node { message })
     }
+}
+
+/// Validate and convert the FFI-facing [`Config`], creating the data
+/// directory on the way.
+fn runtime_config(
+    config: Config,
+    restore: Option<RestoreSource>,
+) -> Result<RuntimeConfig, FfiError> {
+    let data_dir = PathBuf::from(&config.data_dir);
+    std::fs::create_dir_all(&data_dir).map_err(|e| FfiError::Startup {
+        message: format!("data dir: {e}"),
+    })?;
+    Ok(RuntimeConfig {
+        db_path: data_dir.join("node.db"),
+        passphrase: config.passphrase.into_bytes(),
+        kdf: match config.kdf {
+            KdfChoice::Desktop => kult_crypto::KDF_PROFILE_DESKTOP,
+            KdfChoice::Mobile => kult_crypto::KDF_PROFILE_MOBILE,
+        },
+        restore,
+        listen: config.listen,
+        bootstrap: config.bootstrap,
+        relay: config.relay,
+        mailboxes: config.mailboxes,
+        serve_mailbox: config.serve_mailbox,
+        mdns: config.mdns,
+        spool: config.spool.map(PathBuf::from),
+        meshtastic_serial: config.meshtastic_serial,
+        meshtastic_tcp: config.meshtastic_tcp,
+        bridge: config.bridge,
+        tick_interval: Duration::from_millis(config.tick_ms.max(10)),
+        checkin_interval: Duration::from_secs(config.checkin_secs.max(1)),
+        nat_interval: Duration::from_secs(config.nat_secs.max(1)),
+    })
 }
 
 /// Lowercase hex encoding.

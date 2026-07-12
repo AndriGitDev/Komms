@@ -32,6 +32,10 @@ pub enum CryptoError {
     Serialization,
     /// The Argon2id parameters were rejected.
     KdfParams,
+    /// A mnemonic phrase is malformed: wrong word count, unknown word, or
+    /// failing checksum. Deliberately not more specific — a typo and a
+    /// wrong phrase look the same.
+    InvalidMnemonic,
 }
 
 impl fmt::Display for CryptoError {
@@ -48,6 +52,7 @@ impl fmt::Display for CryptoError {
             Self::HandshakeMismatch => "handshake inputs inconsistent",
             Self::Serialization => "serialization failure",
             Self::KdfParams => "invalid KDF parameters",
+            Self::InvalidMnemonic => "invalid mnemonic phrase",
         };
         f.write_str(s)
     }

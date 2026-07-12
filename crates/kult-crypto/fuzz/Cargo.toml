@@ -33,5 +33,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "mnemonic_decode"
+path = "fuzz_targets/mnemonic_decode.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

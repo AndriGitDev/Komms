@@ -24,6 +24,15 @@ use kult_transport::{
     DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, Transport, TransportOptions,
 };
 
+/// A backup to restore from on first start (docs/07-storage.md §4).
+#[derive(Clone)]
+pub(crate) struct RestoreSource {
+    /// The encrypted backup file's bytes.
+    pub backup: Vec<u8>,
+    /// The 24-word mnemonic sealing it.
+    pub mnemonic: String,
+}
+
 /// Everything the runtime needs, already validated and converted from the
 /// FFI-facing [`crate::Config`].
 #[derive(Clone)]
@@ -31,6 +40,9 @@ pub(crate) struct RuntimeConfig {
     pub db_path: PathBuf,
     pub passphrase: Vec<u8>,
     pub kdf: KdfProfile,
+    /// Restore the store from a backup instead of creating a fresh
+    /// identity. Refused when the store already exists.
+    pub restore: Option<RestoreSource>,
     pub listen: Vec<String>,
     pub bootstrap: Vec<String>,
     pub relay: Option<String>,
@@ -95,6 +107,10 @@ pub(crate) enum Msg {
     Publish {
         resp: Resp<()>,
     },
+    Backup {
+        path: PathBuf,
+        resp: Resp<String>,
+    },
     Counts {
         resp: Resp<Counts>,
     },
@@ -134,7 +150,24 @@ impl Runtime {
         cfg: RuntimeConfig,
         listener: Box<dyn Fn(Event) + Send>,
     ) -> Result<Self, String> {
-        let mut node = if cfg.db_path.exists() {
+        let mut node = if let Some(restore) = &cfg.restore {
+            // Restore is a first-run operation: an existing store holds an
+            // identity, and silently replacing it would destroy keys.
+            if cfg.db_path.exists() {
+                return Err(format!(
+                    "refusing to restore over the existing store {}",
+                    cfg.db_path.display()
+                ));
+            }
+            Node::restore(
+                &cfg.db_path,
+                &restore.backup,
+                &restore.mnemonic,
+                &cfg.passphrase,
+                cfg.kdf,
+                &mut OsRng,
+            )
+        } else if cfg.db_path.exists() {
             Node::open(&cfg.db_path, &cfg.passphrase)
         } else {
             Node::create(&cfg.db_path, &cfg.passphrase, cfg.kdf, &mut OsRng)
@@ -293,6 +326,21 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
+/// Write a secret-bearing file: created 0600 from the first byte, and an
+/// existing file is never overwritten (pick a new name or remove it first).
+/// Kept in lockstep with `kultd`'s equivalent.
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)?.write_all(bytes)
+}
+
 /// The hints this node publishes: every live listen address (circuit
 /// addresses included once reserved) plus each mailbox relay it collects
 /// from.
@@ -411,6 +459,17 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         Msg::Publish { resp } => {
             let hints = own_hints(net, &cfg.mailboxes);
             let _ = resp.send(node.publish_bundle(&hints, now).await.map_err(fail));
+        }
+        Msg::Backup { path, resp } => {
+            let result = node
+                .export_backup(now, &mut OsRng)
+                .map_err(|e| e.to_string())
+                .and_then(|(file, mnemonic)| {
+                    write_private(&path, &file)
+                        .map(|()| (*mnemonic).clone())
+                        .map_err(|e| format!("backup write: {e}"))
+                });
+            let _ = resp.send(result);
         }
         Msg::Counts { resp } => {
             let result = node

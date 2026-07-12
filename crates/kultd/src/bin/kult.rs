@@ -34,6 +34,9 @@ COMMANDS:
                        [--mesh NODE|broadcast]...
                                     replace a contact's delivery hints
     publish                         publish the prekey bundle on the DHT now
+    backup PATH                     write an encrypted backup file and print the
+                                    one-time 24-word mnemonic that seals it
+                                    (write it down; it is shown exactly once)
     watch                           stream events until interrupted
     -h, --help                      this text
 ";
@@ -113,6 +116,10 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
             })
         }
         "publish" => json!({ "op": "publish" }),
+        "backup" => {
+            need(1)?;
+            json!({ "op": "backup", "path": args[0] })
+        }
         "watch" => json!({ "op": "subscribe" }),
         other => return Err(format!("unknown command: {other}\n\n{USAGE}")),
     };

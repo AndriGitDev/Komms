@@ -49,7 +49,7 @@ jobs:
       - name: fuzz kult-crypto targets
         working-directory: crates/kult-crypto
         run: |
-          for t in envelope_decode handshake_decode bundle_decode; do
+          for t in envelope_decode handshake_decode bundle_decode mnemonic_decode; do
             cargo +nightly fuzz run "$t" -- -max_total_time=60
           done
       - name: fuzz kult-protocol targets
