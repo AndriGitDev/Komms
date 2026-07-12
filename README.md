@@ -18,10 +18,13 @@ git clone https://github.com/AndriGitDev/KommsKult && cd KommsKult
 cargo run --example sneakernet_demo
 ```
 
-> Status: **M2 — protocol & storage.** The design framework (M0), the crypto core (M1),
-> and the protocol/storage layer (M2: sealed envelopes, LoRa-sized fragmentation with
-> NACK retransmission, encrypted local store, sneakernet bundles) are implemented and
-> tested; remaining milestones are specified in the [roadmap](docs/08-roadmap.md).
+> Status: **M3 in progress — runtime landed.** The design framework (M0), the crypto
+> core (M1), the protocol/storage layer (M2: sealed envelopes, LoRa-sized fragmentation
+> with NACK retransmission, encrypted local store, sneakernet bundles), and the
+> `kult-node` runtime (delivery engine with honest queued→sent→delivered states,
+> transport scheduler, encrypted receipts, out-of-order stash) are implemented and
+> tested; the libp2p internet transport completes M3 per the
+> [roadmap](docs/08-roadmap.md).
 
 KommsKult is a decentralized messenger built on four principles:
 
@@ -66,8 +69,11 @@ Layout in [Architecture §7](docs/03-architecture.md). Implemented so far:
 `kult-crypto` (hybrid PQXDH, Double Ratchet with encrypted headers, anonymous sealed
 boxes, sealed state), `kult-protocol` (envelopes, padding buckets, fragmentation +
 NACKs, delivery tokens, `.kkb` bundles), and `kult-store` (encrypted SQLite, key
-hierarchy, persistent queue), and `kult-transport` (the `Transport` contract plus the
-sneakernet spool-directory carrier). `kult-node` and `kult-ffi` land in M3+.
+hierarchy, persistent queue), `kult-transport` (the `Transport` contract plus the
+sneakernet spool-directory carrier), and `kult-node` (session lifecycle, delivery
+engine with per-message state machine and retry/backoff, transport scheduler,
+end-to-end encrypted delivery receipts, fragmentation over small-MTU links,
+command/event API). The libp2p transport and `kult-ffi` land in M3+.
 
 ```sh
 cargo test --workspace          # KATs, property tests, 10k-message soak

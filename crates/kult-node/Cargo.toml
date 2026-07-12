@@ -1,6 +1,6 @@
 [package]
 name = "kult-node"
-description = "Runtime composing crypto, protocol, storage and transports. Implemented in M3. Spec: docs/03-architecture.md"
+description = "Runtime composing crypto, protocol, storage and transports: session lifecycle, delivery engine, transport scheduler, command/event API. Spec: docs/03-architecture.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,3 +8,18 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+kult-crypto = { version = "0.1.0", path = "../kult-crypto" }
+kult-protocol = { version = "0.1.0", path = "../kult-protocol" }
+kult-store = { version = "0.1.0", path = "../kult-store" }
+kult-transport = { version = "0.1.0", path = "../kult-transport" }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+rand_core = "0.6"
+serde = { version = "1", features = ["derive"] }
+subtle = { version = "2", default-features = false }
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
+[dev-dependencies]
+async-trait = "0.1"
+rand = "0.8"
+tempfile = "3"
+tokio = { version = "1", features = ["rt", "macros", "sync", "fs"] }

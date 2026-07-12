@@ -98,8 +98,9 @@ pub struct LinkProfile {
 }
 
 /// How a transport addresses a peer. Deliberately **not** an identity key —
-/// hints are per-transport routing data only (contract rule 2).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// hints are per-transport routing data only (contract rule 2). Serializable
+/// so the runtime can persist hints (as opaque bytes) with contacts.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum DeliveryHint {
     /// A spool directory (sneakernet): envelopes are written into it.
