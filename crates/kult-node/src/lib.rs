@@ -12,12 +12,19 @@
 //!   end-to-end encrypted receipt. Nothing is ever faked.
 //! - **Transport scheduler** — ranks the registered carriers per recipient
 //!   by (reachability, latency class, cost class) and falls through the
-//!   ranking on failure; failed items retry with exponential backoff.
+//!   ranking on failure; failed items retry with exponential backoff. The
+//!   queue flushes in priority order (text > receipts > handshakes,
+//!   docs/05-transports.md §4.2 rule 3), and payloads over 4 KiB are held
+//!   off airtime-budgeted (LoRa) links with honest feedback instead of
+//!   silently hogging the mesh.
 //! - **Dedup & reassembly** — inbound envelopes are deduplicated by content
 //!   id (multipath duplicates are normal), fragments reassembled, and
 //!   envelopes that arrive before the session that can read them (courier
 //!   reordering) are stashed persistently and retried — never lost, never
-//!   double-processed.
+//!   double-processed. Partials stuck missing fragments are NACKed back to
+//!   the sender, which retransmits exactly the missing indices (selective
+//!   retransmission, §4.2 rule 2) — airtime is the scarcest resource in
+//!   the system.
 //!
 //! Driving the node: applications call commands ([`Node::send_message`],
 //! [`Node::add_contact`], … or the [`Command`] enum) and then pump
@@ -26,7 +33,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use rand_core::CryptoRngCore;
@@ -38,10 +45,10 @@ use kult_crypto::{
 };
 use kult_protocol::{
     delivery_token, epoch_day, fragment, intro_token, pad, unpad, Envelope, EnvelopeKind,
-    MailboxKey, Reassembler, ReceiptPayload, ENVELOPE_HEADER_LEN,
+    MailboxKey, Reassembler, ReceiptPayload, ENVELOPE_HEADER_LEN, REASSEMBLY_WINDOW_SECS,
 };
 use kult_store::{ContactRecord, DeliveryState, Direction, MessageRecord, QueueItem, Store};
-use kult_transport::{DeliveryHint, Discovery, Reachability, Transport};
+use kult_transport::{CostClass, DeliveryHint, Discovery, Reachability, Transport};
 
 mod api;
 mod error;
@@ -83,9 +90,52 @@ const PENDING_TTL_SECS: u64 = 30 * 86_400;
 const RETRY_BASE_SECS: u64 = 30;
 const RETRY_CAP_SECS: u64 = 3_600;
 
+/// Envelopes above this size never ride an airtime-budgeted (LoRa) link:
+/// they are held for a faster carrier, with honest feedback
+/// ([`Event::AwaitingFasterLink`]), instead of silently hogging the mesh
+/// (docs/05-transports.md §4.2 rule 3).
+const AIRTIME_CEILING_BYTES: usize = 4 * 1024;
+
+/// How long a partial message may sit incomplete before the receiver NACKs
+/// its missing fragment indices (selective retransmission,
+/// docs/05-transports.md §4.2 rule 2) — long enough that in-flight
+/// fragments on a seconds-class link get their chance to arrive.
+const NACK_AFTER_SECS: u64 = 60;
+/// Minimum spacing between NACKs for the same partial. NACKs cost airtime
+/// too, and a duplicate retransmission costs even more.
+const NACK_INTERVAL_SECS: u64 = 900;
+
+/// Cap on remembered sent-fragment sets (the sender side of selective
+/// retransmission). Oldest entries evict first; an evicted message can no
+/// longer be selectively repaired, only fully resent.
+const MAX_FRAG_CACHE: usize = 256;
+
+/// Missing fragment indices per in-flight message id — the NACK half of a
+/// receipt (the shape of [`ReceiptPayload::nacks`]).
+type FragNacks = Vec<([u8; 4], Vec<u16>)>;
+
 struct Backoff {
     attempts: u32,
     next_ok: u64,
+}
+
+/// Receiver-side bookkeeping for one in-flight partial message: enough to
+/// address the NACK requesting its missing fragments (via the delivery
+/// token) and to pace repeats.
+struct PartialMeta {
+    token: [u8; 32],
+    first_seen: u64,
+    last_nack: Option<u64>,
+}
+
+/// Sender-side copy of one fragmented envelope's fragment bodies, kept so a
+/// NACK can trigger retransmission of exactly the missing indices instead of
+/// re-flooding the whole message (docs/05-transports.md §4.2 rule 2).
+struct SentFragments {
+    peer: [u8; 32],
+    token: [u8; 32],
+    bodies: Vec<Vec<u8>>,
+    sent_at: u64,
 }
 
 enum Consumed {
@@ -105,6 +155,9 @@ pub struct Node {
     sessions: HashMap<[u8; 32], kult_crypto::Session>,
     reassembler: Reassembler,
     backoff: HashMap<i64, Backoff>,
+    frag_meta: HashMap<[u8; 4], PartialMeta>,
+    frag_cache: HashMap<[u8; 4], SentFragments>,
+    held_notified: HashSet<i64>,
     events: VecDeque<Event>,
 }
 
@@ -151,6 +204,9 @@ impl Node {
             sessions,
             reassembler: Reassembler::new(),
             backoff: HashMap::new(),
+            frag_meta: HashMap::new(),
+            frag_cache: HashMap::new(),
+            held_notified: HashSet::new(),
             events: VecDeque::new(),
         })
     }
@@ -560,13 +616,38 @@ impl Node {
         }
 
         // 3. Acknowledge consumed messages with end-to-end encrypted
-        //    receipts, batched per peer.
+        //    receipts, and NACK the missing fragment indices of stale
+        //    partials (selective retransmission, docs/05-transports.md §4.2
+        //    rule 2) — batched per peer, acks and nacks in one envelope.
         let mut acks_by_peer: BTreeMap<[u8; 32], Vec<[u8; 16]>> = BTreeMap::new();
         for (peer, content_id) in acks {
             acks_by_peer.entry(peer).or_default().push(content_id);
         }
-        for (peer, content_ids) in acks_by_peer {
-            self.queue_receipt(&peer, content_ids, now, rng)?;
+        let mut nacks_by_peer: BTreeMap<[u8; 32], FragNacks> = BTreeMap::new();
+        for (id, missing) in self.stale_partials(now) {
+            // The fragment's delivery token names the session to ask.
+            // Handshake fragments never match one — correctly so: with no
+            // session there is nothing to encrypt a receipt under.
+            let Some(token) = self.frag_meta.get(&id).map(|m| m.token) else {
+                continue;
+            };
+            let Some(peer) = self.match_session(&token, now) else {
+                continue;
+            };
+            if let Some(meta) = self.frag_meta.get_mut(&id) {
+                meta.last_nack = Some(now);
+            }
+            nacks_by_peer.entry(peer).or_default().push((id, missing));
+        }
+        let receipt_peers: BTreeSet<[u8; 32]> = acks_by_peer
+            .keys()
+            .chain(nacks_by_peer.keys())
+            .copied()
+            .collect();
+        for peer in receipt_peers {
+            let acks = acks_by_peer.remove(&peer).unwrap_or_default();
+            let nacks = nacks_by_peer.remove(&peer).unwrap_or_default();
+            self.queue_receipt(&peer, acks, nacks, now, rng)?;
         }
 
         // 4. Flush the outbound queue.
@@ -597,6 +678,18 @@ impl Node {
                 if depth > 0 {
                     self.store.mark_seen(&env.content_id())?;
                     return Ok(Consumed::Done);
+                }
+                // Remember which delivery token this partial rides under so
+                // the NACK for its missing pieces (selective retransmission,
+                // docs/05-transports.md §4.2 rule 2) knows which session to
+                // ask — resolvable lazily, once that session exists.
+                if env.body.len() >= 4 {
+                    let id: [u8; 4] = env.body[..4].try_into().expect("length checked");
+                    self.frag_meta.entry(id).or_insert(PartialMeta {
+                        token: env.token,
+                        first_seen: now,
+                        last_nack: None,
+                    });
                 }
                 let completed = self.reassembler.insert(&env.body, now);
                 self.store.mark_seen(&env.content_id())?;
@@ -780,8 +873,34 @@ impl Node {
         receipt: &ReceiptPayload,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
-        // Fragment NACKs (selective retransmission) are consumed by the
-        // mesh transport milestone (M4); acks advance delivery state now.
+        // Selective retransmission (docs/05-transports.md §4.2 rule 2):
+        // re-queue exactly the missing fragment indices, never the whole
+        // message — and only if the NACK comes from the peer the fragments
+        // were addressed to, so no one else can elicit retransmissions.
+        // A stale NACK crossing a retransmission in flight re-queues
+        // duplicates; the receiver's content-id dedup absorbs them.
+        for (id, indices) in &receipt.nacks {
+            let Some(cached) = self.frag_cache.get(id) else {
+                continue; // expired or evicted — the full-message retry path remains
+            };
+            if !bool::from(cached.peer.ct_eq(peer)) {
+                continue;
+            }
+            for &i in indices {
+                let Some(body) = cached.bodies.get(usize::from(i)) else {
+                    continue;
+                };
+                self.store.queue_push(
+                    &QueueItem {
+                        peer: *peer,
+                        msg_id: None,
+                        envelope: Envelope::new(EnvelopeKind::Fragment, cached.token, body.clone()),
+                    },
+                    rng,
+                )?;
+            }
+        }
+
         for record in self.store.messages_with(peer)? {
             let Some(wire_id) = record.wire_id else {
                 continue;
@@ -823,21 +942,47 @@ impl Node {
         None
     }
 
+    /// Partials incomplete for at least [`NACK_AFTER_SECS`] (and not NACKed
+    /// within [`NACK_INTERVAL_SECS`]), with their missing indices — the
+    /// batch worth requesting selective retransmission for this tick. Also
+    /// prunes metadata for partials the reassembler no longer tracks
+    /// (completed, or expired out of the 24 h window).
+    fn stale_partials(&mut self, now: u64) -> FragNacks {
+        let missing = self.reassembler.missing(now);
+        let live: HashSet<[u8; 4]> = missing.iter().map(|(id, _)| *id).collect();
+        self.frag_meta.retain(|id, _| live.contains(id));
+        missing
+            .into_iter()
+            .filter(|(id, miss)| {
+                if miss.is_empty() {
+                    return false;
+                }
+                let Some(meta) = self.frag_meta.get(id) else {
+                    return false;
+                };
+                now.saturating_sub(meta.first_seen) >= NACK_AFTER_SECS
+                    && meta
+                        .last_nack
+                        .is_none_or(|t| now.saturating_sub(t) >= NACK_INTERVAL_SECS)
+            })
+            .collect()
+    }
+
     fn queue_receipt(
         &mut self,
         peer: &[u8; 32],
         acks: Vec<[u8; 16]>,
+        nacks: FragNacks,
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
+        if acks.is_empty() && nacks.is_empty() {
+            return Ok(());
+        }
         let Some(session) = self.sessions.get_mut(peer) else {
             return Ok(()); // session vanished — the sender will retry
         };
-        let payload = ReceiptPayload {
-            acks,
-            nacks: Vec::new(),
-        }
-        .encode();
+        let payload = ReceiptPayload { acks, nacks }.encode();
         let msg = session.encrypt(rng, now, &pad(&payload)?, &[]);
         let token = delivery_token(
             &MailboxKey::from_bytes(*session.mailbox_key()),
@@ -860,19 +1005,32 @@ impl Node {
 
     async fn flush(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<()> {
         let transports = self.transports.clone();
-        for (seq, item) in self.store.queue_all()? {
+        // Priority classes (docs/05-transports.md §4.2 rule 3): when a
+        // scarce link finally opens, text goes first, then receipts, then
+        // handshakes — FIFO within each class.
+        let mut queue = self.store.queue_all()?;
+        queue.sort_by_key(|(seq, item)| (flush_class(item.envelope.kind), *seq));
+        for (seq, item) in queue {
             if let Some(b) = self.backoff.get(&seq) {
                 if now < b.next_ok {
                     continue;
                 }
             }
             let hints = self.resolve_hints(&item.peer, now, rng).await?;
+            let oversize = item.envelope.encode().len() > AIRTIME_CEILING_BYTES;
+            let mut held_for_airtime = false;
 
             // Scheduler: rank every (transport, hint) pair by reachability
             // (immediate beats store-and-forward), then latency, then cost.
             let mut candidates = Vec::new();
             for transport in &transports {
                 let profile = transport.profile();
+                // Rule 3: media-sized payloads never hog the mesh — hold
+                // for a faster carrier instead.
+                if oversize && profile.cost == CostClass::Airtime {
+                    held_for_airtime = true;
+                    continue;
+                }
                 for hint in &hints {
                     let rank = match transport.reachable(hint).await {
                         Reachability::Now => 0u8,
@@ -890,10 +1048,10 @@ impl Node {
 
             let mut sent = false;
             for (_, transport, hint) in &candidates {
-                if send_via(transport.as_ref(), hint, &item.envelope)
-                    .await
-                    .is_ok()
-                {
+                if let Ok(fragments) = send_via(transport.as_ref(), hint, &item.envelope).await {
+                    if let Some(bodies) = fragments {
+                        self.remember_fragments(item.peer, item.envelope.token, bodies, now);
+                    }
                     sent = true;
                     break;
                 }
@@ -902,8 +1060,20 @@ impl Node {
             if sent {
                 self.store.queue_ack(seq)?;
                 self.backoff.remove(&seq);
+                self.held_notified.remove(&seq);
                 if let Some(msg_id) = item.msg_id {
                     self.mark_sent(&item.peer, &msg_id, rng)?;
+                }
+            } else if candidates.is_empty() && held_for_airtime {
+                // Held, not failed: nothing was attempted, so no backoff —
+                // the item goes out on the first tick after a faster
+                // carrier reaches the peer. Surface the honest feedback
+                // once per message, not per tick.
+                if let Some(msg_id) = item.msg_id {
+                    if self.held_notified.insert(seq) {
+                        self.events
+                            .push_back(Event::AwaitingFasterLink { id: msg_id });
+                    }
                 }
             } else {
                 let entry = self.backoff.entry(seq).or_insert(Backoff {
@@ -916,6 +1086,48 @@ impl Node {
             }
         }
         Ok(())
+    }
+
+    /// Remember a just-sent envelope's fragment bodies so an inbound NACK
+    /// can retransmit exactly the missing indices. Bounded two ways:
+    /// entries expire with the receiver's reassembly window, and beyond
+    /// [`MAX_FRAG_CACHE`] messages the oldest is evicted first.
+    fn remember_fragments(
+        &mut self,
+        peer: [u8; 32],
+        token: [u8; 32],
+        bodies: Vec<Vec<u8>>,
+        now: u64,
+    ) {
+        let Some(id) = bodies
+            .first()
+            .and_then(|b| b.get(..4))
+            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+        else {
+            return;
+        };
+        self.frag_cache
+            .retain(|_, f| now.saturating_sub(f.sent_at) <= REASSEMBLY_WINDOW_SECS);
+        while self.frag_cache.len() >= MAX_FRAG_CACHE {
+            let oldest = self
+                .frag_cache
+                .iter()
+                .min_by_key(|(_, f)| f.sent_at)
+                .map(|(id, _)| *id);
+            match oldest {
+                Some(oldest) => self.frag_cache.remove(&oldest),
+                None => break,
+            };
+        }
+        self.frag_cache.insert(
+            id,
+            SentFragments {
+                peer,
+                token,
+                bodies,
+                sent_at: now,
+            },
+        );
     }
 
     fn mark_sent(
@@ -981,31 +1193,53 @@ impl Node {
 }
 
 /// Hand one envelope to a transport, fragmenting if it exceeds the link MTU.
+/// Returns the fragment bodies when fragmentation happened, so the caller
+/// can retain them for selective retransmission.
 async fn send_via(
     transport: &dyn Transport,
     hint: &DeliveryHint,
     envelope: &Envelope,
-) -> Result<()> {
+) -> Result<Option<Vec<Vec<u8>>>> {
     let mtu = transport.profile().mtu;
     let encoded = envelope.encode();
     if encoded.len() <= mtu {
         transport.send(hint, envelope).await?;
-        return Ok(());
+        return Ok(None);
+    }
+    // Fragments never nest (the receiver treats nested ones as malformed):
+    // a retransmitted fragment that does not fit this link makes the
+    // scheduler fall through to a wider one, it is never split again.
+    if envelope.kind == EnvelopeKind::Fragment {
+        return Err(NodeError::Protocol(
+            kult_protocol::ProtocolError::MtuTooSmall,
+        ));
     }
     let budget = mtu
         .checked_sub(ENVELOPE_HEADER_LEN)
         .ok_or(NodeError::Protocol(
             kult_protocol::ProtocolError::MtuTooSmall,
         ))?;
-    for body in fragment(&encoded, budget)? {
+    let bodies = fragment(&encoded, budget)?;
+    for body in &bodies {
         transport
             .send(
                 hint,
-                &Envelope::new(EnvelopeKind::Fragment, envelope.token, body),
+                &Envelope::new(EnvelopeKind::Fragment, envelope.token, body.clone()),
             )
             .await?;
     }
-    Ok(())
+    Ok(Some(bodies))
+}
+
+/// Flush priority (docs/05-transports.md §4.2 rule 3): text > receipts >
+/// prekey/handshake. Fragments rank with text — a retransmitted piece
+/// completes a message the mesh has already mostly paid for.
+fn flush_class(kind: EnvelopeKind) -> u8 {
+    match kind {
+        EnvelopeKind::Message | EnvelopeKind::Fragment => 0,
+        EnvelopeKind::Receipt => 1,
+        EnvelopeKind::Handshake => 2,
+    }
 }
 
 fn encode_hints(hints: &[DeliveryHint]) -> Vec<Vec<u8>> {
