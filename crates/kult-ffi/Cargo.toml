@@ -1,10 +1,39 @@
 [package]
 name = "kult-ffi"
-description = "UniFFI bindings exposing kult-node to Kotlin/Swift/desktop. Implemented in M5."
+description = "UniFFI bindings exposing the node's command/event API to Kotlin/Swift/desktop shells over an embedded in-process runtime. Spec: docs/03-architecture.md (FFI layer), ADR-0010"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+# `lib` for the Rust integration tests, `staticlib` for iOS, `cdylib` for
+# Android/desktop bindings.
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+# Attach Meshtastic radios through the FFI config (desktop shells with a USB
+# radio). Off by default: phones have no serial port, and the dependency
+# tree is heavy.
+meshtastic = ["kult-transport/meshtastic"]
+# The `uniffi-bindgen` CLI used to generate Kotlin/Swift sources from this
+# library (see crate docs). Build-time tooling only.
+bindgen = ["uniffi/cli"]
+
 [dependencies]
+kult-crypto = { version = "0.1.0", path = "../kult-crypto" }
+kult-node = { version = "0.1.0", path = "../kult-node" }
+kult-store = { version = "0.1.0", path = "../kult-store" }
+kult-transport = { version = "0.1.0", path = "../kult-transport" }
+rand = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+uniffi = "0.29"
+
+[dev-dependencies]
+tempfile = "3"
