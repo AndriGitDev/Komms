@@ -18,14 +18,15 @@ git clone https://github.com/AndriGitDev/KommsKult && cd KommsKult
 cargo run --example sneakernet_demo
 ```
 
-> Status: **M3 in progress — runtime and internet carrier landed.** The design
-> framework (M0), the crypto core (M1), the protocol/storage layer (M2: sealed
-> envelopes, LoRa-sized fragmentation with NACK retransmission, encrypted local store,
-> sneakernet bundles), the `kult-node` runtime (delivery engine with honest
+> Status: **M3 in progress — runtime, internet carrier, and DHT discovery landed.**
+> The design framework (M0), the crypto core (M1), the protocol/storage layer (M2:
+> sealed envelopes, LoRa-sized fragmentation with NACK retransmission, encrypted local
+> store, sneakernet bundles), the `kult-node` runtime (delivery engine with honest
 > queued→sent→delivered states, transport scheduler, encrypted receipts, out-of-order
-> stash), and the first slice of the libp2p internet transport (QUIC primary,
-> TCP+Noise fallback) are implemented and tested; DHT prekey discovery, relay
-> mailboxes and hole punching complete M3 per the [roadmap](docs/08-roadmap.md).
+> stash), the libp2p internet transport (QUIC primary, TCP+Noise fallback), and
+> Kademlia prekey discovery (whole-bundle-signed records; add a contact from a kult
+> address alone) are implemented and tested; relay mailboxes and hole punching
+> complete M3 per the [roadmap](docs/08-roadmap.md).
 
 KommsKult is a decentralized messenger built on four principles:
 
@@ -73,11 +74,12 @@ NACKs, delivery tokens, `.kkb` bundles), and `kult-store` (encrypted SQLite, key
 hierarchy, persistent queue), `kult-transport` (the `Transport` contract, the
 sneakernet spool-directory carrier, and the libp2p internet carrier — QUIC primary,
 TCP+Noise+Yamux fallback, envelope request-response protocol with honest next-hop
-acks), and `kult-node` (session lifecycle, delivery
+acks, and a Kademlia discovery plane serving signed prekey-bundle records), and
+`kult-node` (session lifecycle, delivery
 engine with per-message state machine and retry/backoff, transport scheduler,
 end-to-end encrypted delivery receipts, fragmentation over small-MTU links,
-command/event API). DHT discovery, relay mailboxes, DCUtR and `kult-ffi` land in
-M3+.
+contact-by-address via DHT lookup, command/event API). Relay mailboxes, DCUtR and
+`kult-ffi` land in M3+.
 
 ```sh
 cargo test --workspace          # KATs, property tests, 10k-message soak

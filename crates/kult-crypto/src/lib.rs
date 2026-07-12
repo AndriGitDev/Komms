@@ -35,7 +35,7 @@ pub use anonbox::{open_anonymous, seal_anonymous};
 pub use error::CryptoError;
 pub use fingerprint::{safety_number, SafetyNumber};
 pub use handshake::{initiate, respond, InitialMessage};
-pub use identity::{Identity, IdentityPublic};
+pub use identity::{parse_address, Identity, IdentityPublic};
 pub use kdf::{derive_kek, KdfProfile, KDF_PROFILE_DESKTOP, KDF_PROFILE_MOBILE};
 pub use prekeys::{
     OneTimePrekeySecret, PqPrekeySecret, PrekeyBundle, SignedPrekeySecret, VerifiedBundle,

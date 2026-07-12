@@ -124,6 +124,31 @@ pub fn base32_lower_nopad(data: &[u8]) -> alloc::string::String {
     out
 }
 
+/// Decode [`base32_lower_nopad`] output. Returns `None` on characters
+/// outside the alphabet or non-canonical trailing bits (every valid encoding
+/// decodes to exactly one byte string and re-encodes identically).
+pub fn base32_lower_nopad_decode(s: &str) -> Option<Vec<u8>> {
+    const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
+    let mut out = Vec::with_capacity(s.len() * 5 / 8);
+    let mut buf: u64 = 0;
+    let mut bits: u32 = 0;
+    for c in s.bytes() {
+        let val = ALPHABET.iter().position(|&a| a == c)? as u64;
+        buf = (buf << 5) | val;
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buf >> bits) & 0xff) as u8);
+        }
+    }
+    // Leftover bits are padding from the final symbol; canonical encodings
+    // leave them zero (and never a whole symbol's worth).
+    if bits >= 5 || (buf & ((1 << bits) - 1)) != 0 {
+        return None;
+    }
+    Some(out)
+}
+
 /// Serde shim for `[u8; 64]` (serde has no built-in impl past 32 bytes).
 pub mod bytes64 {
     use core::fmt;

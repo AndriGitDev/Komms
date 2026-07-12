@@ -139,6 +139,26 @@ pub enum SendReceipt {
     AckedByNextHop,
 }
 
+/// A discovery plane: a distributed key→value lookup for prekey bundles
+/// (docs/05-transports.md §2). Implemented by [`Libp2pTransport`] over
+/// Kademlia; sneakernet and mesh carriers have no discovery plane.
+///
+/// Records are **untrusted bytes** regardless of which node served them —
+/// prekey bundles are self-authenticating, and it is the caller's job to
+/// verify signatures and the key↔record binding before using anything
+/// returned by [`Discovery::lookup`].
+#[async_trait]
+pub trait Discovery: Send + Sync {
+    /// Publish `value` under `key`, replacing this node's previous record
+    /// for the same key. Resolves once at least one other node stored it.
+    async fn publish(&self, key: [u8; 32], value: Vec<u8>) -> Result<()>;
+
+    /// Fetch all record values currently retrievable under `key` (distinct
+    /// nodes may serve different versions; the caller picks after verifying).
+    /// An unknown key yields an empty vector, not an error.
+    async fn lookup(&self, key: [u8; 32]) -> Result<Vec<Vec<u8>>>;
+}
+
 /// The contract every carrier implements (docs/05-transports.md §1).
 ///
 /// Event-driven integration with the delivery engine (an `EventSink` instead

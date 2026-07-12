@@ -47,10 +47,16 @@ Bob publishes a **prekey bundle** (via DHT or exchanged directly/QR — see
 [06 — Identity & Trust](06-identity-trust.md)):
 
 ```
-Bundle_B = { IK_B, SPK_B, Sig(IK_B, SPK_B), PQSPK_B, Sig(IK_B, PQSPK_B), OPK_B? , relay hints }
+Bundle_B = { IK_B, SPK_B, Sig(IK_B, SPK_B), PQSPK_B, Sig(IK_B, PQSPK_B), OPK_B? , relay hints,
+             expiry, Sig(IK_B, canonical-bundle) }
 ```
 
-Alice verifies both signatures, then computes:
+The final signature covers a canonical serialization of **every** field — including the
+expiry, the OPK (or its absence), and the relay hints — so whoever serves the bundle (a
+DHT node, a courier) can withhold it but cannot extend its lifetime, strip its OPK, or
+redirect its relay hints ([06 — Identity & Trust §2](06-identity-trust.md)).
+
+Alice verifies all three signatures, then computes:
 
 ```
 DH1 = DH(IK_A_x25519, SPK_B)

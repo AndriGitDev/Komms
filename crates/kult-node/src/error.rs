@@ -22,6 +22,13 @@ pub enum NodeError {
     /// The store exists but was never initialized as a node (no identity or
     /// prekeys) — or a stored runtime record failed to parse.
     CorruptState,
+    /// No discovery plane is registered, or none of the registered ones
+    /// accepted the operation.
+    NoDiscovery,
+    /// Discovery returned no prekey bundle that verifies *and* matches the
+    /// requested address — an unpublished peer and a forged record are
+    /// deliberately indistinguishable here.
+    BundleNotFound,
 }
 
 impl std::fmt::Display for NodeError {
@@ -34,6 +41,8 @@ impl std::fmt::Display for NodeError {
             Self::UnknownPeer => f.write_str("peer is not a stored contact"),
             Self::NoSession => f.write_str("no session and no prekey bundle for this peer"),
             Self::CorruptState => f.write_str("node state missing or corrupt"),
+            Self::NoDiscovery => f.write_str("no usable discovery plane"),
+            Self::BundleNotFound => f.write_str("no verifiable prekey bundle found for address"),
         }
     }
 }

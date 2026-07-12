@@ -41,7 +41,7 @@ use kult_protocol::{
     MailboxKey, Reassembler, ReceiptPayload, ENVELOPE_HEADER_LEN,
 };
 use kult_store::{ContactRecord, DeliveryState, Direction, MessageRecord, QueueItem, Store};
-use kult_transport::{DeliveryHint, Reachability, Transport};
+use kult_transport::{DeliveryHint, Discovery, Reachability, Transport};
 
 mod api;
 mod error;
@@ -96,6 +96,7 @@ pub struct Node {
     identity: Identity,
     vault: PrekeyVault,
     transports: Vec<Arc<dyn Transport>>,
+    discoveries: Vec<Arc<dyn Discovery>>,
     sessions: HashMap<[u8; 32], kult_crypto::Session>,
     reassembler: Reassembler,
     backoff: HashMap<i64, Backoff>,
@@ -141,6 +142,7 @@ impl Node {
             identity,
             vault,
             transports: Vec::new(),
+            discoveries: Vec::new(),
             sessions,
             reassembler: Reassembler::new(),
             backoff: HashMap::new(),
@@ -152,6 +154,13 @@ impl Node {
     /// link profile per delivery, not registration order.
     pub fn add_transport(&mut self, transport: Arc<dyn Transport>) {
         self.transports.push(transport);
+    }
+
+    /// Register a discovery plane (a DHT) for prekey-bundle publication and
+    /// lookup. Registering none is fine — bundles then travel out-of-band
+    /// only (QR, file), exactly as in M2.
+    pub fn add_discovery(&mut self, discovery: Arc<dyn Discovery>) {
+        self.discoveries.push(discovery);
     }
 
     // ---- identity ----------------------------------------------------------
@@ -199,6 +208,105 @@ impl Node {
             vec![],
         );
         Ok(bundle.encode())
+    }
+
+    // ---- discovery (DHT prekey records, docs/05-transports.md §2) -----------
+
+    /// Publish this node's prekey bundle on every registered discovery
+    /// plane, keyed by the digest inside our kult address — after this,
+    /// anyone holding the address can start a session with no further
+    /// out-of-band exchange.
+    ///
+    /// `hints` are our own reachable addresses (e.g.
+    /// [`kult_transport::Libp2pTransport::listen_addrs`] as
+    /// [`DeliveryHint::Multiaddr`]); they ride in the bundle's `relay_hints`
+    /// so a fetcher learns both *who* we are and *where* to deliver.
+    ///
+    /// The published bundle deliberately carries **no one-time prekey**: a
+    /// DHT record is served to arbitrarily many fetchers, and an OPK is
+    /// single-use — the first handshake would consume it and strand everyone
+    /// else. First-flight forward secrecy for DHT-initiated sessions rests
+    /// on the signed prekeys, exactly as specified for OPK-less PQXDH
+    /// (docs/04-cryptography.md §3). Call it again after rotating prekeys or
+    /// when listen addresses change; the record replaces the previous one.
+    pub async fn publish_bundle(&mut self, hints: &[DeliveryHint], now: u64) -> Result<()> {
+        if self.discoveries.is_empty() {
+            return Err(NodeError::NoDiscovery);
+        }
+        let bundle = PrekeyBundle::build(
+            &self.identity,
+            &self.vault.spk(),
+            &self.vault.pqspk()?,
+            None,
+            now + BUNDLE_TTL_SECS,
+            encode_hints(hints),
+        );
+        let key = self.identity.public().address_digest();
+        let value = bundle.encode();
+        let mut published = false;
+        for discovery in &self.discoveries {
+            if discovery.publish(key, value.clone()).await.is_ok() {
+                published = true;
+            }
+        }
+        if published {
+            Ok(())
+        } else {
+            Err(NodeError::NoDiscovery)
+        }
+    }
+
+    /// Add a contact from their kult address alone, fetching the prekey
+    /// bundle from the discovery planes. Every candidate record is untrusted
+    /// input: it must carry valid signatures **and** hash back to the very
+    /// digest the address encodes, so a malicious DHT node can withhold a
+    /// bundle but never substitute one. Among the survivors the freshest
+    /// (latest-expiring) bundle wins, and its embedded delivery hints become
+    /// the contact's hints. Returns the contact's peer id.
+    pub async fn add_contact_by_address(
+        &mut self,
+        name: &str,
+        address: &str,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 32]> {
+        if self.discoveries.is_empty() {
+            return Err(NodeError::NoDiscovery);
+        }
+        let digest = kult_crypto::parse_address(address)?;
+        let bundle = self
+            .lookup_bundle(digest, now)
+            .await
+            .ok_or(NodeError::BundleNotFound)?;
+        let hints = decode_hints(&bundle.relay_hints);
+        self.add_contact(name, &bundle.encode(), &hints, now, rng)
+    }
+
+    /// Fetch, verify, and select the freshest prekey bundle for `digest`
+    /// across all discovery planes. `None` means no candidate survived
+    /// verification — never that a record was accepted unverified.
+    async fn lookup_bundle(&self, digest: [u8; 32], now: u64) -> Option<PrekeyBundle> {
+        let mut best: Option<PrekeyBundle> = None;
+        for discovery in &self.discoveries {
+            let Ok(candidates) = discovery.lookup(digest).await else {
+                continue;
+            };
+            for bytes in candidates {
+                let Ok(bundle) = PrekeyBundle::decode(&bytes) else {
+                    continue;
+                };
+                if bundle.verify(now).is_err() || bundle.identity.address_digest() != digest {
+                    continue;
+                }
+                if best
+                    .as_ref()
+                    .is_none_or(|b| bundle.expires_at > b.expires_at)
+                {
+                    best = Some(bundle);
+                }
+            }
+        }
+        best
     }
 
     // ---- contacts ----------------------------------------------------------
@@ -720,7 +828,7 @@ impl Node {
                     continue;
                 }
             }
-            let hints = self.hints_for(&item.peer)?;
+            let hints = self.resolve_hints(&item.peer, now, rng).await?;
 
             // Scheduler: rank every (transport, hint) pair by reachability
             // (immediate beats store-and-forward), then latency, then cost.
@@ -796,11 +904,41 @@ impl Node {
         let Some(contact) = self.store.get_contact(peer)? else {
             return Ok(Vec::new());
         };
-        Ok(contact
-            .hints
-            .iter()
-            .filter_map(|bytes| postcard::from_bytes(bytes).ok())
-            .collect())
+        Ok(decode_hints(&contact.hints))
+    }
+
+    /// Delivery hints for a peer, consulting the discovery planes when the
+    /// contact record has none. Sealed sender means an inbound handshake
+    /// never reveals a return path — for a contact learned that way, the
+    /// peer's published DHT bundle is where the reply path comes from.
+    /// Freshly discovered hints are persisted on the contact, so the lookup
+    /// happens once, not per flush (and failed sends stay gated by the
+    /// delivery engine's backoff regardless).
+    async fn resolve_hints(
+        &mut self,
+        peer: &[u8; 32],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Vec<DeliveryHint>> {
+        let hints = self.hints_for(peer)?;
+        if !hints.is_empty() || self.discoveries.is_empty() {
+            return Ok(hints);
+        }
+        let Some(mut contact) = self.store.get_contact(peer)? else {
+            return Ok(hints);
+        };
+        let Ok(identity) = postcard::from_bytes::<IdentityPublic>(&contact.identity) else {
+            return Ok(hints);
+        };
+        let Some(bundle) = self.lookup_bundle(identity.address_digest(), now).await else {
+            return Ok(hints);
+        };
+        let found = decode_hints(&bundle.relay_hints);
+        if !found.is_empty() {
+            contact.hints = bundle.relay_hints.clone();
+            self.store.put_contact(&contact, rng)?;
+        }
+        Ok(found)
     }
 }
 
@@ -836,5 +974,16 @@ fn encode_hints(hints: &[DeliveryHint]) -> Vec<Vec<u8>> {
     hints
         .iter()
         .map(|h| postcard::to_allocvec(h).expect("hint serialization cannot fail"))
+        .collect()
+}
+
+/// Decode persisted/published hint blobs, skipping any that fail to parse
+/// (hints are routing data — a bad entry costs a delivery path, never
+/// correctness; the bundle signature already guarantees the blobs are the
+/// owner's, not what they contain).
+fn decode_hints(blobs: &[Vec<u8>]) -> Vec<DeliveryHint> {
+    blobs
+        .iter()
+        .filter_map(|bytes| postcard::from_bytes(bytes).ok())
         .collect()
 }
