@@ -97,6 +97,37 @@ public final class Session: @unchecked Sendable {
         try node.send(peer: peer, body: body)
     }
 
+    /// Create a sender-key group from stored contacts; returns its id.
+    public func createGroup(name: String, members: [String]) throws -> String {
+        try node.createGroup(name: name, members: members)
+    }
+
+    /// All live groups, excluding secrets and sender chains.
+    public func groups() throws -> [Group] { try node.groups() }
+
+    /// Message history for a group, including per-member delivery states.
+    public func groupMessages(group: String) throws -> [GroupMessage] {
+        try node.groupMessages(group: group)
+    }
+
+    /// Queue a group message; progress is reported independently per member.
+    public func sendGroup(group: String, body: String) throws -> String {
+        try node.sendGroup(group: group, body: body)
+    }
+
+    /// Add a stored contact to a group (creator only).
+    public func addGroupMember(group: String, peer: String) throws {
+        try node.addGroupMember(group: group, peer: peer)
+    }
+
+    /// Remove a member and rotate group keys (creator only).
+    public func removeGroupMember(group: String, peer: String) throws {
+        try node.removeGroupMember(group: group, peer: peer)
+    }
+
+    /// Leave a group; local message history remains stored.
+    public func leaveGroup(group: String) throws { try node.leaveGroup(group: group) }
+
     /// The safety number with a peer (render ``safetyQrText(_:)`` for the QR).
     public func safetyNumber(peer: String) throws -> SafetyNumber {
         try node.safetyNumber(peer: peer)

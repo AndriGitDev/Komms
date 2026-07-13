@@ -11,9 +11,11 @@ struct MainView: View {
     @State private var showAdd = false
     @State private var showBackup = false
     @State private var showSettings = false
+    @State private var showCreateGroup = false
+    @State private var navigation = NavigationPath()
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navigation) {
             List {
                 if !model.notices.isEmpty {
                     Section("Notices") {
@@ -47,10 +49,31 @@ struct MainView: View {
                         }
                     }
                 }
+
+                Section("Groups") {
+                    if model.groups.isEmpty {
+                        Text("No groups yet — create one from stored contacts.")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(model.groups.sorted(by: { $0.name < $1.name }), id: \.id) { group in
+                        NavigationLink(value: GroupRoute(id: group.id)) {
+                            VStack(alignment: .leading) {
+                                Text(group.name)
+                                Text("\(group.members.count) "
+                                     + (group.members.count == 1 ? "member" : "members"))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
             }
             .navigationTitle("Komms")
             .navigationDestination(for: String.self) { peer in
                 ChatView(peer: peer)
+            }
+            .navigationDestination(for: GroupRoute.self) { route in
+                GroupChatView(groupId: route.id)
             }
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
@@ -60,6 +83,7 @@ struct MainView: View {
                         Label("Add contact", systemImage: "person.badge.plus")
                     }
                     Menu {
+                        Button("New group") { showCreateGroup = true }
                         Button("My pairing QR") { showMyQr = true }
                         Button("Backup…") { showBackup = true }
                         Button("Network settings") { showSettings = true }
@@ -73,8 +97,18 @@ struct MainView: View {
             .sheet(isPresented: $showAdd) { AddContactView() }
             .sheet(isPresented: $showBackup) { BackupView() }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .sheet(isPresented: $showCreateGroup) {
+                CreateGroupView { group in
+                    showCreateGroup = false
+                    navigation.append(GroupRoute(id: group))
+                }
+            }
         }
     }
+}
+
+private struct GroupRoute: Hashable {
+    let id: String
 }
 
 /// Transport indicators, rendered from the node's status verbatim.

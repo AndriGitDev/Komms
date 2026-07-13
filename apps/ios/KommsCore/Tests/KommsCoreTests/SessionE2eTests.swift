@@ -180,6 +180,106 @@ final class SessionE2eTests: XCTestCase {
         bob.stop()
     }
 
+    func testGroupUXCreatesManagesMessagesAndShowsPartialDelivery() throws {
+        let dir = try tempDir()
+        let aEv = Events()
+        let bEv = Events()
+
+        // The embedded FFI runtime admits two live nodes per process. Capture
+        // a real third identity first, then keep Carol offline so delivery can
+        // be proven independently per member.
+        let carol = try open(dir, "group-carol", Events())
+        let carolBundle = try carol.myBundleHex()
+        carol.stop()
+        let alice = try open(dir, "group-alice", aEv)
+        let bob = try open(dir, "group-bob", bEv)
+        defer {
+            alice.stop()
+            bob.stop()
+        }
+
+        let aliceAddr = try listenAddr(alice)
+        let bobAddr = try listenAddr(bob)
+        let aliceBundle = try alice.myBundleHex()
+        let bobBundle = try bob.myBundleHex()
+        let bobPeer = try alice.addContact(
+            name: "Bob", bundleHex: bobBundle, hints: multiaddrHint(bobAddr))
+        let carolPeer = try alice.addContact(
+            name: "Carol", bundleHex: carolBundle,
+            hints: multiaddrHint("/ip4/127.0.0.1/udp/9/quic-v1"))
+        let aliceAtBob = try bob.addContact(
+            name: "Alice", bundleHex: aliceBundle, hints: multiaddrHint(aliceAddr))
+
+        // The create flow selects one stored contact; the creator then adds
+        // another from the members screen.
+        let group = try alice.createGroup(name: "Trail crew", members: [bobPeer])
+        _ = try bEv.wait("Bob's group invite") { event -> Void? in
+            if case let .groupUpdated(updated) = event, updated == group { return () }
+            return nil
+        }
+        var listed = try alice.groups()
+        XCTAssertEqual(1, listed.count)
+        XCTAssertEqual(group, listed[0].id)
+        XCTAssertEqual("Trail crew", listed[0].name)
+        XCTAssertEqual(2, listed[0].members.count)
+
+        try alice.addGroupMember(group: group, peer: carolPeer)
+        listed = try alice.groups()
+        XCTAssertEqual(3, listed[0].members.count)
+
+        // Only the creator gets roster controls; the node's explicit
+        // authority error passes through the shell unchanged.
+        XCTAssertThrowsError(try bob.addGroupMember(group: group, peer: carolPeer)) { error in
+            guard let ffi = error as? FfiError, case .Node = ffi else {
+                return XCTFail("expected FfiError.Node, got: \(error)")
+            }
+            XCTAssertTrue(ffi.reasonText.contains("creator"), "got: \(ffi.reasonText)")
+        }
+
+        // Bob receives while offline Carol remains queued/sent. Outbound
+        // history exposes one truthful state per recipient.
+        let first = try alice.sendGroup(group: group, body: "Meet at the north trailhead")
+        _ = try bEv.wait("Bob's group message") { event -> Void? in
+            if case let .groupMessageReceived(receivedGroup, _, _, _, body) = event,
+               receivedGroup == group, body == "Meet at the north trailhead" {
+                return ()
+            }
+            return nil
+        }
+        _ = try aEv.wait("Bob's group copy delivered") { event -> Void? in
+            if case let .groupDeliveryUpdated(id, peer, state) = event,
+               id == first, peer == bobPeer, state == .delivered {
+                return ()
+            }
+            return nil
+        }
+        let history = try alice.groupMessages(group: group)
+        XCTAssertEqual(1, history.count)
+        XCTAssertEqual(.outbound, history[0].direction)
+        XCTAssertEqual(2, history[0].deliveries.count)
+        XCTAssertEqual(
+            .delivered,
+            history[0].deliveries.first(where: { $0.peer == bobPeer })?.state)
+        let carolState = history[0].deliveries.first(where: { $0.peer == carolPeer })?.state
+        XCTAssertTrue(carolState == .queued || carolState == .sent)
+        let bobHistory = try bob.groupMessages(group: group)
+        XCTAssertEqual(aliceAtBob, bobHistory[0].sender)
+        XCTAssertEqual(.inbound, bobHistory[0].direction)
+        XCTAssertTrue(bobHistory[0].deliveries.isEmpty)
+
+        // Creator removal rotates the roster immediately. A member can leave;
+        // their live group disappears locally and the creator converges too.
+        try alice.removeGroupMember(group: group, peer: carolPeer)
+        XCTAssertEqual(2, try alice.groups()[0].members.count)
+        try bob.leaveGroup(group: group)
+        XCTAssertTrue(try bob.groups().isEmpty)
+        let deadline = Date().addingTimeInterval(30)
+        while try alice.groups()[0].members.count != 1 {
+            guard Date() < deadline else { throw Timeout(what: "creator applying Bob's leave") }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+    }
+
     func testBackupMnemonicRestoreFlow() throws {
         let dir = try tempDir()
         var aEv = Events()
