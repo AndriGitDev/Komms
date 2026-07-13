@@ -249,10 +249,16 @@ the only library it links is the workspace's own Rust core, built into
 the `KommsCore` e2e on Linux (official Swift container) on every push;
 a gated macOS job (`IOS_APP_CI` repository variable, mirroring the HIL
 bench's arming pattern) assembles the xcframework and builds the app
-for the simulator. Remaining: arming that macOS job and a hands-on pass
-of the SwiftUI shell on a device: unlike the pinned `KommsCore`
-behavior layer, the app layer hasn't been exercised yet; background
-delivery and store distribution stay M6.
+for the simulator. That gated build was run locally on macOS for the
+first time (Xcode 26.6, iOS 26.5): it surfaced two latent breaks in the
+never-CI'd app target, a SwiftUI `Section` title-plus-footer form with no
+matching initializer and a missing `SystemConfiguration.framework` link
+the Rust libp2p FFI needs, both fixed, after which the simulator build
+succeeds and `KommsApp` boots to its first-run gate in the simulator.
+Remaining: arming that macOS job in CI, and a full hands-on pass of the
+SwiftUI shell (the messaging flow end to end, and an on-device run)
+beyond that first-launch smoke test; background delivery and store
+distribution stay M6.
 
 **Acceptance**: a non-technical user can install desktop + mobile builds, exchange QR
 verification with a friend, and message over internet, LAN, and mesh with truthful
@@ -291,7 +297,24 @@ exclusion. Remaining for groups: the `kultd` RPC + `kult` CLI front door,
 **Acceptance**: audit findings triaged with public report; reproducible-build attestation
 for all release artifacts.
 
+## Near horizon: real-time calls
+
+Live voice and video calls are in scope as a near-horizon capability, strictly
+confined to high-bandwidth carriers (internet libp2p and LAN/mDNS) and disabled
+over any airtime-budgeted mesh link. The transport core already negotiates the
+direct connections a call needs (QUIC, DCUtR hole punching), and identity keys
+authenticate the peer with no central coordinator. Because this adds a real-time
+media path to the transports, it is pinned by ADR-0013 (Proposed) (media
+transport, metadata-blind call setup, carrier-gating rule) ahead of
+implementation. Recorded
+audio/video clips are already in scope as ordinary asynchronous payloads. Details
+and constraints: [11: Feature Scope](11-feature-scope.md).
+
 ## Explicitly not scheduled
 
-Voice/video calls, cryptocurrency anything, federation with other networks, and any
-feature requiring project-operated infrastructure. Each would need a compelling ADR.
+Cryptocurrency anything, federation with other networks, and any feature requiring
+project-operated infrastructure. Each would need a compelling ADR.
+
+For the wider product-feature triage (which messenger-app features fit the model
+and under what constraints, and where each maps onto these milestones), see
+[11: Feature Scope](11-feature-scope.md).

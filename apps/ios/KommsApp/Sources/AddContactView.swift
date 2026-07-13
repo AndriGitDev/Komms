@@ -61,11 +61,13 @@ struct AddContactView: View {
                         Text("Where to reach them directly, if you know it — e.g. a LAN or public address. Otherwise discovery finds a path.")
                     }
                 case .address:
-                    Section("kult address") {
+                    Section {
                         TextField("kk1…", text: $address)
                             .font(.caption.monospaced())
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
+                    } header: {
+                        Text("kult address")
                     } footer: {
                         Text("Looks their prekey bundle up on the DHT — needs a working discovery path (bootstrap or LAN).")
                     }
