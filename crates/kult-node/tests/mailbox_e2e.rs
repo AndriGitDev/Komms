@@ -69,7 +69,11 @@ async fn offline_recipient_via_relay_mailbox() {
         .send_message(&bob_id, plaintext, NOW, &mut rng)
         .unwrap();
     alice.tick(NOW + 1, &mut rng).await.unwrap();
-    assert_eq!(alice.queued().unwrap(), 0, "deposited at the relay");
+    assert_eq!(
+        alice.queued().unwrap(),
+        1,
+        "handshake deposited; capability waits for the session token"
+    );
 
     // ADR-0007, end-to-end: alice and bob share this relay, yet alice's own
     // check-in (with *her* recipient-scoped token set) collects nothing —
@@ -120,7 +124,8 @@ async fn offline_recipient_via_relay_mailbox() {
         })
         .unwrap();
 
-    // Bob's encrypted receipt takes the same path back: sealed sender gave
+    // Bob's encrypted receipt and terminal capability control take the same
+    // path back: sealed sender gave
     // him no return hints, so he routes via the shared relay, where alice's
     // earlier check-in already registered her filters. (His first flush had
     // no route and backed off — the retry runs once the backoff elapses.)
@@ -137,7 +142,7 @@ async fn offline_recipient_via_relay_mailbox() {
         .mailbox_checkin(&relay_addr, &alice.mailbox_tokens(NOW + 61))
         .await
         .unwrap();
-    assert_eq!(collected, 1);
+    assert_eq!(collected, 2, "receipt plus terminal capability control");
     let events = alice.tick(NOW + 62, &mut rng).await.unwrap();
     assert!(
         events.iter().any(|e| matches!(

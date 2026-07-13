@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use kult_crypto::{derive_kek, CryptoError, Identity, KdfProfile, Session, StorageKey};
-use kult_protocol::Envelope;
+use kult_protocol::{CapabilityControl, Envelope};
 
 mod backup;
 
@@ -261,6 +261,7 @@ const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta     (k TEXT PRIMARY KEY, v BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS identity (id INTEGER PRIMARY KEY CHECK (id = 1), blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS sessions (peer BLOB PRIMARY KEY, blob BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS capabilities (peer BLOB PRIMARY KEY, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS messages (rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS queue    (seq INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS seen     (id BLOB PRIMARY KEY);
@@ -278,6 +279,7 @@ pub struct Store {
     conn: Connection,
     k_identity: StorageKey,
     k_sessions: StorageKey,
+    k_capabilities: StorageKey,
     k_messages: StorageKey,
     k_queue: StorageKey,
     k_contacts: StorageKey,
@@ -366,6 +368,7 @@ impl Store {
         Self {
             k_identity: master.derive(b"KK-store-identity"),
             k_sessions: master.derive(b"KK-store-sessions"),
+            k_capabilities: master.derive(b"KK-store-capabilities"),
             k_messages: master.derive(b"KK-store-messages"),
             k_queue: master.derive(b"KK-store-queue"),
             k_contacts: master.derive(b"KK-store-contacts"),
@@ -437,6 +440,55 @@ impl Store {
             Some(s) => Ok(Some(Session::unseal(&s, &self.k_sessions)?)),
             None => Ok(None),
         }
+    }
+
+    // ---- authenticated peer capabilities ---------------------------------
+
+    /// Persist (or replace) the authenticated content-capability snapshot
+    /// tied to a peer's current ratchet session.
+    pub fn put_capabilities(
+        &self,
+        peer: &[u8; 32],
+        capabilities: &CapabilityControl,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let encoded = capabilities.encode()?;
+        let sealed = self.k_capabilities.seal(b"capability", &encoded, rng);
+        self.conn.execute(
+            "INSERT OR REPLACE INTO capabilities (peer, blob) VALUES (?1, ?2)",
+            params![peer.as_slice(), sealed],
+        )?;
+        Ok(())
+    }
+
+    /// Load the authenticated content-capability snapshot for a peer's
+    /// current ratchet session.
+    pub fn get_capabilities(&self, peer: &[u8; 32]) -> Result<Option<CapabilityControl>> {
+        let sealed: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT blob FROM capabilities WHERE peer = ?1",
+                params![peer.as_slice()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match sealed {
+            Some(sealed) => {
+                let plain = self.k_capabilities.open(b"capability", &sealed)?;
+                Ok(Some(CapabilityControl::decode(&plain)?))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Clear a peer capability snapshot when its ratchet session is reset or
+    /// replaced. Capability state is re-creatable and never backed up.
+    pub fn delete_capabilities(&self, peer: &[u8; 32]) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM capabilities WHERE peer = ?1",
+            params![peer.as_slice()],
+        )?;
+        Ok(())
     }
 
     // ---- messages ---------------------------------------------------------

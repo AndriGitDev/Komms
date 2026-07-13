@@ -14,8 +14,10 @@ use rand::SeedableRng;
 use kult_crypto::{
     Identity, KdfProfile, OneTimePrekeySecret, PqPrekeySecret, PrekeyBundle, SignedPrekeySecret,
 };
-use kult_node::{Event, Node};
-use kult_protocol::{Envelope, EnvelopeKind};
+use kult_node::{ContentStatus, Event, Node};
+use kult_protocol::{
+    decode_content, encode_text, DecodedContent, Envelope, EnvelopeKind, CONTENT_MAGIC,
+};
 use kult_store::DeliveryState;
 use kult_transport::{
     CostClass, DeliveryHint, LatencyClass, LinkProfile, Reachability, SendReceipt,
@@ -135,6 +137,9 @@ async fn sneakernet_round_trip_with_receipts_and_restart() {
     assert!(delivered.contains(&m1) && delivered.contains(&m2));
     let history = alice.messages_with(&bob_id).unwrap();
     assert!(history.iter().all(|r| r.state == DeliveryState::Delivered));
+    assert!(history
+        .iter()
+        .all(|record| matches!(decode_content(&record.body), DecodedContent::LegacyText(_))));
 
     // ---- Both devices restart; everything must survive. ----
     drop(alice);
@@ -153,12 +158,104 @@ async fn sneakernet_round_trip_with_receipts_and_restart() {
     let r1 = bob
         .send_message(&alice_id, b"got both, replying", NOW + 200, &mut rng)
         .unwrap();
+    let reply_history = bob.messages_with(&alice_id).unwrap();
+    assert!(matches!(
+        decode_content(&reply_history.last().unwrap().body),
+        DecodedContent::Text { id, text: "got both, replying" } if id == r1
+    ));
     bob.tick(NOW + 201, &mut rng).await.unwrap();
     let events = alice.tick(NOW + 260, &mut rng).await.unwrap();
     assert_eq!(count_received(&events), 1);
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::MessageReceived {
+            id,
+            content: ContentStatus::Text { id: content_id },
+            body,
+            ..
+        } if *id == r1 && content_id == id && body == b"got both, replying"
+    )));
     // Alice's receipt makes it back to Bob.
     let events = bob.tick(NOW + 320, &mut rng).await.unwrap();
     assert!(delivered_ids(&events).contains(&r1));
+
+    // Authenticated unsupported and malformed content is retained exactly,
+    // acknowledged normally, and never exposed as raw application text.
+    let mut unsupported = CONTENT_MAGIC.to_vec();
+    unsupported.push(2); // unknown framing version
+    let mut malformed = CONTENT_MAGIC.to_vec();
+    malformed.push(1); // truncated v1 header
+    let unsupported_id = bob
+        .send_message(&alice_id, &unsupported, NOW + 400, &mut rng)
+        .unwrap();
+    let malformed_id = bob
+        .send_message(&alice_id, &malformed, NOW + 400, &mut rng)
+        .unwrap();
+    bob.tick(NOW + 401, &mut rng).await.unwrap();
+    let events = alice.tick(NOW + 460, &mut rng).await.unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::MessageReceived {
+            body,
+            content: ContentStatus::Unsupported { format_version: Some(2), kind: None },
+            ..
+        } if body.is_empty()
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::MessageReceived {
+            body,
+            content: ContentStatus::Malformed,
+            ..
+        } if body.is_empty()
+    )));
+    let retained = alice.messages_with(&bob_id).unwrap();
+    assert!(retained.iter().any(|record| record.body == unsupported));
+    assert!(retained.iter().any(|record| record.body == malformed));
+    let events = bob.tick(NOW + 520, &mut rng).await.unwrap();
+    let delivered = delivered_ids(&events);
+    assert!(delivered.contains(&unsupported_id) && delivered.contains(&malformed_id));
+
+    // Re-encrypting the same logical event under two transport envelopes is
+    // still one message inside this conversation and author scope. Both
+    // envelopes are acknowledged so the sender's delivery ladder completes.
+    let repeated = encode_text([0x42; 16], "once").unwrap();
+    let copy_one = bob
+        .send_message(&alice_id, &repeated, NOW + 600, &mut rng)
+        .unwrap();
+    let copy_two = bob
+        .send_message(&alice_id, &repeated, NOW + 600, &mut rng)
+        .unwrap();
+    bob.tick(NOW + 601, &mut rng).await.unwrap();
+    let events = alice.tick(NOW + 660, &mut rng).await.unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                event,
+                Event::MessageReceived {
+                    content: ContentStatus::Text { id },
+                    ..
+                } if *id == [0x42; 16]
+            ))
+            .count(),
+        1
+    );
+    assert_eq!(
+        alice
+            .messages_with(&bob_id)
+            .unwrap()
+            .iter()
+            .filter(|record| matches!(
+                decode_content(&record.body),
+                DecodedContent::Text { id, .. } if id == [0x42; 16]
+            ))
+            .count(),
+        1
+    );
+    let events = bob.tick(NOW + 720, &mut rng).await.unwrap();
+    let delivered = delivered_ids(&events);
+    assert!(delivered.contains(&copy_one) && delivered.contains(&copy_two));
 
     // Wrong passphrase still fails closed.
     assert!(Node::open(&alice_db, b"wrong").is_err());
@@ -396,23 +493,23 @@ async fn retry_with_backoff_until_link_recovers() {
         .send_message(&peer, b"stubborn", NOW, &mut rng)
         .unwrap();
 
-    // Link down: first flush fails, item stays queued.
+    // Link down: message and terminal capability control both stay queued.
     alice.tick(NOW, &mut rng).await.unwrap();
-    assert_eq!(attempts.load(Ordering::SeqCst), 1);
-    assert_eq!(alice.queued().unwrap(), 1);
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(alice.queued().unwrap(), 2);
 
     // Inside the backoff window nothing is attempted.
     alice.tick(NOW + 5, &mut rng).await.unwrap();
     assert_eq!(
         attempts.load(Ordering::SeqCst),
-        1,
+        2,
         "backoff suppresses retry"
     );
 
     // Link recovers; after the backoff expires the send succeeds.
     healthy.store(true, Ordering::SeqCst);
     alice.tick(NOW + 31, &mut rng).await.unwrap();
-    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(attempts.load(Ordering::SeqCst), 4);
     assert_eq!(alice.queued().unwrap(), 0);
     let record = alice
         .messages_with(&peer)
@@ -421,7 +518,7 @@ async fn retry_with_backoff_until_link_recovers() {
         .find(|r| r.id == msg)
         .unwrap();
     assert_eq!(record.state, DeliveryState::Sent);
-    assert_eq!(net.lock().unwrap().get(&9).unwrap().len(), 1);
+    assert_eq!(net.lock().unwrap().get(&9).unwrap().len(), 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -466,19 +563,26 @@ async fn out_of_order_arrival_survives_restart() {
         .unwrap();
     alice.tick(NOW + 1, &mut rng).await.unwrap();
 
-    // Intercept the two envelopes and deliver the session message first.
+    // Intercept the two message envelopes and deliver the session message
+    // first. The terminal capability control is irrelevant to this test.
     // (Picked by kind: priority flushing sends the text-class envelope
     // before the handshake, so wire order is not handshake-first.)
     let (handshake, session_msg) = {
         let mut locked = net.lock().unwrap();
         let queue = locked.get_mut(&2).unwrap();
-        assert_eq!(queue.len(), 2);
+        assert_eq!(queue.len(), 3);
         let hs_at = queue
             .iter()
             .position(|e| e.kind == EnvelopeKind::Handshake)
             .unwrap();
         let hs = queue.remove(hs_at);
-        let sm = queue.remove(0);
+        let msg_at = queue
+            .iter()
+            .position(|e| e.kind == EnvelopeKind::Message)
+            .unwrap();
+        let sm = queue.remove(msg_at);
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.pop().unwrap().kind, EnvelopeKind::Receipt);
         (hs, sm)
     };
 

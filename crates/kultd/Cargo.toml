@@ -18,6 +18,7 @@ path = "src/bin/kult.rs"
 [dependencies]
 kult-crypto = { version = "0.1.0", path = "../kult-crypto" }
 kult-node = { version = "0.1.0", path = "../kult-node" }
+kult-protocol = { version = "0.1.0", path = "../kult-protocol" }
 kult-store = { version = "0.1.0", path = "../kult-store" }
 # The daemon always ships the Meshtastic carrier: attaching a ~30€ radio to
 # the box the daemon runs on is exactly the off-grid deployment M4 targets.

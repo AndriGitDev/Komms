@@ -228,6 +228,19 @@ pub enum Direction {
     Inbound,
 }
 
+/// Application-visible interpretation of authenticated message content.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ContentKind {
+    /// Valid UTF-8 from the permanent pre-frame compatibility path.
+    LegacyText,
+    /// Canonical framed text.
+    Text,
+    /// Authenticated content this version cannot interpret.
+    Unsupported,
+    /// A typed frame that violated the canonical contract.
+    Malformed,
+}
+
 /// A stored contact.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct Contact {
@@ -254,6 +267,8 @@ pub struct Message {
     pub timestamp: u64,
     /// Message body (UTF-8 text).
     pub body: String,
+    /// Explicit content interpretation.
+    pub content_kind: ContentKind,
 }
 
 /// A sender-key group, excluding every secret and chain value.
@@ -293,6 +308,8 @@ pub struct GroupMessage {
     pub timestamp: u64,
     /// Message body (UTF-8 text).
     pub body: String,
+    /// Explicit content interpretation.
+    pub content_kind: ContentKind,
     /// Per-member delivery states (outbound only).
     pub deliveries: Vec<GroupDelivery>,
 }
@@ -363,6 +380,8 @@ pub enum Event {
         timestamp: u64,
         /// Decrypted body.
         body: String,
+        /// Explicit content interpretation.
+        content_kind: ContentKind,
     },
     /// An unknown peer completed a handshake with us; a contact stub was
     /// created (unverified, no hints — the application fills those in).
@@ -401,6 +420,8 @@ pub enum Event {
         timestamp: u64,
         /// Decrypted body.
         body: String,
+        /// Explicit content interpretation.
+        content_kind: ContentKind,
     },
     /// One member's copy of an outbound group message changed state.
     GroupDeliveryUpdated {
@@ -428,11 +449,13 @@ impl Event {
                 id,
                 timestamp,
                 body,
+                content,
             } => Self::MessageReceived {
                 peer: hex_encode(&peer),
                 id: hex_encode(&id),
                 timestamp,
-                body: String::from_utf8_lossy(&body).into_owned(),
+                body: render_event_body(&body, content),
+                content_kind: content_kind(content),
             },
             kult_node::Event::ContactAdded { peer } => Self::ContactAdded {
                 peer: hex_encode(&peer),
@@ -452,12 +475,14 @@ impl Event {
                 id,
                 timestamp,
                 body,
+                content,
             } => Self::GroupMessageReceived {
                 group: hex_encode(&group),
                 sender: hex_encode(&sender),
                 id: hex_encode(&id),
                 timestamp,
-                body: String::from_utf8_lossy(&body).into_owned(),
+                body: render_event_body(&body, content),
+                content_kind: content_kind(content),
             },
             kult_node::Event::GroupDeliveryUpdated { id, peer, state } => {
                 Self::GroupDeliveryUpdated {
@@ -671,24 +696,28 @@ impl KultNode {
         Ok(self
             .call(|resp| Msg::GroupMessages { group, resp })?
             .iter()
-            .map(|message| GroupMessage {
-                id: hex_encode(&message.id),
-                group: hex_encode(&message.group),
-                sender: hex_encode(&message.sender),
-                direction: match message.direction {
-                    kult_store::Direction::Outbound => Direction::Outbound,
-                    kult_store::Direction::Inbound => Direction::Inbound,
-                },
-                timestamp: message.timestamp,
-                body: String::from_utf8_lossy(&message.body).into_owned(),
-                deliveries: message
-                    .deliveries
-                    .iter()
-                    .map(|delivery| GroupDelivery {
-                        peer: hex_encode(&delivery.peer),
-                        state: DeliveryState::from_store(delivery.state),
-                    })
-                    .collect(),
+            .map(|message| {
+                let (body, content_kind) = render_stored_content(&message.body);
+                GroupMessage {
+                    id: hex_encode(&message.id),
+                    group: hex_encode(&message.group),
+                    sender: hex_encode(&message.sender),
+                    direction: match message.direction {
+                        kult_store::Direction::Outbound => Direction::Outbound,
+                        kult_store::Direction::Inbound => Direction::Inbound,
+                    },
+                    timestamp: message.timestamp,
+                    body,
+                    content_kind,
+                    deliveries: message
+                        .deliveries
+                        .iter()
+                        .map(|delivery| GroupDelivery {
+                            peer: hex_encode(&delivery.peer),
+                            state: DeliveryState::from_store(delivery.state),
+                        })
+                        .collect(),
+                }
             })
             .collect())
     }
@@ -712,16 +741,20 @@ impl KultNode {
         let messages = self.call(|resp| Msg::Messages { peer, resp })?;
         Ok(messages
             .iter()
-            .map(|m| Message {
-                id: hex_encode(&m.id),
-                peer: hex_encode(&m.peer),
-                direction: match m.direction {
-                    kult_store::Direction::Outbound => Direction::Outbound,
-                    kult_store::Direction::Inbound => Direction::Inbound,
-                },
-                state: DeliveryState::from_store(m.state),
-                timestamp: m.timestamp,
-                body: String::from_utf8_lossy(&m.body).into_owned(),
+            .map(|m| {
+                let (body, content_kind) = render_stored_content(&m.body);
+                Message {
+                    id: hex_encode(&m.id),
+                    peer: hex_encode(&m.peer),
+                    direction: match m.direction {
+                        kult_store::Direction::Outbound => Direction::Outbound,
+                        kult_store::Direction::Inbound => Direction::Inbound,
+                    },
+                    state: DeliveryState::from_store(m.state),
+                    timestamp: m.timestamp,
+                    body,
+                    content_kind,
+                }
             })
             .collect())
     }
@@ -847,6 +880,45 @@ fn runtime_config(
     })
 }
 
+const UNSUPPORTED_MESSAGE: &str = "Unsupported message — update Komms";
+
+fn content_kind(status: kult_node::ContentStatus) -> ContentKind {
+    match status {
+        kult_node::ContentStatus::LegacyText => ContentKind::LegacyText,
+        kult_node::ContentStatus::Text { .. } => ContentKind::Text,
+        kult_node::ContentStatus::Unsupported { .. } => ContentKind::Unsupported,
+        kult_node::ContentStatus::Malformed => ContentKind::Malformed,
+        _ => ContentKind::Unsupported,
+    }
+}
+
+fn render_event_body(body: &[u8], status: kult_node::ContentStatus) -> String {
+    match status {
+        kult_node::ContentStatus::LegacyText | kult_node::ContentStatus::Text { .. } => {
+            String::from_utf8(body.to_vec()).expect("node exposes only validated UTF-8 text")
+        }
+        kult_node::ContentStatus::Unsupported { .. } | kult_node::ContentStatus::Malformed => {
+            UNSUPPORTED_MESSAGE.to_owned()
+        }
+        _ => UNSUPPORTED_MESSAGE.to_owned(),
+    }
+}
+
+fn render_stored_content(bytes: &[u8]) -> (String, ContentKind) {
+    match kult_protocol::decode_content(bytes) {
+        kult_protocol::DecodedContent::LegacyText(text) => {
+            (text.to_owned(), ContentKind::LegacyText)
+        }
+        kult_protocol::DecodedContent::Text { text, .. } => (text.to_owned(), ContentKind::Text),
+        kult_protocol::DecodedContent::Unsupported { .. } => {
+            (UNSUPPORTED_MESSAGE.to_owned(), ContentKind::Unsupported)
+        }
+        kult_protocol::DecodedContent::Malformed => {
+            (UNSUPPORTED_MESSAGE.to_owned(), ContentKind::Malformed)
+        }
+    }
+}
+
 /// Lowercase hex encoding.
 fn hex_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -908,6 +980,7 @@ mod tests {
             id: [2; 16],
             timestamp: 7,
             body: b"hi".to_vec(),
+            content: kult_node::ContentStatus::LegacyText,
         })
         .unwrap();
         match event {
@@ -916,13 +989,29 @@ mod tests {
                 id,
                 timestamp,
                 body,
+                content_kind,
             } => {
                 assert_eq!(peer, "01".repeat(32));
                 assert_eq!(id, "02".repeat(16));
                 assert_eq!(timestamp, 7);
                 assert_eq!(body, "hi");
+                assert_eq!(content_kind, ContentKind::LegacyText);
             }
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+
+    #[test]
+    fn unsupported_content_never_crosses_as_lossy_or_raw_text() {
+        let mut unknown = kult_protocol::CONTENT_MAGIC.to_vec();
+        unknown.push(2);
+        let (body, kind) = render_stored_content(&unknown);
+        assert_eq!(body, UNSUPPORTED_MESSAGE);
+        assert_eq!(kind, ContentKind::Unsupported);
+        assert!(!body.contains('\u{fffd}'));
+
+        let (body, kind) = render_stored_content(&kult_protocol::CONTENT_MAGIC);
+        assert_eq!(body, UNSUPPORTED_MESSAGE);
+        assert_eq!(kind, ContentKind::Malformed);
     }
 }

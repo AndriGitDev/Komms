@@ -90,6 +90,31 @@ pub struct GroupInfo {
     pub members: Vec<[u8; 32]>,
 }
 
+/// Render-safe classification of authenticated message content (ADR-0014).
+///
+/// Text bytes are carried separately by the event. Unsupported and malformed
+/// content never exposes its raw authenticated bytes to application surfaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ContentStatus {
+    /// Valid UTF-8 from the permanent pre-frame compatibility path.
+    LegacyText,
+    /// Canonical framed text with its author-minted content id.
+    Text {
+        /// Content id scoped to the conversation and author.
+        id: [u8; 16],
+    },
+    /// Authenticated content this client version cannot interpret.
+    Unsupported {
+        /// Typed framing version, when known.
+        format_version: Option<u8>,
+        /// Content kind, when known from the common header.
+        kind: Option<u16>,
+    },
+    /// A typed frame that violated the canonical framing contract.
+    Malformed,
+}
+
 /// What the node reports back to the application layer. Delivery states are
 /// honest by construction (docs/09-implementation-guide.md ground rule 4):
 /// `Sent` means handed to a link, `Delivered` means an end-to-end encrypted
@@ -113,8 +138,11 @@ pub enum Event {
         id: [u8; 16],
         /// Local receive time (Unix seconds).
         timestamp: u64,
-        /// Decrypted body.
+        /// Renderable UTF-8 bytes for legacy or framed text; empty for
+        /// unsupported or malformed content.
         body: Vec<u8>,
+        /// Explicit content interpretation.
+        content: ContentStatus,
     },
     /// An unknown peer completed a handshake with us; a contact stub was
     /// created (unverified, no hints — the application fills those in).
@@ -155,8 +183,11 @@ pub enum Event {
         id: [u8; 16],
         /// Local receive time (Unix seconds).
         timestamp: u64,
-        /// Decrypted body.
+        /// Renderable UTF-8 bytes for legacy or framed text; empty for
+        /// unsupported or malformed content.
         body: Vec<u8>,
+        /// Explicit content interpretation.
+        content: ContentStatus,
     },
     /// One member's copy of an outbound group message changed delivery
     /// state — per member, honestly, like the pairwise ladder.

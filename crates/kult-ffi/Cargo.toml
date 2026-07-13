@@ -29,6 +29,7 @@ bindgen = ["uniffi/cli"]
 [dependencies]
 kult-crypto = { version = "0.1.0", path = "../kult-crypto" }
 kult-node = { version = "0.1.0", path = "../kult-node" }
+kult-protocol = { version = "0.1.0", path = "../kult-protocol" }
 kult-store = { version = "0.1.0", path = "../kult-store" }
 kult-transport = { version = "0.1.0", path = "../kult-transport" }
 rand = "0.8"

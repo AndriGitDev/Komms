@@ -112,7 +112,7 @@ final class SessionE2eTests: XCTestCase {
         // Send → the event stream walks the honest ladder.
         let msgId = try alice.send(peer: bobPeer, body: "hello from the phone")
         let got = try bEv.wait("bob's message event") { event -> (peer: String, body: String)? in
-            if case let .messageReceived(peer, _, _, body) = event { return (peer, body) }
+            if case let .messageReceived(peer, _, _, body, _) = event { return (peer, body) }
             return nil
         }
         XCTAssertEqual(alicePeer, got.peer)
@@ -240,7 +240,7 @@ final class SessionE2eTests: XCTestCase {
         // history exposes one truthful state per recipient.
         let first = try alice.sendGroup(group: group, body: "Meet at the north trailhead")
         _ = try bEv.wait("Bob's group message") { event -> Void? in
-            if case let .groupMessageReceived(receivedGroup, _, _, _, body) = event,
+            if case let .groupMessageReceived(receivedGroup, _, _, _, body, _) = event,
                receivedGroup == group, body == "Meet at the north trailhead" {
                 return ()
             }
@@ -349,7 +349,7 @@ final class SessionE2eTests: XCTestCase {
         try bob.setHints(peer: alicePeer, hints: multiaddrHint(try listenAddr(alice)))
         _ = try bob.send(peer: alicePeer, body: "glad you're back")
         let got = try aEv.wait("alice's message event") { event -> String? in
-            if case let .messageReceived(_, _, _, body) = event { return body }
+            if case let .messageReceived(_, _, _, body, _) = event { return body }
             return nil
         }
         XCTAssertEqual("glad you're back", got)

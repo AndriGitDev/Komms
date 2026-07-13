@@ -88,13 +88,14 @@ cargo run --example sneakernet_demo
 > shipped too: `kultd` RPC, the `kult` CLI, and `kult-ffi` expose group
 > records, history, events, membership operations, and honest per-member
 > delivery states, pinned by RPC and bindings e2e tests. Desktop, Android,
-> and iOS group UX are shipped with truthful partial-delivery rows. The next
-> shared slice is the versioned message-content model
-> ([ADR-0014](docs/adr/0014-versioned-message-content.md), Proposed), which
-> keeps legacy text readable while unlocking bounded typed content. Remaining
-> per the [roadmap](docs/08-roadmap.md): the physical two-radio bench (M4); a
-> hands-on device pass of the iOS app layer (M5); F2 implementation and the
-> wider M6 hardening list; and the external security audit.
+> and iOS group UX are shipped with truthful partial-delivery rows. The shared
+> versioned message-content foundation is shipped too
+> ([ADR-0014](docs/adr/0014-versioned-message-content.md), Accepted): bounded
+> encrypted `Text` frames negotiate conservatively while legacy text remains
+> permanently readable and unknown authenticated content stays durable.
+> Remaining per the [roadmap](docs/08-roadmap.md): the physical two-radio bench (M4); a
+> hands-on device pass of the iOS app layer (M5); the wider M6 hardening list;
+> and the external security audit.
 
 Komms is a decentralized messenger built on four principles:
 

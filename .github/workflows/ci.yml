@@ -86,7 +86,7 @@ jobs:
       - name: fuzz kult-protocol targets
         working-directory: crates/kult-protocol
         run: |
-          for t in protocol_envelope_decode bundle_import reassembler_insert; do
+          for t in protocol_envelope_decode bundle_import reassembler_insert content_decode capability_decode; do
             cargo +nightly fuzz run "$t" -- -max_total_time=60
           done
 

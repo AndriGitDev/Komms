@@ -12,7 +12,7 @@ use rand::SeedableRng;
 
 use kult_crypto::KdfProfile;
 use kult_node::{Event, Node};
-use kult_protocol::{Envelope, EnvelopeKind};
+use kult_protocol::{decode_content, DecodedContent, Envelope, EnvelopeKind};
 use kult_store::DeliveryState;
 use kult_transport::{
     CostClass, DeliveryHint, LatencyClass, LinkProfile, Reachability, SendReceipt, Transport,
@@ -192,6 +192,10 @@ async fn group_round_trip_receipts_and_restart() {
     let m1 = alice
         .group_send(&gid, b"meet at the pass at dawn", NOW, &mut rng)
         .unwrap();
+    assert!(matches!(
+        decode_content(&alice.group_messages(&gid).unwrap()[0].body),
+        DecodedContent::LegacyText("meet at the pass at dawn")
+    ));
 
     // Alice's first tick: handshakes + announces queued and flushed.
     alice.tick(NOW + 1, &mut rng).await.unwrap();
@@ -273,6 +277,17 @@ async fn group_round_trip_receipts_and_restart() {
         group_bodies(&events),
         vec![b"carol after the restarts".to_vec()]
     );
+
+    // Once every current co-member has authenticated v1 Text support, the
+    // same encrypt-once group path switches to a canonical framed body.
+    let framed = alice
+        .group_send(&gid, b"framed after negotiation", NOW + 50, &mut rng)
+        .unwrap();
+    let history = alice.group_messages(&gid).unwrap();
+    assert!(matches!(
+        decode_content(&history.last().unwrap().body),
+        DecodedContent::Text { id, text: "framed after negotiation" } if id == framed
+    ));
 }
 
 // ---------------------------------------------------------------------------

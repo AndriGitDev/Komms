@@ -44,8 +44,10 @@ use kult_crypto::{
     InitialMessage, KdfProfile, PrekeyBundle, RatchetMessage, SafetyNumber,
 };
 use kult_protocol::{
-    delivery_token, epoch_day, fragment, intro_token, pad, unpad, Envelope, EnvelopeKind,
-    MailboxKey, Reassembler, ReceiptPayload, ENVELOPE_HEADER_LEN, REASSEMBLY_WINDOW_SECS,
+    decode_content, delivery_token, encode_text, epoch_day, fragment, intro_token,
+    is_capability_control, pad, unpad, CapabilityControl, DecodedContent, Envelope, EnvelopeKind,
+    FormatCapabilities, MailboxKey, Reassembler, ReceiptPayload, CONTENT_FORMAT_V1,
+    CONTENT_KIND_TEXT, ENVELOPE_HEADER_LEN, REASSEMBLY_WINDOW_SECS,
 };
 use kult_store::{ContactRecord, DeliveryState, Direction, MessageRecord, QueueItem, Store};
 use kult_transport::{CostClass, DeliveryHint, Discovery, Reachability, Transport};
@@ -55,7 +57,7 @@ mod error;
 mod groups;
 mod vault;
 
-pub use api::{Command, Event, GroupInfo};
+pub use api::{Command, ContentStatus, Event, GroupInfo};
 pub use error::NodeError;
 
 use vault::PrekeyVault;
@@ -269,6 +271,7 @@ pub struct Node {
     transports: Vec<Arc<dyn Transport>>,
     discoveries: Vec<Arc<dyn Discovery>>,
     sessions: HashMap<[u8; 32], kult_crypto::Session>,
+    capabilities_advertised: HashSet<[u8; 32]>,
     reassembler: Reassembler,
     backoff: HashMap<i64, Backoff>,
     frag_meta: HashMap<[u8; 4], PartialMeta>,
@@ -354,6 +357,7 @@ impl Node {
             transports: Vec::new(),
             discoveries: Vec::new(),
             sessions,
+            capabilities_advertised: HashSet::new(),
             reassembler: Reassembler::new(),
             backoff: HashMap::new(),
             frag_meta: HashMap::new(),
@@ -700,13 +704,25 @@ impl Node {
 
         let mut id = [0u8; 16];
         rng.fill_bytes(&mut id);
+
+        // The anonymous first flight is always legacy text. Once a live
+        // session has authenticated v1 Text support, reuse the record id as
+        // the framed content id and retain those exact bytes in history.
+        let wire_body = if self.sessions.contains_key(peer)
+            && core::str::from_utf8(body).is_ok()
+            && self.peer_supports_text(peer)?
+        {
+            encode_text(id, core::str::from_utf8(body).expect("checked above"))?
+        } else {
+            body.to_vec()
+        };
         let mut record = MessageRecord {
             id,
             peer: *peer,
             direction: Direction::Outbound,
             state: DeliveryState::Queued,
             timestamp: now,
-            body: body.to_vec(),
+            body: wire_body.clone(),
             wire_id: None,
         };
         self.store.put_message(&record, rng)?;
@@ -715,7 +731,7 @@ impl Node {
             state: DeliveryState::Queued,
         });
 
-        let padded = pad(body)?;
+        let padded = pad(&wire_body)?;
         let envelope = if let Some(session) = self.sessions.get_mut(peer) {
             let msg = session.encrypt(rng, now, &padded, &[]);
             let token = delivery_token(
@@ -762,6 +778,10 @@ impl Node {
         //    handshakes so re-keyed traffic flows without waiting for the
         //    user to send first.
         self.rekey_reset_peers(now, rng)?;
+
+        // Loaded and newly-created sessions advertise on the first tick.
+        // Controls use the durable queue and are terminal like receipts.
+        self.advertise_capabilities(now, rng)?;
 
         // 1. Gather: previously-stashed envelopes first, then fresh arrivals.
         //    When bridging, fresh arrivals with tokens this node does not
@@ -896,6 +916,8 @@ impl Node {
         }
         let (session, init) = initiate(&self.identity, &bundle, padded, now, rng)?;
         let sealed = seal_anonymous(&bundle.bundle().identity, HS_AD, &init.encode(), rng);
+        self.store.delete_capabilities(peer)?;
+        self.capabilities_advertised.remove(peer);
         self.store.put_session(peer, &session, rng)?;
         self.sessions.insert(*peer, session);
         Ok(Envelope::new(
@@ -1066,6 +1088,8 @@ impl Node {
             self.events.push_back(Event::ContactAdded { peer });
         }
         self.store.put_session(&peer, &session, rng)?;
+        self.store.delete_capabilities(&peer)?;
+        self.capabilities_advertised.remove(&peer);
         self.sessions.insert(peer, session);
         *established = true;
         self.events.push_back(Event::SessionEstablished { peer });
@@ -1126,7 +1150,14 @@ impl Node {
             }
             EnvelopeKind::Receipt => {
                 // Receipts are terminal: they are not themselves receipted.
-                if let Ok(receipt) = ReceiptPayload::decode(&body) {
+                if is_capability_control(&body) {
+                    if let Ok(capabilities) = CapabilityControl::decode(&body) {
+                        self.store.put_capabilities(&peer, &capabilities, rng)?;
+                        if !self.capabilities_advertised.contains(&peer) {
+                            self.queue_capabilities(&peer, now, rng)?;
+                        }
+                    }
+                } else if let Ok(receipt) = ReceiptPayload::decode(&body) {
                     self.apply_receipt(&peer, &receipt, rng)?;
                 }
             }
@@ -1152,8 +1183,49 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
-        let mut id = [0u8; 16];
-        rng.fill_bytes(&mut id);
+        let decoded = decode_content(&body);
+        if let DecodedContent::Text { id, .. } = decoded {
+            let duplicate = self.store.messages_with(&peer)?.iter().any(|record| {
+                record.direction == Direction::Inbound
+                    && matches!(
+                        decode_content(&record.body),
+                        DecodedContent::Text { id: stored_id, .. } if stored_id == id
+                    )
+            });
+            if duplicate {
+                return Ok(());
+            }
+        }
+        let (id, event_body, content) = match decoded {
+            DecodedContent::LegacyText(text) => {
+                let mut id = [0u8; 16];
+                rng.fill_bytes(&mut id);
+                (id, text.as_bytes().to_vec(), ContentStatus::LegacyText)
+            }
+            DecodedContent::Text { id, text } => {
+                (id, text.as_bytes().to_vec(), ContentStatus::Text { id })
+            }
+            DecodedContent::Unsupported {
+                format_version,
+                kind,
+            } => {
+                let mut id = [0u8; 16];
+                rng.fill_bytes(&mut id);
+                (
+                    id,
+                    Vec::new(),
+                    ContentStatus::Unsupported {
+                        format_version,
+                        kind,
+                    },
+                )
+            }
+            DecodedContent::Malformed => {
+                let mut id = [0u8; 16];
+                rng.fill_bytes(&mut id);
+                (id, Vec::new(), ContentStatus::Malformed)
+            }
+        };
         self.store.put_message(
             &MessageRecord {
                 id,
@@ -1161,7 +1233,7 @@ impl Node {
                 direction: Direction::Inbound,
                 state: DeliveryState::Received,
                 timestamp: now,
-                body: body.clone(),
+                body,
                 wire_id: None,
             },
             rng,
@@ -1170,8 +1242,70 @@ impl Node {
             peer,
             id,
             timestamp: now,
-            body,
+            body: event_body,
+            content,
         });
+        Ok(())
+    }
+
+    fn peer_supports_text(&self, peer: &[u8; 32]) -> Result<bool> {
+        Ok(self
+            .store
+            .get_capabilities(peer)?
+            .is_some_and(|capabilities| {
+                capabilities.supports(CONTENT_FORMAT_V1, CONTENT_KIND_TEXT)
+            }))
+    }
+
+    fn local_capabilities() -> CapabilityControl {
+        CapabilityControl {
+            formats: vec![FormatCapabilities {
+                format_version: CONTENT_FORMAT_V1,
+                kinds: vec![CONTENT_KIND_TEXT],
+            }],
+        }
+    }
+
+    fn advertise_capabilities(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<()> {
+        let due: Vec<[u8; 32]> = self
+            .sessions
+            .keys()
+            .filter(|peer| !self.capabilities_advertised.contains(*peer))
+            .copied()
+            .collect();
+        for peer in due {
+            self.queue_capabilities(&peer, now, rng)?;
+        }
+        Ok(())
+    }
+
+    fn queue_capabilities(
+        &mut self,
+        peer: &[u8; 32],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let Some(session) = self.sessions.get_mut(peer) else {
+            return Ok(());
+        };
+        let payload = Self::local_capabilities().encode()?;
+        let msg = session.encrypt(rng, now, &pad(&payload)?, &[]);
+        let token = delivery_token(
+            &MailboxKey::from_bytes(*session.mailbox_key()),
+            epoch_day(now),
+            peer,
+        );
+        self.store.put_session(peer, session, rng)?;
+        self.store.queue_push(
+            &QueueItem {
+                peer: *peer,
+                msg_id: None,
+                group_msg_id: None,
+                envelope: Envelope::new(EnvelopeKind::Receipt, token, msg.encode()),
+            },
+            rng,
+        )?;
+        self.capabilities_advertised.insert(*peer);
         Ok(())
     }
 
