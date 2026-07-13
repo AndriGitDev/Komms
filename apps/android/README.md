@@ -1,7 +1,7 @@
 # Komms Android (alpha)
 
-Application **A2** ([03 — Architecture](../../docs/03-architecture.md)): a
-Kotlin shell over `kult-ffi`'s embedded node runtime — the same library
+Application **A2** ([03: Architecture](../../docs/03-architecture.md)): a
+Kotlin shell over `kult-ffi`'s embedded node runtime, the same library
 surface the desktop app dogfoods (ADR-0010). The shell adds **no protocol
 logic**: delivery states, errors, and security indicators are the node's
 own, verbatim.
@@ -11,12 +11,12 @@ own, verbatim.
 - **Create / unlock / restore** an encrypted store at the gate; restoring
   takes a `.kkr` backup file plus its 24-word mnemonic.
 - **Pair out-of-band**: show your prekey bundle as a QR, scan a friend's
-  with the camera (or paste the hex — interoperable with the desktop app
+  with the camera (or paste the hex, interoperable with the desktop app
   and `kult bundle` / `kult add`), or add a contact from their kult
   address alone via DHT lookup.
-- **Message** with honest delivery states — `queued` → `sent` (handed to a
+- **Message** with honest delivery states: `queued` → `sent` (handed to a
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
-  "held — will send when a faster link exists" verdict on airtime-budgeted
+  "held, will send when a faster link exists" verdict on airtime-budgeted
   mesh links.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends (desktop included), compared aloud or by scanning each other's
@@ -26,10 +26,10 @@ own, verbatim.
   queued and bridged-in-transit counts, refreshed live.
 - **Backup** to a single encrypted file via the system file picker; the
   sealing mnemonic is shown exactly once and stored nowhere. OS cloud
-  backup is disabled (`allowBackup=false`) — portability is the
+  backup is disabled (`allowBackup=false`): portability is the
   user-held `.kkr` file, not Google's servers.
 - **Network settings** persist as secret-free `settings.json` in the data
-  directory — the same file format as the desktop app and the same knobs
+  directory: the same file format as the desktop app and the same knobs
   as `kultd`'s flags.
 - A **foreground service** keeps the node delivering while the app is
   backgrounded; **Lock** stops the node and returns to the gate.
@@ -43,7 +43,7 @@ apps/android/
 └── app/           # the Android shell: activities, layouts, camera QR scanner
 ```
 
-Every behavior lives in `:core` and is pinned by its JVM tests — the e2e
+Every behavior lives in `:core` and is pinned by its JVM tests: the e2e
 drives two full nodes (pair by scanned bundle hex, verified `delivered`
 states via listener events, safety numbers, backup → mnemonic → restore →
 automatic re-handshake) against the host-built `libkult_ffi`, no emulator
@@ -51,16 +51,16 @@ required. `:app` is UI only.
 
 This is deliberately its own Gradle build, outside the cargo workspace:
 the Android dependency tree stays out of the core crates' lockfile and
-cargo-deny surface. The runtime footprint is small and auditable — JNA
+cargo-deny surface. The runtime footprint is small and auditable: JNA
 (the UniFFI transport), kotlinx-serialization (settings.json), androidx
 basics, CameraX, and ZXing core (pure-Java QR encode/decode: no Google
-Play Services, no ML Kit — F-Droid friendly). JVM dependencies are pinned
+Play Services, no ML Kit, F-Droid friendly). JVM dependencies are pinned
 by `core/gradle.lockfile`.
 
 ## Build & test
 
 `:core` (bindings + session layer + e2e) needs only a JDK ≥ 17, Gradle,
-and the Rust toolchain — no Android SDK:
+and the Rust toolchain, no Android SDK:
 
 ```sh
 cd apps/android

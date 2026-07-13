@@ -1,4 +1,4 @@
-# ADR-0005 — Meshtastic as the first off-grid transport
+# ADR-0005: Meshtastic as the first off-grid transport
 
 - **Status**: Accepted
 - **Date**: 2026-07-11
@@ -21,7 +21,7 @@ carrying sealed envelopes on a private application port. No custom firmware in s
 - **BLE/Wi-Fi phone-to-phone mesh only (Briar model)**: zero extra hardware but ~10–100 m
   range; kept as a *proximity* transport, insufficient as the off-grid backbone.
 - **Satellite (Iridium SBD etc.)**: real coverage, but per-message cost, identity-linked
-  subscriptions, and a centralized operator — antithetical to the threat model.
+  subscriptions, and a centralized operator, antithetical to the threat model.
 
 ## Consequences
 

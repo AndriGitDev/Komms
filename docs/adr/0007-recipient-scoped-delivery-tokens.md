@@ -1,20 +1,20 @@
-# ADR-0007 — Recipient-scoped delivery tokens
+# ADR-0007: Recipient-scoped delivery tokens
 
 - **Status**: Accepted
 - **Date**: 2026-07-12
 
 ## Context
 
-[04 — Cryptography §7](../04-cryptography.md) originally defined one delivery-token
+[04: Cryptography §7](../04-cryptography.md) originally defined one delivery-token
 sequence per contact pair: `token_i = HMAC-SHA-256(K_mailbox, epoch_i)`. Both directions
-of a conversation shared it — A→B and B→A envelopes carry the same token in any given
+of a conversation shared it: A→B and B→A envelopes carry the same token in any given
 epoch.
 
 M3's mailbox relays make that a correctness bug. A relay mailbox is collect-and-delete:
 the recipient checks in, the relay hands over everything queued under the recipient's
 tokens and deletes it (a volunteer node cannot retain unbounded mail, so "keep until
 TTL and redeliver forever" is not an option). If both parties of a pair pick the same
-relay — likely, since relays are a small set of community nodes — a shared token
+relay (likely, since relays are a small set of community nodes), a shared token
 sequence means A's check-in drains envelopes deposited *for B*. A cannot tell an echo of
 her own mail from mail addressed to her until decryption fails, and by then the relay
 has already deleted the only copy. Silent message loss, violating the delivery engine's
@@ -36,7 +36,7 @@ addressed to its peer. Introduction tokens were already recipient-scoped.
   ADR removes. Volunteer relays need deposits to leave when collected.
 - **Recipient acks driving relay deletion.** Only the true addressee can distinguish
   its mail, so envelopes collected by the wrong party must be re-served until the right
-  one acks — which is non-destructive collect again, plus ack plumbing through the
+  one acks, which is non-destructive collect again, plus ack plumbing through the
   transport contract.
 - **Direction byte from the session role (initiator/responder).** Equivalent outcome,
   but requires exposing the ratchet role from `kult-crypto`; the recipient identity key

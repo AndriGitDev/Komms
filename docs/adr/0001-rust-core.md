@@ -1,4 +1,4 @@
-# ADR-0001 — Rust core with UniFFI bindings
+# ADR-0001: Rust core with UniFFI bindings
 
 - **Status**: Accepted
 - **Date**: 2026-07-11
@@ -28,4 +28,4 @@ and Tauri (desktop). `kult-crypto` stays `no_std`+alloc compatible.
 
 Single audited implementation; memory safety in the TCB; strongest ecosystem fit
 (RustCrypto, rust-libp2p, zeroize/subtle). Cost: UniFFI binding maintenance and slower UI
-iteration than a pure-JS stack — accepted.
+iteration than a pure-JS stack, accepted.

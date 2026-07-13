@@ -1,4 +1,4 @@
-# 03 — Architecture
+# 03: Architecture
 
 Komms is a **local-first, serverless** messaging system. Every installation is a full
 peer: it holds its own keys, stores its own history, and can relay for others. There is no
@@ -13,10 +13,10 @@ flowchart TB
         A2["Mobile (iOS / Android)"]
         A3["Headless node / relay"]
     end
-    subgraph FFI["kult-ffi — UniFFI bindings"]
+    subgraph FFI["kult-ffi: UniFFI bindings"]
         F1["Stable, async, language-neutral API"]
     end
-    subgraph Node["kult-node — runtime"]
+    subgraph Node["kult-node: runtime"]
         N1["Session manager"]
         N2["Delivery engine<br/>(store-and-forward, retries, receipts)"]
         N3["Transport scheduler<br/>(multipath selection)"]
@@ -66,8 +66,8 @@ base small.
 
 ### Send path
 1. **App** calls `send(conversation, content)` through `kult-ffi`.
-2. **kult-node** persists the outbound message locally (`kult-store`) with state `queued`
-   — the UI is truthful about delivery, and nothing is lost on crash.
+2. **kult-node** persists the outbound message locally (`kult-store`) with state `queued`:
+   the UI is truthful about delivery, and nothing is lost on crash.
 3. **kult-protocol** serializes content, pads it to the next size bucket, and hands it to
    the conversation's ratchet.
 4. **kult-crypto** advances the sending chain, encrypts with XChaCha20-Poly1305, and
@@ -75,7 +75,7 @@ base small.
 5. **kult-protocol** wraps ciphertext in a **sealed envelope**: the only cleartext field is
    an opaque per-recipient *delivery token* (see §5). If the selected link's MTU is small
    (LoRa ≈ 200 B), the envelope is fragmented.
-6. **Transport scheduler** picks the best available transport(s) for this peer — possibly
+6. **Transport scheduler** picks the best available transport(s) for this peer, possibly
    several in parallel (internet + mesh). Duplicate delivery is fine: envelopes are
    idempotent by message ID; receivers deduplicate.
 7. On receipt of an encrypted delivery receipt, state advances `queued → sent → delivered`.
@@ -87,13 +87,13 @@ event to app → (optionally) send encrypted receipt.
 
 ## 4. Store-and-forward without servers
 
-Peers are rarely online at the same moment — especially off-grid. Delivery uses three
+Peers are rarely online at the same moment, especially off-grid. Delivery uses three
 mechanisms, in preference order:
 
 1. **Direct**: recipient reachable on some transport now → deliver immediately.
 2. **Mailbox relays**: any Komms node may volunteer relay capacity. The sender deposits
    the sealed envelope with one or more relays chosen by the *recipient* (advertised in
-   their signed prekey bundle, [06 — Identity & Trust](06-identity-trust.md)). Relays store
+   their signed prekey bundle, [06: Identity & Trust](06-identity-trust.md)). Relays store
    ciphertext-only, TTL-bounded, size-capped queues keyed by delivery token. Users
    naturally relay for their own contacts (friend-relay model); public volunteer relays are
    additive, never required.
@@ -114,7 +114,7 @@ A relay, DHT node, or mesh repeater observes only:
 
 No sender identity, no recipient identity, no timestamps beyond arrival time, no
 conversation linkage. This is the **sealed sender** property; the construction is specified
-in [04 — Cryptography §7](04-cryptography.md).
+in [04: Cryptography §7](04-cryptography.md).
 
 ## 6. Groups
 
@@ -122,8 +122,8 @@ v1 groups use **sender keys**: each member maintains a per-group sending chain, 
 to members over existing pairwise ratchet sessions; a group message is encrypted once and
 fanned out. Membership changes re-key. This is efficient over constrained links (one
 ciphertext, not N) and adequate for small-to-medium groups. Large-group semantics (MLS,
-RFC 9420) are a documented later milestone — see decision record
-[ADR-0003](adr/0003-double-ratchet-pqxdh.md) and [08 — Roadmap](08-roadmap.md).
+RFC 9420) are a documented later milestone; see decision record
+[ADR-0003](adr/0003-double-ratchet-pqxdh.md) and [08: Roadmap](08-roadmap.md).
 
 ## 7. Repository layout (target)
 
@@ -145,4 +145,4 @@ komms/
 ```
 
 Build order and per-crate API sketches for implementers:
-[09 — Implementation Guide](09-implementation-guide.md).
+[09: Implementation Guide](09-implementation-guide.md).

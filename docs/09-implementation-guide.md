@@ -1,16 +1,16 @@
-# 09 — Implementation Guide
+# 09: Implementation Guide
 
 The handoff document. Audience: whoever (human or coding agent) implements M1–M5. The
 design documents say *what*; this says *how to build it without drifting*. When this
-guide and a design doc conflict, the design doc wins and the conflict is a bug — file it.
+guide and a design doc conflict, the design doc wins and the conflict is a bug, file it.
 
 ## 1. Ground rules
 
 1. **No design changes in implementation PRs.** A change to anything specified in docs
    02–07 requires an ADR first (template: `docs/adr/template.md`).
 2. **Crate boundaries are law.** The "must never" column in
-   [03 — Architecture §2](03-architecture.md) is enforced by review and by dependency
-   direction — e.g. `kult-crypto`'s `Cargo.toml` has no I/O crates, period.
+   [03: Architecture §2](03-architecture.md) is enforced by review and by dependency
+   direction, e.g. `kult-crypto`'s `Cargo.toml` has no I/O crates, period.
 3. **Crypto code standards** (in `kult-crypto`, `kult-protocol`):
    - `#![forbid(unsafe_code)]`, `#![deny(missing_docs)]`.
    - Every secret in a `zeroize::Zeroizing`/`ZeroizeOnDrop` type; no `Debug`/`Display`
@@ -22,7 +22,7 @@ guide and a design doc conflict, the design doc wins and the conflict is a bug �
 4. **Errors are honest**: failure states surface to the delivery engine and UI truthfully
    (`queued/sent/delivered/failed`), never faked.
 5. **Every milestone lands with its tests** as defined in the acceptance criteria of
-   [08 — Roadmap](08-roadmap.md); CI = fmt + clippy (deny warnings) + tests + fuzz smoke
+   [08: Roadmap](08-roadmap.md); CI = fmt + clippy (deny warnings) + tests + fuzz smoke
    (60 s per target) + cargo-deny.
 
 ## 2. Build order
@@ -52,7 +52,7 @@ pub fn initiate(me: &Identity, bundle: &VerifiedBundle, rng: ...)
 pub fn respond(me: &Identity, prekeys: &PrekeyStore, msg: &InitialMessage)
     -> Result<Session, HandshakeError>;
 
-// Double Ratchet (04 §4) — opaque, serializable-encrypted, zeroizing
+// Double Ratchet (04 §4), opaque, serializable-encrypted, zeroizing
 impl Session {
     pub fn encrypt(&mut self, plaintext: &[u8], ad: &[u8]) -> RatchetMessage;
     pub fn decrypt(&mut self, msg: &RatchetMessage, ad: &[u8])
@@ -80,10 +80,10 @@ pub fn delivery_token(k_mailbox: &MailboxKey, epoch: Epoch) -> Token; // 04 §7
 
 ### 3.3 `kult-transport`
 
-The trait from [05 — Transports §1](05-transports.md), plus:
+The trait from [05: Transports §1](05-transports.md), plus:
 
 ```rust
-pub struct SneakernetTransport;   // .kkb bundles — implement FIRST (M2): no networking,
+pub struct SneakernetTransport;   // .kkb bundles, implement FIRST (M2): no networking,
                                   // exercises the full envelope path end-to-end
 pub struct Libp2pTransport;       // M3: QUIC/TCP, Kademlia records, relay-v2 mailboxes
 pub struct MeshtasticTransport;   // M4: BLE/serial protobuf client, private PortNum,
@@ -111,7 +111,7 @@ pub struct Node { /* composes store + transports + sessions */ }
 // dedup by message id, retry with per-transport backoff
 ```
 
-`kult-ffi` exposes exactly `Node`'s command/event API via UniFFI — nothing more.
+`kult-ffi` exposes exactly `Node`'s command/event API via UniFFI, nothing more.
 
 ## 4. Testing strategy (beyond per-milestone acceptance)
 
@@ -121,11 +121,11 @@ pub struct Node { /* composes store + transports + sessions */ }
 - **Fuzz targets** (`cargo-fuzz`): envelope decode, bundle decode, handshake message
   decode, sealed-state unseal.
 - **Simulation harness** (M3+): in-process multi-node network with scripted link
-  conditions (latency, loss, partitions, MTU) — deterministic seed, replayable failures.
+  conditions (latency, loss, partitions, MTU), deterministic seed, replayable failures.
   This harness is how store-and-forward, NACK, and bridging logic get tested without
   radios on the desk.
-- **Hardware-in-loop** (M4): two USB Meshtastic radios in CI-adjacent nightly job —
-  bench runbook in [10 — HIL Bench](10-hil-bench.md).
+- **Hardware-in-loop** (M4): two USB Meshtastic radios in CI-adjacent nightly job;
+  bench runbook in [10: HIL Bench](10-hil-bench.md).
 
 ## 5. Review gates
 
@@ -140,6 +140,6 @@ Every PR: CI green + one review. Additionally:
 
 ## 6. Definition of done (any milestone)
 
-Acceptance criteria in [08 — Roadmap](08-roadmap.md) demonstrably met, CI green, docs
+Acceptance criteria in [08: Roadmap](08-roadmap.md) demonstrably met, CI green, docs
 updated where behavior is user-visible, no `TODO` without a tracking issue, and the demo
 described in the milestone runs from a fresh clone with documented commands.

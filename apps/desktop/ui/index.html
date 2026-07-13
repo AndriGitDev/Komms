@@ -13,7 +13,7 @@
   <section id="gate" class="screen">
     <div class="gate-card">
       <h1 class="brand">Komms</h1>
-      <p class="tagline">Serverless end-to-end encrypted messaging — internet, LAN, and LoRa mesh.</p>
+      <p class="tagline">Serverless end-to-end encrypted messaging: internet, LAN, and LoRa mesh.</p>
 
       <div class="tabs" id="gate-tabs" hidden>
         <button class="tab active" data-tab="open">Create / Unlock</button>
@@ -57,10 +57,10 @@
           <label>Sneakernet spool directory
             <input type="text" id="set-spool" spellcheck="false" />
           </label>
-          <label>Meshtastic radio — USB serial port
+          <label>Meshtastic radio, USB serial port
             <input type="text" id="set-mesh-serial" spellcheck="false" placeholder="/dev/ttyUSB0" />
           </label>
-          <label>Meshtastic radio — network API (host:4403)
+          <label>Meshtastic radio, network API (host:4403)
             <input type="text" id="set-mesh-tcp" spellcheck="false" />
           </label>
           <label class="check"><input type="checkbox" id="set-bridge" checked /> Bridge mesh ↔ internet traffic when a radio is attached</label>
@@ -103,7 +103,7 @@
 
     <main id="chat">
       <div id="chat-empty">
-        <p>Select a contact — or share your bundle to pair with someone.</p>
+        <p>Select a contact, or share your bundle to pair with someone.</p>
       </div>
       <div id="chat-pane" hidden>
         <header id="chat-head">
@@ -147,7 +147,7 @@
     </div>
     <div class="qr-card" data-pane="bundle"></div>
     <div class="qr-card" data-pane="address" hidden></div>
-    <label>Bundle (hex — paste into “Add contact” or <code>kult add</code>)
+    <label>Bundle (hex, paste into “Add contact” or <code>kult add</code>)
       <textarea class="share-hex" rows="4" readonly></textarea>
     </label>
     <div class="row">
@@ -186,11 +186,11 @@
   </template>
 
   <template id="tpl-verify">
-    <p class="modal-note">Compare with your contact over a channel you trust — read the digits aloud or scan each other’s QR. Identical numbers mean nobody sits between you.</p>
+    <p class="modal-note">Compare with your contact over a channel you trust: read the digits aloud or scan each other’s QR. Identical numbers mean nobody sits between you.</p>
     <div class="safety-digits"></div>
     <div class="qr-card safety-qr"></div>
     <div class="row end">
-      <button class="primary" data-act="verified">We compared — mark verified</button>
+      <button class="primary" data-act="verified">We compared, mark verified</button>
     </div>
   </template>
 
@@ -207,7 +207,7 @@
   </template>
 
   <template id="tpl-backup">
-    <p class="modal-note">Writes one encrypted file carrying your identity, contacts, and history — sealed under a 24-word recovery mnemonic shown <strong>exactly once</strong>. Ratchet sessions are excluded by design; peers re-handshake automatically after a restore.</p>
+    <p class="modal-note">Writes one encrypted file carrying your identity, contacts, and history, sealed under a 24-word recovery mnemonic shown <strong>exactly once</strong>. Ratchet sessions are excluded by design; peers re-handshake automatically after a restore.</p>
     <label>Write backup to
       <input type="text" data-f="path" spellcheck="false" />
     </label>

@@ -1,7 +1,7 @@
-# 10 — Hardware-in-Loop Bench
+# 10: Hardware-in-Loop Bench
 
 The M4 roadmap item "two USB Meshtastic radios in CI-adjacent nightly job"
-([09 — Implementation Guide §4](09-implementation-guide.md)). This document is the
+([09: Implementation Guide §4](09-implementation-guide.md)). This document is the
 bench runbook: what to buy, how to prepare the radios, how to register the runner,
 and how to arm the nightly.
 
@@ -14,26 +14,26 @@ selective-retransmission NACKs, duty-cycle *arithmetic*, and the full two-daemon
 RPC flow (`crates/kultd/tests/mesh_e2e.rs`). None of that gets truer by running
 it nightly on a desk.
 
-What only hardware can prove — and what the nightly therefore exercises — is the
+What only hardware can prove, and what the nightly therefore exercises, is the
 real path: USB-serial framing against actual firmware, the radio configuration
 handshake (node number, modem params, and the reported region that sizes the
 duty-cycle budget), and end-to-end delivery over actual RF, including the
 firmware's own queueing and rebroadcast behavior.
 
 The test is `crates/kultd/tests/hil.rs`: two `kultd` daemons, each attached to a
-real radio, mDNS off, no bootstrap peers — the radios are the only shared medium.
+real radio, mDNS off, no bootstrap peers. The radios are the only shared medium.
 Alice's first message to Bob (carrying the PQXDH handshake, so ~10 frames of
 fragments) must arrive and produce a `delivered` receipt back over the air; Bob's
 ratcheted reply must round-trip the same way. Timings are printed for the job log.
 
 ## Hardware
 
-- **Two stock-firmware [Meshtastic](https://meshtastic.org) radios** with USB —
+- **Two stock-firmware [Meshtastic](https://meshtastic.org) radios** with USB:
   any supported board works (Heltec V3, RAK4631, LILYGO T-Beam, …). Stock
   firmware is the point: Komms requires no firmware modification (ADR-0005).
 - **Antennas attached before anything else.** Transmitting without an antenna
   can destroy the LoRa PA. On one desk, range is irrelevant; the antenna is not.
-- **A Linux host** for the runner — a Raspberry Pi is plenty; the job builds the
+- **A Linux host** for the runner: a Raspberry Pi is plenty; the job builds the
   workspace, so give it a few GB of disk and either patience or a persistent
   target dir (self-hosted runners keep their work directory between runs, which
   is all the build caching this needs).
@@ -48,12 +48,12 @@ meshtastic --port /dev/ttyUSB0 --set lora.region EU868
 ```
 
 - **Region**: set the region that is legal where the bench sits. EU868 is the
-  region the M4 acceptance names — it is duty-cycle-limited, so the airtime
+  region the M4 acceptance names; it is duty-cycle-limited, so the airtime
   budget path runs armed rather than unbudgeted.
 - **Modem preset and channel**: leave the defaults (`LongFast`, default primary
-  channel) on **both** radios — they must match for the radios to hear each
+  channel) on **both** radios; they must match for the radios to hear each
   other. The channel's own encryption is irrelevant to Komms security (sealed
-  envelopes are self-protecting; see [05 — Transports §4](05-transports.md)),
+  envelopes are self-protecting; see [05: Transports §4](05-transports.md)),
   it only determines which mesh rebroadcasts the frames.
 - Node names, GPS, telemetry: all irrelevant; defaults are fine.
 
@@ -78,8 +78,8 @@ runner's user needs serial access (`dialout` group on Debian-family systems).
 1. Register a [self-hosted runner](https://docs.github.com/en/actions/hosting-your-own-runners)
    on the repository and give it the extra label **`meshtastic-hil`**.
 2. Set repository **variables** (Settings → Secrets and variables → Actions):
-   - `HIL_SERIAL_A`, `HIL_SERIAL_B` — the two `/dev/serial/by-id/…` paths.
-   - `HIL_BENCH` = `armed` — this is the switch. Until it is set, the nightly
+   - `HIL_SERIAL_A`, `HIL_SERIAL_B`: the two `/dev/serial/by-id/…` paths.
+   - `HIL_BENCH` = `armed`: this is the switch. Until it is set, the nightly
      job skips cleanly instead of queuing forever for a runner that doesn't
      exist; unset it to take the bench down for maintenance without red runs.
 
@@ -91,7 +91,7 @@ cargo test -p kultd --test hil -- --ignored --nocapture
 ```
 
 A missing environment variable, an unreachable radio, or a silent mesh all fail
-loudly — the test never reports green on a misconfigured bench.
+loudly: the test never reports green on a misconfigured bench.
 
 Run the same command by hand (with `KOMMS_HIL_SERIAL_A`/`_B` exported) to use
 the bench interactively.
@@ -103,7 +103,7 @@ own. The rules, in force in the workflow and to be kept when editing it:
 
 - **Never add `pull_request` triggers** to any workflow that targets this
   runner: that would hand code execution on the bench to anyone who opens a PR.
-  Schedule and `workflow_dispatch` only — both run code from the default branch
+  Schedule and `workflow_dispatch` only: both run code from the default branch
   or a ref a maintainer explicitly picks.
 - Keep the runner dedicated to this repository (or in a runner group restricted
   to it), with `permissions: contents: read` in the workflow.
@@ -113,7 +113,7 @@ own. The rules, in force in the workflow and to be kept when editing it:
 ## Optional: multi-hop
 
 The M4 acceptance's multi-hop criterion can use the same bench: add a third
-stock-firmware radio on the same channel as a pure repeater (no USB connection —
+stock-firmware radio on the same channel as a pure repeater (no USB connection:
 powered, in range of both endpoints, with the endpoint radios' RF attenuated or
 separated so they only reach each other through it). The test is unchanged:
 routing is the mesh firmware's business, and Komms neither knows nor cares how
