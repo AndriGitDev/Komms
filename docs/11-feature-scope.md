@@ -5,6 +5,7 @@ build the protocol, transports, and app shells. This document is the other axis:
 which *product* features (the surface a messenger-app user recognizes) belong in
 Komms, and under what constraints. It exists so feature requests get triaged
 against the architecture instead of against a competitor's feature list.
+
 The sequenced implementation work for every approved item is in
 [12: Feature Delivery Plan](12-feature-delivery-plan.md).
 
@@ -23,41 +24,46 @@ scope, are the current example: internet/LAN only, ADR-0013 (Proposed)).
 
 ## Build (fits the architecture as-is)
 
-These are either already carried by the core crates, are purely client-side, or
-map directly onto a shipped mechanism. Most are M5 app-shell UX over an existing
-`kult-ffi` surface, not new protocol.
+These are either already carried by the core crates, stay local to a device, or
+fit the architecture without changing its security model. Their shipped/planned
+status and prerequisites are tracked in the delivery plan.
 
-- **Text and audio messages.** The core feature of the protocol and transport
-  layers, routed by the scheduler across whatever carrier is up (mDNS, mesh,
-  internet). Audio is a recorded clip sent as a message payload, not a live call:
-  it rides the same fragmentation path, and on a mesh link it is subject to the
-  same airtime budget and "held, will send when a faster link exists" verdict as
-  any large payload (M4, §4.2 of the transport spec).
+- **Text and audio messages.** Text is shipped through the protocol and transport
+  layers. Recorded audio is planned as an asynchronous encrypted attachment, not
+  a live call; it needs the typed-content and resumable attachment pipeline plus
+  a carrier policy. A clip that exceeds the measured mesh allowance is held for
+  a faster link rather than consuming LoRa airtime.
 - **End-to-end encryption.** Native to `kult-crypto`; not optional and not a
   toggle. Every message is sealed; there is no unencrypted mode to add.
 - **Post-quantum upgrades.** Already the design: the handshake is hybrid PQXDH
   (see [04: Cryptography](04-cryptography.md)). No user-facing feature, listed
   because users ask for it by name.
-- **Usernames / contact names.** Identity is a keypair; the human label is a
-  local petname or a DHT-resolvable nickname over the kult-address digest, never
-  a phone number or a central registry (see [06: Identity & Trust](06-identity-trust.md)).
+- **Usernames / contact names.** Identity is a keypair and the authoritative
+  human label is a local petname, never a phone number or central-registry name
+  (see [06: Identity & Trust](06-identity-trust.md)). An optional signed
+  self-display name may later be advertised as a non-unique suggestion, but it
+  never silently overrides the recipient's petname.
 - **Secure backups.** Shipped: the `KKR2` mnemonic-sealed backup (Argon2id under a
   24-word BIP-39 phrase, ADR-0011/ADR-0012). Stored locally or moved by
   sneakernet; no cloud.
-- **Note to self.** A local conversation with no peer, persisted in `kult-store`.
-  Purely local.
+- **Note to self.** Planned as a sealed local conversation in `kult-store`, with
+  no peer, envelopes, receipts, or transport activity.
 - **Scheduled / queued messages.** Already implicit in the delivery engine: an
-  outbound message sits in the local queue until a carrier is available. A "send
-  at time T" hint is a client-side gate on top of the same queue.
-- **Text formatting, folders, pins, dark mode, custom icons.** Purely client-side
-  UI. No protocol involvement.
+  outbound message sits in the local queue until a carrier is available.
+  Scheduling is planned as a durable `not_before` gate in core storage and the
+  node scheduler so app exit or suspension cannot send early.
+- **Text formatting, folders, pins, dark mode, custom icons.** These stay off the
+  wire. Persistent organization and artwork use sealed local storage; formatting
+  and themes are rendered by each shell.
 - **Screen-security / incognito keyboard.** Platform APIs in the mobile UI layer
   (Android/iOS). No protocol involvement.
 - **Local media editing (e.g. face blurring).** Client-side image processing
   applied *before* encryption, so the edited bytes are what gets sealed. No
   protocol involvement, and it keeps the plaintext original off the wire.
-- **Mentions and labels.** Client-side string parsing (`@name`) inside the chat
-  view. No protocol involvement.
+- **Mentions and labels.** Labels are sealed local metadata. Group mentions use
+  an explicit roster picker and, for portable highlighting and notifications, a
+  stable peer reference inside typed message content rather than ambiguous
+  free-form `@name` parsing.
 
 ## Build with constraints (needs transport-awareness or local-first sync)
 
@@ -66,22 +72,24 @@ peers. The recurring rule: the app must know which carrier a peer is reachable o
 and degrade honestly, exactly as the delivery ladder already does.
 
 - **File sharing.** Fine over mDNS or internet libp2p; on a radio mesh it must be
-  blocked or hard-capped, since a large transfer would monopolize airtime. Reuses
-  the fragmentation path but needs a per-carrier size policy in the app.
-- **Linked devices.** Multi-device by syncing identity across devices over the
-  local network or a direct QR key swap, never a cloud sync. This is the
-  Sesame-style multi-device work already parked in M6; the constraint is that
-  linking happens proximately, not through a server.
-- **Message editing.** Requires decentralized state reconciliation (a simplified
-  CRDT or last-writer-wins with vector clocks) across carriers where some peers
-  are offline or delayed. Feasible but is real protocol work, not a UI toggle.
+  blocked or hard-capped, since a large transfer would monopolize airtime. It
+  needs encrypted resumable chunks and sealed manifests rather than treating the
+  existing envelope fragmentation path as unbounded file transport.
+- **Linked devices.** One account identity uses separately authenticated device
+  keys, per-device sessions, revocation, and deterministic sync. Linking happens
+  proximately through a confirmed QR or LAN ceremony, never by copying live
+  ratchet databases or depending on cloud sync.
+- **Message editing.** Requires authenticated revision events and deterministic
+  reconciliation across carriers where peers may be offline or delayed. The ADR
+  chooses ordering, tombstones, and old-client behavior before implementation.
 - **Disappearing messages / view-once media.** Client-side expiry is easy; the
   hard part is enforcing deletion across mailbox stores and mesh relays that hold
-  sealed copies. Needs an absolute expiration token carried in the payload so
-  every intermediate store can drop it without reading it.
+  sealed copies. Network retention needs a bounded relay-visible deletion hint,
+  cryptographically bound to the encrypted content, because an intermediary
+  cannot act on an expiry value visible only after decryption.
 - **Group polls.** Feasible as structured payload broadcast over the shipped
-  sender-key groups (ADR-0012); a poll is just a typed message body plus tallying
-  in the UI.
+  sender-key groups (ADR-0012), with authenticated idempotent vote events and a
+  deterministic tally that converges after delayed or reordered delivery.
 - **Admin / role controls.** Plausible via cryptographic role tokens embedded in
   the group's signed state (creator-managed membership already exists, ADR-0012),
   rather than a server dictating who is an admin.
@@ -96,9 +104,10 @@ and degrade honestly, exactly as the delivery ladder already does.
   ladder already reports "held, will send when a faster link exists." Recorded
   audio/video *clips* (asynchronous payloads) remain in scope on every carrier;
   this entry adds the synchronous case. This touches transports, so it is pinned
-  by ADR-0013 (Proposed): media transport choice (SRTP-style over the libp2p
-  stream vs. a WebRTC data path), call-setup signaling that stays metadata-blind
-  over the pairwise ratchet, and the exact carrier-gating rule.
+  by ADR-0013 (Proposed): media transport choice (SRTP-style framing over a
+  libp2p path vs. a constrained WebRTC media path), call-setup signaling that
+  stays metadata-blind over the pairwise ratchet, and measured qualification of
+  any relayed path for the carrier-gating rule.
 
 ## Deferred or declined (fights the model)
 
@@ -106,9 +115,9 @@ Structurally incompatible with offline-first, metadata-blind, low-bandwidth-floo
 operation, or would collapse a mesh. Any of these would need a compelling ADR to
 move.
 
-- **Call links.** Depend on a central cloud coordinator to mint and route ad-hoc
-  links to a reachable endpoint. Routing a generic web link to an offline P2P node
-  has no meaning here. Declined.
+- **Call links.** A reusable link needs a rendezvous and routing design for a
+  caller who has no established pairwise session with a reachable endpoint. No
+  metadata-preserving, serverless design has been accepted. Declined.
 - **Very large groups (1,000+).** Over mesh/radio, fanning one message out to
   hundreds of members causes packet collisions and network collapse. Group caps
   stay low for mesh-reachable groups; large-group work (OpenMLS, M6) targets
@@ -119,8 +128,9 @@ move.
 
 ## How to change this document
 
-Adding a "Build" feature is an app-shell task tracked under M5/M6. Moving anything
-out of "Deferred or declined," or adding a feature that touches the protocol,
-transports, or crypto, requires an ADR in [docs/adr/](adr/) that shows the feature
-surviving the threat model and the mesh bandwidth floor. This keeps the feature
-surface honest about the same constraints the rest of the design is held to.
+Adding a "Build" feature must also update the delivery plan with its status and
+prerequisites. Moving anything out of "Deferred or declined," or adding a feature
+that touches the protocol, transports, crypto, or replicated state requires an
+ADR in [docs/adr/](adr/) that shows the feature surviving the threat model and
+the mesh bandwidth floor. This keeps the feature surface honest about the same
+constraints the rest of the design is held to.

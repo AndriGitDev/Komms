@@ -45,7 +45,7 @@ content and capability foundations before individual shells implement UI.
 | Screen security | Planned | Platform protections and documented limitations. |
 | Incognito keyboard | Planned | Android control; best available behavior and honest limits elsewhere. |
 | Local media editing | Planned | Pre-encryption transforms and temporary-file hygiene. |
-| Mentions | Planned | Group-aware local parsing and navigation. |
+| Mentions | Planned | Typed peer reference, group-aware composer, and navigation. |
 | Labels | Planned | Local contact/conversation/message metadata and filtering. |
 | File sharing | Planned | Resumable encrypted attachments and carrier-aware limits. |
 | Linked devices | Planned | Proximate linking, device keys, sync, revocation, and recovery. |
@@ -77,9 +77,10 @@ Deliver:
 
 Add a versioned, length-bounded message-content codec while keeping legacy raw
 text readable. Start with `Text`; add typed variants only as their feature lands.
-Likely variants are `Attachment`, `Edit`, `Poll`, and `PollVote`. Call signaling
-remains the separate `CallSignal` envelope proposed by ADR-0013. Formatting
-remains text plus local rendering metadata and does not need a distinct wire type.
+Candidate variants are `Attachment`, `Edit`, `Poll`, `PollVote`, and `Mention`;
+their exact shapes remain decisions for the content ADR. Call signaling remains
+the separate `CallSignal` envelope proposed by ADR-0013. Formatting remains text
+plus local rendering metadata and does not need a distinct wire type.
 
 The ADR must define:
 
@@ -115,21 +116,24 @@ The node scheduler knows link profiles, but applications do not receive a stable
 per-peer verdict suitable for feature gating. Expose a capability snapshot and
 change events such as:
 
-- `realtime`: direct internet/LAN path available now;
+- `realtime`: a currently usable high-bandwidth internet/LAN media path;
 - `bulk`: non-airtime path available now or store-and-forward;
 - `mesh_only`: only an airtime-budgeted path is currently known;
 - `offline_or_unknown`.
 
 This verdict gates calls, large files, media autoplay/download, and user-facing
 explanations. It must remain advisory and time-bounded because reachability can
-change immediately.
+change immediately. The ADR-0013 spike decides whether any circuit-relayed path
+meets the latency and capacity requirements for `realtime`; the capability API
+must not assume that before measurements exist.
 
 ### F5. Local metadata store
 
 Add sealed local-only records for conversation type, folders, pins, labels,
-drafts/schedules, UI preferences, and custom icons. Keep local organization out
-of network payloads. Define which records belong in encrypted backups and version
-the backup format when the first new record ships.
+drafts, UI preferences, and custom icons. Keep local organization out of network
+payloads. Define which records belong in encrypted backups and version the backup
+format when the first new record ships. Scheduled delivery is separate core queue
+state covered by B8, not a UI-metadata timer.
 
 ## 4. Build features
 
@@ -246,6 +250,8 @@ backup/restore, and all shells use the same reserved conversation identity.
 
 **State:** ordinary queued delivery shipped; scheduling planned.
 
+This is a core queue/storage change, not part of the F5 local UI metadata store.
+
 Persist an optional UTC `not_before` timestamp in core storage and enforce it in
 the node scheduler so delivery survives app exit, background suspension, and
 restart. The UI handles local time zones and daylight-saving display, but it
@@ -353,13 +359,13 @@ enters the attachment pipeline.
 
 ### B17. Mentions
 
-**Depends on:** F1.
+**Depends on:** F1, F2.
 
-Parse mentions locally in group message text using an explicit member picker
-rather than ambiguous free-form names. Encode a stable peer reference alongside
-display text only if cross-device/cross-client highlighting is required; that
-would be part of F2. Mention notifications remain local and opportunistic: there
-is no server push guarantee.
+Compose mentions in group message text using an explicit member picker rather
+than ambiguous free-form names. Encode a stable peer reference alongside fallback
+display text so every client can highlight the intended member despite different
+local petnames. Mention notifications remain local and opportunistic: there is no
+server push guarantee.
 
 Acceptance covers duplicate petnames, roster changes, removed members, Unicode,
 plain-text fallback, and no notification for a peer merely sharing a similar
@@ -513,10 +519,11 @@ rotation, Opus audio, echo cancellation, jitter buffering, and interruption
 handling. Add video only after audio acceptance passes. Never export ratchet
 secrets to the UI layer.
 
-The call button is enabled only for a fresh direct internet/LAN capability.
-Mailbox, sneakernet, relay-only without a usable real-time circuit, and LoRa
-paths show a precise unavailable reason. No project-operated STUN/TURN, SFU, or
-signaling service is introduced.
+The call button is enabled only for a fresh F4 `realtime` capability. Mailbox,
+sneakernet, and LoRa paths show a precise unavailable reason. The spike decides
+whether a circuit-relayed libp2p path can satisfy that capability; until ADR-0013
+is accepted, product code and copy must not assume that relay-only reachability
+qualifies. No project-operated STUN/TURN, SFU, or signaling service is introduced.
 
 Acceptance includes authenticated caller identity, declined/busy/racing calls,
 NAT and LAN matrices, path loss during a call, Bluetooth/headset transitions,
@@ -532,14 +539,14 @@ honest. Parallel work is safe only where rows do not share a foundation.
 |---|---|---|
 | **0: Finish current foundations** | Existing group core is usable; product can make carrier-aware decisions. | F1, F4; design F2/F3/F5. |
 | **1: Local-first product polish** | High-value features with no new network semantics. | B5 rename UX, B7, B9–B15, B18; preserve B1/B3/B4/B6 gates. |
-| **2: Typed content and asynchronous media** | Shared content/attachment path across all shells. | F2, F3, B2, B16, C1, then B17. |
+| **2: Typed content and asynchronous media** | Shared content/attachment path across all shells. | F2, F3, B2, B16, C1; B17 after F2. |
 | **3: Replicated conversation features** | Offline-convergent edits, expiry, polls, and group authority. | C3, C4, C5, C6. |
 | **4: Multi-device** | Proximate device linking and convergent state. | C2, followed by cross-device hardening of Wave 3. |
 | **5: Real-time media** | Direct internet/LAN audio, then video. | ADR-0013 spike and C7. |
 
-Scheduled messages (B8) may land in Wave 1 once F5 exists. If implementation
-shows that durable gating belongs in the shared node queue schema, keep it in a
-small isolated core PR rather than coupling it to the content codec.
+Scheduled messages (B8) may land in Wave 1 as a small isolated core PR. Persist
+the durable gate in the shared queue/storage schema rather than F5 or the UI, and
+do not couple it to the content codec.
 
 ## 7. ADR and format queue
 
@@ -588,18 +595,22 @@ No feature is done until all applicable gates pass:
     `cargo-deny` are green; platform-specific behavior has device/simulator
     evidence where CI cannot prove it.
 
-## 9. Recommended first execution slice
+## 9. Recommended first execution program
 
-The first implementation cycle should remain small enough to review:
+Keep each numbered item, and each shell named within an item, in a separate
+reviewable PR:
 
-1. expose the already-shipped group operations through RPC, CLI, and UniFFI;
-2. add group list/history/create/send UI to desktop before copying the proven
-   behavior layer to Android and iOS;
-3. add sealed local metadata plus note-to-self and scheduled-message records;
-4. write the typed-content and attachment ADRs, with no implementation hidden in
-   the design PRs;
-5. build the per-peer carrier capability API and pin its mesh-only decisions in
-   scheduler/FFI tests.
+1. expose the already-shipped group operations through RPC, CLI, and UniFFI, with
+   an end-to-end bindings test;
+2. add group list/history/create/send UI to desktop, then Android, then iOS as
+   separate follow-ups over the proven interface;
+3. build the per-peer carrier capability API and pin mesh-only decisions in node,
+   scheduler, and FFI tests;
+4. add the sealed local metadata foundation, then note-to-self; implement
+   scheduled delivery in its own core queue/storage PR;
+5. write the typed-content and attachment ADRs as separate design PRs, with no
+   implementation hidden in either decision.
 
-That slice unlocks the largest number of approved features without starting with
-the two riskiest programs, linked-device identity and real-time media.
+This program unlocks the largest number of approved features without combining
+unrelated review surfaces or starting with the two riskiest programs,
+linked-device identity and real-time media.
