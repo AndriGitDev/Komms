@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- The node speaks QUIC/TCP itself; no Google services involved. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- QR pairing and safety-number verification. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Keep the node delivering while the app is backgrounded. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+
+    <application
+        android:name=".KommsApp"
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:theme="@style/Theme.Komms"
+        android:allowBackup="false">
+        <!-- allowBackup=false: the store is passphrase-encrypted, but the OS
+             backup pipeline (Google servers) must never see it at all.
+             Portability is the user-held encrypted .kkr backup instead. -->
+
+        <activity android:name=".GateActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".MainActivity" android:exported="false" />
+        <activity android:name=".AddContactActivity" android:exported="false" />
+        <activity android:name=".ChatActivity" android:exported="false" />
+        <activity android:name=".VerifyActivity" android:exported="false" />
+        <activity android:name=".ScanActivity" android:exported="false" />
+        <activity android:name=".SettingsActivity" android:exported="false" />
+
+        <service
+            android:name=".NodeService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+    </application>
+</manifest>

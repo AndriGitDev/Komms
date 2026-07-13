@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher foreground: two peers joined by a direct line — no middle. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#5aa9e6"
+        android:pathData="M38,54m-9,0a9,9 0 1,1 18,0a9,9 0 1,1 -18,0" />
+    <path
+        android:fillColor="#e8f1f8"
+        android:pathData="M70,54m-9,0a9,9 0 1,1 18,0a9,9 0 1,1 -18,0" />
+    <path
+        android:strokeColor="#e8f1f8"
+        android:strokeWidth="4"
+        android:pathData="M46,54L62,54" />
+</vector>
