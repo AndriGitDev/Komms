@@ -62,8 +62,9 @@ These are prerequisites, not new user-facing scope.
 ### F1. Finish the group front door
 
 The sender-key group core and its shared `kultd` RPC, CLI, and `kult-ffi` front
-doors are shipped. Desktop group UX is shipped; Android and iOS still need the
-same group UX. Complete those surfaces before polls, mentions, or roles.
+doors are shipped. Desktop and Android group UX are shipped; iOS is the final
+shell that still needs the same group UX. Complete it before polls, mentions,
+or roles.
 
 Deliver:
 

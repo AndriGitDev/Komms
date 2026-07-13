@@ -225,8 +225,11 @@ key-change surfacing, transport indicators, hint editing, secret-free
 `settings.json` (same file format as desktop), mnemonic-shown-once backup
 export with OS cloud backup disabled, and a foreground service keeping
 delivery alive in the background. Native libraries cross-compile via
-cargo-ndk; CI runs the `:core` e2e and assembles the debug APK. The iOS
-alpha is in (application A2, `apps/ios`): a Swift shell over the same
+cargo-ndk; CI runs the `:core` e2e and assembles the debug APK. Android
+sender-key group UX is also shipped: a distinct group list/create flow,
+dedicated history/chat/member surface, truthful per-recipient outbound
+delivery rows, and a JVM acceptance scenario with a real offline member.
+The iOS alpha is in (application A2, `apps/ios`): a Swift shell over the same
 `kult-ffi` runtime, generated bindings compiled fresh from the crate at
 build time (never committed). Its structure mirrors the other shells'
 split: every behavior lives in the `KommsCore` Swift package (session
@@ -294,8 +297,9 @@ per-member delivery ladders, newcomer-reads-no-history, and removed-member
 exclusion. The shared front door is also in: `kultd` RPC, the `kult` CLI, and
 `kult-ffi` expose group records, history, events, membership operations, and
 honest per-member delivery state, pinned by `rpc_e2e.rs` and `ffi_e2e.rs`.
-Remaining for groups: Android and iOS group UX (desktop is shipped), then the
-M6 list above.
+Desktop and Android group UX are shipped, including truthful per-recipient
+partial-delivery rows and shell-level acceptance coverage. Remaining for
+groups: iOS group UX, then the M6 list above.
 
 **Acceptance**: audit findings triaged with public report; reproducible-build attestation
 for all release artifacts.

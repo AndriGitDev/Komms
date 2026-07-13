@@ -12,8 +12,11 @@ import android.os.Looper
 import android.view.Menu
 import android.view.MenuItem
 import android.view.LayoutInflater
+import android.view.View
 import android.view.ViewGroup
+import android.widget.CheckBox
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -23,6 +26,7 @@ import java.io.File
 import komms.core.bundleQrText
 import uniffi.kult_ffi.Contact
 import uniffi.kult_ffi.Event
+import uniffi.kult_ffi.Group
 import uniffi.kult_ffi.NatVerdict
 
 /**
@@ -36,6 +40,9 @@ class MainActivity : AppCompatActivity() {
                 .putExtra("peer", contact.peer)
                 .putExtra("name", contact.name),
         )
+    }
+    private val groups = GroupsAdapter { group ->
+        openGroup(group.id, group.name)
     }
 
     private val tick = Handler(Looper.getMainLooper())
@@ -52,6 +59,8 @@ class MainActivity : AppCompatActivity() {
                 is Event.ContactAdded -> refreshContacts()
                 is Event.SessionEstablished -> onSessionEstablished(event.peer)
                 is Event.MessageReceived -> refreshContacts()
+                is Event.GroupUpdated -> refreshGroups()
+                is Event.GroupMessageReceived -> refreshGroups()
                 else -> {}
             }
         }
@@ -79,6 +88,10 @@ class MainActivity : AppCompatActivity() {
         list.layoutManager = LinearLayoutManager(this)
         list.adapter = contacts
 
+        val groupList = findViewById<RecyclerView>(R.id.main_groups)
+        groupList.layoutManager = LinearLayoutManager(this)
+        groupList.adapter = groups
+
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -95,6 +108,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refreshContacts()
+        refreshGroups()
         tick.post(refreshLoop)
     }
 
@@ -111,6 +125,7 @@ class MainActivity : AppCompatActivity() {
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         when (item.itemId) {
             R.id.menu_add -> startActivity(Intent(this, AddContactActivity::class.java))
+            R.id.menu_create_group -> showCreateGroup()
             R.id.menu_my_qr -> showMyQr()
             R.id.menu_backup -> createBackup.launch("komms-backup.kkr")
             R.id.menu_settings -> startActivity(Intent(this, SettingsActivity::class.java))
@@ -143,6 +158,75 @@ class MainActivity : AppCompatActivity() {
             findViewById<TextView>(R.id.main_empty).visibility =
                 if (list.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
         }
+    }
+
+    private fun refreshGroups() {
+        val session = NodeHolder.session ?: return
+        runNode(work = { session.groups() }) { list ->
+            groups.submit(list)
+            findViewById<TextView>(R.id.main_groups_empty).visibility =
+                if (list.isEmpty()) View.VISIBLE else View.GONE
+        }
+    }
+
+    /** Create a group from stored contacts; the node remains the source of
+     * truth and the resulting id is opened only after creation succeeds. */
+    private fun showCreateGroup() {
+        val session = NodeHolder.session ?: return
+        runNode(work = { session.contacts() }) { list ->
+            showCreateGroupDialog(list)
+        }
+    }
+
+    private fun showCreateGroupDialog(availableContacts: List<Contact>) {
+        val view = LayoutInflater.from(this).inflate(R.layout.dialog_create_group, null)
+        val picker = view.findViewById<LinearLayout>(R.id.create_group_members)
+        view.findViewById<TextView>(R.id.create_group_empty).visibility =
+            if (availableContacts.isEmpty()) View.VISIBLE else View.GONE
+        for (contact in availableContacts.sortedBy { it.name.lowercase() }) {
+            picker.addView(CheckBox(this).apply {
+                text = contact.name
+                tag = contact.peer
+            })
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.group_create_title)
+            .setView(view)
+            .setPositiveButton(R.string.group_create_action, null)
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val name = view.findViewById<android.widget.EditText>(R.id.create_group_name)
+                    .text.toString().trim()
+                val members = (0 until picker.childCount)
+                    .map { picker.getChildAt(it) }
+                    .filterIsInstance<CheckBox>()
+                    .filter { it.isChecked }
+                    .map { it.tag as String }
+                when {
+                    name.isEmpty() -> toast(getString(R.string.group_need_name))
+                    members.isEmpty() -> toast(getString(R.string.group_need_member))
+                    else -> {
+                        val session = NodeHolder.session ?: return@setOnClickListener
+                        runNode(work = { session.createGroup(name, members) }) { id ->
+                            dialog.dismiss()
+                            refreshGroups()
+                            openGroup(id, name)
+                        }
+                    }
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    private fun openGroup(group: String, name: String) {
+        startActivity(
+            Intent(this, GroupChatActivity::class.java)
+                .putExtra("group", group)
+                .putExtra("name", name),
+        )
     }
 
     private fun onSessionEstablished(peer: String) {
@@ -216,6 +300,37 @@ class MainActivity : AppCompatActivity() {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK),
         )
         finish()
+    }
+}
+
+/** Group rows: creator-controlled name plus authoritative roster size. */
+private class GroupsAdapter(
+    private val onClick: (Group) -> Unit,
+) : RecyclerView.Adapter<GroupsAdapter.Holder>() {
+    private var items = listOf<Group>()
+
+    class Holder(view: View) : RecyclerView.ViewHolder(view)
+
+    fun submit(list: List<Group>) {
+        items = list.sortedBy { it.name.lowercase() }
+        notifyDataSetChanged()
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder =
+        Holder(LayoutInflater.from(parent.context).inflate(R.layout.row_group, parent, false))
+
+    override fun getItemCount() = items.size
+
+    override fun onBindViewHolder(holder: Holder, position: Int) {
+        val group = items[position]
+        holder.itemView.findViewById<TextView>(R.id.group_name).text = group.name
+        holder.itemView.findViewById<TextView>(R.id.group_members).text =
+            holder.itemView.context.resources.getQuantityString(
+                R.plurals.group_member_count,
+                group.members.size,
+                group.members.size,
+            )
+        holder.itemView.setOnClickListener { onClick(group) }
     }
 }
 

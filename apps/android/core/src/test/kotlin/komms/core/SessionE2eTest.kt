@@ -154,6 +154,102 @@ class SessionE2eTest {
     }
 
     @Test
+    fun `group ux creates manages messages and shows partial delivery`() {
+        val dir = tempDir()
+        val aEv = Events()
+        val bEv = Events()
+
+        // The embedded FFI runtime admits two live nodes per process. Capture
+        // a real third identity first, then keep Carol offline so delivery can
+        // be proven independently per member.
+        val carol = open(dir, "group-carol", Events())
+        val carolBundle = carol.myBundleHex()
+        carol.stop()
+        val alice = open(dir, "group-alice", aEv)
+        val bob = open(dir, "group-bob", bEv)
+
+        val aliceAddr = listenAddr(alice)
+        val bobAddr = listenAddr(bob)
+        val aliceBundle = alice.myBundleHex()
+        val bobBundle = bob.myBundleHex()
+        val bobPeer = alice.addContact("Bob", bobBundle, multiaddrHint(bobAddr))
+        val carolPeer = alice.addContact(
+            "Carol",
+            carolBundle,
+            multiaddrHint("/ip4/127.0.0.1/udp/9/quic-v1"),
+        )
+        val aliceAtBob = bob.addContact("Alice", aliceBundle, multiaddrHint(aliceAddr))
+
+        // The create flow selects one stored contact; the creator then adds
+        // another from the members screen.
+        val group = alice.createGroup("Trail crew", listOf(bobPeer))
+        bEv.wait("Bob's group invite") {
+            (it as? Event.GroupUpdated)?.takeIf { event -> event.group == group }
+        }
+        var listed = alice.groups()
+        assertEquals(1, listed.size)
+        assertEquals(group, listed[0].id)
+        assertEquals("Trail crew", listed[0].name)
+        assertEquals(2, listed[0].members.size)
+
+        alice.addGroupMember(group, carolPeer)
+        listed = alice.groups()
+        assertEquals(3, listed[0].members.size)
+
+        // Only the creator gets roster controls; the node's explicit
+        // authority error passes through the shell unchanged.
+        val authority = assertFailsWith<FfiException.Node> {
+            bob.addGroupMember(group, carolPeer)
+        }
+        assertTrue("creator" in authority.reasonText(), "got: ${authority.reasonText()}")
+
+        // Bob receives while offline Carol remains queued/sent. Outbound
+        // history exposes one truthful state per recipient.
+        val first = alice.sendGroup(group, "Meet at the north trailhead")
+        bEv.wait("Bob's group message") {
+            (it as? Event.GroupMessageReceived)
+                ?.takeIf { event -> event.group == group && event.body == "Meet at the north trailhead" }
+        }
+        aEv.wait("Bob's group copy delivered") {
+            (it as? Event.GroupDeliveryUpdated)?.takeIf { event ->
+                event.id == first && event.peer == bobPeer &&
+                    event.state == DeliveryState.DELIVERED
+            }
+        }
+        val history = alice.groupMessages(group)
+        assertEquals(1, history.size)
+        assertEquals(Direction.OUTBOUND, history[0].direction)
+        assertEquals(2, history[0].deliveries.size)
+        assertEquals(
+            DeliveryState.DELIVERED,
+            history[0].deliveries.first { it.peer == bobPeer }.state,
+        )
+        assertTrue(
+            history[0].deliveries.first { it.peer == carolPeer }.state in
+                setOf(DeliveryState.QUEUED, DeliveryState.SENT),
+        )
+        val bobHistory = bob.groupMessages(group)
+        assertEquals(aliceAtBob, bobHistory[0].sender)
+        assertEquals(Direction.INBOUND, bobHistory[0].direction)
+        assertTrue(bobHistory[0].deliveries.isEmpty())
+
+        // Creator removal rotates the roster immediately. A member can leave;
+        // their live group disappears locally and the creator converges too.
+        alice.removeGroupMember(group, carolPeer)
+        assertEquals(2, alice.groups()[0].members.size)
+        bob.leaveGroup(group)
+        assertTrue(bob.groups().isEmpty())
+        val deadline = System.nanoTime() + 30_000_000_000L
+        while (alice.groups()[0].members.size != 1) {
+            check(System.nanoTime() < deadline) { "creator did not apply Bob's leave" }
+            Thread.sleep(50)
+        }
+
+        alice.stop()
+        bob.stop()
+    }
+
+    @Test
     fun `backup mnemonic restore flow`() {
         val dir = tempDir()
         var aEv = Events()
