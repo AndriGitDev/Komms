@@ -41,18 +41,22 @@ uniffi::setup_scaffolding!();
 
 /// Errors crossing the FFI boundary. Messages are the node's own, verbatim
 /// — honest and human-readable, never downgraded to a fake success.
+///
+/// The field is named `reason` (not `message`): Kotlin exposes errors as
+/// exception classes, and a field literally named `message` collides with
+/// `Throwable.message` in the generated bindings.
 #[derive(Debug, uniffi::Error)]
 pub enum FfiError {
     /// Startup failed: store open/create (wrong passphrase, corrupt file),
     /// transport bind, or an unreachable configured radio.
     Startup {
         /// What failed, verbatim.
-        message: String,
+        reason: String,
     },
     /// The node rejected the operation (unknown contact, malformed input…).
     Node {
         /// The node's error, verbatim.
-        message: String,
+        reason: String,
     },
     /// The node was stopped; the handle is spent.
     Stopped,
@@ -61,8 +65,8 @@ pub enum FfiError {
 impl std::fmt::Display for FfiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Startup { message } => write!(f, "startup: {message}"),
-            Self::Node { message } => write!(f, "{message}"),
+            Self::Startup { reason } => write!(f, "startup: {reason}"),
+            Self::Node { reason } => write!(f, "{reason}"),
             Self::Stopped => write!(f, "node is stopped"),
         }
     }
@@ -420,7 +424,7 @@ impl KultNode {
         listener: Box<dyn EventListener>,
     ) -> Result<Arc<Self>, FfiError> {
         let backup = std::fs::read(&backup_path).map_err(|e| FfiError::Startup {
-            message: format!("backup file: {e}"),
+            reason: format!("backup file: {e}"),
         })?;
         let restore = RestoreSource { backup, mnemonic };
         Self::boot(runtime_config(config, Some(restore))?, listener)
@@ -602,7 +606,7 @@ impl KultNode {
                 listener.on_event(event);
             }
         });
-        let rt = Runtime::start(cfg, sink).map_err(|message| FfiError::Startup { message })?;
+        let rt = Runtime::start(cfg, sink).map_err(|reason| FfiError::Startup { reason })?;
         Ok(Arc::new(Self {
             address: rt.address.clone(),
             peer: hex_encode(&rt.peer),
@@ -626,7 +630,7 @@ impl KultNode {
             .map_err(|_| FfiError::Stopped)?;
         rx.blocking_recv()
             .map_err(|_| FfiError::Stopped)?
-            .map_err(|message| FfiError::Node { message })
+            .map_err(|reason| FfiError::Node { reason })
     }
 }
 
@@ -638,7 +642,7 @@ fn runtime_config(
 ) -> Result<RuntimeConfig, FfiError> {
     let data_dir = PathBuf::from(&config.data_dir);
     std::fs::create_dir_all(&data_dir).map_err(|e| FfiError::Startup {
-        message: format!("data dir: {e}"),
+        reason: format!("data dir: {e}"),
     })?;
     Ok(RuntimeConfig {
         db_path: data_dir.join("node.db"),
@@ -677,7 +681,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 /// Decode a 32-byte hex peer id (case-insensitive).
 fn parse_peer(s: &str) -> Result<[u8; 32], FfiError> {
     let fail = || FfiError::Node {
-        message: "peer must be 64 hex chars".to_owned(),
+        reason: "peer must be 64 hex chars".to_owned(),
     };
     if s.len() != 64 {
         return Err(fail());

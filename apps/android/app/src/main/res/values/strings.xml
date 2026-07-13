@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Komms</string>
+    <string name="notif_channel">Node</string>
+    <string name="notif_running">Node running — messages deliver in the background</string>
+
+    <!-- Gate -->
+    <string name="gate_tagline">Sovereign messaging: end-to-end encrypted, serverless, functional off the grid.</string>
+    <string name="gate_passphrase">Store passphrase</string>
+    <string name="gate_confirm">Confirm passphrase</string>
+    <string name="gate_unlock">Unlock</string>
+    <string name="gate_create">Create identity</string>
+    <string name="gate_empty">Enter a passphrase</string>
+    <string name="gate_mismatch">Passphrases do not match</string>
+    <string name="gate_restore_heading">Or restore from a backup</string>
+    <string name="gate_pick_backup">Choose .kkr backup file</string>
+    <string name="gate_no_backup">no backup file chosen</string>
+    <string name="gate_mnemonic">24-word recovery mnemonic</string>
+    <string name="gate_restore">Restore</string>
+    <string name="gate_settings">Network settings</string>
+
+    <!-- Main -->
+    <string name="status_line">%1$s · NAT %2$s · %3$d LAN · %4$d queued · %5$d transit</string>
+    <string name="nat_public">public</string>
+    <string name="nat_private">private</string>
+    <string name="nat_unknown">unknown</string>
+    <string name="main_empty">No contacts yet. Pair by QR, pasted bundle hex, or kult address.</string>
+    <string name="menu_add_contact">Add contact</string>
+    <string name="menu_my_qr">My pairing QR</string>
+    <string name="menu_backup">Backup…</string>
+    <string name="menu_settings">Settings</string>
+    <string name="menu_lock">Lock</string>
+    <string name="verified_badge">✓ verified</string>
+    <string name="my_qr_title">My pairing QR</string>
+    <string name="my_qr_caption">Scan on another device, or add by address:\n%1$s</string>
+    <string name="key_changed_title">Security notice</string>
+    <string name="key_changed_body">A new encryption session was established with %1$s. If they did not just reinstall or restore, verify safety numbers before trusting new messages.</string>
+    <string name="backup_done_title">Backup written — recovery mnemonic</string>
+    <string name="backup_done_body">Write these 24 words down on paper. They are shown exactly once and stored nowhere:\n\n%1$s</string>
+    <string name="backup_done_ack">I wrote them down</string>
+
+    <!-- Add contact -->
+    <string name="add_title">Add contact</string>
+    <string name="add_name">Their name (what you call them)</string>
+    <string name="add_bundle">Prekey bundle (hex — scan or paste)</string>
+    <string name="add_scan">Scan QR</string>
+    <string name="add_from_bundle">Add from bundle</string>
+    <string name="add_address">kult address (kk1…)</string>
+    <string name="add_from_address">Add by address (DHT lookup)</string>
+    <string name="add_hints_label">Delivery hints, one per line (optional):\nmultiaddr /ip4/…  ·  relay /ip4/…/p2p/…  ·  spool /path  ·  mesh broadcast</string>
+    <string name="add_need_name">Enter a name</string>
+    <string name="add_done">Added %1$s</string>
+
+    <!-- Chat -->
+    <string name="chat_hint">Message</string>
+    <string name="chat_send">Send</string>
+    <string name="state_queued">queued</string>
+    <string name="state_sent">sent</string>
+    <string name="state_delivered">delivered ✓</string>
+    <string name="state_held">held — will send when a faster link exists</string>
+    <string name="menu_verify">Verify safety number</string>
+    <string name="menu_hints">Edit delivery hints</string>
+    <string name="hints_title">Delivery hints</string>
+    <string name="hints_help">One per line: multiaddr /ip4/… · relay /ip4/…/p2p/… · spool /path · mesh broadcast. Saving replaces the current hints.</string>
+    <string name="hints_save">Replace hints</string>
+    <string name="hints_saved">Hints replaced</string>
+
+    <!-- Verify -->
+    <string name="verify_title">Verify %1$s</string>
+    <string name="verify_explain">Compare with the same screen on their device — read the digits aloud or scan each other\'s QR. Identical means nobody sits between you.</string>
+    <string name="verify_scan">Scan their QR</string>
+    <string name="verify_match">Codes match</string>
+    <string name="verify_mismatch">CODES DO NOT MATCH — someone may be intercepting. Do not mark verified.</string>
+    <string name="verify_mark">Mark verified</string>
+    <string name="verify_done">Marked verified</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Network settings</string>
+    <string name="settings_note">Same knobs as kultd\'s flags; stored without secrets in settings.json. Applied when the node next starts (lock, then unlock).</string>
+    <string name="set_listen">Listen multiaddrs (one per line)</string>
+    <string name="set_bootstrap">DHT bootstrap peers (one per line)</string>
+    <string name="set_relay">Relay for NAT circuit (optional)</string>
+    <string name="set_mailboxes">Mailbox relays (one per line)</string>
+    <string name="set_spool">Sneakernet spool directory (optional)</string>
+    <string name="set_mesh_tcp">Meshtastic radio, network API host:4403 (optional; needs a meshtastic build)</string>
+    <string name="set_serve_mailbox">Volunteer mailbox service for others</string>
+    <string name="set_mdns">LAN discovery (mDNS)</string>
+    <string name="set_bridge">Bridge mesh↔internet when a radio is attached</string>
+    <string name="settings_save">Save</string>
+    <string name="settings_saved">Saved — applies at next unlock</string>
+    <string name="settings_corrupt">settings.json is corrupt</string>
+</resources>
