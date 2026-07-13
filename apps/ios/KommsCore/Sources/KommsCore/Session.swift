@@ -1,0 +1,188 @@
+// The iOS shell's view of a running node: a thin, testable layer over
+// `kult-ffi`'s KultNode, mirroring the desktop app's `session.rs` and the
+// Android shell's `Session.kt`.
+//
+// Everything the UI can do goes through `Session` — views call these
+// methods (off the main thread) and nothing else. That keeps the whole
+// behavior testable without a simulator: the e2e test drives two `Session`s
+// through exactly this surface, on Linux or macOS.
+//
+// The shell adds **no** protocol logic. Honesty rules from the core carry
+// through verbatim: delivery states come from the node (`delivered` means an
+// end-to-end encrypted receipt), errors are the node's own words, and the
+// backup mnemonic is returned exactly once and never stored.
+
+import Foundation
+
+extension FfiError {
+    /// Human-readable text for an FFI failure — the node's own words.
+    public var reasonText: String {
+        switch self {
+        case .Startup(let reason): return "startup: \(reason)"
+        case .Node(let reason): return reason
+        case .Stopped: return "node is stopped"
+        }
+    }
+}
+
+/// QR text for a prekey bundle's hex: uppercase keeps the QR in its compact
+/// alphanumeric mode (hex decoding is case-insensitive everywhere), and the
+/// payload is interoperable with the desktop and Android pairing QRs and
+/// `kult bundle` / `kult add`.
+public func bundleQrText(_ bundleHex: String) -> String { bundleHex.uppercased() }
+
+/// QR text for a safety number: uppercase hex of the raw 32-byte comparison
+/// value — both parties render the identical code, on any platform.
+public func safetyQrText(_ sn: SafetyNumber) -> String { hexEncode(sn.qr).uppercased() }
+
+/// Where the shell delivers node events. Called on `kult-ffi`'s dedicated
+/// event thread — the app marshals to its main actor.
+public typealias EventSink = @Sendable (Event) -> Void
+
+/// Adapter: `kult-ffi`'s listener protocol onto an ``EventSink``.
+private final class Forwarder: EventListener {
+    private let sink: EventSink
+    init(_ sink: @escaping EventSink) { self.sink = sink }
+    func onEvent(event: Event) { sink(event) }
+}
+
+/// A running node plus the shell-side conveniences the UI needs. Construct
+/// with ``Session/open(dataDir:passphrase:settings:kdf:sink:)`` or
+/// ``Session/restore(dataDir:passphrase:backupPath:mnemonic:settings:kdf:sink:)``;
+/// methods are blocking — call them off the main thread. Errors surface as
+/// `FfiError` (the node's own words — use ``FfiError/reasonText``) or
+/// ``InputError`` for input this layer rejects before it reaches the node.
+public final class Session: @unchecked Sendable {
+    private let node: KultNode
+
+    private init(node: KultNode) { self.node = node }
+
+    /// This node's human-shareable kult address.
+    public var address: String { node.address() }
+
+    /// This node's peer id (hex).
+    public var peer: String { node.peer() }
+
+    /// Status snapshot for the UI's transport indicators.
+    public func status() throws -> Status { try node.status() }
+
+    /// Export a fresh prekey bundle as pasteable hex. Render
+    /// ``bundleQrText(_:)`` of it for the pairing QR.
+    public func myBundleHex() throws -> String { hexEncode(try node.handshakeBundle()) }
+
+    /// Add a contact from pasted/scanned bundle hex, with delivery hints.
+    /// Returns the new contact's peer id.
+    public func addContact(name: String, bundleHex: String, hints: [HintSpec]) throws -> String {
+        guard let bundle = hexDecode(bundleHex) else {
+            throw InputError("bundle must be hex")
+        }
+        return try node.addContact(name: name, bundle: bundle, hints: hints.toFfi())
+    }
+
+    /// Add a contact from their kult address alone (DHT lookup).
+    public func addContact(name: String, address: String) throws -> String {
+        try node.addContactByAddress(
+            name: name,
+            address: address.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// All stored contacts.
+    public func contacts() throws -> [Contact] { try node.contacts() }
+
+    /// Message history with a peer.
+    public func messages(peer: String) throws -> [Message] { try node.messagesWith(peer: peer) }
+
+    /// Queue a message; returns its id (progress arrives as events).
+    public func send(peer: String, body: String) throws -> String {
+        try node.send(peer: peer, body: body)
+    }
+
+    /// The safety number with a peer (render ``safetyQrText(_:)`` for the QR).
+    public func safetyNumber(peer: String) throws -> SafetyNumber {
+        try node.safetyNumber(peer: peer)
+    }
+
+    /// Record an out-of-band verification.
+    public func markVerified(peer: String) throws { try node.markVerified(peer: peer) }
+
+    /// Replace a contact's delivery hints.
+    public func setHints(peer: String, hints: [HintSpec]) throws {
+        try node.setHints(peer: peer, hints: hints.toFfi())
+    }
+
+    /// Publish the prekey bundle on the DHT now.
+    public func publish() throws { try node.publish() }
+
+    /// Write an encrypted backup file; returns the one-time 24-word
+    /// mnemonic. The shell shows it exactly once and keeps no copy.
+    public func exportBackup(to path: URL) throws -> String {
+        try node.exportBackup(path: path.path)
+    }
+
+    /// Stop the node (idempotent; the handle is spent afterwards).
+    public func stop() { node.stop() }
+
+    /// Open (or create on first run) the store in `dataDir` and start the
+    /// node. Blocking: Argon2id and transport binding happen before this
+    /// returns, so a wrong passphrase is a startup error — never a broken
+    /// half-running node. `kdf` is the cost profile for store *creation*
+    /// (the app passes `.mobile`).
+    public static func open(
+        dataDir: URL,
+        passphrase: String,
+        settings: NetworkSettings,
+        kdf: KdfChoice,
+        sink: @escaping EventSink
+    ) throws -> Session {
+        Session(
+            node: try KultNode.start(
+                config: buildConfig(dataDir: dataDir, passphrase: passphrase,
+                                    settings: settings, kdf: kdf),
+                listener: Forwarder(sink)))
+    }
+
+    /// First run only: restore from an encrypted backup file instead of
+    /// creating a fresh identity, then start.
+    public static func restore(
+        dataDir: URL,
+        passphrase: String,
+        backupPath: URL,
+        mnemonic: String,
+        settings: NetworkSettings,
+        kdf: KdfChoice,
+        sink: @escaping EventSink
+    ) throws -> Session {
+        Session(
+            node: try KultNode.restore(
+                config: buildConfig(dataDir: dataDir, passphrase: passphrase,
+                                    settings: settings, kdf: kdf),
+                backupPath: backupPath.path,
+                mnemonic: mnemonic,
+                listener: Forwarder(sink)))
+    }
+
+    /// The FFI config for this data dir + settings: `kult-ffi`'s baseline
+    /// with the user's network settings on top.
+    private static func buildConfig(
+        dataDir: URL,
+        passphrase: String,
+        settings: NetworkSettings,
+        kdf: KdfChoice
+    ) -> Config {
+        var config = defaultConfig(dataDir: dataDir.path, passphrase: passphrase)
+        config.kdf = kdf
+        // An emptied-out listen list falls back to the baseline rather
+        // than silently starting a node nothing can dial.
+        if !settings.listen.isEmpty { config.listen = settings.listen }
+        config.bootstrap = settings.bootstrap
+        config.relay = settings.relay
+        config.mailboxes = settings.mailboxes
+        config.serveMailbox = settings.serveMailbox
+        config.mdns = settings.mdns
+        config.spool = settings.spool
+        config.meshtasticSerial = settings.meshtasticSerial
+        config.meshtasticTcp = settings.meshtasticTcp
+        config.bridge = settings.bridge
+        return config
+    }
+}
