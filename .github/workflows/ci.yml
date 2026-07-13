@@ -110,6 +110,50 @@ jobs:
       - name: build and test :core (generated bindings + two-node e2e, no Android SDK)
         run: gradle :core:build -Pkomms.androidApp=false
 
+  ios-core:
+    name: ios core (bindings + Swift e2e)
+    runs-on: ubuntu-latest
+    # Official Swift toolchain image; Rust goes in via rustup. The job runs
+    # KommsCore's tests — including the two-node e2e — against the
+    # host-built libkult_ffi, no Xcode or simulator involved.
+    container: swift:6.1-noble
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@v2
+      - name: generate bindings and run KommsCore tests (two-node e2e)
+        run: apps/ios/scripts/test-core.sh
+
+  # macOS runners are billed 10x on private repos, so the simulator build of
+  # the SwiftUI shell is armed explicitly: set the repository variable
+  # IOS_APP_CI=1 to enable it. The behavior layer is still covered on every
+  # push by the Linux ios-core job above.
+  ios-app:
+    name: ios app (simulator build)
+    if: vars.IOS_APP_CI == '1'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+      - name: install xcodegen
+        run: brew install xcodegen
+      - name: assemble KultFFI.xcframework (Rust static libs per platform)
+        run: apps/ios/scripts/build-xcframework.sh
+      - name: generate project and build for the simulator
+        working-directory: apps/ios/KommsApp
+        run: |
+          xcodegen generate
+          xcodebuild -project KommsApp.xcodeproj -scheme KommsApp \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO build
+
   android-app:
     name: android app (assembleDebug)
     runs-on: ubuntu-latest

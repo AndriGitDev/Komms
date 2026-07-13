@@ -225,8 +225,34 @@ key-change surfacing, transport indicators, hint editing, secret-free
 `settings.json` (same file format as desktop), mnemonic-shown-once backup
 export with OS cloud backup disabled, and a foreground service keeping
 delivery alive in the background. Native libraries cross-compile via
-cargo-ndk; CI runs the `:core` e2e and assembles the debug APK.
-Remaining: the iOS shell (Swift over the generated bindings).
+cargo-ndk; CI runs the `:core` e2e and assembles the debug APK. The iOS
+alpha is in (application A2, `apps/ios`): a Swift shell over the same
+`kult-ffi` runtime, generated bindings compiled fresh from the crate at
+build time (never committed). Its structure mirrors the other shells'
+split — every behavior lives in the `KommsCore` Swift package (session
+layer + bindings) pinned by tests that run on plain Linux or macOS with
+no Xcode, including a two-node e2e against the host-built library
+(pairing by scanned bundle hex, verified `delivered` states via listener
+events, safety numbers, backup → restore → automatic re-handshake — no
+simulator involved); the SwiftUI `KommsApp` is UI only. It covers the M5
+UX list: create/unlock/restore gate, pairing by camera-scanned QR,
+pasted hex, or kult address via DHT, conversations rendering the node's
+honest delivery ladder (including the mesh "held" verdict),
+safety-number verification with matching digits + QR across platforms,
+key-change surfacing, transport indicators, hint editing, secret-free
+`settings.json` (same file format as the other shells), and
+mnemonic-shown-once backup export via the share sheet with the data
+directory excluded from iCloud backup. QR rendering is CoreImage and
+scanning is AVFoundation — the app has zero third-party dependencies;
+the only library it links is the workspace's own Rust core, built into
+`KultFFI.xcframework` by a script for device/simulator targets. CI runs
+the `KommsCore` e2e on Linux (official Swift container) on every push;
+a gated macOS job (`IOS_APP_CI` repository variable, mirroring the HIL
+bench's arming pattern) assembles the xcframework and builds the app
+for the simulator. Remaining: arming that macOS job and a hands-on pass
+of the SwiftUI shell on a device — unlike the pinned `KommsCore`
+behavior layer, the app layer hasn't been exercised yet; background
+delivery and store distribution stay M6.
 
 **Acceptance**: a non-technical user can install desktop + mobile builds, exchange QR
 verification with a friend, and message over internet, LAN, and mesh with truthful

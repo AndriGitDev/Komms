@@ -1,0 +1,13 @@
+# Generated UniFFI sources (scripts/generate-bindings.sh) — never committed,
+# mirroring the Android build's posture.
+KommsCore/Sources/KommsCore/Generated/
+KommsCore/Sources/kult_ffiFFI/include/
+
+# SwiftPM / Xcode build state.
+.build/
+.swiftpm/
+*.xcodeproj
+build/
+
+# Rust static libraries assembled for device builds.
+KultFFI.xcframework/

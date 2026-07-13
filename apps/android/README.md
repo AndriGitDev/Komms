@@ -88,4 +88,5 @@ job that uploads the artifact.
 ## Not yet
 
 Mobile push-style wake-ups (the node only runs while the foreground
-service does), BLE radios, an iOS shell, and store distribution (M6).
+service does), BLE radios, and store distribution (M6). The iOS shell
+lives in [`apps/ios`](../ios/).
