@@ -15,8 +15,8 @@ use kult_crypto::{
     GroupHeaderKey, GroupMessage, GroupReceiverChain, GroupSenderChain, IdentityPublic,
 };
 use kult_protocol::{
-    delivery_token, epoch_day, pad, unpad, Envelope, EnvelopeKind, GroupAnnounce,
-    GroupControlPayload, GroupMemberInfo, MailboxKey,
+    decode_content, delivery_token, encode_text, epoch_day, pad, unpad, DecodedContent, Envelope,
+    EnvelopeKind, GroupAnnounce, GroupControlPayload, GroupMemberInfo, MailboxKey,
 };
 use kult_store::{
     ContactRecord, DeliveryState, Direction, GroupDelivery, GroupMember, GroupMessageRecord,
@@ -24,7 +24,7 @@ use kult_store::{
 };
 
 use crate::api::GroupInfo;
-use crate::{Consumed, Event, Node, NodeError, Result};
+use crate::{Consumed, ContentStatus, Event, Node, NodeError, Result};
 
 /// Rotate the sending chain after this many messages (PCS via periodic
 /// rotation, spec §6).
@@ -134,13 +134,28 @@ impl Node {
 
         let mut id = [0u8; 16];
         rng.fill_bytes(&mut id);
+        let mut all_members_support_text = true;
+        for member in rec.members.iter().filter(|member| member.peer != me) {
+            if !self.peer_supports_text(&member.peer)? {
+                all_members_support_text = false;
+                break;
+            }
+        }
+        let wire_content = if all_members_support_text {
+            match core::str::from_utf8(body) {
+                Ok(text) => encode_text(id, text)?,
+                Err(_) => body.to_vec(),
+            }
+        } else {
+            body.to_vec()
+        };
         let mut record = GroupMessageRecord {
             id,
             group: *group,
             sender: me,
             direction: Direction::Outbound,
             timestamp: now,
-            body: body.to_vec(),
+            body: wire_content.clone(),
             deliveries: rec
                 .members
                 .iter()
@@ -169,7 +184,7 @@ impl Node {
 
         let mut chain = decode_chain(&rec.sender_chain)?;
         let hk = GroupHeaderKey::derive(&rec.secret);
-        let wire = chain.seal(&hk, group, &pad(body)?, rng).encode();
+        let wire = chain.seal(&hk, group, &pad(&wire_content)?, rng).encode();
         rec.sender_chain = encode_chain(&chain)?;
         rec.sent_since_rotation += 1;
 
@@ -510,8 +525,51 @@ impl Node {
                 return done(self);
             };
 
-            let mut id = [0u8; 16];
-            rng.fill_bytes(&mut id);
+            let decoded = decode_content(&body);
+            if let DecodedContent::Text { id, .. } = decoded {
+                let duplicate = self.store.group_messages(&rec.id)?.iter().any(|record| {
+                    record.direction == Direction::Inbound
+                        && record.sender == peer
+                        && matches!(
+                            decode_content(&record.body),
+                            DecodedContent::Text { id: stored_id, .. } if stored_id == id
+                        )
+                });
+                if duplicate {
+                    acks.push((peer, env.content_id()));
+                    return done(self);
+                }
+            }
+            let (id, event_body, content) = match decoded {
+                DecodedContent::LegacyText(text) => {
+                    let mut id = [0u8; 16];
+                    rng.fill_bytes(&mut id);
+                    (id, text.as_bytes().to_vec(), ContentStatus::LegacyText)
+                }
+                DecodedContent::Text { id, text } => {
+                    (id, text.as_bytes().to_vec(), ContentStatus::Text { id })
+                }
+                DecodedContent::Unsupported {
+                    format_version,
+                    kind,
+                } => {
+                    let mut id = [0u8; 16];
+                    rng.fill_bytes(&mut id);
+                    (
+                        id,
+                        Vec::new(),
+                        ContentStatus::Unsupported {
+                            format_version,
+                            kind,
+                        },
+                    )
+                }
+                DecodedContent::Malformed => {
+                    let mut id = [0u8; 16];
+                    rng.fill_bytes(&mut id);
+                    (id, Vec::new(), ContentStatus::Malformed)
+                }
+            };
             self.store.put_group_message(
                 &GroupMessageRecord {
                     id,
@@ -519,7 +577,7 @@ impl Node {
                     sender: peer,
                     direction: Direction::Inbound,
                     timestamp: now,
-                    body: body.clone(),
+                    body,
                     deliveries: Vec::new(),
                     wire_body: None,
                 },
@@ -530,7 +588,8 @@ impl Node {
                 sender: peer,
                 id,
                 timestamp: now,
-                body,
+                body: event_body,
+                content,
             });
             acks.push((peer, env.content_id()));
             return done(self);

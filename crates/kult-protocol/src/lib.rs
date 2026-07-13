@@ -9,6 +9,10 @@
 //! - [`delivery_token`] / [`intro_token`] — sealed-sender addressing (spec §7),
 //! - [`bundle_export`] / [`bundle_import`] — `.kkb` sneakernet bundles
 //!   (docs/05-transports.md §5),
+//! - [`decode_content`] / [`encode_text`] — versioned, encrypted message
+//!   content with permanent legacy-text fallback (ADR-0014),
+//! - [`CapabilityControl`] — authenticated content capability negotiation
+//!   over the encrypted receipt lane (ADR-0014),
 //! - [`ReceiptPayload`] — end-to-end encrypted delivery receipts and
 //!   fragment NACKs.
 //!
@@ -22,6 +26,8 @@
 extern crate alloc;
 
 mod bundle;
+mod capability;
+mod content;
 mod envelope;
 mod error;
 mod fragmentation;
@@ -31,6 +37,15 @@ mod receipt;
 mod token;
 
 pub use bundle::{bundle_export, bundle_import, BUNDLE_MAGIC};
+pub use capability::{
+    is_capability_control, CapabilityControl, FormatCapabilities, CAPABILITY_CONTROL_VERSION,
+    CAPABILITY_MAGIC, MAX_CAPABILITY_FORMATS, MAX_CAPABILITY_KINDS,
+};
+pub use content::{
+    decode_content, encode_text, DecodedContent, CONTENT_FORMAT_V1, CONTENT_HEADER_LEN,
+    CONTENT_KIND_TEXT, CONTENT_MAGIC, MAX_COLLECTION_ENTRIES, MAX_CONTENT_FRAME_LEN,
+    MAX_CONTENT_PAYLOAD_LEN, MAX_NESTING_DEPTH,
+};
 pub use envelope::{Envelope, EnvelopeKind, ENVELOPE_HEADER_LEN};
 pub use error::ProtocolError;
 pub use fragmentation::{fragment, Reassembler, FRAG_HEADER_LEN, REASSEMBLY_WINDOW_SECS};

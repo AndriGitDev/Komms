@@ -223,8 +223,9 @@ async fn flush_sends_text_before_receipts_before_handshakes() {
         .send_message(&bob_id, b"text beats everything", NOW + 12, &mut rng)
         .unwrap();
 
-    // One tick: receives Bob's ping (queuing a receipt), then flushes all
-    // three. On the wire: Message, then Receipt, then Handshake.
+    // One tick: receives Bob's ping (queuing a receipt), advertises the
+    // terminal content capability on the same lane, then flushes all four.
+    // On the wire: Message, both Receipts, then Handshake.
     sent.lock().unwrap().clear();
     alice.tick(NOW + 13, &mut rng).await.unwrap();
     let kinds = sent.lock().unwrap().clone();
@@ -232,6 +233,7 @@ async fn flush_sends_text_before_receipts_before_handshakes() {
         kinds,
         vec![
             EnvelopeKind::Message,
+            EnvelopeKind::Receipt,
             EnvelopeKind::Receipt,
             EnvelopeKind::Handshake
         ],

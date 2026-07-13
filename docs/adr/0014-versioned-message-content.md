@@ -1,6 +1,6 @@
 # ADR-0014: Versioned, encrypted message-content frames with legacy text fallback
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-07-13
 
 ## Context

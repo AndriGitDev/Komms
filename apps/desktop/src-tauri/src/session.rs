@@ -18,8 +18,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use kult_ffi::{
-    default_config, Config, DeliveryState, Direction, Event, EventListener, Hint, KdfChoice,
-    KultNode, NatVerdict,
+    default_config, Config, ContentKind, DeliveryState, Direction, Event, EventListener, Hint,
+    KdfChoice, KultNode, NatVerdict,
 };
 
 use crate::qr;
@@ -132,6 +132,8 @@ pub struct UiMessage {
     pub timestamp: u64,
     /// Message text.
     pub body: String,
+    /// `legacy_text`, `text`, `unsupported`, or `malformed`.
+    pub content_kind: &'static str,
 }
 
 /// A sender-key group row for the desktop UI. Secret material and sender
@@ -172,6 +174,8 @@ pub struct UiGroupMessage {
     pub timestamp: u64,
     /// Message text.
     pub body: String,
+    /// `legacy_text`, `text`, `unsupported`, or `malformed`.
+    pub content_kind: &'static str,
     /// Per-recipient states for outbound messages; empty for inbound.
     pub deliveries: Vec<UiGroupDelivery>,
 }
@@ -279,6 +283,8 @@ pub enum UiEvent {
         timestamp: u64,
         /// Decrypted body.
         body: String,
+        /// Explicit content interpretation.
+        content_kind: &'static str,
     },
     /// An unknown peer completed a handshake; a contact stub exists now.
     ContactAdded {
@@ -314,6 +320,8 @@ pub enum UiEvent {
         timestamp: u64,
         /// Decrypted body.
         body: String,
+        /// Explicit content interpretation.
+        content_kind: &'static str,
     },
     /// One member's copy of an outbound group message changed state.
     GroupDeliveryUpdated {
@@ -338,11 +346,13 @@ impl UiEvent {
                 id,
                 timestamp,
                 body,
+                content_kind,
             } => Self::MessageReceived {
                 peer,
                 id,
                 timestamp,
                 body,
+                content_kind: content_kind_str(content_kind),
             },
             Event::ContactAdded { peer } => Self::ContactAdded { peer },
             Event::SessionEstablished { peer } => Self::SessionEstablished { peer },
@@ -354,12 +364,14 @@ impl UiEvent {
                 id,
                 timestamp,
                 body,
+                content_kind,
             } => Self::GroupMessageReceived {
                 group,
                 sender,
                 id,
                 timestamp,
                 body,
+                content_kind: content_kind_str(content_kind),
             },
             Event::GroupDeliveryUpdated { id, peer, state } => Self::GroupDeliveryUpdated {
                 id,
@@ -376,6 +388,15 @@ fn state_str(state: DeliveryState) -> &'static str {
         DeliveryState::Sent => "sent",
         DeliveryState::Delivered => "delivered",
         DeliveryState::Received => "received",
+    }
+}
+
+fn content_kind_str(kind: ContentKind) -> &'static str {
+    match kind {
+        ContentKind::LegacyText => "legacy_text",
+        ContentKind::Text => "text",
+        ContentKind::Unsupported => "unsupported",
+        ContentKind::Malformed => "malformed",
     }
 }
 
@@ -524,6 +545,7 @@ impl Session {
                 state: state_str(m.state),
                 timestamp: m.timestamp,
                 body: m.body,
+                content_kind: content_kind_str(m.content_kind),
             })
             .collect())
     }
@@ -570,6 +592,7 @@ impl Session {
                 outbound: message.direction == Direction::Outbound,
                 timestamp: message.timestamp,
                 body: message.body,
+                content_kind: content_kind_str(message.content_kind),
                 deliveries: message
                     .deliveries
                     .into_iter()
@@ -788,6 +811,7 @@ mod tests {
             id: "03".repeat(16),
             timestamp: 7,
             body: "meet at the pass".to_owned(),
+            content_kind: "text",
         })
         .unwrap();
         assert_eq!(received["type"], "group_message_received");

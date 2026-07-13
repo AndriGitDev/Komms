@@ -75,10 +75,11 @@ Deliver:
 
 ### F2. Versioned content model
 
-**State:** design in progress. [ADR-0014](adr/0014-versioned-message-content.md)
-proposes the compatibility frame, permanent legacy-text path, encrypted
-capability negotiation, stable content ids, and bounded unknown-content
-behavior. Implementation remains the next shared-foundation slice.
+**State:** shipped. [ADR-0014](adr/0014-versioned-message-content.md) is accepted
+and implemented: the compatibility frame, permanent legacy-text path,
+encrypted capability negotiation, scoped stable content ids, bounded
+unknown-content behavior, sealed capability state, and render-safe RPC/UniFFI
+outcomes are shared across pairwise and sender-key group messages.
 
 Add a versioned, length-bounded message-content codec while keeping legacy raw
 text readable. Start with `Text`; add typed variants only as their feature lands.
@@ -149,7 +150,7 @@ change.
 
 Remaining work:
 
-- preserve legacy text decoding forever or provide a one-time sealed migration;
+- keep the permanent legacy-text path and mixed-version coverage green;
 - add copy, reply-context navigation, selectable text, accessibility labels, and
   robust Unicode/bidirectional-text rendering in every shell;
 - keep the existing queued/sent/delivered meanings unchanged.
@@ -559,7 +560,7 @@ Do not combine these into one oversized design decision.
 
 | Order | Decision | Unlocks |
 |---|---|---|
-| 1 | Accept and implement ADR-0014: versioned typed message content and compatibility | Audio, files, edits, polls, structured mentions. |
+| 1 (done) | ADR-0014: versioned typed message content and compatibility | Audio, files, edits, polls, structured mentions. |
 | 2 | Encrypted attachment/chunk transfer and carrier policy | Audio, files, media editing. |
 | 3 | Expiry/retention metadata and deletion semantics | Disappearing and view-once content. |
 | 4 | Edit event ordering and tombstones | Message editing and multi-device convergence. |

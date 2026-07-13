@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use kult_node::{Event, GroupInfo};
+use kult_node::{ContentStatus, Event, GroupInfo};
 use kult_store::{DeliveryState, Direction, GroupMessageRecord, MessageRecord};
 use kult_transport::DeliveryHint;
 
@@ -188,12 +188,14 @@ pub fn event_line(event: &Event) -> String {
             id,
             timestamp,
             body,
+            content,
         } => json!({
             "type": "message",
             "peer": hex_encode(peer),
             "id": hex_encode(id),
             "timestamp": timestamp,
-            "body": String::from_utf8_lossy(body),
+            "body": render_event_body(body, *content),
+            "content_kind": content_kind(*content),
         }),
         Event::ContactAdded { peer } => json!({
             "type": "contact_added",
@@ -217,13 +219,15 @@ pub fn event_line(event: &Event) -> String {
             id,
             timestamp,
             body,
+            content,
         } => json!({
             "type": "group_message",
             "group": hex_encode(group),
             "sender": hex_encode(sender),
             "id": hex_encode(id),
             "timestamp": timestamp,
-            "body": String::from_utf8_lossy(body),
+            "body": render_event_body(body, *content),
+            "content_kind": content_kind(*content),
         }),
         Event::GroupDeliveryUpdated { id, peer, state } => json!({
             "type": "group_delivery",
@@ -248,6 +252,7 @@ pub fn group_json(group: &GroupInfo) -> Value {
 
 /// A group message record as JSON, including honest per-member delivery.
 pub fn group_message_json(rec: &GroupMessageRecord) -> Value {
+    let (body, content_kind) = render_stored_content(&rec.body);
     json!({
         "id": hex_encode(&rec.id),
         "group": hex_encode(&rec.group),
@@ -257,7 +262,8 @@ pub fn group_message_json(rec: &GroupMessageRecord) -> Value {
             Direction::Outbound => "out",
         },
         "timestamp": rec.timestamp,
-        "body": String::from_utf8_lossy(&rec.body),
+        "body": body,
+        "content_kind": content_kind,
         "deliveries": rec.deliveries.iter().map(|delivery| json!({
             "peer": hex_encode(&delivery.peer),
             "state": state_str(delivery.state),
@@ -267,6 +273,7 @@ pub fn group_message_json(rec: &GroupMessageRecord) -> Value {
 
 /// A message record as JSON.
 pub fn message_json(rec: &MessageRecord) -> Value {
+    let (body, content_kind) = render_stored_content(&rec.body);
     json!({
         "id": hex_encode(&rec.id),
         "peer": hex_encode(&rec.peer),
@@ -276,8 +283,44 @@ pub fn message_json(rec: &MessageRecord) -> Value {
         },
         "state": state_str(rec.state),
         "timestamp": rec.timestamp,
-        "body": String::from_utf8_lossy(&rec.body),
+        "body": body,
+        "content_kind": content_kind,
     })
+}
+
+const UNSUPPORTED_MESSAGE: &str = "Unsupported message — update Komms";
+
+fn content_kind(status: ContentStatus) -> &'static str {
+    match status {
+        ContentStatus::LegacyText => "legacy_text",
+        ContentStatus::Text { .. } => "text",
+        ContentStatus::Unsupported { .. } => "unsupported",
+        ContentStatus::Malformed => "malformed",
+        _ => "unsupported",
+    }
+}
+
+fn render_event_body(body: &[u8], status: ContentStatus) -> String {
+    match status {
+        ContentStatus::LegacyText | ContentStatus::Text { .. } => {
+            String::from_utf8(body.to_vec()).expect("node exposes only validated UTF-8 text")
+        }
+        ContentStatus::Unsupported { .. } | ContentStatus::Malformed => {
+            UNSUPPORTED_MESSAGE.to_owned()
+        }
+        _ => UNSUPPORTED_MESSAGE.to_owned(),
+    }
+}
+
+fn render_stored_content(bytes: &[u8]) -> (String, &'static str) {
+    match kult_protocol::decode_content(bytes) {
+        kult_protocol::DecodedContent::LegacyText(text) => (text.to_owned(), "legacy_text"),
+        kult_protocol::DecodedContent::Text { text, .. } => (text.to_owned(), "text"),
+        kult_protocol::DecodedContent::Unsupported { .. } => {
+            (UNSUPPORTED_MESSAGE.to_owned(), "unsupported")
+        }
+        kult_protocol::DecodedContent::Malformed => (UNSUPPORTED_MESSAGE.to_owned(), "malformed"),
+    }
 }
 
 fn state_str(state: DeliveryState) -> &'static str {

@@ -2559,6 +2559,7 @@ version = "0.1.0"
 dependencies = [
  "kult-crypto",
  "kult-node",
+ "kult-protocol",
  "kult-store",
  "kult-transport",
  "rand 0.8.7",

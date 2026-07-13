@@ -33,5 +33,19 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "content_decode"
+path = "fuzz_targets/content_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "capability_decode"
+path = "fuzz_targets/capability_decode.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

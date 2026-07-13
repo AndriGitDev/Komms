@@ -10,7 +10,7 @@ use kult_crypto::{
     initiate, mnemonic_to_entropy, Identity, KdfProfile, OneTimePrekeySecret, PqPrekeySecret,
     PrekeyBundle, SignedPrekeySecret,
 };
-use kult_protocol::pad;
+use kult_protocol::{pad, CapabilityControl, FormatCapabilities};
 use kult_store::{
     ContactRecord, DeliveryState, Direction, GroupDelivery, GroupMember, GroupMessageRecord,
     GroupRecord, MessageRecord, PendingAnnounce, Store, StoreError,
@@ -159,6 +159,18 @@ fn backup_round_trip() {
     let dir = tempfile::tempdir().unwrap();
     let (store, identity, contact, messages, peer) =
         populated_store(&dir.path().join("old.db"), &mut rng);
+    store
+        .put_capabilities(
+            &peer,
+            &CapabilityControl {
+                formats: vec![FormatCapabilities {
+                    format_version: 1,
+                    kinds: vec![1],
+                }],
+            },
+            &mut rng,
+        )
+        .unwrap();
 
     let (file, mnemonic) = store.export_backup(NOW + 100, &mut rng).unwrap();
     assert_eq!(&file[..4], b"KKR2");
@@ -181,6 +193,10 @@ fn backup_round_trip() {
     // The live session became a reset marker; the session itself is gone.
     assert_eq!(restored.reset_markers().unwrap(), vec![peer]);
     assert!(restored.get_session(&peer).unwrap().is_none());
+    assert!(
+        restored.get_capabilities(&peer).unwrap().is_none(),
+        "session-scoped capability state is intentionally excluded"
+    );
     // Prekeys are never restored — the node layer mints fresh ones.
     assert!(restored.get_prekeys().unwrap().is_none());
 
