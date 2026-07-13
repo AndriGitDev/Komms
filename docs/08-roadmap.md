@@ -304,6 +304,12 @@ Desktop, Android, and iOS group UX are shipped, including truthful
 per-recipient partial-delivery rows and shell-level acceptance coverage.
 Remaining for groups is the M6 list above.
 
+The next shared-foundation slice is the versioned message-content model:
+[ADR-0014](adr/0014-versioned-message-content.md) is proposed, specifying a
+permanent legacy-text decode path, encrypted capability negotiation, bounded
+typed frames, stable encrypted content ids, and honest retention of unknown
+future kinds before implementation begins.
+
 **Acceptance**: audit findings triaged with public report; reproducible-build attestation
 for all release artifacts.
 
