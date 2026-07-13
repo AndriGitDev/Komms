@@ -255,6 +255,33 @@ pub enum UiEvent {
         /// Message record id (hex).
         id: String,
     },
+    /// A group was created, joined, re-keyed, re-rostered, or left.
+    GroupUpdated {
+        /// Group id (hex).
+        group: String,
+    },
+    /// An inbound group message was decrypted and stored.
+    GroupMessageReceived {
+        /// Group id (hex).
+        group: String,
+        /// Sending member's peer id (hex).
+        sender: String,
+        /// Group message record id (hex).
+        id: String,
+        /// Local receive time (Unix seconds).
+        timestamp: u64,
+        /// Decrypted body.
+        body: String,
+    },
+    /// One member's copy of an outbound group message changed state.
+    GroupDeliveryUpdated {
+        /// Group message record id (hex).
+        id: String,
+        /// Member peer id (hex).
+        peer: String,
+        /// Delivery state for this member's copy.
+        state: &'static str,
+    },
 }
 
 impl UiEvent {
@@ -278,6 +305,25 @@ impl UiEvent {
             Event::ContactAdded { peer } => Self::ContactAdded { peer },
             Event::SessionEstablished { peer } => Self::SessionEstablished { peer },
             Event::AwaitingFasterLink { id } => Self::AwaitingFasterLink { id },
+            Event::GroupUpdated { group } => Self::GroupUpdated { group },
+            Event::GroupMessageReceived {
+                group,
+                sender,
+                id,
+                timestamp,
+                body,
+            } => Self::GroupMessageReceived {
+                group,
+                sender,
+                id,
+                timestamp,
+                body,
+            },
+            Event::GroupDeliveryUpdated { id, peer, state } => Self::GroupDeliveryUpdated {
+                id,
+                peer,
+                state: state_str(state),
+            },
         }
     }
 }
@@ -613,5 +659,31 @@ mod tests {
         .unwrap();
         assert_eq!(json["type"], "delivery_updated");
         assert_eq!(json["state"], "delivered");
+
+        let updated = serde_json::to_value(UiEvent::GroupUpdated {
+            group: "01".repeat(32),
+        })
+        .unwrap();
+        assert_eq!(updated["type"], "group_updated");
+
+        let received = serde_json::to_value(UiEvent::GroupMessageReceived {
+            group: "01".repeat(32),
+            sender: "02".repeat(32),
+            id: "03".repeat(16),
+            timestamp: 7,
+            body: "meet at the pass".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(received["type"], "group_message_received");
+        assert_eq!(received["body"], "meet at the pass");
+
+        let delivery = serde_json::to_value(UiEvent::GroupDeliveryUpdated {
+            id: "03".repeat(16),
+            peer: "02".repeat(32),
+            state: "delivered",
+        })
+        .unwrap();
+        assert_eq!(delivery["type"], "group_delivery_updated");
+        assert_eq!(delivery["state"], "delivered");
     }
 }

@@ -18,8 +18,8 @@ use rand::rngs::OsRng;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use kult_crypto::{KdfProfile, SafetyNumber};
-use kult_node::{Event, Node};
-use kult_store::{ContactRecord, MessageRecord};
+use kult_node::{Event, GroupInfo, Node};
+use kult_store::{ContactRecord, GroupMessageRecord, MessageRecord};
 use kult_transport::{
     DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, Transport, TransportOptions,
 };
@@ -83,6 +83,37 @@ pub(crate) enum Msg {
         peer: [u8; 32],
         body: Vec<u8>,
         resp: Resp<[u8; 16]>,
+    },
+    GroupCreate {
+        name: String,
+        members: Vec<[u8; 32]>,
+        resp: Resp<[u8; 32]>,
+    },
+    GroupSend {
+        group: [u8; 32],
+        body: Vec<u8>,
+        resp: Resp<[u8; 16]>,
+    },
+    GroupAdd {
+        group: [u8; 32],
+        peer: [u8; 32],
+        resp: Resp<()>,
+    },
+    GroupRemove {
+        group: [u8; 32],
+        peer: [u8; 32],
+        resp: Resp<()>,
+    },
+    GroupLeave {
+        group: [u8; 32],
+        resp: Resp<()>,
+    },
+    Groups {
+        resp: Resp<Vec<GroupInfo>>,
+    },
+    GroupMessages {
+        group: [u8; 32],
+        resp: Resp<Vec<GroupMessageRecord>>,
     },
     Contacts {
         resp: Resp<Vec<ContactRecord>>,
@@ -440,6 +471,37 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
                 node.send_message(&peer, &body, now, &mut OsRng)
                     .map_err(fail),
             );
+        }
+        Msg::GroupCreate {
+            name,
+            members,
+            resp,
+        } => {
+            let _ = resp.send(node.create_group(&name, &members, &mut OsRng).map_err(fail));
+        }
+        Msg::GroupSend { group, body, resp } => {
+            let _ = resp.send(
+                node.group_send(&group, &body, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::GroupAdd { group, peer, resp } => {
+            let _ = resp.send(node.group_add(&group, &peer, &mut OsRng).map_err(fail));
+        }
+        Msg::GroupRemove { group, peer, resp } => {
+            let _ = resp.send(
+                node.group_remove(&group, &peer, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::GroupLeave { group, resp } => {
+            let _ = resp.send(node.group_leave(&group, now, &mut OsRng).map_err(fail));
+        }
+        Msg::Groups { resp } => {
+            let _ = resp.send(node.groups().map_err(fail));
+        }
+        Msg::GroupMessages { group, resp } => {
+            let _ = resp.send(node.group_messages(&group).map_err(fail));
         }
         Msg::Contacts { resp } => {
             let _ = resp.send(node.contacts().map_err(fail));

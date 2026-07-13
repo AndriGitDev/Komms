@@ -256,6 +256,47 @@ pub struct Message {
     pub body: String,
 }
 
+/// A sender-key group, excluding every secret and chain value.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct Group {
+    /// Group id (hex).
+    pub id: String,
+    /// Creator-controlled display name.
+    pub name: String,
+    /// Managing member's peer id (hex).
+    pub creator: String,
+    /// Full roster, this node included (hex peer ids).
+    pub members: Vec<String>,
+}
+
+/// Honest delivery state for one member's copy of an outbound group message.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct GroupDelivery {
+    /// Member peer id (hex).
+    pub peer: String,
+    /// Delivery state for this member's copy.
+    pub state: DeliveryState,
+}
+
+/// One message in a group's history.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct GroupMessage {
+    /// Group message record id (hex).
+    pub id: String,
+    /// Group id (hex).
+    pub group: String,
+    /// Sending member's peer id (hex).
+    pub sender: String,
+    /// Sent or received.
+    pub direction: Direction,
+    /// Unix seconds.
+    pub timestamp: u64,
+    /// Message body (UTF-8 text).
+    pub body: String,
+    /// Per-member delivery states (outbound only).
+    pub deliveries: Vec<GroupDelivery>,
+}
+
 /// A comparable safety number (docs/06-identity-trust.md): both parties
 /// compute the identical value; compare out-of-band.
 #[derive(Clone, Debug, uniffi::Record)]
@@ -343,6 +384,33 @@ pub enum Event {
         /// Message record id (hex).
         id: String,
     },
+    /// A group was created, joined, re-keyed, re-rostered, or left.
+    GroupUpdated {
+        /// Group id (hex).
+        group: String,
+    },
+    /// An inbound group message was decrypted and stored.
+    GroupMessageReceived {
+        /// Group id (hex).
+        group: String,
+        /// Sending member's peer id (hex).
+        sender: String,
+        /// Group message record id (hex).
+        id: String,
+        /// Local receive time (Unix seconds).
+        timestamp: u64,
+        /// Decrypted body.
+        body: String,
+    },
+    /// One member's copy of an outbound group message changed state.
+    GroupDeliveryUpdated {
+        /// Group message record id (hex).
+        id: String,
+        /// Member peer id (hex).
+        peer: String,
+        /// Delivery state for this member's copy.
+        state: DeliveryState,
+    },
 }
 
 impl Event {
@@ -375,6 +443,29 @@ impl Event {
             kult_node::Event::AwaitingFasterLink { id } => Self::AwaitingFasterLink {
                 id: hex_encode(&id),
             },
+            kult_node::Event::GroupUpdated { group } => Self::GroupUpdated {
+                group: hex_encode(&group),
+            },
+            kult_node::Event::GroupMessageReceived {
+                group,
+                sender,
+                id,
+                timestamp,
+                body,
+            } => Self::GroupMessageReceived {
+                group: hex_encode(&group),
+                sender: hex_encode(&sender),
+                id: hex_encode(&id),
+                timestamp,
+                body: String::from_utf8_lossy(&body).into_owned(),
+            },
+            kult_node::Event::GroupDeliveryUpdated { id, peer, state } => {
+                Self::GroupDeliveryUpdated {
+                    id: hex_encode(&id),
+                    peer: hex_encode(&peer),
+                    state: DeliveryState::from_store(state),
+                }
+            }
             _ => return None,
         })
     }
@@ -512,6 +603,94 @@ impl KultNode {
             resp,
         })
         .map(|id| hex_encode(&id))
+    }
+
+    /// Create a sender-key group with stored contacts. Returns its id (hex).
+    pub fn create_group(&self, name: String, members: Vec<String>) -> Result<String, FfiError> {
+        let members = members
+            .iter()
+            .map(|peer| parse_peer(peer))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.call(|resp| Msg::GroupCreate {
+            name,
+            members,
+            resp,
+        })
+        .map(|group| hex_encode(&group))
+    }
+
+    /// Queue a message to a group. Returns its record id (hex); per-member
+    /// progress arrives as [`Event::GroupDeliveryUpdated`].
+    pub fn send_group(&self, group: String, body: String) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        self.call(|resp| Msg::GroupSend {
+            group,
+            body: body.into_bytes(),
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
+    /// Add a stored contact to a group (creator only).
+    pub fn add_group_member(&self, group: String, peer: String) -> Result<(), FfiError> {
+        let group = parse_group(&group)?;
+        let peer = parse_peer(&peer)?;
+        self.call(|resp| Msg::GroupAdd { group, peer, resp })
+    }
+
+    /// Remove a member from a group (creator only), rotating group keys.
+    pub fn remove_group_member(&self, group: String, peer: String) -> Result<(), FfiError> {
+        let group = parse_group(&group)?;
+        let peer = parse_peer(&peer)?;
+        self.call(|resp| Msg::GroupRemove { group, peer, resp })
+    }
+
+    /// Leave a group and drop its local group state; history remains.
+    pub fn leave_group(&self, group: String) -> Result<(), FfiError> {
+        let group = parse_group(&group)?;
+        self.call(|resp| Msg::GroupLeave { group, resp })
+    }
+
+    /// All stored groups, excluding secrets and sender chains.
+    pub fn groups(&self) -> Result<Vec<Group>, FfiError> {
+        Ok(self
+            .call(|resp| Msg::Groups { resp })?
+            .iter()
+            .map(|group| Group {
+                id: hex_encode(&group.id),
+                name: group.name.clone(),
+                creator: hex_encode(&group.creator),
+                members: group.members.iter().map(|peer| hex_encode(peer)).collect(),
+            })
+            .collect())
+    }
+
+    /// Message history for a group, including per-member delivery states.
+    pub fn group_messages(&self, group: String) -> Result<Vec<GroupMessage>, FfiError> {
+        let group = parse_group(&group)?;
+        Ok(self
+            .call(|resp| Msg::GroupMessages { group, resp })?
+            .iter()
+            .map(|message| GroupMessage {
+                id: hex_encode(&message.id),
+                group: hex_encode(&message.group),
+                sender: hex_encode(&message.sender),
+                direction: match message.direction {
+                    kult_store::Direction::Outbound => Direction::Outbound,
+                    kult_store::Direction::Inbound => Direction::Inbound,
+                },
+                timestamp: message.timestamp,
+                body: String::from_utf8_lossy(&message.body).into_owned(),
+                deliveries: message
+                    .deliveries
+                    .iter()
+                    .map(|delivery| GroupDelivery {
+                        peer: hex_encode(&delivery.peer),
+                        state: DeliveryState::from_store(delivery.state),
+                    })
+                    .collect(),
+            })
+            .collect())
     }
 
     /// All stored contacts.
@@ -680,8 +859,17 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 /// Decode a 32-byte hex peer id (case-insensitive).
 fn parse_peer(s: &str) -> Result<[u8; 32], FfiError> {
+    parse_hex_32(s, "peer")
+}
+
+/// Decode a 32-byte hex group id (case-insensitive).
+fn parse_group(s: &str) -> Result<[u8; 32], FfiError> {
+    parse_hex_32(s, "group")
+}
+
+fn parse_hex_32(s: &str, kind: &str) -> Result<[u8; 32], FfiError> {
     let fail = || FfiError::Node {
-        reason: "peer must be 64 hex chars".to_owned(),
+        reason: format!("{kind} must be 64 hex chars"),
     };
     if s.len() != 64 {
         return Err(fail());

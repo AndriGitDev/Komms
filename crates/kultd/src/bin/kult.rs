@@ -26,6 +26,13 @@ COMMANDS:
                                     add a contact from an out-of-band bundle
     add NAME ADDRESS                add a contact from a kult address (DHT)
     send PEER_HEX TEXT...           queue a message
+    group-create NAME [MEMBER_HEX]... create a sender-key group
+    group-send GROUP_HEX TEXT...     queue a group message
+    group-add GROUP_HEX PEER_HEX     add a member (creator only)
+    group-remove GROUP_HEX PEER_HEX  remove a member (creator only)
+    group-leave GROUP_HEX            leave a group
+    groups                            list groups
+    group-messages GROUP_HEX         group message history
     contacts                        list contacts
     messages PEER_HEX               message history with a peer
     safety PEER_HEX                 safety number for out-of-band verification
@@ -93,6 +100,31 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
         "send" => {
             need(2)?;
             json!({ "op": "send", "peer": args[0], "body": args[1..].join(" ") })
+        }
+        "group-create" => {
+            need(1)?;
+            json!({ "op": "group_create", "name": args[0], "members": args[1..] })
+        }
+        "group-send" => {
+            need(2)?;
+            json!({ "op": "group_send", "group": args[0], "body": args[1..].join(" ") })
+        }
+        "group-add" => {
+            need(2)?;
+            json!({ "op": "group_add", "group": args[0], "peer": args[1] })
+        }
+        "group-remove" => {
+            need(2)?;
+            json!({ "op": "group_remove", "group": args[0], "peer": args[1] })
+        }
+        "group-leave" => {
+            need(1)?;
+            json!({ "op": "group_leave", "group": args[0] })
+        }
+        "groups" => json!({ "op": "groups" }),
+        "group-messages" => {
+            need(1)?;
+            json!({ "op": "group_messages", "group": args[0] })
         }
         "contacts" => json!({ "op": "contacts" }),
         "messages" => {
@@ -199,5 +231,33 @@ fn main() -> ExitCode {
             eprintln!("kult: {message}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn group_commands_build_the_rpc_contract() {
+        let request = build_request(
+            "group-create",
+            &["trail crew".to_owned(), "01".repeat(32), "02".repeat(32)],
+        )
+        .unwrap();
+        assert_eq!(request["op"], json!("group_create"));
+        assert_eq!(request["members"].as_array().unwrap().len(), 2);
+
+        let request = build_request(
+            "group-send",
+            &["03".repeat(32), "meet".to_owned(), "there".to_owned()],
+        )
+        .unwrap();
+        assert_eq!(request["body"], json!("meet there"));
+        assert_eq!(
+            build_request("groups", &[]).unwrap(),
+            json!({ "op": "groups" })
+        );
+        assert!(build_request("group-add", &["03".repeat(32)]).is_err());
     }
 }

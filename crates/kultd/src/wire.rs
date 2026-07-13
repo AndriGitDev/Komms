@@ -9,8 +9,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use kult_node::Event;
-use kult_store::{DeliveryState, Direction, MessageRecord};
+use kult_node::{Event, GroupInfo};
+use kult_store::{DeliveryState, Direction, GroupMessageRecord, MessageRecord};
 use kult_transport::DeliveryHint;
 
 /// One request line.
@@ -56,6 +56,46 @@ pub enum Op {
         peer: String,
         /// Message body (UTF-8 text).
         body: String,
+    },
+    /// Create a sender-key group with stored contacts.
+    GroupCreate {
+        /// Display name.
+        name: String,
+        /// Initial co-members (hex peer ids).
+        members: Vec<String>,
+    },
+    /// Queue a group message.
+    GroupSend {
+        /// Group id (hex).
+        group: String,
+        /// Message body (UTF-8 text).
+        body: String,
+    },
+    /// Add a stored contact to a group (creator only).
+    GroupAdd {
+        /// Group id (hex).
+        group: String,
+        /// New member's peer id (hex).
+        peer: String,
+    },
+    /// Remove a member from a group (creator only).
+    GroupRemove {
+        /// Group id (hex).
+        group: String,
+        /// Member's peer id (hex).
+        peer: String,
+    },
+    /// Leave a group.
+    GroupLeave {
+        /// Group id (hex).
+        group: String,
+    },
+    /// List stored groups.
+    Groups,
+    /// Message history for a group.
+    GroupMessages {
+        /// Group id (hex).
+        group: String,
     },
     /// List stored contacts.
     Contacts,
@@ -167,9 +207,62 @@ pub fn event_line(event: &Event) -> String {
             "type": "awaiting_faster_link",
             "id": hex_encode(id),
         }),
+        Event::GroupUpdated { group } => json!({
+            "type": "group_updated",
+            "group": hex_encode(group),
+        }),
+        Event::GroupMessageReceived {
+            group,
+            sender,
+            id,
+            timestamp,
+            body,
+        } => json!({
+            "type": "group_message",
+            "group": hex_encode(group),
+            "sender": hex_encode(sender),
+            "id": hex_encode(id),
+            "timestamp": timestamp,
+            "body": String::from_utf8_lossy(body),
+        }),
+        Event::GroupDeliveryUpdated { id, peer, state } => json!({
+            "type": "group_delivery",
+            "id": hex_encode(id),
+            "peer": hex_encode(peer),
+            "state": state_str(*state),
+        }),
         _ => json!({ "type": "unknown" }),
     };
     json!({ "event": body }).to_string()
+}
+
+/// A group record as JSON, excluding every secret and chain value.
+pub fn group_json(group: &GroupInfo) -> Value {
+    json!({
+        "id": hex_encode(&group.id),
+        "name": group.name,
+        "creator": hex_encode(&group.creator),
+        "members": group.members.iter().map(|peer| hex_encode(peer)).collect::<Vec<_>>(),
+    })
+}
+
+/// A group message record as JSON, including honest per-member delivery.
+pub fn group_message_json(rec: &GroupMessageRecord) -> Value {
+    json!({
+        "id": hex_encode(&rec.id),
+        "group": hex_encode(&rec.group),
+        "sender": hex_encode(&rec.sender),
+        "direction": match rec.direction {
+            Direction::Inbound => "in",
+            Direction::Outbound => "out",
+        },
+        "timestamp": rec.timestamp,
+        "body": String::from_utf8_lossy(&rec.body),
+        "deliveries": rec.deliveries.iter().map(|delivery| json!({
+            "peer": hex_encode(&delivery.peer),
+            "state": state_str(delivery.state),
+        })).collect::<Vec<_>>(),
+    })
 }
 
 /// A message record as JSON.
@@ -225,6 +318,13 @@ pub fn parse_peer(s: &str) -> Result<[u8; 32], String> {
     hex_decode(s)
         .and_then(|v| <[u8; 32]>::try_from(v).ok())
         .ok_or_else(|| "peer must be 64 hex chars".to_owned())
+}
+
+/// Decode a 32-byte hex group id.
+pub fn parse_group(s: &str) -> Result<[u8; 32], String> {
+    hex_decode(s)
+        .and_then(|v| <[u8; 32]>::try_from(v).ok())
+        .ok_or_else(|| "group must be 64 hex chars".to_owned())
 }
 
 #[cfg(test)]

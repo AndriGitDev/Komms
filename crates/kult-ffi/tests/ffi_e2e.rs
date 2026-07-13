@@ -38,6 +38,26 @@ impl Recorder {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
+
+    /// Wait until `n` matching events have arrived in total.
+    fn wait_count(&self, what: &str, pred: impl Fn(&Event) -> bool, n: usize) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if self
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| pred(event))
+                .count()
+                >= n
+            {
+                return;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
 }
 
 fn test_config(dir: &Path, name: &str) -> Config {
@@ -346,6 +366,128 @@ fn restart_persists_history_and_refuses_wrong_passphrase() {
     assert_eq!(history[0].body, "before restart");
     let contacts = alice.contacts().unwrap();
     assert_eq!(contacts[0].name, "bob");
+
+    alice.stop();
+    bob.stop();
+}
+
+/// F1 group front-door acceptance through only the public UniFFI-shaped API.
+#[test]
+fn groups_via_ffi_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let a_rec = Recorder::default();
+    let b_rec = Recorder::default();
+    let alice = KultNode::start(
+        test_config(dir.path(), "group-alice"),
+        Box::new(a_rec.clone()),
+    )
+    .expect("alice starts");
+    let bob = KultNode::start(
+        test_config(dir.path(), "group-bob"),
+        Box::new(b_rec.clone()),
+    )
+    .expect("bob starts");
+
+    let a_addr = listen_addr(&alice);
+    let b_addr = listen_addr(&bob);
+    let a_bundle = alice.handshake_bundle().unwrap();
+    let b_bundle = bob.handshake_bundle().unwrap();
+    let bob_peer = alice
+        .add_contact(
+            "bob".to_owned(),
+            b_bundle,
+            vec![Hint::Multiaddr { addr: b_addr }],
+        )
+        .unwrap();
+    let alice_peer = bob
+        .add_contact(
+            "alice".to_owned(),
+            a_bundle.clone(),
+            vec![Hint::Multiaddr {
+                addr: a_addr.clone(),
+            }],
+        )
+        .unwrap();
+    let group = alice
+        .create_group("trail crew".to_owned(), Vec::new())
+        .unwrap();
+    alice
+        .add_group_member(group.clone(), bob_peer.clone())
+        .unwrap();
+    b_rec.wait(
+        "bob's group invite",
+        |event| matches!(event, Event::GroupUpdated { group: id } if *id == group),
+    );
+    let groups = bob.groups().unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].id, group);
+    assert_eq!(groups[0].name, "trail crew");
+    assert_eq!(groups[0].creator, alice_peer);
+    assert_eq!(groups[0].members.len(), 2);
+
+    // Creator-only and id-validation failures remain explicit.
+    let err = bob
+        .add_group_member(group.clone(), alice_peer.clone())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("creator"), "got: {err}");
+    let err = alice
+        .send_group("zz".to_owned(), "x".to_owned())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("group") && err.contains("hex"), "got: {err}");
+    let err = alice
+        .send_group("00".repeat(32), "x".to_owned())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no stored group"), "got: {err}");
+
+    let message_id = alice
+        .send_group(group.clone(), "meet at the pass".to_owned())
+        .unwrap();
+    b_rec.wait("bob's group message", |event| {
+        matches!(event, Event::GroupMessageReceived {
+            group: id,
+            sender,
+            body,
+            ..
+        } if *id == group && *sender == alice_peer && body == "meet at the pass")
+    });
+    a_rec.wait("bob's delivered copy", |event| {
+        matches!(event, Event::GroupDeliveryUpdated {
+            id,
+            peer,
+            state: DeliveryState::Delivered,
+        } if *id == message_id && *peer == bob_peer)
+    });
+    let history = alice.group_messages(group.clone()).unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].body, "meet at the pass");
+    assert_eq!(history[0].deliveries.len(), 1);
+    assert!(history
+        .iter()
+        .flat_map(|message| &message.deliveries)
+        .all(|delivery| delivery.state == DeliveryState::Delivered));
+
+    alice
+        .remove_group_member(group.clone(), bob_peer.clone())
+        .unwrap();
+    b_rec.wait_count(
+        "bob's removal",
+        |event| matches!(event, Event::GroupUpdated { group: id } if *id == group),
+        2,
+    );
+    assert!(bob.groups().unwrap().is_empty());
+
+    let leave_group = alice
+        .create_group("short trip".to_owned(), vec![bob_peer])
+        .unwrap();
+    b_rec.wait_count(
+        "bob's second group invite",
+        |event| matches!(event, Event::GroupUpdated { .. }),
+        3,
+    );
+    bob.leave_group(leave_group).unwrap();
 
     alice.stop();
     bob.stop();

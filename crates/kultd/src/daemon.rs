@@ -511,6 +511,60 @@ async fn handle_op(
                 .map_err(fail)?;
             Ok(json!({ "id": wire::hex_encode(&id) }))
         }
+        Op::GroupCreate { name, members } => {
+            let members = members
+                .iter()
+                .map(|peer| wire::parse_peer(peer))
+                .collect::<Result<Vec<_>, _>>()?;
+            let group = node
+                .create_group(&name, &members, &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "group": wire::hex_encode(&group) }))
+        }
+        Op::GroupSend { group, body } => {
+            let group = wire::parse_group(&group)?;
+            let id = node
+                .group_send(&group, body.as_bytes(), now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::GroupAdd { group, peer } => {
+            let group = wire::parse_group(&group)?;
+            let peer = wire::parse_peer(&peer)?;
+            node.group_add(&group, &peer, &mut OsRng).map_err(fail)?;
+            Ok(json!({}))
+        }
+        Op::GroupRemove { group, peer } => {
+            let group = wire::parse_group(&group)?;
+            let peer = wire::parse_peer(&peer)?;
+            node.group_remove(&group, &peer, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({}))
+        }
+        Op::GroupLeave { group } => {
+            let group = wire::parse_group(&group)?;
+            node.group_leave(&group, now(), &mut OsRng).map_err(fail)?;
+            Ok(json!({}))
+        }
+        Op::Groups => {
+            let groups = node
+                .groups()
+                .map_err(fail)?
+                .iter()
+                .map(wire::group_json)
+                .collect::<Vec<_>>();
+            Ok(json!({ "groups": groups }))
+        }
+        Op::GroupMessages { group } => {
+            let group = wire::parse_group(&group)?;
+            let messages = node
+                .group_messages(&group)
+                .map_err(fail)?
+                .iter()
+                .map(wire::group_message_json)
+                .collect::<Vec<_>>();
+            Ok(json!({ "messages": messages }))
+        }
         Op::Contacts => {
             let contacts: Vec<Value> = node
                 .contacts()
