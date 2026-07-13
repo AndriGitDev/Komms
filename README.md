@@ -9,7 +9,7 @@
 ![No servers](https://img.shields.io/badge/servers-none-success)
 ![Post-quantum](https://img.shields.io/badge/key_agreement-X25519_%2B_ML--KEM--768-blueviolet)
 
-**Sovereign messaging: end-to-end encrypted, serverless, and functional off the grid.**
+**Sovereign messaging: end-to-end encrypted, serverless, and functional on & off the grid.**
 
 *Messages nobody in the middle can read, scan, or block — because there is no middle.
 Works over the internet, commodity LoRa radios, or a USB stick in a pocket.*
