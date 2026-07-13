@@ -304,8 +304,9 @@ confined to high-bandwidth carriers (internet libp2p and LAN/mDNS) and disabled
 over any airtime-budgeted mesh link. The transport core already negotiates the
 direct connections a call needs (QUIC, DCUtR hole punching), and identity keys
 authenticate the peer with no central coordinator. Because this adds a real-time
-media path to the transports, it lands behind ADR-0013 (media transport,
-metadata-blind call setup, carrier-gating rule) before implementation. Recorded
+media path to the transports, it is pinned by ADR-0013 (Proposed) (media
+transport, metadata-blind call setup, carrier-gating rule) ahead of
+implementation. Recorded
 audio/video clips are already in scope as ordinary asynchronous payloads. Details
 and constraints: [11: Feature Scope](11-feature-scope.md).
 

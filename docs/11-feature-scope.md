@@ -17,7 +17,7 @@ what it would take. Nothing here loosens a security or scope commitment in
 [01: Why](01-why.md) or the [roadmap](08-roadmap.md); where a feature touches the
 protocol, transports, or crypto, it lands only behind an ADR that shows it
 surviving the threat model and the mesh bandwidth floor (real-time calls, now in
-scope, are the current example: internet/LAN only, ADR-0013 pending).
+scope, are the current example: internet/LAN only, ADR-0013 (Proposed)).
 
 ## Build (fits the architecture as-is)
 
@@ -93,10 +93,10 @@ and degrade honestly, exactly as the delivery ladder already does.
   link), calling is disabled with an honest reason, the same way the delivery
   ladder already reports "held, will send when a faster link exists." Recorded
   audio/video *clips* (asynchronous payloads) remain in scope on every carrier;
-  this entry adds the synchronous case. This touches transports and needs an ADR
-  before implementation (ADR-0013): media transport choice (SRTP-style over the
-  libp2p stream vs. a WebRTC data path), call-setup signaling that stays
-  metadata-blind, and the exact carrier-gating rule.
+  this entry adds the synchronous case. This touches transports, so it is pinned
+  by ADR-0013 (Proposed): media transport choice (SRTP-style over the libp2p
+  stream vs. a WebRTC data path), call-setup signaling that stays metadata-blind
+  over the pairwise ratchet, and the exact carrier-gating rule.
 
 ## Deferred or declined (fights the model)
 
