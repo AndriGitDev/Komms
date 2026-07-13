@@ -5,3 +5,7 @@ crates/*/fuzz/artifacts
 crates/*/fuzz/Cargo.lock
 apps/desktop/src-tauri/target
 apps/desktop/src-tauri/gen
+apps/android/.gradle
+apps/android/.kotlin
+apps/android/*/build
+apps/android/local.properties

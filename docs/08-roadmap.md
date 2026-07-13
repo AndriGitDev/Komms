@@ -207,8 +207,26 @@ the core's lockfile and cargo-deny surface (it carries its own, equally
 strict deny config, and its own CI job); all shell behavior lives in a
 webview-agnostic layer pinned by a two-node end-to-end test — pairing by
 scanned-style hex, events as the webview receives them, verification,
-and the backup → mnemonic → restore flow. Remaining: the mobile shells
-(Kotlin/Swift over the generated bindings) and mobile-side QR scanning.
+and the backup → mnemonic → restore flow. The Android alpha is in
+(application A2, `apps/android`): a Kotlin shell over the same `kult-ffi`
+runtime, generated bindings compiled fresh from the crate at build time
+(never committed). Its structure mirrors the desktop split — every
+behavior lives in a plain-JVM `:core` module (session layer + bindings)
+pinned by JVM tests including a two-node e2e against the host-built
+library (pairing by scanned bundle hex, verified `delivered` states via
+listener events, safety numbers, backup → restore → automatic
+re-handshake — no emulator involved); the `:app` module is UI only. It
+covers the M5 UX list: create/unlock/restore gate, pairing by camera-
+scanned QR (CameraX + pure-Java ZXing — no Google services, F-Droid
+friendly), pasted hex, or kult address via DHT, conversations rendering
+the node's honest delivery ladder (including the mesh "held" verdict),
+safety-number verification with matching digits + QR across platforms,
+key-change surfacing, transport indicators, hint editing, secret-free
+`settings.json` (same file format as desktop), mnemonic-shown-once backup
+export with OS cloud backup disabled, and a foreground service keeping
+delivery alive in the background. Native libraries cross-compile via
+cargo-ndk; CI runs the `:core` e2e and assembles the debug APK.
+Remaining: the iOS shell (Swift over the generated bindings).
 
 **Acceptance**: a non-technical user can install desktop + mobile builds, exchange QR
 verification with a friend, and message over internet, LAN, and mesh with truthful

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#26303f</color>
+    <color name="primary_dark">#1a222d</color>
+    <color name="accent">#5aa9e6</color>
+    <color name="ok">#2e9e5b</color>
+    <color name="danger">#c62828</color>
+    <color name="bubble_out">#dcebf7</color>
+    <color name="bubble_in">#eeeeee</color>
+    <color name="ic_launcher_background">#1a222d</color>
+</resources>
