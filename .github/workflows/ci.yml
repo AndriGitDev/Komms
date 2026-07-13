@@ -89,3 +89,52 @@ jobs:
           for t in protocol_envelope_decode bundle_import reassembler_insert; do
             cargo +nightly fuzz run "$t" -- -max_total_time=60
           done
+
+  android-core:
+    name: android core (bindings + JVM e2e)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.14.3"
+      - name: build and test :core (generated bindings + two-node e2e, no Android SDK)
+        run: gradle :core:build -Pkomms.androidApp=false
+
+  android-app:
+    name: android app (assembleDebug)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - name: install cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.14.3"
+      - name: assemble debug APK (cross-compiles kult-ffi via cargo-ndk)
+        run: gradle :app:assembleDebug -Pkomms.androidApp=true
+      - name: upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: komms-android-debug
+          path: apps/android/app/build/outputs/apk/debug/app-debug.apk

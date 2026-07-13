@@ -53,9 +53,19 @@ cargo run --example sneakernet_demo
 > shells via UniFFI — a single constructor starts the full node in-process
 > (same composition as `kultd`, ADR-0010), with typed blocking calls and
 > events pushed to an app-registered listener; its e2e test drives two nodes
-> to verified delivery through the bindings surface alone. Remaining per the
-> [roadmap](docs/08-roadmap.md): the physical two-radio bench (M4), and the
-> desktop/mobile apps themselves (M5).
+> to verified delivery through the bindings surface alone. The desktop app
+> is in (`apps/desktop`): a Tauri shell over that runtime covering the M5
+> UX end to end — create/unlock/restore gate, QR/hex/address pairing,
+> honest delivery states, safety-number verification, transport
+> indicators, and mnemonic-shown-once backup. The Android alpha shell is
+> in (`apps/android`): Kotlin over the same runtime through generated
+> UniFFI bindings, camera QR pairing and verification (CameraX +
+> pure-Java ZXing, no Google services), the same honest delivery ladder
+> and settings file as desktop, and a foreground service for background
+> delivery — the whole behavior layer pinned by a JVM two-node e2e that
+> needs no emulator, native libraries cross-compiled per ABI via
+> cargo-ndk in CI. Remaining per the [roadmap](docs/08-roadmap.md): the
+> physical two-radio bench (M4), and the iOS shell (M5).
 
 Komms is a decentralized messenger built on four principles:
 
@@ -116,7 +126,9 @@ command/event API), and `kultd` (headless
 daemon: tick loop, DHT bootstrap + bundle publication, automatic NAT/relay
 lifecycle, mailbox check-ins, local JSON RPC over a Unix socket, `kult` CLI),
 and `kult-ffi` (UniFFI bindings: the node's command/event API as typed
-records/enums with an embedded in-process runtime, for the M5 app shells).
+records/enums with an embedded in-process runtime, for the M5 app shells),
+plus the M5 apps so far: `apps/desktop` (Tauri shell) and `apps/android`
+(Kotlin alpha shell over the generated bindings).
 
 ```sh
 cargo test --workspace          # KATs, property tests, 10k-message soak
