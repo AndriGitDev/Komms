@@ -120,9 +120,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: install Rust
+        # The Swift image ships no curl; fetch rustup to a file (a pipe into
+        # sh would swallow a download failure) and install a minimal Rust.
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- -y --profile minimal
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            curl ca-certificates build-essential
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh
+          sh /tmp/rustup.sh -y --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - uses: Swatinem/rust-cache@v2
       - name: generate bindings and run KommsCore tests (two-node e2e)
