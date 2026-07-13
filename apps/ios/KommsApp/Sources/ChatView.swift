@@ -1,0 +1,138 @@
+// One conversation: history bubbles with the node's honest delivery ladder
+// (`queued` → `sent` → `delivered`, plus the mesh "held" verdict as a
+// notice), a composer, and doors to verification and the hint editor.
+
+import KommsCore
+import SwiftUI
+
+struct ChatView: View {
+    @EnvironmentObject private var model: AppModel
+    let peer: String
+
+    @State private var draft = ""
+    @State private var error: String?
+    @State private var showVerify = false
+    @State private var showHints = false
+
+    private var contact: Contact? {
+        model.contacts.first { $0.peer == peer }
+    }
+
+    private var history: [Message] { model.histories[peer] ?? [] }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(history, id: \.id) { message in
+                            MessageBubble(message: message)
+                                .id(message.id)
+                        }
+                    }
+                    .padding()
+                }
+                .onChange(of: history.count) { _ in
+                    if let last = history.last {
+                        proxy.scrollTo(last.id, anchor: .bottom)
+                    }
+                }
+            }
+
+            if let error {
+                Text(error)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal)
+            }
+
+            HStack {
+                TextField("Message", text: $draft, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1...4)
+                Button {
+                    send()
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.title2)
+                }
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding()
+        }
+        .navigationTitle(contact?.name ?? String(peer.prefix(12)))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                if contact?.verified == true {
+                    Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
+                }
+                Menu {
+                    Button("Verify safety number") { showVerify = true }
+                    Button("Delivery hints") { showHints = true }
+                } label: {
+                    Label("More", systemImage: "ellipsis.circle")
+                }
+            }
+        }
+        .sheet(isPresented: $showVerify) { VerifyView(peer: peer) }
+        .sheet(isPresented: $showHints) { HintsView(peer: peer) }
+        .task {
+            do {
+                try await model.follow(peer: peer)
+            } catch {
+                self.error = errorText(error)
+            }
+        }
+    }
+
+    private func send() {
+        let body = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        draft = ""
+        error = nil
+        Task {
+            do {
+                try await model.send(peer: peer, body: body)
+            } catch {
+                self.error = errorText(error)
+            }
+        }
+    }
+}
+
+private struct MessageBubble: View {
+    let message: Message
+
+    private var outbound: Bool { message.direction == .outbound }
+
+    /// The delivery ladder, verbatim: only `delivered` means an end-to-end
+    /// encrypted receipt came back.
+    private var stateText: String {
+        switch message.state {
+        case .queued: return "queued"
+        case .sent: return "sent"
+        case .delivered: return "delivered"
+        case .received: return ""
+        }
+    }
+
+    var body: some View {
+        HStack {
+            if outbound { Spacer(minLength: 40) }
+            VStack(alignment: outbound ? .trailing : .leading, spacing: 2) {
+                Text(message.body)
+                    .padding(10)
+                    .background(
+                        outbound ? Color.accentColor.opacity(0.2) : Color.gray.opacity(0.15),
+                        in: RoundedRectangle(cornerRadius: 12))
+                if outbound {
+                    Text(stateText)
+                        .font(.caption2)
+                        .foregroundStyle(
+                            message.state == .delivered ? .green : .secondary)
+                }
+            }
+            if !outbound { Spacer(minLength: 40) }
+        }
+    }
+}

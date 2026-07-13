@@ -64,8 +64,15 @@ cargo run --example sneakernet_demo
 > and settings file as desktop, and a foreground service for background
 > delivery — the whole behavior layer pinned by a JVM two-node e2e that
 > needs no emulator, native libraries cross-compiled per ABI via
-> cargo-ndk in CI. Remaining per the [roadmap](docs/08-roadmap.md): the
-> physical two-radio bench (M4), and the iOS shell (M5).
+> cargo-ndk in CI. The iOS alpha shell is in (`apps/ios`): SwiftUI over
+> the same runtime through generated bindings, camera QR pairing and
+> verification with zero third-party dependencies (CoreImage +
+> AVFoundation), the same honest delivery ladder and settings file as
+> the other shells — its behavior layer (the `KommsCore` Swift package)
+> pinned by a two-node e2e that runs on plain Linux in CI, no Xcode.
+> Remaining per the [roadmap](docs/08-roadmap.md): the physical
+> two-radio bench (M4), and a hands-on device pass of the iOS app
+> layer (M5).
 
 Komms is a decentralized messenger built on four principles:
 
@@ -127,8 +134,9 @@ daemon: tick loop, DHT bootstrap + bundle publication, automatic NAT/relay
 lifecycle, mailbox check-ins, local JSON RPC over a Unix socket, `kult` CLI),
 and `kult-ffi` (UniFFI bindings: the node's command/event API as typed
 records/enums with an embedded in-process runtime, for the M5 app shells),
-plus the M5 apps so far: `apps/desktop` (Tauri shell) and `apps/android`
-(Kotlin alpha shell over the generated bindings).
+plus the M5 apps so far: `apps/desktop` (Tauri shell), `apps/android`
+(Kotlin alpha shell over the generated bindings), and `apps/ios`
+(SwiftUI alpha shell over the same bindings).
 
 ```sh
 cargo test --workspace          # KATs, property tests, 10k-message soak
