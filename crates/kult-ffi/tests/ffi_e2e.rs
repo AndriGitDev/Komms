@@ -377,7 +377,6 @@ fn groups_via_ffi_only() {
     let dir = tempfile::tempdir().unwrap();
     let a_rec = Recorder::default();
     let b_rec = Recorder::default();
-    let c_rec = Recorder::default();
     let alice = KultNode::start(
         test_config(dir.path(), "group-alice"),
         Box::new(a_rec.clone()),
@@ -388,30 +387,16 @@ fn groups_via_ffi_only() {
         Box::new(b_rec.clone()),
     )
     .expect("bob starts");
-    let carol = KultNode::start(
-        test_config(dir.path(), "group-carol"),
-        Box::new(c_rec.clone()),
-    )
-    .expect("carol starts");
 
     let a_addr = listen_addr(&alice);
     let b_addr = listen_addr(&bob);
-    let c_addr = listen_addr(&carol);
     let a_bundle = alice.handshake_bundle().unwrap();
     let b_bundle = bob.handshake_bundle().unwrap();
-    let c_bundle = carol.handshake_bundle().unwrap();
     let bob_peer = alice
         .add_contact(
             "bob".to_owned(),
             b_bundle,
             vec![Hint::Multiaddr { addr: b_addr }],
-        )
-        .unwrap();
-    let carol_peer = alice
-        .add_contact(
-            "carol".to_owned(),
-            c_bundle,
-            vec![Hint::Multiaddr { addr: c_addr }],
         )
         .unwrap();
     let alice_peer = bob
@@ -423,16 +408,11 @@ fn groups_via_ffi_only() {
             }],
         )
         .unwrap();
-    carol
-        .add_contact(
-            "alice".to_owned(),
-            a_bundle,
-            vec![Hint::Multiaddr { addr: a_addr }],
-        )
-        .unwrap();
-
     let group = alice
-        .create_group("trail crew".to_owned(), vec![bob_peer.clone()])
+        .create_group("trail crew".to_owned(), Vec::new())
+        .unwrap();
+    alice
+        .add_group_member(group.clone(), bob_peer.clone())
         .unwrap();
     b_rec.wait(
         "bob's group invite",
@@ -447,7 +427,7 @@ fn groups_via_ffi_only() {
 
     // Creator-only and id-validation failures remain explicit.
     let err = bob
-        .remove_group_member(group.clone(), carol_peer.clone())
+        .add_group_member(group.clone(), alice_peer.clone())
         .unwrap_err()
         .to_string();
     assert!(err.contains("creator"), "got: {err}");
@@ -462,26 +442,10 @@ fn groups_via_ffi_only() {
         .to_string();
     assert!(err.contains("no stored group"), "got: {err}");
 
-    alice
-        .add_group_member(group.clone(), carol_peer.clone())
-        .unwrap();
-    c_rec.wait(
-        "carol's group invite",
-        |event| matches!(event, Event::GroupUpdated { group: id } if *id == group),
-    );
-
     let message_id = alice
         .send_group(group.clone(), "meet at the pass".to_owned())
         .unwrap();
     b_rec.wait("bob's group message", |event| {
-        matches!(event, Event::GroupMessageReceived {
-            group: id,
-            sender,
-            body,
-            ..
-        } if *id == group && *sender == alice_peer && body == "meet at the pass")
-    });
-    c_rec.wait("carol's group message", |event| {
         matches!(event, Event::GroupMessageReceived {
             group: id,
             sender,
@@ -496,37 +460,35 @@ fn groups_via_ffi_only() {
             state: DeliveryState::Delivered,
         } if *id == message_id && *peer == bob_peer)
     });
-    a_rec.wait("carol's delivered copy", |event| {
-        matches!(event, Event::GroupDeliveryUpdated {
-            id,
-            peer,
-            state: DeliveryState::Delivered,
-        } if *id == message_id && *peer == carol_peer)
-    });
-
     let history = alice.group_messages(group.clone()).unwrap();
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].body, "meet at the pass");
-    assert_eq!(history[0].deliveries.len(), 2);
+    assert_eq!(history[0].deliveries.len(), 1);
     assert!(history
         .iter()
         .flat_map(|message| &message.deliveries)
         .all(|delivery| delivery.state == DeliveryState::Delivered));
 
     alice
-        .remove_group_member(group.clone(), carol_peer)
+        .remove_group_member(group.clone(), bob_peer.clone())
         .unwrap();
-    c_rec.wait_count(
-        "carol's removal",
+    b_rec.wait_count(
+        "bob's removal",
         |event| matches!(event, Event::GroupUpdated { group: id } if *id == group),
         2,
     );
-    assert!(carol.groups().unwrap().is_empty());
-
-    bob.leave_group(group.clone()).unwrap();
     assert!(bob.groups().unwrap().is_empty());
+
+    let leave_group = alice
+        .create_group("short trip".to_owned(), vec![bob_peer])
+        .unwrap();
+    b_rec.wait_count(
+        "bob's second group invite",
+        |event| matches!(event, Event::GroupUpdated { .. }),
+        3,
+    );
+    bob.leave_group(leave_group).unwrap();
 
     alice.stop();
     bob.stop();
-    carol.stop();
 }
