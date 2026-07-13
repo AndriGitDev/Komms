@@ -125,6 +125,7 @@ out plainly in [Why Komms](docs/01-why.md).
 | [09: Implementation Guide](docs/09-implementation-guide.md) | Build order, API sketches, standards, review gates |
 | [10: HIL Bench](docs/10-hil-bench.md) | Hardware-in-loop nightly: two-radio bench runbook |
 | [11: Feature Scope](docs/11-feature-scope.md) | Which product features fit the model, and under what constraints |
+| [12: Feature Delivery Plan](docs/12-feature-delivery-plan.md) | Sequenced implementation plan for every approved product feature |
 | [ADRs](docs/adr/) | Recorded decisions and the alternatives they beat |
 
 ## Stack

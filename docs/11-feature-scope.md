@@ -5,6 +5,8 @@ build the protocol, transports, and app shells. This document is the other axis:
 which *product* features (the surface a messenger-app user recognizes) belong in
 Komms, and under what constraints. It exists so feature requests get triaged
 against the architecture instead of against a competitor's feature list.
+The sequenced implementation work for every approved item is in
+[12: Feature Delivery Plan](12-feature-delivery-plan.md).
 
 The organizing question is never "does app X have this?" It is: does the feature
 survive a **decentralized, metadata-blind, delay-tolerant, offline-first** system
