@@ -291,8 +291,10 @@ never chains: a restored node announces a fresh chain, and co-members
 redistribute theirs on the re-handshake, both directions pinned by the
 `kult-node` e2e suite (`groups_e2e.rs`) alongside encrypt-once-on-the-wire,
 per-member delivery ladders, newcomer-reads-no-history, and removed-member
-exclusion. Remaining for groups: the `kultd` RPC + `kult` CLI front door,
-`kult-ffi` exposure and the three shells' group UX, then the M6 list above.
+exclusion. The shared front door is also in: `kultd` RPC, the `kult` CLI, and
+`kult-ffi` expose group records, history, events, membership operations, and
+honest per-member delivery state, pinned by `rpc_e2e.rs` and `ffi_e2e.rs`.
+Remaining for groups: the three shells' group UX, then the M6 list above.
 
 **Acceptance**: audit findings triaged with public report; reproducible-build attestation
 for all release artifacts.

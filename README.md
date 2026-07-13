@@ -84,11 +84,13 @@ cargo run --example sneakernet_demo
 > restore) and carry group identities and history but never chains: a
 > restored node announces a fresh chain and co-members redistribute
 > theirs on the re-handshake, both directions pinned by the `kult-node`
-> group e2e suite (`groups_e2e.rs`). Remaining per the
+> group e2e suite (`groups_e2e.rs`). The shared group front door is now
+> shipped too: `kultd` RPC, the `kult` CLI, and `kult-ffi` expose group
+> records, history, events, membership operations, and honest per-member
+> delivery states, pinned by RPC and bindings e2e tests. Remaining per the
 > [roadmap](docs/08-roadmap.md): the physical two-radio bench (M4); a
-> hands-on device pass of the iOS app layer (M5); and the group front
-> door (M6): `kultd` RPC + `kult` CLI, `kult-ffi` exposure, and the
-> three shells' group UX, ahead of the external security audit.
+> hands-on device pass of the iOS app layer (M5); the three shells' group
+> UX (M6); and the external security audit.
 
 Komms is a decentralized messenger built on four principles:
 

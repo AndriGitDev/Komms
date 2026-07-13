@@ -442,3 +442,177 @@ async fn backup_and_restore_via_rpc() {
     alice.shutdown().await;
     bob.shutdown().await;
 }
+
+/// F1 group front-door acceptance: every group operation, record, event,
+/// and per-member delivery state crosses only the public RPC boundary.
+#[tokio::test(flavor = "multi_thread")]
+async fn groups_via_rpc_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let alice = Daemon::start(test_config(dir.path(), "group-alice"))
+        .await
+        .unwrap();
+    let bob = Daemon::start(test_config(dir.path(), "group-bob"))
+        .await
+        .unwrap();
+    let carol = Daemon::start(test_config(dir.path(), "group-carol"))
+        .await
+        .unwrap();
+
+    let mut a = Client::connect(&alice.socket_path).await;
+    let mut b = Client::connect(&bob.socket_path).await;
+    let mut c = Client::connect(&carol.socket_path).await;
+    let a_addr = listen_addr(&mut a).await;
+    let b_addr = listen_addr(&mut b).await;
+    let c_addr = listen_addr(&mut c).await;
+    let a_bundle = a.ok(json!({ "op": "bundle" })).await["bundle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let b_bundle = b.ok(json!({ "op": "bundle" })).await["bundle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let c_bundle = c.ok(json!({ "op": "bundle" })).await["bundle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let bob_peer = a
+        .ok(json!({
+            "op": "add_contact", "name": "bob", "bundle": b_bundle,
+            "hints": [{ "multiaddr": b_addr }],
+        }))
+        .await["peer"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let carol_peer = a
+        .ok(json!({
+            "op": "add_contact", "name": "carol", "bundle": c_bundle,
+            "hints": [{ "multiaddr": c_addr }],
+        }))
+        .await["peer"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let alice_peer = b
+        .ok(json!({
+            "op": "add_contact", "name": "alice", "bundle": a_bundle,
+            "hints": [{ "multiaddr": a_addr }],
+        }))
+        .await["peer"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    c.ok(json!({
+        "op": "add_contact", "name": "alice", "bundle": a_bundle,
+        "hints": [{ "multiaddr": a_addr }],
+    }))
+    .await;
+
+    let mut a_events = Client::connect(&alice.socket_path).await;
+    let mut b_events = Client::connect(&bob.socket_path).await;
+    let mut c_events = Client::connect(&carol.socket_path).await;
+    a_events.ok(json!({ "op": "subscribe" })).await;
+    b_events.ok(json!({ "op": "subscribe" })).await;
+    c_events.ok(json!({ "op": "subscribe" })).await;
+
+    let group = a
+        .ok(json!({ "op": "group_create", "name": "trail crew", "members": [bob_peer] }))
+        .await["group"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    b_events
+        .wait_event(|event| event["type"] == json!("group_updated"))
+        .await;
+    let listed = b.ok(json!({ "op": "groups" })).await;
+    assert_eq!(listed["groups"][0]["id"], json!(group));
+    assert_eq!(listed["groups"][0]["name"], json!("trail crew"));
+    assert_eq!(listed["groups"][0]["creator"], json!(alice_peer));
+    assert_eq!(listed["groups"][0]["members"].as_array().unwrap().len(), 2);
+
+    // Membership authority and malformed/unknown ids stay explicit.
+    let err = b
+        .call(json!({ "op": "group_remove", "group": group, "peer": carol_peer }))
+        .await
+        .unwrap_err();
+    assert!(err.contains("creator"), "got: {err}");
+    let err = a
+        .call(json!({ "op": "group_send", "group": "zz", "body": "x" }))
+        .await
+        .unwrap_err();
+    assert!(err.contains("group") && err.contains("hex"), "got: {err}");
+    let err = a
+        .call(json!({ "op": "group_send", "group": "00".repeat(32), "body": "x" }))
+        .await
+        .unwrap_err();
+    assert!(err.contains("no stored group"), "got: {err}");
+
+    a.ok(json!({ "op": "group_add", "group": group, "peer": carol_peer }))
+        .await;
+    c_events
+        .wait_event(|event| event["type"] == json!("group_updated"))
+        .await;
+
+    let sent = a
+        .ok(json!({ "op": "group_send", "group": group, "body": "meet at the pass" }))
+        .await;
+    let message_id = sent["id"].as_str().unwrap().to_owned();
+    let bob_received = b_events
+        .wait_event(|event| event["type"] == json!("group_message"))
+        .await;
+    let carol_received = c_events
+        .wait_event(|event| event["type"] == json!("group_message"))
+        .await;
+    assert_eq!(bob_received["body"], json!("meet at the pass"));
+    assert_eq!(carol_received["body"], json!("meet at the pass"));
+    a_events
+        .wait_event(|event| {
+            event["type"] == json!("group_delivery")
+                && event["id"] == json!(message_id)
+                && event["peer"] == json!(bob_peer)
+                && event["state"] == json!("delivered")
+        })
+        .await;
+    a_events
+        .wait_event(|event| {
+            event["type"] == json!("group_delivery")
+                && event["id"] == json!(message_id)
+                && event["peer"] == json!(carol_peer)
+                && event["state"] == json!("delivered")
+        })
+        .await;
+
+    let history = a
+        .ok(json!({ "op": "group_messages", "group": group }))
+        .await;
+    let record = &history["messages"][0];
+    assert_eq!(record["body"], json!("meet at the pass"));
+    assert_eq!(record["direction"], json!("out"));
+    let deliveries = record["deliveries"].as_array().unwrap();
+    assert_eq!(deliveries.len(), 2);
+    assert!(deliveries
+        .iter()
+        .all(|delivery| delivery["state"] == json!("delivered")));
+
+    a.ok(json!({ "op": "group_remove", "group": group, "peer": carol_peer }))
+        .await;
+    c_events
+        .wait_event_count(|event| event["type"] == json!("group_updated"), 2)
+        .await;
+    assert!(c.ok(json!({ "op": "groups" })).await["groups"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    b.ok(json!({ "op": "group_leave", "group": group })).await;
+    assert!(b.ok(json!({ "op": "groups" })).await["groups"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+    carol.shutdown().await;
+}

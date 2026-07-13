@@ -61,9 +61,9 @@ These are prerequisites, not new user-facing scope.
 
 ### F1. Finish the group front door
 
-The sender-key group core is shipped, but `kultd`, the CLI, `kult-ffi`, and the
-three application shells do not expose it. Complete those surfaces before polls,
-mentions, or roles.
+The sender-key group core and its shared `kultd` RPC, CLI, and `kult-ffi` front
+doors are shipped. The three application shells still need group UX. Complete
+those surfaces before polls, mentions, or roles.
 
 Deliver:
 
