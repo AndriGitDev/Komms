@@ -124,6 +124,7 @@ out plainly in [Why Komms](docs/01-why.md).
 | [08: Roadmap](docs/08-roadmap.md) | Milestones M0–M6 with acceptance criteria |
 | [09: Implementation Guide](docs/09-implementation-guide.md) | Build order, API sketches, standards, review gates |
 | [10: HIL Bench](docs/10-hil-bench.md) | Hardware-in-loop nightly: two-radio bench runbook |
+| [11: Feature Scope](docs/11-feature-scope.md) | Which product features fit the model, and under what constraints |
 | [ADRs](docs/adr/) | Recorded decisions and the alternatives they beat |
 
 ## Stack
