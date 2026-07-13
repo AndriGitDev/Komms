@@ -141,6 +141,22 @@ delivered to all members (single ciphertext — critical for mesh bandwidth).
 - Forward secrecy per sender via chain ratcheting; PCS via periodic rotation.
 - Group size guidance: ≤ 64 members in v1. Beyond that, MLS (M6+).
 
+Concrete construction ([ADR-0012](adr/0012-sender-key-groups.md)): a sender key is
+`(key_id: 16 random bytes, chain_key: 32, iteration: u32)` with
+`ck' = HKDF(ck, "KK-group-chain")` and `mk = HKDF(ck, "KK-group-msg")`; receiving
+chains reuse the pairwise delay-tolerance bounds (`MAX_SKIP` 1000, 2000 stored skipped
+keys LRU, 30-day TTL). The group message body is
+`version(1) ‖ enc_header(60) ‖ nonce(24) ‖ ct`, where the header
+(`key_id ‖ iteration`, the only routing metadata) is AEAD-sealed under
+`K_hdr = HKDF(group_secret, "KK-group-hdr")` — intermediaries see uniformly random
+bytes — and the payload binds group id, protocol version, and sealed header as
+associated data. The single ciphertext fans out in per-member envelopes under the
+ordinary pairwise delivery tokens (§7), so relays and receipts need no group
+awareness. Distribution, membership (creator-managed, generation-counted), rotation
+triggers, and the announce-until-acked reliability rule are specified in ADR-0012,
+along with the documented trade: authenticity is membership-level (any member could
+forge as another — no signatures, by design).
+
 ## 7. Sealed sender & delivery tokens
 
 Goal: intermediaries learn neither sender nor recipient identity

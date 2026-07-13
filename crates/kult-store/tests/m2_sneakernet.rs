@@ -92,6 +92,7 @@ fn sneakernet_end_to_end_with_restart() {
                 &QueueItem {
                     peer: bob_id_pub.ed,
                     msg_id: Some([0u8; 16]),
+                    group_msg_id: None,
                     envelope: hs_env,
                 },
                 &mut rng,
@@ -111,6 +112,7 @@ fn sneakernet_end_to_end_with_restart() {
                 &QueueItem {
                     peer: bob_id_pub.ed,
                     msg_id: Some([1u8; 16]),
+                    group_msg_id: None,
                     envelope: msg_env,
                 },
                 &mut rng,
@@ -223,6 +225,7 @@ fn sneakernet_end_to_end_with_restart() {
             &QueueItem {
                 peer: alice_id.ed,
                 msg_id: None,
+                group_msg_id: None,
                 envelope: Envelope::new(EnvelopeKind::Message, token, reply.encode()),
             },
             &mut rng,
