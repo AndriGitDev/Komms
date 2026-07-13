@@ -70,9 +70,25 @@ cargo run --example sneakernet_demo
 > AVFoundation), the same honest delivery ladder and settings file as
 > the other shells — its behavior layer (the `KommsCore` Swift package)
 > pinned by a two-node e2e that runs on plain Linux in CI, no Xcode.
-> Remaining per the [roadmap](docs/08-roadmap.md): the physical
-> two-radio bench (M4), and a hands-on device pass of the iOS app
-> layer (M5).
+> M6 has opened as well: sender-key group messaging v1 is in through the
+> core stack (ADR-0012) — per-member forward-ratcheting chains in
+> `kult-crypto`, group bodies whose only routing metadata (`key_id ‖
+> iteration`) is sealed under a members-only header key so intermediaries
+> see uniformly random bytes, and one ciphertext fanned out in ordinary
+> per-member envelopes, so relays, mailboxes, receipts, NACKs, and
+> bridging carry group traffic without knowing it is group traffic.
+> Membership is creator-managed with a monotonic generation counter and
+> announce-until-acked distribution (a member served late still reads
+> everything since they were entitled; removal re-keys and rotates every
+> remaining chain); backups are now `KKR2` (older `KKR1` files still
+> restore) and carry group identities and history but never chains — a
+> restored node announces a fresh chain and co-members redistribute
+> theirs on the re-handshake, both directions pinned by the `kult-node`
+> group e2e suite (`groups_e2e.rs`). Remaining per the
+> [roadmap](docs/08-roadmap.md): the physical two-radio bench (M4); a
+> hands-on device pass of the iOS app layer (M5); and the group front
+> door (M6) — `kultd` RPC + `kult` CLI, `kult-ffi` exposure, and the
+> three shells' group UX — ahead of the external security audit.
 
 Komms is a decentralized messenger built on four principles:
 
@@ -117,8 +133,9 @@ Rust workspace (`kult-crypto` / `kult-protocol` / `kult-transport` / `kult-store
 mobile shells.
 Layout in [Architecture §7](docs/03-architecture.md). Implemented so far:
 `kult-crypto` (hybrid PQXDH, Double Ratchet with encrypted headers, anonymous sealed
-boxes, sealed state), `kult-protocol` (envelopes, padding buckets, fragmentation +
-NACKs, delivery tokens, `.kkb` bundles), and `kult-store` (encrypted SQLite, key
+boxes, sealed state, sender-key group chains), `kult-protocol` (envelopes, padding
+buckets, fragmentation + NACKs, delivery tokens, sealed group headers, `.kkb`
+bundles), and `kult-store` (encrypted SQLite, key
 hierarchy, persistent queue), `kult-transport` (the `Transport` contract, the
 sneakernet spool-directory carrier, and the libp2p internet carrier — QUIC primary,
 TCP+Noise+Yamux fallback, envelope request-response protocol with honest next-hop
