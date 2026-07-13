@@ -25,6 +25,10 @@ targets:
       # the KommsCore package): Rust static libraries per platform.
       - framework: ../KultFFI.xcframework
         embed: false
+      # libp2p's interface watcher (system_configuration / if_watch crates)
+      # references SystemConfiguration; the app must link the system framework
+      # that provides those SC*/kSC* symbols.
+      - sdk: SystemConfiguration.framework
     info:
       path: Info.plist
       properties:
