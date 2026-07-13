@@ -311,6 +311,12 @@ bounded typed `Text` frames, stable encrypted content ids, scoped deduplication,
 and honest durable retention of unknown future kinds across the node, store,
 RPC, UniFFI, and shells.
 
+The next typed-content decision is proposed in
+[ADR-0015](adr/0015-encrypted-attachment-pipeline.md): a bounded Attachment
+manifest, independently sealed resumable chunks, explicit consent and quotas,
+sealed-file storage, KKR2 media exclusion, and a hard no-airtime bulk policy.
+Activation is gated on the F4 per-peer `bulk` carrier verdict.
+
 **Acceptance**: audit findings triaged with public report; reproducible-build attestation
 for all release artifacts.
 

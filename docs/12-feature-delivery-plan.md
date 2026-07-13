@@ -99,6 +99,11 @@ The ADR must define:
 
 ### F3. Attachment and media pipeline
 
+**State:** design proposed in
+[ADR-0015](adr/0015-encrypted-attachment-pipeline.md). The implementation is
+gated on F4's fresh `bulk` carrier verdict; attachment activation must not infer
+capacity from an available route alone.
+
 The existing envelope path is suitable for small payloads, not an unbounded file
 transfer. Define attachments as encrypted, content-addressed chunks with a sealed
 manifest, resumable receipt state, and bounded local storage.
@@ -561,7 +566,7 @@ Do not combine these into one oversized design decision.
 | Order | Decision | Unlocks |
 |---|---|---|
 | 1 (done) | ADR-0014: versioned typed message content and compatibility | Audio, files, edits, polls, structured mentions. |
-| 2 | Encrypted attachment/chunk transfer and carrier policy | Audio, files, media editing. |
+| 2 (proposed) | ADR-0015: encrypted attachment/chunk transfer and carrier policy | Audio, files, media editing. |
 | 3 | Expiry/retention metadata and deletion semantics | Disappearing and view-once content. |
 | 4 | Edit event ordering and tombstones | Message editing and multi-device convergence. |
 | 5 | Group roles/capabilities and authority transfer | Admin controls and moderated polls. |
