@@ -32,6 +32,7 @@
         <activity android:name=".MainActivity" android:exported="false" />
         <activity android:name=".AddContactActivity" android:exported="false" />
         <activity android:name=".ChatActivity" android:exported="false" />
+        <activity android:name=".GroupChatActivity" android:exported="false" />
         <activity android:name=".VerifyActivity" android:exported="false" />
         <activity android:name=".ScanActivity" android:exported="false" />
         <activity android:name=".SettingsActivity" android:exported="false" />

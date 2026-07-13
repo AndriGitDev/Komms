@@ -29,8 +29,44 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content" />
 
+    <TextView
+        android:text="@string/main_contacts_heading"
+        android:textStyle="bold"
+        android:textSize="18sp"
+        android:paddingHorizontal="16dp"
+        android:paddingTop="10dp"
+        android:paddingBottom="4dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/main_contacts"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+
+    <TextView
+        android:text="@string/main_groups_heading"
+        android:textStyle="bold"
+        android:textSize="18sp"
+        android:paddingHorizontal="16dp"
+        android:paddingTop="10dp"
+        android:paddingBottom="4dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
+    <TextView
+        android:id="@+id/main_groups_empty"
+        android:text="@string/main_groups_empty"
+        android:visibility="gone"
+        android:paddingHorizontal="24dp"
+        android:paddingVertical="8dp"
+        android:gravity="center"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/main_groups"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1" />

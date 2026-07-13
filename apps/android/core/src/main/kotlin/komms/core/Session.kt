@@ -19,6 +19,8 @@ import uniffi.kult_ffi.Contact
 import uniffi.kult_ffi.Event
 import uniffi.kult_ffi.EventListener
 import uniffi.kult_ffi.FfiException
+import uniffi.kult_ffi.Group
+import uniffi.kult_ffi.GroupMessage
 import uniffi.kult_ffi.KdfChoice
 import uniffi.kult_ffi.KultNode
 import uniffi.kult_ffi.Message
@@ -105,6 +107,28 @@ class Session private constructor(private val node: KultNode) {
 
     /** Queue a message; returns its id (progress arrives as events). */
     fun send(peer: String, body: String): String = node.send(peer, body)
+
+    /** Create a sender-key group from stored contacts; returns its id. */
+    fun createGroup(name: String, members: List<String>): String =
+        node.createGroup(name, members)
+
+    /** All live groups, excluding secrets and sender chains. */
+    fun groups(): List<Group> = node.groups()
+
+    /** Message history for a group, including per-member delivery states. */
+    fun groupMessages(group: String): List<GroupMessage> = node.groupMessages(group)
+
+    /** Queue a group message; progress is reported independently per member. */
+    fun sendGroup(group: String, body: String): String = node.sendGroup(group, body)
+
+    /** Add a stored contact to a group (creator only). */
+    fun addGroupMember(group: String, peer: String) = node.addGroupMember(group, peer)
+
+    /** Remove a member and rotate group keys (creator only). */
+    fun removeGroupMember(group: String, peer: String) = node.removeGroupMember(group, peer)
+
+    /** Leave a group; local message history remains stored. */
+    fun leaveGroup(group: String) = node.leaveGroup(group)
 
     /** The safety number with a peer (render [safetyQrText] for the QR). */
     fun safetyNumber(peer: String): SafetyNumber = node.safetyNumber(peer)

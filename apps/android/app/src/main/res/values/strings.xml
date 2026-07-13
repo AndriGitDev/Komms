@@ -25,7 +25,11 @@
     <string name="nat_private">private</string>
     <string name="nat_unknown">unknown</string>
     <string name="main_empty">No contacts yet. Pair by QR, pasted bundle hex, or kult address.</string>
+    <string name="main_contacts_heading">Contacts</string>
+    <string name="main_groups_heading">Groups</string>
+    <string name="main_groups_empty">No groups yet. Create one from stored contacts.</string>
     <string name="menu_add_contact">Add contact</string>
+    <string name="menu_create_group">New group</string>
     <string name="menu_my_qr">My pairing QR</string>
     <string name="menu_backup">Backup…</string>
     <string name="menu_settings">Settings</string>
@@ -58,12 +62,51 @@
     <string name="state_sent">sent</string>
     <string name="state_delivered">delivered ✓</string>
     <string name="state_held">held — will send when a faster link exists</string>
+    <string name="state_received">received</string>
     <string name="menu_verify">Verify safety number</string>
     <string name="menu_hints">Edit delivery hints</string>
     <string name="hints_title">Delivery hints</string>
     <string name="hints_help">One per line: multiaddr /ip4/… · relay /ip4/…/p2p/… · spool /path · mesh broadcast. Saving replaces the current hints.</string>
     <string name="hints_save">Replace hints</string>
     <string name="hints_saved">Hints replaced</string>
+
+    <!-- Groups -->
+    <string name="group_create_title">Create group</string>
+    <string name="group_create_action">Create</string>
+    <string name="group_name_hint">Group name</string>
+    <string name="group_members_heading">Members</string>
+    <string name="group_no_contacts">Add at least one contact before creating a group.</string>
+    <string name="group_need_name">Give this group a name.</string>
+    <string name="group_need_member">Choose at least one member.</string>
+    <string name="group_default_name">Group</string>
+    <string name="group_you">You</string>
+    <plurals name="group_member_count">
+        <item quantity="one">%d member</item>
+        <item quantity="other">%d members</item>
+    </plurals>
+    <string name="menu_group_members">Members</string>
+    <string name="group_members_title">Members of %1$s</string>
+    <plurals name="group_summary_creator">
+        <item quantity="one">%1$d member · You manage this group.</item>
+        <item quantity="other">%1$d members · You manage this group.</item>
+    </plurals>
+    <plurals name="group_summary_member">
+        <item quantity="one">%1$d member · %2$s manages this group.</item>
+        <item quantity="other">%1$d members · %2$s manages this group.</item>
+    </plurals>
+    <string name="group_role_creator">creator</string>
+    <string name="group_role_member">member</string>
+    <string name="group_add_member_action">Add member</string>
+    <string name="group_add_member_title">Add a contact</string>
+    <string name="group_member_added">Added %1$s</string>
+    <string name="group_remove_title">Remove member?</string>
+    <string name="group_remove_warning">Remove %1$s? Group keys rotate immediately for everyone who remains.</string>
+    <string name="group_remove_action">Remove</string>
+    <string name="group_leave_title">Leave group?</string>
+    <string name="group_leave_warning">Leave %1$s? Its message history stays stored on this device.</string>
+    <string name="group_leave_action">Leave group</string>
+    <string name="group_no_longer_active">This group is no longer active. Its history remains stored.</string>
+    <string name="group_delivery_row">%1$s · %2$s</string>
 
     <!-- Verify -->
     <string name="verify_title">Verify %1$s</string>

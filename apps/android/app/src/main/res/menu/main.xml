@@ -6,6 +6,10 @@
         android:title="@string/menu_add_contact"
         app:showAsAction="ifRoom" />
     <item
+        android:id="@+id/menu_create_group"
+        android:title="@string/menu_create_group"
+        app:showAsAction="ifRoom" />
+    <item
         android:id="@+id/menu_my_qr"
         android:title="@string/menu_my_qr"
         app:showAsAction="never" />
