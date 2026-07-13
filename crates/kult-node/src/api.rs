@@ -38,6 +38,56 @@ pub enum Command {
         /// The contact.
         peer: [u8; 32],
     },
+    /// Create a sender-key group with stored contacts (ADR-0012). The
+    /// caller becomes the group's creator — the only member who may add,
+    /// remove, or re-key.
+    GroupCreate {
+        /// Display name.
+        name: String,
+        /// Initial co-members (each must be a stored contact).
+        members: Vec<[u8; 32]>,
+    },
+    /// Queue a message to a group: encrypted once, fanned out per member.
+    GroupSend {
+        /// The group id.
+        group: [u8; 32],
+        /// Message body (will be padded and encrypted).
+        body: Vec<u8>,
+    },
+    /// Add a stored contact to a group (creator only).
+    GroupAdd {
+        /// The group id.
+        group: [u8; 32],
+        /// The new member.
+        peer: [u8; 32],
+    },
+    /// Remove a member (creator only): the group re-keys and every
+    /// remaining member rotates.
+    GroupRemove {
+        /// The group id.
+        group: [u8; 32],
+        /// The member to remove.
+        peer: [u8; 32],
+    },
+    /// Leave a group: co-members are told, local state is dropped
+    /// (history stays).
+    GroupLeave {
+        /// The group id.
+        group: [u8; 32],
+    },
+}
+
+/// A group as the application layer sees it — never the secrets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupInfo {
+    /// The group id.
+    pub id: [u8; 32],
+    /// Display name (creator-controlled).
+    pub name: String,
+    /// The managing member.
+    pub creator: [u8; 32],
+    /// Full roster, this node included.
+    pub members: Vec<[u8; 32]>,
 }
 
 /// What the node reports back to the application layer. Delivery states are
@@ -88,5 +138,34 @@ pub enum Event {
     AwaitingFasterLink {
         /// Message record id.
         id: [u8; 16],
+    },
+    /// A group was created, joined, re-keyed, re-rostered, or left
+    /// (ADR-0012) — re-read it via [`crate::Node::groups`].
+    GroupUpdated {
+        /// The group id.
+        group: [u8; 32],
+    },
+    /// An inbound group message was decrypted and stored.
+    GroupMessageReceived {
+        /// The group id.
+        group: [u8; 32],
+        /// The sending member (Ed25519 identity key bytes).
+        sender: [u8; 32],
+        /// Group message record id.
+        id: [u8; 16],
+        /// Local receive time (Unix seconds).
+        timestamp: u64,
+        /// Decrypted body.
+        body: Vec<u8>,
+    },
+    /// One member's copy of an outbound group message changed delivery
+    /// state — per member, honestly, like the pairwise ladder.
+    GroupDeliveryUpdated {
+        /// Group message record id.
+        id: [u8; 16],
+        /// The member this copy addresses.
+        peer: [u8; 32],
+        /// The new state.
+        state: DeliveryState,
     },
 }

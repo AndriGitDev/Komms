@@ -11,7 +11,10 @@ use kult_crypto::{
     PrekeyBundle, SignedPrekeySecret,
 };
 use kult_protocol::pad;
-use kult_store::{ContactRecord, DeliveryState, Direction, MessageRecord, Store, StoreError};
+use kult_store::{
+    ContactRecord, DeliveryState, Direction, GroupDelivery, GroupMember, GroupMessageRecord,
+    GroupRecord, MessageRecord, PendingAnnounce, Store, StoreError,
+};
 
 const NOW: u64 = 1_800_000_000;
 /// Fast Argon2id profile for tests only (real profiles are spec §8).
@@ -88,6 +91,65 @@ fn populated_store(
     for message in &messages {
         store.put_message(message, rng).unwrap();
     }
+
+    // A group with a live chain and one pending announce (ADR-0012).
+    let me = identity.public().ed;
+    let chain = kult_crypto::GroupSenderChain::generate(rng);
+    store
+        .put_group(
+            &GroupRecord {
+                id: [5; 32],
+                name: "expedition".to_owned(),
+                creator: me,
+                members: vec![
+                    GroupMember {
+                        peer: me,
+                        identity: postcard::to_allocvec(&identity.public()).unwrap(),
+                    },
+                    GroupMember {
+                        peer,
+                        identity: postcard::to_allocvec(&peer_identity.public()).unwrap(),
+                    },
+                ],
+                secret: [6; 32],
+                prev_secret: Some([7; 32]),
+                generation: 3,
+                sender_chain: postcard::to_allocvec(&chain).unwrap(),
+                sent_since_rotation: 12,
+                pending: vec![PendingAnnounce {
+                    peer,
+                    key_id: chain.key_id(),
+                    chain_key: [8; 32],
+                    iteration: 0,
+                    wire_id: Some([4; 16]),
+                    last_sent: NOW,
+                }],
+            },
+            rng,
+        )
+        .unwrap();
+    store
+        .put_group_chain(&[5; 32], &peer, b"opaque-receiver-chain", rng)
+        .unwrap();
+    store
+        .put_group_message(
+            &GroupMessageRecord {
+                id: [3; 16],
+                group: [5; 32],
+                sender: me,
+                direction: Direction::Outbound,
+                timestamp: NOW + 8,
+                body: b"onward".to_vec(),
+                deliveries: vec![GroupDelivery {
+                    peer,
+                    wire_id: Some([9; 16]),
+                    state: DeliveryState::Delivered,
+                }],
+                wire_body: Some(b"retained-ciphertext".to_vec()),
+            },
+            rng,
+        )
+        .unwrap();
     (store, identity, contact, messages, peer)
 }
 
@@ -99,8 +161,9 @@ fn backup_round_trip() {
         populated_store(&dir.path().join("old.db"), &mut rng);
 
     let (file, mnemonic) = store.export_backup(NOW + 100, &mut rng).unwrap();
-    assert_eq!(&file[..4], b"KKR1");
+    assert_eq!(&file[..4], b"KKR2");
     assert!(mnemonic_to_entropy(&mnemonic).is_ok(), "24 valid words");
+    let old_group = store.groups().unwrap().remove(0);
     drop(store); // the old device is gone
 
     // Restore on a "new device": new path, new passphrase.
@@ -121,6 +184,32 @@ fn backup_round_trip() {
     // Prekeys are never restored — the node layer mints fresh ones.
     assert!(restored.get_prekeys().unwrap().is_none());
 
+    // The group's identity survives; its chains do not (ADR-0012): a fresh
+    // sending chain, announces owed to the whole roster, no receiving
+    // chains, and history with the retained ciphertext stripped.
+    let group = restored.groups().unwrap().remove(0);
+    assert_eq!(
+        (group.id, &group.name, group.creator, &group.members),
+        (
+            [5; 32],
+            &old_group.name,
+            old_group.creator,
+            &old_group.members
+        )
+    );
+    assert_eq!((group.secret, group.generation), ([6; 32], 3));
+    assert_eq!(group.prev_secret, None);
+    assert_ne!(group.sender_chain, old_group.sender_chain, "fresh chain");
+    assert_eq!(group.sent_since_rotation, 0);
+    assert_eq!(group.pending.len(), 1);
+    assert_eq!(group.pending[0].peer, peer);
+    assert_eq!(group.pending[0].wire_id, None);
+    assert!(restored.get_group_chain(&[5; 32], &peer).unwrap().is_none());
+    let group_msgs = restored.group_messages(&[5; 32]).unwrap();
+    assert_eq!(group_msgs.len(), 1);
+    assert_eq!(group_msgs[0].body, b"onward");
+    assert_eq!(group_msgs[0].wire_body, None);
+
     // Markers clear once handled, and the new store opens under the new
     // passphrase only.
     restored.clear_reset_marker(&peer).unwrap();
@@ -128,6 +217,67 @@ fn backup_round_trip() {
     drop(restored);
     assert!(Store::open(&new_db, b"new-pass").is_ok());
     assert!(Store::open(&new_db, b"old-pass").is_err());
+}
+
+/// A pre-groups `KKR1` file still restores (empty group state).
+#[test]
+fn legacy_v1_backup_restores() {
+    let mut rng = StdRng::seed_from_u64(13);
+    let dir = tempfile::tempdir().unwrap();
+
+    // Hand-assemble a v1 file: same header layout, groupless payload
+    // (postcard of a struct is the postcard of its fields in order).
+    let identity = Identity::generate(&mut rng);
+    let peer = [3u8; 32];
+    let contacts: Vec<ContactRecord> = vec![];
+    let messages = vec![MessageRecord {
+        id: [1; 16],
+        peer,
+        direction: Direction::Inbound,
+        state: DeliveryState::Received,
+        timestamp: NOW,
+        body: b"from the old world".to_vec(),
+        wire_id: None,
+    }];
+    let reset_peers = vec![peer];
+    let payload = postcard::to_allocvec(&(
+        NOW,
+        identity.to_bytes().to_vec(),
+        &contacts,
+        &messages,
+        &reset_peers,
+    ))
+    .unwrap();
+
+    let entropy = [0x42u8; 32];
+    let mnemonic = kult_crypto::mnemonic_from_entropy(&entropy);
+    let salt = [7u8; 16];
+    let kek = kult_crypto::derive_kek(&entropy, &salt, TEST_KDF).unwrap();
+    let key = kult_crypto::StorageKey::from_bytes(*kek);
+    let mut file = Vec::new();
+    file.extend_from_slice(b"KKR1");
+    file.extend_from_slice(&TEST_KDF.m_cost_kib.to_le_bytes());
+    file.extend_from_slice(&TEST_KDF.t_cost.to_le_bytes());
+    file.extend_from_slice(&TEST_KDF.p_cost.to_le_bytes());
+    file.extend_from_slice(&salt);
+    file.extend_from_slice(&key.seal(b"KK-backup-v1", &payload, &mut rng));
+
+    let restored = Store::restore_backup(
+        &dir.path().join("v1.db"),
+        &file,
+        &mnemonic,
+        b"new-pass",
+        TEST_KDF,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(
+        restored.get_identity().unwrap().unwrap().public().ed,
+        identity.public().ed
+    );
+    assert_eq!(restored.messages_with(&peer).unwrap(), messages);
+    assert_eq!(restored.reset_markers().unwrap(), reset_peers);
+    assert!(restored.groups().unwrap().is_empty());
 }
 
 #[test]

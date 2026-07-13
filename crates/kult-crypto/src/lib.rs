@@ -23,6 +23,7 @@ extern crate alloc;
 mod anonbox;
 mod error;
 mod fingerprint;
+mod group;
 mod handshake;
 mod identity;
 mod kdf;
@@ -36,6 +37,10 @@ mod wordlist;
 pub use anonbox::{open_anonymous, seal_anonymous};
 pub use error::CryptoError;
 pub use fingerprint::{safety_number, SafetyNumber};
+pub use group::{
+    GroupHeaderKey, GroupMessage, GroupReceiverChain, GroupSenderChain, GROUP_MAX_SKIP,
+    GROUP_MAX_STORED_SKIPPED, GROUP_SKIPPED_TTL_SECS,
+};
 pub use handshake::{initiate, respond, InitialMessage};
 pub use identity::{parse_address, Identity, IdentityPublic};
 pub use kdf::{derive_kek, KdfProfile, KDF_PROFILE_DESKTOP, KDF_PROFILE_MOBILE};

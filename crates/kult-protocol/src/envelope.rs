@@ -30,6 +30,12 @@ pub enum EnvelopeKind {
     Receipt = 0x03,
     /// One fragment of a larger envelope (see [`crate::fragment`]).
     Fragment = 0x04,
+    /// Group control (ADR-0012): a pairwise ratchet message whose plaintext
+    /// is a [`crate::GroupControlPayload`].
+    GroupControl = 0x05,
+    /// A sender-key group message (encoded `kult_crypto::GroupMessage`),
+    /// encrypted once and fanned out per member.
+    GroupMessage = 0x06,
 }
 
 impl TryFrom<u8> for EnvelopeKind {
@@ -40,6 +46,8 @@ impl TryFrom<u8> for EnvelopeKind {
             0x02 => Ok(Self::Handshake),
             0x03 => Ok(Self::Receipt),
             0x04 => Ok(Self::Fragment),
+            0x05 => Ok(Self::GroupControl),
+            0x06 => Ok(Self::GroupMessage),
             _ => Err(ProtocolError::Malformed),
         }
     }
