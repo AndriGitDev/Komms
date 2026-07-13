@@ -1,0 +1,43 @@
+# XcodeGen spec for the iOS shell — the .xcodeproj is generated, never
+# committed. Prerequisites (macOS):
+#   ../scripts/build-xcframework.sh   # Rust static libs → KultFFI.xcframework
+#   xcodegen generate                 # this file → KommsApp.xcodeproj
+name: KommsApp
+options:
+  bundleIdPrefix: is.andri
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+packages:
+  KommsCore:
+    path: ../KommsCore
+
+targets:
+  KommsApp:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+    dependencies:
+      - package: KommsCore
+      # Symbols for the kult_ffiFFI module (the module map itself lives in
+      # the KommsCore package): Rust static libraries per platform.
+      - framework: ../KultFFI.xcframework
+        embed: false
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Komms
+        UILaunchScreen: {}
+        NSCameraUsageDescription: >-
+          Komms uses the camera to scan a friend's pairing QR code or a
+          safety-number QR during verification.
+        NSLocalNetworkUsageDescription: >-
+          Komms discovers peers on your local network (mDNS) so messages can
+          be delivered LAN-only, with no internet at all.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: is.andri.komms
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1"

@@ -139,7 +139,8 @@ komms/
 │   └── kult-ffi/
 ├── apps/
 │   ├── desktop/          # Tauri (M5)
-│   └── mobile/           # Kotlin/Swift shells over kult-ffi (M5)
+│   ├── android/          # Kotlin shell over kult-ffi (M5)
+│   └── ios/              # Swift shell over kult-ffi (M5)
 └── docs/                 # this documentation
 ```
 
