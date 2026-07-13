@@ -56,6 +56,44 @@ fn envelope_roundtrip_and_garbage() {
     let mut bytes = env.encode();
     bytes[1] = 0x99;
     assert!(Envelope::decode(&bytes).is_err());
+
+    // Group kinds (ADR-0012) round-trip like the rest.
+    for kind in [EnvelopeKind::GroupControl, EnvelopeKind::GroupMessage] {
+        let env = Envelope::new(kind, [8u8; 32], vec![4, 5]);
+        assert_eq!(Envelope::decode(&env.encode()).unwrap(), env);
+    }
+}
+
+#[test]
+fn group_control_roundtrip_and_garbage() {
+    use kult_protocol::{GroupAnnounce, GroupControlPayload, GroupMemberInfo};
+    let announce = GroupControlPayload::Announce(GroupAnnounce {
+        group: [1u8; 32],
+        name: "expedition".into(),
+        creator: [2u8; 32],
+        members: vec![GroupMemberInfo {
+            peer: [3u8; 32],
+            identity: vec![9, 9, 9],
+        }],
+        secret: [4u8; 32],
+        generation: 7,
+        key_id: [5u8; 16],
+        chain_key: [6u8; 32],
+        iteration: 42,
+    });
+    assert_eq!(
+        GroupControlPayload::decode(&announce.encode()).unwrap(),
+        announce
+    );
+    let leave = GroupControlPayload::Leave { group: [1u8; 32] };
+    assert_eq!(GroupControlPayload::decode(&leave.encode()).unwrap(), leave);
+
+    let mut rng = StdRng::seed_from_u64(2);
+    for len in [0usize, 1, 8, 50, 300] {
+        let mut buf = vec![0u8; len];
+        rng.fill(&mut buf[..]);
+        let _ = GroupControlPayload::decode(&buf); // must not panic
+    }
 }
 
 #[test]

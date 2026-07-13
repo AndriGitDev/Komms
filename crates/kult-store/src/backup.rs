@@ -1,16 +1,21 @@
 //! Encrypted single-file backup (docs/07-storage.md §4,
 //! docs/06-identity-trust.md §5).
 //!
-//! One export carries identity + contacts + message history +
-//! session-reset markers, sealed under a key derived from a 24-word
-//! mnemonic ([`kult_crypto::mnemonic_from_entropy`]) via Argon2id. What it
-//! deliberately does **not** carry:
+//! One export carries identity + contacts + message history (pairwise and
+//! group) + group state + session-reset markers, sealed under a key derived
+//! from a 24-word mnemonic ([`kult_crypto::mnemonic_from_entropy`]) via
+//! Argon2id. What it deliberately does **not** carry:
 //!
 //! - **Ratchet session state** — importing stale ratchet state is a
 //!   correctness and security hazard (old message keys resurrected, replay
 //!   windows confused). Instead, the peers that had live sessions at export
 //!   time are recorded as *reset markers*, and the restored node
 //!   re-handshakes them from the stored prekey bundles.
+//! - **Group chains** (ADR-0012) — same hazard class as ratchets: restored
+//!   chain state forks the moment either copy advances. A restored node
+//!   mints a fresh sending chain per group (announced to the roster on the
+//!   first tick), and co-members redistribute theirs over the
+//!   re-handshaken sessions.
 //! - **Own prekey secrets** — a restored device mints a fresh vault; the
 //!   old device's one-time prekeys must never be honored twice.
 //! - **Queues and stashes** — in-flight envelopes belong to the old
@@ -20,9 +25,12 @@
 //! File layout (strict, all-or-nothing, like the sneakernet bundle format):
 //!
 //! ```text
-//! magic "KKR1" (4) ‖ m_cost_kib u32 LE ‖ t_cost u32 LE ‖ p_cost u32 LE
+//! magic "KKR2" (4) ‖ m_cost_kib u32 LE ‖ t_cost u32 LE ‖ p_cost u32 LE
 //!   ‖ salt (16) ‖ sealed( postcard(BackupPayload) )
 //! ```
+//!
+//! Files with the older `KKR1` magic (pre-groups) still restore — same
+//! layout, groupless payload.
 //!
 //! The Argon2id cost parameters ride in the header so a backup written on
 //! one device class (mobile profile) restores on any other; the sealed
@@ -37,16 +45,33 @@ use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
 use kult_crypto::{
-    derive_kek, mnemonic_from_entropy, mnemonic_to_entropy, Identity, KdfProfile, StorageKey,
+    derive_kek, mnemonic_from_entropy, mnemonic_to_entropy, GroupSenderChain, Identity, KdfProfile,
+    StorageKey,
 };
 
-use crate::{ContactRecord, MessageRecord, Result, Store, StoreError};
+use crate::{
+    ContactRecord, GroupMember, GroupMessageRecord, GroupRecord, MessageRecord, PendingAnnounce,
+    Result, Store, StoreError,
+};
 
-/// Backup file magic: Komms recovery file, format 1.
-pub const BACKUP_MAGIC: [u8; 4] = *b"KKR1";
+/// Backup file magic: Komms recovery file, format 2 (groups included).
+pub const BACKUP_MAGIC: [u8; 4] = *b"KKR2";
+/// The pre-groups format 1 magic — still restorable.
+pub const BACKUP_MAGIC_V1: [u8; 4] = *b"KKR1";
 
 const BACKUP_AD: &[u8] = b"KK-backup-v1";
 const HEADER_LEN: usize = 4 + 12 + 16;
+
+/// A group's durable identity in a backup: everything but the chains.
+#[derive(Serialize, Deserialize)]
+struct BackupGroup {
+    id: [u8; 32],
+    name: String,
+    creator: [u8; 32],
+    members: Vec<GroupMember>,
+    secret: [u8; 32],
+    generation: u64,
+}
 
 /// Everything a backup carries, sealed as one postcard blob.
 #[derive(Serialize, Deserialize)]
@@ -61,6 +86,21 @@ struct BackupPayload {
     messages: Vec<MessageRecord>,
     /// Session-reset markers: peers with a live ratchet session at export
     /// time. The restored node re-handshakes exactly these.
+    reset_peers: Vec<[u8; 32]>,
+    /// Group identities (never chains — module docs).
+    groups: Vec<BackupGroup>,
+    /// Group message history (wire bodies stripped: any unserved fan-out
+    /// belonged to the dead chains).
+    group_messages: Vec<GroupMessageRecord>,
+}
+
+/// The `KKR1` payload shape, for restoring pre-groups backups.
+#[derive(Serialize, Deserialize)]
+struct BackupPayloadV1 {
+    created_at: u64,
+    identity: Vec<u8>,
+    contacts: Vec<ContactRecord>,
+    messages: Vec<MessageRecord>,
     reset_peers: Vec<[u8; 32]>,
 }
 
@@ -83,6 +123,26 @@ impl Store {
             contacts: self.contacts()?,
             messages: self.all_messages()?,
             reset_peers: self.session_peers()?,
+            groups: self
+                .groups()?
+                .into_iter()
+                .map(|g| BackupGroup {
+                    id: g.id,
+                    name: g.name,
+                    creator: g.creator,
+                    members: g.members,
+                    secret: g.secret,
+                    generation: g.generation,
+                })
+                .collect(),
+            group_messages: self
+                .all_group_messages()?
+                .into_iter()
+                .map(|mut m| {
+                    m.wire_body = None;
+                    m
+                })
+                .collect(),
         };
         let plain =
             Zeroizing::new(postcard::to_allocvec(&payload).map_err(|_| StoreError::Serialization)?);
@@ -123,9 +183,14 @@ impl Store {
         profile: KdfProfile,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Self> {
-        if backup.len() <= HEADER_LEN || backup[..4] != BACKUP_MAGIC {
+        if backup.len() <= HEADER_LEN {
             return Err(StoreError::NotABackup);
         }
+        let legacy = match <[u8; 4]>::try_from(&backup[..4]).expect("length checked") {
+            BACKUP_MAGIC => false,
+            BACKUP_MAGIC_V1 => true,
+            _ => return Err(StoreError::NotABackup),
+        };
         let word = |at: usize| -> u32 {
             u32::from_le_bytes(backup[at..at + 4].try_into().expect("length checked"))
         };
@@ -140,17 +205,32 @@ impl Store {
         let kek = derive_kek(&entropy[..], &salt, file_profile)?;
         let key = StorageKey::from_bytes(*kek);
         let plain = Zeroizing::new(key.open(BACKUP_AD, &backup[HEADER_LEN..])?);
-        let mut payload: BackupPayload =
-            postcard::from_bytes(&plain).map_err(|_| StoreError::NotABackup)?;
+        let mut payload: BackupPayload = if legacy {
+            let v1: BackupPayloadV1 =
+                postcard::from_bytes(&plain).map_err(|_| StoreError::NotABackup)?;
+            BackupPayload {
+                created_at: v1.created_at,
+                identity: v1.identity,
+                contacts: v1.contacts,
+                messages: v1.messages,
+                reset_peers: v1.reset_peers,
+                groups: Vec::new(),
+                group_messages: Vec::new(),
+            }
+        } else {
+            postcard::from_bytes(&plain).map_err(|_| StoreError::NotABackup)?
+        };
         let identity_bytes: Zeroizing<[u8; 64]> = Zeroizing::new(
             payload.identity[..]
                 .try_into()
                 .map_err(|_| StoreError::NotABackup)?,
         );
         payload.identity.zeroize();
+        let identity = Identity::from_bytes(&identity_bytes);
+        let me = identity.public().ed;
 
         let store = Store::create(path, passphrase, profile, rng)?;
-        store.put_identity(&Identity::from_bytes(&identity_bytes), rng)?;
+        store.put_identity(&identity, rng)?;
         for contact in &payload.contacts {
             store.put_contact(contact, rng)?;
         }
@@ -159,6 +239,45 @@ impl Store {
         }
         for peer in &payload.reset_peers {
             store.put_reset_marker(peer)?;
+        }
+        for group in payload.groups {
+            // Fresh chain, announced to the full roster: the old chains died
+            // with the old device (module docs). Receiving chains rebuild as
+            // co-members redistribute over the re-handshaken sessions.
+            let chain = GroupSenderChain::generate(rng);
+            let (key_id, chain_key, iteration) = chain.snapshot();
+            let pending = group
+                .members
+                .iter()
+                .filter(|m| m.peer != me)
+                .map(|m| PendingAnnounce {
+                    peer: m.peer,
+                    key_id,
+                    chain_key: *chain_key,
+                    iteration,
+                    wire_id: None,
+                    last_sent: 0,
+                })
+                .collect();
+            store.put_group(
+                &GroupRecord {
+                    id: group.id,
+                    name: group.name,
+                    creator: group.creator,
+                    members: group.members,
+                    secret: group.secret,
+                    prev_secret: None,
+                    generation: group.generation,
+                    sender_chain: postcard::to_allocvec(&chain)
+                        .map_err(|_| StoreError::Serialization)?,
+                    sent_since_rotation: 0,
+                    pending,
+                },
+                rng,
+            )?;
+        }
+        for message in &payload.group_messages {
+            store.put_group_message(message, rng)?;
         }
         Ok(store)
     }

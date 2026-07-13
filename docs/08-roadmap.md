@@ -258,12 +258,35 @@ delivery and store distribution stay M6.
 verification with a friend, and message over internet, LAN, and mesh with truthful
 delivery/security indicators. Backup/restore round-trips.
 
-## M6 — Hardening & reach
+## M6 — Hardening & reach *(in progress)*
 
 Sender-key groups polish → OpenMLS for large groups; censorship-resistant transports
 (obfuscation, arti/Tor); multi-device (Sesame-style); panic wipe; reproducible builds;
 **external security audit** of `kult-crypto` + `kult-protocol`; F-Droid and store
 distribution.
+
+Sender-key groups v1 is in through the core stack (ADR-0012, construction pinned
+in [04 — Cryptography §6](04-cryptography.md)): per-member forward-ratcheting
+chains in `kult-crypto` with the pairwise delay-tolerance bounds, group message
+bodies whose only routing metadata (`key_id ‖ iteration`) is sealed under a
+members-only header key so intermediaries see uniformly random bytes, and the
+single ciphertext fanned out in ordinary per-member envelopes — relays,
+mailboxes, receipts, NACKs, and bridging carry group traffic without knowing it
+is group traffic. Membership is creator-managed with a monotonic generation
+counter; every control message is one **announce** shape (group state + the
+sender's chain snapshot frozen at entitlement time) that resends on a paced
+timer until the ordinary encrypted receipt acknowledges it, so an envelope lost
+on a lossy carrier never leaves a member permanently deaf to a sender. Removal
+re-keys the group secret and rotates every remaining chain (the removed member
+gets a notice that deliberately carries nothing else); rotation also triggers
+on leave, on a message-count threshold (PCS), and on restore. Backups (now
+`KKR2`; `KKR1` files still restore) carry group identities and history but
+never chains — a restored node announces a fresh chain, and co-members
+redistribute theirs on the re-handshake, both directions pinned by the
+`kult-node` e2e suite (`groups_e2e.rs`) alongside encrypt-once-on-the-wire,
+per-member delivery ladders, newcomer-reads-no-history, and removed-member
+exclusion. Remaining for groups: the `kultd` RPC + `kult` CLI front door,
+`kult-ffi` exposure and the three shells' group UX, then the M6 list above.
 
 **Acceptance**: audit findings triaged with public report; reproducible-build attestation
 for all release artifacts.

@@ -29,6 +29,10 @@ pub enum NodeError {
     /// requested address — an unpublished peer and a forged record are
     /// deliberately indistinguishable here.
     BundleNotFound,
+    /// The group id names no stored group.
+    UnknownGroup,
+    /// Only the group's creator may add, remove, or re-key (ADR-0012).
+    NotGroupCreator,
 }
 
 impl std::fmt::Display for NodeError {
@@ -43,6 +47,8 @@ impl std::fmt::Display for NodeError {
             Self::CorruptState => f.write_str("node state missing or corrupt"),
             Self::NoDiscovery => f.write_str("no usable discovery plane"),
             Self::BundleNotFound => f.write_str("no verifiable prekey bundle found for address"),
+            Self::UnknownGroup => f.write_str("group id names no stored group"),
+            Self::NotGroupCreator => f.write_str("only the group creator may change it"),
         }
     }
 }

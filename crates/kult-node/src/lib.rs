@@ -52,9 +52,10 @@ use kult_transport::{CostClass, DeliveryHint, Discovery, Reachability, Transport
 
 mod api;
 mod error;
+mod groups;
 mod vault;
 
-pub use api::{Command, Event};
+pub use api::{Command, Event, GroupInfo};
 pub use error::NodeError;
 
 use vault::PrekeyVault;
@@ -667,6 +668,15 @@ impl Node {
             }
             Command::SetHints { peer, hints } => self.set_hints(&peer, &hints, rng)?,
             Command::MarkVerified { peer } => self.mark_verified(&peer, rng)?,
+            Command::GroupCreate { name, members } => {
+                self.create_group(&name, &members, rng)?;
+            }
+            Command::GroupSend { group, body } => {
+                self.group_send(&group, &body, now, rng)?;
+            }
+            Command::GroupAdd { group, peer } => self.group_add(&group, &peer, rng)?,
+            Command::GroupRemove { group, peer } => self.group_remove(&group, &peer, now, rng)?,
+            Command::GroupLeave { group } => self.group_leave(&group, now, rng)?,
         }
         Ok(())
     }
@@ -728,6 +738,7 @@ impl Node {
             &QueueItem {
                 peer: *peer,
                 msg_id: Some(id),
+                group_msg_id: None,
                 envelope,
             },
             rng,
@@ -816,6 +827,11 @@ impl Node {
             }
             break;
         }
+
+        // 2b. Group upkeep (ADR-0012): flush due announces (initiating
+        //     pairwise sessions where possible) and serve late fan-out to
+        //     members whose session appeared after a group send.
+        self.tick_groups(now, rng).await?;
 
         // 3. Acknowledge consumed messages with end-to-end encrypted
         //    receipts, and NACK the missing fragment indices of stale
@@ -920,6 +936,7 @@ impl Node {
                 &QueueItem {
                     peer,
                     msg_id: None,
+                    group_msg_id: None,
                     envelope,
                 },
                 rng,
@@ -979,9 +996,10 @@ impl Node {
                 Ok(Consumed::Done)
             }
             EnvelopeKind::Handshake => self.consume_handshake(env, now, rng, acks, established),
-            EnvelopeKind::Message | EnvelopeKind::Receipt => {
-                self.consume_ratchet(env, now, rng, acks)
+            EnvelopeKind::Message | EnvelopeKind::Receipt | EnvelopeKind::GroupControl => {
+                self.consume_ratchet(env, now, rng, acks, established)
             }
+            EnvelopeKind::GroupMessage => self.consume_group_message(env, now, rng, acks),
         }
     }
 
@@ -1051,6 +1069,10 @@ impl Node {
         self.sessions.insert(peer, session);
         *established = true;
         self.events.push_back(Event::SessionEstablished { peer });
+        // A re-established session may mean the peer restored from backup
+        // and lost every group receiving chain: make sure any group we
+        // share owes them an announce (ADR-0012).
+        self.groups_on_session_established(&peer, rng)?;
 
         // An empty first flight is session maintenance (a re-handshake
         // after restore), not a message — nothing to record or receipt.
@@ -1070,6 +1092,7 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
         acks: &mut Vec<([u8; 32], [u8; 16])>,
+        established: &mut bool,
     ) -> Result<Consumed> {
         // No session recognizes this token yet → it may be for a session a
         // later handshake establishes. Stash, don't drop.
@@ -1107,7 +1130,16 @@ impl Node {
                     self.apply_receipt(&peer, &receipt, rng)?;
                 }
             }
-            _ => unreachable!("consume() routes only Message/Receipt here"),
+            EnvelopeKind::GroupControl => {
+                // Applied controls are acknowledged like messages;
+                // not-applicable-yet ones (a co-member's announce racing
+                // the creator's invite) are dropped *unacked* so the
+                // sender's paced resend arrives after the missing context.
+                if self.apply_group_control(peer, &body, now, rng, established)? {
+                    acks.push((peer, env.content_id()));
+                }
+            }
+            _ => unreachable!("consume() routes only Message/Receipt/GroupControl here"),
         }
         self.store.mark_seen(&env.content_id())?;
         Ok(Consumed::Done)
@@ -1170,6 +1202,7 @@ impl Node {
                     &QueueItem {
                         peer: *peer,
                         msg_id: None,
+                        group_msg_id: None,
                         envelope: Envelope::new(EnvelopeKind::Fragment, cached.token, body.clone()),
                     },
                     rng,
@@ -1195,6 +1228,10 @@ impl Node {
                 });
             }
         }
+
+        // The same acks may retire pending group announces and advance
+        // per-member group deliveries (ADR-0012).
+        self.apply_group_receipt(peer, &receipt.acks, rng)?;
         Ok(())
     }
 
@@ -1285,6 +1322,7 @@ impl Node {
             &QueueItem {
                 peer: *peer,
                 msg_id: None,
+                group_msg_id: None,
                 envelope: Envelope::new(EnvelopeKind::Receipt, token, msg.encode()),
             },
             rng,
@@ -1354,6 +1392,9 @@ impl Node {
                 self.held_notified.remove(&seq);
                 if let Some(msg_id) = item.msg_id {
                     self.mark_sent(&item.peer, &msg_id, rng)?;
+                }
+                if let Some(group_msg_id) = item.group_msg_id {
+                    self.group_mark_sent(&item.peer, &group_msg_id, rng)?;
                 }
             } else if candidates.is_empty() && held_for_airtime {
                 // Held, not failed: nothing was attempted, so no backoff —
@@ -1641,11 +1682,13 @@ async fn send_via(
 
 /// Flush priority (docs/05-transports.md §4.2 rule 3): text > receipts >
 /// prekey/handshake. Fragments rank with text — a retransmitted piece
-/// completes a message the mesh has already mostly paid for.
+/// completes a message the mesh has already mostly paid for. Group text is
+/// text; group control ranks with receipts (it unlocks reading but carries
+/// no user words).
 fn flush_class(kind: EnvelopeKind) -> u8 {
     match kind {
-        EnvelopeKind::Message | EnvelopeKind::Fragment => 0,
-        EnvelopeKind::Receipt => 1,
+        EnvelopeKind::Message | EnvelopeKind::Fragment | EnvelopeKind::GroupMessage => 0,
+        EnvelopeKind::Receipt | EnvelopeKind::GroupControl => 1,
         EnvelopeKind::Handshake => 2,
     }
 }
