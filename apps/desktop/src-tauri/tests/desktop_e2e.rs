@@ -188,6 +188,134 @@ fn two_desktops_pair_by_bundle_hex_and_message() {
 }
 
 #[test]
+fn desktop_group_ux_create_roster_message_and_partial_delivery() {
+    let dir = tempfile::tempdir().unwrap();
+    let a_ev = Events::default();
+    let b_ev = Events::default();
+    // The embedded FFI runtime admits two live nodes per process. Capture a
+    // real third identity first, then keep Carol offline so delivery can be
+    // proven independently per member.
+    let carol = open(dir.path(), "group-carol", &Events::default());
+    let carol_bundle = carol.my_bundle().unwrap();
+    carol.stop();
+    let alice = open(dir.path(), "group-alice", &a_ev);
+    let bob = open(dir.path(), "group-bob", &b_ev);
+
+    let alice_addr = listen_addr(&alice);
+    let bob_addr = listen_addr(&bob);
+    let alice_bundle = alice.my_bundle().unwrap();
+    let bob_bundle = bob.my_bundle().unwrap();
+    let bob_peer = alice
+        .add_contact("Bob".to_owned(), &bob_bundle.hex, &multiaddr_hint(bob_addr))
+        .unwrap();
+    let carol_peer = alice
+        .add_contact(
+            "Carol".to_owned(),
+            &carol_bundle.hex,
+            &multiaddr_hint("/ip4/127.0.0.1/udp/9/quic-v1".to_owned()),
+        )
+        .unwrap();
+    let alice_at_bob = bob
+        .add_contact(
+            "Alice".to_owned(),
+            &alice_bundle.hex,
+            &multiaddr_hint(alice_addr.clone()),
+        )
+        .unwrap();
+    // The new-group dialog starts with one selected stored contact; the
+    // creator then adds another from the members screen.
+    let group = alice
+        .create_group("Trail crew".to_owned(), vec![bob_peer.clone()])
+        .unwrap();
+    b_ev.wait(
+        "Bob's group invite",
+        |event| matches!(event, UiEvent::GroupUpdated { group: id } if *id == group),
+    );
+    let listed = alice.groups().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "Trail crew");
+    assert_eq!(listed[0].members.len(), 2);
+
+    alice
+        .add_group_member(group.clone(), carol_peer.clone())
+        .unwrap();
+    let listed = alice.groups().unwrap();
+    assert_eq!(listed[0].members.len(), 3);
+
+    // Only the creator gets roster controls; the shell surfaces the core's
+    // explicit error to a non-creator instead of pretending it succeeded.
+    let err = bob
+        .add_group_member(group.clone(), carol_peer.clone())
+        .unwrap_err();
+    assert!(err.contains("creator"), "got: {err}");
+
+    // Group conversation history is identical across the shell boundary.
+    // Bob receives while offline Carol remains queued/sent: outbound rows
+    // expose a distinct truthful state for each member rather than one
+    // misleading group-level checkmark.
+    let first = alice
+        .send_group(group.clone(), "Meet at the north trailhead".to_owned())
+        .unwrap();
+    b_ev.wait("Bob's group message", |event| {
+        matches!(event, UiEvent::GroupMessageReceived { body, .. }
+            if body == "Meet at the north trailhead")
+    });
+    a_ev.wait("Bob's group copy delivered", |event| {
+        matches!(event, UiEvent::GroupDeliveryUpdated { id, peer, state: "delivered" }
+            if *id == first && *peer == bob_peer)
+    });
+    let history = alice.group_messages(group.clone()).unwrap();
+    assert_eq!(history.len(), 1);
+    assert!(history[0].outbound);
+    assert_eq!(history[0].deliveries.len(), 2);
+    assert_eq!(
+        history[0]
+            .deliveries
+            .iter()
+            .find(|delivery| delivery.peer == bob_peer)
+            .unwrap()
+            .state,
+        "delivered"
+    );
+    assert_ne!(
+        history[0]
+            .deliveries
+            .iter()
+            .find(|delivery| delivery.peer == carol_peer)
+            .unwrap()
+            .state,
+        "delivered"
+    );
+    let bob_history = bob.group_messages(group.clone()).unwrap();
+    assert_eq!(bob_history[0].sender, alice_at_bob);
+    assert!(!bob_history[0].outbound);
+    assert!(bob_history[0].deliveries.is_empty());
+
+    // Creator removal rotates the roster immediately. A member can leave;
+    // their live group disappears locally and the creator converges too.
+    alice
+        .remove_group_member(group.clone(), carol_peer)
+        .unwrap();
+    assert_eq!(alice.groups().unwrap()[0].members.len(), 2);
+    bob.leave_group(group.clone()).unwrap();
+    assert!(bob.groups().unwrap().is_empty());
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if alice.groups().unwrap()[0].members.len() == 1 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "creator did not apply Bob's leave"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    alice.stop();
+    bob.stop();
+}
+
+#[test]
 fn backup_mnemonic_restore_flow() {
     let dir = tempfile::tempdir().unwrap();
     let a_ev = Events::default();

@@ -134,6 +134,48 @@ pub struct UiMessage {
     pub body: String,
 }
 
+/// A sender-key group row for the desktop UI. Secret material and sender
+/// chains never cross into the shell.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiGroup {
+    /// Group id (hex).
+    pub id: String,
+    /// Creator-controlled display name.
+    pub name: String,
+    /// Managing member's peer id (hex).
+    pub creator: String,
+    /// Full roster, this node included (hex peer ids).
+    pub members: Vec<String>,
+}
+
+/// One member's honest delivery state for an outbound group message.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiGroupDelivery {
+    /// Recipient peer id (hex).
+    pub peer: String,
+    /// `queued`, `sent`, or `delivered`, verbatim from the node.
+    pub state: &'static str,
+}
+
+/// A group message row for the desktop conversation view.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiGroupMessage {
+    /// Group message record id (hex).
+    pub id: String,
+    /// Group id (hex).
+    pub group: String,
+    /// Sending member's peer id (hex).
+    pub sender: String,
+    /// Sent by this device (vs. received).
+    pub outbound: bool,
+    /// Unix seconds.
+    pub timestamp: u64,
+    /// Message text.
+    pub body: String,
+    /// Per-recipient states for outbound messages; empty for inbound.
+    pub deliveries: Vec<UiGroupDelivery>,
+}
+
 /// A point-in-time node snapshot for the status bar.
 #[derive(Clone, Debug, Serialize)]
 pub struct UiStatus {
@@ -489,6 +531,80 @@ impl Session {
     /// Queue a message; returns its id (progress arrives as events).
     pub fn send(&self, peer: String, body: String) -> Result<String, String> {
         self.node.send(peer, body).map_err(|e| e.to_string())
+    }
+
+    /// Create a sender-key group from stored contacts. Returns its id.
+    pub fn create_group(&self, name: String, members: Vec<String>) -> Result<String, String> {
+        self.node
+            .create_group(name, members)
+            .map_err(|e| e.to_string())
+    }
+
+    /// All locally stored groups, excluding every secret and chain value.
+    pub fn groups(&self) -> Result<Vec<UiGroup>, String> {
+        Ok(self
+            .node
+            .groups()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|group| UiGroup {
+                id: group.id,
+                name: group.name,
+                creator: group.creator,
+                members: group.members,
+            })
+            .collect())
+    }
+
+    /// Group history with honest per-recipient delivery states.
+    pub fn group_messages(&self, group: String) -> Result<Vec<UiGroupMessage>, String> {
+        Ok(self
+            .node
+            .group_messages(group)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|message| UiGroupMessage {
+                id: message.id,
+                group: message.group,
+                sender: message.sender,
+                outbound: message.direction == Direction::Outbound,
+                timestamp: message.timestamp,
+                body: message.body,
+                deliveries: message
+                    .deliveries
+                    .into_iter()
+                    .map(|delivery| UiGroupDelivery {
+                        peer: delivery.peer,
+                        state: state_str(delivery.state),
+                    })
+                    .collect(),
+            })
+            .collect())
+    }
+
+    /// Queue one encrypted group message. Per-member progress arrives as
+    /// `GroupDeliveryUpdated` events.
+    pub fn send_group(&self, group: String, body: String) -> Result<String, String> {
+        self.node.send_group(group, body).map_err(|e| e.to_string())
+    }
+
+    /// Add a stored contact to a group (creator only).
+    pub fn add_group_member(&self, group: String, peer: String) -> Result<(), String> {
+        self.node
+            .add_group_member(group, peer)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Remove a member and rotate the group keys (creator only).
+    pub fn remove_group_member(&self, group: String, peer: String) -> Result<(), String> {
+        self.node
+            .remove_group_member(group, peer)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Leave a group and drop its live local state; stored history remains.
+    pub fn leave_group(&self, group: String) -> Result<(), String> {
+        self.node.leave_group(group).map_err(|e| e.to_string())
     }
 
     /// The safety number with a peer, plus a QR of the raw comparison

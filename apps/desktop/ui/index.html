@@ -86,11 +86,22 @@
         </div>
       </header>
 
-      <div class="contacts-head">
-        <span>Contacts</span>
-        <button id="btn-add-contact" class="ghost">+ Add</button>
+      <div id="conversation-lists">
+        <section class="conversation-section">
+          <div class="contacts-head">
+            <span>Contacts</span>
+            <button id="btn-add-contact" class="ghost">+ Add</button>
+          </div>
+          <nav id="contact-list" aria-label="Contacts"></nav>
+        </section>
+        <section class="conversation-section">
+          <div class="contacts-head">
+            <span>Groups</span>
+            <button id="btn-create-group" class="ghost">+ New</button>
+          </div>
+          <nav id="group-list" aria-label="Groups"></nav>
+        </section>
       </div>
-      <nav id="contact-list"></nav>
 
       <footer id="status-bar" title="Transport status">
         <span class="stat" id="stat-nat">NAT: …</span>
@@ -114,6 +125,7 @@
           <div>
             <button id="btn-verify" class="ghost">Verify</button>
             <button id="btn-hints" class="ghost">Delivery</button>
+            <button id="btn-group-details" class="ghost" hidden>Members</button>
           </div>
         </header>
         <div id="messages"></div>
@@ -191,6 +203,37 @@
     <div class="qr-card safety-qr"></div>
     <div class="row end">
       <button class="primary" data-act="verified">We compared, mark verified</button>
+    </div>
+  </template>
+
+  <template id="tpl-create-group">
+    <p class="modal-note">Choose stored contacts for this sender-key group. Membership changes are announced over each member's existing encrypted session.</p>
+    <label>Group name
+      <input type="text" data-f="name" maxlength="80" autocomplete="off" />
+    </label>
+    <fieldset class="member-picker">
+      <legend>Members</legend>
+      <div data-f="members"></div>
+    </fieldset>
+    <p class="error" data-f="error" hidden></p>
+    <div class="row end">
+      <button class="primary" data-act="create">Create group</button>
+    </div>
+  </template>
+
+  <template id="tpl-group-details">
+    <p class="modal-note group-summary"></p>
+    <div class="member-list" data-f="roster"></div>
+    <div class="group-add" data-f="add-wrap" hidden>
+      <label>Add a contact
+        <select data-f="add-peer"></select>
+      </label>
+      <button class="ghost" data-act="add-member">Add member</button>
+    </div>
+    <p class="error" data-f="error" hidden></p>
+    <div class="row split">
+      <button class="danger" data-act="leave">Leave group</button>
+      <button class="ghost" data-act="close">Done</button>
     </div>
   </template>
 

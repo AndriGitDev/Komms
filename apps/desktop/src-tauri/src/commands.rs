@@ -11,7 +11,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::session::{
-    NetworkSettings, Session, UiBundle, UiContact, UiHint, UiMessage, UiSafetyNumber, UiStatus,
+    NetworkSettings, Session, UiBundle, UiContact, UiGroup, UiGroupMessage, UiHint, UiMessage,
+    UiSafetyNumber, UiStatus,
 };
 
 /// The one piece of managed state: the running session, if unlocked.
@@ -216,6 +217,36 @@ forward!(
 forward!(
     /// Queue a message; progress arrives as `node-event`s.
     send(peer: String, body: String) -> String, |s| s.send(peer, body)
+);
+forward!(
+    /// Create a sender-key group from stored contacts.
+    create_group(name: String, members: Vec<String>) -> String,
+    |s| s.create_group(name, members)
+);
+forward!(
+    /// All locally stored groups.
+    groups() -> Vec<UiGroup>, |s| s.groups()
+);
+forward!(
+    /// Group history with per-member delivery states.
+    group_messages(group: String) -> Vec<UiGroupMessage>, |s| s.group_messages(group)
+);
+forward!(
+    /// Queue a message to a group.
+    send_group(group: String, body: String) -> String, |s| s.send_group(group, body)
+);
+forward!(
+    /// Add a stored contact to a group (creator only).
+    add_group_member(group: String, peer: String) -> (), |s| s.add_group_member(group, peer)
+);
+forward!(
+    /// Remove a member and rotate group keys (creator only).
+    remove_group_member(group: String, peer: String) -> (),
+    |s| s.remove_group_member(group, peer)
+);
+forward!(
+    /// Leave a group and drop its live local state.
+    leave_group(group: String) -> (), |s| s.leave_group(group)
 );
 forward!(
     /// Safety number + QR for out-of-band verification.

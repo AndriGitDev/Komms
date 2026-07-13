@@ -17,6 +17,9 @@ security indicators are the node's own, verbatim.
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted
   mesh links.
+- **Use sender-key groups**: create and list groups, read history, send,
+  add/remove members, and leave. Outbound bubbles show a separate honest
+  delivery state for every recipient, so partial delivery stays visible.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends, compared out-of-band, with a visible verified badge.
 - **Transport indicators**: NAT verdict, LAN peers discovered over mDNS,
