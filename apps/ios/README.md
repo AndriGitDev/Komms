@@ -18,6 +18,11 @@ are the node's own, verbatim.
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted
   mesh links.
+- **Create and use sender-key groups** from stored contacts: list and read
+  group history, send messages, add/remove members as the creator, and leave
+  as any member while local history remains stored. Inbound rows name the
+  sender; outbound rows show every recipient's actual delivery state instead
+  of a misleading group-level checkmark.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends (all platforms), compared aloud or by scanning each other's code,
   with a visible verified badge. Key changes are surfaced, never hidden.
@@ -53,7 +58,9 @@ Every behavior lives in `KommsCore` and is pinned by its tests: the e2e
 drives two full nodes (pair by scanned bundle hex, verified `delivered`
 states via listener events, safety numbers, backup → mnemonic → restore →
 automatic re-handshake) against the host-built `libkult_ffi`, no
-simulator required. `KommsApp` is UI only.
+simulator required. Its group acceptance scenario adds a real offline third
+identity and pins creator authority, add/remove/leave convergence, history,
+and honest partial delivery per recipient. `KommsApp` is UI only.
 
 Generated bindings are never committed; `scripts/generate-bindings.sh`
 produces them fresh from the crate. The package is deliberately outside

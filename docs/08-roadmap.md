@@ -245,8 +245,11 @@ safety-number verification with matching digits + QR across platforms,
 key-change surfacing, transport indicators, hint editing, secret-free
 `settings.json` (same file format as the other shells), and
 mnemonic-shown-once backup export via the share sheet with the data
-directory excluded from iCloud backup. QR rendering is CoreImage and
-scanning is AVFoundation. The app has zero third-party dependencies;
+directory excluded from iCloud backup. The sender-key group front door is
+also shipped: a distinct group list/create flow, dedicated history/chat and
+member-management surfaces, truthful per-recipient outbound delivery rows,
+and a host acceptance scenario with a real offline member. QR rendering is
+CoreImage and scanning is AVFoundation. The app has zero third-party dependencies;
 the only library it links is the workspace's own Rust core, built into
 `KultFFI.xcframework` by a script for device/simulator targets. CI runs
 the `KommsCore` e2e on Linux (official Swift container) on every push;
@@ -297,9 +300,9 @@ per-member delivery ladders, newcomer-reads-no-history, and removed-member
 exclusion. The shared front door is also in: `kultd` RPC, the `kult` CLI, and
 `kult-ffi` expose group records, history, events, membership operations, and
 honest per-member delivery state, pinned by `rpc_e2e.rs` and `ffi_e2e.rs`.
-Desktop and Android group UX are shipped, including truthful per-recipient
-partial-delivery rows and shell-level acceptance coverage. Remaining for
-groups: iOS group UX, then the M6 list above.
+Desktop, Android, and iOS group UX are shipped, including truthful
+per-recipient partial-delivery rows and shell-level acceptance coverage.
+Remaining for groups is the M6 list above.
 
 **Acceptance**: audit findings triaged with public report; reproducible-build attestation
 for all release artifacts.

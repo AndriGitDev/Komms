@@ -14,6 +14,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var session: Session?
     @Published private(set) var contacts: [Contact] = []
     @Published private(set) var histories: [String: [Message]] = [:] // peer → history
+    @Published private(set) var groups: [Group] = []
+    @Published private(set) var groupHistories: [String: [GroupMessage]] = [:]
     @Published private(set) var status: Status?
     /// Surfaced node happenings: key changes, held-for-faster-link verdicts.
     @Published var notices: [String] = []
@@ -92,6 +94,8 @@ final class AppModel: ObservableObject {
         session = nil
         contacts = []
         histories = [:]
+        groups = []
+        groupHistories = [:]
         status = nil
         notices = []
     }
@@ -116,7 +120,8 @@ final class AppModel: ObservableObject {
 
     private func handle(_ event: Event) {
         switch event {
-        case .deliveryUpdated, .messageReceived:
+        case .deliveryUpdated, .messageReceived,
+             .groupUpdated, .groupMessageReceived, .groupDeliveryUpdated:
             Task { await refresh() }
         case .contactAdded:
             Task { await refresh() }
@@ -136,21 +141,34 @@ final class AppModel: ObservableObject {
 
     // MARK: queries
 
-    /// Refresh status, contacts, and the histories the UI already follows.
+    /// Refresh status, contacts, groups, and the histories the UI follows.
     func refresh() async {
         guard let session else { return }
         let peers = Array(histories.keys)
+        let followedGroups = Array(groupHistories.keys)
         do {
-            let snapshot = try await run { () -> (Status, [Contact], [String: [Message]]) in
+            let snapshot = try await run { () -> (
+                Status, [Contact], [String: [Message]], [Group], [String: [GroupMessage]]
+            ) in
                 var fresh: [String: [Message]] = [:]
                 for peer in peers {
                     fresh[peer] = try session.messages(peer: peer)
                 }
-                return (try session.status(), try session.contacts(), fresh)
+                let liveGroups = try session.groups()
+                let liveIds = Set(liveGroups.map(\.id))
+                var freshGroups: [String: [GroupMessage]] = [:]
+                for group in followedGroups where liveIds.contains(group) {
+                    freshGroups[group] = try session.groupMessages(group: group)
+                }
+                return (
+                    try session.status(), try session.contacts(), fresh,
+                    liveGroups, freshGroups)
             }
             status = snapshot.0
             contacts = snapshot.1
             histories.merge(snapshot.2) { _, new in new }
+            groups = snapshot.3
+            groupHistories.merge(snapshot.4) { _, new in new }
         } catch {
             // A stopped handle answers honestly; the gate is already up.
         }
@@ -163,11 +181,49 @@ final class AppModel: ObservableObject {
         histories[peer] = history
     }
 
+    /// Start following a group conversation (loads its persisted history).
+    func followGroup(group: String) async throws {
+        guard let session else { return }
+        let history = try await run { try session.groupMessages(group: group) }
+        groupHistories[group] = history
+    }
+
     // MARK: commands (all forwarded verbatim to the session layer)
 
     func send(peer: String, body: String) async throws {
         guard let session else { return }
         _ = try await run { try session.send(peer: peer, body: body) }
+        await refresh()
+    }
+
+    func createGroup(name: String, members: [String]) async throws -> String {
+        guard let session else { throw InputError("node is locked") }
+        let id = try await run { try session.createGroup(name: name, members: members) }
+        await refresh()
+        return id
+    }
+
+    func sendGroup(group: String, body: String) async throws {
+        guard let session else { return }
+        _ = try await run { try session.sendGroup(group: group, body: body) }
+        await refresh()
+    }
+
+    func addGroupMember(group: String, peer: String) async throws {
+        guard let session else { return }
+        try await run { try session.addGroupMember(group: group, peer: peer) }
+        await refresh()
+    }
+
+    func removeGroupMember(group: String, peer: String) async throws {
+        guard let session else { return }
+        try await run { try session.removeGroupMember(group: group, peer: peer) }
+        await refresh()
+    }
+
+    func leaveGroup(group: String) async throws {
+        guard let session else { return }
+        try await run { try session.leaveGroup(group: group) }
         await refresh()
     }
 
