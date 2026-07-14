@@ -154,10 +154,10 @@
 
   <!-- ══ Modals ══ -->
   <div id="modal-backdrop" hidden>
-    <div class="modal" id="modal" role="dialog" aria-modal="true">
+    <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <header>
         <span id="modal-title"></span>
-        <button id="modal-close" class="ghost">✕</button>
+        <button id="modal-close" class="ghost" aria-label="Close dialog">✕</button>
       </header>
       <div id="modal-body"></div>
     </div>
@@ -184,7 +184,7 @@
   </template>
 
   <template id="tpl-attachment-send">
-    <p class="modal-note">The selected file is streamed into encrypted storage. Its source path is not shared.</p>
+    <p class="modal-note">Review the file and current carrier policy before explicitly sending it. The private staged copy is deleted after send or discard.</p>
     <p class="attachment-selection"><strong>Selected:</strong> <span data-f="selected-name"></span></p>
     <label>Display filename
       <input type="text" data-f="filename" spellcheck="false" />
@@ -192,9 +192,74 @@
     <label>MIME type
       <input type="text" data-f="media-type" spellcheck="false" placeholder="application/octet-stream" />
     </label>
+    <p class="modal-note warn" data-f="carrier" role="status"></p>
     <p class="error" data-f="error" hidden></p>
-    <div class="row end">
+    <div class="row split">
+      <button type="button" class="danger" data-act="discard-attachment">Discard</button>
       <button class="primary" data-act="send-attachment">Send attachment</button>
+    </div>
+  </template>
+
+  <template id="tpl-image-edit">
+    <p class="modal-note">Edits happen locally. The original is never sent. Crop coordinates use oriented pixels; privacy regions use the rotated final canvas.</p>
+    <div class="image-editor-grid">
+      <figure class="image-review">
+        <img data-f="image-review" alt="Exact final edited image review" />
+        <figcaption data-f="image-info" aria-live="polite"></figcaption>
+      </figure>
+      <div class="image-controls">
+        <label>Crop preset
+          <select data-f="crop-preset">
+            <option value="original">Original</option>
+            <option value="free">Free</option>
+            <option value="1:1">Square 1:1</option>
+            <option value="4:3">4:3</option>
+            <option value="16:9">16:9</option>
+          </select>
+        </label>
+        <fieldset>
+          <legend>Crop in oriented pixels</legend>
+          <div class="number-grid">
+            <label>X <input type="number" min="0" step="1" data-f="crop-x" /></label>
+            <label>Y <input type="number" min="0" step="1" data-f="crop-y" /></label>
+            <label>Width <input type="number" min="1" step="1" data-f="crop-width" /></label>
+            <label>Height <input type="number" min="1" step="1" data-f="crop-height" /></label>
+          </div>
+        </fieldset>
+        <div class="row">
+          <button type="button" class="ghost" data-act="rotate-left" aria-label="Rotate 90 degrees counter-clockwise">Rotate left</button>
+          <button type="button" class="ghost" data-act="rotate-right" aria-label="Rotate 90 degrees clockwise">Rotate right</button>
+        </div>
+        <fieldset>
+          <legend>Add manual privacy region</legend>
+          <label>Operation
+            <select data-f="region-kind"><option value="blur">Blur</option><option value="pixelate">Pixelate</option></select>
+          </label>
+          <div class="number-grid">
+            <label>X <input type="number" min="0" step="1" value="0" data-f="region-x" /></label>
+            <label>Y <input type="number" min="0" step="1" value="0" data-f="region-y" /></label>
+            <label>Width <input type="number" min="1" step="1" value="32" data-f="region-width" /></label>
+            <label>Height <input type="number" min="1" step="1" value="32" data-f="region-height" /></label>
+            <label>Strength <input type="number" min="1" max="64" step="1" value="8" data-f="region-strength" /></label>
+          </div>
+          <button type="button" class="ghost" data-act="add-region">Add region</button>
+          <ol data-f="regions" aria-label="Privacy regions"></ol>
+        </fieldset>
+        <div class="row">
+          <button type="button" class="ghost" data-act="apply-image">Apply crop</button>
+          <button type="button" class="ghost" data-act="undo-image">Undo</button>
+          <button type="button" class="ghost" data-act="reset-image">Reset</button>
+        </div>
+      </div>
+    </div>
+    <label>Display filename
+      <input type="text" data-f="filename" spellcheck="false" />
+    </label>
+    <p class="modal-note warn" data-f="carrier" role="status"></p>
+    <p class="error" data-f="error" hidden></p>
+    <div class="row split">
+      <button type="button" class="danger" data-act="discard-image">Discard</button>
+      <button type="button" class="primary" data-act="send-image">Send exact final image</button>
     </div>
   </template>
 

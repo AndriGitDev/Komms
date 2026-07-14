@@ -26,6 +26,8 @@ import uniffi.kult_ffi.Group
 import uniffi.kult_ffi.GroupMessage
 import uniffi.kult_ffi.KdfChoice
 import uniffi.kult_ffi.KultNode
+import uniffi.kult_ffi.ImageEditRecipe
+import uniffi.kult_ffi.ImageInfo
 import uniffi.kult_ffi.Message
 import uniffi.kult_ffi.NoteMessage
 import uniffi.kult_ffi.SafetyNumber
@@ -33,7 +35,9 @@ import uniffi.kult_ffi.ScheduledMessage
 import uniffi.kult_ffi.Status
 import uniffi.kult_ffi.defaultConfig
 import uniffi.kult_ffi.canonicalizeRecordedAudio
+import uniffi.kult_ffi.editImage as ffiEditImage
 import uniffi.kult_ffi.probeRecordedAudio
+import uniffi.kult_ffi.probeEditedImage
 
 /**
  * Human-readable text for an FFI failure — the node's own words. (The
@@ -193,19 +197,38 @@ class Session private constructor(private val node: KultNode) {
     /** Validate canonical audio and derive duration/waveform only on this device. */
     fun probeAudio(path: File): AudioInfo = probeRecordedAudio(path.absolutePath)
 
+    /** Apply the shared bounded image recipe into a protected create-new destination. */
+    fun editImage(source: File, destination: File, recipe: ImageEditRecipe): ImageInfo =
+        ffiEditImage(source.absolutePath, destination.absolutePath, recipe)
+
+    /** Validate the exact metadata-free canonical image profile before import or preview. */
+    fun probeImage(path: File): ImageInfo = probeEditedImage(path.absolutePath)
+
+    /** Current authoritative carrier explanation for pairwise file/image confirmation. */
+    fun attachmentCarrierExplanation(peer: String): String =
+        carrierExplanation(listOf(peer), "attachment")
+
+    /** Current authoritative carrier explanation for every current group recipient. */
+    fun groupAttachmentCarrierExplanation(group: String): String {
+        val members = groups().firstOrNull { it.id == group }
+            ?.members?.filter { it != peer }
+            ?: throw IllegalArgumentException("unknown group")
+        return carrierExplanation(members, "attachment")
+    }
+
     /** Current authoritative carrier explanation for pairwise audio confirmation. */
     fun audioCarrierExplanation(peer: String): String =
-        audioCarrierExplanation(listOf(peer))
+        carrierExplanation(listOf(peer), "audio")
 
     /** Current authoritative carrier explanation for every other current group member. */
     fun groupAudioCarrierExplanation(group: String): String {
         val members = groups().firstOrNull { it.id == group }
             ?.members?.filter { it != peer }
             ?: throw IllegalArgumentException("unknown group")
-        return audioCarrierExplanation(members)
+        return carrierExplanation(members, "audio")
     }
 
-    private fun audioCarrierExplanation(recipients: List<String>): String {
+    private fun carrierExplanation(recipients: List<String>, subject: String): String {
         val snapshots = node.carrierCapabilities().associateBy { it.peer }
         val mesh = recipients.count {
             snapshots[it]?.capability == CarrierCapability.MESH_ONLY
@@ -218,11 +241,11 @@ class Session private constructor(private val node: KultNode) {
             )
         }
         return when {
-            recipients.isEmpty() -> "This group has no other current recipients; no audio delivery will be created."
+            recipients.isEmpty() -> "This group has no other current recipients; no $subject delivery will be created."
             mesh > 0 && unavailable > 0 ->
-                "$mesh recipient(s) have only a mesh route, so audio waits for a faster link and emits zero mesh bulk frames; " +
+                "$mesh recipient(s) have only a mesh route, so $subject waits for a faster link and emits zero manifest, chunk, missing-range, or other bulk mesh frames; " +
                     "$unavailable more have no fresh route. Recipients with a fresh realtime or bulk link can proceed."
-            mesh > 0 -> "Will send when a faster link exists for $mesh recipient(s). Audio emits zero mesh bulk frames."
+            mesh > 0 -> "Will send when a faster link exists for $mesh recipient(s). This $subject emits zero manifest, chunk, missing-range, or other bulk mesh frames."
             unavailable > 0 -> "Will remain queued locally until $unavailable recipient(s) have a fresh faster link."
             else -> "Every current recipient has a fresh realtime or bulk link; normal attachment quotas apply."
         }

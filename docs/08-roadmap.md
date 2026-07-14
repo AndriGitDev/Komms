@@ -326,10 +326,10 @@ native caller-selected paths, Android uses Storage Access Framework streams,
 and iOS uses security-scoped document-provider URLs; both mobile shells stage
 only bounded app-private copies. All three expose pairwise/group send,
 per-object verified-byte progress and state, lifecycle controls, and protected
-caller-selected export. F3 shell delivery is complete: local bounded JPEG/PNG
-thumbnail generation feeds the sealed preview object, all three shells render
-completed previews through protected transient paths and use media-aware
-presentation, and each shell exposes its actual interruption/resume policy.
+caller-selected export. F3 shell delivery is complete: generic files use explicit
+local confirmation, older sealed previews remain renderable, and canonical
+edited PNG primaries are validated and rendered only through protected transient
+paths. Each shell exposes its actual interruption/resume policy.
 Restart acceptance proves verified progress survives node shutdown; Android's
 foreground service continues data-sync work while backgrounded, desktop
 continues while open or minimized, and iOS resumes on foreground without
@@ -345,6 +345,22 @@ encrypt-once sender-key group flow. Protected playback and failure, interruption
 lock, restart, and orphan cleanup are covered. The ADR-0015 invariant remains
 absolute: mesh-only recorded audio waits for a faster link and emits zero bulk
 airtime frames.
+
+B16 still-image editing is shipped end to end without changing F3, F4, wire
+metadata, crypto, or transport behavior. One path-based Rust/UniFFI helper owns
+the 32 MiB / 4096-edge / 12-megapixel decode limits, EXIF-orientation
+normalization, integer crop/quarter-turn/region semantics, metadata-free RGBA
+PNG output, and create-new protection. Desktop, Android SAF, and iOS
+security-scoped pickers all stage protected app-private originals, show the exact
+final asset, support free/preset crop, rotation, and user-positioned blur or
+pixelation, and require explicit send or discard. Only the canonical final enters
+F3; cleanup covers denial, cancellation, failure, low storage, background/lock,
+shutdown, and restart orphans. Generic non-image files now show and atomically
+recheck the same authoritative F4 explanation. Pairwise and sender-key group
+acceptance proves exact bytes, metadata removal, wrapper determinism, protected
+receiver rendering/export, and zero manifest/chunk/range or other bulk mesh
+airtime. Video, cloud/generative editing, filters, face recognition, project
+files, and protocol changes remain out of scope.
 
 The F5 sealed local-metadata foundation is shipped in `kult-store`: typed and
 bounded conversation, folder, pin, label, draft, preference, and custom-icon

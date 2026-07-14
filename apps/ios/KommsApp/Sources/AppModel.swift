@@ -7,10 +7,7 @@
 // never hidden, and the backup mnemonic passes through exactly once.
 
 import Foundation
-import ImageIO
 import KommsCore
-import UIKit
-import UniformTypeIdentifiers
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -41,8 +38,12 @@ final class AppModel: ObservableObject {
         let entries = try? FileManager.default.contentsOfDirectory(
             at: temporary, includingPropertiesForKeys: nil
         )
-        entries?.filter {
-            $0.lastPathComponent.hasPrefix("komms-audio-")
+        let plaintextPrefixes = [
+            "komms-audio-", "komms-attachment-", "komms-image-final-",
+            "komms-render-preview-", "komms-render-image-", "komms-export-",
+        ]
+        entries?.filter { url in
+            plaintextPrefixes.contains { url.lastPathComponent.hasPrefix($0) }
         }.forEach { try? FileManager.default.removeItem(at: $0) }
     }
 
@@ -227,47 +228,125 @@ final class AppModel: ObservableObject {
         await refresh()
     }
 
-    func sendAttachment(
-        peer: String,
-        source: URL,
-        mediaType: String,
-        filename: String?
-    ) async throws {
-        guard let session else { return }
-        let staged = try await run { try stageAttachment(source, mediaType: mediaType) }
-        defer { staged.remove() }
-        _ = try await run {
-            if let preview = staged.preview {
-                try session.sendAttachmentWithPreview(
-                    peer: peer, path: staged.primary, mediaType: mediaType,
-                    filename: filename, preview: preview)
-            } else {
-                try session.sendAttachment(
-                    peer: peer, path: staged.primary, mediaType: mediaType, filename: filename)
+    /// Stage a security-scoped document privately. Content-verified JPEG/PNG
+    /// enters the shared editor; every other file enters explicit F4 review.
+    func prepareAttachment(
+        source: URL, mediaType: String, filename: String?
+    ) async throws -> PreparedAttachment {
+        guard let session else { throw InputError("node is locked") }
+        let claimedImage = isClaimedImage(mediaType: mediaType, filename: filename)
+        return try await run {
+            let original = try stageProtectedAttachment(
+                source, maxBytes: claimedImage ? imageSourceLimit : attachmentLimit)
+            let final = FileManager.default.temporaryDirectory
+                .appendingPathComponent("komms-image-final-\(UUID().uuidString).png")
+            do {
+                let recipe = LocalImageRecipe()
+                let info = try session.renderEditedImage(
+                    source: original, destination: final, recipe: recipe.ffi())
+                try protectTransient(final)
+                return PreparedAttachment(image: PreparedImage(
+                    original: original,
+                    finalAsset: final,
+                    orientedWidth: info.width,
+                    orientedHeight: info.height,
+                    width: info.width,
+                    height: info.height,
+                    encodedBytes: info.encodedBytes,
+                    recipe: recipe,
+                    filename: outputImageName(filename)))
+            } catch {
+                try? FileManager.default.removeItem(at: final)
+                if claimedImage {
+                    try? FileManager.default.removeItem(at: original)
+                    throw error
+                }
+                return PreparedAttachment(
+                    generic: PreparedFile(
+                        staged: original, mediaType: mediaType,
+                        filename: filename ?? "attachment"))
             }
         }
-        await refresh()
     }
 
-    func sendGroupAttachment(
-        group: String,
-        source: URL,
-        mediaType: String,
-        filename: String?
-    ) async throws {
-        guard let session else { return }
-        let staged = try await run { try stageAttachment(source, mediaType: mediaType) }
-        defer { staged.remove() }
-        _ = try await run {
-            if let preview = staged.preview {
-                try session.sendGroupAttachmentWithPreview(
-                    group: group, path: staged.primary, mediaType: mediaType,
-                    filename: filename, preview: preview)
-            } else {
-                try session.sendGroupAttachment(
-                    group: group, path: staged.primary, mediaType: mediaType, filename: filename)
+    /// Replace one exact final image through the shared deterministic helper.
+    func updatePreparedImage(
+        _ image: PreparedImage, recipe: LocalImageRecipe
+    ) async throws -> PreparedImage {
+        guard let session else { throw InputError("node is locked") }
+        return try await run {
+            let replacement = FileManager.default.temporaryDirectory
+                .appendingPathComponent("komms-image-final-\(UUID().uuidString).png")
+            do {
+                let info = try session.renderEditedImage(
+                    source: image.original, destination: replacement, recipe: recipe.ffi())
+                try protectTransient(replacement)
+                var updated = image
+                updated.finalAsset = replacement
+                updated.width = info.width
+                updated.height = info.height
+                updated.encodedBytes = info.encodedBytes
+                updated.recipe = recipe
+                return updated
+            } catch {
+                try? FileManager.default.removeItem(at: replacement)
+                throw error
             }
         }
+    }
+
+    /// Authoritative F4 wording shown before every file/image send action.
+    func attachmentCarrierExplanation(destination: AttachmentDestination) async throws -> String {
+        guard let session else { throw InputError("node is locked") }
+        return try await run {
+            switch destination {
+            case .peer(let peer): return try session.attachmentCarrierExplanation(peer: peer)
+            case .group(let group):
+                return try session.groupAttachmentCarrierExplanation(group: group)
+            }
+        }
+    }
+
+    /// Recheck the F4 snapshot and import the reviewed protected path. A
+    /// changed explanation is returned as a typed local error for reconfirmation.
+    func sendPreparedAttachment(
+        destination: AttachmentDestination,
+        prepared: PreparedAttachment,
+        expectedCarrier: String
+    ) async throws {
+        guard let session else { throw InputError("node is locked") }
+        _ = try await run {
+            let current: String
+            switch destination {
+            case .peer(let peer): current = try session.attachmentCarrierExplanation(peer: peer)
+            case .group(let group):
+                current = try session.groupAttachmentCarrierExplanation(group: group)
+            }
+            guard current == expectedCarrier else {
+                throw InputError("carrier_changed:\(current)")
+            }
+            switch (destination, prepared.kind) {
+            case (.peer(let peer), .generic(let file)):
+                return try session.sendAttachment(
+                    peer: peer, path: file.staged, mediaType: file.mediaType,
+                    filename: file.filename)
+            case (.group(let group), .generic(let file)):
+                return try session.sendGroupAttachment(
+                    group: group, path: file.staged, mediaType: file.mediaType,
+                    filename: file.filename)
+            case (.peer(let peer), .image(let image)):
+                _ = try session.probeImage(image.finalAsset)
+                return try session.sendAttachment(
+                    peer: peer, path: image.finalAsset, mediaType: "image/png",
+                    filename: image.filename)
+            case (.group(let group), .image(let image)):
+                _ = try session.probeImage(image.finalAsset)
+                return try session.sendGroupAttachment(
+                    group: group, path: image.finalAsset, mediaType: "image/png",
+                    filename: image.filename)
+            }
+        }
+        prepared.remove()
         await refresh()
     }
 
@@ -298,11 +377,15 @@ final class AppModel: ObservableObject {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("komms-export-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try protectTransient(directory)
         let basename = URL(fileURLWithPath: filename ?? "attachment").lastPathComponent
         let destination = directory.appendingPathComponent(
             basename.isEmpty ? "attachment" : basename, isDirectory: false)
         do {
-            try await run { try session.exportAttachment(transfer: transfer, to: destination) }
+            try await run {
+                try session.exportAttachment(transfer: transfer, to: destination)
+                try protectTransient(destination)
+            }
             return destination
         } catch {
             try? FileManager.default.removeItem(at: directory)
@@ -314,13 +397,41 @@ final class AppModel: ObservableObject {
     /// bytes for UIKit, then remove the plaintext path.
     func attachmentPreview(transfer: String) async throws -> Data {
         guard let session else { throw InputError("node is locked") }
-        let path = FileManager.default.temporaryDirectory
-            .appendingPathComponent("komms-render-preview-\(UUID().uuidString).jpg")
-        defer { try? FileManager.default.removeItem(at: path) }
-        try await run { try session.exportAttachmentPreview(transfer: transfer, to: path) }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("komms-render-preview-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try protectTransient(directory)
+        let path = directory.appendingPathComponent("preview.jpg")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try await run {
+            try session.exportAttachmentPreview(transfer: transfer, to: path)
+            try protectTransient(path)
+        }
         let data = try Data(contentsOf: path, options: .mappedIfSafe)
         guard data.count <= previewLimit else {
             throw InputError("attachment preview exceeds the 256 KiB limit")
+        }
+        return data
+    }
+
+    /// Materialize a completed canonical edited primary only long enough to
+    /// validate and render its exact protected bytes.
+    func attachmentImage(transfer: String) async throws -> Data {
+        guard let session else { throw InputError("node is locked") }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("komms-render-image-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try protectTransient(directory)
+        let path = directory.appendingPathComponent("image.png")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let info = try await run {
+            try session.exportAttachment(transfer: transfer, to: path)
+            try protectTransient(path)
+            return try session.probeImage(path)
+        }
+        let data = try Data(contentsOf: path, options: .mappedIfSafe)
+        guard UInt64(data.count) == info.encodedBytes else {
+            throw InputError("canonical edited image changed during protected preview")
         }
         return data
     }
@@ -528,28 +639,109 @@ final class AppModel: ObservableObject {
 
 private let attachmentLimit = 512 * 1024 * 1024
 private let attachmentCopySize = 64 * 1024
+private let imageSourceLimit = 32 * 1024 * 1024
 private let previewLimit = 256 * 1024
 
-private struct StagedAttachment: Sendable {
-    let primary: URL
-    let preview: URL?
+struct LocalImageCrop: Sendable, Equatable {
+    var x: UInt32
+    var y: UInt32
+    var width: UInt32
+    var height: UInt32
+
+    func ffi() -> ImageCrop { ImageCrop(x: x, y: y, width: width, height: height) }
+}
+
+enum LocalImageRegionKind: String, Sendable, CaseIterable {
+    case blur
+    case pixelate
+}
+
+struct LocalImageRegion: Sendable, Equatable, Identifiable {
+    let id = UUID()
+    var kind: LocalImageRegionKind
+    var x: UInt32
+    var y: UInt32
+    var width: UInt32
+    var height: UInt32
+    var strength: UInt32
+
+    func ffi() -> ImageEditRegion {
+        ImageEditRegion(
+            kind: kind == .blur ? .blur : .pixelate,
+            x: x, y: y, width: width, height: height, strength: strength)
+    }
+}
+
+struct LocalImageRecipe: Sendable, Equatable {
+    var crop: LocalImageCrop?
+    var rotation: UInt8
+    var regions: [LocalImageRegion]
+
+    init(crop: LocalImageCrop? = nil, rotation: UInt8 = 0, regions: [LocalImageRegion] = []) {
+        self.crop = crop
+        self.rotation = rotation
+        self.regions = regions
+    }
+
+    func ffi() -> ImageEditRecipe {
+        ImageEditRecipe(
+            crop: crop?.ffi(), rotationQuarterTurns: rotation,
+            regions: regions.map { $0.ffi() })
+    }
+}
+
+struct PreparedImage: Sendable {
+    let original: URL
+    var finalAsset: URL
+    let orientedWidth: UInt32
+    let orientedHeight: UInt32
+    var width: UInt32
+    var height: UInt32
+    var encodedBytes: UInt64
+    var recipe: LocalImageRecipe
+    var filename: String
+}
+
+struct PreparedFile: Sendable {
+    let staged: URL
+    let mediaType: String
+    var filename: String
+}
+
+enum PreparedAttachmentKind: Sendable {
+    case image(PreparedImage)
+    case generic(PreparedFile)
+}
+
+struct PreparedAttachment: Identifiable, Sendable {
+    let id = UUID()
+    var kind: PreparedAttachmentKind
+
+    init(image: PreparedImage) { kind = .image(image) }
+    init(generic: PreparedFile) { kind = .generic(generic) }
 
     func remove() {
-        try? FileManager.default.removeItem(at: primary)
-        if let preview { try? FileManager.default.removeItem(at: preview) }
+        switch kind {
+        case .image(let image):
+            try? FileManager.default.removeItem(at: image.original)
+            try? FileManager.default.removeItem(at: image.finalAsset)
+        case .generic(let file):
+            try? FileManager.default.removeItem(at: file.staged)
+        }
     }
 }
 
 /// Copy one security-scoped provider document into a unique app-private file
 /// with bounded memory and an explicit size ceiling. The caller holds the
 /// security scope open for this blocking operation.
-private func stageAttachment(_ source: URL, mediaType: String) throws -> StagedAttachment {
+private func stageProtectedAttachment(_ source: URL, maxBytes: Int) throws -> URL {
     let staged = FileManager.default.temporaryDirectory
         .appendingPathComponent("komms-attachment-\(UUID().uuidString)")
     guard FileManager.default.createFile(atPath: staged.path, contents: nil) else {
         throw InputError("the selected document could not be staged")
     }
     do {
+        try protectTransient(staged)
         let input = try FileHandle(forReadingFrom: source)
         defer { try? input.close() }
         let output = try FileHandle(forWritingTo: staged)
@@ -557,52 +749,38 @@ private func stageAttachment(_ source: URL, mediaType: String) throws -> StagedA
         var copied = 0
         while let chunk = try input.read(upToCount: attachmentCopySize), !chunk.isEmpty {
             copied += chunk.count
-            guard copied <= attachmentLimit else {
-                throw InputError("this attachment exceeds the 512 MiB limit")
+            guard copied <= maxBytes else {
+                throw InputError("this selection exceeds the protected staging limit")
             }
             try output.write(contentsOf: chunk)
         }
         try output.synchronize()
-        let preview = try generateImagePreview(staged, mediaType: mediaType)
-        return StagedAttachment(primary: staged, preview: preview)
+        return staged
     } catch {
         try? FileManager.default.removeItem(at: staged)
         throw error
     }
 }
 
-private func generateImagePreview(_ source: URL, mediaType: String) throws -> URL? {
-    guard mediaType == "image/jpeg" || mediaType == "image/png" else { return nil }
-    guard let imageSource = CGImageSourceCreateWithURL(source as CFURL, nil) else {
-        throw InputError("this image could not be safely previewed")
-    }
-    guard let sourceType = CGImageSourceGetType(imageSource),
-          sourceType == UTType.jpeg.identifier as CFString
-            || sourceType == UTType.png.identifier as CFString
-    else {
-        throw InputError("the selected content is not JPEG or PNG")
-    }
-    for (edge, quality) in [(512, 0.82), (448, 0.72), (384, 0.62), (320, 0.52)] {
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: edge,
-            kCGImageSourceShouldCacheImmediately: false,
-        ]
-        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(
-            imageSource, 0, options as CFDictionary)
-        else { continue }
-        guard let data = UIImage(cgImage: thumbnail).jpegData(compressionQuality: quality) else {
-            continue
-        }
-        if data.count <= previewLimit {
-            let path = FileManager.default.temporaryDirectory
-                .appendingPathComponent("komms-preview-\(UUID().uuidString).jpg")
-            try data.write(to: path, options: [.atomic, .completeFileProtection])
-            return path
-        }
-    }
-    throw InputError("this image could not fit the 256 KiB preview limit")
+private func protectTransient(_ url: URL) throws {
+    try FileManager.default.setAttributes(
+        [.protectionKey: FileProtectionType.complete], ofItemAtPath: url.path)
+    var protected = url
+    var values = URLResourceValues()
+    values.isExcludedFromBackup = true
+    try protected.setResourceValues(values)
+}
+
+private func isClaimedImage(mediaType: String, filename: String?) -> Bool {
+    let ext = filename.map { URL(fileURLWithPath: $0).pathExtension.lowercased() }
+    return mediaType == "image/jpeg" || mediaType == "image/png"
+        || ext == "jpg" || ext == "jpeg" || ext == "png"
+}
+
+private func outputImageName(_ filename: String?) -> String {
+    guard let filename, !filename.isEmpty else { return "edited-image.png" }
+    let stem = (filename as NSString).deletingPathExtension
+    return (stem.isEmpty ? "edited-image" : stem) + ".png"
 }
 
 /// One error string for any failure the UI shows: the node's words for FFI

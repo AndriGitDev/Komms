@@ -27,6 +27,7 @@ const state = {
   attachmentNotified: new Set(), // inbound transfer ids already announced
   recording: null,
   audioDraft: null,
+  imageDraft: null,
   statusTimer: null,
 };
 
@@ -209,6 +210,12 @@ function discardAudioDraft() {
   URL.revokeObjectURL(state.audioDraft.url);
   state.audioDraft = null;
   $("#recording-status").textContent = "Audio recording discarded.";
+}
+
+function discardImageDraft() {
+  const token = state.imageDraft?.token;
+  state.imageDraft = null;
+  if (token) invoke("discard_image_edit", { token }).catch(() => {});
 }
 
 function releaseRecorder(recorder) {
@@ -394,10 +401,12 @@ document.addEventListener("visibilitychange", () => {
     closeModal();
     $("#recording-status").textContent = "Audio review discarded because Komms was hidden or locked.";
   }
+  if (state.imageDraft) closeModal();
 });
 window.addEventListener("pagehide", () => {
   abortRecording("Recording discarded on shutdown.");
   discardAudioDraft();
+  discardImageDraft();
 });
 
 // ── gate (create / unlock / restore) ────────────────────────────────────
@@ -860,6 +869,15 @@ function attachmentRow(attachment) {
       })
       .catch(() => image.remove());
   }
+  if (!preview && primary?.media_type === "image/png" && attachment.state === "complete") {
+    const image = document.createElement("img");
+    image.className = "attachment-preview";
+    image.alt = `Protected exact image from ${attachment.direction === "inbound" ? "sender" : "you"}`;
+    row.append(image);
+    invoke("attachment_image", { transfer: attachment.transfer_id })
+      .then((source) => { image.src = source; })
+      .catch(() => image.remove());
+  }
 
   if (isAudio && attachment.state === "complete") {
     const audioCard = document.createElement("div");
@@ -1041,21 +1059,238 @@ function openScheduleModal(message = null) {
 
 $("#btn-schedule").addEventListener("click", () => openScheduleModal());
 
-$("#btn-attach").addEventListener("click", async () => {
-  if (!state.currentId || state.currentKind === "note") return;
-  const path = await openPath({
-    title: state.currentKind === "group" ? "Choose a group attachment" : "Choose an attachment",
-    multiple: false,
-    directory: false,
-  });
-  if (!path || typeof path !== "string") return;
+function attachmentConversation() {
+  return state.currentKind === "group" ? "group" : "pairwise";
+}
 
-  const selectedName = pathBasename(path);
+async function freshAttachmentCarrier(conversation, destination) {
+  return call("attachment_carrier_explanation", { conversation, destination });
+}
+
+function carrierChangedText(error) {
+  const text = String(error);
+  const marker = "carrier_changed:";
+  const at = text.indexOf(marker);
+  return at < 0 ? null : text.slice(at + marker.length);
+}
+
+function cloneRecipe(recipe) {
+  return JSON.parse(JSON.stringify(recipe));
+}
+
+function imageNumber(root, field) {
+  const value = Number(root.querySelector(`[data-f="${field}"]`).value);
+  if (!Number.isInteger(value) || value < 0) throw new Error(`${field.replaceAll("-", " ")} must be a whole number`);
+  return value;
+}
+
+function centeredCrop(width, height, ratio) {
+  let cropWidth = width;
+  let cropHeight = Math.floor(width / ratio);
+  if (cropHeight > height) {
+    cropHeight = height;
+    cropWidth = Math.floor(height * ratio);
+  }
+  return {
+    x: Math.floor((width - cropWidth) / 2),
+    y: Math.floor((height - cropHeight) / 2),
+    width: cropWidth,
+    height: cropHeight,
+  };
+}
+
+function setCropFields(root, crop) {
+  const chosen = crop ?? { x: 0, y: 0, width: state.imageDraft.orientedWidth, height: state.imageDraft.orientedHeight };
+  for (const key of ["x", "y", "width", "height"]) {
+    root.querySelector(`[data-f="crop-${key}"]`).value = chosen[key];
+  }
+}
+
+function cropFromControls(root) {
+  const preset = root.querySelector('[data-f="crop-preset"]').value;
+  if (preset === "original") return null;
+  if (preset !== "free") {
+    const [wide, high] = preset.split(":").map(Number);
+    return centeredCrop(state.imageDraft.orientedWidth, state.imageDraft.orientedHeight, wide / high);
+  }
+  return {
+    x: imageNumber(root, "crop-x"),
+    y: imageNumber(root, "crop-y"),
+    width: imageNumber(root, "crop-width"),
+    height: imageNumber(root, "crop-height"),
+  };
+}
+
+function renderImageReview(root) {
+  const draft = state.imageDraft;
+  root.querySelector('[data-f="image-review"]').src = draft.review.data_url;
+  root.querySelector('[data-f="image-info"]').textContent =
+    `${draft.review.width} × ${draft.review.height} pixels · ${Number(draft.review.encoded_bytes).toLocaleString()} bytes · exact metadata-free PNG`;
+  const regions = root.querySelector('[data-f="regions"]');
+  regions.replaceChildren();
+  draft.recipe.regions.forEach((region, index) => {
+    const item = document.createElement("li");
+    item.textContent = `${region.kind}, x ${region.x}, y ${region.y}, ${region.width} × ${region.height}, strength ${region.strength} `;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "ghost";
+    remove.dataset.removeRegion = index;
+    remove.textContent = "Remove";
+    remove.setAttribute("aria-label", `Remove privacy region ${index + 1}`);
+    item.append(remove);
+    regions.append(item);
+  });
+}
+
+async function applyImageRecipe(root, recipe, remember = true) {
+  const draft = state.imageDraft;
+  const previous = cloneRecipe(draft.recipe);
+  const review = await invoke("update_image_edit", { token: draft.token, recipe });
+  if (remember) draft.history.push(previous);
+  draft.recipe = cloneRecipe(recipe);
+  draft.review = review;
+  renderImageReview(root);
+}
+
+async function openImageEditor(selectedName, initial) {
+  const conversation = attachmentConversation();
+  const destination = state.currentId;
+  let carrier;
+  try {
+    carrier = await freshAttachmentCarrier(conversation, destination);
+  } catch (error) {
+    await invoke("discard_image_edit", { token: initial.token }).catch(() => {});
+    throw error;
+  }
+  const root = openModal("Edit and review image", "tpl-image-edit");
+  $("#modal").classList.add("image-editing");
+  state.imageDraft = {
+    token: initial.token,
+    review: initial,
+    orientedWidth: initial.width,
+    orientedHeight: initial.height,
+    recipe: { crop: null, rotation_quarter_turns: 0, regions: [] },
+    history: [],
+    conversation,
+    destination,
+  };
+  root.querySelector('[data-f="filename"]').value =
+    (selectedName.includes(".") ? selectedName.replace(/\.[^.]+$/, "") : selectedName) + ".png";
+  const carrierText = root.querySelector('[data-f="carrier"]');
+  carrierText.textContent = carrier;
+  carrierText.dataset.snapshot = carrier;
+  setCropFields(root, null);
+  renderImageReview(root);
+
+  root.querySelector('[data-f="crop-preset"]').addEventListener("change", (event) => {
+    const preset = event.target.value;
+    if (preset === "original") setCropFields(root, null);
+    else if (preset !== "free") {
+      const [wide, high] = preset.split(":").map(Number);
+      setCropFields(root, centeredCrop(initial.width, initial.height, wide / high));
+    }
+  });
+  root.addEventListener("click", async (event) => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    try {
+      if (button.matches('[data-act="discard-image"]')) {
+        closeModal();
+        return;
+      }
+      if (button.dataset.removeRegion !== undefined) {
+        const recipe = cloneRecipe(state.imageDraft.recipe);
+        recipe.regions.splice(Number(button.dataset.removeRegion), 1);
+        await applyImageRecipe(root, recipe);
+        return;
+      }
+      if (button.matches('[data-act="apply-image"]')) {
+        const recipe = cloneRecipe(state.imageDraft.recipe);
+        recipe.crop = cropFromControls(root);
+        await applyImageRecipe(root, recipe);
+        return;
+      }
+      if (button.matches('[data-act="rotate-left"], [data-act="rotate-right"]')) {
+        const recipe = cloneRecipe(state.imageDraft.recipe);
+        const delta = button.matches('[data-act="rotate-left"]') ? 3 : 1;
+        recipe.rotation_quarter_turns = (recipe.rotation_quarter_turns + delta) % 4;
+        recipe.regions = [];
+        await applyImageRecipe(root, recipe);
+        return;
+      }
+      if (button.matches('[data-act="add-region"]')) {
+        const recipe = cloneRecipe(state.imageDraft.recipe);
+        recipe.regions.push({
+          kind: root.querySelector('[data-f="region-kind"]').value,
+          x: imageNumber(root, "region-x"),
+          y: imageNumber(root, "region-y"),
+          width: imageNumber(root, "region-width"),
+          height: imageNumber(root, "region-height"),
+          strength: imageNumber(root, "region-strength"),
+        });
+        await applyImageRecipe(root, recipe);
+        return;
+      }
+      if (button.matches('[data-act="undo-image"]')) {
+        const recipe = state.imageDraft.history.pop();
+        if (recipe) await applyImageRecipe(root, recipe, false);
+        return;
+      }
+      if (button.matches('[data-act="reset-image"]')) {
+        const recipe = { crop: null, rotation_quarter_turns: 0, regions: [] };
+        root.querySelector('[data-f="crop-preset"]').value = "original";
+        setCropFields(root, null);
+        await applyImageRecipe(root, recipe);
+        return;
+      }
+      if (!button.matches('[data-act="send-image"]')) return;
+      button.disabled = true;
+      const draft = state.imageDraft;
+      try {
+        await invoke("send_image_edit", {
+          token: draft.token,
+          conversation: draft.conversation,
+          destination: draft.destination,
+          filename: root.querySelector('[data-f="filename"]').value.trim() || null,
+          expectedCarrier: carrierText.dataset.snapshot,
+        });
+        state.imageDraft = null;
+        closeModal();
+        await renderMessages();
+      } catch (error) {
+        const changed = carrierChangedText(error);
+        if (changed !== null) {
+          carrierText.textContent = changed;
+          carrierText.dataset.snapshot = changed;
+          showError(root, "Carrier state changed. Review the updated explanation, then choose Send exact final image again.");
+        } else {
+          showError(root, error);
+        }
+        button.disabled = false;
+      }
+    } catch (error) {
+      button.disabled = false;
+      showError(root, error);
+    }
+  });
+}
+
+async function openGenericAttachment(path, selectedName) {
+  const conversation = attachmentConversation();
+  const destination = state.currentId;
+  const carrier = await freshAttachmentCarrier(conversation, destination);
   const root = openModal("Send attachment", "tpl-attachment-send");
   root.querySelector('[data-f="selected-name"]').textContent = selectedName;
   root.querySelector('[data-f="filename"]').value = selectedName;
   root.querySelector('[data-f="media-type"]').value = guessedMime(selectedName);
+  const carrierText = root.querySelector('[data-f="carrier"]');
+  carrierText.textContent = carrier;
+  carrierText.dataset.snapshot = carrier;
   root.addEventListener("click", async (event) => {
+    if (event.target.matches('[data-act="discard-attachment"]')) {
+      closeModal();
+      return;
+    }
     if (!event.target.matches('[data-act="send-attachment"]')) return;
     const button = event.target;
     const filename = root.querySelector('[data-f="filename"]').value.trim();
@@ -1063,20 +1298,31 @@ $("#btn-attach").addEventListener("click", async () => {
     try {
       if (!mediaType) throw "enter a MIME type";
       button.disabled = true;
-      if (state.currentKind === "group") {
-        await invoke("send_group_attachment", {
-          group: state.currentId,
+      const latest = await freshAttachmentCarrier(conversation, destination);
+      if (latest !== carrierText.dataset.snapshot) {
+        carrierText.textContent = latest;
+        carrierText.dataset.snapshot = latest;
+        button.disabled = false;
+        showError(root, "Carrier state changed. Review the updated explanation, then choose Send attachment again.");
+        return;
+      }
+      try {
+        await invoke("send_confirmed_attachment", {
+          conversation,
+          destination,
           path,
           mediaType,
           filename: filename || null,
+          expectedCarrier: latest,
         });
-      } else {
-        await invoke("send_attachment", {
-          peer: state.currentId,
-          path,
-          mediaType,
-          filename: filename || null,
-        });
+      } catch (error) {
+        const changed = carrierChangedText(error);
+        if (changed === null) throw error;
+        carrierText.textContent = changed;
+        carrierText.dataset.snapshot = changed;
+        button.disabled = false;
+        showError(root, "Carrier state changed. Review the updated explanation, then choose Send attachment again.");
+        return;
       }
       closeModal();
       await renderMessages();
@@ -1085,6 +1331,28 @@ $("#btn-attach").addEventListener("click", async () => {
       showError(root, err);
     }
   });
+}
+
+$("#btn-attach").addEventListener("click", async () => {
+  if (!state.currentId || state.currentKind === "note") return;
+  const path = await openPath({
+    title: state.currentKind === "group" ? "Choose a group attachment" : "Choose an attachment",
+    multiple: false,
+    directory: false,
+  });
+  if (!path || typeof path !== "string") return;
+  const selectedName = pathBasename(path);
+  const claimedImage = ["image/jpeg", "image/png"].includes(guessedMime(selectedName));
+  try {
+    const initial = await invoke("begin_image_edit", { path });
+    await openImageEditor(selectedName, initial);
+  } catch (error) {
+    if (claimedImage || !String(error).includes("only content-verified JPEG and PNG")) {
+      toast(String(error), true);
+      return;
+    }
+    await openGenericAttachment(path, selectedName);
+  }
 });
 
 // ── node events ─────────────────────────────────────────────────────────
@@ -1210,19 +1478,33 @@ listen("node-event", async ({ payload: ev }) => {
 
 // ── modals ──────────────────────────────────────────────────────────────
 
+let modalReturnFocus = null;
+
+function modalFocusable() {
+  return [...$("#modal").querySelectorAll(
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  )].filter((element) => !element.hidden && element.getClientRects().length > 0);
+}
+
 function openModal(title, tplId) {
+  modalReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const body = $("#modal-body");
   body.textContent = "";
   $("#modal-title").textContent = title;
   body.append($("#" + tplId).content.cloneNode(true));
   $("#modal-backdrop").hidden = false;
+  requestAnimationFrame(() => (modalFocusable()[0] ?? $("#modal-close")).focus());
   return body;
 }
 
 function closeModal() {
   discardAudioDraft();
+  discardImageDraft();
+  $("#modal").classList.remove("image-editing");
   $("#modal-backdrop").hidden = true;
   $("#modal-body").textContent = "";
+  modalReturnFocus?.focus();
+  modalReturnFocus = null;
 }
 
 $("#modal-close").addEventListener("click", closeModal);
@@ -1230,7 +1512,23 @@ $("#modal-backdrop").addEventListener("click", (e) => {
   if (e.target === $("#modal-backdrop")) closeModal();
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !$("#modal-backdrop").hidden) closeModal();
+  if ($("#modal-backdrop").hidden) return;
+  if (e.key === "Escape") {
+    closeModal();
+    return;
+  }
+  if (e.key !== "Tab") return;
+  const focusable = modalFocusable();
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
 });
 
 function showError(root, err) {

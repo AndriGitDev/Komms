@@ -12,7 +12,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::session::{
     NetworkSettings, Session, UiAttachment, UiAudioMedia, UiBundle, UiContact, UiGroup,
-    UiGroupMessage, UiHint, UiMessage, UiNoteMessage, UiSafetyNumber, UiScheduledMessage, UiStatus,
+    UiGroupMessage, UiHint, UiImageEditRecipe, UiImageReview, UiMessage, UiNoteMessage,
+    UiSafetyNumber, UiScheduledMessage, UiStatus,
 };
 
 /// The one piece of managed state: the running session, if unlocked.
@@ -204,6 +205,56 @@ forward!(
     |s| s.audio_carrier_explanation(conversation, destination)
 );
 forward!(
+    /// Explain the current authoritative carrier gate for a file/image confirmation.
+    attachment_carrier_explanation(conversation: String, destination: String) -> String,
+    |s| s.attachment_carrier_explanation(conversation, destination)
+);
+forward!(
+    /// Privately stage and normalize one caller-selected JPEG/PNG.
+    begin_image_edit(path: String) -> UiImageReview,
+    |s| s.begin_image_edit(path)
+);
+forward!(
+    /// Render a deterministic replacement final for one protected image draft.
+    update_image_edit(token: String, recipe: UiImageEditRecipe) -> UiImageReview,
+    |s| s.update_image_edit(token, recipe)
+);
+forward!(
+    /// Delete every protected path associated with an image draft.
+    discard_image_edit(token: String) -> (),
+    |s| s.discard_image_edit(token)
+);
+forward!(
+    /// Import only the exact reviewed edited image after carrier reconfirmation.
+    send_image_edit(
+        token: String,
+        conversation: String,
+        destination: String,
+        filename: Option<String>,
+        expected_carrier: String
+    ) -> String,
+    |s| s.send_image_edit(token, conversation, destination, filename, expected_carrier)
+);
+forward!(
+    /// Stage and import one explicitly confirmed non-image file.
+    send_confirmed_attachment(
+        conversation: String,
+        destination: String,
+        path: String,
+        media_type: String,
+        filename: Option<String>,
+        expected_carrier: String
+    ) -> String,
+    |s| s.send_confirmed_attachment(
+        conversation,
+        destination,
+        path,
+        media_type,
+        filename,
+        expected_carrier
+    )
+);
+forward!(
     /// Schedule pairwise text for an absolute UTC Unix instant.
     schedule(peer: String, body: String, not_before: u64) -> String,
     |s| s.schedule(peer, body, not_before)
@@ -257,26 +308,6 @@ forward!(
     send(peer: String, body: String) -> String, |s| s.send(peer, body)
 );
 forward!(
-    /// Import a caller-selected file as a pairwise attachment.
-    send_attachment(
-        peer: String,
-        path: String,
-        media_type: String,
-        filename: Option<String>
-    ) -> String,
-    |s| s.send_attachment(peer, path, media_type, filename)
-);
-forward!(
-    /// Import a caller-selected file as an encrypt-once group attachment.
-    send_group_attachment(
-        group: String,
-        path: String,
-        media_type: String,
-        filename: Option<String>
-    ) -> String,
-    |s| s.send_group_attachment(group, path, media_type, filename)
-);
-forward!(
     /// Every attachment transfer as render-safe state.
     attachments() -> Vec<UiAttachment>, |s| s.attachments()
 );
@@ -311,6 +342,10 @@ forward!(
 forward!(
     /// Return completed canonical audio through bounded protected playback materialization.
     attachment_audio(transfer: String) -> UiAudioMedia, |s| s.attachment_audio(transfer)
+);
+forward!(
+    /// Return a completed canonical edited image through protected materialization.
+    attachment_image(transfer: String) -> String, |s| s.attachment_image(transfer)
 );
 forward!(
     /// Stable reserved identity for the local note-to-self conversation.

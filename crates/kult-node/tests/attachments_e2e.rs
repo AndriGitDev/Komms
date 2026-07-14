@@ -327,24 +327,42 @@ async fn attachment_offer_emits_no_airtime_frames_when_bulk_route_disappears() {
     .unwrap();
     establish(&mut alice, &mut bob, bob_id, &mut rng).await;
     let before = airtime_sent.load(Ordering::SeqCst);
-    alice
-        .send_attachment(
-            &bob_id,
-            &AttachmentMetadata {
-                media_type: "audio/wav".to_owned(),
-                filename: Some("audio-message.wav".to_owned()),
-            },
-            &mut Cursor::new(b"RIFF held canonical audio fixture"),
-            NOW + 10,
-            &mut rng,
-        )
-        .unwrap();
+    for (media_type, filename, bytes) in [
+        (
+            "audio/wav",
+            "audio-message.wav",
+            b"RIFF held canonical audio fixture".as_slice(),
+        ),
+        (
+            "image/png",
+            "edited-image.png",
+            b"canonical edited image fixture".as_slice(),
+        ),
+        (
+            "application/octet-stream",
+            "generic-file.bin",
+            b"generic file fixture".as_slice(),
+        ),
+    ] {
+        alice
+            .send_attachment(
+                &bob_id,
+                &AttachmentMetadata {
+                    media_type: media_type.to_owned(),
+                    filename: Some(filename.to_owned()),
+                },
+                &mut Cursor::new(bytes),
+                NOW + 10,
+                &mut rng,
+            )
+            .unwrap();
+    }
     fast_reachable.store(false, Ordering::SeqCst);
     alice.tick(NOW + 11, &mut rng).await.unwrap();
     assert_eq!(
         airtime_sent.load(Ordering::SeqCst),
         before,
-        "recorded-audio manifest and bulk records must emit zero airtime frames"
+        "audio, edited-image, and generic-file manifests and bulk records must emit zero airtime frames"
     );
     assert!(alice.queued().unwrap() == 0, "manifest was never enqueued");
     assert!(net.lock().unwrap().get(&2).is_none_or(Vec::is_empty));

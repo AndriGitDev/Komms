@@ -1,5 +1,6 @@
 package komms.android
 
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.database.Cursor
@@ -8,18 +9,22 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.text.InputType
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.RecyclerView
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
@@ -28,12 +33,16 @@ import uniffi.kult_ffi.Attachment
 import uniffi.kult_ffi.AttachmentDirection
 import uniffi.kult_ffi.AttachmentObject
 import uniffi.kult_ffi.AttachmentState
+import uniffi.kult_ffi.ImageCrop
+import uniffi.kult_ffi.ImageEditRecipe
+import uniffi.kult_ffi.ImageEditRegion
+import uniffi.kult_ffi.ImageEditRegionKind
+import uniffi.kult_ffi.ImageInfo
 
 private const val MAX_PRIMARY_BYTES = 512L * 1024L * 1024L
 private const val COPY_BUFFER_BYTES = 64 * 1024
-private const val MAX_PREVIEW_BYTES = 256 * 1024
-private const val PREVIEW_EDGE = 512
 private const val PENDING_EXPORT_KEY = "komms.pending_attachment_export"
+private const val IMAGE_SOURCE_LIMIT = 32L * 1024L * 1024L
 
 /** Metadata hints from a caller-selected SAF document. */
 private data class SelectedDocument(
@@ -41,6 +50,41 @@ private data class SelectedDocument(
     val mediaType: String,
     val displayName: String?,
 )
+
+private data class AndroidImageRecipe(
+    val crop: ImageCrop? = null,
+    val rotation: UByte = 0u,
+    val regions: List<ImageEditRegion> = emptyList(),
+) {
+    fun ffi() = ImageEditRecipe(crop, rotation, regions)
+}
+
+private data class PendingImage(
+    val original: File,
+    var finalAsset: File,
+    var info: ImageInfo,
+    val orientedWidth: UInt,
+    val orientedHeight: UInt,
+    var recipe: AndroidImageRecipe,
+    val history: MutableList<AndroidImageRecipe>,
+    val filename: String,
+    var carrierSnapshot: String,
+) {
+    fun remove() {
+        original.delete()
+        finalAsset.delete()
+    }
+}
+
+private sealed interface ConfirmationResult {
+    data class Changed(val explanation: String) : ConfirmationResult
+    data object Sent : ConfirmationResult
+}
+
+private sealed interface PreparedSelection {
+    data class Image(val draft: PendingImage) : PreparedSelection
+    data class Generic(val document: SelectedDocument, val carrier: String) : PreparedSelection
+}
 
 /**
  * Shared pairwise/group attachment UI. SAF owns every external path: input is
@@ -52,6 +96,7 @@ class AttachmentController(
     private val activity: AppCompatActivity,
     private val belongsHere: (Attachment) -> Boolean,
     private val send: (Session, File, String, String?, File?) -> String,
+    private val carrierExplanation: (Session) -> String,
     private val bindAudio: (Attachment, LinearLayout) -> Unit,
     private val refresh: () -> Unit,
     savedState: Bundle?,
@@ -60,6 +105,8 @@ class AttachmentController(
     private val previewCache = mutableMapOf<String, Bitmap>()
     private val loadingPreviews = mutableSetOf<String>()
     private var pendingExport = savedState?.getString(PENDING_EXPORT_KEY)
+    private var activeDialog: AlertDialog? = null
+    private var activeImage: PendingImage? = null
     private val exportContract = MimeCreateDocument()
 
     private val openDocument = activity.registerForActivityResult(
@@ -75,6 +122,7 @@ class AttachmentController(
     }
 
     init {
+        cleanupPlaintextOrphans()
         activity.findViewById<RecyclerView>(R.id.chat_attachments).adapter = adapter
         activity.findViewById<Button>(R.id.chat_attach).setOnClickListener {
             openDocument.launch(arrayOf("*/*"))
@@ -99,72 +147,447 @@ class AttachmentController(
         activity.runNode(
             work = {
                 val selected = stageDocument(uri)
-                var preview: File? = null
+                val finalAsset = File(
+                    activity.cacheDir,
+                    "komms-image-final-${UUID.randomUUID()}.png",
+                )
                 try {
-                    preview = generatePreview(selected)
-                    send(session, selected.file, selected.mediaType, selected.displayName, preview)
-                } finally {
-                    preview?.delete()
-                    selected.file.delete()
+                    val info = session.editImage(
+                        selected.file,
+                        finalAsset,
+                        AndroidImageRecipe().ffi(),
+                    )
+                    PreparedSelection.Image(
+                        PendingImage(
+                            original = selected.file,
+                            finalAsset = finalAsset,
+                            info = info,
+                            orientedWidth = info.width,
+                            orientedHeight = info.height,
+                            recipe = AndroidImageRecipe(),
+                            history = mutableListOf(),
+                            filename = selected.displayName
+                                ?.substringBeforeLast('.', selected.displayName)
+                                ?.plus(".png") ?: "edited-image.png",
+                            carrierSnapshot = carrierExplanation(session),
+                        ),
+                    )
+                } catch (error: Throwable) {
+                    finalAsset.delete()
+                    if (selected.isClaimedImage()) {
+                        selected.file.delete()
+                        throw error
+                    }
+                    PreparedSelection.Generic(selected, carrierExplanation(session))
                 }
             },
-        ) {
-            activity.toast(activity.getString(R.string.attachment_queued))
-            refresh()
+        ) { prepared ->
+            when (prepared) {
+                is PreparedSelection.Image -> showImageEditor(prepared.draft)
+                is PreparedSelection.Generic -> showGenericConfirmation(
+                    prepared.document,
+                    prepared.carrier,
+                )
+            }
         }
     }
 
     fun close() {
+        activeDialog?.dismiss()
+        activeDialog = null
+        activeImage?.remove()
+        activeImage = null
         previewCache.values.forEach { it.recycle() }
         previewCache.clear()
     }
 
-    private fun generatePreview(selected: SelectedDocument): File? {
-        if (selected.mediaType !in setOf("image/jpeg", "image/png")) return null
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(selected.file.absolutePath, bounds)
-        require(bounds.outWidth > 0 && bounds.outHeight > 0) {
-            activity.getString(R.string.attachment_preview_failed)
+    fun onStop() {
+        activeDialog?.dismiss()
+    }
+
+    private fun SelectedDocument.isClaimedImage(): Boolean {
+        val extension = displayName?.substringAfterLast('.', "")?.lowercase()
+        return mediaType in setOf("image/jpeg", "image/png") || extension in setOf("jpg", "jpeg", "png")
+    }
+
+    private fun cleanupPlaintextOrphans() {
+        val prefixes = listOf(
+            "attachment-import-",
+            "attachment-preview-",
+            "attachment-export-",
+            "komms-image-final-",
+        )
+        activity.cacheDir.listFiles()?.filter { file ->
+            prefixes.any(file.name::startsWith)
+        }?.forEach(File::delete)
+    }
+
+    private fun text(value: String): TextView = TextView(activity).apply {
+        this.text = value
+        setPadding(12, 8, 12, 8)
+    }
+
+    private fun numberField(label: String, value: UInt): EditText = EditText(activity).apply {
+        hint = label
+        contentDescription = label
+        inputType = InputType.TYPE_CLASS_NUMBER
+        setText(value.toString())
+    }
+
+    private fun fieldValue(field: EditText, name: String): UInt =
+        field.text.toString().toUIntOrNull()
+            ?: throw IllegalArgumentException("$name must be a non-negative whole number")
+
+    private fun centeredCrop(width: UInt, height: UInt, wide: UInt, high: UInt): ImageCrop {
+        var cropWidth = width
+        var cropHeight = (width.toULong() * high.toULong() / wide.toULong()).toUInt()
+        if (cropHeight > height) {
+            cropHeight = height
+            cropWidth = (height.toULong() * wide.toULong() / high.toULong()).toUInt()
         }
-        require(bounds.outMimeType == "image/jpeg" || bounds.outMimeType == "image/png") {
-            activity.getString(R.string.attachment_preview_failed)
+        return ImageCrop(
+            (width - cropWidth) / 2u,
+            (height - cropHeight) / 2u,
+            cropWidth,
+            cropHeight,
+        )
+    }
+
+    private fun showGenericConfirmation(selected: SelectedDocument, carrier: String) {
+        var snapshot = carrier
+        val carrierText = text(carrier).apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
+        val content = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(text("Review ${selected.displayName ?: "attachment"} before explicitly sending it."))
+            addView(text("Type: ${selected.mediaType}"))
+            addView(carrierText)
         }
-        var sample = 1
-        while (bounds.outWidth.toLong() / sample > PREVIEW_EDGE.toLong() * 2 ||
-            bounds.outHeight.toLong() / sample > PREVIEW_EDGE.toLong() * 2
-        ) sample *= 2
-        val decoded = BitmapFactory.decodeFile(
-            selected.file.absolutePath,
-            BitmapFactory.Options().apply { inSampleSize = sample },
-        ) ?: throw IllegalArgumentException(activity.getString(R.string.attachment_preview_failed))
-        try {
-            for ((edge, quality) in listOf(512 to 82, 448 to 72, 384 to 62, 320 to 52)) {
-                val scale = minOf(1f, edge.toFloat() / maxOf(decoded.width, decoded.height))
-                val width = maxOf(1, (decoded.width * scale).toInt())
-                val height = maxOf(1, (decoded.height * scale).toInt())
-                val thumbnail = Bitmap.createScaledBitmap(decoded, width, height, true)
-                val bytes = ByteArrayOutputStream().use { output ->
-                    require(thumbnail.compress(Bitmap.CompressFormat.JPEG, quality, output))
-                    output.toByteArray()
-                }
-                if (thumbnail !== decoded) thumbnail.recycle()
-                if (bytes.size <= MAX_PREVIEW_BYTES) {
-                    val file = File.createTempFile("attachment-preview-", ".jpg", activity.cacheDir)
-                    FileOutputStream(file).use { output ->
-                        output.write(bytes)
-                        output.fd.sync()
+        val dialog = AlertDialog.Builder(activity)
+            .setTitle("Review attachment")
+            .setView(content)
+            .setNegativeButton("Discard") { _, _ -> selected.file.delete() }
+            .setPositiveButton("Send attachment", null)
+            .create()
+        activeDialog = dialog
+        dialog.setOnDismissListener {
+            selected.file.delete()
+            if (activeDialog === dialog) activeDialog = null
+        }
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val session = NodeHolder.session ?: return@setOnClickListener
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
+                activity.runNode(
+                    work = {
+                        val latest = carrierExplanation(session)
+                        if (latest != snapshot) {
+                            ConfirmationResult.Changed(latest)
+                        } else {
+                            try {
+                                send(
+                                    session,
+                                    selected.file,
+                                    selected.mediaType,
+                                    selected.displayName,
+                                    null,
+                                )
+                                ConfirmationResult.Sent
+                            } finally {
+                                selected.file.delete()
+                            }
+                        }
+                    },
+                    onError = { error ->
+                        selected.file.delete()
+                        dialog.dismiss()
+                        activity.toast(error)
+                    },
+                ) { result ->
+                    when (result) {
+                        is ConfirmationResult.Changed -> {
+                            snapshot = result.explanation
+                            carrierText.text = result.explanation
+                            activity.toast("Carrier state changed. Review the updated explanation and confirm again.")
+                            dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
+                        }
+                        ConfirmationResult.Sent -> {
+                            dialog.dismiss()
+                            activity.toast(activity.getString(R.string.attachment_queued))
+                            refresh()
+                        }
                     }
-                    return file
                 }
             }
-        } finally {
-            decoded.recycle()
         }
-        throw IllegalArgumentException(activity.getString(R.string.attachment_preview_failed))
+        dialog.show()
+    }
+
+    private fun showImageEditor(draft: PendingImage) {
+        activeImage?.remove()
+        activeImage = draft
+        val column = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(16, 12, 16, 12)
+        }
+        column.addView(text("Edits are local. The original is never sent. Review the exact final PNG before sending."))
+        val preview = ImageView(activity).apply {
+            adjustViewBounds = true
+            contentDescription = "Exact final edited image review"
+            minimumHeight = 240
+        }
+        val infoText = text("").apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
+        column.addView(preview)
+        column.addView(infoText)
+
+        val preset = Spinner(activity)
+        val presets = listOf("Original", "Free", "Square 1:1", "4:3", "16:9")
+        preset.adapter = ArrayAdapter(activity, android.R.layout.simple_spinner_dropdown_item, presets)
+        preset.contentDescription = "Crop preset"
+        column.addView(preset)
+        val cropX = numberField("Crop X", 0u)
+        val cropY = numberField("Crop Y", 0u)
+        val cropWidth = numberField("Crop width", draft.orientedWidth)
+        val cropHeight = numberField("Crop height", draft.orientedHeight)
+        listOf(cropX, cropY, cropWidth, cropHeight).forEach(column::addView)
+
+        val controls = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
+        val applyCrop = Button(activity).apply { text = "Apply crop" }
+        val rotateLeft = Button(activity).apply {
+            text = "Rotate left"
+            contentDescription = "Rotate 90 degrees counter-clockwise"
+        }
+        val rotateRight = Button(activity).apply {
+            text = "Rotate right"
+            contentDescription = "Rotate 90 degrees clockwise"
+        }
+        controls.addView(applyCrop)
+        controls.addView(rotateLeft)
+        controls.addView(rotateRight)
+        column.addView(controls)
+
+        column.addView(text("Add a user-positioned privacy region on the current final canvas."))
+        val regionKind = Spinner(activity).apply {
+            adapter = ArrayAdapter(
+                activity,
+                android.R.layout.simple_spinner_dropdown_item,
+                listOf("Blur", "Pixelate"),
+            )
+            contentDescription = "Privacy operation"
+        }
+        column.addView(regionKind)
+        val regionX = numberField("Region X", 0u)
+        val regionY = numberField("Region Y", 0u)
+        val regionWidth = numberField("Region width", minOf(64u, draft.info.width))
+        val regionHeight = numberField("Region height", minOf(64u, draft.info.height))
+        val regionStrength = numberField("Region strength", 8u)
+        listOf(regionX, regionY, regionWidth, regionHeight, regionStrength).forEach(column::addView)
+        val addRegion = Button(activity).apply { text = "Add privacy region" }
+        val regionList = text("No privacy regions")
+        column.addView(addRegion)
+        column.addView(regionList)
+        val historyControls = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
+        val undo = Button(activity).apply { text = "Undo" }
+        val reset = Button(activity).apply { text = "Reset" }
+        historyControls.addView(undo)
+        historyControls.addView(reset)
+        column.addView(historyControls)
+        val filename = EditText(activity).apply {
+            hint = "Display filename"
+            setText(draft.filename)
+        }
+        val carrierText = text(draft.carrierSnapshot).apply {
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        }
+        column.addView(filename)
+        column.addView(carrierText)
+        val scroll = ScrollView(activity).apply { addView(column) }
+
+        var reviewBitmap: Bitmap? = null
+        fun render() {
+            val replacement = BitmapFactory.decodeFile(draft.finalAsset.absolutePath)
+                ?: throw IllegalArgumentException("exact final image could not be displayed")
+            val old = reviewBitmap
+            reviewBitmap = replacement
+            preview.setImageBitmap(replacement)
+            old?.recycle()
+            infoText.text = "${draft.info.width} × ${draft.info.height} pixels · ${draft.info.encodedBytes} bytes · exact metadata-free PNG"
+            regionList.text = if (draft.recipe.regions.isEmpty()) {
+                "No privacy regions"
+            } else {
+                draft.recipe.regions.mapIndexed { index, region ->
+                    "${index + 1}. ${region.kind.name.lowercase()} x ${region.x}, y ${region.y}, ${region.width} × ${region.height}, strength ${region.strength}"
+                }.joinToString("\n")
+            }
+        }
+
+        fun renderRecipe(recipe: AndroidImageRecipe, remember: Boolean = true) {
+            val session = NodeHolder.session ?: return
+            val replacement = File(
+                activity.cacheDir,
+                "komms-image-final-${UUID.randomUUID()}.png",
+            )
+            activity.runNode(
+                work = {
+                    try {
+                        val info = session.editImage(draft.original, replacement, recipe.ffi())
+                        Pair(info, replacement)
+                    } catch (error: Throwable) {
+                        replacement.delete()
+                        throw error
+                    }
+                },
+                onError = { error ->
+                    draft.remove()
+                    activeImage = null
+                    activeDialog?.dismiss()
+                    activity.toast(error)
+                },
+            ) { (info, file) ->
+                if (activeImage !== draft) {
+                    file.delete()
+                    return@runNode
+                }
+                if (remember) draft.history.add(draft.recipe)
+                draft.finalAsset.delete()
+                draft.finalAsset = file
+                draft.info = info
+                draft.recipe = recipe
+                render()
+            }
+        }
+
+        fun chosenCrop(): ImageCrop? = when (preset.selectedItemPosition) {
+            0 -> null
+            1 -> ImageCrop(
+                fieldValue(cropX, "crop X"),
+                fieldValue(cropY, "crop Y"),
+                fieldValue(cropWidth, "crop width"),
+                fieldValue(cropHeight, "crop height"),
+            )
+            2 -> centeredCrop(draft.orientedWidth, draft.orientedHeight, 1u, 1u)
+            3 -> centeredCrop(draft.orientedWidth, draft.orientedHeight, 4u, 3u)
+            else -> centeredCrop(draft.orientedWidth, draft.orientedHeight, 16u, 9u)
+        }
+
+        applyCrop.setOnClickListener {
+            runCatching { draft.recipe.copy(crop = chosenCrop()) }
+                .fold(::renderRecipe) { activity.toast(errorText(it)) }
+        }
+        rotateLeft.setOnClickListener {
+            renderRecipe(
+                draft.recipe.copy(
+                    rotation = ((draft.recipe.rotation.toInt() + 3) % 4).toUByte(),
+                    regions = emptyList(),
+                ),
+            )
+        }
+        rotateRight.setOnClickListener {
+            renderRecipe(
+                draft.recipe.copy(
+                    rotation = ((draft.recipe.rotation.toInt() + 1) % 4).toUByte(),
+                    regions = emptyList(),
+                ),
+            )
+        }
+        addRegion.setOnClickListener {
+            runCatching {
+                ImageEditRegion(
+                    if (regionKind.selectedItemPosition == 0) {
+                        ImageEditRegionKind.BLUR
+                    } else {
+                        ImageEditRegionKind.PIXELATE
+                    },
+                    fieldValue(regionX, "region X"),
+                    fieldValue(regionY, "region Y"),
+                    fieldValue(regionWidth, "region width"),
+                    fieldValue(regionHeight, "region height"),
+                    fieldValue(regionStrength, "region strength"),
+                )
+            }.fold(
+                { region -> renderRecipe(draft.recipe.copy(regions = draft.recipe.regions + region)) },
+                { activity.toast(errorText(it)) },
+            )
+        }
+        undo.setOnClickListener {
+            draft.history.removeLastOrNull()?.let { renderRecipe(it, remember = false) }
+        }
+        reset.setOnClickListener {
+            preset.setSelection(0)
+            renderRecipe(AndroidImageRecipe())
+        }
+
+        val dialog = AlertDialog.Builder(activity)
+            .setTitle("Edit and review image")
+            .setView(scroll)
+            .setNegativeButton("Discard", null)
+            .setPositiveButton("Send exact final image", null)
+            .create()
+        activeDialog = dialog
+        dialog.setOnDismissListener {
+            reviewBitmap?.recycle()
+            draft.remove()
+            if (activeImage === draft) activeImage = null
+            if (activeDialog === dialog) activeDialog = null
+        }
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener { dialog.dismiss() }
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val session = NodeHolder.session ?: return@setOnClickListener
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
+                activity.runNode(
+                    work = {
+                        val latest = carrierExplanation(session)
+                        if (latest != draft.carrierSnapshot) {
+                            ConfirmationResult.Changed(latest)
+                        } else {
+                            try {
+                                session.probeImage(draft.finalAsset)
+                                send(
+                                    session,
+                                    draft.finalAsset,
+                                    "image/png",
+                                    filename.text.toString().ifBlank { "edited-image.png" },
+                                    null,
+                                )
+                                ConfirmationResult.Sent
+                            } finally {
+                                draft.remove()
+                            }
+                        }
+                    },
+                    onError = { error ->
+                        draft.remove()
+                        dialog.dismiss()
+                        activity.toast(error)
+                    },
+                ) { result ->
+                    when (result) {
+                        is ConfirmationResult.Changed -> {
+                            draft.carrierSnapshot = result.explanation
+                            carrierText.text = result.explanation
+                            activity.toast("Carrier state changed. Review the updated explanation and confirm again.")
+                            dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
+                        }
+                        ConfirmationResult.Sent -> {
+                            dialog.dismiss()
+                            activity.toast(activity.getString(R.string.attachment_queued))
+                            refresh()
+                        }
+                    }
+                }
+            }
+        }
+        render()
+        dialog.show()
     }
 
     private fun bindPreview(attachment: Attachment, image: ImageView) {
-        val available = attachment.objects.any { it.preview && it.state == AttachmentState.COMPLETE }
+        val sealedPreview = attachment.objects.any {
+            it.preview && it.state == AttachmentState.COMPLETE
+        }
+        val canonicalPrimary = attachment.state == AttachmentState.COMPLETE &&
+            attachment.objects.any { !it.preview && it.mediaType == "image/png" }
+        val available = sealedPreview || canonicalPrimary
         image.tag = attachment.transferId
         image.visibility = if (available) View.INVISIBLE else View.GONE
         if (!available) return
@@ -180,9 +603,17 @@ class AttachmentController(
         }
         activity.runNode(
             work = {
-                val protected = File(activity.cacheDir, "attachment-preview-${UUID.randomUUID()}.jpg")
+                val protected = File(
+                    activity.cacheDir,
+                    "attachment-preview-${UUID.randomUUID()}.${if (sealedPreview) "jpg" else "png"}",
+                )
                 try {
-                    session.exportAttachmentPreview(attachment.transferId, protected)
+                    if (sealedPreview) {
+                        session.exportAttachmentPreview(attachment.transferId, protected)
+                    } else {
+                        session.exportAttachment(attachment.transferId, protected)
+                        session.probeImage(protected)
+                    }
                     BitmapFactory.decodeFile(protected.absolutePath)
                         ?: throw IllegalArgumentException(activity.getString(R.string.attachment_preview_failed))
                 } finally {
@@ -206,6 +637,8 @@ class AttachmentController(
         val mediaType = resolver.getType(uri)?.takeIf { it.isNotBlank() }
             ?: "application/octet-stream"
         val staged = File.createTempFile("attachment-import-", ".stage", activity.cacheDir)
+        val selected = SelectedDocument(staged, mediaType, displayName)
+        val maxBytes = if (selected.isClaimedImage()) IMAGE_SOURCE_LIMIT else MAX_PRIMARY_BYTES
         try {
             resolver.openInputStream(uri).use { input ->
                 requireNotNull(input) { activity.getString(R.string.attachment_open_failed) }
@@ -216,15 +649,19 @@ class AttachmentController(
                         val read = input.read(buffer)
                         if (read < 0) break
                         copied += read
-                        require(copied <= MAX_PRIMARY_BYTES) {
-                            activity.getString(R.string.attachment_too_large)
+                        require(copied <= maxBytes) {
+                            if (maxBytes == IMAGE_SOURCE_LIMIT) {
+                                "This image exceeds the 32 MiB editor limit"
+                            } else {
+                                activity.getString(R.string.attachment_too_large)
+                            }
                         }
                         output.write(buffer, 0, read)
                     }
                     output.fd.sync()
                 }
             }
-            return SelectedDocument(staged, mediaType, displayName)
+            return selected
         } catch (error: Throwable) {
             staged.delete()
             throw error

@@ -12,9 +12,11 @@
 //! an end-to-end encrypted receipt), errors are the node's own words, and
 //! the backup mnemonic is returned exactly once and never stored.
 
+use std::collections::HashMap;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use base64::Engine;
 use image::codecs::jpeg::JpegEncoder;
@@ -22,10 +24,12 @@ use image::{ImageFormat, ImageReader};
 use serde::{Deserialize, Serialize};
 
 use kult_ffi::{
-    canonicalize_recorded_audio, default_config, probe_recorded_audio, Attachment,
-    AttachmentConversation, AttachmentDirection, AttachmentState, AudioInfo, CarrierCapability,
-    Config, ContentKind, DeliveryState, Direction, Event, EventListener, Hint, KdfChoice, KultNode,
-    NatVerdict, ScheduledConversation, AUDIO_MAX_BYTES, AUDIO_MEDIA_TYPE,
+    canonicalize_recorded_audio, default_config, edit_image, probe_edited_image,
+    probe_recorded_audio, Attachment, AttachmentConversation, AttachmentDirection, AttachmentState,
+    AudioInfo, CarrierCapability, Config, ContentKind, DeliveryState, Direction, Event,
+    EventListener, Hint, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind,
+    ImageInfo, KdfChoice, KultNode, NatVerdict, ScheduledConversation, AUDIO_MAX_BYTES,
+    AUDIO_MEDIA_TYPE, IMAGE_MAX_INPUT_BYTES, IMAGE_MEDIA_TYPE,
 };
 
 use crate::qr;
@@ -78,8 +82,6 @@ impl PrivateTemp {
     }
 
     fn with_bytes(extension: &str, bytes: &[u8]) -> Result<Self, String> {
-        use std::io::Write;
-
         let temp = Self::empty(extension)?;
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -91,9 +93,139 @@ impl PrivateTemp {
         Ok(temp)
     }
 
+    fn copy_bounded(extension: &str, source: &Path, max_bytes: u64) -> Result<Self, String> {
+        let mut input = std::fs::File::open(source).map_err(|error| error.to_string())?;
+        let length = input.metadata().map_err(|error| error.to_string())?.len();
+        if length == 0 || length > max_bytes {
+            return Err(format!(
+                "selected file is empty or exceeds {max_bytes} bytes"
+            ));
+        }
+        let temp = Self::empty(extension)?;
+        let result = (|| {
+            let mut output = std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(temp.path())
+                .map_err(|error| error.to_string())?;
+            let copied = std::io::copy(
+                &mut Read::by_ref(&mut input).take(max_bytes + 1),
+                &mut output,
+            )
+            .map_err(|error| error.to_string())?;
+            if copied != length || copied > max_bytes {
+                return Err(
+                    "selected file changed or exceeded its size limit while staging".to_owned(),
+                );
+            }
+            output.sync_all().map_err(|error| error.to_string())
+        })();
+        if let Err(error) = result {
+            drop(temp);
+            return Err(error);
+        }
+        Ok(temp)
+    }
+
     fn path(&self) -> &Path {
         &self.0
     }
+}
+
+const DESKTOP_ATTACHMENT_MAX_BYTES: u64 = 512 * 1024 * 1024;
+
+struct PendingImageEdit {
+    original: PrivateTemp,
+    final_asset: PrivateTemp,
+    info: ImageInfo,
+}
+
+/// Integer crop received from the keyboard-operable desktop editor.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UiImageCrop {
+    /// Left edge after orientation normalization.
+    pub x: u32,
+    /// Top edge after orientation normalization.
+    pub y: u32,
+    /// Non-zero crop width.
+    pub width: u32,
+    /// Non-zero crop height.
+    pub height: u32,
+}
+
+/// One ordered manual blur or pixelation rectangle.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UiImageRegion {
+    /// `blur` or `pixelate`.
+    pub kind: String,
+    /// Left edge on the rotated final canvas.
+    pub x: u32,
+    /// Top edge on the rotated final canvas.
+    pub y: u32,
+    /// Non-zero region width.
+    pub width: u32,
+    /// Non-zero region height.
+    pub height: u32,
+    /// Blur radius or pixel block edge.
+    pub strength: u32,
+}
+
+/// Complete deterministic desktop edit recipe.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UiImageEditRecipe {
+    /// Optional exact integer crop.
+    pub crop: Option<UiImageCrop>,
+    /// Clockwise quarter turns.
+    pub rotation_quarter_turns: u8,
+    /// Ordered manual privacy operations.
+    pub regions: Vec<UiImageRegion>,
+}
+
+impl UiImageEditRecipe {
+    fn into_ffi(self) -> Result<ImageEditRecipe, String> {
+        Ok(ImageEditRecipe {
+            crop: self.crop.map(|crop| ImageCrop {
+                x: crop.x,
+                y: crop.y,
+                width: crop.width,
+                height: crop.height,
+            }),
+            rotation_quarter_turns: self.rotation_quarter_turns,
+            regions: self
+                .regions
+                .into_iter()
+                .map(|region| {
+                    Ok(ImageEditRegion {
+                        kind: match region.kind.as_str() {
+                            "blur" => ImageEditRegionKind::Blur,
+                            "pixelate" => ImageEditRegionKind::Pixelate,
+                            _ => return Err("image region must be blur or pixelate".to_owned()),
+                        },
+                        x: region.x,
+                        y: region.y,
+                        width: region.width,
+                        height: region.height,
+                        strength: region.strength,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+}
+
+/// Opaque protected draft plus the exact canonical final review.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiImageReview {
+    /// Opaque session-local draft identifier.
+    pub token: String,
+    /// Final width.
+    pub width: u32,
+    /// Final height.
+    pub height: u32,
+    /// Exact canonical PNG size.
+    pub encoded_bytes: u64,
+    /// Bounded exact final bytes for the local protected review surface.
+    pub data_url: String,
 }
 
 impl Drop for PrivateTemp {
@@ -760,6 +892,7 @@ impl EventListener for Forwarder {
 /// A running node plus the shell-side conveniences the UI needs.
 pub struct Session {
     node: Arc<KultNode>,
+    pending_images: Mutex<HashMap<String, PendingImageEdit>>,
 }
 
 impl Session {
@@ -777,7 +910,10 @@ impl Session {
         cleanup_media_temps();
         let config = build_config(data_dir, passphrase, settings, kdf);
         let node = KultNode::start(config, Box::new(Forwarder(sink))).map_err(|e| e.to_string())?;
-        Ok(Self { node })
+        Ok(Self {
+            node,
+            pending_images: Mutex::new(HashMap::new()),
+        })
     }
 
     /// First run only: restore from an encrypted backup file instead of
@@ -795,7 +931,10 @@ impl Session {
         let config = build_config(data_dir, passphrase, settings, kdf);
         let node = KultNode::restore(config, backup_path, mnemonic, Box::new(Forwarder(sink)))
             .map_err(|e| e.to_string())?;
-        Ok(Self { node })
+        Ok(Self {
+            node,
+            pending_images: Mutex::new(HashMap::new()),
+        })
     }
 
     /// This node's human-shareable kult address.
@@ -957,6 +1096,185 @@ impl Session {
         }
     }
 
+    fn image_review(token: String, draft: &PendingImageEdit) -> Result<UiImageReview, String> {
+        let bytes = std::fs::read(draft.final_asset.path()).map_err(|error| error.to_string())?;
+        if bytes.len() as u64 != draft.info.encoded_bytes {
+            return Err("edited image changed after validation".to_owned());
+        }
+        Ok(UiImageReview {
+            token,
+            width: draft.info.width,
+            height: draft.info.height,
+            encoded_bytes: draft.info.encoded_bytes,
+            data_url: format!(
+                "data:{IMAGE_MEDIA_TYPE};base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            ),
+        })
+    }
+
+    /// Stage a caller-selected JPEG/PNG privately, normalize its orientation,
+    /// and return an opaque draft with the exact metadata-free initial review.
+    pub fn begin_image_edit(&self, path: String) -> Result<UiImageReview, String> {
+        let original =
+            PrivateTemp::copy_bounded("image-source", Path::new(&path), IMAGE_MAX_INPUT_BYTES)?;
+        let final_asset = PrivateTemp::destination("png")?;
+        let info = edit_image(
+            original.path().display().to_string(),
+            final_asset.path().display().to_string(),
+            ImageEditRecipe {
+                crop: None,
+                rotation_quarter_turns: 0,
+                regions: vec![],
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        let token = format!(
+            "{}-{}",
+            std::process::id(),
+            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        );
+        let draft = PendingImageEdit {
+            original,
+            final_asset,
+            info,
+        };
+        let review = Self::image_review(token.clone(), &draft)?;
+        self.pending_images
+            .lock()
+            .map_err(|_| "image draft lock failed".to_owned())?
+            .insert(token, draft);
+        Ok(review)
+    }
+
+    /// Re-render one protected draft through the shared Rust contract. The
+    /// previous final is retained until the replacement has validated.
+    pub fn update_image_edit(
+        &self,
+        token: String,
+        recipe: UiImageEditRecipe,
+    ) -> Result<UiImageReview, String> {
+        let mut drafts = self
+            .pending_images
+            .lock()
+            .map_err(|_| "image draft lock failed".to_owned())?;
+        let draft = drafts
+            .get_mut(&token)
+            .ok_or_else(|| "image draft expired or was discarded".to_owned())?;
+        let replacement = PrivateTemp::destination("png")?;
+        let info = edit_image(
+            draft.original.path().display().to_string(),
+            replacement.path().display().to_string(),
+            recipe.into_ffi()?,
+        )
+        .map_err(|error| error.to_string())?;
+        draft.final_asset = replacement;
+        draft.info = info;
+        Self::image_review(token, draft)
+    }
+
+    /// Discard every plaintext path held by an editor draft.
+    pub fn discard_image_edit(&self, token: String) -> Result<(), String> {
+        self.pending_images
+            .lock()
+            .map_err(|_| "image draft lock failed".to_owned())?
+            .remove(&token);
+        Ok(())
+    }
+
+    /// Import only the exact reviewed final image after atomically checking
+    /// that the authoritative carrier explanation has not changed.
+    pub fn send_image_edit(
+        &self,
+        token: String,
+        conversation: String,
+        destination: String,
+        filename: Option<String>,
+        expected_carrier: String,
+    ) -> Result<String, String> {
+        let current =
+            self.attachment_carrier_explanation(conversation.clone(), destination.clone())?;
+        if current != expected_carrier {
+            return Err(format!("carrier_changed:{current}"));
+        }
+        let draft = self
+            .pending_images
+            .lock()
+            .map_err(|_| "image draft lock failed".to_owned())?
+            .remove(&token)
+            .ok_or_else(|| "image draft expired or was discarded".to_owned())?;
+        probe_edited_image(draft.final_asset.path().display().to_string())
+            .map_err(|error| error.to_string())?;
+        if conversation == "group" {
+            self.node
+                .send_group_attachment(
+                    destination,
+                    draft.final_asset.path().display().to_string(),
+                    IMAGE_MEDIA_TYPE.to_owned(),
+                    filename.or_else(|| Some("edited-image.png".to_owned())),
+                )
+                .map_err(|error| error.to_string())
+        } else if conversation == "pairwise" {
+            self.node
+                .send_attachment(
+                    destination,
+                    draft.final_asset.path().display().to_string(),
+                    IMAGE_MEDIA_TYPE.to_owned(),
+                    filename.or_else(|| Some("edited-image.png".to_owned())),
+                )
+                .map_err(|error| error.to_string())
+        } else {
+            Err("unknown attachment conversation".to_owned())
+        }
+    }
+
+    /// Stage and import one explicitly confirmed non-image file. Image MIME
+    /// types are forced through the editor so an original can never enter F3.
+    pub fn send_confirmed_attachment(
+        &self,
+        conversation: String,
+        destination: String,
+        path: String,
+        media_type: String,
+        filename: Option<String>,
+        expected_carrier: String,
+    ) -> Result<String, String> {
+        if matches!(media_type.as_str(), "image/jpeg" | "image/png") {
+            return Err("JPEG and PNG attachments must pass through the image editor".to_owned());
+        }
+        let current =
+            self.attachment_carrier_explanation(conversation.clone(), destination.clone())?;
+        if current != expected_carrier {
+            return Err(format!("carrier_changed:{current}"));
+        }
+        let staged = PrivateTemp::copy_bounded(
+            "attachment",
+            Path::new(&path),
+            DESKTOP_ATTACHMENT_MAX_BYTES,
+        )?;
+        if conversation == "group" {
+            self.node
+                .send_group_attachment(
+                    destination,
+                    staged.path().display().to_string(),
+                    media_type,
+                    filename,
+                )
+                .map_err(|error| error.to_string())
+        } else if conversation == "pairwise" {
+            self.node
+                .send_attachment(
+                    destination,
+                    staged.path().display().to_string(),
+                    media_type,
+                    filename,
+                )
+                .map_err(|error| error.to_string())
+        } else {
+            Err("unknown attachment conversation".to_owned())
+        }
+    }
+
     fn canonical_audio(&self, encoded: &str) -> Result<(PrivateTemp, AudioInfo), String> {
         let max_encoded = AUDIO_MAX_BYTES.div_ceil(3) * 4;
         if encoded.len() as u64 > max_encoded {
@@ -1016,6 +1334,25 @@ impl Session {
         conversation: String,
         destination: String,
     ) -> Result<String, String> {
+        self.carrier_explanation(conversation, destination, "audio")
+    }
+
+    /// Explain the authoritative current carrier gate at generic file or
+    /// edited-image confirmation.
+    pub fn attachment_carrier_explanation(
+        &self,
+        conversation: String,
+        destination: String,
+    ) -> Result<String, String> {
+        self.carrier_explanation(conversation, destination, "attachment")
+    }
+
+    fn carrier_explanation(
+        &self,
+        conversation: String,
+        destination: String,
+        subject: &str,
+    ) -> Result<String, String> {
         let snapshots = self
             .node
             .carrier_capabilities()
@@ -1049,18 +1386,19 @@ impl Session {
             }
         }
         Ok(if members.is_empty() {
-            "This group has no other current recipients; no audio delivery will be created."
-                .to_owned()
+            format!(
+                "This group has no other current recipients; no {subject} delivery will be created."
+            )
         } else if mesh > 0 && unavailable > 0 {
             format!(
-                "{mesh} recipient{} ha{} only a mesh route, so audio waits for a faster link and emits zero mesh bulk frames; {unavailable} more ha{} no fresh route. Recipients with a fresh realtime or bulk link can proceed.",
+                "{mesh} recipient{} ha{} only a mesh route, so {subject} waits for a faster link and emits zero manifest, chunk, missing-range, or other bulk mesh frames; {unavailable} more ha{} no fresh route. Recipients with a fresh realtime or bulk link can proceed.",
                 if mesh == 1 { "" } else { "s" },
                 if mesh == 1 { "s" } else { "ve" },
                 if unavailable == 1 { "s" } else { "ve" }
             )
         } else if mesh > 0 {
             format!(
-                "Will send when a faster link exists for {mesh} recipient{}. Audio emits zero mesh bulk frames.",
+                "Will send when a faster link exists for {mesh} recipient{}. This {subject} emits zero manifest, chunk, missing-range, or other bulk mesh frames.",
                 if mesh == 1 { "" } else { "s" }
             )
         } else if unavailable > 0 {
@@ -1201,6 +1539,42 @@ impl Session {
             duration_ms: info.duration_ms,
             waveform: info.waveform,
         })
+    }
+
+    /// Materialize a completed canonical edited image through a protected
+    /// transient, validate it, read the bounded bytes, and immediately delete it.
+    pub fn attachment_image(&self, transfer: String) -> Result<String, String> {
+        let media_type = self
+            .node
+            .attachments()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|attachment| attachment.transfer_id == transfer)
+            .and_then(|attachment| {
+                attachment
+                    .objects
+                    .into_iter()
+                    .find(|object| !object.preview)
+                    .map(|object| object.media_type)
+            })
+            .ok_or_else(|| "image attachment is unavailable".to_owned())?;
+        if media_type != IMAGE_MEDIA_TYPE {
+            return Err("attachment is not a canonical edited image".to_owned());
+        }
+        let image = PrivateTemp::destination("png")?;
+        self.node
+            .export_attachment(transfer, image.path().display().to_string())
+            .map_err(|error| error.to_string())?;
+        let info = probe_edited_image(image.path().display().to_string())
+            .map_err(|error| error.to_string())?;
+        let bytes = std::fs::read(image.path()).map_err(|error| error.to_string())?;
+        if bytes.len() as u64 != info.encoded_bytes {
+            return Err("canonical edited image changed during preview".to_owned());
+        }
+        Ok(format!(
+            "data:{IMAGE_MEDIA_TYPE};base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        ))
     }
 
     /// Schedule pairwise text for an absolute UTC Unix instant.
@@ -1403,7 +1777,11 @@ impl Session {
 
     /// Stop the node (idempotent).
     pub fn stop(&self) {
+        if let Ok(mut drafts) = self.pending_images.lock() {
+            drafts.clear();
+        }
         self.node.stop();
+        cleanup_media_temps();
     }
 }
 

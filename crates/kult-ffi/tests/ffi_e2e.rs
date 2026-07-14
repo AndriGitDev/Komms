@@ -6,15 +6,65 @@
 //! `#[test]`s on purpose: the FFI is blocking, exactly like a foreign
 //! caller.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use kult_ffi::{
-    default_config, probe_recorded_audio, AttachmentDirection, AttachmentState, CarrierCapability,
-    Config, ContentKind, DeliveryState, Event, EventListener, Hint, KdfChoice, KultNode,
+    default_config, edit_image, probe_edited_image, probe_recorded_audio, AttachmentDirection,
+    AttachmentState, CarrierCapability, Config, ContentKind, DeliveryState, Event, EventListener,
+    Hint, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, KdfChoice, KultNode,
     ScheduledConversation,
 };
+
+fn edited_image(directory: &Path, prefix: &str) -> (PathBuf, Vec<u8>) {
+    use image::{ImageBuffer, ImageEncoder, Rgba};
+
+    let source = directory.join(format!("{prefix}-original.png"));
+    let output = directory.join(format!("{prefix}-final.png"));
+    let pixels = ImageBuffer::from_fn(4, 3, |x, y| {
+        Rgba([(x * 50) as u8, (y * 70) as u8, (x * 9 + y) as u8, 255])
+    });
+    let file = std::fs::File::create(&source).unwrap();
+    image::codecs::png::PngEncoder::new(file)
+        .write_image(
+            pixels.as_raw(),
+            pixels.width(),
+            pixels.height(),
+            image::ExtendedColorType::Rgba8,
+        )
+        .unwrap();
+    let info = edit_image(
+        source.display().to_string(),
+        output.display().to_string(),
+        ImageEditRecipe {
+            crop: Some(ImageCrop {
+                x: 1,
+                y: 0,
+                width: 3,
+                height: 3,
+            }),
+            rotation_quarter_turns: 1,
+            regions: vec![ImageEditRegion {
+                kind: ImageEditRegionKind::Pixelate,
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+                strength: 2,
+            }],
+        },
+    )
+    .unwrap();
+    assert_eq!((info.width, info.height), (3, 3));
+    let bytes = std::fs::read(&output).unwrap();
+    assert_ne!(bytes, std::fs::read(source).unwrap());
+    assert_eq!(
+        probe_edited_image(output.display().to_string()).unwrap(),
+        info
+    );
+    (output, bytes)
+}
 
 fn canonical_audio(samples: usize) -> Vec<u8> {
     let data_len = (samples * 2) as u32;
@@ -414,6 +464,38 @@ fn two_nodes_message_via_ffi_only() {
         100
     );
 
+    // Only the metadata-free final edit crosses F3; the original remains a
+    // distinct local path and the receiver exports byte-for-byte final PNG.
+    let (image_source, image_bytes) = edited_image(dir.path(), "ffi-pairwise-image");
+    let image_content = alice
+        .send_attachment(
+            bob_peer.clone(),
+            image_source.display().to_string(),
+            "image/png".to_owned(),
+            Some("edited-image.png".to_owned()),
+        )
+        .unwrap();
+    let image_offer = b_rec.wait("edited image offer", |event| {
+        matches!(event, Event::AttachmentUpdated { attachment }
+            if attachment.content_id == image_content
+                && attachment.direction == AttachmentDirection::Inbound)
+    });
+    let image_transfer = match image_offer {
+        Event::AttachmentUpdated { attachment } => attachment.transfer_id,
+        other => panic!("wrong event: {other:?}"),
+    };
+    bob.accept_attachment(image_transfer.clone()).unwrap();
+    b_rec.wait("edited image completion", |event| {
+        matches!(event, Event::AttachmentUpdated { attachment }
+            if attachment.transfer_id == image_transfer
+                && attachment.state == AttachmentState::Complete)
+    });
+    let image_export = dir.path().join("ffi-pairwise-image-received.png");
+    bob.export_attachment(image_transfer, image_export.display().to_string())
+        .unwrap();
+    assert_eq!(std::fs::read(&image_export).unwrap(), image_bytes);
+    probe_edited_image(image_export.display().to_string()).unwrap();
+
     // Bob replies over the established session; Alice sees it.
     bob.send(alice_peer.clone(), "loud and clear".to_owned())
         .unwrap();
@@ -784,6 +866,42 @@ fn groups_via_ffi_only() {
             .duration_ms,
         100
     );
+
+    let (group_image_source, group_image_bytes) = edited_image(dir.path(), "ffi-group-image");
+    let group_image_content = alice
+        .send_group_attachment(
+            group.clone(),
+            group_image_source.display().to_string(),
+            "image/png".to_owned(),
+            Some("edited-image.png".to_owned()),
+        )
+        .unwrap();
+    let group_image_offer = b_rec.wait("group edited image offer", |event| {
+        matches!(event, Event::AttachmentUpdated { attachment }
+            if attachment.content_id == group_image_content
+                && attachment.conversation == kult_ffi::AttachmentConversation::Group)
+    });
+    let group_image_transfer = match group_image_offer {
+        Event::AttachmentUpdated { attachment } => attachment.transfer_id,
+        other => panic!("wrong event: {other:?}"),
+    };
+    bob.accept_attachment(group_image_transfer.clone()).unwrap();
+    b_rec.wait("group edited image completion", |event| {
+        matches!(event, Event::AttachmentUpdated { attachment }
+            if attachment.transfer_id == group_image_transfer
+                && attachment.state == AttachmentState::Complete)
+    });
+    let group_image_export = dir.path().join("ffi-group-image-received.png");
+    bob.export_attachment(
+        group_image_transfer,
+        group_image_export.display().to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read(&group_image_export).unwrap(),
+        group_image_bytes
+    );
+    probe_edited_image(group_image_export.display().to_string()).unwrap();
 
     alice
         .remove_group_member(group.clone(), bob_peer.clone())

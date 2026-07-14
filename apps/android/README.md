@@ -25,10 +25,13 @@ own, verbatim.
   Access Framework, with explicit consent, exact verified-byte progress,
   pause/resume/cancel/reject controls, and caller-selected export. Provider
   streams are copied with bounded memory through unique app-private staging
-  files that are deleted after each operation; no broad storage permission or
-  URI-to-filesystem-path conversion is used. Android generates bounded,
-  metadata-stripped JPEG previews for selected images, stores them sealed, and
-  renders them only through short-lived protected cache files.
+  files; no broad storage permission or URI-to-filesystem-path conversion is
+  used. Generic files show and recheck F4 before explicit send/discard. JPEG/PNG
+  selections use the shared Rust editor for orientation normalization,
+  free/preset crop, 90-degree rotation, and user-positioned blur/pixelation, then
+  review and send only the exact metadata-free PNG. Originals, intermediates,
+  and protected receiver previews are deleted on send, discard, denial, failure,
+  activity stop/lock, low storage, and restart orphan recovery.
 - **Record pairwise or group audio messages** with runtime microphone consent,
   a foreground-only stop/review flow, no autoplay, locally derived
   duration/waveform, and explicit send/discard. Every native capture is rewritten

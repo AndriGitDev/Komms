@@ -64,7 +64,7 @@ button {
 }
 .danger:hover { background: rgba(224, 108, 91, 0.12); }
 
-input[type="text"], input[type="password"], input[type="datetime-local"], textarea, select {
+input[type="text"], input[type="password"], input[type="datetime-local"], input[type="number"], textarea, select {
   width: 100%;
   background: var(--bg);
   color: var(--text);
@@ -336,6 +336,16 @@ label.check input { width: auto; margin: 0; }
 .attachment-actions { justify-content: flex-end; margin-top: 0.55em; }
 .attachment-actions button { font-size: 0.78em; }
 .attachment-selection { word-break: break-word; }
+.image-editor-grid { display: grid; grid-template-columns: minmax(16rem, 1fr) minmax(18rem, 1fr); gap: 1rem; }
+.image-review { margin: 0; align-self: start; position: sticky; top: 0; }
+.image-review img { display: block; width: 100%; max-height: 55vh; object-fit: contain; background: #0b1110; border: 1px solid var(--line); border-radius: 8px; }
+.image-review figcaption { color: var(--text-dim); margin-top: 0.4rem; }
+.image-controls { min-width: 0; }
+.image-controls fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 0.7rem 0; padding: 0.7rem; }
+.number-grid { display: grid; grid-template-columns: repeat(2, minmax(6rem, 1fr)); gap: 0.5rem; }
+.number-grid label { margin: 0; }
+.image-controls ol { max-height: 7rem; overflow-y: auto; color: var(--text-dim); }
+@media (max-width: 760px) { .image-editor-grid { grid-template-columns: 1fr; } .image-review { position: static; } }
 .audio-card, .audio-review {
   margin-top: 0.6em;
   padding: 0.65em;
@@ -374,6 +384,7 @@ label.check input { width: auto; margin: 0; }
   border-radius: 14px;
   padding: 1.2em 1.5em;
 }
+.modal.image-editing { width: min(72rem, 94vw); }
 .modal > header {
   display: flex;
   justify-content: space-between;

@@ -112,6 +112,13 @@ cargo run --example sneakernet_demo
 > playback with duration/waveform, pairwise and sender-key group F3 delivery, and
 > current F4 carrier explanations. ADR-0015 remains absolute: mesh-only audio
 > waits for a faster link and emits zero bulk airtime frames.
+> Still-image editing is shipped across the same three shells and unchanged F3
+> path. Content-verified bounded JPEG/PNG selections are orientation-normalized,
+> cropped, rotated, manually blurred or pixelated, and re-encoded by one shared
+> Rust helper as metadata-free PNG before an exact final review. Only that final
+> asset can be imported. Generic files skip the editor but now receive the same
+> authoritative F4 explanation, fresh recheck, and explicit send/discard flow.
+> Images and files with only a mesh route wait and emit zero bulk airtime frames.
 > Remaining per the [roadmap](docs/08-roadmap.md): the physical two-radio bench (M4); a
 > hands-on device pass of the iOS app layer (M5); the wider M6 hardening list;
 > and the external security audit.

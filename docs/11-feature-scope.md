@@ -65,9 +65,11 @@ status and prerequisites are tracked in the delivery plan.
   and themes are rendered by each shell.
 - **Screen-security / incognito keyboard.** Platform APIs in the mobile UI layer
   (Android/iOS). No protocol involvement.
-- **Local media editing (e.g. face blurring).** Client-side image processing
-  applied *before* encryption, so the edited bytes are what gets sealed. No
-  protocol involvement, and it keeps the plaintext original off the wire.
+- **Local still-image editing.** Shipped across desktop, Android, and iOS through
+  one bounded Rust helper: JPEG/PNG orientation normalization, free/preset crop,
+  90-degree rotation, and manual blur/pixelation are applied *before* encryption.
+  The exact metadata-free PNG is reviewed and is the only asset sealed; protected
+  originals and intermediates are cleaned locally. No protocol involvement.
 - **Mentions and labels.** Labels are sealed local metadata. Group mentions use
   an explicit roster picker and, for portable highlighting and notifications, a
   stable peer reference inside typed message content rather than ambiguous
