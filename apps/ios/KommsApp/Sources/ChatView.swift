@@ -13,12 +13,21 @@ struct ChatView: View {
     @State private var error: String?
     @State private var showVerify = false
     @State private var showHints = false
+    @State private var scheduleEditor: ScheduleEditor?
 
     private var contact: Contact? {
         model.contacts.first { $0.peer == peer }
     }
 
     private var history: [Message] { model.histories[peer] ?? [] }
+    private var scheduled: [ScheduledMessage] {
+        model.scheduledMessages
+            .filter { message in
+                if case .peer = message.conversation { return message.destination == peer }
+                return false
+            }
+            .sorted { $0.notBefore < $1.notBefore }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,12 +38,19 @@ struct ChatView: View {
                             MessageBubble(message: message)
                                 .id(message.id)
                         }
+                        ForEach(scheduled, id: \.id) { message in
+                            ScheduledMessageBubble(
+                                message: message,
+                                edit: { scheduleEditor = ScheduleEditor(message: message) },
+                                cancel: { cancel(message) })
+                                .id(message.id)
+                        }
                     }
                     .padding()
                 }
-                .onChange(of: history.count) { _ in
-                    if let last = history.last {
-                        proxy.scrollTo(last.id, anchor: .bottom)
+                .onChange(of: history.count + scheduled.count) { _ in
+                    if let last = scheduled.last?.id ?? history.last?.id {
+                        proxy.scrollTo(last, anchor: .bottom)
                     }
                 }
             }
@@ -50,6 +66,13 @@ struct ChatView: View {
                 TextField("Message", text: $draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...4)
+                Button {
+                    scheduleEditor = ScheduleEditor(body: draft)
+                } label: {
+                    Image(systemName: "calendar.badge.clock").font(.title2)
+                }
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityLabel("Schedule message")
                 Button {
                     send()
                 } label: {
@@ -77,6 +100,19 @@ struct ChatView: View {
         }
         .sheet(isPresented: $showVerify) { VerifyView(peer: peer) }
         .sheet(isPresented: $showHints) { HintsView(peer: peer) }
+        .sheet(item: $scheduleEditor) { editor in
+            ScheduledMessageEditor(
+                editor: editor,
+                save: { body, date in
+                    if let message = editor.message {
+                        try await model.editScheduled(
+                            message: message.id, body: body, notBefore: date)
+                    } else {
+                        try await model.schedule(peer: peer, body: body, notBefore: date)
+                        draft = ""
+                    }
+                })
+        }
         .task {
             do {
                 try await model.follow(peer: peer)
@@ -93,6 +129,16 @@ struct ChatView: View {
         Task {
             do {
                 try await model.send(peer: peer, body: body)
+            } catch {
+                self.error = errorText(error)
+            }
+        }
+    }
+
+    private func cancel(_ message: ScheduledMessage) {
+        Task {
+            do {
+                try await model.cancelScheduled(message: message.id)
             } catch {
                 self.error = errorText(error)
             }

@@ -64,7 +64,7 @@ button {
 }
 .danger:hover { background: rgba(224, 108, 91, 0.12); }
 
-input[type="text"], input[type="password"], textarea, select {
+input[type="text"], input[type="password"], input[type="datetime-local"], textarea, select {
   width: 100%;
   background: var(--bg);
   color: var(--text);
@@ -258,6 +258,18 @@ label.check input { width: auto; margin: 0; }
   color: var(--text-dim);
 }
 .msg .delivery.state-delivered { color: var(--accent); }
+.msg.scheduled {
+  border: 1px dashed var(--warn);
+  background: rgba(217, 164, 65, 0.09);
+}
+.msg .scheduled-meta { color: var(--warn); }
+.scheduled-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4em;
+  margin-top: 0.45em;
+}
+.scheduled-actions button { font-size: 0.72em; }
 
 #composer {
   display: flex;
@@ -266,6 +278,7 @@ label.check input { width: auto; margin: 0; }
   border-top: 1px solid var(--line);
 }
 #composer input { margin: 0; }
+#composer #btn-schedule { white-space: nowrap; }
 
 /* ── Modals ── */
 #modal-backdrop {

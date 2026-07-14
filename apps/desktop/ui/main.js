@@ -69,6 +69,12 @@ function fmtTime(unixSecs) {
     : d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+function dateTimeLocalValue(unixSecs) {
+  const date = new Date(unixSecs * 1000);
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
 const STATE_GLYPH = { queued: "queued ○", sent: "sent ✓", delivered: "delivered ✓✓" };
 
 // ── gate (create / unlock / restore) ────────────────────────────────────
@@ -231,6 +237,7 @@ async function refreshStatus() {
   lan.className = "stat " + (s.lan_peers.length ? "good" : "");
   lan.title = s.lan_peers.length ? `Peers on this network:\n${s.lan_peers.join("\n")}` : "No peers found on this network";
   $("#stat-queued").textContent = `Queued: ${s.queued}`;
+  $("#stat-scheduled").textContent = `Scheduled: ${s.scheduled}`;
   const transit = $("#stat-transit");
   transit.hidden = s.transit === 0;
   transit.textContent = `Bridging: ${s.transit}`;
@@ -325,6 +332,7 @@ function updateChatHead() {
   $("#btn-verify").hidden = isGroup || isNote;
   $("#btn-hints").hidden = isGroup || isNote;
   $("#btn-group-details").hidden = !isGroup;
+  $("#btn-schedule").hidden = isNote;
   $("#note-to-self").classList.toggle("active", isNote);
 }
 
@@ -427,18 +435,56 @@ function groupBubble(m) {
   return el;
 }
 
+function scheduledBubble(message) {
+  const el = document.createElement("div");
+  el.className = "msg out scheduled";
+  el.append(message.body);
+  const meta = document.createElement("span");
+  meta.className = "meta scheduled-meta";
+  meta.textContent = `scheduled for ${fmtTime(message.not_before)}`;
+  const actions = document.createElement("span");
+  actions.className = "scheduled-actions";
+  const edit = document.createElement("button");
+  edit.type = "button";
+  edit.className = "ghost";
+  edit.textContent = "Edit";
+  edit.addEventListener("click", () => openScheduleModal(message));
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "danger";
+  cancel.textContent = "Cancel";
+  cancel.addEventListener("click", async () => {
+    if (!window.confirm("Cancel this scheduled message?")) return;
+    await call("cancel_scheduled", { message: message.id });
+    await renderMessages();
+    await refreshStatus();
+  });
+  actions.append(edit, cancel);
+  el.append(meta, actions);
+  return el;
+}
+
 async function renderMessages() {
   const isNote = state.currentKind === "note";
   const isGroup = state.currentKind === "group";
-  const msgs = isNote
-    ? await call("note_to_self_messages")
-    : isGroup
-    ? await call("group_messages", { group: state.currentId })
-    : await call("messages", { peer: state.currentId });
+  const [msgs, scheduled] = await Promise.all([
+    isNote
+      ? call("note_to_self_messages")
+      : isGroup
+      ? call("group_messages", { group: state.currentId })
+      : call("messages", { peer: state.currentId }),
+    isNote ? Promise.resolve([]) : call("scheduled_messages"),
+  ]);
   const box = $("#messages");
   box.textContent = "";
   state.msgEls.clear();
   for (const m of msgs) box.append(isNote ? noteBubble(m) : isGroup ? groupBubble(m) : bubble(m));
+  for (const message of scheduled
+    .filter((item) => item.destination === state.currentId
+      && item.conversation === (isGroup ? "group" : "peer"))
+    .sort((a, b) => a.not_before - b.not_before)) {
+    box.append(scheduledBubble(message));
+  }
   box.scrollTop = box.scrollHeight;
 }
 
@@ -458,10 +504,67 @@ $("#composer").addEventListener("submit", async (e) => {
   await renderMessages();
 });
 
+function openScheduleModal(message = null) {
+  if (!state.currentId || state.currentKind === "note") return;
+  const editing = message !== null;
+  const root = openModal(editing ? "Edit scheduled message" : "Schedule message", "tpl-schedule");
+  const body = root.querySelector('[data-f="body"]');
+  const notBefore = root.querySelector('[data-f="not-before"]');
+  body.value = message?.body ?? $("#composer-input").value.trim();
+  const earliest = Math.floor(Date.now() / 1000) + 60;
+  notBefore.min = dateTimeLocalValue(Math.min(message?.not_before ?? earliest, earliest));
+  notBefore.value = dateTimeLocalValue(message?.not_before ?? earliest + 29 * 60);
+  root.querySelector('[data-act="save"]').textContent = editing ? "Save changes" : "Schedule message";
+  root.addEventListener("click", async (event) => {
+    if (!event.target.matches('[data-act="save"]')) return;
+    const text = body.value.trim();
+    const instant = Math.floor(new Date(notBefore.value).getTime() / 1000);
+    try {
+      if (!text) throw "write a message first";
+      if (!Number.isFinite(instant)) throw "choose a send time";
+      if (editing) {
+        await invoke("edit_scheduled", {
+          message: message.id,
+          body: text,
+          notBefore: instant,
+        });
+      } else if (state.currentKind === "group") {
+        await invoke("schedule_group", {
+          group: state.currentId,
+          body: text,
+          notBefore: instant,
+        });
+      } else {
+        await invoke("schedule", {
+          peer: state.currentId,
+          body: text,
+          notBefore: instant,
+        });
+      }
+      if (!editing) $("#composer-input").value = "";
+      closeModal();
+      await renderMessages();
+      await refreshStatus();
+    } catch (err) {
+      showError(root, err);
+    }
+  });
+  body.focus();
+}
+
+$("#btn-schedule").addEventListener("click", () => openScheduleModal());
+
 // ── node events ─────────────────────────────────────────────────────────
 
 listen("node-event", async ({ payload: ev }) => {
   switch (ev.type) {
+    case "scheduled_message_updated":
+    case "scheduled_message_cancelled":
+    case "scheduled_message_activated": {
+      if (state.currentKind && state.currentKind !== "note") await renderMessages();
+      await refreshStatus();
+      break;
+    }
     case "note_to_self_message_added": {
       if (state.currentKind === "note" && ev.conversation === state.currentId) {
         await renderMessages();

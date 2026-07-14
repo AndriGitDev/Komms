@@ -20,6 +20,8 @@ import uniffi.kult_ffi.DeliveryState
 import uniffi.kult_ffi.Direction
 import uniffi.kult_ffi.Event
 import uniffi.kult_ffi.Message
+import uniffi.kult_ffi.ScheduledConversation
+import uniffi.kult_ffi.ScheduledMessage
 
 /**
  * One conversation. Bubbles render the node's honest delivery ladder
@@ -37,6 +39,9 @@ class ChatActivity : AppCompatActivity() {
             is Event.DeliveryUpdated -> true // ids are ours or cheap to refresh
             is Event.MessageReceived -> event.peer == peer
             is Event.AwaitingFasterLink -> true
+            is Event.ScheduledMessageUpdated -> true
+            is Event.ScheduledMessageCancelled -> true
+            is Event.ScheduledMessageActivated -> true
             else -> false
         }
         if (relevant) runOnUiThread { refresh() }
@@ -57,6 +62,9 @@ class ChatActivity : AppCompatActivity() {
         list.adapter = adapter
 
         val input = findViewById<EditText>(R.id.chat_input)
+        findViewById<android.widget.Button>(R.id.chat_schedule).setOnClickListener {
+            schedule(input, null)
+        }
         findViewById<android.widget.Button>(R.id.chat_send).setOnClickListener {
             val body = input.text.toString()
             if (body.isEmpty()) return@setOnClickListener
@@ -106,10 +114,42 @@ class ChatActivity : AppCompatActivity() {
     private fun refresh() {
         val session = NodeHolder.session ?: return
         val list = findViewById<RecyclerView>(R.id.chat_messages)
-        runNode(work = { session.messages(peer) }) { messages ->
-            adapter.submit(messages)
-            if (messages.isNotEmpty()) list.scrollToPosition(messages.size - 1)
+        runNode(work = {
+            ChatScreenState(
+                messages = session.messages(peer),
+                scheduled = session.scheduledMessages().filter {
+                    it.conversation == ScheduledConversation.PEER && it.destination == peer
+                },
+            )
+        }) { state ->
+            adapter.submit(state.messages)
+            renderScheduledOutbox(
+                state.scheduled,
+                edit = { schedule(findViewById(R.id.chat_input), it) },
+                cancel = { cancel(it) },
+            )
+            if (state.messages.isNotEmpty()) list.scrollToPosition(state.messages.size - 1)
         }
+    }
+
+    private fun schedule(input: EditText, message: ScheduledMessage?) {
+        val session = NodeHolder.session ?: return
+        showScheduledEditor(
+            initialBody = input.text.toString(),
+            message = message,
+            work = { body, notBefore ->
+                if (message == null) session.schedule(peer, body, notBefore)
+                else session.editScheduled(message.id, body, notBefore)
+            },
+        ) {
+            if (message == null) input.text.clear()
+            refresh()
+        }
+    }
+
+    private fun cancel(message: ScheduledMessage) {
+        val session = NodeHolder.session ?: return
+        runNode(work = { session.cancelScheduled(message.id) }) { refresh() }
     }
 
     /** Replace this contact's delivery hints (one per line, `kind value`). */
@@ -129,6 +169,11 @@ class ChatActivity : AppCompatActivity() {
             .show()
     }
 }
+
+private data class ChatScreenState(
+    val messages: List<Message>,
+    val scheduled: List<ScheduledMessage>,
+)
 
 /** Message bubbles with the honest state caption. */
 private class MessagesAdapter : RecyclerView.Adapter<MessagesAdapter.Holder>() {

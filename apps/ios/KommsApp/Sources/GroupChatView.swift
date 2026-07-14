@@ -13,9 +13,18 @@ struct GroupChatView: View {
     @State private var draft = ""
     @State private var error: String?
     @State private var showMembers = false
+    @State private var scheduleEditor: ScheduleEditor?
 
     private var group: KommsCore.Group? { model.groups.first { $0.id == groupId } }
     private var history: [GroupMessage] { model.groupHistories[groupId] ?? [] }
+    private var scheduled: [ScheduledMessage] {
+        model.scheduledMessages
+            .filter { message in
+                if case .group = message.conversation { return message.destination == groupId }
+                return false
+            }
+            .sorted { $0.notBefore < $1.notBefore }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,12 +35,19 @@ struct GroupChatView: View {
                             GroupMessageBubble(message: message, memberName: memberName)
                                 .id(message.id)
                         }
+                        ForEach(scheduled, id: \.id) { message in
+                            ScheduledMessageBubble(
+                                message: message,
+                                edit: { scheduleEditor = ScheduleEditor(message: message) },
+                                cancel: { cancel(message) })
+                                .id(message.id)
+                        }
                     }
                     .padding()
                 }
-                .onChange(of: history.count) { _ in
-                    if let last = history.last {
-                        proxy.scrollTo(last.id, anchor: .bottom)
+                .onChange(of: history.count + scheduled.count) { _ in
+                    if let last = scheduled.last?.id ?? history.last?.id {
+                        proxy.scrollTo(last, anchor: .bottom)
                     }
                 }
             }
@@ -47,6 +63,15 @@ struct GroupChatView: View {
                 TextField("Message", text: $draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...4)
+                Button {
+                    scheduleEditor = ScheduleEditor(body: draft)
+                } label: {
+                    Image(systemName: "calendar.badge.clock").font(.title2)
+                }
+                .disabled(
+                    group == nil
+                        || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityLabel("Schedule message")
                 Button {
                     send()
                 } label: {
@@ -67,6 +92,20 @@ struct GroupChatView: View {
             }
         }
         .sheet(isPresented: $showMembers) { GroupMembersView(groupId: groupId) }
+        .sheet(item: $scheduleEditor) { editor in
+            ScheduledMessageEditor(
+                editor: editor,
+                save: { body, date in
+                    if let message = editor.message {
+                        try await model.editScheduled(
+                            message: message.id, body: body, notBefore: date)
+                    } else {
+                        try await model.scheduleGroup(
+                            group: groupId, body: body, notBefore: date)
+                        draft = ""
+                    }
+                })
+        }
         .task {
             do {
                 try await model.followGroup(group: groupId)
@@ -92,6 +131,16 @@ struct GroupChatView: View {
         Task {
             do {
                 try await model.sendGroup(group: groupId, body: body)
+            } catch {
+                self.error = errorText(error)
+            }
+        }
+    }
+
+    private func cancel(_ message: ScheduledMessage) {
+        Task {
+            do {
+                try await model.cancelScheduled(message: message.id)
             } catch {
                 self.error = errorText(error)
             }

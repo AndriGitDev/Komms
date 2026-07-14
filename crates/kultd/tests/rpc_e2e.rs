@@ -418,11 +418,16 @@ async fn daemon_restarts_with_history() {
         .as_str()
         .unwrap()
         .to_owned();
+    // `send` persists the outbound record before returning. Assert that
+    // precondition directly instead of waiting for unrelated network delivery,
+    // which can race with the other RPC integration tests on a busy runner.
     a.ok(json!({ "op": "send", "peer": bob_peer, "body": "before restart" }))
         .await;
-    let mut b_events = Client::connect(&bob.socket_path).await;
-    b_events.ok(json!({ "op": "subscribe" })).await;
-    b_events.wait_event(|e| e["type"] == json!("message")).await;
+    let before_restart = a.ok(json!({ "op": "messages", "peer": bob_peer })).await;
+    assert_eq!(
+        before_restart["messages"][0]["body"],
+        json!("before restart")
+    );
 
     let address_before = alice.address.clone();
     alice.shutdown().await;

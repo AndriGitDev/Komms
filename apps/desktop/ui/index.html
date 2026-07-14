@@ -115,6 +115,7 @@
       <footer id="status-bar" title="Transport status">
         <span class="stat" id="stat-nat">NAT: …</span>
         <span class="stat" id="stat-lan">LAN: 0</span>
+        <span class="stat" id="stat-scheduled">Scheduled: 0</span>
         <span class="stat" id="stat-queued">Queued: 0</span>
         <span class="stat" id="stat-transit" hidden>Bridging: 0</span>
         <button id="btn-lock" class="ghost" title="Stop the node and lock">Lock</button>
@@ -140,6 +141,7 @@
         <div id="messages"></div>
         <form id="composer" autocomplete="off">
           <input type="text" id="composer-input" placeholder="Message…" />
+          <button type="button" id="btn-schedule" class="ghost">Schedule</button>
           <button type="submit" class="primary">Send</button>
         </form>
       </div>
@@ -266,6 +268,21 @@
     <p class="error" data-f="error" hidden></p>
     <div class="row end">
       <button class="primary" data-act="export">Export backup</button>
+    </div>
+  </template>
+
+  <template id="tpl-schedule">
+    <p class="modal-note">The text stays sealed on this device and does not enter the encrypted delivery queue until this absolute instant.</p>
+    <label>Message
+      <textarea data-f="body" rows="4" maxlength="65536"></textarea>
+    </label>
+    <label>Send at
+      <input type="datetime-local" data-f="not-before" />
+    </label>
+    <p class="hint">Shown in your local time; stored as an absolute UTC instant.</p>
+    <p class="error" data-f="error" hidden></p>
+    <div class="row end">
+      <button class="primary" data-act="save">Schedule message</button>
     </div>
   </template>
 

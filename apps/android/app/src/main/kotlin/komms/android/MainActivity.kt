@@ -153,7 +153,8 @@ class MainActivity : AppCompatActivity() {
             }
             findViewById<TextView>(R.id.main_status).text = getString(
                 R.string.status_line,
-                s.address.take(12) + "…", nat, s.lanPeers.size, s.queued.toLong(), s.transit.toLong(),
+                s.address.take(12) + "…", nat, s.lanPeers.size, s.scheduled.toLong(),
+                s.queued.toLong(), s.transit.toLong(),
             )
         }
     }

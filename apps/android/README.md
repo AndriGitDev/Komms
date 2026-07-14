@@ -18,6 +18,9 @@ own, verbatim.
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted
   mesh links.
+- **Schedule pairwise or group text** in local time: the sealed scheduled
+  outbox is shown separately with edit/cancel controls until the core moves an
+  entry into the ordinary delivery ladder at its absolute UTC instant.
 - **Create and use sender-key groups** from stored contacts: list and read
   group history, send messages, add/remove members as the creator, and leave
   as any member while local history remains stored. Inbound rows name the
@@ -28,7 +31,7 @@ own, verbatim.
   code, with a visible verified badge. Key changes are surfaced, never
   hidden.
 - **Transport indicators**: kult address, NAT verdict, LAN peers via mDNS,
-  queued and bridged-in-transit counts, refreshed live.
+  scheduled, queued, and bridged-in-transit counts, refreshed live.
 - **Backup** to a single encrypted file via the system file picker; the
   sealing mnemonic is shown exactly once and stored nowhere. OS cloud
   backup is disabled (`allowBackup=false`): portability is the

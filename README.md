@@ -104,8 +104,8 @@ cargo run --example sneakernet_demo
 > pairwise/group text stays sealed in a device-local scheduled outbox until its
 > absolute UTC instant, remains editable/cancellable without advancing a ratchet,
 > and then enters the ordinary queued→sent→delivered ladder. RPC/CLI, UniFFI, and
-> all three shell session adapters expose the same lifecycle; composer/history UI
-> integration remains.
+> all three shells expose the same lifecycle with local-time composer controls and
+> visibly distinct scheduled history rows.
 > Remaining per the [roadmap](docs/08-roadmap.md): the physical two-radio bench (M4); a
 > hands-on device pass of the iOS app layer (M5); the wider M6 hardening list;
 > and the external security audit.
