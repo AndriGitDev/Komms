@@ -50,7 +50,9 @@ use kult_protocol::{
     CONTENT_KIND_ATTACHMENT, CONTENT_KIND_TEXT, ENVELOPE_HEADER_LEN, REASSEMBLY_WINDOW_SECS,
 };
 use kult_store::{
-    ContactRecord, DeliveryState, Direction, MessageRecord, QueueClass, QueueItem, Store,
+    ContactRecord, ConversationId, ConversationMetadata, DeliveryState, Direction,
+    LocalMetadataKey, LocalMetadataRecord, MessageRecord, NoteMessageRecord, QueueClass, QueueItem,
+    Store,
 };
 use kult_transport::{CostClass, DeliveryHint, Discovery, Reachability, Transport};
 
@@ -67,6 +69,7 @@ pub use api::{
     Event, GroupInfo,
 };
 pub use error::NodeError;
+pub use kult_store::NOTE_TO_SELF_CONVERSATION_ID;
 
 use vault::PrekeyVault;
 
@@ -663,6 +666,12 @@ impl Node {
         Ok(self.store.messages_with(peer)?)
     }
 
+    /// Text history in the one reserved device-local note-to-self
+    /// conversation, in insertion order.
+    pub fn note_to_self_messages(&self) -> Result<Vec<NoteMessageRecord>> {
+        Ok(self.store.note_messages()?)
+    }
+
     /// Number of envelopes waiting in the outbound queue.
     pub fn queued(&self) -> Result<usize> {
         Ok(self.store.queue_all()?.len())
@@ -676,6 +685,9 @@ impl Node {
         match cmd {
             Command::Send { peer, body } => {
                 self.send_message(&peer, &body, now, rng)?;
+            }
+            Command::NoteToSelfSend { body } => {
+                self.note_to_self_send(&body, now, rng)?;
             }
             Command::AddContact {
                 name,
@@ -787,6 +799,44 @@ impl Node {
             },
             rng,
         )?;
+        Ok(id)
+    }
+
+    /// Append UTF-8 text to the one reserved local note-to-self
+    /// conversation. This path creates no contact, session, envelope,
+    /// receipt, delivery state, queue item, or transport work.
+    pub fn note_to_self_send(
+        &mut self,
+        body: &str,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        if self
+            .store
+            .get_local_metadata(&LocalMetadataKey::Conversation(ConversationId::NoteToSelf))?
+            .is_none()
+        {
+            self.store.put_local_metadata(
+                &LocalMetadataRecord::Conversation(ConversationMetadata {
+                    conversation: ConversationId::NoteToSelf,
+                    created_at: now,
+                }),
+                rng,
+            )?;
+        }
+        let mut id = [0u8; 16];
+        rng.fill_bytes(&mut id);
+        let record = NoteMessageRecord {
+            id,
+            timestamp: now,
+            body: body.to_owned(),
+        };
+        self.store.put_note_message(&record, rng)?;
+        self.events.push_back(Event::NoteToSelfMessageAdded {
+            id,
+            timestamp: now,
+            body: body.to_owned(),
+        });
         Ok(id)
     }
 

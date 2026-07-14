@@ -9,8 +9,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use kult_node::{CarrierCapability, CarrierCapabilitySnapshot, ContentStatus, Event, GroupInfo};
-use kult_store::{DeliveryState, Direction, GroupMessageRecord, MessageRecord};
+use kult_node::{
+    CarrierCapability, CarrierCapabilitySnapshot, ContentStatus, Event, GroupInfo,
+    NOTE_TO_SELF_CONVERSATION_ID,
+};
+use kult_store::{DeliveryState, Direction, GroupMessageRecord, MessageRecord, NoteMessageRecord};
 use kult_transport::DeliveryHint;
 
 /// One request line.
@@ -57,6 +60,13 @@ pub enum Op {
         /// Message body (UTF-8 text).
         body: String,
     },
+    /// Append text to the reserved local note-to-self conversation.
+    NoteToSelfSend {
+        /// UTF-8 note text.
+        body: String,
+    },
+    /// Read the reserved local note-to-self history.
+    NoteToSelfMessages,
     /// Create a sender-key group with stored contacts.
     GroupCreate {
         /// Display name.
@@ -199,6 +209,17 @@ pub fn event_line(event: &Event) -> String {
             "body": render_event_body(body, *content),
             "content_kind": content_kind(*content),
         }),
+        Event::NoteToSelfMessageAdded {
+            id,
+            timestamp,
+            body,
+        } => json!({
+            "type": "note_to_self_message",
+            "conversation": NOTE_TO_SELF_CONVERSATION_ID,
+            "id": hex_encode(id),
+            "timestamp": timestamp,
+            "body": body,
+        }),
         Event::ContactAdded { peer } => json!({
             "type": "contact_added",
             "peer": hex_encode(peer),
@@ -313,6 +334,16 @@ pub fn message_json(rec: &MessageRecord) -> Value {
     })
 }
 
+/// One note-to-self record as render-safe JSON.
+pub fn note_message_json(rec: &NoteMessageRecord) -> Value {
+    json!({
+        "id": hex_encode(&rec.id),
+        "conversation": NOTE_TO_SELF_CONVERSATION_ID,
+        "timestamp": rec.timestamp,
+        "body": rec.body,
+    })
+}
+
 const UNSUPPORTED_MESSAGE: &str = "Unsupported message — update Komms";
 
 fn content_kind(status: ContentStatus) -> &'static str {
@@ -424,6 +455,10 @@ mod tests {
         assert!(matches!(r.op, Op::AddContact { .. }));
         let r: Request = serde_json::from_str(r#"{"id":3,"op":"carrier_capabilities"}"#).unwrap();
         assert!(matches!(r.op, Op::CarrierCapabilities));
+        let r: Request =
+            serde_json::from_str(r#"{"id":4,"op":"note_to_self_send","body":"remember this"}"#)
+                .unwrap();
+        assert!(matches!(r.op, Op::NoteToSelfSend { .. }));
     }
 
     #[test]

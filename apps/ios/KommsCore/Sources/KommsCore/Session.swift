@@ -97,6 +97,17 @@ public final class Session: @unchecked Sendable {
         try node.send(peer: peer, body: body)
     }
 
+    /// Stable reserved identity for the local note-to-self conversation.
+    public func noteToSelfId() -> String { node.noteToSelfId() }
+
+    /// All sealed local-only note-to-self entries.
+    public func noteToSelfMessages() throws -> [NoteMessage] { try node.noteToSelfMessages() }
+
+    /// Append one sealed local-only note; no transport work is created.
+    public func sendNoteToSelf(body: String) throws -> String {
+        try node.sendNoteToSelf(body: body)
+    }
+
     /// Create a sender-key group from stored contacts; returns its id.
     public func createGroup(name: String, members: [String]) throws -> String {
         try node.createGroup(name: name, members: members)

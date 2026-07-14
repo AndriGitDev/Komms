@@ -153,6 +153,43 @@ async fn wait_carrier(client: &mut Client, peer: &str, expected: &str) -> Value 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn note_to_self_via_rpc_is_local_and_uses_the_reserved_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let daemon = Daemon::start(test_config(directory.path(), "notes"))
+        .await
+        .unwrap();
+    let mut client = Client::connect(&daemon.socket_path).await;
+    let mut events = Client::connect(&daemon.socket_path).await;
+    events.ok(json!({ "op": "subscribe" })).await;
+
+    let sent = client
+        .ok(json!({
+            "op": "note_to_self_send",
+            "body": "check the radio batteries",
+        }))
+        .await;
+    assert_eq!(sent["conversation"], json!("note_to_self"));
+    let id = sent["id"].as_str().unwrap().to_owned();
+    let event = events
+        .wait_event(|event| event["type"] == json!("note_to_self_message"))
+        .await;
+    assert_eq!(event["conversation"], json!("note_to_self"));
+    assert_eq!(event["id"], json!(id));
+
+    let history = client.ok(json!({ "op": "note_to_self_messages" })).await;
+    assert_eq!(history["conversation"], json!("note_to_self"));
+    assert_eq!(
+        history["messages"][0]["body"],
+        json!("check the radio batteries")
+    );
+    let status = client.ok(json!({ "op": "status" })).await;
+    assert_eq!(status["queued"], json!(0));
+    assert_eq!(status["contacts"], json!(0));
+
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn two_daemons_message_via_rpc_only() {
     let dir = tempfile::tempdir().unwrap();
     let alice = Daemon::start(test_config(dir.path(), "alice"))

@@ -26,6 +26,8 @@ COMMANDS:
                                     add a contact from an out-of-band bundle
     add NAME ADDRESS                add a contact from a kult address (DHT)
     send PEER_HEX TEXT...           queue a message
+    note TEXT...                    append to the local note-to-self conversation
+    note-messages                   local note-to-self history
     group-create NAME [MEMBER_HEX]... create a sender-key group
     group-send GROUP_HEX TEXT...     queue a group message
     group-add GROUP_HEX PEER_HEX     add a member (creator only)
@@ -102,6 +104,11 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
             need(2)?;
             json!({ "op": "send", "peer": args[0], "body": args[1..].join(" ") })
         }
+        "note" => {
+            need(1)?;
+            json!({ "op": "note_to_self_send", "body": args.join(" ") })
+        }
+        "note-messages" => json!({ "op": "note_to_self_messages" }),
         "group-create" => {
             need(1)?;
             json!({ "op": "group_create", "name": args[0], "members": args[1..] })
@@ -264,6 +271,14 @@ mod tests {
         assert_eq!(
             build_request("carriers", &[]).unwrap(),
             json!({ "op": "carrier_capabilities" })
+        );
+        assert_eq!(
+            build_request("note", &["remember".to_owned(), "this".to_owned()]).unwrap(),
+            json!({ "op": "note_to_self_send", "body": "remember this" })
+        );
+        assert_eq!(
+            build_request("note-messages", &[]).unwrap(),
+            json!({ "op": "note_to_self_messages" })
         );
     }
 }

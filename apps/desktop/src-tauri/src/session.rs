@@ -136,6 +136,20 @@ pub struct UiMessage {
     pub content_kind: &'static str,
 }
 
+/// One sealed, local-only note-to-self entry. It intentionally has no
+/// transport direction or delivery state because it never leaves the node.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiNoteMessage {
+    /// Message record id (hex).
+    pub id: String,
+    /// Stable reserved conversation identity shared by every shell.
+    pub conversation: String,
+    /// Unix seconds.
+    pub timestamp: u64,
+    /// Note text.
+    pub body: String,
+}
+
 /// A sender-key group row for the desktop UI. Secret material and sender
 /// chains never cross into the shell.
 #[derive(Clone, Debug, Serialize)]
@@ -286,6 +300,17 @@ pub enum UiEvent {
         /// Explicit content interpretation.
         content_kind: &'static str,
     },
+    /// A sealed local-only note was appended.
+    NoteToSelfMessageAdded {
+        /// Stable reserved conversation identity.
+        conversation: String,
+        /// Message record id (hex).
+        id: String,
+        /// Local creation time (Unix seconds).
+        timestamp: u64,
+        /// Note text.
+        body: String,
+    },
     /// An unknown peer completed a handshake; a contact stub exists now.
     ContactAdded {
         /// The new peer (hex).
@@ -364,6 +389,17 @@ impl UiEvent {
                 timestamp,
                 body,
                 content_kind: content_kind_str(content_kind),
+            },
+            Event::NoteToSelfMessageAdded {
+                conversation,
+                id,
+                timestamp,
+                body,
+            } => Self::NoteToSelfMessageAdded {
+                conversation,
+                id,
+                timestamp,
+                body,
             },
             Event::ContactAdded { peer } => Self::ContactAdded { peer },
             Event::SessionEstablished { peer } => Self::SessionEstablished { peer },
@@ -579,6 +615,34 @@ impl Session {
     /// Queue a message; returns its id (progress arrives as events).
     pub fn send(&self, peer: String, body: String) -> Result<String, String> {
         self.node.send(peer, body).map_err(|e| e.to_string())
+    }
+
+    /// Stable reserved identity for the local note-to-self conversation.
+    pub fn note_to_self_id(&self) -> String {
+        self.node.note_to_self_id()
+    }
+
+    /// All sealed local-only note-to-self entries.
+    pub fn note_to_self_messages(&self) -> Result<Vec<UiNoteMessage>, String> {
+        Ok(self
+            .node
+            .note_to_self_messages()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|message| UiNoteMessage {
+                id: message.id,
+                conversation: message.conversation,
+                timestamp: message.timestamp,
+                body: message.body,
+            })
+            .collect())
+    }
+
+    /// Append one sealed local-only note; no transport work is created.
+    pub fn send_note_to_self(&self, body: String) -> Result<String, String> {
+        self.node
+            .send_note_to_self(body)
+            .map_err(|e| e.to_string())
     }
 
     /// Create a sender-key group from stored contacts. Returns its id.
@@ -824,6 +888,16 @@ mod tests {
         .unwrap();
         assert_eq!(json["type"], "delivery_updated");
         assert_eq!(json["state"], "delivered");
+
+        let note = serde_json::to_value(UiEvent::NoteToSelfMessageAdded {
+            conversation: "note_to_self".to_owned(),
+            id: "05".repeat(16),
+            timestamp: 11,
+            body: "remember".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(note["type"], "note_to_self_message_added");
+        assert_eq!(note["conversation"], "note_to_self");
 
         let carrier = serde_json::to_value(UiEvent::CarrierCapabilityChanged {
             peer: "04".repeat(32),

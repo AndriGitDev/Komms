@@ -34,7 +34,7 @@ content and capability foundations before individual shells implement UI.
 | Post-quantum handshake | Assurance | Crypto-agility and downgrade-safe future upgrades. |
 | Contact names / usernames | Partial | Local petnames exist; rename UX and optional signed self-display name do not. |
 | Secure backups | Shipped | Future feature data must be added without leaking or silently omitting it. |
-| Note to self | Planned | Local conversation type and UI. |
+| Note to self | Shipped (text) | Attachments follow F3 shell integration. |
 | Queued messages | Shipped | Already part of the honest delivery engine. |
 | Scheduled messages | Planned | Durable `not_before` gate and UI. |
 | Text formatting | Planned | Safe common subset and consistent rendering. |
@@ -155,8 +155,9 @@ must not assume that before measurements exist.
 bounded records and stable replacement keys for conversation types, folders,
 single-folder membership, pins, labels and multi-label membership, drafts, UI
 preferences, and custom icons. The table exposes only row count and approximate
-sealed sizes in a copied database; `KKR3` backs up every user-authored record
-while `KKR1` and `KKR2` remain restorable. Feature behavior and shell UX remain
+sealed sizes in a copied database; `KKR4` backs up every user-authored record
+and note-to-self history while `KKR1`, `KKR2`, and `KKR3` remain restorable.
+Feature behavior and shell UX remain
 separate B7/B10-B13/B18 slices.
 
 Add sealed local-only records for conversation type, folders, pins, labels,
@@ -250,7 +251,7 @@ fact that changing a remote suggestion never silently renames a local petname.
 
 ### B6. Secure backups
 
-**State:** KKR3 shipped; permanent compatibility track.
+**State:** KKR4 shipped; permanent compatibility track.
 
 For every feature in this plan, decide explicitly whether its state is identity
 critical, conversation history, local preference, secret ephemeral state, or
@@ -260,13 +261,18 @@ never back up live ratchet/sender chains or temporary decrypted media.
 Acceptance:
 
 - backup and restore preserve all promised feature state;
-- older KKR1/KKR2 files remain restorable;
+- older KKR1/KKR2/KKR3 files remain restorable;
 - a restored node rotates/re-handshakes where required;
 - omitted caches are rebuilt without data loss or false delivery state.
 
 ### B7. Note to self
 
 **Depends on:** F5.
+
+**State:** text note-to-self shipped through `kult-store`, `kult-node`, RPC/CLI,
+UniFFI, desktop, Android, and iOS. Every surface uses the reserved
+`note_to_self` identity. `KKR4` includes the sealed history; exact KKR1–KKR3
+restore compatibility remains. Attachments follow F3 shell integration.
 
 Implement a first-class local conversation, not a fake contact or a message sent
 through the node's own ratchet. Store entries sealed in `kult-store`; never queue,
@@ -630,16 +636,16 @@ No feature is done until all applicable gates pass:
 Keep each numbered item, and each shell named within an item, in a separate
 reviewable PR:
 
-1. expose the already-shipped group operations through RPC, CLI, and UniFFI, with
-   an end-to-end bindings test;
-2. add group list/history/create/send UI to desktop, then Android, then iOS as
-   separate follow-ups over the proven interface;
-3. build the per-peer carrier capability API and pin mesh-only decisions in node,
-   scheduler, and FFI tests;
-4. add the sealed local metadata foundation, then note-to-self; implement
-   scheduled delivery in its own core queue/storage PR;
-5. write the typed-content and attachment ADRs as separate design PRs, with no
-   implementation hidden in either decision.
+1. completed: expose group operations through RPC, CLI, and UniFFI, with an
+   end-to-end bindings test;
+2. completed: add group list/history/create/send UI to desktop, Android, and iOS;
+3. completed: build the per-peer carrier capability API and pin mesh-only
+   decisions in node, scheduler, and FFI tests;
+4. completed through note-to-self: add the sealed local metadata foundation and
+   first local conversation; scheduled delivery remains its own core
+   queue/storage PR;
+5. completed: write the typed-content and attachment ADRs as separate design
+   changes before implementation.
 
 This program unlocks the largest number of approved features without combining
 unrelated review surfaces or starting with the two riskiest programs,

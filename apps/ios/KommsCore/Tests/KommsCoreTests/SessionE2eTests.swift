@@ -180,6 +180,36 @@ final class SessionE2eTests: XCTestCase {
         bob.stop()
     }
 
+    func testNoteToSelfIsLocalSealedAndDurable() throws {
+        let dir = try tempDir()
+        let events = Events()
+        var session = try open(dir, "notes", events)
+
+        XCTAssertEqual("note_to_self", session.noteToSelfId())
+        let id = try session.sendNoteToSelf(body: "remember the glacier map")
+        let added = try events.wait("local note event") {
+            event -> (conversation: String, body: String)? in
+            if case let .noteToSelfMessageAdded(conversation, eventId, _, body) = event,
+               eventId == id {
+                return (conversation, body)
+            }
+            return nil
+        }
+        XCTAssertEqual(session.noteToSelfId(), added.conversation)
+        XCTAssertEqual("remember the glacier map", added.body)
+        XCTAssertEqual(0, try session.status().queued)
+        XCTAssertEqual(0, try session.status().contacts)
+        XCTAssertEqual("remember the glacier map", try session.noteToSelfMessages().first?.body)
+
+        session.stop()
+        session = try open(dir, "notes", Events())
+        let history = try session.noteToSelfMessages()
+        XCTAssertEqual("note_to_self", history.first?.conversation)
+        XCTAssertEqual("remember the glacier map", history.first?.body)
+        XCTAssertEqual(0, try session.status().queued)
+        session.stop()
+    }
+
     func testGroupUXCreatesManagesMessagesAndShowsPartialDelivery() throws {
         let dir = try tempDir()
         let aEv = Events()
@@ -300,6 +330,7 @@ final class SessionE2eTests: XCTestCase {
             }
             return nil
         }
+        _ = try alice.sendNoteToSelf(body: "packed in the backup")
 
         // The backup sheet: mnemonic comes back exactly once, 24 words; an
         // existing file is refused, not clobbered.
@@ -335,6 +366,7 @@ final class SessionE2eTests: XCTestCase {
         let history = try alice.messages(peer: bobPeer)
         XCTAssertEqual(1, history.count)
         XCTAssertEqual("before the backup", history[0].body)
+        XCTAssertEqual("packed in the backup", try alice.noteToSelfMessages().first?.body)
 
         // The restored node re-handshakes automatically; after Bob learns
         // the new address, messaging resumes in both directions.

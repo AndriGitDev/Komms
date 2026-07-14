@@ -19,7 +19,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use kult_crypto::{KdfProfile, SafetyNumber};
 use kult_node::{CarrierCapabilitySnapshot, Event, GroupInfo, Node};
-use kult_store::{ContactRecord, GroupMessageRecord, MessageRecord};
+use kult_store::{ContactRecord, GroupMessageRecord, MessageRecord, NoteMessageRecord};
 use kult_transport::{
     DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, Transport, TransportOptions,
 };
@@ -83,6 +83,13 @@ pub(crate) enum Msg {
         peer: [u8; 32],
         body: Vec<u8>,
         resp: Resp<[u8; 16]>,
+    },
+    NoteToSelfSend {
+        body: String,
+        resp: Resp<[u8; 16]>,
+    },
+    NoteToSelfMessages {
+        resp: Resp<Vec<NoteMessageRecord>>,
     },
     GroupCreate {
         name: String,
@@ -474,6 +481,12 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
                 node.send_message(&peer, &body, now, &mut OsRng)
                     .map_err(fail),
             );
+        }
+        Msg::NoteToSelfSend { body, resp } => {
+            let _ = resp.send(node.note_to_self_send(&body, now, &mut OsRng).map_err(fail));
+        }
+        Msg::NoteToSelfMessages { resp } => {
+            let _ = resp.send(node.note_to_self_messages().map_err(fail));
         }
         Msg::GroupCreate {
             name,

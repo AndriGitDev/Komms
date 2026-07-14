@@ -31,6 +31,17 @@ struct MainView: View {
                     StatusSection(status: status)
                 }
 
+                Section("Local") {
+                    NavigationLink(value: NoteRoute(id: model.noteToSelfId())) {
+                        VStack(alignment: .leading) {
+                            Text("Note to self")
+                            Text("Local only")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
                 Section("Contacts") {
                     if model.contacts.isEmpty {
                         Text("No contacts yet — pair with a friend's QR code.")
@@ -75,6 +86,9 @@ struct MainView: View {
             .navigationDestination(for: GroupRoute.self) { route in
                 GroupChatView(groupId: route.id)
             }
+            .navigationDestination(for: NoteRoute.self) { route in
+                NoteToSelfView(conversationId: route.id)
+            }
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
                     Button {
@@ -108,6 +122,10 @@ struct MainView: View {
 }
 
 private struct GroupRoute: Hashable {
+    let id: String
+}
+
+private struct NoteRoute: Hashable {
     let id: String
 }
 

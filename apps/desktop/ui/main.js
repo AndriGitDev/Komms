@@ -17,7 +17,8 @@ const state = {
   peer: "",
   contacts: [],
   groups: [],
-  currentKind: null, // "contact" or "group"
+  noteToSelfId: null,
+  currentKind: null, // "contact", "group", or "note"
   currentId: null,
   unread: new Map(), // peer id → count
   groupUnread: new Map(), // group id → count
@@ -183,6 +184,7 @@ function enterApp(address) {
   $("#gate-mnemonic").value = "";
   refreshContacts();
   refreshGroups();
+  call("note_to_self_id").then((id) => { state.noteToSelfId = id; });
   refreshStatus();
   state.statusTimer = setInterval(refreshStatus, 5000);
 }
@@ -194,6 +196,7 @@ async function leaveApp() {
   state.currentId = null;
   state.contacts = [];
   state.groups = [];
+  state.noteToSelfId = null;
   state.unread.clear();
   state.groupUnread.clear();
   state.msgEls.clear();
@@ -313,14 +316,16 @@ function currentGroup() {
 }
 
 function updateChatHead() {
+  const isNote = state.currentKind === "note";
   const isGroup = state.currentKind === "group";
-  const contact = isGroup ? null : state.contacts.find((x) => x.peer === state.currentId);
+  const contact = isGroup || isNote ? null : state.contacts.find((x) => x.peer === state.currentId);
   const group = isGroup ? currentGroup() : null;
-  $("#chat-name").textContent = isGroup ? (group?.name ?? "") : (contact?.name ?? "");
-  $("#chat-verified").hidden = isGroup || !contact?.verified;
-  $("#btn-verify").hidden = isGroup;
-  $("#btn-hints").hidden = isGroup;
+  $("#chat-name").textContent = isNote ? "Note to self" : isGroup ? (group?.name ?? "") : (contact?.name ?? "");
+  $("#chat-verified").hidden = isGroup || isNote || !contact?.verified;
+  $("#btn-verify").hidden = isGroup || isNote;
+  $("#btn-hints").hidden = isGroup || isNote;
   $("#btn-group-details").hidden = !isGroup;
+  $("#note-to-self").classList.toggle("active", isNote);
 }
 
 // ── conversation ────────────────────────────────────────────────────────
@@ -349,6 +354,19 @@ async function openGroup(group) {
   $("#composer-input").focus();
 }
 
+async function openNoteToSelf() {
+  state.noteToSelfId ??= await call("note_to_self_id");
+  state.currentKind = "note";
+  state.currentId = state.noteToSelfId;
+  $("#chat-empty").hidden = true;
+  $("#chat-pane").hidden = false;
+  updateChatHead();
+  await renderMessages();
+  $("#composer-input").focus();
+}
+
+$("#note-to-self").addEventListener("click", openNoteToSelf);
+
 function bubble(m) {
   const el = document.createElement("div");
   el.className = "msg " + (m.outbound ? "out" : "in");
@@ -362,6 +380,18 @@ function bubble(m) {
     st.textContent = " · " + (STATE_GLYPH[m.state] ?? m.state);
     meta.append(st);
   }
+  el.append(meta);
+  state.msgEls.set(m.id, el);
+  return el;
+}
+
+function noteBubble(m) {
+  const el = document.createElement("div");
+  el.className = "msg out";
+  el.textContent = m.body;
+  const meta = document.createElement("span");
+  meta.className = "meta";
+  meta.textContent = `${fmtTime(m.timestamp)} · local only`;
   el.append(meta);
   state.msgEls.set(m.id, el);
   return el;
@@ -398,14 +428,17 @@ function groupBubble(m) {
 }
 
 async function renderMessages() {
+  const isNote = state.currentKind === "note";
   const isGroup = state.currentKind === "group";
-  const msgs = isGroup
+  const msgs = isNote
+    ? await call("note_to_self_messages")
+    : isGroup
     ? await call("group_messages", { group: state.currentId })
     : await call("messages", { peer: state.currentId });
   const box = $("#messages");
   box.textContent = "";
   state.msgEls.clear();
-  for (const m of msgs) box.append(isGroup ? groupBubble(m) : bubble(m));
+  for (const m of msgs) box.append(isNote ? noteBubble(m) : isGroup ? groupBubble(m) : bubble(m));
   box.scrollTop = box.scrollHeight;
 }
 
@@ -417,6 +450,8 @@ $("#composer").addEventListener("submit", async (e) => {
   input.value = "";
   if (state.currentKind === "group") {
     await call("send_group", { group: state.currentId, body });
+  } else if (state.currentKind === "note") {
+    await call("send_note_to_self", { body });
   } else {
     await call("send", { peer: state.currentId, body });
   }
@@ -427,6 +462,12 @@ $("#composer").addEventListener("submit", async (e) => {
 
 listen("node-event", async ({ payload: ev }) => {
   switch (ev.type) {
+    case "note_to_self_message_added": {
+      if (state.currentKind === "note" && ev.conversation === state.currentId) {
+        await renderMessages();
+      }
+      break;
+    }
     case "delivery_updated": {
       const el = state.msgEls.get(ev.id);
       if (el) {

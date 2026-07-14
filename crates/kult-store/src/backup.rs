@@ -25,12 +25,13 @@
 //! File layout (strict, all-or-nothing, like the sneakernet bundle format):
 //!
 //! ```text
-//! magic "KKR3" (4) ‖ m_cost_kib u32 LE ‖ t_cost u32 LE ‖ p_cost u32 LE
+//! magic "KKR4" (4) ‖ m_cost_kib u32 LE ‖ t_cost u32 LE ‖ p_cost u32 LE
 //!   ‖ salt (16) ‖ sealed( postcard(BackupPayload) )
 //! ```
 //!
-//! Files with the older `KKR1` (pre-groups) and `KKR2` (pre-local-metadata)
-//! magic still restore with the same header layout.
+//! Files with the older `KKR1` (pre-groups), `KKR2` (pre-local-metadata),
+//! and `KKR3` (pre-note-to-self) magic still restore with the same header
+//! layout.
 //!
 //! The Argon2id cost parameters ride in the header so a backup written on
 //! one device class (mobile profile) restores on any other; the sealed
@@ -51,11 +52,13 @@ use kult_crypto::{
 
 use crate::{
     ContactRecord, GroupMember, GroupMessageRecord, GroupRecord, LocalMetadataRecord,
-    MessageRecord, PendingAnnounce, Result, Store, StoreError,
+    MessageRecord, NoteMessageRecord, PendingAnnounce, Result, Store, StoreError,
 };
 
-/// Backup file magic: Komms recovery file, format 3 (local metadata included).
-pub const BACKUP_MAGIC: [u8; 4] = *b"KKR3";
+/// Backup file magic: Komms recovery file, format 4 (note-to-self included).
+pub const BACKUP_MAGIC: [u8; 4] = *b"KKR4";
+/// The pre-note-to-self format 3 magic — still restorable.
+pub const BACKUP_MAGIC_V3: [u8; 4] = *b"KKR3";
 /// The pre-local-metadata format 2 magic — still restorable.
 pub const BACKUP_MAGIC_V2: [u8; 4] = *b"KKR2";
 /// The pre-groups format 1 magic — still restorable.
@@ -96,6 +99,8 @@ struct BackupPayload {
     group_messages: Vec<GroupMessageRecord>,
     /// User-authored local organization, drafts, preferences, and icons.
     local_metadata: Vec<LocalMetadataRecord>,
+    /// First-class local note-to-self text history.
+    note_messages: Vec<NoteMessageRecord>,
 }
 
 /// The `KKR1` payload shape, for restoring pre-groups backups.
@@ -118,6 +123,19 @@ struct BackupPayloadV2 {
     reset_peers: Vec<[u8; 32]>,
     groups: Vec<BackupGroup>,
     group_messages: Vec<GroupMessageRecord>,
+}
+
+/// The `KKR3` payload shape, before note-to-self history existed.
+#[derive(Serialize, Deserialize)]
+struct BackupPayloadV3 {
+    created_at: u64,
+    identity: Vec<u8>,
+    contacts: Vec<ContactRecord>,
+    messages: Vec<MessageRecord>,
+    reset_peers: Vec<[u8; 32]>,
+    groups: Vec<BackupGroup>,
+    group_messages: Vec<GroupMessageRecord>,
+    local_metadata: Vec<LocalMetadataRecord>,
 }
 
 fn decode_exact<T>(bytes: &[u8]) -> Result<T>
@@ -172,6 +190,7 @@ impl Store {
                 })
                 .collect(),
             local_metadata: self.local_metadata()?,
+            note_messages: self.note_messages()?,
         };
         let plain =
             Zeroizing::new(postcard::to_allocvec(&payload).map_err(|_| StoreError::Serialization)?);
@@ -216,7 +235,8 @@ impl Store {
             return Err(StoreError::NotABackup);
         }
         let version = match <[u8; 4]>::try_from(&backup[..4]).expect("length checked") {
-            BACKUP_MAGIC => 3,
+            BACKUP_MAGIC => 4,
+            BACKUP_MAGIC_V3 => 3,
             BACKUP_MAGIC_V2 => 2,
             BACKUP_MAGIC_V1 => 1,
             _ => return Err(StoreError::NotABackup),
@@ -247,6 +267,7 @@ impl Store {
                     groups: Vec::new(),
                     group_messages: Vec::new(),
                     local_metadata: Vec::new(),
+                    note_messages: Vec::new(),
                 }
             }
             2 => {
@@ -260,9 +281,24 @@ impl Store {
                     groups: v2.groups,
                     group_messages: v2.group_messages,
                     local_metadata: Vec::new(),
+                    note_messages: Vec::new(),
                 }
             }
-            3 => decode_exact(&plain)?,
+            3 => {
+                let v3: BackupPayloadV3 = decode_exact(&plain)?;
+                BackupPayload {
+                    created_at: v3.created_at,
+                    identity: v3.identity,
+                    contacts: v3.contacts,
+                    messages: v3.messages,
+                    reset_peers: v3.reset_peers,
+                    groups: v3.groups,
+                    group_messages: v3.group_messages,
+                    local_metadata: v3.local_metadata,
+                    note_messages: Vec::new(),
+                }
+            }
+            4 => decode_exact(&plain)?,
             _ => unreachable!("version matched above"),
         };
         let identity_bytes: Zeroizing<[u8; 64]> = Zeroizing::new(
@@ -326,6 +362,9 @@ impl Store {
         }
         for record in &payload.local_metadata {
             store.put_local_metadata(record, rng)?;
+        }
+        for message in &payload.note_messages {
+            store.put_note_message(message, rng)?;
         }
         Ok(store)
     }

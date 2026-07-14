@@ -24,6 +24,7 @@ import uniffi.kult_ffi.GroupMessage
 import uniffi.kult_ffi.KdfChoice
 import uniffi.kult_ffi.KultNode
 import uniffi.kult_ffi.Message
+import uniffi.kult_ffi.NoteMessage
 import uniffi.kult_ffi.SafetyNumber
 import uniffi.kult_ffi.Status
 import uniffi.kult_ffi.defaultConfig
@@ -107,6 +108,15 @@ class Session private constructor(private val node: KultNode) {
 
     /** Queue a message; returns its id (progress arrives as events). */
     fun send(peer: String, body: String): String = node.send(peer, body)
+
+    /** Stable reserved identity for the local note-to-self conversation. */
+    fun noteToSelfId(): String = node.noteToSelfId()
+
+    /** All sealed local-only note-to-self entries. */
+    fun noteToSelfMessages(): List<NoteMessage> = node.noteToSelfMessages()
+
+    /** Append one sealed local-only note; no transport work is created. */
+    fun sendNoteToSelf(body: String): String = node.sendNoteToSelf(body)
 
     /** Create a sender-key group from stored contacts; returns its id. */
     fun createGroup(name: String, members: List<String>): String =

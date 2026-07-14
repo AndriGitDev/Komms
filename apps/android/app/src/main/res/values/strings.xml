@@ -28,6 +28,9 @@
     <string name="main_contacts_heading">Contacts</string>
     <string name="main_groups_heading">Groups</string>
     <string name="main_groups_empty">No groups yet. Create one from stored contacts.</string>
+    <string name="note_to_self_title">Note to self</string>
+    <string name="note_to_self_local">Note to self, local only</string>
+    <string name="note_local_only">local only</string>
     <string name="menu_add_contact">Add contact</string>
     <string name="menu_create_group">New group</string>
     <string name="menu_my_qr">My pairing QR</string>
