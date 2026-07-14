@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use kult_node::{ContentStatus, Event, GroupInfo};
+use kult_node::{CarrierCapability, CarrierCapabilitySnapshot, ContentStatus, Event, GroupInfo};
 use kult_store::{DeliveryState, Direction, GroupMessageRecord, MessageRecord};
 use kult_transport::DeliveryHint;
 
@@ -99,6 +99,8 @@ pub enum Op {
     },
     /// List stored contacts.
     Contacts,
+    /// List safe, time-bounded carrier snapshots for all contacts.
+    CarrierCapabilities,
     /// Message history with a peer.
     Messages {
         /// The peer id (hex).
@@ -209,6 +211,10 @@ pub fn event_line(event: &Event) -> String {
             "type": "awaiting_faster_link",
             "id": hex_encode(id),
         }),
+        Event::CarrierCapabilityChanged { snapshot } => json!({
+            "type": "carrier_capability",
+            "snapshot": carrier_json(snapshot),
+        }),
         Event::GroupUpdated { group } => json!({
             "type": "group_updated",
             "group": hex_encode(group),
@@ -248,6 +254,25 @@ pub fn group_json(group: &GroupInfo) -> Value {
         "creator": hex_encode(&group.creator),
         "members": group.members.iter().map(|peer| hex_encode(peer)).collect::<Vec<_>>(),
     })
+}
+
+/// One render-safe, time-bounded carrier snapshot as JSON.
+pub fn carrier_json(snapshot: &CarrierCapabilitySnapshot) -> Value {
+    json!({
+        "peer": hex_encode(&snapshot.peer),
+        "capability": carrier_str(snapshot.capability),
+        "observed_at": snapshot.observed_at,
+        "expires_at": snapshot.expires_at,
+    })
+}
+
+fn carrier_str(capability: CarrierCapability) -> &'static str {
+    match capability {
+        CarrierCapability::Realtime => "realtime",
+        CarrierCapability::Bulk => "bulk",
+        CarrierCapability::MeshOnly => "mesh_only",
+        CarrierCapability::OfflineOrUnknown => "offline_or_unknown",
+    }
 }
 
 /// A group message record as JSON, including honest per-member delivery.
@@ -397,6 +422,24 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(r.op, Op::AddContact { .. }));
+        let r: Request = serde_json::from_str(r#"{"id":3,"op":"carrier_capabilities"}"#).unwrap();
+        assert!(matches!(r.op, Op::CarrierCapabilities));
+    }
+
+    #[test]
+    fn carrier_event_is_explicit_and_time_bounded() {
+        let line = event_line(&Event::CarrierCapabilityChanged {
+            snapshot: CarrierCapabilitySnapshot {
+                peer: [0x12; 32],
+                capability: CarrierCapability::MeshOnly,
+                observed_at: 10,
+                expires_at: 70,
+            },
+        });
+        let value: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(value["event"]["type"], json!("carrier_capability"));
+        assert_eq!(value["event"]["snapshot"]["capability"], json!("mesh_only"));
+        assert_eq!(value["event"]["snapshot"]["expires_at"], json!(70));
     }
 
     #[test]

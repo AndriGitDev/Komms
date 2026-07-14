@@ -104,10 +104,10 @@ planned. [ADR-0015](adr/0015-encrypted-attachment-pipeline.md) now has bounded
 manifest/bulk codecs, deterministic chunk cryptography, sealed quota-bound
 storage, explicit consent/cancel/reject/resume state, pairwise and encrypt-once
 group transfer, streamed export, and a scheduler-enforced no-airtime class.
-Activation performs a fresh non-airtime reachability check on every offer or
-missing-range request. F4 still supplies the stable, time-bounded verdict and
-change events that applications need for user-facing feature gating; shells
-must not infer capacity from an available route alone.
+Activation consumes F4's fresh, time-bounded verdict on every offer or
+missing-range request. Applications receive the same snapshot and change events
+for user-facing feature gating; shells must not infer capacity from an available
+route alone.
 
 The existing envelope path is suitable for small payloads, not an unbounded file
 transfer. Define attachments as encrypted, content-addressed chunks with a sealed
@@ -127,6 +127,12 @@ Required properties:
   corrupting or dropping the conversation.
 
 ### F4. Per-peer carrier capabilities
+
+**State:** shipped through node, RPC/CLI, and UniFFI. The node probes stored
+delivery hints on each heartbeat, publishes a 60-second snapshot and verdict
+change event, and safely downgrades expired positive observations to
+`offline_or_unknown`. Attachment activation consumes this same snapshot, so
+applications and the scheduler no longer infer capacity independently.
 
 The node scheduler knows link profiles, but applications do not receive a stable
 per-peer verdict suitable for feature gating. Expose a capability snapshot and

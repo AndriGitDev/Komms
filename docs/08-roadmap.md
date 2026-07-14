@@ -316,10 +316,11 @@ The Attachment core proposed by
 manifests and bulk records, independently sealed resumable chunks, explicit
 consent/cancel/reject state, pairwise and encrypt-once group transfer,
 quota-bound sealed-file storage, KKR2 media exclusion, streamed export, and a
-hard no-airtime bulk class. Core activation rechecks non-airtime reachability
-before queueing an offer or missing-range request. Remaining F3 work is the F4
-application-facing carrier verdict plus RPC/UniFFI and shell file-picker,
-progress, preview, background-transfer, and protected-export integration.
+hard no-airtime bulk class. The F4 application-facing carrier verdict is now
+shared across the node scheduler, RPC/CLI, and UniFFI as an expiring snapshot
+with change events; attachment activation consumes that same verdict. Remaining
+F3 work is attachment RPC/UniFFI plus shell file-picker, progress, preview,
+background-transfer, and protected-export integration.
 
 **Acceptance**: audit findings triaged with public report; reproducible-build attestation
 for all release artifacts.

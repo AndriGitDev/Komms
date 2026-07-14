@@ -252,6 +252,55 @@ pub struct Contact {
     pub verified: bool,
 }
 
+/// Best currently known carrier class for one contact. Positive verdicts are
+/// advisory and expire at the time carried by [`CarrierCapabilitySnapshot`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum CarrierCapability {
+    /// Direct low-latency non-airtime path reachable now.
+    Realtime,
+    /// Non-airtime path reachable now or by store-and-forward.
+    Bulk,
+    /// Only airtime-budgeted reachability is currently known.
+    MeshOnly,
+    /// No fresh reachable carrier is currently known.
+    OfflineOrUnknown,
+}
+
+impl CarrierCapability {
+    fn from_node(capability: kult_node::CarrierCapability) -> Self {
+        match capability {
+            kult_node::CarrierCapability::Realtime => Self::Realtime,
+            kult_node::CarrierCapability::Bulk => Self::Bulk,
+            kult_node::CarrierCapability::MeshOnly => Self::MeshOnly,
+            kult_node::CarrierCapability::OfflineOrUnknown => Self::OfflineOrUnknown,
+        }
+    }
+}
+
+/// Stable, time-bounded carrier verdict for one contact.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct CarrierCapabilitySnapshot {
+    /// Contact peer id (hex).
+    pub peer: String,
+    /// Best observed carrier class.
+    pub capability: CarrierCapability,
+    /// Unix time at which transports were probed.
+    pub observed_at: u64,
+    /// Unix time at which the verdict stops being authoritative.
+    pub expires_at: u64,
+}
+
+impl CarrierCapabilitySnapshot {
+    fn from_node(snapshot: kult_node::CarrierCapabilitySnapshot) -> Self {
+        Self {
+            peer: hex_encode(&snapshot.peer),
+            capability: CarrierCapability::from_node(snapshot.capability),
+            observed_at: snapshot.observed_at,
+            expires_at: snapshot.expires_at,
+        }
+    }
+}
+
 /// One message in a conversation's history.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct Message {
@@ -403,6 +452,11 @@ pub enum Event {
         /// Message record id (hex).
         id: String,
     },
+    /// The authoritative time-bounded carrier verdict for a contact changed.
+    CarrierCapabilityChanged {
+        /// Current snapshot.
+        snapshot: CarrierCapabilitySnapshot,
+    },
     /// A group was created, joined, re-keyed, re-rostered, or left.
     GroupUpdated {
         /// Group id (hex).
@@ -466,6 +520,11 @@ impl Event {
             kult_node::Event::AwaitingFasterLink { id } => Self::AwaitingFasterLink {
                 id: hex_encode(&id),
             },
+            kult_node::Event::CarrierCapabilityChanged { snapshot } => {
+                Self::CarrierCapabilityChanged {
+                    snapshot: CarrierCapabilitySnapshot::from_node(snapshot),
+                }
+            }
             kult_node::Event::GroupUpdated { group } => Self::GroupUpdated {
                 group: hex_encode(&group),
             },
@@ -732,6 +791,16 @@ impl KultNode {
                 name: c.name.clone(),
                 verified: c.verified,
             })
+            .collect())
+    }
+
+    /// Fresh, safe carrier snapshots for all stored contacts. Expired
+    /// positive observations are returned as `offline_or_unknown`.
+    pub fn carrier_capabilities(&self) -> Result<Vec<CarrierCapabilitySnapshot>, FfiError> {
+        Ok(self
+            .call(|resp| Msg::CarrierCapabilities { resp })?
+            .into_iter()
+            .map(CarrierCapabilitySnapshot::from_node)
             .collect())
     }
 

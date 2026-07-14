@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use kult_ffi::{
-    default_config, Config, DeliveryState, Event, EventListener, Hint, KdfChoice, KultNode,
+    default_config, CarrierCapability, Config, DeliveryState, Event, EventListener, Hint,
+    KdfChoice, KultNode,
 };
 
 /// Records every event; tests poll it like an app's view-model would.
@@ -127,6 +128,22 @@ fn two_nodes_message_via_ffi_only() {
         .unwrap();
     assert_eq!(bob_peer, bob.peer());
     assert_eq!(alice_peer, alice.peer());
+
+    // The same carrier verdict that gates attachment activation crosses the
+    // bindings as an expiring snapshot and a change event.
+    a_rec.wait("alice's realtime carrier verdict", |event| {
+        matches!(
+            event,
+            Event::CarrierCapabilityChanged { snapshot }
+                if snapshot.peer == bob_peer
+                    && snapshot.capability == CarrierCapability::Realtime
+        )
+    });
+    let carriers = alice.carrier_capabilities().unwrap();
+    assert_eq!(carriers.len(), 1);
+    assert_eq!(carriers[0].peer, bob_peer);
+    assert_eq!(carriers[0].capability, CarrierCapability::Realtime);
+    assert!(carriers[0].expires_at > carriers[0].observed_at);
 
     // Send; the listener walks the honest ladder to `delivered` (an
     // end-to-end encrypted receipt, not a transport ack).

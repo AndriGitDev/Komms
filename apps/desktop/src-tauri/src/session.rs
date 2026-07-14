@@ -18,8 +18,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use kult_ffi::{
-    default_config, Config, ContentKind, DeliveryState, Direction, Event, EventListener, Hint,
-    KdfChoice, KultNode, NatVerdict,
+    default_config, CarrierCapability, Config, ContentKind, DeliveryState, Direction, Event,
+    EventListener, Hint, KdfChoice, KultNode, NatVerdict,
 };
 
 use crate::qr;
@@ -303,6 +303,17 @@ pub enum UiEvent {
         /// Message record id (hex).
         id: String,
     },
+    /// The authoritative time-bounded carrier verdict for a contact changed.
+    CarrierCapabilityChanged {
+        /// Contact peer id (hex).
+        peer: String,
+        /// `realtime`, `bulk`, `mesh_only`, or `offline_or_unknown`.
+        capability: &'static str,
+        /// Unix time at which transports were probed.
+        observed_at: u64,
+        /// Unix time at which the verdict stops being authoritative.
+        expires_at: u64,
+    },
     /// A group was created, joined, re-keyed, re-rostered, or left.
     GroupUpdated {
         /// Group id (hex).
@@ -357,6 +368,12 @@ impl UiEvent {
             Event::ContactAdded { peer } => Self::ContactAdded { peer },
             Event::SessionEstablished { peer } => Self::SessionEstablished { peer },
             Event::AwaitingFasterLink { id } => Self::AwaitingFasterLink { id },
+            Event::CarrierCapabilityChanged { snapshot } => Self::CarrierCapabilityChanged {
+                peer: snapshot.peer,
+                capability: carrier_capability_str(snapshot.capability),
+                observed_at: snapshot.observed_at,
+                expires_at: snapshot.expires_at,
+            },
             Event::GroupUpdated { group } => Self::GroupUpdated { group },
             Event::GroupMessageReceived {
                 group,
@@ -397,6 +414,15 @@ fn content_kind_str(kind: ContentKind) -> &'static str {
         ContentKind::Text => "text",
         ContentKind::Unsupported => "unsupported",
         ContentKind::Malformed => "malformed",
+    }
+}
+
+fn carrier_capability_str(capability: CarrierCapability) -> &'static str {
+    match capability {
+        CarrierCapability::Realtime => "realtime",
+        CarrierCapability::Bulk => "bulk",
+        CarrierCapability::MeshOnly => "mesh_only",
+        CarrierCapability::OfflineOrUnknown => "offline_or_unknown",
     }
 }
 
@@ -798,6 +824,17 @@ mod tests {
         .unwrap();
         assert_eq!(json["type"], "delivery_updated");
         assert_eq!(json["state"], "delivered");
+
+        let carrier = serde_json::to_value(UiEvent::CarrierCapabilityChanged {
+            peer: "04".repeat(32),
+            capability: "mesh_only",
+            observed_at: 10,
+            expires_at: 70,
+        })
+        .unwrap();
+        assert_eq!(carrier["type"], "carrier_capability_changed");
+        assert_eq!(carrier["capability"], "mesh_only");
+        assert_eq!(carrier["expires_at"], 70);
 
         let updated = serde_json::to_value(UiEvent::GroupUpdated {
             group: "01".repeat(32),

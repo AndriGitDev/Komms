@@ -5,6 +5,39 @@
 use kult_store::{DeliveryState, MediaTransferState};
 use kult_transport::DeliveryHint;
 
+/// Application-facing summary of the best carrier currently known for one
+/// peer. The ordering is semantic rather than a promise that a particular
+/// transport remains reachable after the snapshot expires.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CarrierCapability {
+    /// A direct, low-latency non-airtime path is reachable now. Suitable for
+    /// bulk transfer and a future measured real-time media profile.
+    Realtime,
+    /// A non-airtime path is reachable now or via store-and-forward. Suitable
+    /// for bounded attachment transfer, but not necessarily live media.
+    Bulk,
+    /// At least one airtime-budgeted path is reachable, with no non-airtime
+    /// path currently known. Bulk work must remain held.
+    MeshOnly,
+    /// No route is currently reachable, the peer is unknown, or the last
+    /// positive observation expired.
+    OfflineOrUnknown,
+}
+
+/// Time-bounded carrier verdict for one contact. Consumers must treat the
+/// snapshot as [`CarrierCapability::OfflineOrUnknown`] after `expires_at`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CarrierCapabilitySnapshot {
+    /// Contact identity key.
+    pub peer: [u8; 32],
+    /// Best currently observed carrier class.
+    pub capability: CarrierCapability,
+    /// Unix time at which transports were probed.
+    pub observed_at: u64,
+    /// Unix time at which this observation stops being authoritative.
+    pub expires_at: u64,
+}
+
 /// Instructions the application layer gives the node. Every command is also
 /// available as a typed method on [`crate::Node`]; this enum is the single
 /// serializable entry point the FFI layer wraps.
@@ -269,6 +302,13 @@ pub enum Event {
     AwaitingFasterLink {
         /// Message record id.
         id: [u8; 16],
+    },
+    /// The best time-bounded carrier verdict for a contact changed. Initial
+    /// observation is emitted too, so applications can populate state from
+    /// the same stream used for later transitions.
+    CarrierCapabilityChanged {
+        /// Current authoritative snapshot.
+        snapshot: CarrierCapabilitySnapshot,
     },
     /// A group was created, joined, re-keyed, re-rostered, or left
     /// (ADR-0012) — re-read it via [`crate::Node::groups`].
