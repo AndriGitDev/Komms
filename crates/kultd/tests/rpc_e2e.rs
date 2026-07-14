@@ -186,6 +186,85 @@ async fn note_to_self_via_rpc_is_local_and_uses_the_reserved_identity() {
     assert_eq!(status["queued"], json!(0));
     assert_eq!(status["contacts"], json!(0));
 
+    // The same local-only contract test also pins scheduling's RPC front
+    // door without adding another network-heavy test thread. A self contact
+    // is sufficient because activation is deliberately hours away.
+    let bob_bundle = client.ok(json!({ "op": "bundle" })).await["bundle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bob_peer = client
+        .ok(json!({
+            "op": "add_contact",
+            "name": "bob",
+            "bundle": bob_bundle,
+            "hints": [],
+        }))
+        .await["peer"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let group = client
+        .ok(json!({ "op": "group_create", "name": "later", "members": [] }))
+        .await["group"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let future = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3_600;
+
+    let pair = client
+        .ok(json!({
+            "op": "schedule",
+            "peer": bob_peer,
+            "body": "first draft",
+            "not_before": future,
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    client
+        .ok(json!({
+            "op": "group_schedule",
+            "group": group,
+            "body": "group later",
+            "not_before": future + 60,
+        }))
+        .await;
+    let scheduled = client.ok(json!({ "op": "scheduled_messages" })).await;
+    assert_eq!(scheduled["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(scheduled["messages"][0]["state"], json!("scheduled"));
+    assert_eq!(scheduled["messages"][0]["conversation"], json!("peer"));
+    assert_eq!(scheduled["messages"][1]["conversation"], json!("group"));
+    let status = client.ok(json!({ "op": "status" })).await;
+    assert_eq!(status["scheduled"], json!(2));
+
+    client
+        .ok(json!({
+            "op": "scheduled_edit",
+            "message": pair,
+            "body": "final text",
+            "not_before": future + 120,
+        }))
+        .await;
+    let scheduled = client.ok(json!({ "op": "scheduled_messages" })).await;
+    assert_eq!(scheduled["messages"][0]["body"], json!("final text"));
+    assert_eq!(scheduled["messages"][0]["not_before"], json!(future + 120));
+    client
+        .ok(json!({ "op": "scheduled_cancel", "message": pair }))
+        .await;
+    assert_eq!(
+        client.ok(json!({ "op": "scheduled_messages" })).await["messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
     daemon.shutdown().await;
 }
 

@@ -18,7 +18,7 @@ use rand::rngs::OsRng;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use kult_crypto::{KdfProfile, SafetyNumber};
-use kult_node::{CarrierCapabilitySnapshot, Event, GroupInfo, Node};
+use kult_node::{CarrierCapabilitySnapshot, Event, GroupInfo, Node, ScheduledMessageInfo};
 use kult_store::{ContactRecord, GroupMessageRecord, MessageRecord, NoteMessageRecord};
 use kult_transport::{
     DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, Transport, TransportOptions,
@@ -83,6 +83,31 @@ pub(crate) enum Msg {
         peer: [u8; 32],
         body: Vec<u8>,
         resp: Resp<[u8; 16]>,
+    },
+    Schedule {
+        peer: [u8; 32],
+        body: Vec<u8>,
+        not_before: u64,
+        resp: Resp<[u8; 16]>,
+    },
+    GroupSchedule {
+        group: [u8; 32],
+        body: Vec<u8>,
+        not_before: u64,
+        resp: Resp<[u8; 16]>,
+    },
+    ScheduledEdit {
+        id: [u8; 16],
+        body: Vec<u8>,
+        not_before: u64,
+        resp: Resp<()>,
+    },
+    ScheduledCancel {
+        id: [u8; 16],
+        resp: Resp<()>,
+    },
+    ScheduledMessages {
+        resp: Resp<Vec<ScheduledMessageInfo>>,
     },
     NoteToSelfSend {
         body: String,
@@ -164,6 +189,7 @@ pub(crate) enum Msg {
 /// Queue depths and contact count for the status report.
 pub(crate) struct Counts {
     pub queued: u64,
+    pub scheduled: u64,
     pub transit: u64,
     pub contacts: u64,
 }
@@ -482,6 +508,45 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
                     .map_err(fail),
             );
         }
+        Msg::Schedule {
+            peer,
+            body,
+            not_before,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.schedule_message(&peer, &body, not_before, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::GroupSchedule {
+            group,
+            body,
+            not_before,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.schedule_group_message(&group, &body, not_before, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::ScheduledEdit {
+            id,
+            body,
+            not_before,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.edit_scheduled_message(&id, &body, not_before, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::ScheduledCancel { id, resp } => {
+            let _ = resp.send(node.cancel_scheduled_message(&id).map_err(fail));
+        }
+        Msg::ScheduledMessages { resp } => {
+            let _ = resp.send(node.scheduled_messages().map_err(fail));
+        }
         Msg::NoteToSelfSend { body, resp } => {
             let _ = resp.send(node.note_to_self_send(&body, now, &mut OsRng).map_err(fail));
         }
@@ -556,10 +621,13 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
             let result = node
                 .queued()
                 .and_then(|queued| {
-                    node.contacts().map(|contacts| Counts {
-                        queued: queued as u64,
-                        transit: node.transit_queued() as u64,
-                        contacts: contacts.len() as u64,
+                    node.scheduled_messages().and_then(|scheduled| {
+                        node.contacts().map(|contacts| Counts {
+                            queued: queued as u64,
+                            scheduled: scheduled.len() as u64,
+                            transit: node.transit_queued() as u64,
+                            contacts: contacts.len() as u64,
+                        })
                     })
                 })
                 .map_err(|e| e.to_string());

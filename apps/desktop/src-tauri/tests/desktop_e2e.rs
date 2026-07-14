@@ -113,6 +113,32 @@ fn two_desktops_pair_by_bundle_hex_and_message() {
         .add_contact("alice".to_owned(), &a_bundle.hex, &multiaddr_hint(a_addr))
         .unwrap();
 
+    // The desktop command/session surface exposes the distinct scheduled
+    // state and edit/cancel lifecycle without entering the delivery queue.
+    let future = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3_600;
+    let scheduled_id = alice
+        .schedule(bob_peer.clone(), "first draft".to_owned(), future)
+        .unwrap();
+    a_ev.wait(
+        "scheduled update",
+        |event| matches!(event, UiEvent::ScheduledMessageUpdated { id } if *id == scheduled_id),
+    );
+    assert_eq!(alice.status().unwrap().scheduled, 1);
+    assert_eq!(alice.status().unwrap().queued, 0);
+    let scheduled = alice.scheduled_messages().unwrap();
+    assert_eq!(scheduled[0].state, "scheduled");
+    assert_eq!(scheduled[0].conversation, "peer");
+    alice
+        .edit_scheduled(scheduled_id.clone(), "final draft".to_owned(), future + 60)
+        .unwrap();
+    assert_eq!(alice.scheduled_messages().unwrap()[0].body, "final draft");
+    alice.cancel_scheduled(scheduled_id).unwrap();
+    assert!(alice.scheduled_messages().unwrap().is_empty());
+
     // Send → the webview's event stream walks the honest ladder.
     let msg_id = alice
         .send(bob_peer.clone(), "hello from the desktop".to_owned())

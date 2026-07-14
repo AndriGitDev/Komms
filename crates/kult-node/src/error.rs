@@ -40,6 +40,10 @@ pub enum NodeError {
     UnknownAttachment,
     /// Attachment input or a requested lifecycle transition is invalid.
     InvalidAttachment,
+    /// A scheduled message id no longer exists (it was cancelled or activated).
+    UnknownScheduledMessage,
+    /// The requested schedule is in the past or its body is invalid.
+    InvalidSchedule,
     /// Streaming import or export failed.
     MediaIo(std::io::Error),
 }
@@ -63,6 +67,10 @@ impl std::fmt::Display for NodeError {
             }
             Self::UnknownAttachment => f.write_str("attachment transfer does not exist"),
             Self::InvalidAttachment => f.write_str("invalid attachment state or metadata"),
+            Self::UnknownScheduledMessage => {
+                f.write_str("scheduled message does not exist or already activated")
+            }
+            Self::InvalidSchedule => f.write_str("invalid scheduled message or send instant"),
             Self::MediaIo(e) => write!(f, "attachment stream error: {e}"),
         }
     }

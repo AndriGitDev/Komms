@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 
 use kult_node::{
     CarrierCapability, CarrierCapabilitySnapshot, ContentStatus, Event, GroupInfo,
-    NOTE_TO_SELF_CONVERSATION_ID,
+    ScheduledConversation, ScheduledMessageInfo, NOTE_TO_SELF_CONVERSATION_ID,
 };
 use kult_store::{DeliveryState, Direction, GroupMessageRecord, MessageRecord, NoteMessageRecord};
 use kult_transport::DeliveryHint;
@@ -60,6 +60,40 @@ pub enum Op {
         /// Message body (UTF-8 text).
         body: String,
     },
+    /// Schedule pairwise text for an absolute UTC Unix instant.
+    Schedule {
+        /// Recipient peer id (hex).
+        peer: String,
+        /// Message body (UTF-8 text).
+        body: String,
+        /// Unix seconds before which no transport work occurs.
+        not_before: u64,
+    },
+    /// Schedule group text for an absolute UTC Unix instant.
+    GroupSchedule {
+        /// Group id (hex).
+        group: String,
+        /// Message body (UTF-8 text).
+        body: String,
+        /// Unix seconds before which no transport work occurs.
+        not_before: u64,
+    },
+    /// Edit a scheduled message before activation.
+    ScheduledEdit {
+        /// Stable scheduled message id (hex).
+        message: String,
+        /// Replacement message body.
+        body: String,
+        /// Replacement absolute UTC Unix instant.
+        not_before: u64,
+    },
+    /// Cancel a scheduled message before activation.
+    ScheduledCancel {
+        /// Stable scheduled message id (hex).
+        message: String,
+    },
+    /// List the durable scheduled outbox.
+    ScheduledMessages,
     /// Append text to the reserved local note-to-self conversation.
     NoteToSelfSend {
         /// UTF-8 note text.
@@ -190,6 +224,18 @@ pub fn err(id: u64, message: &str) -> String {
 /// An event line for subscribed connections.
 pub fn event_line(event: &Event) -> String {
     let body = match event {
+        Event::ScheduledMessageUpdated { id } => json!({
+            "type": "scheduled_updated",
+            "id": hex_encode(id),
+        }),
+        Event::ScheduledMessageCancelled { id } => json!({
+            "type": "scheduled_cancelled",
+            "id": hex_encode(id),
+        }),
+        Event::ScheduledMessageActivated { id } => json!({
+            "type": "scheduled_activated",
+            "id": hex_encode(id),
+        }),
         Event::DeliveryUpdated { id, state } => json!({
             "type": "delivery",
             "id": hex_encode(id),
@@ -344,6 +390,23 @@ pub fn note_message_json(rec: &NoteMessageRecord) -> Value {
     })
 }
 
+/// One scheduled outbox record as render-safe JSON.
+pub fn scheduled_message_json(message: &ScheduledMessageInfo) -> Value {
+    let (conversation, destination) = match message.conversation {
+        ScheduledConversation::Peer(peer) => ("peer", hex_encode(&peer)),
+        ScheduledConversation::Group(group) => ("group", hex_encode(&group)),
+    };
+    json!({
+        "id": hex_encode(&message.id),
+        "conversation": conversation,
+        "destination": destination,
+        "created_at": message.created_at,
+        "not_before": message.not_before,
+        "body": String::from_utf8_lossy(&message.body),
+        "state": "scheduled",
+    })
+}
+
 const UNSUPPORTED_MESSAGE: &str = "Unsupported message — update Komms";
 
 fn content_kind(status: ContentStatus) -> &'static str {
@@ -427,6 +490,14 @@ pub fn parse_group(s: &str) -> Result<[u8; 32], String> {
     hex_decode(s)
         .and_then(|v| <[u8; 32]>::try_from(v).ok())
         .ok_or_else(|| "group must be 64 hex chars".to_owned())
+}
+
+/// Parse a 16-byte message id from lowercase/uppercase hex.
+pub fn parse_message(s: &str) -> Result<[u8; 16], String> {
+    hex_decode(s)
+        .ok_or_else(|| "message id must be hex".to_owned())?
+        .try_into()
+        .map_err(|_| "message id must be 16 bytes".to_owned())
 }
 
 #[cfg(test)]

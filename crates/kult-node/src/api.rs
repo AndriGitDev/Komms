@@ -51,6 +51,38 @@ pub enum Command {
         /// Message body (will be padded and encrypted).
         body: Vec<u8>,
     },
+    /// Persist pairwise text until an absolute UTC send instant.
+    Schedule {
+        /// Recipient (Ed25519 identity key bytes).
+        peer: [u8; 32],
+        /// Message body.
+        body: Vec<u8>,
+        /// Unix seconds before which no encryption or transport work occurs.
+        not_before: u64,
+    },
+    /// Persist group text until an absolute UTC send instant.
+    GroupSchedule {
+        /// Group id.
+        group: [u8; 32],
+        /// Message body.
+        body: Vec<u8>,
+        /// Unix seconds before which no encryption or transport work occurs.
+        not_before: u64,
+    },
+    /// Edit text or the send instant while a scheduled entry is inactive.
+    ScheduledEdit {
+        /// Stable scheduled message id.
+        id: [u8; 16],
+        /// Replacement message body.
+        body: Vec<u8>,
+        /// Replacement absolute UTC send instant.
+        not_before: u64,
+    },
+    /// Cancel a scheduled entry before it activates.
+    ScheduledCancel {
+        /// Stable scheduled message id.
+        id: [u8; 16],
+    },
     /// Append text to the reserved device-local note-to-self conversation.
     NoteToSelfSend {
         /// UTF-8 note text; no envelope or delivery state is created.
@@ -224,6 +256,31 @@ pub struct GroupInfo {
     pub members: Vec<[u8; 32]>,
 }
 
+/// Conversation addressed by one scheduled outbox entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScheduledConversation {
+    /// Pairwise conversation with a contact.
+    Peer([u8; 32]),
+    /// Sender-key group conversation.
+    Group([u8; 32]),
+}
+
+/// Render-safe scheduled text. The plaintext has not entered a ratchet or
+/// transport queue yet and can therefore still be edited or cancelled.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScheduledMessageInfo {
+    /// Stable id retained after activation.
+    pub id: [u8; 16],
+    /// Destination conversation.
+    pub conversation: ScheduledConversation,
+    /// Unix time when the schedule was created.
+    pub created_at: u64,
+    /// Absolute UTC Unix send instant.
+    pub not_before: u64,
+    /// Plaintext body, safe for the local application to render.
+    pub body: Vec<u8>,
+}
+
 /// Render-safe classification of authenticated message content (ADR-0014).
 ///
 /// Text bytes are carried separately by the event. Unsupported and malformed
@@ -263,6 +320,23 @@ pub enum ContentStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event {
+    /// A scheduled message was created or edited; re-read the scheduled
+    /// outbox for the authoritative record.
+    ScheduledMessageUpdated {
+        /// Stable scheduled message id.
+        id: [u8; 16],
+    },
+    /// A scheduled message was cancelled before activation.
+    ScheduledMessageCancelled {
+        /// Stable scheduled message id.
+        id: [u8; 16],
+    },
+    /// A scheduled message reached its UTC instant and entered the ordinary
+    /// encrypted delivery queue under the same stable id.
+    ScheduledMessageActivated {
+        /// Stable scheduled message id.
+        id: [u8; 16],
+    },
     /// A message record changed delivery state
     /// (`Queued` → `Sent` → `Delivered`).
     DeliveryUpdated {

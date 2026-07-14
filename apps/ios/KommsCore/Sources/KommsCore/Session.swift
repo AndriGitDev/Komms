@@ -97,6 +97,31 @@ public final class Session: @unchecked Sendable {
         try node.send(peer: peer, body: body)
     }
 
+    /// Schedule pairwise text at an absolute UTC Unix instant.
+    public func schedule(peer: String, body: String, notBefore: UInt64) throws -> String {
+        try node.schedule(peer: peer, body: body, notBefore: notBefore)
+    }
+
+    /// Schedule group text at an absolute UTC Unix instant.
+    public func scheduleGroup(group: String, body: String, notBefore: UInt64) throws -> String {
+        try node.scheduleGroup(group: group, body: body, notBefore: notBefore)
+    }
+
+    /// Edit text and/or the UTC instant before activation.
+    public func editScheduled(message: String, body: String, notBefore: UInt64) throws {
+        try node.editScheduled(message: message, body: body, notBefore: notBefore)
+    }
+
+    /// Cancel a scheduled message before activation.
+    public func cancelScheduled(message: String) throws {
+        try node.cancelScheduled(message: message)
+    }
+
+    /// Full durable scheduled outbox.
+    public func scheduledMessages() throws -> [ScheduledMessage] {
+        try node.scheduledMessages()
+    }
+
     /// Stable reserved identity for the local note-to-self conversation.
     public func noteToSelfId() -> String { node.noteToSelfId() }
 

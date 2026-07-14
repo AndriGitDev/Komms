@@ -65,6 +65,13 @@ base small.
 ## 3. Message lifecycle
 
 ### Send path
+For a scheduled send, `kult-node` first stores the destination, text, and
+absolute UTC `not_before` value in a separately sealed scheduled-outbox row.
+Until a tick observes `now >= not_before`, the steps below do not begin: no
+ratchet advances and no envelope or transport-visible queue row exists. This is
+what makes pre-activation edit/cancel safe. Clock rollback keeps the row held;
+clock advance activates it on the next tick; time-zone changes are display-only.
+
 1. **App** calls `send(conversation, content)` through `kult-ffi`.
 2. **kult-node** persists the outbound message locally (`kult-store`) with state `queued`:
    the UI is truthful about delivery, and nothing is lost on crash.

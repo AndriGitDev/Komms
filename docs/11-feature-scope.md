@@ -53,8 +53,10 @@ status and prerequisites are tracked in the delivery plan.
   follow the attachment shell work.
 - **Scheduled / queued messages.** Already implicit in the delivery engine: an
   outbound message sits in the local queue until a carrier is available.
-  Scheduling is planned as a durable `not_before` gate in core storage and the
-  node scheduler so app exit or suspension cannot send early.
+  Scheduling now has a durable absolute-UTC gate in core storage and the node
+  scheduler, plus shared RPC/CLI/UniFFI operations for create/list/edit/cancel,
+  so app exit or suspension cannot send early. Composer/history presentation in
+  the three shells remains before the product feature is fully shipped.
 - **Text formatting, folders, pins, dark mode, custom icons.** These stay off the
   wire. Persistent organization and artwork use sealed local storage; formatting
   and themes are rendered by each shell.

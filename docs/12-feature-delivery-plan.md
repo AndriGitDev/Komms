@@ -284,7 +284,13 @@ backup/restore, and all shells use the same reserved conversation identity.
 
 ### B8. Scheduled and queued messages
 
-**State:** ordinary queued delivery shipped; scheduling planned.
+**State:** durable scheduling core and shared front doors shipped; shell UX
+planned. `kult-store` seals pairwise/group scheduled text separately from the
+encrypted delivery queue, and `kult-node` activates it only when the absolute
+UTC instant is reached. RPC/CLI and UniFFI expose create/list/edit/cancel, with
+the same scheduled lifecycle events. Desktop, Android, and iOS session adapters
+carry the API, but their composer/history UI still needs the scheduled-state
+presentation before B8 is fully shipped.
 
 This is a core queue/storage change, not part of the F5 local UI metadata store.
 
@@ -300,6 +306,10 @@ Acceptance:
 - restart and time-zone changes do not alter the intended instant;
 - when the instant arrives offline, the message becomes ordinarily queued;
 - UI clearly distinguishes scheduled, queued, sent, and delivered.
+
+The first three acceptance items are covered by restart, clock rollback/advance,
+offline activation, pairwise/group, RPC, and UniFFI tests. The final shell-UI
+item remains.
 
 ### B9. Text formatting
 

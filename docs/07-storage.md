@@ -30,6 +30,7 @@ HKDF per-domain keys.
 | `contacts` | Peer keys, verification state, petnames, relay hints | Never leaves the device |
 | `messages` | Envelope plaintexts post-decrypt, delivery state | Per-blob AEAD, random nonces |
 | `queue` | Outbound envelopes pending delivery per transport | Ciphertext only, survives crash/restart |
+| `scheduled_messages` | Pairwise/group text held until an absolute UTC instant | Plaintext fields exist only inside independently sealed blobs; no ratchet or envelope is created early |
 | `prekeys` | Own signed/PQ/one-time prekey secrets | One-time prekeys deleted on use |
 | `pending` | Inbound envelopes not yet readable (arrived before their session) | Ciphertext only; TTL-bounded |
 | `media` | Attachment blobs, chunked | Each chunk sealed; keys stored in `messages` |
@@ -57,6 +58,10 @@ trade for this project.)
   device resumes identity; sessions re-handshake (ratchet states are deliberately *not*
   portable, importing stale ratchet state is a correctness and security hazard). Format
   and mechanism: ADR-0011.
+- **Scheduled outbox state is not a backup payload.** Like the live encrypted
+  delivery queue, it is device runtime state rather than conversation history;
+  it survives ordinary process/app restarts on that device but is not resurrected
+  by a later identity restore.
 - **Plaintext export**: JSON-lines + media directory, clearly warned as plaintext.
   The user's data is the user's.
 - **Panic wipe** (roadmap M6): duress passphrase unlocking a decoy profile while

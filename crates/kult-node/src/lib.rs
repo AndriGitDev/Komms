@@ -52,7 +52,7 @@ use kult_protocol::{
 use kult_store::{
     ContactRecord, ConversationId, ConversationMetadata, DeliveryState, Direction,
     LocalMetadataKey, LocalMetadataRecord, MessageRecord, NoteMessageRecord, QueueClass, QueueItem,
-    Store,
+    ScheduledConversation as StoreScheduledConversation, ScheduledMessageRecord, Store,
 };
 use kult_transport::{CostClass, DeliveryHint, Discovery, Reachability, Transport};
 
@@ -66,7 +66,7 @@ mod vault;
 pub use api::{
     AttachmentConversation, AttachmentDirection, AttachmentInfo, AttachmentMetadata,
     AttachmentObjectInfo, CarrierCapability, CarrierCapabilitySnapshot, Command, ContentStatus,
-    Event, GroupInfo,
+    Event, GroupInfo, ScheduledConversation, ScheduledMessageInfo,
 };
 pub use error::NodeError;
 pub use kult_store::NOTE_TO_SELF_CONVERSATION_ID;
@@ -677,6 +677,16 @@ impl Node {
         Ok(self.store.queue_all()?.len())
     }
 
+    /// Messages waiting for an absolute UTC activation instant.
+    pub fn scheduled_messages(&self) -> Result<Vec<ScheduledMessageInfo>> {
+        Ok(self
+            .store
+            .scheduled_messages()?
+            .into_iter()
+            .map(scheduled_info)
+            .collect())
+    }
+
     // ---- commands ----------------------------------------------------------
 
     /// Execute one [`Command`] — the single serializable entry point the FFI
@@ -686,6 +696,26 @@ impl Node {
             Command::Send { peer, body } => {
                 self.send_message(&peer, &body, now, rng)?;
             }
+            Command::Schedule {
+                peer,
+                body,
+                not_before,
+            } => {
+                self.schedule_message(&peer, &body, not_before, now, rng)?;
+            }
+            Command::GroupSchedule {
+                group,
+                body,
+                not_before,
+            } => {
+                self.schedule_group_message(&group, &body, not_before, now, rng)?;
+            }
+            Command::ScheduledEdit {
+                id,
+                body,
+                not_before,
+            } => self.edit_scheduled_message(&id, &body, not_before, now, rng)?,
+            Command::ScheduledCancel { id } => self.cancel_scheduled_message(&id)?,
             Command::NoteToSelfSend { body } => {
                 self.note_to_self_send(&body, now, rng)?;
             }
@@ -736,13 +766,24 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 16]> {
+        let mut id = [0u8; 16];
+        rng.fill_bytes(&mut id);
+        self.send_message_with_id(peer, body, id, now, now, rng)
+    }
+
+    fn send_message_with_id(
+        &mut self,
+        peer: &[u8; 32],
+        body: &[u8],
+        id: [u8; 16],
+        timestamp: u64,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
         let contact = self
             .store
             .get_contact(peer)?
             .ok_or(NodeError::UnknownPeer)?;
-
-        let mut id = [0u8; 16];
-        rng.fill_bytes(&mut id);
 
         // The anonymous first flight is always legacy text. Once a live
         // session has authenticated v1 Text support, reuse the record id as
@@ -760,7 +801,7 @@ impl Node {
             peer: *peer,
             direction: Direction::Outbound,
             state: DeliveryState::Queued,
-            timestamp: now,
+            timestamp,
             body: wire_body.clone(),
             wire_id: None,
         };
@@ -800,6 +841,118 @@ impl Node {
             rng,
         )?;
         Ok(id)
+    }
+
+    /// Persist pairwise text until `not_before` UTC. No ratchet, envelope,
+    /// queue, or transport state is touched before activation.
+    pub fn schedule_message(
+        &mut self,
+        peer: &[u8; 32],
+        body: &[u8],
+        not_before: u64,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        let contact = self
+            .store
+            .get_contact(peer)?
+            .ok_or(NodeError::UnknownPeer)?;
+        if !self.sessions.contains_key(peer) && contact.bundle.is_empty() {
+            return Err(NodeError::NoSession);
+        }
+        self.schedule(
+            StoreScheduledConversation::Peer(*peer),
+            body,
+            not_before,
+            now,
+            rng,
+        )
+    }
+
+    /// Persist group text until `not_before` UTC without advancing the
+    /// sender chain or creating member copies early.
+    pub fn schedule_group_message(
+        &mut self,
+        group: &[u8; 32],
+        body: &[u8],
+        not_before: u64,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        self.store
+            .get_group(group)?
+            .ok_or(NodeError::UnknownGroup)?;
+        self.schedule(
+            StoreScheduledConversation::Group(*group),
+            body,
+            not_before,
+            now,
+            rng,
+        )
+    }
+
+    fn schedule(
+        &mut self,
+        conversation: StoreScheduledConversation,
+        body: &[u8],
+        not_before: u64,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        if not_before <= now || core::str::from_utf8(body).is_err() || pad(body).is_err() {
+            return Err(NodeError::InvalidSchedule);
+        }
+        let mut id = [0u8; 16];
+        rng.fill_bytes(&mut id);
+        self.store.put_scheduled_message(
+            &ScheduledMessageRecord {
+                id,
+                conversation,
+                created_at: now,
+                not_before,
+                body: body.to_vec(),
+            },
+            rng,
+        )?;
+        self.events.push_back(Event::ScheduledMessageUpdated { id });
+        Ok(id)
+    }
+
+    /// Replace a scheduled message's body and UTC instant. Once activation
+    /// begins the scheduled row is gone and edits fail explicitly.
+    pub fn edit_scheduled_message(
+        &mut self,
+        id: &[u8; 16],
+        body: &[u8],
+        not_before: u64,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        if not_before <= now || core::str::from_utf8(body).is_err() || pad(body).is_err() {
+            return Err(NodeError::InvalidSchedule);
+        }
+        let mut record = self
+            .store
+            .get_scheduled_message(id)?
+            .ok_or(NodeError::UnknownScheduledMessage)?;
+        record.body = body.to_vec();
+        record.not_before = not_before;
+        if !self.store.update_scheduled_message(&record, rng)? {
+            return Err(NodeError::UnknownScheduledMessage);
+        }
+        self.events
+            .push_back(Event::ScheduledMessageUpdated { id: *id });
+        Ok(())
+    }
+
+    /// Cancel a scheduled message before its activation instant.
+    pub fn cancel_scheduled_message(&mut self, id: &[u8; 16]) -> Result<()> {
+        if !self.store.delete_scheduled_message(id)? {
+            return Err(NodeError::UnknownScheduledMessage);
+        }
+        self.events
+            .push_back(Event::ScheduledMessageCancelled { id: *id });
+        Ok(())
     }
 
     /// Append UTF-8 text to the one reserved local note-to-self
@@ -860,6 +1013,11 @@ impl Node {
         //    handshakes so re-keyed traffic flows without waiting for the
         //    user to send first.
         self.rekey_reset_peers(now, rng)?;
+
+        // Absolute UTC scheduling is enforced in core before encryption:
+        // clock rollback keeps entries held, clock advance activates them on
+        // this tick, and a restart simply reloads the same sealed records.
+        self.activate_scheduled_messages(now, rng)?;
 
         // Loaded and newly-created sessions advertise on the first tick.
         // Controls use the durable queue and are terminal like receipts.
@@ -1016,6 +1174,64 @@ impl Node {
             intro_token(peer, epoch_day(now)),
             sealed,
         ))
+    }
+
+    fn activate_scheduled_messages(
+        &mut self,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        for scheduled in self.store.scheduled_messages()? {
+            if now < scheduled.not_before {
+                continue;
+            }
+            let activation = (|| -> Result<()> {
+                match scheduled.conversation {
+                    StoreScheduledConversation::Peer(peer) => {
+                        // Validate a first-flight bundle before the ordinary
+                        // send path persists its queued history record. An
+                        // expired bundle keeps the editable scheduled record
+                        // intact without stalling unrelated node work.
+                        if !self.sessions.contains_key(&peer) {
+                            let contact = self
+                                .store
+                                .get_contact(&peer)?
+                                .ok_or(NodeError::UnknownPeer)?;
+                            if contact.bundle.is_empty() {
+                                return Err(NodeError::NoSession);
+                            }
+                            PrekeyBundle::decode(&contact.bundle)?.verify(now)?;
+                        }
+                        self.send_message_with_id(
+                            &peer,
+                            &scheduled.body,
+                            scheduled.id,
+                            scheduled.not_before,
+                            now,
+                            rng,
+                        )?;
+                    }
+                    StoreScheduledConversation::Group(group) => {
+                        self.group_send_with_id(
+                            &group,
+                            &scheduled.body,
+                            scheduled.id,
+                            scheduled.not_before,
+                            now,
+                            rng,
+                        )?;
+                    }
+                }
+                Ok(())
+            })();
+            if activation.is_err() {
+                continue;
+            }
+            self.store.delete_scheduled_message(&scheduled.id)?;
+            self.events
+                .push_back(Event::ScheduledMessageActivated { id: scheduled.id });
+        }
+        Ok(())
     }
 
     /// Queue a fresh handshake to every session-reset-marked peer
@@ -1930,6 +2146,20 @@ fn flush_class(kind: EnvelopeKind) -> u8 {
         EnvelopeKind::Message | EnvelopeKind::Fragment | EnvelopeKind::GroupMessage => 0,
         EnvelopeKind::Receipt | EnvelopeKind::GroupControl => 1,
         EnvelopeKind::Handshake => 2,
+    }
+}
+
+fn scheduled_info(record: ScheduledMessageRecord) -> ScheduledMessageInfo {
+    let conversation = match record.conversation {
+        StoreScheduledConversation::Peer(peer) => ScheduledConversation::Peer(peer),
+        StoreScheduledConversation::Group(group) => ScheduledConversation::Group(group),
+    };
+    ScheduledMessageInfo {
+        id: record.id,
+        conversation,
+        created_at: record.created_at,
+        not_before: record.not_before,
+        body: record.body,
     }
 }
 

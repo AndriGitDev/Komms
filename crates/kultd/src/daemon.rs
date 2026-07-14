@@ -477,6 +477,7 @@ async fn handle_op(
                 "lan_peers": net.lan_peers(),
                 "nat": nat,
                 "queued": node.queued().map_err(fail)?,
+                "scheduled": node.scheduled_messages().map_err(fail)?.len(),
                 "transit": node.transit_queued(),
                 "contacts": node.contacts().map_err(fail)?.len(),
             }))
@@ -511,6 +512,51 @@ async fn handle_op(
                 .map_err(fail)?;
             Ok(json!({ "id": wire::hex_encode(&id) }))
         }
+        Op::Schedule {
+            peer,
+            body,
+            not_before,
+        } => {
+            let peer = wire::parse_peer(&peer)?;
+            let id = node
+                .schedule_message(&peer, body.as_bytes(), not_before, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::GroupSchedule {
+            group,
+            body,
+            not_before,
+        } => {
+            let group = wire::parse_group(&group)?;
+            let id = node
+                .schedule_group_message(&group, body.as_bytes(), not_before, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::ScheduledEdit {
+            message,
+            body,
+            not_before,
+        } => {
+            let id = wire::parse_message(&message)?;
+            node.edit_scheduled_message(&id, body.as_bytes(), not_before, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({}))
+        }
+        Op::ScheduledCancel { message } => {
+            let id = wire::parse_message(&message)?;
+            node.cancel_scheduled_message(&id).map_err(fail)?;
+            Ok(json!({}))
+        }
+        Op::ScheduledMessages => Ok(json!({
+            "messages": node
+                .scheduled_messages()
+                .map_err(fail)?
+                .iter()
+                .map(wire::scheduled_message_json)
+                .collect::<Vec<_>>(),
+        })),
         Op::NoteToSelfSend { body } => {
             let id = node
                 .note_to_self_send(&body, now(), &mut OsRng)

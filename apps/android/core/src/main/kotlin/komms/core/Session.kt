@@ -26,6 +26,7 @@ import uniffi.kult_ffi.KultNode
 import uniffi.kult_ffi.Message
 import uniffi.kult_ffi.NoteMessage
 import uniffi.kult_ffi.SafetyNumber
+import uniffi.kult_ffi.ScheduledMessage
 import uniffi.kult_ffi.Status
 import uniffi.kult_ffi.defaultConfig
 
@@ -108,6 +109,24 @@ class Session private constructor(private val node: KultNode) {
 
     /** Queue a message; returns its id (progress arrives as events). */
     fun send(peer: String, body: String): String = node.send(peer, body)
+
+    /** Schedule pairwise text at an absolute UTC Unix instant. */
+    fun schedule(peer: String, body: String, notBefore: ULong): String =
+        node.schedule(peer, body, notBefore)
+
+    /** Schedule group text at an absolute UTC Unix instant. */
+    fun scheduleGroup(group: String, body: String, notBefore: ULong): String =
+        node.scheduleGroup(group, body, notBefore)
+
+    /** Edit a scheduled message before activation. */
+    fun editScheduled(message: String, body: String, notBefore: ULong) =
+        node.editScheduled(message, body, notBefore)
+
+    /** Cancel a scheduled message before activation. */
+    fun cancelScheduled(message: String) = node.cancelScheduled(message)
+
+    /** Full durable scheduled outbox. */
+    fun scheduledMessages(): List<ScheduledMessage> = node.scheduledMessages()
 
     /** Stable reserved identity for the local note-to-self conversation. */
     fun noteToSelfId(): String = node.noteToSelfId()
