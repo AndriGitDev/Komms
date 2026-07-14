@@ -278,7 +278,43 @@ label.check input { width: auto; margin: 0; }
   border-top: 1px solid var(--line);
 }
 #composer input { margin: 0; }
-#composer #btn-schedule { white-space: nowrap; }
+#composer #btn-attach, #composer #btn-schedule { white-space: nowrap; }
+
+#attachment-transfers {
+  max-height: 42%;
+  overflow-y: auto;
+  padding: 0.7em 1.2em;
+  border-top: 1px solid var(--line);
+  background: rgba(22, 28, 34, 0.72);
+}
+.attachment-transfer {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.65em 0.8em;
+}
+.attachment-transfer + .attachment-transfer { margin-top: 0.55em; }
+.attachment-head, .attachment-object-head, .attachment-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.55em;
+}
+.attachment-head { justify-content: space-between; }
+.attachment-title { font-weight: 600; word-break: break-word; }
+.attachment-state {
+  color: var(--text-dim);
+  font-size: 0.78em;
+  white-space: nowrap;
+}
+.attachment-state.awaiting_consent { color: var(--warn); }
+.attachment-state.complete { color: var(--accent); }
+.attachment-state.rejected, .attachment-state.cancelled,
+.attachment-state.corrupt, .attachment-state.unavailable { color: var(--danger); }
+.attachment-object { margin-top: 0.55em; }
+.attachment-object-head { justify-content: space-between; color: var(--text-dim); font-size: 0.78em; }
+.attachment-object progress { width: 100%; height: 0.55em; accent-color: var(--accent); }
+.attachment-actions { justify-content: flex-end; margin-top: 0.55em; }
+.attachment-actions button { font-size: 0.78em; }
+.attachment-selection { word-break: break-word; }
 
 /* ── Modals ── */
 #modal-backdrop {

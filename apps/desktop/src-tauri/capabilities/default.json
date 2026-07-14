@@ -1,7 +1,7 @@
 {
   "$schema": "gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The main window talks to the node backend over IPC and listens for node events. No plugins, no shell/file-system/network capabilities — the webview reaches the outside world only through the audited command surface.",
+  "description": "The main window talks to the node backend over IPC, listens for node events, and can ask the OS for caller-selected attachment input/export paths. It has no shell, direct file-system, or network capabilities.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "dialog:allow-open", "dialog:allow-save"]
 }
