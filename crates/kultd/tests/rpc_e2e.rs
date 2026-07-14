@@ -360,8 +360,11 @@ async fn two_daemons_message_via_rpc_only() {
     // cryptography, consent, progress, and carrier policy remain in the node.
     wait_carrier(&mut b, &alice_peer, "realtime").await;
     let attachment_bytes = b"attachment bytes through RPC\0and after the NUL";
+    let preview_bytes = b"RPC local jpeg preview";
     let source = dir.path().join("rpc-source.bin");
+    let preview = dir.path().join("rpc-preview.jpg");
     std::fs::write(&source, attachment_bytes).unwrap();
+    std::fs::write(&preview, preview_bytes).unwrap();
     let sent_attachment = a
         .ok(json!({
             "op": "attachment_send",
@@ -369,6 +372,8 @@ async fn two_daemons_message_via_rpc_only() {
             "path": source.display().to_string(),
             "media_type": "application/octet-stream",
             "filename": "field-notes.bin",
+            "preview_path": preview.display().to_string(),
+            "preview_media_type": "image/jpeg",
         }))
         .await;
     let attachment_content_id = sent_attachment["id"].as_str().unwrap().to_owned();
@@ -382,6 +387,13 @@ async fn two_daemons_message_via_rpc_only() {
         attachment_content_id
     );
     assert_eq!(outbound["attachments"][0]["direction"], json!("out"));
+    assert_eq!(
+        outbound["attachments"][0]["objects"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
     assert_eq!(
         outbound["attachments"][0]["objects"][0]["filename"],
         json!("field-notes.bin")
@@ -430,6 +442,10 @@ async fn two_daemons_message_via_rpc_only() {
         completed["attachments"][0]["objects"][0]["verified_bytes"],
         json!(attachment_bytes.len())
     );
+    assert_eq!(
+        completed["attachments"][0]["objects"][1]["verified_bytes"],
+        json!(preview_bytes.len())
+    );
     let exported = dir.path().join("rpc-export.bin");
     b.ok(json!({
         "op": "attachment_export",
@@ -438,6 +454,15 @@ async fn two_daemons_message_via_rpc_only() {
     }))
     .await;
     assert_eq!(std::fs::read(&exported).unwrap(), attachment_bytes);
+    let exported_preview = dir.path().join("rpc-export-preview.jpg");
+    b.ok(json!({
+        "op": "attachment_export",
+        "transfer": inbound_transfer,
+        "path": exported_preview.display().to_string(),
+        "preview": true,
+    }))
+    .await;
+    assert_eq!(std::fs::read(&exported_preview).unwrap(), preview_bytes);
     let overwrite = b
         .call(json!({
             "op": "attachment_export",

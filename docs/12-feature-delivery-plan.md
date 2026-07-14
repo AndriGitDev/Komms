@@ -99,9 +99,8 @@ The ADR must define:
 
 ### F3. Attachment and media pipeline
 
-**State:** core and shared RPC/CLI/UniFFI front doors plus bounded desktop,
-Android, and iOS UX are implemented; preview and background-transfer UX is
-planned.
+**State:** shipped through core, shared RPC/CLI/UniFFI front doors, and the
+desktop, Android, and iOS shells.
 [ADR-0015](adr/0015-encrypted-attachment-pipeline.md) now has bounded
 manifest/bulk codecs, deterministic chunk cryptography, sealed quota-bound
 storage, explicit consent/cancel/reject/resume state, pairwise and encrypt-once
@@ -115,7 +114,14 @@ paths; Android uses Storage Access Framework streams and iOS uses
 security-scoped document-provider URLs, with both mobile shells staging bounded
 copies in app-private storage. All three provide pairwise/group send, protected
 caller-selected export, exact per-object verified-byte progress, and lifecycle
-controls without exposing protocol or storage internals.
+controls without exposing protocol or storage internals. JPEG/PNG thumbnails
+are generated locally with bounded decoders, stripped of source
+metadata, capped at 256 KiB, sealed as the manifest's preview object, and
+materialized only through protected transient paths for rendering. Each shell
+states its real lifecycle behavior: desktop continues while open or minimized
+and resumes after restart, Android keeps the node alive with its data-sync
+foreground service, and iOS resumes durable verified progress on foreground
+because the OS provides no equivalent continuous background service.
 
 The existing envelope path is suitable for small payloads, not an unbounded file
 transfer. Define attachments as encrypted, content-addressed chunks with a sealed

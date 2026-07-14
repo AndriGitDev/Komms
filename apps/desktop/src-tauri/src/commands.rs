@@ -290,6 +290,10 @@ forward!(
     export_attachment(transfer: String, path: String) -> (), |s| s.export_attachment(transfer, path)
 );
 forward!(
+    /// Return a completed sealed preview as a bounded data URL.
+    attachment_preview(transfer: String) -> String, |s| s.attachment_preview(transfer)
+);
+forward!(
     /// Stable reserved identity for the local note-to-self conversation.
     note_to_self_id() -> String, |s| Ok(s.note_to_self_id())
 );

@@ -13,8 +13,12 @@
 //! the backup mnemonic is returned exactly once and never stored.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use base64::Engine;
+use image::codecs::jpeg::JpegEncoder;
+use image::{ImageFormat, ImageReader};
 use serde::{Deserialize, Serialize};
 
 use kult_ffi::{
@@ -24,6 +28,111 @@ use kult_ffi::{
 };
 
 use crate::qr;
+
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+struct PrivateTemp(PathBuf);
+
+impl PrivateTemp {
+    fn destination(extension: &str) -> Result<Self, String> {
+        for _ in 0..32 {
+            let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "komms-preview-{}-{sequence}.{extension}",
+                std::process::id()
+            ));
+            if !path.exists() {
+                return Ok(Self(path));
+            }
+        }
+        Err("could not allocate a private preview path".to_owned())
+    }
+
+    fn empty(extension: &str) -> Result<Self, String> {
+        use std::io::Write;
+
+        for _ in 0..32 {
+            let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "komms-preview-{}-{sequence}.{extension}",
+                std::process::id()
+            ));
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(&path) {
+                Ok(mut file) => {
+                    file.flush().map_err(|error| error.to_string())?;
+                    return Ok(Self(path));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        Err("could not allocate a private preview path".to_owned())
+    }
+
+    fn with_bytes(extension: &str, bytes: &[u8]) -> Result<Self, String> {
+        use std::io::Write;
+
+        let temp = Self::empty(extension)?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(temp.path())
+            .map_err(|error| error.to_string())?;
+        file.write_all(bytes).map_err(|error| error.to_string())?;
+        file.sync_all().map_err(|error| error.to_string())?;
+        Ok(temp)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for PrivateTemp {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn generate_preview(path: &Path, media_type: &str) -> Result<Option<PrivateTemp>, String> {
+    if !matches!(media_type, "image/jpeg" | "image/png") {
+        return Ok(None);
+    }
+    let mut reader = ImageReader::open(path)
+        .map_err(|error| format!("image preview: {error}"))?
+        .with_guessed_format()
+        .map_err(|error| format!("image preview: {error}"))?;
+    if !matches!(reader.format(), Some(ImageFormat::Jpeg | ImageFormat::Png)) {
+        return Err("image preview: selected content is not JPEG or PNG".to_owned());
+    }
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(16_384);
+    limits.max_image_height = Some(16_384);
+    limits.max_alloc = Some(192 * 1024 * 1024);
+    reader.limits(limits);
+    let image = reader
+        .decode()
+        .map_err(|error| format!("image preview: {error}"))?;
+
+    for (edge, quality) in [(512, 82), (448, 72), (384, 62), (320, 52)] {
+        let thumbnail = image.thumbnail(edge, edge);
+        let mut encoded = Vec::new();
+        JpegEncoder::new_with_quality(&mut encoded, quality)
+            .encode_image(&thumbnail)
+            .map_err(|error| format!("image preview: {error}"))?;
+        if encoded.len() <= 256 * 1024 {
+            return PrivateTemp::with_bytes("jpg", &encoded).map(Some);
+        }
+    }
+    Err("image preview could not fit the 256 KiB limit".to_owned())
+}
 
 /// Network configuration the user can edit on the unlock screen. Persisted
 /// as plain JSON next to the store — it holds the same information as
@@ -773,9 +882,23 @@ impl Session {
         media_type: String,
         filename: Option<String>,
     ) -> Result<String, String> {
-        self.node
-            .send_attachment(peer, path, media_type, filename)
-            .map_err(|e| e.to_string())
+        match generate_preview(Path::new(&path), &media_type)? {
+            Some(preview) => self
+                .node
+                .send_attachment_with_preview(
+                    peer,
+                    path,
+                    media_type,
+                    filename,
+                    preview.path().display().to_string(),
+                    "image/jpeg".to_owned(),
+                )
+                .map_err(|e| e.to_string()),
+            None => self
+                .node
+                .send_attachment(peer, path, media_type, filename)
+                .map_err(|e| e.to_string()),
+        }
     }
 
     /// Import a caller-selected path as one encrypt-once group attachment.
@@ -786,9 +909,23 @@ impl Session {
         media_type: String,
         filename: Option<String>,
     ) -> Result<String, String> {
-        self.node
-            .send_group_attachment(group, path, media_type, filename)
-            .map_err(|e| e.to_string())
+        match generate_preview(Path::new(&path), &media_type)? {
+            Some(preview) => self
+                .node
+                .send_group_attachment_with_preview(
+                    group,
+                    path,
+                    media_type,
+                    filename,
+                    preview.path().display().to_string(),
+                    "image/jpeg".to_owned(),
+                )
+                .map_err(|e| e.to_string()),
+            None => self
+                .node
+                .send_group_attachment(group, path, media_type, filename)
+                .map_err(|e| e.to_string()),
+        }
     }
 
     /// Every supported transfer as render-safe state. No keys, hashes,
@@ -845,6 +982,40 @@ impl Session {
         self.node
             .export_attachment(transfer, path)
             .map_err(|e| e.to_string())
+    }
+
+    /// Decrypt a completed sealed preview into a short-lived protected file,
+    /// read its bounded bytes, delete it, and return a browser-safe data URL.
+    pub fn attachment_preview(&self, transfer: String) -> Result<String, String> {
+        let media_type = self
+            .node
+            .attachments()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|attachment| attachment.transfer_id == transfer)
+            .and_then(|attachment| {
+                attachment
+                    .objects
+                    .into_iter()
+                    .find(|object| object.preview)
+                    .map(|object| object.media_type)
+            })
+            .ok_or_else(|| "attachment preview is unavailable".to_owned())?;
+        if !matches!(media_type.as_str(), "image/jpeg" | "image/png") {
+            return Err("attachment preview has an invalid media type".to_owned());
+        }
+        let preview = PrivateTemp::destination("jpg")?;
+        self.node
+            .export_attachment_preview(transfer, preview.path().display().to_string())
+            .map_err(|e| e.to_string())?;
+        let bytes = std::fs::read(preview.path()).map_err(|e| e.to_string())?;
+        if bytes.len() > 256 * 1024 {
+            return Err("attachment preview exceeds protocol limit".to_owned());
+        }
+        Ok(format!(
+            "data:{media_type};base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        ))
     }
 
     /// Schedule pairwise text for an absolute UTC Unix instant.

@@ -29,6 +29,8 @@ meshtastic = ["kult-ffi/meshtastic"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 kult-ffi = { version = "0.1.0", path = "../../../crates/kult-ffi" }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 serde = { version = "1", features = ["derive"] }

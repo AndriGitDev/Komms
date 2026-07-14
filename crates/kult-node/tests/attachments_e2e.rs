@@ -146,14 +146,22 @@ async fn pairwise_attachment_resumes_after_restart_and_exports_exact_bytes() {
     let bytes: Vec<u8> = (0..(kult_crypto::ATTACHMENT_CHUNK_DATA_LEN * 9 + 7))
         .map(|index| (index % 251) as u8)
         .collect();
+    let preview = b"bounded locally-generated jpeg preview".to_vec();
     let content_id = alice
-        .send_attachment(
+        .send_attachment_with_preview(
             &bob_id,
             &AttachmentMetadata {
                 media_type: "application/octet-stream".to_owned(),
                 filename: Some("restart.bin".to_owned()),
             },
             &mut Cursor::new(&bytes),
+            Some((
+                &AttachmentMetadata {
+                    media_type: "image/jpeg".to_owned(),
+                    filename: None,
+                },
+                &mut Cursor::new(&preview),
+            )),
             NOW + 10,
             &mut rng,
         )
@@ -180,7 +188,9 @@ async fn pairwise_attachment_resumes_after_restart_and_exports_exact_bytes() {
         .unwrap();
     assert_eq!(offered.direction, AttachmentDirection::Inbound);
     assert_eq!(offered.state, MediaTransferState::AwaitingConsent);
+    assert_eq!(offered.objects.len(), 2);
     assert_eq!(offered.objects[0].verified_bytes, 0);
+    assert!(offered.objects[1].preview);
 
     bob.accept_attachment(&transfer_id, NOW + 13, &mut rng)
         .unwrap();
@@ -268,9 +278,14 @@ async fn pairwise_attachment_resumes_after_restart_and_exports_exact_bytes() {
         .unwrap();
     assert_eq!(complete.state, MediaTransferState::Complete);
     assert_eq!(complete.objects[0].verified_bytes, bytes.len() as u64);
+    assert_eq!(complete.objects[1].verified_bytes, preview.len() as u64);
     let mut exported = Vec::new();
     bob.export_attachment(&transfer_id, &mut exported).unwrap();
     assert_eq!(exported, bytes);
+    let mut exported_preview = Vec::new();
+    bob.export_attachment_object(&transfer_id, true, &mut exported_preview)
+        .unwrap();
+    assert_eq!(exported_preview, preview);
     assert!(alice.attachments().unwrap().iter().any(|attachment| {
         attachment.content_id == content_id && attachment.state == MediaTransferState::Cancelled
     }));
@@ -404,14 +419,22 @@ async fn group_attachment_encrypts_once_and_members_progress_independently() {
     alice.tick(NOW + 12, &mut rng).await.unwrap();
 
     let bytes = vec![0x5a; kult_crypto::ATTACHMENT_CHUNK_DATA_LEN + 1];
+    let preview = b"group jpeg preview".to_vec();
     let content_id = alice
-        .send_group_attachment(
+        .send_group_attachment_with_preview(
             &group,
             &AttachmentMetadata {
                 media_type: "image/png".to_owned(),
                 filename: Some("group.png".to_owned()),
             },
             &mut Cursor::new(&bytes),
+            Some((
+                &AttachmentMetadata {
+                    media_type: "image/jpeg".to_owned(),
+                    filename: None,
+                },
+                &mut Cursor::new(&preview),
+            )),
             NOW + 20,
             &mut rng,
         )
@@ -486,8 +509,8 @@ async fn group_attachment_encrypts_once_and_members_progress_independently() {
         std::fs::read_dir(dir.path().join("a.db.media"))
             .unwrap()
             .count(),
-        2,
-        "two entitled members reuse the same two sealed chunk files"
+        3,
+        "two entitled members reuse one sealed chunk set per object"
     );
 
     carol
@@ -502,4 +525,9 @@ async fn group_attachment_encrypts_once_and_members_progress_independently() {
         .export_attachment(&carol_transfer, &mut exported)
         .unwrap();
     assert_eq!(exported, bytes);
+    let mut exported_preview = Vec::new();
+    carol
+        .export_attachment_object(&carol_transfer, true, &mut exported_preview)
+        .unwrap();
+    assert_eq!(exported_preview, preview);
 }

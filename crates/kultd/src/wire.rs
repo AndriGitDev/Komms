@@ -74,6 +74,12 @@ pub enum Op {
         media_type: String,
         /// Optional authenticated display basename.
         filename: Option<String>,
+        /// Optional locally generated preview input path.
+        #[serde(default)]
+        preview_path: Option<String>,
+        /// JPEG/PNG media type required when `preview_path` is present.
+        #[serde(default)]
+        preview_media_type: Option<String>,
     },
     /// Import and queue a sender-key group attachment.
     GroupAttachmentSend {
@@ -85,6 +91,12 @@ pub enum Op {
         media_type: String,
         /// Optional authenticated display basename.
         filename: Option<String>,
+        /// Optional locally generated preview input path.
+        #[serde(default)]
+        preview_path: Option<String>,
+        /// JPEG/PNG media type required when `preview_path` is present.
+        #[serde(default)]
+        preview_media_type: Option<String>,
     },
     /// List render-safe attachment transfer state.
     Attachments,
@@ -119,6 +131,9 @@ pub enum Op {
         transfer: String,
         /// Destination path, created without overwriting.
         path: String,
+        /// Export the optional preview instead of the primary object.
+        #[serde(default)]
+        preview: bool,
     },
     /// Schedule pairwise text for an absolute UTC Unix instant.
     Schedule {

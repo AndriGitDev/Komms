@@ -3,6 +3,8 @@ package komms.android
 import android.content.Context
 import android.content.Intent
 import android.database.Cursor
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
@@ -10,12 +12,14 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.RecyclerView
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
@@ -27,6 +31,8 @@ import uniffi.kult_ffi.AttachmentState
 
 private const val MAX_PRIMARY_BYTES = 512L * 1024L * 1024L
 private const val COPY_BUFFER_BYTES = 64 * 1024
+private const val MAX_PREVIEW_BYTES = 256 * 1024
+private const val PREVIEW_EDGE = 512
 private const val PENDING_EXPORT_KEY = "komms.pending_attachment_export"
 
 /** Metadata hints from a caller-selected SAF document. */
@@ -45,11 +51,13 @@ private data class SelectedDocument(
 class AttachmentController(
     private val activity: AppCompatActivity,
     private val belongsHere: (Attachment) -> Boolean,
-    private val send: (Session, File, String, String?) -> String,
+    private val send: (Session, File, String, String?, File?) -> String,
     private val refresh: () -> Unit,
     savedState: Bundle?,
 ) {
-    private val adapter = AttachmentAdapter(::runAction, ::beginExport)
+    private val adapter = AttachmentAdapter(::runAction, ::beginExport, ::bindPreview)
+    private val previewCache = mutableMapOf<String, Bitmap>()
+    private val loadingPreviews = mutableSetOf<String>()
     private var pendingExport = savedState?.getString(PENDING_EXPORT_KEY)
     private val exportContract = MimeCreateDocument()
 
@@ -90,15 +98,104 @@ class AttachmentController(
         activity.runNode(
             work = {
                 val selected = stageDocument(uri)
+                var preview: File? = null
                 try {
-                    send(session, selected.file, selected.mediaType, selected.displayName)
+                    preview = generatePreview(selected)
+                    send(session, selected.file, selected.mediaType, selected.displayName, preview)
                 } finally {
+                    preview?.delete()
                     selected.file.delete()
                 }
             },
         ) {
             activity.toast(activity.getString(R.string.attachment_queued))
             refresh()
+        }
+    }
+
+    fun close() {
+        previewCache.values.forEach { it.recycle() }
+        previewCache.clear()
+    }
+
+    private fun generatePreview(selected: SelectedDocument): File? {
+        if (selected.mediaType !in setOf("image/jpeg", "image/png")) return null
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(selected.file.absolutePath, bounds)
+        require(bounds.outWidth > 0 && bounds.outHeight > 0) {
+            activity.getString(R.string.attachment_preview_failed)
+        }
+        require(bounds.outMimeType == "image/jpeg" || bounds.outMimeType == "image/png") {
+            activity.getString(R.string.attachment_preview_failed)
+        }
+        var sample = 1
+        while (bounds.outWidth.toLong() / sample > PREVIEW_EDGE.toLong() * 2 ||
+            bounds.outHeight.toLong() / sample > PREVIEW_EDGE.toLong() * 2
+        ) sample *= 2
+        val decoded = BitmapFactory.decodeFile(
+            selected.file.absolutePath,
+            BitmapFactory.Options().apply { inSampleSize = sample },
+        ) ?: throw IllegalArgumentException(activity.getString(R.string.attachment_preview_failed))
+        try {
+            for ((edge, quality) in listOf(512 to 82, 448 to 72, 384 to 62, 320 to 52)) {
+                val scale = minOf(1f, edge.toFloat() / maxOf(decoded.width, decoded.height))
+                val width = maxOf(1, (decoded.width * scale).toInt())
+                val height = maxOf(1, (decoded.height * scale).toInt())
+                val thumbnail = Bitmap.createScaledBitmap(decoded, width, height, true)
+                val bytes = ByteArrayOutputStream().use { output ->
+                    require(thumbnail.compress(Bitmap.CompressFormat.JPEG, quality, output))
+                    output.toByteArray()
+                }
+                if (thumbnail !== decoded) thumbnail.recycle()
+                if (bytes.size <= MAX_PREVIEW_BYTES) {
+                    val file = File.createTempFile("attachment-preview-", ".jpg", activity.cacheDir)
+                    FileOutputStream(file).use { output ->
+                        output.write(bytes)
+                        output.fd.sync()
+                    }
+                    return file
+                }
+            }
+        } finally {
+            decoded.recycle()
+        }
+        throw IllegalArgumentException(activity.getString(R.string.attachment_preview_failed))
+    }
+
+    private fun bindPreview(attachment: Attachment, image: ImageView) {
+        val available = attachment.objects.any { it.preview && it.state == AttachmentState.COMPLETE }
+        image.tag = attachment.transferId
+        image.visibility = if (available) View.INVISIBLE else View.GONE
+        if (!available) return
+        previewCache[attachment.transferId]?.let {
+            image.setImageBitmap(it)
+            image.visibility = View.VISIBLE
+            return
+        }
+        if (!loadingPreviews.add(attachment.transferId)) return
+        val session = NodeHolder.session ?: run {
+            loadingPreviews.remove(attachment.transferId)
+            return
+        }
+        activity.runNode(
+            work = {
+                val protected = File(activity.cacheDir, "attachment-preview-${UUID.randomUUID()}.jpg")
+                try {
+                    session.exportAttachmentPreview(attachment.transferId, protected)
+                    BitmapFactory.decodeFile(protected.absolutePath)
+                        ?: throw IllegalArgumentException(activity.getString(R.string.attachment_preview_failed))
+                } finally {
+                    protected.delete()
+                }
+            },
+            onError = { loadingPreviews.remove(attachment.transferId) },
+        ) { bitmap ->
+            loadingPreviews.remove(attachment.transferId)
+            previewCache[attachment.transferId] = bitmap
+            if (image.tag == attachment.transferId) {
+                image.setImageBitmap(bitmap)
+                image.visibility = View.VISIBLE
+            }
         }
     }
 
@@ -206,6 +303,7 @@ private enum class AttachmentAction { ACCEPT, REJECT, CANCEL, PAUSE, RESUME }
 private class AttachmentAdapter(
     private val action: (Attachment, AttachmentAction) -> Unit,
     private val export: (Attachment) -> Unit,
+    private val preview: (Attachment, ImageView) -> Unit,
 ) : RecyclerView.Adapter<AttachmentAdapter.Holder>() {
     private var items = listOf<Attachment>()
 
@@ -241,6 +339,7 @@ private class AttachmentAdapter(
             ),
             context.attachmentState(attachment.state),
         )
+        preview(attachment, view.findViewById(R.id.attachment_preview_image))
 
         val objects = view.findViewById<LinearLayout>(R.id.attachment_objects)
         objects.removeAllViews()

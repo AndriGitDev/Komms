@@ -7,7 +7,10 @@
 // never hidden, and the backup mnemonic passes through exactly once.
 
 import Foundation
+import ImageIO
 import KommsCore
+import UIKit
+import UniformTypeIdentifiers
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -221,11 +224,17 @@ final class AppModel: ObservableObject {
         filename: String?
     ) async throws {
         guard let session else { return }
-        let staged = try await run { try stageAttachment(source) }
-        defer { try? FileManager.default.removeItem(at: staged) }
+        let staged = try await run { try stageAttachment(source, mediaType: mediaType) }
+        defer { staged.remove() }
         _ = try await run {
-            try session.sendAttachment(
-                peer: peer, path: staged, mediaType: mediaType, filename: filename)
+            if let preview = staged.preview {
+                try session.sendAttachmentWithPreview(
+                    peer: peer, path: staged.primary, mediaType: mediaType,
+                    filename: filename, preview: preview)
+            } else {
+                try session.sendAttachment(
+                    peer: peer, path: staged.primary, mediaType: mediaType, filename: filename)
+            }
         }
         await refresh()
     }
@@ -237,11 +246,17 @@ final class AppModel: ObservableObject {
         filename: String?
     ) async throws {
         guard let session else { return }
-        let staged = try await run { try stageAttachment(source) }
-        defer { try? FileManager.default.removeItem(at: staged) }
+        let staged = try await run { try stageAttachment(source, mediaType: mediaType) }
+        defer { staged.remove() }
         _ = try await run {
-            try session.sendGroupAttachment(
-                group: group, path: staged, mediaType: mediaType, filename: filename)
+            if let preview = staged.preview {
+                try session.sendGroupAttachmentWithPreview(
+                    group: group, path: staged.primary, mediaType: mediaType,
+                    filename: filename, preview: preview)
+            } else {
+                try session.sendGroupAttachment(
+                    group: group, path: staged.primary, mediaType: mediaType, filename: filename)
+            }
         }
         await refresh()
     }
@@ -283,6 +298,21 @@ final class AppModel: ObservableObject {
             try? FileManager.default.removeItem(at: directory)
             throw error
         }
+    }
+
+    /// Materialize a sealed preview only long enough to read its bounded
+    /// bytes for UIKit, then remove the plaintext path.
+    func attachmentPreview(transfer: String) async throws -> Data {
+        guard let session else { throw InputError("node is locked") }
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("komms-render-preview-\(UUID().uuidString).jpg")
+        defer { try? FileManager.default.removeItem(at: path) }
+        try await run { try session.exportAttachmentPreview(transfer: transfer, to: path) }
+        let data = try Data(contentsOf: path, options: .mappedIfSafe)
+        guard data.count <= previewLimit else {
+            throw InputError("attachment preview exceeds the 256 KiB limit")
+        }
+        return data
     }
 
     private func attachmentAction(_ action: @escaping @Sendable (Session) throws -> Void) async throws {
@@ -413,11 +443,22 @@ final class AppModel: ObservableObject {
 
 private let attachmentLimit = 512 * 1024 * 1024
 private let attachmentCopySize = 64 * 1024
+private let previewLimit = 256 * 1024
+
+private struct StagedAttachment: Sendable {
+    let primary: URL
+    let preview: URL?
+
+    func remove() {
+        try? FileManager.default.removeItem(at: primary)
+        if let preview { try? FileManager.default.removeItem(at: preview) }
+    }
+}
 
 /// Copy one security-scoped provider document into a unique app-private file
 /// with bounded memory and an explicit size ceiling. The caller holds the
 /// security scope open for this blocking operation.
-private func stageAttachment(_ source: URL) throws -> URL {
+private func stageAttachment(_ source: URL, mediaType: String) throws -> StagedAttachment {
     let staged = FileManager.default.temporaryDirectory
         .appendingPathComponent("komms-attachment-\(UUID().uuidString)")
     guard FileManager.default.createFile(atPath: staged.path, contents: nil) else {
@@ -437,11 +478,46 @@ private func stageAttachment(_ source: URL) throws -> URL {
             try output.write(contentsOf: chunk)
         }
         try output.synchronize()
-        return staged
+        let preview = try generateImagePreview(staged, mediaType: mediaType)
+        return StagedAttachment(primary: staged, preview: preview)
     } catch {
         try? FileManager.default.removeItem(at: staged)
         throw error
     }
+}
+
+private func generateImagePreview(_ source: URL, mediaType: String) throws -> URL? {
+    guard mediaType == "image/jpeg" || mediaType == "image/png" else { return nil }
+    guard let imageSource = CGImageSourceCreateWithURL(source as CFURL, nil) else {
+        throw InputError("this image could not be safely previewed")
+    }
+    guard let sourceType = CGImageSourceGetType(imageSource),
+          sourceType == UTType.jpeg.identifier as CFString
+            || sourceType == UTType.png.identifier as CFString
+    else {
+        throw InputError("the selected content is not JPEG or PNG")
+    }
+    for (edge, quality) in [(512, 0.82), (448, 0.72), (384, 0.62), (320, 0.52)] {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: edge,
+            kCGImageSourceShouldCacheImmediately: false,
+        ]
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(
+            imageSource, 0, options as CFDictionary)
+        else { continue }
+        guard let data = UIImage(cgImage: thumbnail).jpegData(compressionQuality: quality) else {
+            continue
+        }
+        if data.count <= previewLimit {
+            let path = FileManager.default.temporaryDirectory
+                .appendingPathComponent("komms-preview-\(UUID().uuidString).jpg")
+            try data.write(to: path, options: [.atomic, .completeFileProtection])
+            return path
+        }
+    }
+    throw InputError("this image could not fit the 256 KiB preview limit")
 }
 
 /// One error string for any failure the UI shows: the node's words for FFI

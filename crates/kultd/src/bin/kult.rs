@@ -28,8 +28,12 @@ COMMANDS:
     send PEER_HEX TEXT...           queue a message
     attachment-send PEER_HEX PATH MEDIA_TYPE [FILENAME]
                                     import and queue a pairwise attachment
+    attachment-send-preview PEER_HEX PATH MEDIA_TYPE PREVIEW_PATH PREVIEW_MEDIA_TYPE [FILENAME]
+                                    import pairwise content plus a sealed preview
     group-attachment-send GROUP_HEX PATH MEDIA_TYPE [FILENAME]
                                     import and queue a group attachment
+    group-attachment-send-preview GROUP_HEX PATH MEDIA_TYPE PREVIEW_PATH PREVIEW_MEDIA_TYPE [FILENAME]
+                                    import group content plus a sealed preview
     attachments                     list render-safe attachment transfers
     attachment-accept TRANSFER_HEX  accept an inbound offer
     attachment-reject TRANSFER_HEX  reject an inbound offer
@@ -38,6 +42,8 @@ COMMANDS:
     attachment-resume TRANSFER_HEX  resume a paused transfer
     attachment-export TRANSFER_HEX PATH
                                     stream a completed object to a new file
+    attachment-preview-export TRANSFER_HEX PATH
+                                    stream a sealed preview to a new file
     schedule PEER_HEX UNIX_SECS TEXT... schedule pairwise text at a UTC instant
     group-schedule GROUP_HEX UNIX_SECS TEXT... schedule group text
     scheduled                       list scheduled messages
@@ -134,6 +140,21 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
                 "filename": args.get(3),
             })
         }
+        "attachment-send-preview" => {
+            need(5)?;
+            if args.len() > 6 {
+                return Err("attachment-send-preview: too many arguments".to_owned());
+            }
+            json!({
+                "op": "attachment_send",
+                "peer": args[0],
+                "path": args[1],
+                "media_type": args[2],
+                "preview_path": args[3],
+                "preview_media_type": args[4],
+                "filename": args.get(5),
+            })
+        }
         "group-attachment-send" => {
             need(3)?;
             if args.len() > 4 {
@@ -145,6 +166,21 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
                 "path": args[1],
                 "media_type": args[2],
                 "filename": args.get(3),
+            })
+        }
+        "group-attachment-send-preview" => {
+            need(5)?;
+            if args.len() > 6 {
+                return Err("group-attachment-send-preview: too many arguments".to_owned());
+            }
+            json!({
+                "op": "group_attachment_send",
+                "group": args[0],
+                "path": args[1],
+                "media_type": args[2],
+                "preview_path": args[3],
+                "preview_media_type": args[4],
+                "filename": args.get(5),
             })
         }
         "attachments" => json!({ "op": "attachments" }),
@@ -171,6 +207,15 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
         "attachment-export" => {
             need(2)?;
             json!({ "op": "attachment_export", "transfer": args[0], "path": args[1] })
+        }
+        "attachment-preview-export" => {
+            need(2)?;
+            json!({
+                "op": "attachment_export",
+                "transfer": args[0],
+                "path": args[1],
+                "preview": true,
+            })
         }
         "schedule" => {
             need(3)?;
@@ -424,9 +469,30 @@ mod tests {
         .unwrap();
         assert_eq!(request["op"], json!("attachment_send"));
         assert_eq!(request["filename"], json!("photo.jpg"));
+        let preview_request = build_request(
+            "attachment-send-preview",
+            &[
+                "05".repeat(32),
+                "/tmp/photo.jpg".to_owned(),
+                "image/jpeg".to_owned(),
+                "/tmp/preview.jpg".to_owned(),
+                "image/jpeg".to_owned(),
+                "photo.jpg".to_owned(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(preview_request["preview_path"], json!("/tmp/preview.jpg"));
         assert_eq!(
             build_request("attachment-accept", &["06".repeat(16)]).unwrap(),
             json!({ "op": "attachment_accept", "transfer": "06".repeat(16) })
+        );
+        assert_eq!(
+            build_request(
+                "attachment-preview-export",
+                &["06".repeat(16), "/tmp/preview.jpg".to_owned()]
+            )
+            .unwrap()["preview"],
+            json!(true)
         );
         assert_eq!(
             build_request(

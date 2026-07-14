@@ -77,8 +77,14 @@ class GroupChatActivity : AppCompatActivity() {
             belongsHere = {
                 it.conversation == AttachmentConversation.GROUP && it.group == groupId
             },
-            send = { session, path, mediaType, filename ->
-                session.sendGroupAttachment(groupId, path, mediaType, filename)
+            send = { session, path, mediaType, filename, preview ->
+                if (preview == null) {
+                    session.sendGroupAttachment(groupId, path, mediaType, filename)
+                } else {
+                    session.sendGroupAttachmentWithPreview(
+                        groupId, path, mediaType, filename, preview,
+                    )
+                }
             },
             refresh = ::refresh,
             savedState = savedInstanceState,
@@ -100,6 +106,7 @@ class GroupChatActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         NodeHolder.removeListener(listener)
+        if (::attachmentController.isInitialized) attachmentController.close()
         super.onDestroy()
     }
 

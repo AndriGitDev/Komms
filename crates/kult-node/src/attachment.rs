@@ -21,12 +21,12 @@ use kult_protocol::{
     AttachmentBulkOperation, AttachmentBulkRecord, AttachmentManifest, AttachmentObject,
     AttachmentReason, AttachmentRole, AttachmentScope, DecodedAttachmentBulkRecord, DecodedContent,
     Envelope, EnvelopeKind, MailboxKey, MissingRange, CONTENT_FORMAT_V1, CONTENT_KIND_ATTACHMENT,
-    MAX_PRIMARY_OBJECT_LEN,
+    MAX_PREVIEW_OBJECT_LEN, MAX_PRIMARY_OBJECT_LEN,
 };
 use kult_store::{
     DeliveryState, Direction, GroupDelivery, GroupMessageRecord, MediaDirection, MediaObjectRecord,
     MediaRecord, MediaScope, MediaTransferRecord, MediaTransferState, MessageRecord, QueueClass,
-    QueueItem, StoreError,
+    QueueItem, Store, StoreError,
 };
 
 const BULK_CONTROL_PADDING_FLOOR: usize = 4096;
@@ -54,6 +54,126 @@ pub(crate) struct GroupAttachmentOffer {
     pub(crate) entitled_peers: Vec<[u8; 32]>,
 }
 
+struct AttachmentSourceDetails {
+    total_len: u64,
+    content_hash: [u8; 32],
+}
+
+fn attachment_source_details<R: Read + Seek>(
+    source: &mut R,
+    max_len: u64,
+) -> Result<AttachmentSourceDetails> {
+    let total_len = source.seek(SeekFrom::End(0))?;
+    if total_len > max_len {
+        return Err(NodeError::InvalidAttachment);
+    }
+    source.seek(SeekFrom::Start(0))?;
+    let mut hasher = blake3::Hasher::new();
+    let mut remaining = total_len;
+    let mut buffer = Zeroizing::new(vec![0u8; kult_crypto::ATTACHMENT_CHUNK_DATA_LEN]);
+    while remaining != 0 {
+        let take = usize::try_from(remaining.min(buffer.len() as u64))
+            .map_err(|_| NodeError::InvalidAttachment)?;
+        source.read_exact(&mut buffer[..take])?;
+        hasher.update(&buffer[..take]);
+        remaining -= take as u64;
+    }
+    source.seek(SeekFrom::Start(0))?;
+    Ok(AttachmentSourceDetails {
+        total_len,
+        content_hash: *hasher.finalize().as_bytes(),
+    })
+}
+
+fn validate_preview_metadata(metadata: &AttachmentMetadata) -> Result<()> {
+    if metadata.filename.is_some()
+        || !matches!(metadata.media_type.as_str(), "image/jpeg" | "image/png")
+    {
+        return Err(NodeError::InvalidAttachment);
+    }
+    Ok(())
+}
+
+fn media_object_record(
+    local_id: [u8; 16],
+    transfer_id: [u8; 16],
+    object_id: [u8; 16],
+    role: AttachmentRole,
+    details: &AttachmentSourceDetails,
+    metadata: &AttachmentMetadata,
+) -> MediaObjectRecord {
+    let chunk_count = kult_protocol::attachment_chunk_count(details.total_len);
+    MediaObjectRecord {
+        local_id,
+        transfer_id,
+        object_id,
+        role: role as u8,
+        total_len: details.total_len,
+        chunk_count,
+        content_hash: details.content_hash,
+        media_type: metadata.media_type.clone(),
+        filename: if role == AttachmentRole::Primary {
+            metadata.filename.clone()
+        } else {
+            None
+        },
+        state: MediaTransferState::Queued,
+        verified_bitmap: vec![0; (chunk_count as usize).div_ceil(8)],
+        chunk_addresses: vec![None; chunk_count as usize],
+        verified_bytes: 0,
+    }
+}
+
+fn import_object<R: Read + Seek>(
+    store: &mut Store,
+    source: &mut R,
+    attachment_key: &[u8; 32],
+    context: AttachmentChunkContext,
+    local_object_id: &[u8; 16],
+    rng: &mut impl CryptoRngCore,
+) -> Result<()> {
+    let mut buffer = Zeroizing::new(vec![0u8; kult_crypto::ATTACHMENT_CHUNK_DATA_LEN]);
+    for index in 0..context.chunk_count {
+        let consumed = u64::from(index) * kult_crypto::ATTACHMENT_CHUNK_DATA_LEN as u64;
+        let actual_len = usize::try_from(
+            (context.total_len - consumed).min(kult_crypto::ATTACHMENT_CHUNK_DATA_LEN as u64),
+        )
+        .map_err(|_| NodeError::InvalidAttachment)?;
+        source.read_exact(&mut buffer[..actual_len])?;
+        let sealed = seal_attachment_chunk(attachment_key, &context, index, &buffer[..actual_len])?;
+        store.commit_media_chunk(local_object_id, index, &sealed, rng)?;
+    }
+    store.mark_media_complete(local_object_id, &context.content_hash, rng)?;
+    Ok(())
+}
+
+fn import_group_object<R: Read + Seek>(
+    store: &mut Store,
+    source: &mut R,
+    attachment_key: &[u8; 32],
+    context: AttachmentChunkContext,
+    local_object_ids: &[[u8; 16]],
+    rng: &mut impl CryptoRngCore,
+) -> Result<()> {
+    let mut buffer = Zeroizing::new(vec![0u8; kult_crypto::ATTACHMENT_CHUNK_DATA_LEN]);
+    for index in 0..context.chunk_count {
+        let consumed = u64::from(index) * kult_crypto::ATTACHMENT_CHUNK_DATA_LEN as u64;
+        let actual_len = usize::try_from(
+            (context.total_len - consumed).min(kult_crypto::ATTACHMENT_CHUNK_DATA_LEN as u64),
+        )
+        .map_err(|_| NodeError::InvalidAttachment)?;
+        source.read_exact(&mut buffer[..actual_len])?;
+        let sealed = seal_attachment_chunk(attachment_key, &context, index, &buffer[..actual_len])?;
+        for local_object_id in local_object_ids {
+            store.commit_media_chunk(local_object_id, index, &sealed, rng)?;
+        }
+    }
+    for local_object_id in local_object_ids {
+        store.mark_media_complete(local_object_id, &context.content_hash, rng)?;
+    }
+    Ok(())
+}
+
 impl Node {
     /// Import one pairwise attachment from a bounded seekable stream.
     ///
@@ -70,6 +190,21 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 16]> {
+        self.send_attachment_with_preview::<R, R>(peer, metadata, source, None, now, rng)
+    }
+
+    /// Import one pairwise attachment with an optional locally generated
+    /// JPEG/PNG preview. Both streams are sealed directly into the media
+    /// store and the preview is subject to the protocol's 256 KiB ceiling.
+    pub fn send_attachment_with_preview<R: Read + Seek, P: Read + Seek>(
+        &mut self,
+        peer: &[u8; 32],
+        metadata: &AttachmentMetadata,
+        source: &mut R,
+        mut preview: Option<(&AttachmentMetadata, &mut P)>,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
         self.store
             .get_contact(peer)?
             .ok_or(NodeError::UnknownPeer)?;
@@ -77,49 +212,63 @@ impl Node {
             return Err(NodeError::AttachmentUnsupported);
         }
 
-        let total_len = source.seek(SeekFrom::End(0))?;
-        if total_len > MAX_PRIMARY_OBJECT_LEN {
-            return Err(NodeError::InvalidAttachment);
-        }
-        source.seek(SeekFrom::Start(0))?;
-        let mut hasher = blake3::Hasher::new();
-        let mut remaining = total_len;
-        let mut buffer = Zeroizing::new(vec![0u8; kult_crypto::ATTACHMENT_CHUNK_DATA_LEN]);
-        while remaining != 0 {
-            let take = usize::try_from(remaining.min(buffer.len() as u64))
-                .map_err(|_| NodeError::InvalidAttachment)?;
-            source.read_exact(&mut buffer[..take])?;
-            hasher.update(&buffer[..take]);
-            remaining -= take as u64;
-        }
-        let content_hash = *hasher.finalize().as_bytes();
-        source.seek(SeekFrom::Start(0))?;
+        let primary = attachment_source_details(source, MAX_PRIMARY_OBJECT_LEN)?;
+        let preview_details = match preview.as_mut() {
+            Some((preview_metadata, preview_source)) => {
+                validate_preview_metadata(preview_metadata)?;
+                Some(attachment_source_details(
+                    *preview_source,
+                    MAX_PREVIEW_OBJECT_LEN,
+                )?)
+            }
+            None => None,
+        };
 
         let mut content_id = [0u8; 16];
         let mut transfer_id = [0u8; 16];
         let mut local_object_id = [0u8; 16];
         let mut object_id = [0u8; 16];
+        let mut preview_local_object_id = [0u8; 16];
+        let mut preview_object_id = [0u8; 16];
         let mut attachment_key = [0u8; 32];
-        rng.fill_bytes(&mut content_id);
-        rng.fill_bytes(&mut transfer_id);
-        rng.fill_bytes(&mut local_object_id);
-        rng.fill_bytes(&mut object_id);
-        rng.fill_bytes(&mut attachment_key);
+        for value in [
+            &mut content_id[..],
+            &mut transfer_id[..],
+            &mut local_object_id[..],
+            &mut object_id[..],
+            &mut preview_local_object_id[..],
+            &mut preview_object_id[..],
+            &mut attachment_key[..],
+        ] {
+            rng.fill_bytes(value);
+        }
 
-        let chunk_count = kult_protocol::attachment_chunk_count(total_len);
+        let chunk_count = kult_protocol::attachment_chunk_count(primary.total_len);
+        let preview_manifest = preview.as_ref().zip(preview_details.as_ref()).map(
+            |((preview_metadata, _), details)| AttachmentObject {
+                role: AttachmentRole::Preview,
+                object_id: preview_object_id,
+                total_len: details.total_len,
+                chunk_data_len: kult_protocol::ATTACHMENT_CHUNK_DATA_LEN,
+                chunk_count: kult_protocol::attachment_chunk_count(details.total_len),
+                content_hash: details.content_hash,
+                media_type: &preview_metadata.media_type,
+                filename: None,
+            },
+        );
         let manifest = AttachmentManifest {
             attachment_key,
             primary: AttachmentObject {
                 role: AttachmentRole::Primary,
                 object_id,
-                total_len,
+                total_len: primary.total_len,
                 chunk_data_len: kult_protocol::ATTACHMENT_CHUNK_DATA_LEN,
                 chunk_count,
-                content_hash,
+                content_hash: primary.content_hash,
                 media_type: &metadata.media_type,
                 filename: metadata.filename.as_deref(),
             },
-            preview: None,
+            preview: preview_manifest,
         };
         let frame =
             encode_attachment(content_id, &manifest).map_err(|_| NodeError::InvalidAttachment)?;
@@ -137,21 +286,14 @@ impl Node {
             state: MediaTransferState::Queued,
             updated_at: now,
         };
-        let object = MediaObjectRecord {
-            local_id: local_object_id,
+        let object = media_object_record(
+            local_object_id,
             transfer_id,
             object_id,
-            role: AttachmentRole::Primary as u8,
-            total_len,
-            chunk_count,
-            content_hash,
-            media_type: metadata.media_type.clone(),
-            filename: metadata.filename.clone(),
-            state: MediaTransferState::Queued,
-            verified_bitmap: vec![0; (chunk_count as usize).div_ceil(8)],
-            chunk_addresses: vec![None; chunk_count as usize],
-            verified_bytes: 0,
-        };
+            AttachmentRole::Primary,
+            &primary,
+            metadata,
+        );
 
         self.store.put_message(
             &MessageRecord {
@@ -167,32 +309,60 @@ impl Node {
         )?;
         self.store.put_media_transfer(&transfer, rng)?;
         self.store.put_media_object(&object, rng)?;
-
-        let context = AttachmentChunkContext {
-            scope: AttachmentChunkScope::Pairwise,
-            scope_id,
-            manifest_author: me,
-            manifest_content_id: content_id,
-            object_id,
-            role: AttachmentRole::Primary as u8,
-            total_len,
-            chunk_count,
-            content_hash,
-        };
-        for index in 0..chunk_count {
-            let consumed = u64::from(index) * kult_crypto::ATTACHMENT_CHUNK_DATA_LEN as u64;
-            let actual_len = usize::try_from(
-                (total_len - consumed).min(kult_crypto::ATTACHMENT_CHUNK_DATA_LEN as u64),
-            )
-            .map_err(|_| NodeError::InvalidAttachment)?;
-            source.read_exact(&mut buffer[..actual_len])?;
-            let sealed =
-                seal_attachment_chunk(&attachment_key, &context, index, &buffer[..actual_len])?;
-            self.store
-                .commit_media_chunk(&local_object_id, index, &sealed, rng)?;
+        if let (Some((preview_metadata, _)), Some(details)) =
+            (preview.as_ref(), preview_details.as_ref())
+        {
+            self.store.put_media_object(
+                &media_object_record(
+                    preview_local_object_id,
+                    transfer_id,
+                    preview_object_id,
+                    AttachmentRole::Preview,
+                    details,
+                    preview_metadata,
+                ),
+                rng,
+            )?;
         }
-        self.store
-            .mark_media_complete(&local_object_id, &content_hash, rng)?;
+
+        import_object(
+            &mut self.store,
+            source,
+            &attachment_key,
+            AttachmentChunkContext {
+                scope: AttachmentChunkScope::Pairwise,
+                scope_id,
+                manifest_author: me,
+                manifest_content_id: content_id,
+                object_id,
+                role: AttachmentRole::Primary as u8,
+                total_len: primary.total_len,
+                chunk_count,
+                content_hash: primary.content_hash,
+            },
+            &local_object_id,
+            rng,
+        )?;
+        if let (Some((_, preview_source)), Some(details)) = (preview.as_mut(), preview_details) {
+            import_object(
+                &mut self.store,
+                *preview_source,
+                &attachment_key,
+                AttachmentChunkContext {
+                    scope: AttachmentChunkScope::Pairwise,
+                    scope_id,
+                    manifest_author: me,
+                    manifest_content_id: content_id,
+                    object_id: preview_object_id,
+                    role: AttachmentRole::Preview as u8,
+                    total_len: details.total_len,
+                    chunk_count: kult_protocol::attachment_chunk_count(details.total_len),
+                    content_hash: details.content_hash,
+                },
+                &preview_local_object_id,
+                rng,
+            )?;
+        }
         self.emit_attachment_update(&transfer_id)?;
         Ok(content_id)
     }
@@ -206,6 +376,21 @@ impl Node {
         group: &[u8; 32],
         metadata: &AttachmentMetadata,
         source: &mut R,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        self.send_group_attachment_with_preview::<R, R>(group, metadata, source, None, now, rng)
+    }
+
+    /// Import one sender-key group attachment with an optional locally
+    /// generated JPEG/PNG preview. Each object is encrypted once and the
+    /// deterministic sealed chunks are retained for every entitled member.
+    pub fn send_group_attachment_with_preview<R: Read + Seek, P: Read + Seek>(
+        &mut self,
+        group: &[u8; 32],
+        metadata: &AttachmentMetadata,
+        source: &mut R,
+        mut preview: Option<(&AttachmentMetadata, &mut P)>,
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 16]> {
@@ -229,44 +414,52 @@ impl Node {
             }
         }
 
-        let total_len = source.seek(SeekFrom::End(0))?;
-        if total_len > MAX_PRIMARY_OBJECT_LEN {
-            return Err(NodeError::InvalidAttachment);
-        }
-        source.seek(SeekFrom::Start(0))?;
-        let mut hasher = blake3::Hasher::new();
-        let mut remaining = total_len;
-        let mut buffer = Zeroizing::new(vec![0u8; kult_crypto::ATTACHMENT_CHUNK_DATA_LEN]);
-        while remaining != 0 {
-            let take = usize::try_from(remaining.min(buffer.len() as u64))
-                .map_err(|_| NodeError::InvalidAttachment)?;
-            source.read_exact(&mut buffer[..take])?;
-            hasher.update(&buffer[..take]);
-            remaining -= take as u64;
-        }
-        let content_hash = *hasher.finalize().as_bytes();
-        source.seek(SeekFrom::Start(0))?;
+        let primary = attachment_source_details(source, MAX_PRIMARY_OBJECT_LEN)?;
+        let preview_details = match preview.as_mut() {
+            Some((preview_metadata, preview_source)) => {
+                validate_preview_metadata(preview_metadata)?;
+                Some(attachment_source_details(
+                    *preview_source,
+                    MAX_PREVIEW_OBJECT_LEN,
+                )?)
+            }
+            None => None,
+        };
 
         let mut content_id = [0u8; 16];
         let mut object_id = [0u8; 16];
+        let mut preview_object_id = [0u8; 16];
         let mut attachment_key = [0u8; 32];
         rng.fill_bytes(&mut content_id);
         rng.fill_bytes(&mut object_id);
+        rng.fill_bytes(&mut preview_object_id);
         rng.fill_bytes(&mut attachment_key);
-        let chunk_count = kult_protocol::attachment_chunk_count(total_len);
+        let chunk_count = kult_protocol::attachment_chunk_count(primary.total_len);
+        let preview_manifest = preview.as_ref().zip(preview_details.as_ref()).map(
+            |((preview_metadata, _), details)| AttachmentObject {
+                role: AttachmentRole::Preview,
+                object_id: preview_object_id,
+                total_len: details.total_len,
+                chunk_data_len: kult_protocol::ATTACHMENT_CHUNK_DATA_LEN,
+                chunk_count: kult_protocol::attachment_chunk_count(details.total_len),
+                content_hash: details.content_hash,
+                media_type: &preview_metadata.media_type,
+                filename: None,
+            },
+        );
         let manifest = AttachmentManifest {
             attachment_key,
             primary: AttachmentObject {
                 role: AttachmentRole::Primary,
                 object_id,
-                total_len,
+                total_len: primary.total_len,
                 chunk_data_len: kult_protocol::ATTACHMENT_CHUNK_DATA_LEN,
                 chunk_count,
-                content_hash,
+                content_hash: primary.content_hash,
                 media_type: &metadata.media_type,
                 filename: metadata.filename.as_deref(),
             },
-            preview: None,
+            preview: preview_manifest,
         };
         let frame =
             encode_attachment(content_id, &manifest).map_err(|_| NodeError::InvalidAttachment)?;
@@ -291,23 +484,25 @@ impl Node {
             rng,
         )?;
 
-        let context = AttachmentChunkContext {
+        let primary_context = AttachmentChunkContext {
             scope: AttachmentChunkScope::Group,
             scope_id: *group,
             manifest_author: me,
             manifest_content_id: content_id,
             object_id,
             role: AttachmentRole::Primary as u8,
-            total_len,
+            total_len: primary.total_len,
             chunk_count,
-            content_hash,
+            content_hash: primary.content_hash,
         };
         let mut rows = Vec::new();
         for peer in &peers {
             let mut transfer_id = [0u8; 16];
             let mut local_object_id = [0u8; 16];
+            let mut preview_local_object_id = [0u8; 16];
             rng.fill_bytes(&mut transfer_id);
             rng.fill_bytes(&mut local_object_id);
+            rng.fill_bytes(&mut preview_local_object_id);
             let transfer = MediaTransferRecord {
                 local_id: transfer_id,
                 peer: *peer,
@@ -320,43 +515,71 @@ impl Node {
                 state: MediaTransferState::Queued,
                 updated_at: now,
             };
-            let object = MediaObjectRecord {
-                local_id: local_object_id,
+            let object = media_object_record(
+                local_object_id,
                 transfer_id,
                 object_id,
-                role: AttachmentRole::Primary as u8,
-                total_len,
-                chunk_count,
-                content_hash,
-                media_type: metadata.media_type.clone(),
-                filename: metadata.filename.clone(),
-                state: MediaTransferState::Queued,
-                verified_bitmap: vec![0; (chunk_count as usize).div_ceil(8)],
-                chunk_addresses: vec![None; chunk_count as usize],
-                verified_bytes: 0,
-            };
+                AttachmentRole::Primary,
+                &primary,
+                metadata,
+            );
+            let preview_object = preview.as_ref().zip(preview_details.as_ref()).map(
+                |((preview_metadata, _), details)| {
+                    media_object_record(
+                        preview_local_object_id,
+                        transfer_id,
+                        preview_object_id,
+                        AttachmentRole::Preview,
+                        details,
+                        preview_metadata,
+                    )
+                },
+            );
             self.store.put_media_transfer(&transfer, rng)?;
             self.store.put_media_object(&object, rng)?;
-            rows.push((transfer, object));
+            if let Some(preview_object) = &preview_object {
+                self.store.put_media_object(preview_object, rng)?;
+            }
+            rows.push((transfer, object, preview_object));
         }
 
-        for index in 0..chunk_count {
-            let consumed = u64::from(index) * kult_crypto::ATTACHMENT_CHUNK_DATA_LEN as u64;
-            let actual_len = usize::try_from(
-                (total_len - consumed).min(kult_crypto::ATTACHMENT_CHUNK_DATA_LEN as u64),
-            )
-            .map_err(|_| NodeError::InvalidAttachment)?;
-            source.read_exact(&mut buffer[..actual_len])?;
-            let sealed =
-                seal_attachment_chunk(&attachment_key, &context, index, &buffer[..actual_len])?;
-            for (_, object) in &rows {
-                self.store
-                    .commit_media_chunk(&object.local_id, index, &sealed, rng)?;
-            }
+        let primary_ids = rows
+            .iter()
+            .map(|(_, object, _)| object.local_id)
+            .collect::<Vec<_>>();
+        import_group_object(
+            &mut self.store,
+            source,
+            &attachment_key,
+            primary_context,
+            &primary_ids,
+            rng,
+        )?;
+        if let (Some((_, preview_source)), Some(details)) = (preview.as_mut(), preview_details) {
+            let preview_ids = rows
+                .iter()
+                .filter_map(|(_, _, object)| object.as_ref().map(|object| object.local_id))
+                .collect::<Vec<_>>();
+            import_group_object(
+                &mut self.store,
+                *preview_source,
+                &attachment_key,
+                AttachmentChunkContext {
+                    scope: AttachmentChunkScope::Group,
+                    scope_id: *group,
+                    manifest_author: me,
+                    manifest_content_id: content_id,
+                    object_id: preview_object_id,
+                    role: AttachmentRole::Preview as u8,
+                    total_len: details.total_len,
+                    chunk_count: kult_protocol::attachment_chunk_count(details.total_len),
+                    content_hash: details.content_hash,
+                },
+                &preview_ids,
+                rng,
+            )?;
         }
-        for (transfer, object) in &rows {
-            self.store
-                .mark_media_complete(&object.local_id, &content_hash, rng)?;
+        for (transfer, _, _) in &rows {
             self.emit_attachment_update(&transfer.local_id)?;
         }
         Ok(content_id)
@@ -382,15 +605,31 @@ impl Node {
         transfer_id: &[u8; 16],
         destination: &mut W,
     ) -> Result<()> {
+        self.export_attachment_object(transfer_id, false, destination)
+    }
+
+    /// Stream a completed primary or preview object to an
+    /// application-provided protected handle. Preview export is intended for
+    /// transient local rendering and never selects a filesystem path itself.
+    pub fn export_attachment_object<W: Write>(
+        &self,
+        transfer_id: &[u8; 16],
+        preview: bool,
+        destination: &mut W,
+    ) -> Result<()> {
         let transfer = self.require_attachment(transfer_id)?;
-        if transfer.state != MediaTransferState::Complete {
-            return Err(NodeError::InvalidAttachment);
-        }
         let object = self
             .store
             .media_objects_for_transfer(transfer_id)?
             .into_iter()
-            .find(|object| object.role == AttachmentRole::Primary as u8)
+            .find(|object| {
+                object.role
+                    == if preview {
+                        AttachmentRole::Preview as u8
+                    } else {
+                        AttachmentRole::Primary as u8
+                    }
+            })
             .ok_or(NodeError::UnknownAttachment)?;
         if object.state != MediaTransferState::Complete {
             return Err(NodeError::InvalidAttachment);

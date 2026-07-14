@@ -7,14 +7,22 @@ import SwiftUI
 
 @main
 struct KommsApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model = AppModel()
 
     var body: some Scene {
         WindowGroup {
-            if model.session == nil {
-                GateView().environmentObject(model)
-            } else {
-                MainView().environmentObject(model)
+            Group {
+                if model.session == nil {
+                    GateView().environmentObject(model)
+                } else {
+                    MainView().environmentObject(model)
+                }
+            }
+            .onChange(of: scenePhase) { phase in
+                if phase == .active {
+                    Task { await model.refresh() }
+                }
             }
         }
     }

@@ -91,12 +91,14 @@ pub(crate) enum Msg {
         peer: [u8; 32],
         metadata: AttachmentMetadata,
         path: PathBuf,
+        preview: Option<(AttachmentMetadata, PathBuf)>,
         resp: Resp<[u8; 16]>,
     },
     GroupAttachmentSend {
         group: [u8; 32],
         metadata: AttachmentMetadata,
         path: PathBuf,
+        preview: Option<(AttachmentMetadata, PathBuf)>,
         resp: Resp<[u8; 16]>,
     },
     Attachments {
@@ -125,6 +127,7 @@ pub(crate) enum Msg {
     AttachmentExport {
         transfer: [u8; 16],
         path: PathBuf,
+        preview: bool,
         resp: Resp<()>,
     },
     Schedule {
@@ -560,13 +563,32 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
             peer,
             metadata,
             path,
+            preview,
             resp,
         } => {
             let result = std::fs::File::open(path)
                 .map_err(|e| format!("attachment source: {e}"))
                 .and_then(|mut source| {
-                    node.send_attachment(&peer, &metadata, &mut source, now, &mut OsRng)
-                        .map_err(fail)
+                    let mut opened_preview = match preview {
+                        Some((preview_metadata, path)) => Some((
+                            preview_metadata,
+                            std::fs::File::open(path)
+                                .map_err(|e| format!("attachment preview source: {e}"))?,
+                        )),
+                        None => None,
+                    };
+                    let preview = opened_preview
+                        .as_mut()
+                        .map(|(metadata, source)| (&*metadata, source));
+                    node.send_attachment_with_preview(
+                        &peer,
+                        &metadata,
+                        &mut source,
+                        preview,
+                        now,
+                        &mut OsRng,
+                    )
+                    .map_err(fail)
                 });
             let _ = resp.send(result);
         }
@@ -574,13 +596,32 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
             group,
             metadata,
             path,
+            preview,
             resp,
         } => {
             let result = std::fs::File::open(path)
                 .map_err(|e| format!("attachment source: {e}"))
                 .and_then(|mut source| {
-                    node.send_group_attachment(&group, &metadata, &mut source, now, &mut OsRng)
-                        .map_err(fail)
+                    let mut opened_preview = match preview {
+                        Some((preview_metadata, path)) => Some((
+                            preview_metadata,
+                            std::fs::File::open(path)
+                                .map_err(|e| format!("attachment preview source: {e}"))?,
+                        )),
+                        None => None,
+                    };
+                    let preview = opened_preview
+                        .as_mut()
+                        .map(|(metadata, source)| (&*metadata, source));
+                    node.send_group_attachment_with_preview(
+                        &group,
+                        &metadata,
+                        &mut source,
+                        preview,
+                        now,
+                        &mut OsRng,
+                    )
+                    .map_err(fail)
                 });
             let _ = resp.send(result);
         }
@@ -620,12 +661,13 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         Msg::AttachmentExport {
             transfer,
             path,
+            preview,
             resp,
         } => {
             let result = match open_private(&path) {
                 Ok(mut destination) => {
                     let result = node
-                        .export_attachment(&transfer, &mut destination)
+                        .export_attachment_object(&transfer, preview, &mut destination)
                         .map_err(fail);
                     drop(destination);
                     if result.is_err() {

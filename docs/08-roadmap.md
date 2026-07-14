@@ -326,8 +326,14 @@ native caller-selected paths, Android uses Storage Access Framework streams,
 and iOS uses security-scoped document-provider URLs; both mobile shells stage
 only bounded app-private copies. All three expose pairwise/group send,
 per-object verified-byte progress and state, lifecycle controls, and protected
-caller-selected export. Remaining F3 shell work is previews, media handling,
-and background-transfer behavior.
+caller-selected export. F3 shell delivery is complete: local bounded JPEG/PNG
+thumbnail generation feeds the sealed preview object, all three shells render
+completed previews through protected transient paths and use media-aware
+presentation, and each shell exposes its actual interruption/resume policy.
+Restart acceptance proves verified progress survives node shutdown; Android's
+foreground service continues data-sync work while backgrounded, desktop
+continues while open or minimized, and iOS resumes on foreground without
+claiming unsupported continuous execution.
 
 The F5 sealed local-metadata foundation is shipped in `kult-store`: typed and
 bounded conversation, folder, pin, label, draft, preference, and custom-icon

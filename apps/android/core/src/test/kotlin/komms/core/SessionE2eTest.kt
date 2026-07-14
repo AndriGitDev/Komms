@@ -125,19 +125,24 @@ class SessionE2eTest {
         // Session sees only that bounded path and the provider's untrusted
         // display hints. The transfer surface remains render-safe.
         val attachmentBytes = "android attachment bytes\u0000exact".toByteArray()
+        val previewBytes = "android local jpeg preview".toByteArray()
         val source = File(dir, "android-source.bin").apply { writeBytes(attachmentBytes) }
-        val contentId = alice.sendAttachment(
+        val preview = File(dir, "android-preview.jpg").apply { writeBytes(previewBytes) }
+        val contentId = alice.sendAttachmentWithPreview(
             bobPeer,
             source,
             "application/octet-stream",
             "field-notes.bin",
+            preview,
         )
         val outbound = alice.attachments().single { it.contentId == contentId }
         assertEquals(AttachmentConversation.PAIRWISE, outbound.conversation)
         assertEquals(AttachmentDirection.OUTBOUND, outbound.direction)
-        assertEquals("field-notes.bin", outbound.objects.single().filename)
-        assertEquals(attachmentBytes.size.toULong(), outbound.objects.single().totalBytes)
-        assertEquals("application/octet-stream", outbound.objects.single().mediaType)
+        assertEquals(2, outbound.objects.size)
+        assertEquals("field-notes.bin", outbound.objects.first().filename)
+        assertEquals(attachmentBytes.size.toULong(), outbound.objects.first().totalBytes)
+        assertEquals("application/octet-stream", outbound.objects.first().mediaType)
+        assertEquals(true, outbound.objects.last().preview)
 
         alice.pauseAttachment(outbound.transferId)
         assertEquals(
@@ -154,7 +159,7 @@ class SessionE2eTest {
             }
         }.attachment
         assertEquals(AttachmentState.AWAITING_CONSENT, offer.state)
-        assertEquals(0uL, offer.objects.single().verifiedBytes)
+        assertEquals(0uL, offer.objects.first().verifiedBytes)
         bob.acceptAttachment(offer.transferId)
         bEv.wait("pairwise attachment completion") {
             (it as? Event.AttachmentUpdated)?.takeIf { event ->
@@ -163,13 +168,17 @@ class SessionE2eTest {
             }
         }
         val received = bob.attachments().single { it.transferId == offer.transferId }
-        assertEquals(attachmentBytes.size.toULong(), received.objects.single().verifiedBytes)
+        assertEquals(attachmentBytes.size.toULong(), received.objects.first().verifiedBytes)
+        assertEquals(previewBytes.size.toULong(), received.objects.last().verifiedBytes)
 
         // Android exports to a unique protected cache path first, then SAF
         // streams from it. The node refuses an existing local destination.
         val exported = File(dir, "android-export.bin")
         bob.exportAttachment(offer.transferId, exported)
         assertContentEquals(attachmentBytes, exported.readBytes())
+        val exportedPreview = File(dir, "android-export-preview.jpg")
+        bob.exportAttachmentPreview(offer.transferId, exportedPreview)
+        assertContentEquals(previewBytes, exportedPreview.readBytes())
         assertFailsWith<FfiException> { bob.exportAttachment(offer.transferId, exported) }
         assertContentEquals(attachmentBytes, exported.readBytes())
 

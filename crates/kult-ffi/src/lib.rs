@@ -939,6 +939,39 @@ impl KultNode {
             peer,
             metadata,
             path: PathBuf::from(path),
+            preview: None,
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
+    /// Import a caller-selected file with a locally generated JPEG/PNG
+    /// preview. The preview path is read with the same bounded streaming
+    /// boundary and is stored sealed as a distinct manifest object.
+    pub fn send_attachment_with_preview(
+        &self,
+        peer: String,
+        path: String,
+        media_type: String,
+        filename: Option<String>,
+        preview_path: String,
+        preview_media_type: String,
+    ) -> Result<String, FfiError> {
+        let peer = parse_peer(&peer)?;
+        self.call(|resp| Msg::AttachmentSend {
+            peer,
+            metadata: kult_node::AttachmentMetadata {
+                media_type,
+                filename,
+            },
+            path: PathBuf::from(path),
+            preview: Some((
+                kult_node::AttachmentMetadata {
+                    media_type: preview_media_type,
+                    filename: None,
+                },
+                PathBuf::from(preview_path),
+            )),
             resp,
         })
         .map(|id| hex_encode(&id))
@@ -962,6 +995,38 @@ impl KultNode {
             group,
             metadata,
             path: PathBuf::from(path),
+            preview: None,
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
+    /// Import a sender-key group attachment with a locally generated sealed
+    /// JPEG/PNG preview.
+    pub fn send_group_attachment_with_preview(
+        &self,
+        group: String,
+        path: String,
+        media_type: String,
+        filename: Option<String>,
+        preview_path: String,
+        preview_media_type: String,
+    ) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        self.call(|resp| Msg::GroupAttachmentSend {
+            group,
+            metadata: kult_node::AttachmentMetadata {
+                media_type,
+                filename,
+            },
+            path: PathBuf::from(path),
+            preview: Some((
+                kult_node::AttachmentMetadata {
+                    media_type: preview_media_type,
+                    filename: None,
+                },
+                PathBuf::from(preview_path),
+            )),
             resp,
         })
         .map(|id| hex_encode(&id))
@@ -1013,6 +1078,23 @@ impl KultNode {
         self.call(|resp| Msg::AttachmentExport {
             transfer,
             path: PathBuf::from(path),
+            preview: false,
+            resp,
+        })
+    }
+
+    /// Stream a completed preview object to a new caller-selected protected
+    /// path for transient local rendering.
+    pub fn export_attachment_preview(
+        &self,
+        transfer: String,
+        path: String,
+    ) -> Result<(), FfiError> {
+        let transfer = parse_transfer(&transfer)?;
+        self.call(|resp| Msg::AttachmentExport {
+            transfer,
+            path: PathBuf::from(path),
+            preview: true,
             resp,
         })
     }

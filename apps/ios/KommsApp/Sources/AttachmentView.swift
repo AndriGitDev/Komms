@@ -84,6 +84,7 @@ struct AttachmentTransferView: View {
     @State private var error: String?
     @State private var exportItem: AttachmentExport?
     @State private var exportDirectory: URL?
+    @State private var previewImage: UIImage?
 
     private var primary: AttachmentObject? {
         attachment.objects.first(where: { !$0.preview }) ?? attachment.objects.first
@@ -104,7 +105,7 @@ struct AttachmentTransferView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Image(systemName: "doc.fill")
+                Image(systemName: mediaIcon)
                 Text(primary?.filename ?? "attachment").font(.headline)
                 Spacer()
                 if working { ProgressView().controlSize(.small) }
@@ -112,6 +113,19 @@ struct AttachmentTransferView: View {
 
             Text("\(directionText) · \(stateText(attachment.state))")
                 .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if let previewImage {
+                Image(uiImage: previewImage)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: 220)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .accessibilityLabel("Local attachment preview")
+            }
+
+            Text("iOS transfers continue only while the system allows background execution; verified progress resumes when Komms returns to the foreground.")
+                .font(.caption2)
                 .foregroundStyle(.secondary)
 
             ForEach(attachment.objects.indices, id: \.self) { index in
@@ -161,11 +175,38 @@ struct AttachmentTransferView: View {
         .sheet(item: $exportItem, onDismiss: cleanupExport) { item in
             AttachmentExportPicker(file: item.file) { exportItem = nil }
         }
+        .task(id: previewTaskKey) { await loadPreview() }
         .onDisappear { cleanupExport() }
     }
 
     private var directionText: String {
         attachment.direction == .inbound ? "inbound" : "outbound"
+    }
+
+    private var mediaIcon: String {
+        let mediaType = primary?.mediaType ?? ""
+        if mediaType.hasPrefix("image/") { return "photo.fill" }
+        if mediaType.hasPrefix("video/") { return "video.fill" }
+        if mediaType.hasPrefix("audio/") { return "waveform" }
+        return "doc.fill"
+    }
+
+    private var previewTaskKey: String {
+        let complete = attachment.objects.contains { $0.preview && $0.state == .complete }
+        return "\(attachment.transferId):\(complete)"
+    }
+
+    private func loadPreview() async {
+        guard attachment.objects.contains(where: { $0.preview && $0.state == .complete }) else {
+            previewImage = nil
+            return
+        }
+        do {
+            previewImage = UIImage(data: try await model.attachmentPreview(
+                transfer: attachment.transferId))
+        } catch {
+            previewImage = nil
+        }
     }
 
     @ViewBuilder

@@ -20,6 +20,23 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content" />
 
+    <ImageView
+        android:id="@+id/attachment_preview_image"
+        android:contentDescription="@string/attachment_preview_description"
+        android:adjustViewBounds="true"
+        android:scaleType="centerInside"
+        android:visibility="gone"
+        android:layout_marginTop="6dp"
+        android:layout_width="match_parent"
+        android:layout_height="160dp" />
+
+    <TextView
+        android:text="@string/attachment_background_policy"
+        android:textSize="11sp"
+        android:layout_marginTop="4dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
     <LinearLayout
         android:id="@+id/attachment_objects"
         android:orientation="vertical"

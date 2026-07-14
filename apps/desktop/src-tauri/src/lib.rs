@@ -51,6 +51,7 @@ pub fn run() {
             commands::pause_attachment,
             commands::resume_attachment,
             commands::export_attachment,
+            commands::attachment_preview,
             commands::schedule,
             commands::schedule_group,
             commands::scheduled_messages,

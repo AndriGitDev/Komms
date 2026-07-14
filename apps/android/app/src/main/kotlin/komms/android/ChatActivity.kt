@@ -74,8 +74,12 @@ class ChatActivity : AppCompatActivity() {
             belongsHere = {
                 it.conversation == AttachmentConversation.PAIRWISE && it.peer == peer
             },
-            send = { session, path, mediaType, filename ->
-                session.sendAttachment(peer, path, mediaType, filename)
+            send = { session, path, mediaType, filename, preview ->
+                if (preview == null) {
+                    session.sendAttachment(peer, path, mediaType, filename)
+                } else {
+                    session.sendAttachmentWithPreview(peer, path, mediaType, filename, preview)
+                }
             },
             refresh = ::refresh,
             savedState = savedInstanceState,
@@ -100,6 +104,7 @@ class ChatActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         NodeHolder.removeListener(listener)
+        if (::attachmentController.isInitialized) attachmentController.close()
         super.onDestroy()
     }
 

@@ -123,6 +123,17 @@ class Session private constructor(private val node: KultNode) {
         filename: String?,
     ): String = node.sendAttachment(peer, path.absolutePath, mediaType, filename)
 
+    /** Import a pairwise attachment plus a locally generated sealed preview. */
+    fun sendAttachmentWithPreview(
+        peer: String,
+        path: File,
+        mediaType: String,
+        filename: String?,
+        preview: File,
+    ): String = node.sendAttachmentWithPreview(
+        peer, path.absolutePath, mediaType, filename, preview.absolutePath, "image/jpeg",
+    )
+
     /** Import one app-private path as an encrypt-once group attachment. */
     fun sendGroupAttachment(
         group: String,
@@ -130,6 +141,17 @@ class Session private constructor(private val node: KultNode) {
         mediaType: String,
         filename: String?,
     ): String = node.sendGroupAttachment(group, path.absolutePath, mediaType, filename)
+
+    /** Import a group attachment plus a locally generated sealed preview. */
+    fun sendGroupAttachmentWithPreview(
+        group: String,
+        path: File,
+        mediaType: String,
+        filename: String?,
+        preview: File,
+    ): String = node.sendGroupAttachmentWithPreview(
+        group, path.absolutePath, mediaType, filename, preview.absolutePath, "image/jpeg",
+    )
 
     /** Every supported transfer as render-safe state. */
     fun attachments(): List<Attachment> = node.attachments()
@@ -155,6 +177,10 @@ class Session private constructor(private val node: KultNode) {
      */
     fun exportAttachment(transfer: String, path: File) =
         node.exportAttachment(transfer, path.absolutePath)
+
+    /** Decrypt a sealed preview into a protected app-private path. */
+    fun exportAttachmentPreview(transfer: String, path: File) =
+        node.exportAttachmentPreview(transfer, path.absolutePath)
 
     /** Schedule pairwise text at an absolute UTC Unix instant. */
     fun schedule(peer: String, body: String, notBefore: ULong): String =

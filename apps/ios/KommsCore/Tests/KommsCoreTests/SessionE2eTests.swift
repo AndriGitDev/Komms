@@ -138,17 +138,22 @@ final class SessionE2eTests: XCTestCase {
         // bounded app-private copy before Session imports it. The render-safe
         // transfer surface exposes exact authenticated metadata and progress.
         let attachmentBytes = Data("iOS attachment bytes\u{0}exact".utf8)
+        let previewBytes = Data("iOS local jpeg preview".utf8)
         let source = dir.appendingPathComponent("ios-source.bin")
+        let preview = dir.appendingPathComponent("ios-preview.jpg")
         try attachmentBytes.write(to: source)
-        let contentId = try alice.sendAttachment(
+        try previewBytes.write(to: preview)
+        let contentId = try alice.sendAttachmentWithPreview(
             peer: bobPeer,
             path: source,
             mediaType: "application/octet-stream",
-            filename: "field-notes.bin")
+            filename: "field-notes.bin",
+            preview: preview)
         let outbound = try XCTUnwrap(
             alice.attachments().first(where: { $0.contentId == contentId }))
         XCTAssertEqual(.pairwise, outbound.conversation)
         XCTAssertEqual(.outbound, outbound.direction)
+        XCTAssertEqual(2, outbound.objects.count)
         XCTAssertEqual("field-notes.bin", outbound.objects.first?.filename)
         XCTAssertEqual(UInt64(attachmentBytes.count), outbound.objects.first?.totalBytes)
         XCTAssertEqual("application/octet-stream", outbound.objects.first?.mediaType)
@@ -182,12 +187,16 @@ final class SessionE2eTests: XCTestCase {
         let received = try XCTUnwrap(
             bob.attachments().first(where: { $0.transferId == offer.transferId }))
         XCTAssertEqual(UInt64(attachmentBytes.count), received.objects.first?.verifiedBytes)
+        XCTAssertEqual(UInt64(previewBytes.count), received.objects.last?.verifiedBytes)
 
         // iOS exports to a unique protected source URL before presenting the
         // system destination picker. The node refuses an existing path.
         let exported = dir.appendingPathComponent("ios-export.bin")
         try bob.exportAttachment(transfer: offer.transferId, to: exported)
         XCTAssertEqual(attachmentBytes, try Data(contentsOf: exported))
+        let exportedPreview = dir.appendingPathComponent("ios-export-preview.jpg")
+        try bob.exportAttachmentPreview(transfer: offer.transferId, to: exportedPreview)
+        XCTAssertEqual(previewBytes, try Data(contentsOf: exportedPreview))
         XCTAssertThrowsError(
             try bob.exportAttachment(transfer: offer.transferId, to: exported))
         XCTAssertEqual(attachmentBytes, try Data(contentsOf: exported))

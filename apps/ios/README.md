@@ -25,7 +25,11 @@ are the node's own, verbatim.
   pickers, with explicit consent, exact verified-byte progress,
   pause/resume/cancel/reject controls, and caller-selected export.
   Security-scoped provider files are copied with bounded memory through unique
-  app-private staging paths that are deleted after each operation.
+  app-private staging paths that are deleted after each operation. ImageIO
+  creates bounded, metadata-stripped JPEG previews, which are stored sealed and
+  rendered only after a protected transient export. The UI states iOS's actual
+  lifecycle contract: work continues only while the OS permits execution and
+  resumes from durable verified progress on foreground.
 - **Create and use sender-key groups** from stored contacts: list and read
   group history, send messages, add/remove members as the creator, and leave
   as any member while local history remains stored. Inbound rows name the
@@ -109,6 +113,6 @@ are billed 10× on private repos).
 
 ## Not yet
 
-Push-style wake-ups and background delivery (the node runs while the app
-is foregrounded, iOS offers no equivalent of Android's foreground
-service), BLE radios, and store distribution (M6).
+Push-style wake-ups and continuous background delivery (iOS offers no
+equivalent of Android's foreground service), BLE radios, and store
+distribution (M6).

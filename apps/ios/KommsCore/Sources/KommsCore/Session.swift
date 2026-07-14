@@ -110,6 +110,19 @@ public final class Session: @unchecked Sendable {
             peer: peer, path: path.path, mediaType: mediaType, filename: filename)
     }
 
+    /// Import a pairwise attachment plus a locally generated sealed preview.
+    public func sendAttachmentWithPreview(
+        peer: String,
+        path: URL,
+        mediaType: String,
+        filename: String?,
+        preview: URL
+    ) throws -> String {
+        try node.sendAttachmentWithPreview(
+            peer: peer, path: path.path, mediaType: mediaType, filename: filename,
+            previewPath: preview.path, previewMediaType: "image/jpeg")
+    }
+
     /// Import one app-private path as an encrypt-once group attachment.
     public func sendGroupAttachment(
         group: String,
@@ -119,6 +132,19 @@ public final class Session: @unchecked Sendable {
     ) throws -> String {
         try node.sendGroupAttachment(
             group: group, path: path.path, mediaType: mediaType, filename: filename)
+    }
+
+    /// Import a group attachment plus a locally generated sealed preview.
+    public func sendGroupAttachmentWithPreview(
+        group: String,
+        path: URL,
+        mediaType: String,
+        filename: String?,
+        preview: URL
+    ) throws -> String {
+        try node.sendGroupAttachmentWithPreview(
+            group: group, path: path.path, mediaType: mediaType, filename: filename,
+            previewPath: preview.path, previewMediaType: "image/jpeg")
     }
 
     /// Every supported transfer as render-safe state.
@@ -152,6 +178,11 @@ public final class Session: @unchecked Sendable {
     /// Stream a completed primary object to a protected, new app-private path.
     public func exportAttachment(transfer: String, to path: URL) throws {
         try node.exportAttachment(transfer: transfer, path: path.path)
+    }
+
+    /// Decrypt a sealed preview into a protected app-private path.
+    public func exportAttachmentPreview(transfer: String, to path: URL) throws {
+        try node.exportAttachmentPreview(transfer: transfer, path: path.path)
     }
 
     /// Schedule pairwise text at an absolute UTC Unix instant.
