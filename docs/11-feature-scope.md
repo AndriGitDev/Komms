@@ -55,8 +55,9 @@ status and prerequisites are tracked in the delivery plan.
   outbound message sits in the local queue until a carrier is available.
   Scheduling now has a durable absolute-UTC gate in core storage and the node
   scheduler, plus shared RPC/CLI/UniFFI operations for create/list/edit/cancel,
-  so app exit or suspension cannot send early. Composer/history presentation in
-  the three shells remains before the product feature is fully shipped.
+  so app exit or suspension cannot send early. Desktop, Android, and iOS now
+  provide local-time composer controls plus distinct editable/cancellable
+  scheduled rows before the ordinary queued, sent, and delivered states.
 - **Text formatting, folders, pins, dark mode, custom icons.** These stay off the
   wire. Persistent organization and artwork use sealed local storage; formatting
   and themes are rendered by each shell.

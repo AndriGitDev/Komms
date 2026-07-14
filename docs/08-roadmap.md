@@ -330,6 +330,13 @@ included in `KKR4`. Note-to-self text is shipped through every shell under one
 reserved identity; the individual organization/theme/icon experiences remain
 separate work.
 
+Durable scheduled pairwise and group text is shipped end to end. The sealed
+scheduled outbox does not advance a ratchet or create transport work early;
+RPC/CLI, UniFFI, desktop, Android, and iOS expose create/list/edit/cancel and
+the activation lifecycle. Every shell renders scheduled rows separately from
+the ordinary queued, sent, and delivered ladder while converting only the
+display/editor to local time.
+
 **Acceptance**: audit findings triaged with public report; reproducible-build attestation
 for all release artifacts.
 

@@ -23,6 +23,8 @@ import uniffi.kult_ffi.Direction
 import uniffi.kult_ffi.Event
 import uniffi.kult_ffi.Group
 import uniffi.kult_ffi.GroupMessage
+import uniffi.kult_ffi.ScheduledConversation
+import uniffi.kult_ffi.ScheduledMessage
 
 /**
  * A sender-key group conversation. The node store is authoritative: events
@@ -40,6 +42,9 @@ class GroupChatActivity : AppCompatActivity() {
             is Event.GroupMessageReceived -> event.group == groupId
             is Event.GroupDeliveryUpdated -> true // ids are cheap to refresh
             is Event.GroupUpdated -> event.group == groupId
+            is Event.ScheduledMessageUpdated -> true
+            is Event.ScheduledMessageCancelled -> true
+            is Event.ScheduledMessageActivated -> true
             else -> false
         }
         if (relevant) runOnUiThread { refresh() }
@@ -60,6 +65,7 @@ class GroupChatActivity : AppCompatActivity() {
         list.adapter = adapter
 
         val input = findViewById<EditText>(R.id.chat_input)
+        findViewById<Button>(R.id.chat_schedule).setOnClickListener { schedule(input, null) }
         findViewById<Button>(R.id.chat_send).setOnClickListener {
             val body = input.text.toString()
             if (body.isEmpty()) return@setOnClickListener
@@ -112,6 +118,9 @@ class GroupChatActivity : AppCompatActivity() {
                     group = group,
                     contacts = session.contacts(),
                     messages = if (group == null) emptyList() else session.groupMessages(groupId),
+                    scheduled = session.scheduledMessages().filter {
+                        it.conversation == ScheduledConversation.GROUP && it.destination == groupId
+                    },
                 )
             },
         ) { state ->
@@ -125,8 +134,33 @@ class GroupChatActivity : AppCompatActivity() {
             groupName = group.name
             supportActionBar?.title = group.name
             adapter.submit(state.messages)
+            renderScheduledOutbox(
+                state.scheduled,
+                edit = { schedule(findViewById(R.id.chat_input), it) },
+                cancel = { cancel(it) },
+            )
             if (state.messages.isNotEmpty()) list.scrollToPosition(state.messages.size - 1)
         }
+    }
+
+    private fun schedule(input: EditText, message: ScheduledMessage?) {
+        val session = NodeHolder.session ?: return
+        showScheduledEditor(
+            initialBody = input.text.toString(),
+            message = message,
+            work = { body, notBefore ->
+                if (message == null) session.scheduleGroup(groupId, body, notBefore)
+                else session.editScheduled(message.id, body, notBefore)
+            },
+        ) {
+            if (message == null) input.text.clear()
+            refresh()
+        }
+    }
+
+    private fun cancel(message: ScheduledMessage) {
+        val session = NodeHolder.session ?: return
+        runNode(work = { session.cancelScheduled(message.id) }) { refresh() }
     }
 
     private fun memberName(peer: String): String {
@@ -254,6 +288,7 @@ private data class GroupScreenState(
     val group: Group?,
     val contacts: List<Contact>,
     val messages: List<GroupMessage>,
+    val scheduled: List<ScheduledMessage>,
 )
 
 /** Group bubbles with sender names inbound and per-recipient state outbound. */

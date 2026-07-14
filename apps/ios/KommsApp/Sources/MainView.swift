@@ -150,6 +150,7 @@ private struct StatusSection: View {
             }
             LabeledContent("NAT", value: natText)
             LabeledContent("LAN peers", value: String(status.lanPeers.count))
+            LabeledContent("Scheduled", value: String(status.scheduled))
             LabeledContent("Queued", value: String(status.queued))
             LabeledContent("Bridging", value: String(status.transit))
             DisclosureGroup("Listen addresses (\(status.listen.count))") {

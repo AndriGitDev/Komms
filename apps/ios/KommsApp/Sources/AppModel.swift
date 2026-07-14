@@ -16,6 +16,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var histories: [String: [Message]] = [:] // peer → history
     @Published private(set) var groups: [Group] = []
     @Published private(set) var groupHistories: [String: [GroupMessage]] = [:]
+    @Published private(set) var scheduledMessages: [ScheduledMessage] = []
     @Published private(set) var noteHistory: [NoteMessage] = []
     @Published private(set) var status: Status?
     /// Surfaced node happenings: key changes, held-for-faster-link verdicts.
@@ -97,6 +98,7 @@ final class AppModel: ObservableObject {
         histories = [:]
         groups = []
         groupHistories = [:]
+        scheduledMessages = []
         noteHistory = []
         status = nil
         notices = []
@@ -154,7 +156,7 @@ final class AppModel: ObservableObject {
         do {
             let snapshot = try await run { () -> (
                 Status, [Contact], [String: [Message]], [Group], [String: [GroupMessage]],
-                [NoteMessage]
+                [ScheduledMessage], [NoteMessage]
             ) in
                 var fresh: [String: [Message]] = [:]
                 for peer in peers {
@@ -168,14 +170,16 @@ final class AppModel: ObservableObject {
                 }
                 return (
                     try session.status(), try session.contacts(), fresh,
-                    liveGroups, freshGroups, try session.noteToSelfMessages())
+                    liveGroups, freshGroups, try session.scheduledMessages(),
+                    try session.noteToSelfMessages())
             }
             status = snapshot.0
             contacts = snapshot.1
             histories.merge(snapshot.2) { _, new in new }
             groups = snapshot.3
             groupHistories.merge(snapshot.4) { _, new in new }
-            noteHistory = snapshot.5
+            scheduledMessages = snapshot.5
+            noteHistory = snapshot.6
         } catch {
             // A stopped handle answers honestly; the gate is already up.
         }
@@ -204,6 +208,47 @@ final class AppModel: ObservableObject {
         guard let session else { return }
         _ = try await run { try session.send(peer: peer, body: body) }
         await refresh()
+    }
+
+    func schedule(peer: String, body: String, notBefore: Date) async throws {
+        guard let session else { return }
+        let instant = try scheduledInstant(notBefore)
+        _ = try await run {
+            try session.schedule(peer: peer, body: body, notBefore: instant)
+        }
+        await refresh()
+    }
+
+    func scheduleGroup(group: String, body: String, notBefore: Date) async throws {
+        guard let session else { return }
+        let instant = try scheduledInstant(notBefore)
+        _ = try await run {
+            try session.scheduleGroup(group: group, body: body, notBefore: instant)
+        }
+        await refresh()
+    }
+
+    func editScheduled(message: String, body: String, notBefore: Date) async throws {
+        guard let session else { return }
+        let instant = try scheduledInstant(notBefore)
+        try await run {
+            try session.editScheduled(message: message, body: body, notBefore: instant)
+        }
+        await refresh()
+    }
+
+    func cancelScheduled(message: String) async throws {
+        guard let session else { return }
+        try await run { try session.cancelScheduled(message: message) }
+        await refresh()
+    }
+
+    private func scheduledInstant(_ date: Date) throws -> UInt64 {
+        let seconds = date.timeIntervalSince1970
+        guard seconds.isFinite, seconds >= 0 else {
+            throw InputError("choose a valid send time")
+        }
+        return UInt64(seconds)
     }
 
     func sendNoteToSelf(body: String) async throws {

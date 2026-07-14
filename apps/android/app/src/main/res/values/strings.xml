@@ -20,7 +20,7 @@
     <string name="gate_settings">Network settings</string>
 
     <!-- Main -->
-    <string name="status_line">%1$s · NAT %2$s · %3$d LAN · %4$d queued · %5$d transit</string>
+    <string name="status_line">%1$s · NAT %2$s · %3$d LAN · %4$d scheduled · %5$d queued · %6$d transit</string>
     <string name="nat_public">public</string>
     <string name="nat_private">private</string>
     <string name="nat_unknown">unknown</string>
@@ -61,6 +61,18 @@
     <!-- Chat -->
     <string name="chat_hint">Message</string>
     <string name="chat_send">Send</string>
+    <string name="chat_schedule">Schedule</string>
+    <string name="scheduled_outbox_title">Scheduled outbox</string>
+    <string name="scheduled_edit">Edit</string>
+    <string name="scheduled_cancel">Cancel</string>
+    <string name="scheduled_dialog_new">Schedule message</string>
+    <string name="scheduled_dialog_edit">Edit scheduled message</string>
+    <string name="scheduled_send_at">Send at %1$s</string>
+    <string name="scheduled_need_body">Write a message first.</string>
+    <string name="scheduled_need_future">Choose a time in the future.</string>
+    <string name="scheduled_absolute_hint">Shown in local time; stored as an absolute UTC instant.</string>
+    <string name="scheduled_cancel_title">Cancel scheduled message?</string>
+    <string name="scheduled_cancel_action">Cancel message</string>
     <string name="state_queued">queued</string>
     <string name="state_sent">sent</string>
     <string name="state_delivered">delivered ✓</string>

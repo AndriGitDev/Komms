@@ -418,10 +418,13 @@ async fn daemon_restarts_with_history() {
         .as_str()
         .unwrap()
         .to_owned();
-    a.ok(json!({ "op": "send", "peer": bob_peer, "body": "before restart" }))
-        .await;
+    // Subscribe before sending. A loopback delivery can beat a subscription
+    // opened after `send` returns, which made this persistence test depend on
+    // runner scheduling rather than on the behavior it is meant to prove.
     let mut b_events = Client::connect(&bob.socket_path).await;
     b_events.ok(json!({ "op": "subscribe" })).await;
+    a.ok(json!({ "op": "send", "peer": bob_peer, "body": "before restart" }))
+        .await;
     b_events.wait_event(|e| e["type"] == json!("message")).await;
 
     let address_before = alice.address.clone();

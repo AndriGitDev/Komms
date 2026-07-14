@@ -17,13 +17,16 @@ security indicators are the node's own, verbatim.
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted
   mesh links.
+- **Schedule pairwise or group text** in local time: sealed scheduled rows
+  remain visibly separate from ordinary history and can be edited or cancelled
+  until the core activates them at the stored absolute UTC instant.
 - **Use sender-key groups**: create and list groups, read history, send,
   add/remove members, and leave. Outbound bubbles show a separate honest
   delivery state for every recipient, so partial delivery stays visible.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends, compared out-of-band, with a visible verified badge.
 - **Transport indicators**: NAT verdict, LAN peers discovered over mDNS,
-  queued and bridged-in-transit counts, live listen addresses.
+  scheduled, queued, and bridged-in-transit counts, live listen addresses.
 - **Backup** to a single encrypted file; the sealing mnemonic is shown
   exactly once and stored nowhere.
 - **Network settings** (listen addresses, bootstrap peers, relays,
