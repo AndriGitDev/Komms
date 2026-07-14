@@ -16,6 +16,9 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import java.text.DateFormat
 import java.util.Date
+import uniffi.kult_ffi.Attachment
+import uniffi.kult_ffi.AttachmentConversation
+import uniffi.kult_ffi.ContentKind
 import uniffi.kult_ffi.DeliveryState
 import uniffi.kult_ffi.Direction
 import uniffi.kult_ffi.Event
@@ -33,6 +36,7 @@ class ChatActivity : AppCompatActivity() {
     private lateinit var peer: String
     private lateinit var contactName: String
     private val adapter = MessagesAdapter()
+    private lateinit var attachmentController: AttachmentController
 
     private val listener: (Event) -> Unit = { event ->
         val relevant = when (event) {
@@ -42,6 +46,9 @@ class ChatActivity : AppCompatActivity() {
             is Event.ScheduledMessageUpdated -> true
             is Event.ScheduledMessageCancelled -> true
             is Event.ScheduledMessageActivated -> true
+            is Event.AttachmentUpdated ->
+                ::attachmentController.isInitialized &&
+                    attachmentController.isRelevant(event.attachment)
             else -> false
         }
         if (relevant) runOnUiThread { refresh() }
@@ -60,6 +67,19 @@ class ChatActivity : AppCompatActivity() {
         val list = findViewById<RecyclerView>(R.id.chat_messages)
         list.layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }
         list.adapter = adapter
+        val attachmentList = findViewById<RecyclerView>(R.id.chat_attachments)
+        attachmentList.layoutManager = LinearLayoutManager(this)
+        attachmentController = AttachmentController(
+            activity = this,
+            belongsHere = {
+                it.conversation == AttachmentConversation.PAIRWISE && it.peer == peer
+            },
+            send = { session, path, mediaType, filename ->
+                session.sendAttachment(peer, path, mediaType, filename)
+            },
+            refresh = ::refresh,
+            savedState = savedInstanceState,
+        )
 
         val input = findViewById<EditText>(R.id.chat_input)
         findViewById<android.widget.Button>(R.id.chat_schedule).setOnClickListener {
@@ -81,6 +101,11 @@ class ChatActivity : AppCompatActivity() {
     override fun onDestroy() {
         NodeHolder.removeListener(listener)
         super.onDestroy()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        if (::attachmentController.isInitialized) attachmentController.saveState(outState)
+        super.onSaveInstanceState(outState)
     }
 
     override fun onResume() {
@@ -120,15 +145,17 @@ class ChatActivity : AppCompatActivity() {
                 scheduled = session.scheduledMessages().filter {
                     it.conversation == ScheduledConversation.PEER && it.destination == peer
                 },
+                attachments = session.attachments(),
             )
         }) { state ->
             adapter.submit(state.messages)
+            attachmentController.submit(state.attachments)
             renderScheduledOutbox(
                 state.scheduled,
                 edit = { schedule(findViewById(R.id.chat_input), it) },
                 cancel = { cancel(it) },
             )
-            if (state.messages.isNotEmpty()) list.scrollToPosition(state.messages.size - 1)
+            if (adapter.itemCount > 0) list.scrollToPosition(adapter.itemCount - 1)
         }
     }
 
@@ -173,6 +200,7 @@ class ChatActivity : AppCompatActivity() {
 private data class ChatScreenState(
     val messages: List<Message>,
     val scheduled: List<ScheduledMessage>,
+    val attachments: List<Attachment>,
 )
 
 /** Message bubbles with the honest state caption. */
@@ -182,7 +210,7 @@ private class MessagesAdapter : RecyclerView.Adapter<MessagesAdapter.Holder>() {
     class Holder(view: android.view.View) : RecyclerView.ViewHolder(view)
 
     fun submit(list: List<Message>) {
-        items = list
+        items = list.filter { it.contentKind != ContentKind.ATTACHMENT }
         notifyDataSetChanged()
     }
 

@@ -16,6 +16,10 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import uniffi.kult_ffi.AttachmentConversation
+import uniffi.kult_ffi.AttachmentDirection
+import uniffi.kult_ffi.AttachmentState
+import uniffi.kult_ffi.ContentKind
 import uniffi.kult_ffi.DeliveryState
 import uniffi.kult_ffi.Direction
 import uniffi.kult_ffi.Event
@@ -117,6 +121,69 @@ class SessionE2eTest {
         assertEquals(Direction.INBOUND, inbox[0].direction)
         assertEquals(DeliveryState.RECEIVED, inbox[0].state)
 
+        // The SAF layer stages a content:// stream in app-private storage;
+        // Session sees only that bounded path and the provider's untrusted
+        // display hints. The transfer surface remains render-safe.
+        val attachmentBytes = "android attachment bytes\u0000exact".toByteArray()
+        val source = File(dir, "android-source.bin").apply { writeBytes(attachmentBytes) }
+        val contentId = alice.sendAttachment(
+            bobPeer,
+            source,
+            "application/octet-stream",
+            "field-notes.bin",
+        )
+        val outbound = alice.attachments().single { it.contentId == contentId }
+        assertEquals(AttachmentConversation.PAIRWISE, outbound.conversation)
+        assertEquals(AttachmentDirection.OUTBOUND, outbound.direction)
+        assertEquals("field-notes.bin", outbound.objects.single().filename)
+        assertEquals(attachmentBytes.size.toULong(), outbound.objects.single().totalBytes)
+        assertEquals("application/octet-stream", outbound.objects.single().mediaType)
+
+        alice.pauseAttachment(outbound.transferId)
+        assertEquals(
+            AttachmentState.PAUSED,
+            alice.attachments().single { it.transferId == outbound.transferId }.state,
+        )
+        alice.resumeAttachment(outbound.transferId)
+
+        val offer = bEv.wait("pairwise attachment offer") {
+            (it as? Event.AttachmentUpdated)?.takeIf { event ->
+                event.attachment.contentId == contentId &&
+                    event.attachment.direction == AttachmentDirection.INBOUND &&
+                    event.attachment.peer == alicePeer
+            }
+        }.attachment
+        assertEquals(AttachmentState.AWAITING_CONSENT, offer.state)
+        assertEquals(0uL, offer.objects.single().verifiedBytes)
+        bob.acceptAttachment(offer.transferId)
+        bEv.wait("pairwise attachment completion") {
+            (it as? Event.AttachmentUpdated)?.takeIf { event ->
+                event.attachment.transferId == offer.transferId &&
+                    event.attachment.state == AttachmentState.COMPLETE
+            }
+        }
+        val received = bob.attachments().single { it.transferId == offer.transferId }
+        assertEquals(attachmentBytes.size.toULong(), received.objects.single().verifiedBytes)
+
+        // Android exports to a unique protected cache path first, then SAF
+        // streams from it. The node refuses an existing local destination.
+        val exported = File(dir, "android-export.bin")
+        bob.exportAttachment(offer.transferId, exported)
+        assertContentEquals(attachmentBytes, exported.readBytes())
+        assertFailsWith<FfiException> { bob.exportAttachment(offer.transferId, exported) }
+        assertContentEquals(attachmentBytes, exported.readBytes())
+
+        bob.rejectAttachment(offer.transferId)
+        assertEquals(
+            AttachmentState.REJECTED,
+            bob.attachments().single { it.transferId == offer.transferId }.state,
+        )
+        alice.cancelAttachment(outbound.transferId)
+        assertEquals(
+            AttachmentState.CANCELLED,
+            alice.attachments().single { it.transferId == outbound.transferId }.state,
+        )
+
         // The verify screen: identical digits and QR payloads on both
         // ends (also identical to what the desktop app renders), and the
         // "mark verified" button reflects into the contact list badge.
@@ -217,6 +284,50 @@ class SessionE2eTest {
         assertEquals("Trail crew", listed[0].name)
         assertEquals(2, listed[0].members.size)
 
+        // Capability negotiation is authenticated session state. Establish
+        // the pairwise session before the group attachment composer asks the
+        // node whether every recipient supports attachments.
+        val capabilityProbe = alice.send(bobPeer, "attachment capability handshake")
+        bEv.wait("attachment capability handshake") {
+            (it as? Event.MessageReceived)?.takeIf { event ->
+                event.peer == aliceAtBob && event.body == "attachment capability handshake"
+            }
+        }
+        aEv.wait("attachment capability receipt") {
+            (it as? Event.DeliveryUpdated)?.takeIf { event ->
+                event.id == capabilityProbe && event.state == DeliveryState.DELIVERED
+            }
+        }
+
+        // The same Session methods cover one encrypt-once group attachment.
+        val groupBytes = "one encrypted Android group object".toByteArray()
+        val groupSource = File(dir, "android-group-source.bin").apply {
+            writeBytes(groupBytes)
+        }
+        val groupContent = alice.sendGroupAttachment(
+            group,
+            groupSource,
+            "application/octet-stream",
+            "route.bin",
+        )
+        val groupOffer = bEv.wait("group attachment offer") {
+            (it as? Event.AttachmentUpdated)?.takeIf { event ->
+                event.attachment.contentId == groupContent &&
+                    event.attachment.conversation == AttachmentConversation.GROUP &&
+                    event.attachment.group == group
+            }
+        }.attachment
+        bob.acceptAttachment(groupOffer.transferId)
+        bEv.wait("group attachment completion") {
+            (it as? Event.AttachmentUpdated)?.takeIf { event ->
+                event.attachment.transferId == groupOffer.transferId &&
+                    event.attachment.state == AttachmentState.COMPLETE
+            }
+        }
+        val groupExport = File(dir, "android-group-export.bin")
+        bob.exportAttachment(groupOffer.transferId, groupExport)
+        assertContentEquals(groupBytes, groupExport.readBytes())
+
         alice.addGroupMember(group, carolPeer)
         listed = alice.groups()
         assertEquals(3, listed[0].members.size)
@@ -241,7 +352,9 @@ class SessionE2eTest {
                     event.state == DeliveryState.DELIVERED
             }
         }
-        val history = alice.groupMessages(group)
+        val allHistory = alice.groupMessages(group)
+        assertEquals(1, allHistory.count { it.contentKind == ContentKind.ATTACHMENT })
+        val history = allHistory.filter { it.contentKind != ContentKind.ATTACHMENT }
         assertEquals(1, history.size)
         assertEquals(Direction.OUTBOUND, history[0].direction)
         assertEquals(2, history[0].deliveries.size)
@@ -253,7 +366,9 @@ class SessionE2eTest {
             history[0].deliveries.first { it.peer == carolPeer }.state in
                 setOf(DeliveryState.QUEUED, DeliveryState.SENT),
         )
-        val bobHistory = bob.groupMessages(group)
+        val bobHistory = bob.groupMessages(group).filter {
+            it.contentKind != ContentKind.ATTACHMENT
+        }
         assertEquals(aliceAtBob, bobHistory[0].sender)
         assertEquals(Direction.INBOUND, bobHistory[0].direction)
         assertTrue(bobHistory[0].deliveries.isEmpty())

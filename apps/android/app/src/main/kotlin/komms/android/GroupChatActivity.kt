@@ -17,6 +17,9 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import java.text.DateFormat
 import java.util.Date
+import uniffi.kult_ffi.Attachment
+import uniffi.kult_ffi.AttachmentConversation
+import uniffi.kult_ffi.ContentKind
 import uniffi.kult_ffi.Contact
 import uniffi.kult_ffi.DeliveryState
 import uniffi.kult_ffi.Direction
@@ -36,6 +39,7 @@ class GroupChatActivity : AppCompatActivity() {
     private lateinit var groupName: String
     private var contacts = listOf<Contact>()
     private val adapter = GroupMessagesAdapter { peer -> memberName(peer) }
+    private lateinit var attachmentController: AttachmentController
 
     private val listener: (Event) -> Unit = { event ->
         val relevant = when (event) {
@@ -45,6 +49,9 @@ class GroupChatActivity : AppCompatActivity() {
             is Event.ScheduledMessageUpdated -> true
             is Event.ScheduledMessageCancelled -> true
             is Event.ScheduledMessageActivated -> true
+            is Event.AttachmentUpdated ->
+                ::attachmentController.isInitialized &&
+                    attachmentController.isRelevant(event.attachment)
             else -> false
         }
         if (relevant) runOnUiThread { refresh() }
@@ -63,6 +70,19 @@ class GroupChatActivity : AppCompatActivity() {
         val list = findViewById<RecyclerView>(R.id.chat_messages)
         list.layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }
         list.adapter = adapter
+        val attachmentList = findViewById<RecyclerView>(R.id.chat_attachments)
+        attachmentList.layoutManager = LinearLayoutManager(this)
+        attachmentController = AttachmentController(
+            activity = this,
+            belongsHere = {
+                it.conversation == AttachmentConversation.GROUP && it.group == groupId
+            },
+            send = { session, path, mediaType, filename ->
+                session.sendGroupAttachment(groupId, path, mediaType, filename)
+            },
+            refresh = ::refresh,
+            savedState = savedInstanceState,
+        )
 
         val input = findViewById<EditText>(R.id.chat_input)
         findViewById<Button>(R.id.chat_schedule).setOnClickListener { schedule(input, null) }
@@ -81,6 +101,11 @@ class GroupChatActivity : AppCompatActivity() {
     override fun onDestroy() {
         NodeHolder.removeListener(listener)
         super.onDestroy()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        if (::attachmentController.isInitialized) attachmentController.saveState(outState)
+        super.onSaveInstanceState(outState)
     }
 
     override fun onResume() {
@@ -121,6 +146,7 @@ class GroupChatActivity : AppCompatActivity() {
                     scheduled = session.scheduledMessages().filter {
                         it.conversation == ScheduledConversation.GROUP && it.destination == groupId
                     },
+                    attachments = session.attachments(),
                 )
             },
         ) { state ->
@@ -134,12 +160,13 @@ class GroupChatActivity : AppCompatActivity() {
             groupName = group.name
             supportActionBar?.title = group.name
             adapter.submit(state.messages)
+            attachmentController.submit(state.attachments)
             renderScheduledOutbox(
                 state.scheduled,
                 edit = { schedule(findViewById(R.id.chat_input), it) },
                 cancel = { cancel(it) },
             )
-            if (state.messages.isNotEmpty()) list.scrollToPosition(state.messages.size - 1)
+            if (adapter.itemCount > 0) list.scrollToPosition(adapter.itemCount - 1)
         }
     }
 
@@ -289,6 +316,7 @@ private data class GroupScreenState(
     val contacts: List<Contact>,
     val messages: List<GroupMessage>,
     val scheduled: List<ScheduledMessage>,
+    val attachments: List<Attachment>,
 )
 
 /** Group bubbles with sender names inbound and per-recipient state outbound. */
@@ -300,7 +328,7 @@ private class GroupMessagesAdapter(
     class Holder(view: View) : RecyclerView.ViewHolder(view)
 
     fun submit(list: List<GroupMessage>) {
-        items = list
+        items = list.filter { it.contentKind != ContentKind.ATTACHMENT }
         notifyDataSetChanged()
     }
 
