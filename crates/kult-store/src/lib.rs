@@ -23,9 +23,16 @@ use kult_crypto::{derive_kek, CryptoError, Identity, KdfProfile, Session, Storag
 use kult_protocol::{CapabilityControl, Envelope};
 
 mod backup;
+mod local_metadata;
 mod media;
 
 pub use backup::BACKUP_MAGIC;
+pub use local_metadata::{
+    ConversationId, ConversationMetadata, CustomIconRecord, CustomIconTarget, DraftRecord,
+    FolderAssignment, FolderRecord, LabelAssignment, LabelRecord, LocalMetadataKey,
+    LocalMetadataRecord, PinRecord, UiPreferenceRecord, MAX_CUSTOM_ICON_BYTES, MAX_DRAFT_BYTES,
+    MAX_LOCAL_METADATA_STRING_BYTES, MAX_UI_PREFERENCE_VALUE_BYTES,
+};
 pub use media::{
     MediaDirection, MediaLimits, MediaObjectRecord, MediaReconciliation, MediaRecord, MediaScope,
     MediaTransferRecord, MediaTransferState, MediaUsage, DEFAULT_MEDIA_STORE_QUOTA,
@@ -58,6 +65,8 @@ pub enum StoreError {
     LowStorage,
     /// Media state or a chunk transition is inconsistent.
     MediaState,
+    /// A local metadata record exceeds its documented resource bound.
+    LocalMetadataBounds,
 }
 
 impl std::fmt::Display for StoreError {
@@ -73,6 +82,7 @@ impl std::fmt::Display for StoreError {
             Self::MediaQuota => f.write_str("media quota exceeded"),
             Self::LowStorage => f.write_str("insufficient reserved filesystem space"),
             Self::MediaState => f.write_str("invalid media transfer state"),
+            Self::LocalMetadataBounds => f.write_str("local metadata bounds exceeded"),
         }
     }
 }
@@ -318,6 +328,7 @@ CREATE TABLE IF NOT EXISTS group_chains (gid BLOB NOT NULL, peer BLOB NOT NULL, 
 CREATE TABLE IF NOT EXISTS group_msgs   (rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS media_transfers (id BLOB PRIMARY KEY, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS media_objects   (id BLOB PRIMARY KEY, blob BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS local_metadata  (rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
 ";
 
 /// An open, unlocked Komms store.
@@ -335,6 +346,7 @@ pub struct Store {
     /// (`group` / `group-chain` / `group-msg`) keep the domains disjoint.
     k_groups: StorageKey,
     k_media: StorageKey,
+    k_local_metadata: StorageKey,
     media_dir: PathBuf,
     media_limits: MediaLimits,
 }
@@ -426,6 +438,7 @@ impl Store {
             k_pending: master.derive(b"KK-store-pending"),
             k_groups: master.derive(b"KK-store-groups"),
             k_media: master.derive(b"KK-store-media"),
+            k_local_metadata: master.derive(b"KK-store-local-metadata"),
             media_dir,
             media_limits: MediaLimits::default(),
             conn,

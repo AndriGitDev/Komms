@@ -223,7 +223,7 @@ into delivery tokens or transport headers.
 
 Application and storage APIs evolve from a bare `body: Vec<u8>` / `body: String`
 to a typed content result while keeping the existing text send methods as
-compatibility wrappers. Stores and KKR2 backups already preserve message bodies
+compatibility wrappers. Stores and `KKR2`-and-later backups preserve message bodies
 as sealed opaque bytes, so this ADR does not require a backup-format bump. Each
 future kind must explicitly revisit backup behavior before shipping.
 

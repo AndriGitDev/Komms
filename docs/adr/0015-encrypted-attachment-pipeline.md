@@ -363,16 +363,17 @@ references transactionally, then garbage-collect unreferenced files. Completed
 media remains until explicit local deletion or quota policy evicts it. Remote
 deletion and expiry remain later ADRs.
 
-The existing KKR2 backup continues carrying message and group-message bodies,
-therefore it carries Attachment manifests and their keys, but it excludes media
-files, incomplete-transfer state, bitmaps, and bulk queues. No backup-format bump
-is needed for F3. After restore, manifests render as `Unavailable`; once sessions
+The mnemonic backup (`KKR2` when this ADR was accepted; current `KKR3`)
+continues carrying message and group-message bodies, therefore it carries
+Attachment manifests and their keys, but it excludes media files,
+incomplete-transfer state, bitmaps, and bulk queues. No backup-format bump is
+needed for F3. After restore, manifests render as `Unavailable`; once sessions
 and capabilities recover, the user may request the bytes again if the original
 author still has them. Outbound attachments may likewise become unavailable
 after restore. A future optional media-inclusive backup must be streaming,
 quota-bounded, and versioned separately; it must not silently append gigabytes
-to KKR2. Plaintext export includes only complete media the user explicitly
-chooses and warns that the destination is unencrypted.
+to the current mnemonic backup. Plaintext export includes only complete media
+the user explicitly chooses and warns that the destination is unencrypted.
 
 ### 8. Compatibility fails closed and preserves history
 
@@ -420,7 +421,7 @@ Implementation is not accepted until it includes:
   never handed to whole-envelope reassembly;
 - copied-database/media-directory inspection proving plaintext names, types,
   hashes, keys, bytes, transfer ranges, and conversation links are absent;
-- KKR2 backup/restore tests proving manifests survive while media and transfer
+- KKR3 backup/restore tests proving manifests survive while media and transfer
   state are intentionally absent; and
 - cross-surface tests proving identical states and safe errors in RPC/CLI,
   UniFFI, desktop, Android, and iOS, including background interruption and
@@ -462,7 +463,7 @@ Implementation is not accepted until it includes:
 - **Store media as SQLite BLOBs or plaintext files.** Rejected: large BLOBs
   amplify database copies and backups; plaintext files violate the storage
   promise. Sealed files plus transactional sealed metadata bound both risks.
-- **Include all media in KKR2.** Rejected: current backup construction is a
+- **Include all media in the mnemonic backup.** Rejected: current backup construction is a
   single bounded file assembled in memory, and silently adding up to 64 GiB
   changes its operational contract. Manifests remain portable; media backup is
   a future explicit streaming format.

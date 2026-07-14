@@ -43,9 +43,9 @@ status and prerequisites are tracked in the delivery plan.
   (see [06: Identity & Trust](06-identity-trust.md)). An optional signed
   self-display name may later be advertised as a non-unique suggestion, but it
   never silently overrides the recipient's petname.
-- **Secure backups.** Shipped: the `KKR2` mnemonic-sealed backup (Argon2id under a
-  24-word BIP-39 phrase, ADR-0011/ADR-0012). Stored locally or moved by
-  sneakernet; no cloud.
+- **Secure backups.** Shipped: the `KKR3` mnemonic-sealed backup (Argon2id under a
+  24-word BIP-39 phrase, ADR-0011/ADR-0012), including sealed local metadata;
+  `KKR1`/`KKR2` remain restorable. Stored locally or moved by sneakernet; no cloud.
 - **Note to self.** Planned as a sealed local conversation in `kult-store`, with
   no peer, envelopes, receipts, or transport activity.
 - **Scheduled / queued messages.** Already implicit in the delivery engine: an

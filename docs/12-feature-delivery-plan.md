@@ -151,6 +151,14 @@ must not assume that before measurements exist.
 
 ### F5. Local metadata store
 
+**State:** sealed store foundation shipped. `kult-store` provides versioned,
+bounded records and stable replacement keys for conversation types, folders,
+single-folder membership, pins, labels and multi-label membership, drafts, UI
+preferences, and custom icons. The table exposes only row count and approximate
+sealed sizes in a copied database; `KKR3` backs up every user-authored record
+while `KKR1` and `KKR2` remain restorable. Feature behavior and shell UX remain
+separate B7/B10-B13/B18 slices.
+
 Add sealed local-only records for conversation type, folders, pins, labels,
 drafts, UI preferences, and custom icons. Keep local organization out of network
 payloads. Define which records belong in encrypted backups and version the backup
@@ -242,7 +250,7 @@ fact that changing a remote suggestion never silently renames a local petname.
 
 ### B6. Secure backups
 
-**State:** KKR2 shipped; permanent compatibility track.
+**State:** KKR3 shipped; permanent compatibility track.
 
 For every feature in this plan, decide explicitly whether its state is identity
 critical, conversation history, local preference, secret ephemeral state, or
