@@ -99,15 +99,16 @@ The ADR must define:
 
 ### F3. Attachment and media pipeline
 
-**State:** core implemented behind node APIs; product-surface integration is
+**State:** core and shared RPC/CLI/UniFFI front doors implemented; shell UX is
 planned. [ADR-0015](adr/0015-encrypted-attachment-pipeline.md) now has bounded
 manifest/bulk codecs, deterministic chunk cryptography, sealed quota-bound
 storage, explicit consent/cancel/reject/resume state, pairwise and encrypt-once
 group transfer, streamed export, and a scheduler-enforced no-airtime class.
 Activation consumes F4's fresh, time-bounded verdict on every offer or
 missing-range request. Applications receive the same snapshot and change events
-for user-facing feature gating; shells must not infer capacity from an available
-route alone.
+for user-facing feature gating, plus bounded path-based send/export, render-safe
+transfer records and events, and every lifecycle control. Shells must not infer
+capacity from an available route alone.
 
 The existing envelope path is suitable for small payloads, not an unbounded file
 transfer. Define attachments as encrypted, content-addressed chunks with a sealed

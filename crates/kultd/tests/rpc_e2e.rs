@@ -356,6 +356,111 @@ async fn two_daemons_message_via_rpc_only() {
     assert_eq!(record["direction"], json!("out"));
     assert_eq!(record["body"], json!("hello over the daemon"));
 
+    // Attachment input/output stays path-bounded at the RPC edge while all
+    // cryptography, consent, progress, and carrier policy remain in the node.
+    wait_carrier(&mut b, &alice_peer, "realtime").await;
+    let attachment_bytes = b"attachment bytes through RPC\0and after the NUL";
+    let source = dir.path().join("rpc-source.bin");
+    std::fs::write(&source, attachment_bytes).unwrap();
+    let sent_attachment = a
+        .ok(json!({
+            "op": "attachment_send",
+            "peer": bob_peer,
+            "path": source.display().to_string(),
+            "media_type": "application/octet-stream",
+            "filename": "field-notes.bin",
+        }))
+        .await;
+    let attachment_content_id = sent_attachment["id"].as_str().unwrap().to_owned();
+    let outbound = a.ok(json!({ "op": "attachments" })).await;
+    let outbound_transfer = outbound["attachments"][0]["transfer_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        outbound["attachments"][0]["content_id"],
+        attachment_content_id
+    );
+    assert_eq!(outbound["attachments"][0]["direction"], json!("out"));
+    assert_eq!(
+        outbound["attachments"][0]["objects"][0]["filename"],
+        json!("field-notes.bin")
+    );
+
+    // Lifecycle controls use only the random local transfer id.
+    a.ok(json!({ "op": "attachment_pause", "transfer": outbound_transfer }))
+        .await;
+    assert_eq!(
+        a.ok(json!({ "op": "attachments" })).await["attachments"][0]["state"],
+        json!("paused")
+    );
+    a.ok(json!({ "op": "attachment_resume", "transfer": outbound_transfer }))
+        .await;
+
+    let offer = b_events
+        .wait_event(|event| {
+            event["type"] == json!("attachment_updated")
+                && event["attachment"]["direction"] == json!("in")
+        })
+        .await;
+    let inbound_transfer = offer["attachment"]["transfer_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(offer["attachment"]["content_id"], attachment_content_id);
+    assert_eq!(offer["attachment"]["state"], json!("awaiting_consent"));
+    let attachment_message = b_events
+        .wait_event(|event| {
+            event["type"] == json!("message") && event["content_kind"] == json!("attachment")
+        })
+        .await;
+    assert_eq!(attachment_message["body"], json!(""));
+
+    b.ok(json!({ "op": "attachment_accept", "transfer": inbound_transfer }))
+        .await;
+    b_events
+        .wait_event(|event| {
+            event["type"] == json!("attachment_updated")
+                && event["attachment"]["transfer_id"] == json!(inbound_transfer)
+                && event["attachment"]["state"] == json!("complete")
+        })
+        .await;
+    let completed = b.ok(json!({ "op": "attachments" })).await;
+    assert_eq!(
+        completed["attachments"][0]["objects"][0]["verified_bytes"],
+        json!(attachment_bytes.len())
+    );
+    let exported = dir.path().join("rpc-export.bin");
+    b.ok(json!({
+        "op": "attachment_export",
+        "transfer": inbound_transfer,
+        "path": exported.display().to_string(),
+    }))
+    .await;
+    assert_eq!(std::fs::read(&exported).unwrap(), attachment_bytes);
+    let overwrite = b
+        .call(json!({
+            "op": "attachment_export",
+            "transfer": inbound_transfer,
+            "path": exported.display().to_string(),
+        }))
+        .await
+        .unwrap_err();
+    assert!(overwrite.contains("attachment export"), "got: {overwrite}");
+    assert_eq!(std::fs::read(&exported).unwrap(), attachment_bytes);
+    b.ok(json!({ "op": "attachment_reject", "transfer": inbound_transfer }))
+        .await;
+    assert_eq!(
+        b.ok(json!({ "op": "attachments" })).await["attachments"][0]["state"],
+        json!("rejected")
+    );
+    a.ok(json!({ "op": "attachment_cancel", "transfer": outbound_transfer }))
+        .await;
+    assert_eq!(
+        a.ok(json!({ "op": "attachments" })).await["attachments"][0]["state"],
+        json!("cancelled")
+    );
+
     // Bob replies over the established session; Alice sees it.
     b.ok(json!({ "op": "send", "peer": alice_peer, "body": "loud and clear" }))
         .await;
@@ -690,6 +795,49 @@ async fn groups_via_rpc_only() {
     assert!(deliveries
         .iter()
         .all(|delivery| delivery["state"] == json!("delivered")));
+
+    let group_attachment_bytes = b"one ciphertext set for the group";
+    let group_source = dir.path().join("rpc-group-source.bin");
+    std::fs::write(&group_source, group_attachment_bytes).unwrap();
+    let group_attachment = a
+        .ok(json!({
+            "op": "group_attachment_send",
+            "group": group,
+            "path": group_source.display().to_string(),
+            "media_type": "application/octet-stream",
+            "filename": "group.bin",
+        }))
+        .await;
+    let group_content_id = group_attachment["id"].as_str().unwrap().to_owned();
+    let group_offer = b_events
+        .wait_event(|event| {
+            event["type"] == json!("attachment_updated")
+                && event["attachment"]["conversation"] == json!("group")
+                && event["attachment"]["content_id"] == json!(group_content_id)
+        })
+        .await;
+    assert_eq!(group_offer["attachment"]["group"], json!(group));
+    let group_transfer = group_offer["attachment"]["transfer_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    b.ok(json!({ "op": "attachment_accept", "transfer": group_transfer }))
+        .await;
+    b_events
+        .wait_event(|event| {
+            event["type"] == json!("attachment_updated")
+                && event["attachment"]["transfer_id"] == json!(group_transfer)
+                && event["attachment"]["state"] == json!("complete")
+        })
+        .await;
+    let group_export = dir.path().join("rpc-group-export.bin");
+    b.ok(json!({
+        "op": "attachment_export",
+        "transfer": group_transfer,
+        "path": group_export.display().to_string(),
+    }))
+    .await;
+    assert_eq!(std::fs::read(group_export).unwrap(), group_attachment_bytes);
 
     a.ok(json!({ "op": "group_remove", "group": group, "peer": bob_peer }))
         .await;

@@ -10,10 +10,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use kult_node::{
-    CarrierCapability, CarrierCapabilitySnapshot, ContentStatus, Event, GroupInfo,
-    ScheduledConversation, ScheduledMessageInfo, NOTE_TO_SELF_CONVERSATION_ID,
+    AttachmentConversation, AttachmentDirection, AttachmentInfo, CarrierCapability,
+    CarrierCapabilitySnapshot, ContentStatus, Event, GroupInfo, ScheduledConversation,
+    ScheduledMessageInfo, NOTE_TO_SELF_CONVERSATION_ID,
 };
-use kult_store::{DeliveryState, Direction, GroupMessageRecord, MessageRecord, NoteMessageRecord};
+use kult_store::{
+    DeliveryState, Direction, GroupMessageRecord, MediaTransferState, MessageRecord,
+    NoteMessageRecord,
+};
 use kult_transport::DeliveryHint;
 
 /// One request line.
@@ -59,6 +63,62 @@ pub enum Op {
         peer: String,
         /// Message body (UTF-8 text).
         body: String,
+    },
+    /// Import and queue a pairwise attachment from a caller-selected path.
+    AttachmentSend {
+        /// Recipient peer id (hex).
+        peer: String,
+        /// Plaintext input path selected by the local caller.
+        path: String,
+        /// Authenticated lowercase media-type hint.
+        media_type: String,
+        /// Optional authenticated display basename.
+        filename: Option<String>,
+    },
+    /// Import and queue a sender-key group attachment.
+    GroupAttachmentSend {
+        /// Group id (hex).
+        group: String,
+        /// Plaintext input path selected by the local caller.
+        path: String,
+        /// Authenticated lowercase media-type hint.
+        media_type: String,
+        /// Optional authenticated display basename.
+        filename: Option<String>,
+    },
+    /// List render-safe attachment transfer state.
+    Attachments,
+    /// Accept an inbound attachment offer.
+    AttachmentAccept {
+        /// Local transfer id (hex).
+        transfer: String,
+    },
+    /// Reject an inbound attachment offer.
+    AttachmentReject {
+        /// Local transfer id (hex).
+        transfer: String,
+    },
+    /// Cancel local attachment activity.
+    AttachmentCancel {
+        /// Local transfer id (hex).
+        transfer: String,
+    },
+    /// Pause attachment activity while retaining verified progress.
+    AttachmentPause {
+        /// Local transfer id (hex).
+        transfer: String,
+    },
+    /// Resume a paused attachment.
+    AttachmentResume {
+        /// Local transfer id (hex).
+        transfer: String,
+    },
+    /// Stream a completed primary object to a new caller-selected file.
+    AttachmentExport {
+        /// Local transfer id (hex).
+        transfer: String,
+        /// Destination path, created without overwriting.
+        path: String,
     },
     /// Schedule pairwise text for an absolute UTC Unix instant.
     Schedule {
@@ -308,9 +368,58 @@ pub fn event_line(event: &Event) -> String {
             "peer": hex_encode(peer),
             "state": state_str(*state),
         }),
+        Event::AttachmentUpdated { attachment } => json!({
+            "type": "attachment_updated",
+            "attachment": attachment_json(attachment),
+        }),
         _ => json!({ "type": "unknown" }),
     };
     json!({ "event": body }).to_string()
+}
+
+/// One render-safe attachment transfer as JSON. No manifest key, object id,
+/// hash, chunk address, bitmap, missing range, or transport address crosses
+/// the local RPC boundary.
+pub fn attachment_json(attachment: &AttachmentInfo) -> Value {
+    json!({
+        "transfer_id": hex_encode(&attachment.transfer_id),
+        "peer": hex_encode(&attachment.peer),
+        "conversation": match attachment.conversation {
+            AttachmentConversation::Pairwise => "pairwise",
+            AttachmentConversation::Group => "group",
+        },
+        "group": attachment.group.map(|group| hex_encode(&group)),
+        "direction": match attachment.direction {
+            AttachmentDirection::Inbound => "in",
+            AttachmentDirection::Outbound => "out",
+        },
+        "author": hex_encode(&attachment.author),
+        "content_id": hex_encode(&attachment.content_id),
+        "state": attachment_state_str(attachment.state),
+        "objects": attachment.objects.iter().map(|object| json!({
+            "preview": object.preview,
+            "total_bytes": object.total_bytes,
+            "verified_bytes": object.verified_bytes,
+            "media_type": object.media_type,
+            "filename": object.filename,
+            "state": attachment_state_str(object.state),
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn attachment_state_str(state: MediaTransferState) -> &'static str {
+    match state {
+        MediaTransferState::Offered => "offered",
+        MediaTransferState::AwaitingConsent => "awaiting_consent",
+        MediaTransferState::Queued => "queued",
+        MediaTransferState::Transferring => "transferring",
+        MediaTransferState::Paused => "paused",
+        MediaTransferState::Complete => "complete",
+        MediaTransferState::Rejected => "rejected",
+        MediaTransferState::Cancelled => "cancelled",
+        MediaTransferState::Corrupt => "corrupt",
+        MediaTransferState::Unavailable => "unavailable",
+    }
 }
 
 /// A group record as JSON, excluding every secret and chain value.
@@ -413,6 +522,7 @@ fn content_kind(status: ContentStatus) -> &'static str {
     match status {
         ContentStatus::LegacyText => "legacy_text",
         ContentStatus::Text { .. } => "text",
+        ContentStatus::Attachment { .. } => "attachment",
         ContentStatus::Unsupported { .. } => "unsupported",
         ContentStatus::Malformed => "malformed",
         _ => "unsupported",
@@ -424,6 +534,7 @@ fn render_event_body(body: &[u8], status: ContentStatus) -> String {
         ContentStatus::LegacyText | ContentStatus::Text { .. } => {
             String::from_utf8(body.to_vec()).expect("node exposes only validated UTF-8 text")
         }
+        ContentStatus::Attachment { .. } => String::new(),
         ContentStatus::Unsupported { .. } | ContentStatus::Malformed => {
             UNSUPPORTED_MESSAGE.to_owned()
         }
@@ -435,9 +546,7 @@ fn render_stored_content(bytes: &[u8]) -> (String, &'static str) {
     match kult_protocol::decode_content(bytes) {
         kult_protocol::DecodedContent::LegacyText(text) => (text.to_owned(), "legacy_text"),
         kult_protocol::DecodedContent::Text { text, .. } => (text.to_owned(), "text"),
-        kult_protocol::DecodedContent::Attachment { .. } => {
-            (UNSUPPORTED_MESSAGE.to_owned(), "unsupported")
-        }
+        kult_protocol::DecodedContent::Attachment { .. } => (String::new(), "attachment"),
         kult_protocol::DecodedContent::Unsupported { .. } => {
             (UNSUPPORTED_MESSAGE.to_owned(), "unsupported")
         }
@@ -498,6 +607,14 @@ pub fn parse_message(s: &str) -> Result<[u8; 16], String> {
         .ok_or_else(|| "message id must be hex".to_owned())?
         .try_into()
         .map_err(|_| "message id must be 16 bytes".to_owned())
+}
+
+/// Parse a 16-byte local attachment transfer id.
+pub fn parse_transfer(s: &str) -> Result<[u8; 16], String> {
+    hex_decode(s)
+        .ok_or_else(|| "transfer id must be hex".to_owned())?
+        .try_into()
+        .map_err(|_| "transfer id must be 16 bytes".to_owned())
 }
 
 #[cfg(test)]
@@ -566,8 +683,8 @@ mod tests {
         };
         let frame = kult_protocol::encode_attachment([0x44; 16], &manifest).unwrap();
         let (body, kind) = render_stored_content(&frame);
-        assert_eq!(body, UNSUPPORTED_MESSAGE);
-        assert_eq!(kind, "unsupported");
+        assert!(body.is_empty());
+        assert_eq!(kind, "attachment");
         assert!(!body.contains("private.png"));
     }
 }

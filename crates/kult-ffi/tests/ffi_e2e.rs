@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use kult_ffi::{
-    default_config, CarrierCapability, Config, DeliveryState, Event, EventListener, Hint,
-    KdfChoice, KultNode, ScheduledConversation,
+    default_config, AttachmentDirection, AttachmentState, CarrierCapability, Config, ContentKind,
+    DeliveryState, Event, EventListener, Hint, KdfChoice, KultNode, ScheduledConversation,
 };
 
 /// Records every event; tests poll it like an app's view-model would.
@@ -243,6 +243,96 @@ fn two_nodes_message_via_ffi_only() {
     assert_eq!(history[0].id, msg_id);
     assert_eq!(history[0].state, DeliveryState::Delivered);
     assert_eq!(history[0].body, "hello through the bindings");
+
+    // Attachment calls are path-bounded, typed, and event-compatible across
+    // Kotlin/Swift generation without exposing protocol or store internals.
+    let attachment_bytes = b"attachment bytes through UniFFI\0exactly";
+    let source = dir.path().join("ffi-source.bin");
+    std::fs::write(&source, attachment_bytes).unwrap();
+    let attachment_content_id = alice
+        .send_attachment(
+            bob_peer.clone(),
+            source.display().to_string(),
+            "application/octet-stream".to_owned(),
+            Some("field-notes.bin".to_owned()),
+        )
+        .unwrap();
+    let outbound = alice.attachments().unwrap();
+    assert_eq!(outbound.len(), 1);
+    assert_eq!(outbound[0].content_id, attachment_content_id);
+    assert_eq!(outbound[0].direction, AttachmentDirection::Outbound);
+    assert_eq!(
+        outbound[0].objects[0].filename.as_deref(),
+        Some("field-notes.bin")
+    );
+    alice
+        .pause_attachment(outbound[0].transfer_id.clone())
+        .unwrap();
+    assert_eq!(
+        alice.attachments().unwrap()[0].state,
+        AttachmentState::Paused
+    );
+    alice
+        .resume_attachment(outbound[0].transfer_id.clone())
+        .unwrap();
+
+    let offered = b_rec.wait("attachment offer", |event| {
+        matches!(
+            event,
+            Event::AttachmentUpdated { attachment }
+                if attachment.direction == AttachmentDirection::Inbound
+                    && attachment.content_id == attachment_content_id
+        )
+    });
+    let inbound_transfer = match offered {
+        Event::AttachmentUpdated { attachment } => {
+            assert_eq!(attachment.state, AttachmentState::AwaitingConsent);
+            attachment.transfer_id
+        }
+        other => panic!("wrong event: {other:?}"),
+    };
+    b_rec.wait("typed attachment message", |event| {
+        matches!(
+            event,
+            Event::MessageReceived { body, content_kind: ContentKind::Attachment, .. }
+                if body.is_empty()
+        )
+    });
+    bob.accept_attachment(inbound_transfer.clone()).unwrap();
+    b_rec.wait("attachment completion", |event| {
+        matches!(
+            event,
+            Event::AttachmentUpdated { attachment }
+                if attachment.transfer_id == inbound_transfer
+                    && attachment.state == AttachmentState::Complete
+        )
+    });
+    let completed = bob.attachments().unwrap();
+    assert_eq!(
+        completed[0].objects[0].verified_bytes,
+        attachment_bytes.len() as u64
+    );
+    let exported = dir.path().join("ffi-export.bin");
+    bob.export_attachment(inbound_transfer.clone(), exported.display().to_string())
+        .unwrap();
+    assert_eq!(std::fs::read(&exported).unwrap(), attachment_bytes);
+    assert!(bob
+        .export_attachment(inbound_transfer, exported.display().to_string())
+        .is_err());
+    assert_eq!(std::fs::read(&exported).unwrap(), attachment_bytes);
+    bob.reject_attachment(completed[0].transfer_id.clone())
+        .unwrap();
+    assert_eq!(
+        bob.attachments().unwrap()[0].state,
+        AttachmentState::Rejected
+    );
+    alice
+        .cancel_attachment(outbound[0].transfer_id.clone())
+        .unwrap();
+    assert_eq!(
+        alice.attachments().unwrap()[0].state,
+        AttachmentState::Cancelled
+    );
 
     // Bob replies over the established session; Alice sees it.
     bob.send(alice_peer.clone(), "loud and clear".to_owned())
@@ -565,6 +655,46 @@ fn groups_via_ffi_only() {
         .iter()
         .flat_map(|message| &message.deliveries)
         .all(|delivery| delivery.state == DeliveryState::Delivered));
+
+    let group_attachment_bytes = b"one ciphertext set through UniFFI";
+    let group_source = dir.path().join("ffi-group-source.bin");
+    std::fs::write(&group_source, group_attachment_bytes).unwrap();
+    let group_content_id = alice
+        .send_group_attachment(
+            group.clone(),
+            group_source.display().to_string(),
+            "application/octet-stream".to_owned(),
+            Some("group.bin".to_owned()),
+        )
+        .unwrap();
+    let group_offer = b_rec.wait("group attachment offer", |event| {
+        matches!(
+            event,
+            Event::AttachmentUpdated { attachment }
+                if attachment.conversation == kult_ffi::AttachmentConversation::Group
+                    && attachment.content_id == group_content_id
+        )
+    });
+    let group_transfer = match group_offer {
+        Event::AttachmentUpdated { attachment } => {
+            assert_eq!(attachment.group.as_deref(), Some(group.as_str()));
+            attachment.transfer_id
+        }
+        other => panic!("wrong event: {other:?}"),
+    };
+    bob.accept_attachment(group_transfer.clone()).unwrap();
+    b_rec.wait("group attachment completion", |event| {
+        matches!(
+            event,
+            Event::AttachmentUpdated { attachment }
+                if attachment.transfer_id == group_transfer
+                    && attachment.state == AttachmentState::Complete
+        )
+    });
+    let group_export = dir.path().join("ffi-group-export.bin");
+    bob.export_attachment(group_transfer, group_export.display().to_string())
+        .unwrap();
+    assert_eq!(std::fs::read(group_export).unwrap(), group_attachment_bytes);
 
     alice
         .remove_group_member(group.clone(), bob_peer.clone())

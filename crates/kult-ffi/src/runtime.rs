@@ -18,7 +18,10 @@ use rand::rngs::OsRng;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use kult_crypto::{KdfProfile, SafetyNumber};
-use kult_node::{CarrierCapabilitySnapshot, Event, GroupInfo, Node, ScheduledMessageInfo};
+use kult_node::{
+    AttachmentInfo, AttachmentMetadata, CarrierCapabilitySnapshot, Event, GroupInfo, Node,
+    ScheduledMessageInfo,
+};
 use kult_store::{ContactRecord, GroupMessageRecord, MessageRecord, NoteMessageRecord};
 use kult_transport::{
     DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, Transport, TransportOptions,
@@ -83,6 +86,46 @@ pub(crate) enum Msg {
         peer: [u8; 32],
         body: Vec<u8>,
         resp: Resp<[u8; 16]>,
+    },
+    AttachmentSend {
+        peer: [u8; 32],
+        metadata: AttachmentMetadata,
+        path: PathBuf,
+        resp: Resp<[u8; 16]>,
+    },
+    GroupAttachmentSend {
+        group: [u8; 32],
+        metadata: AttachmentMetadata,
+        path: PathBuf,
+        resp: Resp<[u8; 16]>,
+    },
+    Attachments {
+        resp: Resp<Vec<AttachmentInfo>>,
+    },
+    AttachmentAccept {
+        transfer: [u8; 16],
+        resp: Resp<()>,
+    },
+    AttachmentReject {
+        transfer: [u8; 16],
+        resp: Resp<()>,
+    },
+    AttachmentCancel {
+        transfer: [u8; 16],
+        resp: Resp<()>,
+    },
+    AttachmentPause {
+        transfer: [u8; 16],
+        resp: Resp<()>,
+    },
+    AttachmentResume {
+        transfer: [u8; 16],
+        resp: Resp<()>,
+    },
+    AttachmentExport {
+        transfer: [u8; 16],
+        path: PathBuf,
+        resp: Resp<()>,
     },
     Schedule {
         peer: [u8; 32],
@@ -398,6 +441,11 @@ fn now() -> u64 {
 /// Kept in lockstep with `kultd`'s equivalent.
 fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
+    open_private(path)?.write_all(bytes)
+}
+
+/// Create a protected caller-selected destination without overwriting.
+fn open_private(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -405,7 +453,7 @@ fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    options.open(path)?.write_all(bytes)
+    options.open(path)
 }
 
 /// The hints this node publishes: every live listen address (circuit
@@ -507,6 +555,87 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
                 node.send_message(&peer, &body, now, &mut OsRng)
                     .map_err(fail),
             );
+        }
+        Msg::AttachmentSend {
+            peer,
+            metadata,
+            path,
+            resp,
+        } => {
+            let result = std::fs::File::open(path)
+                .map_err(|e| format!("attachment source: {e}"))
+                .and_then(|mut source| {
+                    node.send_attachment(&peer, &metadata, &mut source, now, &mut OsRng)
+                        .map_err(fail)
+                });
+            let _ = resp.send(result);
+        }
+        Msg::GroupAttachmentSend {
+            group,
+            metadata,
+            path,
+            resp,
+        } => {
+            let result = std::fs::File::open(path)
+                .map_err(|e| format!("attachment source: {e}"))
+                .and_then(|mut source| {
+                    node.send_group_attachment(&group, &metadata, &mut source, now, &mut OsRng)
+                        .map_err(fail)
+                });
+            let _ = resp.send(result);
+        }
+        Msg::Attachments { resp } => {
+            let _ = resp.send(node.attachments().map_err(fail));
+        }
+        Msg::AttachmentAccept { transfer, resp } => {
+            let _ = resp.send(
+                node.accept_attachment(&transfer, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::AttachmentReject { transfer, resp } => {
+            let _ = resp.send(
+                node.reject_attachment(&transfer, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::AttachmentCancel { transfer, resp } => {
+            let _ = resp.send(
+                node.cancel_attachment(&transfer, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::AttachmentPause { transfer, resp } => {
+            let _ = resp.send(
+                node.pause_attachment(&transfer, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::AttachmentResume { transfer, resp } => {
+            let _ = resp.send(
+                node.resume_attachment(&transfer, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::AttachmentExport {
+            transfer,
+            path,
+            resp,
+        } => {
+            let result = match open_private(&path) {
+                Ok(mut destination) => {
+                    let result = node
+                        .export_attachment(&transfer, &mut destination)
+                        .map_err(fail);
+                    drop(destination);
+                    if result.is_err() {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                    result
+                }
+                Err(error) => Err(format!("attachment export: {error}")),
+            };
+            let _ = resp.send(result);
         }
         Msg::Schedule {
             peer,

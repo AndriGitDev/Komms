@@ -18,8 +18,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use kult_ffi::{
-    default_config, CarrierCapability, Config, ContentKind, DeliveryState, Direction, Event,
-    EventListener, Hint, KdfChoice, KultNode, NatVerdict, ScheduledConversation,
+    default_config, Attachment, AttachmentConversation, AttachmentDirection, AttachmentState,
+    CarrierCapability, Config, ContentKind, DeliveryState, Direction, Event, EventListener, Hint,
+    KdfChoice, KultNode, NatVerdict, ScheduledConversation,
 };
 
 use crate::qr;
@@ -297,6 +298,73 @@ impl UiHint {
     }
 }
 
+/// Render-safe progress for one attachment object.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiAttachmentObject {
+    /// Whether this is the optional preview rather than the primary object.
+    pub preview: bool,
+    /// Exact authenticated object size.
+    pub total_bytes: u64,
+    /// Bytes represented by durably verified chunks.
+    pub verified_bytes: u64,
+    /// Authenticated but untrusted media-type display hint.
+    pub media_type: String,
+    /// Optional sanitized display basename.
+    pub filename: Option<String>,
+    /// Durable object lifecycle state.
+    pub state: &'static str,
+}
+
+/// Render-safe attachment transfer state for the webview event stream.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiAttachment {
+    /// Random local transfer id (hex).
+    pub transfer_id: String,
+    /// Peer serving or being served (hex).
+    pub peer: String,
+    /// `pairwise` or `group`.
+    pub conversation: &'static str,
+    /// Group id for group attachments; absent for pairwise transfers.
+    pub group: Option<String>,
+    /// `inbound` or `outbound` on this device.
+    pub direction: &'static str,
+    /// Original manifest author (hex).
+    pub author: String,
+    /// Stable encrypted content id (hex).
+    pub content_id: String,
+    /// Durable transfer lifecycle state.
+    pub state: &'static str,
+    /// Primary object followed by an optional preview.
+    pub objects: Vec<UiAttachmentObject>,
+}
+
+impl UiAttachment {
+    fn from_ffi(attachment: Attachment) -> Self {
+        Self {
+            transfer_id: attachment.transfer_id,
+            peer: attachment.peer,
+            conversation: attachment_conversation_str(attachment.conversation),
+            group: attachment.group,
+            direction: attachment_direction_str(attachment.direction),
+            author: attachment.author,
+            content_id: attachment.content_id,
+            state: attachment_state_str(attachment.state),
+            objects: attachment
+                .objects
+                .into_iter()
+                .map(|object| UiAttachmentObject {
+                    preview: object.preview,
+                    total_bytes: object.total_bytes,
+                    verified_bytes: object.verified_bytes,
+                    media_type: object.media_type,
+                    filename: object.filename,
+                    state: attachment_state_str(object.state),
+                })
+                .collect(),
+        }
+    }
+}
+
 /// A node event as the webview receives it (`type` tag plus fields).
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -404,6 +472,12 @@ pub enum UiEvent {
         /// Delivery state for this member's copy.
         state: &'static str,
     },
+    /// Attachment offer, consent, progress, completion, or terminal state
+    /// changed.
+    AttachmentUpdated {
+        /// Current render-safe transfer state.
+        attachment: UiAttachment,
+    },
 }
 
 impl UiEvent {
@@ -470,6 +544,9 @@ impl UiEvent {
                 peer,
                 state: state_str(state),
             },
+            Event::AttachmentUpdated { attachment } => Self::AttachmentUpdated {
+                attachment: UiAttachment::from_ffi(attachment),
+            },
         }
     }
 }
@@ -487,8 +564,38 @@ fn content_kind_str(kind: ContentKind) -> &'static str {
     match kind {
         ContentKind::LegacyText => "legacy_text",
         ContentKind::Text => "text",
+        ContentKind::Attachment => "attachment",
         ContentKind::Unsupported => "unsupported",
         ContentKind::Malformed => "malformed",
+    }
+}
+
+fn attachment_conversation_str(conversation: AttachmentConversation) -> &'static str {
+    match conversation {
+        AttachmentConversation::Pairwise => "pairwise",
+        AttachmentConversation::Group => "group",
+    }
+}
+
+fn attachment_direction_str(direction: AttachmentDirection) -> &'static str {
+    match direction {
+        AttachmentDirection::Inbound => "inbound",
+        AttachmentDirection::Outbound => "outbound",
+    }
+}
+
+fn attachment_state_str(state: AttachmentState) -> &'static str {
+    match state {
+        AttachmentState::Offered => "offered",
+        AttachmentState::AwaitingConsent => "awaiting_consent",
+        AttachmentState::Queued => "queued",
+        AttachmentState::Transferring => "transferring",
+        AttachmentState::Paused => "paused",
+        AttachmentState::Complete => "complete",
+        AttachmentState::Rejected => "rejected",
+        AttachmentState::Cancelled => "cancelled",
+        AttachmentState::Corrupt => "corrupt",
+        AttachmentState::Unavailable => "unavailable",
     }
 }
 
@@ -1034,5 +1141,34 @@ mod tests {
         .unwrap();
         assert_eq!(delivery["type"], "group_delivery_updated");
         assert_eq!(delivery["state"], "delivered");
+
+        let attachment = serde_json::to_value(UiEvent::AttachmentUpdated {
+            attachment: UiAttachment {
+                transfer_id: "04".repeat(16),
+                peer: "05".repeat(32),
+                conversation: "pairwise",
+                group: None,
+                direction: "inbound",
+                author: "05".repeat(32),
+                content_id: "06".repeat(16),
+                state: "awaiting_consent",
+                objects: vec![UiAttachmentObject {
+                    preview: false,
+                    total_bytes: 42,
+                    verified_bytes: 0,
+                    media_type: "application/octet-stream".to_owned(),
+                    filename: Some("notes.bin".to_owned()),
+                    state: "awaiting_consent",
+                }],
+            },
+        })
+        .unwrap();
+        assert_eq!(attachment["type"], "attachment_updated");
+        assert_eq!(attachment["attachment"]["state"], "awaiting_consent");
+        assert_eq!(
+            attachment["attachment"]["objects"][0]["filename"],
+            "notes.bin"
+        );
+        assert_eq!(content_kind_str(ContentKind::Attachment), "attachment");
     }
 }
