@@ -19,7 +19,14 @@ struct ChatView: View {
         model.contacts.first { $0.peer == peer }
     }
 
-    private var history: [Message] { model.histories[peer] ?? [] }
+    private var history: [Message] {
+        (model.histories[peer] ?? []).filter { $0.contentKind != .attachment }
+    }
+    private var attachments: [Attachment] {
+        model.attachments.filter {
+            $0.conversation == .pairwise && $0.peer == peer
+        }
+    }
     private var scheduled: [ScheduledMessage] {
         model.scheduledMessages
             .filter { message in
@@ -45,11 +52,17 @@ struct ChatView: View {
                                 cancel: { cancel(message) })
                                 .id(message.id)
                         }
+                        ForEach(attachments, id: \.transferId) { attachment in
+                            AttachmentTransferView(attachment: attachment)
+                                .id("attachment-\(attachment.transferId)")
+                        }
                     }
                     .padding()
                 }
-                .onChange(of: history.count + scheduled.count) { _ in
-                    if let last = scheduled.last?.id ?? history.last?.id {
+                .onChange(of: history.count + scheduled.count + attachments.count) { _ in
+                    if let attachment = attachments.last {
+                        proxy.scrollTo("attachment-\(attachment.transferId)", anchor: .bottom)
+                    } else if let last = scheduled.last?.id ?? history.last?.id {
                         proxy.scrollTo(last, anchor: .bottom)
                     }
                 }
@@ -63,6 +76,9 @@ struct ChatView: View {
             }
 
             HStack {
+                AttachmentPickerButton(destination: .peer(peer)) { error in
+                    self.error = error
+                }
                 TextField("Message", text: $draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...4)

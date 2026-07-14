@@ -549,6 +549,22 @@ function attachmentRow(attachment) {
   head.append(title, transferState);
   row.append(head);
 
+  const preview = attachment.objects.find((object) => object.preview && object.state === "complete");
+  if (preview) {
+    const image = document.createElement("img");
+    image.className = "attachment-preview";
+    image.alt = `Local preview of ${primary?.filename ?? "attachment"}`;
+    image.hidden = true;
+    row.append(image);
+    invoke("attachment_preview", { transfer: attachment.transfer_id })
+      .then((source) => {
+        if (!image.isConnected) return;
+        image.src = source;
+        image.hidden = false;
+      })
+      .catch(() => image.remove());
+  }
+
   for (const object of attachment.objects) {
     const objectRow = document.createElement("div");
     objectRow.className = "attachment-object";
@@ -600,6 +616,12 @@ function renderAttachments(attachments) {
   panel.textContent = "";
   const matching = attachments.filter(attachmentBelongsHere);
   panel.hidden = matching.length === 0;
+  if (matching.length > 0) {
+    const policy = document.createElement("p");
+    policy.className = "attachment-background-policy";
+    policy.textContent = "Transfers continue while Komms is open or minimized. Closing the app pauses network work; verified progress resumes after unlock.";
+    panel.append(policy);
+  }
   for (const attachment of matching) panel.append(attachmentRow(attachment));
 }
 

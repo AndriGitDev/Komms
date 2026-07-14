@@ -252,15 +252,19 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
     // The path chosen by the desktop dialog stays a path across the shell
     // boundary. The render model carries only honest object metadata and
     // verified-byte progress.
-    let bytes = b"desktop attachment bytes\0exact";
-    let source = dir.path().join("desktop-source.bin");
-    std::fs::write(&source, bytes).unwrap();
+    let source = dir.path().join("desktop-source.png");
+    image::RgbaImage::from_fn(24, 16, |x, y| {
+        image::Rgba([(x * 9) as u8, (y * 13) as u8, 120, 255])
+    })
+    .save(&source)
+    .unwrap();
+    let bytes = std::fs::read(&source).unwrap();
     let content_id = alice
         .send_attachment(
             bob_peer,
             source.display().to_string(),
-            "application/octet-stream".to_owned(),
-            Some("field-notes.bin".to_owned()),
+            "image/png".to_owned(),
+            Some("field-photo.png".to_owned()),
         )
         .unwrap();
     let outbound = alice.attachments().unwrap();
@@ -268,16 +272,13 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
     assert_eq!(outbound[0].content_id, content_id);
     assert_eq!(outbound[0].conversation, "pairwise");
     assert_eq!(outbound[0].direction, "outbound");
-    assert_eq!(outbound[0].objects.len(), 1);
+    assert_eq!(outbound[0].objects.len(), 2);
     assert_eq!(
         outbound[0].objects[0].filename.as_deref(),
-        Some("field-notes.bin")
+        Some("field-photo.png")
     );
     assert_eq!(outbound[0].objects[0].total_bytes, bytes.len() as u64);
-    assert_eq!(
-        outbound[0].objects[0].media_type,
-        "application/octet-stream"
-    );
+    assert_eq!(outbound[0].objects[0].media_type, "image/png");
 
     alice
         .pause_attachment(outbound[0].transfer_id.clone())
@@ -313,6 +314,11 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
         .find(|attachment| attachment.transfer_id == inbound_transfer)
         .unwrap();
     assert_eq!(inbound.objects[0].verified_bytes, bytes.len() as u64);
+    assert!(inbound.objects[1].preview);
+    assert!(bob
+        .attachment_preview(inbound_transfer.clone())
+        .unwrap()
+        .starts_with("data:image/jpeg;base64,"));
 
     // Export is caller-selected, exact, protected, and refuses overwrite.
     let exported = dir.path().join("desktop-export.bin");

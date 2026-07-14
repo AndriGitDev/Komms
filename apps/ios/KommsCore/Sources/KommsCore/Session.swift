@@ -97,6 +97,94 @@ public final class Session: @unchecked Sendable {
         try node.send(peer: peer, body: body)
     }
 
+    /// Import one app-private, caller-selected path as a pairwise attachment.
+    /// The SwiftUI shell stages a security-scoped document at this path and
+    /// deletes it after this blocking call returns.
+    public func sendAttachment(
+        peer: String,
+        path: URL,
+        mediaType: String,
+        filename: String?
+    ) throws -> String {
+        try node.sendAttachment(
+            peer: peer, path: path.path, mediaType: mediaType, filename: filename)
+    }
+
+    /// Import a pairwise attachment plus a locally generated sealed preview.
+    public func sendAttachmentWithPreview(
+        peer: String,
+        path: URL,
+        mediaType: String,
+        filename: String?,
+        preview: URL
+    ) throws -> String {
+        try node.sendAttachmentWithPreview(
+            peer: peer, path: path.path, mediaType: mediaType, filename: filename,
+            previewPath: preview.path, previewMediaType: "image/jpeg")
+    }
+
+    /// Import one app-private path as an encrypt-once group attachment.
+    public func sendGroupAttachment(
+        group: String,
+        path: URL,
+        mediaType: String,
+        filename: String?
+    ) throws -> String {
+        try node.sendGroupAttachment(
+            group: group, path: path.path, mediaType: mediaType, filename: filename)
+    }
+
+    /// Import a group attachment plus a locally generated sealed preview.
+    public func sendGroupAttachmentWithPreview(
+        group: String,
+        path: URL,
+        mediaType: String,
+        filename: String?,
+        preview: URL
+    ) throws -> String {
+        try node.sendGroupAttachmentWithPreview(
+            group: group, path: path.path, mediaType: mediaType, filename: filename,
+            previewPath: preview.path, previewMediaType: "image/jpeg")
+    }
+
+    /// Every supported transfer as render-safe state.
+    public func attachments() throws -> [Attachment] { try node.attachments() }
+
+    /// Accept an inbound attachment offer.
+    public func acceptAttachment(transfer: String) throws {
+        try node.acceptAttachment(transfer: transfer)
+    }
+
+    /// Durably reject an inbound attachment offer.
+    public func rejectAttachment(transfer: String) throws {
+        try node.rejectAttachment(transfer: transfer)
+    }
+
+    /// Cancel local transfer work and release unreferenced partial data.
+    public func cancelAttachment(transfer: String) throws {
+        try node.cancelAttachment(transfer: transfer)
+    }
+
+    /// Pause attachment work while retaining verified progress.
+    public func pauseAttachment(transfer: String) throws {
+        try node.pauseAttachment(transfer: transfer)
+    }
+
+    /// Resume a paused transfer from durable verified progress.
+    public func resumeAttachment(transfer: String) throws {
+        try node.resumeAttachment(transfer: transfer)
+    }
+
+    /// Stream a completed primary object to a protected, new app-private path.
+    public func exportAttachment(transfer: String, to path: URL) throws {
+        try node.exportAttachment(transfer: transfer, path: path.path)
+    }
+
+    /// Decrypt a sealed preview into a protected app-private path.
+    public func exportAttachmentPreview(transfer: String, to path: URL) throws {
+        try node.exportAttachmentPreview(transfer: transfer, path: path.path)
+    }
+
     /// Schedule pairwise text at an absolute UTC Unix instant.
     public func schedule(peer: String, body: String, notBefore: UInt64) throws -> String {
         try node.schedule(peer: peer, body: body, notBefore: notBefore)

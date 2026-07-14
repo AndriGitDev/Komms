@@ -26,7 +26,9 @@ own, verbatim.
   pause/resume/cancel/reject controls, and caller-selected export. Provider
   streams are copied with bounded memory through unique app-private staging
   files that are deleted after each operation; no broad storage permission or
-  URI-to-filesystem-path conversion is used.
+  URI-to-filesystem-path conversion is used. Android generates bounded,
+  metadata-stripped JPEG previews for selected images, stores them sealed, and
+  renders them only through short-lived protected cache files.
 - **Create and use sender-key groups** from stored contacts: list and read
   group history, send messages, add/remove members as the creator, and leave
   as any member while local history remains stored. Inbound rows name the
@@ -105,6 +107,6 @@ job that uploads the artifact.
 
 ## Not yet
 
-Mobile push-style wake-ups (the node only runs while the foreground
-service does), BLE radios, and store distribution (M6). The iOS shell
+Mobile push-style wake-ups after the foreground service itself is stopped,
+BLE radios, and store distribution (M6). The iOS shell
 lives in [`apps/ios`](../ios/).

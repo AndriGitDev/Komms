@@ -382,6 +382,23 @@ fn open_private(path: &std::path::Path) -> io::Result<std::fs::File> {
     options.open(path)
 }
 
+fn open_preview(
+    path: Option<String>,
+    media_type: Option<String>,
+) -> Result<Option<(kult_node::AttachmentMetadata, std::fs::File)>, String> {
+    match (path, media_type) {
+        (None, None) => Ok(None),
+        (Some(path), Some(media_type)) => Ok(Some((
+            kult_node::AttachmentMetadata {
+                media_type,
+                filename: None,
+            },
+            std::fs::File::open(path).map_err(|e| format!("attachment preview source: {e}"))?,
+        ))),
+        _ => Err("preview_path and preview_media_type must be supplied together".to_owned()),
+    }
+}
+
 /// The hints this node publishes: every live listen address (circuit
 /// addresses included once reserved) plus each mailbox relay it collects
 /// from.
@@ -523,6 +540,8 @@ async fn handle_op(
             path,
             media_type,
             filename,
+            preview_path,
+            preview_media_type,
         } => {
             let peer = wire::parse_peer(&peer)?;
             let mut source =
@@ -531,8 +550,19 @@ async fn handle_op(
                 media_type,
                 filename,
             };
+            let mut preview = open_preview(preview_path, preview_media_type)?;
+            let preview = preview
+                .as_mut()
+                .map(|(metadata, source)| (&*metadata, source));
             let id = node
-                .send_attachment(&peer, &metadata, &mut source, now(), &mut OsRng)
+                .send_attachment_with_preview(
+                    &peer,
+                    &metadata,
+                    &mut source,
+                    preview,
+                    now(),
+                    &mut OsRng,
+                )
                 .map_err(fail)?;
             Ok(json!({ "id": wire::hex_encode(&id) }))
         }
@@ -541,6 +571,8 @@ async fn handle_op(
             path,
             media_type,
             filename,
+            preview_path,
+            preview_media_type,
         } => {
             let group = wire::parse_group(&group)?;
             let mut source =
@@ -549,8 +581,19 @@ async fn handle_op(
                 media_type,
                 filename,
             };
+            let mut preview = open_preview(preview_path, preview_media_type)?;
+            let preview = preview
+                .as_mut()
+                .map(|(metadata, source)| (&*metadata, source));
             let id = node
-                .send_group_attachment(&group, &metadata, &mut source, now(), &mut OsRng)
+                .send_group_attachment_with_preview(
+                    &group,
+                    &metadata,
+                    &mut source,
+                    preview,
+                    now(),
+                    &mut OsRng,
+                )
                 .map_err(fail)?;
             Ok(json!({ "id": wire::hex_encode(&id) }))
         }
@@ -592,12 +635,17 @@ async fn handle_op(
                 .map_err(fail)?;
             Ok(json!({}))
         }
-        Op::AttachmentExport { transfer, path } => {
+        Op::AttachmentExport {
+            transfer,
+            path,
+            preview,
+        } => {
             let transfer = wire::parse_transfer(&transfer)?;
             let destination_path = std::path::Path::new(&path);
             let mut destination =
                 open_private(destination_path).map_err(|e| format!("attachment export: {e}"))?;
-            if let Err(error) = node.export_attachment(&transfer, &mut destination) {
+            if let Err(error) = node.export_attachment_object(&transfer, preview, &mut destination)
+            {
                 drop(destination);
                 let _ = std::fs::remove_file(destination_path);
                 return Err(fail(error));

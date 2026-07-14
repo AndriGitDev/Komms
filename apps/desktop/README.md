@@ -20,6 +20,12 @@ security indicators are the node's own, verbatim.
 - **Schedule pairwise or group text** in local time: sealed scheduled rows
   remain visibly separate from ordinary history and can be edited or cancelled
   until the core activates them at the stored absolute UTC instant.
+- **Send and receive pairwise or group attachments** through native path
+  pickers with consent, exact progress, lifecycle controls, protected export,
+  and media-aware local previews. JPEG/PNG thumbnails are generated through a
+  bounded decoder, stripped to a capped JPEG, stored sealed, and decrypted only
+  into a protected transient rendering path. Transfers continue while Komms is
+  open or minimized and resume from verified progress after restart.
 - **Use sender-key groups**: create and list groups, read history, send,
   add/remove members, and leave. Outbound bubbles show a separate honest
   delivery state for every recipient, so partial delivery stays visible.

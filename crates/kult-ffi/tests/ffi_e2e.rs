@@ -248,19 +248,25 @@ fn two_nodes_message_via_ffi_only() {
     // Kotlin/Swift generation without exposing protocol or store internals.
     let attachment_bytes = b"attachment bytes through UniFFI\0exactly";
     let source = dir.path().join("ffi-source.bin");
+    let preview = dir.path().join("ffi-preview.jpg");
+    let preview_bytes = b"locally generated preview";
     std::fs::write(&source, attachment_bytes).unwrap();
+    std::fs::write(&preview, preview_bytes).unwrap();
     let attachment_content_id = alice
-        .send_attachment(
+        .send_attachment_with_preview(
             bob_peer.clone(),
             source.display().to_string(),
             "application/octet-stream".to_owned(),
             Some("field-notes.bin".to_owned()),
+            preview.display().to_string(),
+            "image/jpeg".to_owned(),
         )
         .unwrap();
     let outbound = alice.attachments().unwrap();
     assert_eq!(outbound.len(), 1);
     assert_eq!(outbound[0].content_id, attachment_content_id);
     assert_eq!(outbound[0].direction, AttachmentDirection::Outbound);
+    assert_eq!(outbound[0].objects.len(), 2);
     assert_eq!(
         outbound[0].objects[0].filename.as_deref(),
         Some("field-notes.bin")
@@ -312,10 +318,21 @@ fn two_nodes_message_via_ffi_only() {
         completed[0].objects[0].verified_bytes,
         attachment_bytes.len() as u64
     );
+    assert_eq!(
+        completed[0].objects[1].verified_bytes,
+        preview_bytes.len() as u64
+    );
     let exported = dir.path().join("ffi-export.bin");
     bob.export_attachment(inbound_transfer.clone(), exported.display().to_string())
         .unwrap();
     assert_eq!(std::fs::read(&exported).unwrap(), attachment_bytes);
+    let exported_preview = dir.path().join("ffi-export-preview.jpg");
+    bob.export_attachment_preview(
+        inbound_transfer.clone(),
+        exported_preview.display().to_string(),
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(&exported_preview).unwrap(), preview_bytes);
     assert!(bob
         .export_attachment(inbound_transfer, exported.display().to_string())
         .is_err());

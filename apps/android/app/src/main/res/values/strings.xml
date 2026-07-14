@@ -76,6 +76,9 @@
     <string name="attachment_direction_state">%1$s · %2$s</string>
     <string name="attachment_primary">Primary</string>
     <string name="attachment_preview">Preview</string>
+    <string name="attachment_preview_description">Local attachment preview</string>
+    <string name="attachment_preview_failed">This image could not be safely previewed</string>
+    <string name="attachment_background_policy">Transfers continue through the foreground service when Komms is backgrounded; verified progress survives process restart.</string>
     <string name="attachment_object_kind">%1$s · %2$s</string>
     <string name="attachment_progress">%1$s / %2$s verified bytes · %3$s</string>
     <string name="attachment_progress_description">Verified attachment progress</string>
