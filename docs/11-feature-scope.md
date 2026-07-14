@@ -28,11 +28,13 @@ These are either already carried by the core crates, stay local to a device, or
 fit the architecture without changing its security model. Their shipped/planned
 status and prerequisites are tracked in the delivery plan.
 
-- **Text and audio messages.** Text is shipped through the protocol and transport
-  layers. Recorded audio is planned as an asynchronous encrypted attachment, not
-  a live call; it needs the typed-content and resumable attachment pipeline plus
-  a carrier policy. A clip that exceeds the measured mesh allowance is held for
-  a faster link rather than consuming LoRa airtime.
+- **Text and audio messages.** Both are shipped. Recorded audio is an
+  asynchronous encrypted F3 attachment, never a live call: every shell records
+  the same bounded metadata-free mono PCM WAV profile, requires local review and
+  explicit send/discard, and derives duration/waveform only on the endpoint.
+  F4 explains the current carrier at confirmation. Under ADR-0015's hard rule,
+  a mesh-only route holds every audio clip for a faster link and emits zero bulk
+  airtime frames.
 - **End-to-end encryption.** Native to `kult-crypto`; not optional and not a
   toggle. Every message is sealed; there is no unencrypted mode to add.
 - **Post-quantum upgrades.** Already the design: the handshake is hybrid PQXDH
@@ -108,8 +110,9 @@ and degrade honestly, exactly as the delivery ladder already does.
   carrier: if a peer is reachable only over Meshtastic (or any airtime-budgeted
   link), calling is disabled with an honest reason, the same way the delivery
   ladder already reports "held, will send when a faster link exists." Recorded
-  audio/video *clips* (asynchronous payloads) remain in scope on every carrier;
-  this entry adds the synchronous case. This touches transports, so it is pinned
+  audio/video *clips* remain asynchronous payloads; audio can be composed on
+  every platform but waits for a non-airtime link when F4 reports mesh-only.
+  This entry adds the synchronous case. This touches transports, so it is pinned
   by ADR-0013 (Proposed): media transport choice (SRTP-style framing over a
   libp2p path vs. a constrained WebRTC media path), call-setup signaling that
   stays metadata-blind over the pairwise ratchet, and measured qualification of

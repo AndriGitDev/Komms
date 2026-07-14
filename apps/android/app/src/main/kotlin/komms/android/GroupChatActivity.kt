@@ -40,6 +40,7 @@ class GroupChatActivity : AppCompatActivity() {
     private var contacts = listOf<Contact>()
     private val adapter = GroupMessagesAdapter { peer -> memberName(peer) }
     private lateinit var attachmentController: AttachmentController
+    private lateinit var audioController: AudioMessageController
 
     private val listener: (Event) -> Unit = { event ->
         val relevant = when (event) {
@@ -72,6 +73,14 @@ class GroupChatActivity : AppCompatActivity() {
         list.adapter = adapter
         val attachmentList = findViewById<RecyclerView>(R.id.chat_attachments)
         attachmentList.layoutManager = LinearLayoutManager(this)
+        audioController = AudioMessageController(
+            activity = this,
+            send = { session, file ->
+                session.sendGroupAttachment(groupId, file, "audio/wav", "audio-message.wav")
+            },
+            carrierExplanation = { session -> session.groupAudioCarrierExplanation(groupId) },
+            refresh = ::refresh,
+        )
         attachmentController = AttachmentController(
             activity = this,
             belongsHere = {
@@ -86,6 +95,7 @@ class GroupChatActivity : AppCompatActivity() {
                     )
                 }
             },
+            bindAudio = audioController::bindAttachment,
             refresh = ::refresh,
             savedState = savedInstanceState,
         )
@@ -107,7 +117,13 @@ class GroupChatActivity : AppCompatActivity() {
     override fun onDestroy() {
         NodeHolder.removeListener(listener)
         if (::attachmentController.isInitialized) attachmentController.close()
+        if (::audioController.isInitialized) audioController.close()
         super.onDestroy()
+    }
+
+    override fun onStop() {
+        if (::audioController.isInitialized) audioController.onStop()
+        super.onStop()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

@@ -36,6 +36,16 @@ final class AppModel: ObservableObject {
 
     private var refreshTimer: Timer?
 
+    init() {
+        let temporary = FileManager.default.temporaryDirectory
+        let entries = try? FileManager.default.contentsOfDirectory(
+            at: temporary, includingPropertiesForKeys: nil
+        )
+        entries?.filter {
+            $0.lastPathComponent.hasPrefix("komms-audio-")
+        }.forEach { try? FileManager.default.removeItem(at: $0) }
+    }
+
     /// True on first run: no store yet, so the gate offers create/restore.
     var storeExists: Bool {
         FileManager.default.fileExists(atPath: dataDir.appendingPathComponent("node.db").path)
@@ -313,6 +323,81 @@ final class AppModel: ObservableObject {
             throw InputError("attachment preview exceeds the 256 KiB limit")
         }
         return data
+    }
+
+    /// Canonicalize a native linear-PCM WAVE recording, strip every extra
+    /// chunk, and derive duration/waveform locally before review.
+    func prepareAudioReview(source: URL) async throws -> ProtectedAudio {
+        guard let session else { throw InputError("node is locked") }
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("komms-audio-\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: source) }
+        do {
+            let info = try await run {
+                try session.canonicalizeAudio(source: source, destination: destination)
+            }
+            try FileManager.default.setAttributes(
+                [.protectionKey: FileProtectionType.complete],
+                ofItemAtPath: destination.path)
+            return ProtectedAudio(file: destination, info: info)
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
+        }
+    }
+
+    /// Authoritative F4 wording shown before the explicit send action.
+    func audioCarrierExplanation(destination: RecordedAudioDestination) async throws -> String {
+        guard let session else { throw InputError("node is locked") }
+        return try await run {
+            switch destination {
+            case .peer(let peer): return try session.audioCarrierExplanation(peer: peer)
+            case .group(let group): return try session.groupAudioCarrierExplanation(group: group)
+            }
+        }
+    }
+
+    /// Import one reviewed canonical clip through the ordinary F3 attachment path.
+    func sendRecordedAudio(
+        destination: RecordedAudioDestination,
+        audio: ProtectedAudio
+    ) async throws {
+        guard let session else { throw InputError("node is locked") }
+        let file = audio.file
+        _ = try await run {
+            switch destination {
+            case .peer(let peer):
+                return try session.sendAttachment(
+                    peer: peer, path: file, mediaType: "audio/wav",
+                    filename: "audio-message.wav")
+            case .group(let group):
+                return try session.sendGroupAttachment(
+                    group: group, path: file, mediaType: "audio/wav",
+                    filename: "audio-message.wav")
+            }
+        }
+        audio.remove()
+        await refresh()
+    }
+
+    /// Materialize a completed clip through a protected transient for explicit
+    /// local playback. The view removes it when playback ends or disappears.
+    func attachmentAudio(transfer: String) async throws -> ProtectedAudio {
+        guard let session else { throw InputError("node is locked") }
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("komms-audio-playback-\(UUID().uuidString).wav")
+        do {
+            let info = try await run {
+                try session.exportAttachment(transfer: transfer, to: path)
+                return try session.probeAudio(path)
+            }
+            try FileManager.default.setAttributes(
+                [.protectionKey: FileProtectionType.complete], ofItemAtPath: path.path)
+            return ProtectedAudio(file: path, info: info)
+        } catch {
+            try? FileManager.default.removeItem(at: path)
+            throw error
+        }
     }
 
     private func attachmentAction(_ action: @escaping @Sendable (Session) throws -> Void) async throws {

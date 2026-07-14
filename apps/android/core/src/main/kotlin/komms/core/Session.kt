@@ -15,6 +15,8 @@ package komms.core
 
 import java.io.File
 import uniffi.kult_ffi.Attachment
+import uniffi.kult_ffi.AudioInfo
+import uniffi.kult_ffi.CarrierCapability
 import uniffi.kult_ffi.Config
 import uniffi.kult_ffi.Contact
 import uniffi.kult_ffi.Event
@@ -30,6 +32,8 @@ import uniffi.kult_ffi.SafetyNumber
 import uniffi.kult_ffi.ScheduledMessage
 import uniffi.kult_ffi.Status
 import uniffi.kult_ffi.defaultConfig
+import uniffi.kult_ffi.canonicalizeRecordedAudio
+import uniffi.kult_ffi.probeRecordedAudio
 
 /**
  * Human-readable text for an FFI failure — the node's own words. (The
@@ -181,6 +185,48 @@ class Session private constructor(private val node: KultNode) {
     /** Decrypt a sealed preview into a protected app-private path. */
     fun exportAttachmentPreview(transfer: String, path: File) =
         node.exportAttachmentPreview(transfer, path.absolutePath)
+
+    /** Rewrite native PCM WAVE into Komms's bounded metadata-free profile. */
+    fun canonicalizeAudio(source: File, destination: File): AudioInfo =
+        canonicalizeRecordedAudio(source.absolutePath, destination.absolutePath)
+
+    /** Validate canonical audio and derive duration/waveform only on this device. */
+    fun probeAudio(path: File): AudioInfo = probeRecordedAudio(path.absolutePath)
+
+    /** Current authoritative carrier explanation for pairwise audio confirmation. */
+    fun audioCarrierExplanation(peer: String): String =
+        audioCarrierExplanation(listOf(peer))
+
+    /** Current authoritative carrier explanation for every other current group member. */
+    fun groupAudioCarrierExplanation(group: String): String {
+        val members = groups().firstOrNull { it.id == group }
+            ?.members?.filter { it != peer }
+            ?: throw IllegalArgumentException("unknown group")
+        return audioCarrierExplanation(members)
+    }
+
+    private fun audioCarrierExplanation(recipients: List<String>): String {
+        val snapshots = node.carrierCapabilities().associateBy { it.peer }
+        val mesh = recipients.count {
+            snapshots[it]?.capability == CarrierCapability.MESH_ONLY
+        }
+        val unavailable = recipients.count {
+            snapshots[it]?.capability !in setOf(
+                CarrierCapability.REALTIME,
+                CarrierCapability.BULK,
+                CarrierCapability.MESH_ONLY,
+            )
+        }
+        return when {
+            recipients.isEmpty() -> "This group has no other current recipients; no audio delivery will be created."
+            mesh > 0 && unavailable > 0 ->
+                "$mesh recipient(s) have only a mesh route, so audio waits for a faster link and emits zero mesh bulk frames; " +
+                    "$unavailable more have no fresh route. Recipients with a fresh realtime or bulk link can proceed."
+            mesh > 0 -> "Will send when a faster link exists for $mesh recipient(s). Audio emits zero mesh bulk frames."
+            unavailable > 0 -> "Will remain queued locally until $unavailable recipient(s) have a fresh faster link."
+            else -> "Every current recipient has a fresh realtime or bulk link; normal attachment quotas apply."
+        }
+    }
 
     /** Schedule pairwise text at an absolute UTC Unix instant. */
     fun schedule(peer: String, body: String, notBefore: ULong): String =

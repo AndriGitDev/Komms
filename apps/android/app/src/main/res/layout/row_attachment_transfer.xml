@@ -38,6 +38,39 @@
         android:layout_height="wrap_content" />
 
     <LinearLayout
+        android:id="@+id/attachment_audio_container"
+        android:orientation="vertical"
+        android:visibility="gone"
+        android:layout_marginTop="6dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <TextView
+            android:id="@+id/attachment_audio_duration"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <komms.android.AudioWaveformView
+            android:id="@+id/attachment_audio_waveform"
+            android:importantForAccessibility="yes"
+            android:layout_width="match_parent"
+            android:layout_height="44dp" />
+
+        <SeekBar
+            android:id="@+id/attachment_audio_seek"
+            android:contentDescription="@string/audio_seek_description"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <Button
+            android:id="@+id/attachment_audio_play"
+            android:text="@string/audio_play"
+            android:contentDescription="@string/audio_play_description"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+    </LinearLayout>
+
+    <LinearLayout
         android:id="@+id/attachment_objects"
         android:orientation="vertical"
         android:layout_width="match_parent"

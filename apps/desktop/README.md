@@ -26,6 +26,13 @@ security indicators are the node's own, verbatim.
   bounded decoder, stripped to a capped JPEG, stored sealed, and decrypted only
   into a protected transient rendering path. Transfers continue while Komms is
   open or minimized and resume from verified progress after restart.
+- **Record pairwise or group audio messages** only while Komms is visible, stop
+  into a no-autoplay review with duration/waveform and the current F4 carrier
+  explanation, then explicitly send or discard. The shell rewrites every clip
+  to the shared metadata-free mono 16-bit PCM WAV / 16 kHz / 60-second profile
+  before the existing F3 import. Hiding, locking, interruption, failure, or
+  shutdown stops capture and clears review/plaintext transients; received audio
+  is validated and materialized only for explicit protected local playback.
 - **Use sender-key groups**: create and list groups, read history, send,
   add/remove members, and leave. Outbound bubbles show a separate honest
   delivery state for every recipient, so partial delivery stays visible.

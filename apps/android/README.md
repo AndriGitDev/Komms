@@ -29,6 +29,14 @@ own, verbatim.
   URI-to-filesystem-path conversion is used. Android generates bounded,
   metadata-stripped JPEG previews for selected images, stores them sealed, and
   renders them only through short-lived protected cache files.
+- **Record pairwise or group audio messages** with runtime microphone consent,
+  a foreground-only stop/review flow, no autoplay, locally derived
+  duration/waveform, and explicit send/discard. Every native capture is rewritten
+  to the shared metadata-free mono 16-bit PCM WAV / 16 kHz / 60-second profile
+  and enters the existing F3 pipeline. Audio-focus loss, activity stop, lock,
+  failure, discard, and restart remove plaintext cache files; completed clips are
+  probed and exported only into short-lived app-private playback files. F4 is
+  rechecked at send, and mesh-only audio waits with zero bulk airtime frames.
 - **Create and use sender-key groups** from stored contacts: list and read
   group history, send messages, add/remove members as the creator, and leave
   as any member while local history remains stored. Inbound rows name the
@@ -67,7 +75,10 @@ required. Its group acceptance scenario adds a real offline third identity
 and pins creator authority, add/remove/leave convergence, history, and honest
 partial delivery per recipient. Pairwise and group attachment acceptance covers
 offer/consent/completion, exact bytes and metadata, lifecycle controls, exact
-export, and overwrite refusal. `:app` remains UI-only SAF and rendering glue.
+export, and overwrite refusal. Audio acceptance additionally strips an injected
+native metadata chunk and pins identical canonical bytes and duration across
+pairwise and sender-key group delivery. `:app` remains UI-only SAF, recorder, and
+rendering glue.
 
 This is deliberately its own Gradle build, outside the cargo workspace:
 the Android dependency tree stays out of the core crates' lockfile and

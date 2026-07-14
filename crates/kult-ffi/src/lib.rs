@@ -25,7 +25,14 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+mod audio;
 mod runtime;
+
+pub use audio::{
+    canonicalize_recorded_audio, probe_recorded_audio, AudioInfo, AUDIO_BITS_PER_SAMPLE,
+    AUDIO_CHANNELS, AUDIO_MAX_BYTES, AUDIO_MAX_DURATION_MS, AUDIO_MEDIA_TYPE, AUDIO_SAMPLE_RATE,
+    AUDIO_WAVEFORM_BINS,
+};
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

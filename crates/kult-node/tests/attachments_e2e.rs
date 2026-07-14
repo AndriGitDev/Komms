@@ -331,10 +331,10 @@ async fn attachment_offer_emits_no_airtime_frames_when_bulk_route_disappears() {
         .send_attachment(
             &bob_id,
             &AttachmentMetadata {
-                media_type: "text/plain".to_owned(),
-                filename: Some("held.txt".to_owned()),
+                media_type: "audio/wav".to_owned(),
+                filename: Some("audio-message.wav".to_owned()),
             },
-            &mut Cursor::new(b"held"),
+            &mut Cursor::new(b"RIFF held canonical audio fixture"),
             NOW + 10,
             &mut rng,
         )
@@ -344,7 +344,7 @@ async fn attachment_offer_emits_no_airtime_frames_when_bulk_route_disappears() {
     assert_eq!(
         airtime_sent.load(Ordering::SeqCst),
         before,
-        "manifest and bulk records must emit zero airtime frames"
+        "recorded-audio manifest and bulk records must emit zero airtime frames"
     );
     assert!(alice.queued().unwrap() == 0, "manifest was never enqueued");
     assert!(net.lock().unwrap().get(&2).is_none_or(Vec::is_empty));

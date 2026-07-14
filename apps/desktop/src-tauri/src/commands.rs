@@ -11,8 +11,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::session::{
-    NetworkSettings, Session, UiAttachment, UiBundle, UiContact, UiGroup, UiGroupMessage, UiHint,
-    UiMessage, UiNoteMessage, UiSafetyNumber, UiScheduledMessage, UiStatus,
+    NetworkSettings, Session, UiAttachment, UiAudioMedia, UiBundle, UiContact, UiGroup,
+    UiGroupMessage, UiHint, UiMessage, UiNoteMessage, UiSafetyNumber, UiScheduledMessage, UiStatus,
 };
 
 /// The one piece of managed state: the running session, if unlocked.
@@ -189,6 +189,21 @@ forward!(
     status() -> UiStatus, |s| s.status()
 );
 forward!(
+    /// Validate and send an explicitly confirmed pairwise audio recording.
+    send_recorded_audio(peer: String, encoded: String) -> String,
+    |s| s.send_recorded_audio(peer, encoded)
+);
+forward!(
+    /// Validate and send an explicitly confirmed group audio recording.
+    send_group_recorded_audio(group: String, encoded: String) -> String,
+    |s| s.send_group_recorded_audio(group, encoded)
+);
+forward!(
+    /// Explain the current authoritative carrier gate for an audio confirmation.
+    audio_carrier_explanation(conversation: String, destination: String) -> String,
+    |s| s.audio_carrier_explanation(conversation, destination)
+);
+forward!(
     /// Schedule pairwise text for an absolute UTC Unix instant.
     schedule(peer: String, body: String, not_before: u64) -> String,
     |s| s.schedule(peer, body, not_before)
@@ -292,6 +307,10 @@ forward!(
 forward!(
     /// Return a completed sealed preview as a bounded data URL.
     attachment_preview(transfer: String) -> String, |s| s.attachment_preview(transfer)
+);
+forward!(
+    /// Return completed canonical audio through bounded protected playback materialization.
+    attachment_audio(transfer: String) -> UiAudioMedia, |s| s.attachment_audio(transfer)
 );
 forward!(
     /// Stable reserved identity for the local note-to-self conversation.

@@ -74,6 +74,43 @@ private func listenAddr(_ session: Session) throws -> String {
 
 private func multiaddrHint(_ addr: String) -> [HintSpec] { [HintSpec("multiaddr", addr)] }
 
+private func canonicalAudio(samples: Int = 1_600) -> Data {
+    func le16(_ value: Int) -> [UInt8] {
+        [UInt8(value & 0xff), UInt8((value >> 8) & 0xff)]
+    }
+    func le32(_ value: Int) -> [UInt8] {
+        le16(value & 0xffff) + le16((value >> 16) & 0xffff)
+    }
+    let dataBytes = samples * 2
+    var bytes = Data("RIFF".utf8)
+    bytes.append(contentsOf: le32(36 + dataBytes))
+    bytes.append(Data("WAVEfmt ".utf8))
+    bytes.append(contentsOf: le32(16))
+    bytes.append(contentsOf: le16(1) + le16(1) + le32(16_000) + le32(32_000))
+    bytes.append(contentsOf: le16(2) + le16(16))
+    bytes.append(Data("data".utf8))
+    bytes.append(contentsOf: le32(dataBytes))
+    for index in 0..<samples {
+        bytes.append(contentsOf: le16((index % 2_000) - 1_000))
+    }
+    return bytes
+}
+
+private func nativeAudioWithMetadata(_ canonical: Data) -> Data {
+    func le32(_ value: Int) -> [UInt8] {
+        [UInt8(value & 0xff), UInt8((value >> 8) & 0xff),
+         UInt8((value >> 16) & 0xff), UInt8((value >> 24) & 0xff)]
+    }
+    var bytes = Data("RIFF".utf8)
+    bytes.append(contentsOf: le32(canonical.count + 4))
+    bytes.append(contentsOf: canonical[8..<36])
+    bytes.append(Data("LIST".utf8))
+    bytes.append(contentsOf: le32(4))
+    bytes.append(Data("leak".utf8))
+    bytes.append(contentsOf: canonical[36..<canonical.count])
+    return bytes
+}
+
 final class SessionE2eTests: XCTestCase {
     private func tempDir() throws -> URL {
         let dir = FileManager.default.temporaryDirectory
@@ -123,6 +160,9 @@ final class SessionE2eTests: XCTestCase {
             }
             return nil
         }
+        XCTAssertTrue(
+            try alice.audioCarrierExplanation(peer: bobPeer)
+                .contains("fresh realtime or bulk link"))
 
         // History rows carry what the bubbles render.
         let history = try alice.messages(peer: bobPeer)
@@ -209,6 +249,38 @@ final class SessionE2eTests: XCTestCase {
         XCTAssertEqual(
             .cancelled,
             try alice.attachments().first(where: { $0.transferId == outbound.transferId })?.state)
+
+        let audioBytes = canonicalAudio()
+        let nativeAudio = dir.appendingPathComponent("ios-native-audio.wav")
+        try nativeAudioWithMetadata(audioBytes).write(to: nativeAudio)
+        let audioSource = dir.appendingPathComponent("ios-audio-message.wav")
+        XCTAssertEqual(
+            100,
+            try alice.canonicalizeAudio(source: nativeAudio, destination: audioSource).durationMs)
+        XCTAssertEqual(audioBytes, try Data(contentsOf: audioSource))
+        XCTAssertEqual(100, try alice.probeAudio(audioSource).durationMs)
+        let audioContent = try alice.sendAttachment(
+            peer: bobPeer, path: audioSource, mediaType: "audio/wav",
+            filename: "audio-message.wav")
+        let audioOffer = try bEv.wait("pairwise audio offer") { event -> Attachment? in
+            if case let .attachmentUpdated(attachment) = event,
+               attachment.contentId == audioContent,
+               attachment.direction == .inbound {
+                return attachment
+            }
+            return nil
+        }
+        try bob.acceptAttachment(transfer: audioOffer.transferId)
+        _ = try bEv.wait("pairwise audio completion") { event -> Void? in
+            if case let .attachmentUpdated(attachment) = event,
+               attachment.transferId == audioOffer.transferId,
+               attachment.state == .complete { return () }
+            return nil
+        }
+        let audioExport = dir.appendingPathComponent("ios-audio-received.wav")
+        try bob.exportAttachment(transfer: audioOffer.transferId, to: audioExport)
+        XCTAssertEqual(audioBytes, try Data(contentsOf: audioExport))
+        XCTAssertEqual(100, try bob.probeAudio(audioExport).durationMs)
 
         // The verify screen: identical digits and QR payloads on both ends
         // (also identical to what the desktop and Android apps render), and
@@ -350,14 +422,14 @@ final class SessionE2eTests: XCTestCase {
         }
 
         // The same Session surface covers one encrypt-once group attachment.
-        let groupBytes = Data("one encrypted iOS group object".utf8)
-        let groupSource = dir.appendingPathComponent("ios-group-source.bin")
+        let groupBytes = canonicalAudio()
+        let groupSource = dir.appendingPathComponent("ios-group-source.wav")
         try groupBytes.write(to: groupSource)
         let groupContent = try alice.sendGroupAttachment(
             group: group,
             path: groupSource,
-            mediaType: "application/octet-stream",
-            filename: "route.bin")
+            mediaType: "audio/wav",
+            filename: "audio-message.wav")
         let groupOffer = try bEv.wait("group attachment offer") { event -> Attachment? in
             if case let .attachmentUpdated(attachment) = event,
                attachment.contentId == groupContent,
@@ -379,6 +451,7 @@ final class SessionE2eTests: XCTestCase {
         let groupExport = dir.appendingPathComponent("ios-group-export.bin")
         try bob.exportAttachment(transfer: groupOffer.transferId, to: groupExport)
         XCTAssertEqual(groupBytes, try Data(contentsOf: groupExport))
+        XCTAssertEqual(100, try bob.probeAudio(groupExport).durationMs)
 
         try alice.addGroupMember(group: group, peer: carolPeer)
         listed = try alice.groups()

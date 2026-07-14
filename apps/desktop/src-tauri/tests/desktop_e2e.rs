@@ -11,8 +11,40 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use base64::Engine;
 use komms_desktop::session::{hex_decode, NetworkSettings, Session, UiEvent, UiHint};
 use kult_ffi::KdfChoice;
+
+fn canonical_audio(samples: usize) -> Vec<u8> {
+    let data_len = (samples * 2) as u32;
+    let mut bytes = Vec::with_capacity(44 + data_len as usize);
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&16_000u32.to_le_bytes());
+    bytes.extend_from_slice(&32_000u32.to_le_bytes());
+    bytes.extend_from_slice(&2u16.to_le_bytes());
+    bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&data_len.to_le_bytes());
+    for index in 0..samples {
+        bytes.extend_from_slice(&((index as i16 % 2_000) - 1_000).to_le_bytes());
+    }
+    bytes
+}
+
+fn native_audio_with_metadata(canonical: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(canonical.len() + 12);
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&((canonical.len() + 4) as u32).to_le_bytes());
+    bytes.extend_from_slice(&canonical[8..36]);
+    bytes.extend_from_slice(b"LIST\x04\0\0\0leak");
+    bytes.extend_from_slice(&canonical[36..]);
+    bytes
+}
 
 /// Collects `node-event` payloads exactly as the webview would.
 #[derive(Clone, Default)]
@@ -337,6 +369,38 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
         .cancel_attachment(outbound[0].transfer_id.clone())
         .unwrap();
     assert_eq!(alice.attachments().unwrap()[0].state, "cancelled");
+    assert!(alice
+        .audio_carrier_explanation("pairwise".to_owned(), outbound[0].peer.clone())
+        .unwrap()
+        .contains("fresh realtime or bulk link"));
+
+    let audio_bytes = canonical_audio(1_600);
+    let encoded =
+        base64::engine::general_purpose::STANDARD.encode(native_audio_with_metadata(&audio_bytes));
+    let audio_content = alice
+        .send_recorded_audio(outbound[0].peer.clone(), encoded.clone())
+        .unwrap();
+    let audio_offer = b_ev.wait("pairwise audio offer", |event| {
+        matches!(event, UiEvent::AttachmentUpdated { attachment }
+            if attachment.content_id == audio_content && attachment.direction == "inbound")
+    });
+    let audio_transfer = match audio_offer {
+        UiEvent::AttachmentUpdated { attachment } => attachment.transfer_id,
+        other => panic!("wrong event: {other:?}"),
+    };
+    bob.accept_attachment(audio_transfer.clone()).unwrap();
+    b_ev.wait("pairwise audio completion", |event| {
+        matches!(event, UiEvent::AttachmentUpdated { attachment }
+            if attachment.transfer_id == audio_transfer && attachment.state == "complete")
+    });
+    let audio = bob.attachment_audio(audio_transfer).unwrap();
+    assert_eq!(audio.duration_ms, 100);
+    assert_eq!(audio.waveform.len(), 64);
+    assert!(audio.data_url.starts_with("data:audio/wav;base64,"));
+    let received = base64::engine::general_purpose::STANDARD
+        .decode(audio.data_url.split_once(',').unwrap().1)
+        .unwrap();
+    assert_eq!(received, audio_bytes, "native metadata must be stripped");
 
     // The same thin shell methods cover an encrypt-once group offer and
     // consent/completion/export flow without adding group-specific protocol.
@@ -347,16 +411,8 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
         "group invite",
         |event| matches!(event, UiEvent::GroupUpdated { group: id } if *id == group),
     );
-    let group_bytes = b"one encrypted object for the group";
-    let group_source = dir.path().join("desktop-group-source.bin");
-    std::fs::write(&group_source, group_bytes).unwrap();
     let group_content_id = alice
-        .send_group_attachment(
-            group.clone(),
-            group_source.display().to_string(),
-            "application/octet-stream".to_owned(),
-            Some("route.bin".to_owned()),
-        )
+        .send_group_recorded_audio(group.clone(), encoded)
         .unwrap();
     let group_offer = b_ev.wait("group attachment offer", |event| {
         matches!(event, UiEvent::AttachmentUpdated { attachment }
@@ -373,10 +429,9 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
         matches!(event, UiEvent::AttachmentUpdated { attachment }
             if attachment.transfer_id == group_transfer && attachment.state == "complete")
     });
-    let group_export = dir.path().join("desktop-group-export.bin");
-    bob.export_attachment(group_transfer, group_export.display().to_string())
-        .unwrap();
-    assert_eq!(std::fs::read(group_export).unwrap(), group_bytes);
+    let group_audio = bob.attachment_audio(group_transfer).unwrap();
+    assert_eq!(group_audio.duration_ms, 100);
+    assert_eq!(group_audio.waveform.len(), 64);
 
     alice.stop();
     bob.stop();

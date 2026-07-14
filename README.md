@@ -106,6 +106,12 @@ cargo run --example sneakernet_demo
 > and then enters the ordinary queued→sent→delivered ladder. RPC/CLI, UniFFI, and
 > all three shells expose the same lifecycle with local-time composer controls and
 > visibly distinct scheduled history rows.
+> Recorded audio messages are shipped across desktop, Android, and iOS as one
+> metadata-free mono PCM WAV profile, bounded to 60 seconds. Each shell provides
+> foreground-only record→stop→review→explicit send/discard, protected local
+> playback with duration/waveform, pairwise and sender-key group F3 delivery, and
+> current F4 carrier explanations. ADR-0015 remains absolute: mesh-only audio
+> waits for a faster link and emits zero bulk airtime frames.
 > Remaining per the [roadmap](docs/08-roadmap.md): the physical two-radio bench (M4); a
 > hands-on device pass of the iOS app layer (M5); the wider M6 hardening list;
 > and the external security audit.
