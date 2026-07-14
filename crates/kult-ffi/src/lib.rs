@@ -333,6 +333,32 @@ pub struct NoteMessage {
     pub body: String,
 }
 
+/// Destination type for a scheduled outbox entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ScheduledConversation {
+    /// Pairwise conversation with a contact.
+    Peer,
+    /// Sender-key group conversation.
+    Group,
+}
+
+/// Text sealed locally until an absolute UTC activation instant.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct ScheduledMessage {
+    /// Stable id retained after activation (hex).
+    pub id: String,
+    /// Pairwise or group destination.
+    pub conversation: ScheduledConversation,
+    /// Peer or group id (hex).
+    pub destination: String,
+    /// Unix time when the schedule was created.
+    pub created_at: u64,
+    /// Absolute UTC Unix send instant.
+    pub not_before: u64,
+    /// UTF-8 message text.
+    pub body: String,
+}
+
 /// A sender-key group, excluding every secret and chain value.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct Group {
@@ -414,6 +440,8 @@ pub struct Status {
     pub nat: NatVerdict,
     /// Outbound messages not yet delivered.
     pub queued: u64,
+    /// Plaintext messages sealed locally until a future UTC instant.
+    pub scheduled: u64,
     /// Third-party envelopes buffered for mesh↔internet bridging.
     pub transit: u64,
     /// Stored contacts.
@@ -424,6 +452,21 @@ pub struct Status {
 /// (docs/09-implementation-guide.md §3.5).
 #[derive(Clone, Debug, uniffi::Enum)]
 pub enum Event {
+    /// A scheduled message was created or edited.
+    ScheduledMessageUpdated {
+        /// Stable message id (hex).
+        id: String,
+    },
+    /// A scheduled message was cancelled before activation.
+    ScheduledMessageCancelled {
+        /// Stable message id (hex).
+        id: String,
+    },
+    /// A scheduled message entered the ordinary encrypted delivery queue.
+    ScheduledMessageActivated {
+        /// Stable message id (hex).
+        id: String,
+    },
     /// A message record changed delivery state
     /// (`Queued` → `Sent` → `Delivered`).
     DeliveryUpdated {
@@ -518,6 +561,15 @@ impl Event {
     /// update, never silently mislabeled.
     fn from_node(event: kult_node::Event) -> Option<Self> {
         Some(match event {
+            kult_node::Event::ScheduledMessageUpdated { id } => Self::ScheduledMessageUpdated {
+                id: hex_encode(&id),
+            },
+            kult_node::Event::ScheduledMessageCancelled { id } => Self::ScheduledMessageCancelled {
+                id: hex_encode(&id),
+            },
+            kult_node::Event::ScheduledMessageActivated { id } => Self::ScheduledMessageActivated {
+                id: hex_encode(&id),
+            },
             kult_node::Event::DeliveryUpdated { id, state } => Self::DeliveryUpdated {
                 id: hex_encode(&id),
                 state: DeliveryState::from_store(state),
@@ -667,6 +719,7 @@ impl KultNode {
             lan_peers: rt.net.lan_peers(),
             nat,
             queued: counts.queued,
+            scheduled: counts.scheduled,
             transit: counts.transit,
             contacts: counts.contacts,
         })
@@ -721,6 +774,89 @@ impl KultNode {
             resp,
         })
         .map(|id| hex_encode(&id))
+    }
+
+    /// Schedule pairwise text at an absolute UTC Unix instant. The returned
+    /// id remains stable when it later enters the delivery queue.
+    pub fn schedule(
+        &self,
+        peer: String,
+        body: String,
+        not_before: u64,
+    ) -> Result<String, FfiError> {
+        let peer = parse_peer(&peer)?;
+        self.call(|resp| Msg::Schedule {
+            peer,
+            body: body.into_bytes(),
+            not_before,
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
+    /// Schedule group text at an absolute UTC Unix instant.
+    pub fn schedule_group(
+        &self,
+        group: String,
+        body: String,
+        not_before: u64,
+    ) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        self.call(|resp| Msg::GroupSchedule {
+            group,
+            body: body.into_bytes(),
+            not_before,
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
+    /// Edit text and/or the UTC instant before a scheduled message activates.
+    pub fn edit_scheduled(
+        &self,
+        message: String,
+        body: String,
+        not_before: u64,
+    ) -> Result<(), FfiError> {
+        let id = parse_message(&message)?;
+        self.call(|resp| Msg::ScheduledEdit {
+            id,
+            body: body.into_bytes(),
+            not_before,
+            resp,
+        })
+    }
+
+    /// Cancel a scheduled message before it activates.
+    pub fn cancel_scheduled(&self, message: String) -> Result<(), FfiError> {
+        let id = parse_message(&message)?;
+        self.call(|resp| Msg::ScheduledCancel { id, resp })
+    }
+
+    /// Full durable scheduled outbox.
+    pub fn scheduled_messages(&self) -> Result<Vec<ScheduledMessage>, FfiError> {
+        Ok(self
+            .call(|resp| Msg::ScheduledMessages { resp })?
+            .into_iter()
+            .map(|message| {
+                let (conversation, destination) = match message.conversation {
+                    kult_node::ScheduledConversation::Peer(peer) => {
+                        (ScheduledConversation::Peer, hex_encode(&peer))
+                    }
+                    kult_node::ScheduledConversation::Group(group) => {
+                        (ScheduledConversation::Group, hex_encode(&group))
+                    }
+                };
+                ScheduledMessage {
+                    id: hex_encode(&message.id),
+                    conversation,
+                    destination,
+                    created_at: message.created_at,
+                    not_before: message.not_before,
+                    body: String::from_utf8_lossy(&message.body).into_owned(),
+                }
+            })
+            .collect())
     }
 
     /// Stable identity shared by every shell for the one local note-to-self
@@ -1070,6 +1206,25 @@ fn parse_peer(s: &str) -> Result<[u8; 32], FfiError> {
 /// Decode a 32-byte hex group id (case-insensitive).
 fn parse_group(s: &str) -> Result<[u8; 32], FfiError> {
     parse_hex_32(s, "group")
+}
+
+fn parse_message(s: &str) -> Result<[u8; 16], FfiError> {
+    let fail = || FfiError::Node {
+        reason: "message id must be 32 hex chars".to_owned(),
+    };
+    if s.len() != 32 {
+        return Err(fail());
+    }
+    let digits: Vec<u32> = s
+        .chars()
+        .map(|c| c.to_digit(16))
+        .collect::<Option<_>>()
+        .ok_or_else(fail)?;
+    let mut out = [0u8; 16];
+    for (i, pair) in digits.chunks_exact(2).enumerate() {
+        out[i] = ((pair[0] << 4) | pair[1]) as u8;
+    }
+    Ok(out)
 }
 
 fn parse_hex_32(s: &str, kind: &str) -> Result<[u8; 32], FfiError> {

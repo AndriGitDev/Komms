@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use kult_ffi::{
     default_config, CarrierCapability, Config, DeliveryState, Event, EventListener, Hint,
-    KdfChoice, KultNode,
+    KdfChoice, KultNode, ScheduledConversation,
 };
 
 /// Records every event; tests poll it like an app's view-model would.
@@ -116,6 +116,39 @@ fn note_to_self_via_ffi_only_is_local_and_durable() {
     assert_eq!(history[0].body, "remember the charging cable");
     assert_eq!(node.status().unwrap().queued, 0);
     assert_eq!(node.status().unwrap().contacts, 0);
+
+    // Pin scheduling's complete FFI front door in this existing single-node
+    // test so the network-heavy e2e cases do not gain another parallel node.
+    let own_peer = node
+        .add_contact("self".to_owned(), node.handshake_bundle().unwrap(), vec![])
+        .unwrap();
+    let group = node.create_group("later".to_owned(), vec![]).unwrap();
+    let future = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3_600;
+
+    let pair = node
+        .schedule(own_peer.clone(), "first draft".to_owned(), future)
+        .unwrap();
+    node.schedule_group(group.clone(), "group later".to_owned(), future + 60)
+        .unwrap();
+    let scheduled = node.scheduled_messages().unwrap();
+    assert_eq!(scheduled.len(), 2);
+    assert_eq!(scheduled[0].conversation, ScheduledConversation::Peer);
+    assert_eq!(scheduled[0].destination, own_peer);
+    assert_eq!(scheduled[1].conversation, ScheduledConversation::Group);
+    assert_eq!(scheduled[1].destination, group);
+    assert_eq!(node.status().unwrap().scheduled, 2);
+
+    node.edit_scheduled(pair.clone(), "final text".to_owned(), future + 120)
+        .unwrap();
+    let scheduled = node.scheduled_messages().unwrap();
+    assert_eq!(scheduled[0].body, "final text");
+    assert_eq!(scheduled[0].not_before, future + 120);
+    node.cancel_scheduled(pair).unwrap();
+    assert_eq!(node.scheduled_messages().unwrap().len(), 1);
     node.stop();
 
     let reopened = KultNode::start(
@@ -124,6 +157,7 @@ fn note_to_self_via_ffi_only_is_local_and_durable() {
     )
     .expect("node reopens");
     assert_eq!(reopened.note_to_self_messages().unwrap()[0].id, id);
+    assert_eq!(reopened.scheduled_messages().unwrap().len(), 1);
     reopened.stop();
 }
 

@@ -26,6 +26,11 @@ COMMANDS:
                                     add a contact from an out-of-band bundle
     add NAME ADDRESS                add a contact from a kult address (DHT)
     send PEER_HEX TEXT...           queue a message
+    schedule PEER_HEX UNIX_SECS TEXT... schedule pairwise text at a UTC instant
+    group-schedule GROUP_HEX UNIX_SECS TEXT... schedule group text
+    scheduled                       list scheduled messages
+    schedule-edit ID UNIX_SECS TEXT... edit a scheduled message
+    schedule-cancel ID              cancel a scheduled message
     note TEXT...                    append to the local note-to-self conversation
     note-messages                   local note-to-self history
     group-create NAME [MEMBER_HEX]... create a sender-key group
@@ -103,6 +108,47 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
         "send" => {
             need(2)?;
             json!({ "op": "send", "peer": args[0], "body": args[1..].join(" ") })
+        }
+        "schedule" => {
+            need(3)?;
+            let not_before: u64 = args[1]
+                .parse()
+                .map_err(|_| "schedule: UNIX_SECS must be an unsigned integer")?;
+            json!({
+                "op": "schedule",
+                "peer": args[0],
+                "not_before": not_before,
+                "body": args[2..].join(" "),
+            })
+        }
+        "group-schedule" => {
+            need(3)?;
+            let not_before: u64 = args[1]
+                .parse()
+                .map_err(|_| "group-schedule: UNIX_SECS must be an unsigned integer")?;
+            json!({
+                "op": "group_schedule",
+                "group": args[0],
+                "not_before": not_before,
+                "body": args[2..].join(" "),
+            })
+        }
+        "scheduled" => json!({ "op": "scheduled_messages" }),
+        "schedule-edit" => {
+            need(3)?;
+            let not_before: u64 = args[1]
+                .parse()
+                .map_err(|_| "schedule-edit: UNIX_SECS must be an unsigned integer")?;
+            json!({
+                "op": "scheduled_edit",
+                "message": args[0],
+                "not_before": not_before,
+                "body": args[2..].join(" "),
+            })
+        }
+        "schedule-cancel" => {
+            need(1)?;
+            json!({ "op": "scheduled_cancel", "message": args[0] })
         }
         "note" => {
             need(1)?;
@@ -280,5 +326,27 @@ mod tests {
             build_request("note-messages", &[]).unwrap(),
             json!({ "op": "note_to_self_messages" })
         );
+        assert_eq!(
+            build_request(
+                "schedule",
+                &["04".repeat(32), "1800000100".to_owned(), "later".to_owned()]
+            )
+            .unwrap(),
+            json!({
+                "op": "schedule",
+                "peer": "04".repeat(32),
+                "not_before": 1_800_000_100u64,
+                "body": "later",
+            })
+        );
+        assert_eq!(
+            build_request("scheduled", &[]).unwrap(),
+            json!({ "op": "scheduled_messages" })
+        );
+        assert!(build_request(
+            "schedule-edit",
+            &["01".repeat(16), "not-a-time".to_owned(), "x".to_owned()]
+        )
+        .is_err());
     }
 }

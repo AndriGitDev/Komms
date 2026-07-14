@@ -126,14 +126,25 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 16]> {
+        let mut id = [0u8; 16];
+        rng.fill_bytes(&mut id);
+        self.group_send_with_id(group, body, id, now, now, rng)
+    }
+
+    pub(crate) fn group_send_with_id(
+        &mut self,
+        group: &[u8; 32],
+        body: &[u8],
+        id: [u8; 16],
+        timestamp: u64,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
         let mut rec = self
             .store
             .get_group(group)?
             .ok_or(NodeError::UnknownGroup)?;
         let me = self.identity.public().ed;
-
-        let mut id = [0u8; 16];
-        rng.fill_bytes(&mut id);
         let mut all_members_support_text = true;
         for member in rec.members.iter().filter(|member| member.peer != me) {
             if !self.peer_supports_text(&member.peer)? {
@@ -154,7 +165,7 @@ impl Node {
             group: *group,
             sender: me,
             direction: Direction::Outbound,
-            timestamp: now,
+            timestamp,
             body: wire_content.clone(),
             deliveries: rec
                 .members

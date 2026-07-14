@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use kult_ffi::{
     default_config, CarrierCapability, Config, ContentKind, DeliveryState, Direction, Event,
-    EventListener, Hint, KdfChoice, KultNode, NatVerdict,
+    EventListener, Hint, KdfChoice, KultNode, NatVerdict, ScheduledConversation,
 };
 
 use crate::qr;
@@ -150,6 +150,25 @@ pub struct UiNoteMessage {
     pub body: String,
 }
 
+/// One editable/cancellable scheduled outbox entry.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiScheduledMessage {
+    /// Stable message id (hex).
+    pub id: String,
+    /// `peer` or `group`.
+    pub conversation: &'static str,
+    /// Peer or group id (hex).
+    pub destination: String,
+    /// Unix time when the schedule was created.
+    pub created_at: u64,
+    /// Absolute UTC Unix send instant.
+    pub not_before: u64,
+    /// Message text.
+    pub body: String,
+    /// Explicit state label for shell rendering.
+    pub state: &'static str,
+}
+
 /// A sender-key group row for the desktop UI. Secret material and sender
 /// chains never cross into the shell.
 #[derive(Clone, Debug, Serialize)]
@@ -209,6 +228,8 @@ pub struct UiStatus {
     pub nat: &'static str,
     /// Outbound messages not yet delivered.
     pub queued: u64,
+    /// Text waiting for a future UTC activation instant.
+    pub scheduled: u64,
     /// Third-party envelopes buffered for mesh↔internet bridging.
     pub transit: u64,
     /// Stored contacts.
@@ -280,6 +301,21 @@ impl UiHint {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UiEvent {
+    /// A scheduled message was created or edited.
+    ScheduledMessageUpdated {
+        /// Stable message id (hex).
+        id: String,
+    },
+    /// A scheduled message was cancelled before activation.
+    ScheduledMessageCancelled {
+        /// Stable message id (hex).
+        id: String,
+    },
+    /// A scheduled message entered the encrypted delivery queue.
+    ScheduledMessageActivated {
+        /// Stable message id (hex).
+        id: String,
+    },
     /// A message record changed delivery state.
     DeliveryUpdated {
         /// Message record id (hex).
@@ -373,6 +409,9 @@ pub enum UiEvent {
 impl UiEvent {
     fn from_ffi(event: Event) -> Self {
         match event {
+            Event::ScheduledMessageUpdated { id } => Self::ScheduledMessageUpdated { id },
+            Event::ScheduledMessageCancelled { id } => Self::ScheduledMessageCancelled { id },
+            Event::ScheduledMessageActivated { id } => Self::ScheduledMessageActivated { id },
             Event::DeliveryUpdated { id, state } => Self::DeliveryUpdated {
                 id,
                 state: state_str(state),
@@ -538,6 +577,7 @@ impl Session {
                 NatVerdict::Unknown => "unknown",
             },
             queued: s.queued,
+            scheduled: s.scheduled,
             transit: s.transit,
             contacts: s.contacts,
         })
@@ -615,6 +655,66 @@ impl Session {
     /// Queue a message; returns its id (progress arrives as events).
     pub fn send(&self, peer: String, body: String) -> Result<String, String> {
         self.node.send(peer, body).map_err(|e| e.to_string())
+    }
+
+    /// Schedule pairwise text for an absolute UTC Unix instant.
+    pub fn schedule(&self, peer: String, body: String, not_before: u64) -> Result<String, String> {
+        self.node
+            .schedule(peer, body, not_before)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Schedule group text for an absolute UTC Unix instant.
+    pub fn schedule_group(
+        &self,
+        group: String,
+        body: String,
+        not_before: u64,
+    ) -> Result<String, String> {
+        self.node
+            .schedule_group(group, body, not_before)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Edit one scheduled outbox entry before activation.
+    pub fn edit_scheduled(
+        &self,
+        message: String,
+        body: String,
+        not_before: u64,
+    ) -> Result<(), String> {
+        self.node
+            .edit_scheduled(message, body, not_before)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Cancel one scheduled outbox entry before activation.
+    pub fn cancel_scheduled(&self, message: String) -> Result<(), String> {
+        self.node
+            .cancel_scheduled(message)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Full scheduled outbox for rendering alongside ordinary histories.
+    pub fn scheduled_messages(&self) -> Result<Vec<UiScheduledMessage>, String> {
+        Ok(self
+            .node
+            .scheduled_messages()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|message| UiScheduledMessage {
+                id: message.id,
+                conversation: match message.conversation {
+                    ScheduledConversation::Peer => "peer",
+                    ScheduledConversation::Group => "group",
+                },
+                destination: message.destination,
+                created_at: message.created_at,
+                not_before: message.not_before,
+                body: message.body,
+                state: "scheduled",
+            })
+            .collect())
     }
 
     /// Stable reserved identity for the local note-to-self conversation.

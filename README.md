@@ -100,6 +100,12 @@ cargo run --example sneakernet_demo
 > permanently readable and unknown authenticated content stays durable.
 > The F5 local-metadata foundation is shipped as well: typed folders, pins,
 > labels, drafts, preferences, and custom icons remain sealed and strictly local.
+> Durable scheduled messaging is now in through the shared core and front doors:
+> pairwise/group text stays sealed in a device-local scheduled outbox until its
+> absolute UTC instant, remains editable/cancellable without advancing a ratchet,
+> and then enters the ordinary queued→sent→delivered ladder. RPC/CLI, UniFFI, and
+> all three shell session adapters expose the same lifecycle; composer/history UI
+> integration remains.
 > Remaining per the [roadmap](docs/08-roadmap.md): the physical two-radio bench (M4); a
 > hands-on device pass of the iOS app layer (M5); the wider M6 hardening list;
 > and the external security audit.

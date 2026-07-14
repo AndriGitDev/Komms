@@ -122,7 +122,9 @@ final class AppModel: ObservableObject {
 
     private func handle(_ event: Event) {
         switch event {
-        case .deliveryUpdated, .messageReceived, .noteToSelfMessageAdded,
+        case .scheduledMessageUpdated, .scheduledMessageCancelled,
+             .scheduledMessageActivated, .deliveryUpdated, .messageReceived,
+             .noteToSelfMessageAdded,
              .carrierCapabilityChanged,
              .groupUpdated, .groupMessageReceived, .groupDeliveryUpdated:
             Task { await refresh() }

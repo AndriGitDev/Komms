@@ -12,7 +12,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::session::{
     NetworkSettings, Session, UiBundle, UiContact, UiGroup, UiGroupMessage, UiHint, UiMessage,
-    UiNoteMessage, UiSafetyNumber, UiStatus,
+    UiNoteMessage, UiSafetyNumber, UiScheduledMessage, UiStatus,
 };
 
 /// The one piece of managed state: the running session, if unlocked.
@@ -187,6 +187,29 @@ macro_rules! forward {
 forward!(
     /// Status snapshot for the transport indicators.
     status() -> UiStatus, |s| s.status()
+);
+forward!(
+    /// Schedule pairwise text for an absolute UTC Unix instant.
+    schedule(peer: String, body: String, not_before: u64) -> String,
+    |s| s.schedule(peer, body, not_before)
+);
+forward!(
+    /// Schedule group text for an absolute UTC Unix instant.
+    schedule_group(group: String, body: String, not_before: u64) -> String,
+    |s| s.schedule_group(group, body, not_before)
+);
+forward!(
+    /// Full durable scheduled outbox.
+    scheduled_messages() -> Vec<UiScheduledMessage>, |s| s.scheduled_messages()
+);
+forward!(
+    /// Edit scheduled text and/or its UTC instant.
+    edit_scheduled(message: String, body: String, not_before: u64) -> (),
+    |s| s.edit_scheduled(message, body, not_before)
+);
+forward!(
+    /// Cancel a scheduled message before activation.
+    cancel_scheduled(message: String) -> (), |s| s.cancel_scheduled(message)
 );
 forward!(
     /// A QR of this node's kult address.
