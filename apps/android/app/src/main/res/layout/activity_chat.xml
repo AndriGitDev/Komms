@@ -20,6 +20,27 @@
         android:layout_weight="1" />
 
     <LinearLayout
+        android:id="@+id/chat_attachment_section"
+        android:orientation="vertical"
+        android:visibility="gone"
+        android:paddingHorizontal="8dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <TextView
+            android:text="@string/attachment_transfers_title"
+            android:textStyle="bold"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/chat_attachments"
+            android:nestedScrollingEnabled="false"
+            android:layout_width="match_parent"
+            android:layout_height="180dp" />
+    </LinearLayout>
+
+    <LinearLayout
         android:id="@+id/chat_scheduled_section"
         android:orientation="vertical"
         android:visibility="gone"
@@ -48,6 +69,13 @@
         android:padding="8dp"
         android:layout_width="match_parent"
         android:layout_height="wrap_content">
+
+        <Button
+            android:id="@+id/chat_attach"
+            android:text="@string/chat_attach"
+            android:contentDescription="@string/chat_attach"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
 
         <EditText
             android:id="@+id/chat_input"

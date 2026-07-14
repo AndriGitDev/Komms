@@ -1079,6 +1079,18 @@ impl Node {
                 if object.content_hash != content_hash {
                     return Ok(());
                 }
+                // Completion acknowledgements can cross an explicit local
+                // terminal decision in flight. A delayed acknowledgement
+                // confirms remote receipt, but must not resurrect work the
+                // user cancelled/rejected or that failed integrity locally.
+                if matches!(
+                    transfer.state,
+                    MediaTransferState::Rejected
+                        | MediaTransferState::Cancelled
+                        | MediaTransferState::Corrupt
+                ) {
+                    return Ok(());
+                }
                 self.store.set_media_transfer_state(
                     &transfer.local_id,
                     MediaTransferState::Complete,

@@ -21,6 +21,12 @@ own, verbatim.
 - **Schedule pairwise or group text** in local time: the sealed scheduled
   outbox is shown separately with edit/cancel controls until the core moves an
   entry into the ordinary delivery ladder at its absolute UTC instant.
+- **Send and receive pairwise or group attachments** through Android's Storage
+  Access Framework, with explicit consent, exact verified-byte progress,
+  pause/resume/cancel/reject controls, and caller-selected export. Provider
+  streams are copied with bounded memory through unique app-private staging
+  files that are deleted after each operation; no broad storage permission or
+  URI-to-filesystem-path conversion is used.
 - **Create and use sender-key groups** from stored contacts: list and read
   group history, send messages, add/remove members as the creator, and leave
   as any member while local history remains stored. Inbound rows name the
@@ -51,13 +57,15 @@ apps/android/
 └── app/           # the Android shell: activities, layouts, camera QR scanner
 ```
 
-Every behavior lives in `:core` and is pinned by its JVM tests: the e2e
+Every node behavior lives in `:core` and is pinned by its JVM tests: the e2e
 drives two full nodes (pair by scanned bundle hex, verified `delivered`
 states via listener events, safety numbers, backup → mnemonic → restore →
 automatic re-handshake) against the host-built `libkult_ffi`, no emulator
 required. Its group acceptance scenario adds a real offline third identity
 and pins creator authority, add/remove/leave convergence, history, and honest
-partial delivery per recipient. `:app` is UI only.
+partial delivery per recipient. Pairwise and group attachment acceptance covers
+offer/consent/completion, exact bytes and metadata, lifecycle controls, exact
+export, and overwrite refusal. `:app` remains UI-only SAF and rendering glue.
 
 This is deliberately its own Gradle build, outside the cargo workspace:
 the Android dependency tree stays out of the core crates' lockfile and

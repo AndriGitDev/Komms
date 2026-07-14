@@ -321,11 +321,12 @@ shared across the node scheduler, RPC/CLI, and UniFFI as an expiring snapshot
 with change events; attachment activation consumes that same verdict. Bounded
 path-based attachment import/export, render-safe transfer records and events,
 and consent/reject/cancel/pause/resume now cross RPC/CLI and typed UniFFI with
-pairwise and encrypt-once group acceptance coverage. The desktop shell now adds
-native caller-selected input/export paths, pairwise and group send affordances,
+pairwise and encrypt-once group acceptance coverage. The desktop shell uses
+native caller-selected paths, while Android uses Storage Access Framework
+streams staged only in app-private storage; both expose pairwise/group send,
 per-object verified-byte progress and state, lifecycle controls, and protected
-export. Remaining F3 shell work is Android/iOS attachment UX plus previews,
-media handling, and background-transfer behavior.
+caller-selected export. Remaining F3 shell work is iOS attachment UX plus
+previews, media handling, and background-transfer behavior.
 
 The F5 sealed local-metadata foundation is shipped in `kult-store`: typed and
 bounded conversation, folder, pin, label, draft, preference, and custom-icon

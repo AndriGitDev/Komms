@@ -14,6 +14,7 @@
 package komms.core
 
 import java.io.File
+import uniffi.kult_ffi.Attachment
 import uniffi.kult_ffi.Config
 import uniffi.kult_ffi.Contact
 import uniffi.kult_ffi.Event
@@ -109,6 +110,51 @@ class Session private constructor(private val node: KultNode) {
 
     /** Queue a message; returns its id (progress arrives as events). */
     fun send(peer: String, body: String): String = node.send(peer, body)
+
+    /**
+     * Import one app-private, caller-selected path as a pairwise attachment.
+     * The Android shell stages a SAF stream at this path and deletes it when
+     * this blocking call returns.
+     */
+    fun sendAttachment(
+        peer: String,
+        path: File,
+        mediaType: String,
+        filename: String?,
+    ): String = node.sendAttachment(peer, path.absolutePath, mediaType, filename)
+
+    /** Import one app-private path as an encrypt-once group attachment. */
+    fun sendGroupAttachment(
+        group: String,
+        path: File,
+        mediaType: String,
+        filename: String?,
+    ): String = node.sendGroupAttachment(group, path.absolutePath, mediaType, filename)
+
+    /** Every supported transfer as render-safe state. */
+    fun attachments(): List<Attachment> = node.attachments()
+
+    /** Accept an inbound attachment offer. */
+    fun acceptAttachment(transfer: String) = node.acceptAttachment(transfer)
+
+    /** Durably reject an inbound attachment offer. */
+    fun rejectAttachment(transfer: String) = node.rejectAttachment(transfer)
+
+    /** Cancel local transfer work and release unreferenced partial data. */
+    fun cancelAttachment(transfer: String) = node.cancelAttachment(transfer)
+
+    /** Pause attachment work while retaining verified progress. */
+    fun pauseAttachment(transfer: String) = node.pauseAttachment(transfer)
+
+    /** Resume a paused transfer from durable verified progress. */
+    fun resumeAttachment(transfer: String) = node.resumeAttachment(transfer)
+
+    /**
+     * Stream a completed primary object to a protected, new app-private path.
+     * The Android shell then copies that file to the caller-selected SAF URI.
+     */
+    fun exportAttachment(transfer: String, path: File) =
+        node.exportAttachment(transfer, path.absolutePath)
 
     /** Schedule pairwise text at an absolute UTC Unix instant. */
     fun schedule(peer: String, body: String, notBefore: ULong): String =

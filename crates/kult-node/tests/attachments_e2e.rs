@@ -244,6 +244,20 @@ async fn pairwise_attachment_resumes_after_restart_and_exports_exact_bytes() {
     bob.tick(idle + 2, &mut rng).await.unwrap();
     alice.tick(idle + 3, &mut rng).await.unwrap();
     bob.tick(idle + 4, &mut rng).await.unwrap();
+
+    // Bob's completion acknowledgement is now queued for Alice, but has not
+    // been consumed. An explicit local cancellation must remain sticky when
+    // that older acknowledgement arrives out of order.
+    let outbound_transfer = alice
+        .attachments()
+        .unwrap()
+        .into_iter()
+        .find(|attachment| attachment.content_id == content_id)
+        .unwrap()
+        .transfer_id;
+    alice
+        .cancel_attachment(&outbound_transfer, idle + 5, &mut rng)
+        .unwrap();
     alice.tick(idle + 5, &mut rng).await.unwrap();
 
     let complete = bob
@@ -258,7 +272,7 @@ async fn pairwise_attachment_resumes_after_restart_and_exports_exact_bytes() {
     bob.export_attachment(&transfer_id, &mut exported).unwrap();
     assert_eq!(exported, bytes);
     assert!(alice.attachments().unwrap().iter().any(|attachment| {
-        attachment.content_id == content_id && attachment.state == MediaTransferState::Complete
+        attachment.content_id == content_id && attachment.state == MediaTransferState::Cancelled
     }));
 }
 
