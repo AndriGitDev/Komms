@@ -12,7 +12,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::session::{
     NetworkSettings, Session, UiBundle, UiContact, UiGroup, UiGroupMessage, UiHint, UiMessage,
-    UiSafetyNumber, UiStatus,
+    UiNoteMessage, UiSafetyNumber, UiStatus,
 };
 
 /// The one piece of managed state: the running session, if unlocked.
@@ -217,6 +217,18 @@ forward!(
 forward!(
     /// Queue a message; progress arrives as `node-event`s.
     send(peer: String, body: String) -> String, |s| s.send(peer, body)
+);
+forward!(
+    /// Stable reserved identity for the local note-to-self conversation.
+    note_to_self_id() -> String, |s| Ok(s.note_to_self_id())
+);
+forward!(
+    /// All sealed local-only note-to-self entries.
+    note_to_self_messages() -> Vec<UiNoteMessage>, |s| s.note_to_self_messages()
+);
+forward!(
+    /// Append one sealed local-only note.
+    send_note_to_self(body: String) -> String, |s| s.send_note_to_self(body)
 );
 forward!(
     /// Create a sender-key group from stored contacts.

@@ -29,6 +29,17 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content" />
 
+    <Button
+        android:id="@+id/main_note_to_self"
+        style="?attr/borderlessButtonStyle"
+        android:text="@string/note_to_self_title"
+        android:textAllCaps="false"
+        android:textAlignment="viewStart"
+        android:paddingHorizontal="16dp"
+        android:contentDescription="@string/note_to_self_local"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
     <TextView
         android:text="@string/main_contacts_heading"
         android:textStyle="bold"

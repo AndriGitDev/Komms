@@ -511,6 +511,27 @@ async fn handle_op(
                 .map_err(fail)?;
             Ok(json!({ "id": wire::hex_encode(&id) }))
         }
+        Op::NoteToSelfSend { body } => {
+            let id = node
+                .note_to_self_send(&body, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({
+                "conversation": kult_node::NOTE_TO_SELF_CONVERSATION_ID,
+                "id": wire::hex_encode(&id),
+            }))
+        }
+        Op::NoteToSelfMessages => {
+            let messages = node
+                .note_to_self_messages()
+                .map_err(fail)?
+                .iter()
+                .map(wire::note_message_json)
+                .collect::<Vec<_>>();
+            Ok(json!({
+                "conversation": kult_node::NOTE_TO_SELF_CONVERSATION_ID,
+                "messages": messages,
+            }))
+        }
         Op::GroupCreate { name, members } => {
             let members = members
                 .iter()

@@ -51,6 +51,11 @@ pub enum Command {
         /// Message body (will be padded and encrypted).
         body: Vec<u8>,
     },
+    /// Append text to the reserved device-local note-to-self conversation.
+    NoteToSelfSend {
+        /// UTF-8 note text; no envelope or delivery state is created.
+        body: String,
+    },
     /// Add (or replace) a contact from their encoded prekey bundle.
     AddContact {
         /// Local display name.
@@ -279,6 +284,15 @@ pub enum Event {
         body: Vec<u8>,
         /// Explicit content interpretation.
         content: ContentStatus,
+    },
+    /// Text was appended to the reserved local note-to-self conversation.
+    NoteToSelfMessageAdded {
+        /// Local note record id.
+        id: [u8; 16],
+        /// Local creation time (Unix seconds).
+        timestamp: u64,
+        /// UTF-8 note text.
+        body: String,
     },
     /// An unknown peer completed a handshake with us; a contact stub was
     /// created (unverified, no hints — the application fills those in).

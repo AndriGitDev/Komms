@@ -49,9 +49,11 @@ trade for this project.)
 ## 4. Backup & portability
 
 - **Encrypted backup file**: single-file export (identity + contacts + history +
-  local organization/drafts/preferences/icons + session-reset markers), sealed under a
-  key derived from a BIP-39-style mnemonic via Argon2id. `KKR3` adds the sealed local
-  metadata domain; older `KKR1` and `KKR2` files remain restorable. Restoring on a new
+  local organization/drafts/preferences/icons + note-to-self history +
+  session-reset markers), sealed under a key derived from a BIP-39-style
+  mnemonic via Argon2id. `KKR3` added the sealed local metadata domain and
+  `KKR4` adds sealed note-to-self history; older `KKR1`, `KKR2`, and `KKR3`
+  files remain restorable. Restoring on a new
   device resumes identity; sessions re-handshake (ratchet states are deliberately *not*
   portable, importing stale ratchet state is a correctness and security hazard). Format
   and mechanism: ADR-0011.

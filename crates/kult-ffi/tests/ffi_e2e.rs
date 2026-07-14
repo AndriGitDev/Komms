@@ -89,6 +89,45 @@ fn listen_addr(node: &KultNode) -> String {
 }
 
 #[test]
+fn note_to_self_via_ffi_only_is_local_and_durable() {
+    let directory = tempfile::tempdir().unwrap();
+    let recorder = Recorder::default();
+    let node = KultNode::start(
+        test_config(directory.path(), "notes"),
+        Box::new(recorder.clone()),
+    )
+    .expect("node starts");
+    assert_eq!(node.note_to_self_id(), "note_to_self");
+
+    let id = node
+        .send_note_to_self("remember the charging cable".to_owned())
+        .unwrap();
+    let event = recorder.wait("note-to-self event", |event| {
+        matches!(event, Event::NoteToSelfMessageAdded { id: event_id, .. } if *event_id == id)
+    });
+    assert!(matches!(
+        event,
+        Event::NoteToSelfMessageAdded { conversation, body, .. }
+            if conversation == "note_to_self" && body == "remember the charging cable"
+    ));
+    let history = node.note_to_self_messages().unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].conversation, "note_to_self");
+    assert_eq!(history[0].body, "remember the charging cable");
+    assert_eq!(node.status().unwrap().queued, 0);
+    assert_eq!(node.status().unwrap().contacts, 0);
+    node.stop();
+
+    let reopened = KultNode::start(
+        test_config(directory.path(), "notes"),
+        Box::new(Recorder::default()),
+    )
+    .expect("node reopens");
+    assert_eq!(reopened.note_to_self_messages().unwrap()[0].id, id);
+    reopened.stop();
+}
+
+#[test]
 fn two_nodes_message_via_ffi_only() {
     let dir = tempfile::tempdir().unwrap();
     let a_rec = Recorder::default();
@@ -250,6 +289,9 @@ fn backup_and_restore_via_ffi_only() {
     a_rec.wait("alice's delivered event", |e| {
         matches!(e, Event::DeliveryUpdated { id, state: DeliveryState::Delivered } if *id == msg_id)
     });
+    let note_id = alice
+        .send_note_to_self("survives the backup too".to_owned())
+        .unwrap();
 
     // Backup through the FFI: file appears, mnemonic comes back once, and
     // an existing file is never clobbered.
@@ -291,6 +333,10 @@ fn backup_and_restore_via_ffi_only() {
     let history = alice.messages_with(bob_peer.clone()).unwrap();
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].body, "before the backup");
+    let notes = alice.note_to_self_messages().unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].id, note_id);
+    assert_eq!(notes[0].conversation, "note_to_self");
 
     // The tick loop re-handshakes Bob: a *second* session establishment
     // for the same contact (the first was the original pairing).

@@ -84,6 +84,14 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
         setSupportActionBar(findViewById(R.id.main_toolbar))
 
+        findViewById<View>(R.id.main_note_to_self).setOnClickListener {
+            val conversation = NodeHolder.session?.noteToSelfId() ?: return@setOnClickListener
+            startActivity(
+                Intent(this, NoteToSelfActivity::class.java)
+                    .putExtra("conversation", conversation),
+            )
+        }
+
         val list = findViewById<RecyclerView>(R.id.main_contacts)
         list.layoutManager = LinearLayoutManager(this)
         list.adapter = contacts

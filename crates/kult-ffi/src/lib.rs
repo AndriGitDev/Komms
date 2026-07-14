@@ -320,6 +320,19 @@ pub struct Message {
     pub content_kind: ContentKind,
 }
 
+/// One message in the reserved device-local note-to-self conversation.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct NoteMessage {
+    /// Local note record id (hex).
+    pub id: String,
+    /// Stable reserved identity: `note_to_self`.
+    pub conversation: String,
+    /// Unix seconds when the note was added.
+    pub timestamp: u64,
+    /// UTF-8 note text.
+    pub body: String,
+}
+
 /// A sender-key group, excluding every secret and chain value.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct Group {
@@ -432,6 +445,17 @@ pub enum Event {
         /// Explicit content interpretation.
         content_kind: ContentKind,
     },
+    /// Text was appended to the reserved local note-to-self conversation.
+    NoteToSelfMessageAdded {
+        /// Stable reserved identity: `note_to_self`.
+        conversation: String,
+        /// Local note record id (hex).
+        id: String,
+        /// Local creation time (Unix seconds).
+        timestamp: u64,
+        /// UTF-8 note text.
+        body: String,
+    },
     /// An unknown peer completed a handshake with us; a contact stub was
     /// created (unverified, no hints — the application fills those in).
     ContactAdded {
@@ -510,6 +534,16 @@ impl Event {
                 timestamp,
                 body: render_event_body(&body, content),
                 content_kind: content_kind(content),
+            },
+            kult_node::Event::NoteToSelfMessageAdded {
+                id,
+                timestamp,
+                body,
+            } => Self::NoteToSelfMessageAdded {
+                conversation: kult_node::NOTE_TO_SELF_CONVERSATION_ID.to_owned(),
+                id: hex_encode(&id),
+                timestamp,
+                body,
             },
             kult_node::Event::ContactAdded { peer } => Self::ContactAdded {
                 peer: hex_encode(&peer),
@@ -687,6 +721,33 @@ impl KultNode {
             resp,
         })
         .map(|id| hex_encode(&id))
+    }
+
+    /// Stable identity shared by every shell for the one local note-to-self
+    /// conversation.
+    pub fn note_to_self_id(&self) -> String {
+        kult_node::NOTE_TO_SELF_CONVERSATION_ID.to_owned()
+    }
+
+    /// Append text to note-to-self. No delivery state or transport work is
+    /// created; the returned id names the durable local record.
+    pub fn send_note_to_self(&self, body: String) -> Result<String, FfiError> {
+        self.call(|resp| Msg::NoteToSelfSend { body, resp })
+            .map(|id| hex_encode(&id))
+    }
+
+    /// Full local note-to-self text history in insertion order.
+    pub fn note_to_self_messages(&self) -> Result<Vec<NoteMessage>, FfiError> {
+        Ok(self
+            .call(|resp| Msg::NoteToSelfMessages { resp })?
+            .into_iter()
+            .map(|message| NoteMessage {
+                id: hex_encode(&message.id),
+                conversation: kult_node::NOTE_TO_SELF_CONVERSATION_ID.to_owned(),
+                timestamp: message.timestamp,
+                body: message.body,
+            })
+            .collect())
     }
 
     /// Create a sender-key group with stored contacts. Returns its id (hex).

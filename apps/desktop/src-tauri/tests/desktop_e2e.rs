@@ -316,6 +316,44 @@ fn desktop_group_ux_create_roster_message_and_partial_delivery() {
 }
 
 #[test]
+fn note_to_self_is_local_sealed_and_durable() {
+    let dir = tempfile::tempdir().unwrap();
+    let events = Events::default();
+    let session = open(dir.path(), "notes", &events);
+
+    assert_eq!(session.note_to_self_id(), "note_to_self");
+    let id = session
+        .send_note_to_self("remember the glacier map".to_owned())
+        .unwrap();
+    let added = events.wait("local note event", |event| {
+        matches!(event, UiEvent::NoteToSelfMessageAdded { id: event_id, .. } if *event_id == id)
+    });
+    match added {
+        UiEvent::NoteToSelfMessageAdded {
+            conversation, body, ..
+        } => {
+            assert_eq!(conversation, "note_to_self");
+            assert_eq!(body, "remember the glacier map");
+        }
+        other => panic!("wrong event: {other:?}"),
+    }
+    let status = session.status().unwrap();
+    assert_eq!((status.queued, status.contacts), (0, 0));
+    assert_eq!(
+        session.note_to_self_messages().unwrap()[0].body,
+        "remember the glacier map"
+    );
+    session.stop();
+
+    let session = open(dir.path(), "notes", &Events::default());
+    let history = session.note_to_self_messages().unwrap();
+    assert_eq!(history[0].conversation, "note_to_self");
+    assert_eq!(history[0].body, "remember the glacier map");
+    assert_eq!(session.status().unwrap().queued, 0);
+    session.stop();
+}
+
+#[test]
 fn backup_mnemonic_restore_flow() {
     let dir = tempfile::tempdir().unwrap();
     let a_ev = Events::default();
@@ -346,6 +384,9 @@ fn backup_mnemonic_restore_flow() {
         "delivered",
         |e| matches!(e, UiEvent::DeliveryUpdated { id, state: "delivered" } if *id == msg_id),
     );
+    alice
+        .send_note_to_self("packed in the backup".to_owned())
+        .unwrap();
 
     // The backup dialog: mnemonic comes back exactly once, 24 words; an
     // existing file is refused, not clobbered.
@@ -386,6 +427,10 @@ fn backup_mnemonic_restore_flow() {
     let history = alice.messages(bob_peer.clone()).unwrap();
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].body, "before the backup");
+    assert_eq!(
+        alice.note_to_self_messages().unwrap()[0].body,
+        "packed in the backup"
+    );
 
     // The restored node re-handshakes automatically; after Bob learns the
     // new address, messaging resumes in both directions.

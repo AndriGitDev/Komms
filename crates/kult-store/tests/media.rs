@@ -1,5 +1,5 @@
 //! ADR-0015 media-store acceptance: sealed metadata, atomic chunk files,
-//! restart reconciliation, quota enforcement, and KKR3 exclusion.
+//! restart reconciliation, quota enforcement, and KKR4 exclusion.
 
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -215,7 +215,7 @@ fn quotas_and_protocol_object_bounds_fail_before_writes() {
 }
 
 #[test]
-fn kkr3_carries_manifest_but_excludes_media_state_and_files() {
+fn kkr4_carries_manifest_but_excludes_media_state_and_files() {
     let mut rng = StdRng::seed_from_u64(0x18);
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("old.db");

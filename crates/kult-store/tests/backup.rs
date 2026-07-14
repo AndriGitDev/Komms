@@ -14,7 +14,7 @@ use kult_protocol::{pad, CapabilityControl, FormatCapabilities};
 use kult_store::{
     ContactRecord, ConversationId, DeliveryState, Direction, DraftRecord, GroupDelivery,
     GroupMember, GroupMessageRecord, GroupRecord, LocalMetadataRecord, MessageRecord,
-    PendingAnnounce, Store, StoreError,
+    NoteMessageRecord, PendingAnnounce, Store, StoreError,
 };
 
 const NOW: u64 = 1_800_000_000;
@@ -178,9 +178,15 @@ fn backup_round_trip() {
         updated_at: NOW + 50,
     });
     store.put_local_metadata(&local_metadata, &mut rng).unwrap();
+    let note_message = NoteMessageRecord {
+        id: [10; 16],
+        timestamp: NOW + 60,
+        body: "backed up note to self".to_owned(),
+    };
+    store.put_note_message(&note_message, &mut rng).unwrap();
 
     let (file, mnemonic) = store.export_backup(NOW + 100, &mut rng).unwrap();
-    assert_eq!(&file[..4], b"KKR3");
+    assert_eq!(&file[..4], b"KKR4");
     assert!(mnemonic_to_entropy(&mnemonic).is_ok(), "24 valid words");
     let old_group = store.groups().unwrap().remove(0);
     drop(store); // the old device is gone
@@ -207,6 +213,7 @@ fn backup_round_trip() {
     // Prekeys are never restored — the node layer mints fresh ones.
     assert!(restored.get_prekeys().unwrap().is_none());
     assert_eq!(restored.local_metadata().unwrap(), vec![local_metadata]);
+    assert_eq!(restored.note_messages().unwrap(), vec![note_message]);
 
     // The group's identity survives; its chains do not (ADR-0012): a fresh
     // sending chain, announces owed to the whole roster, no receiving
@@ -302,6 +309,7 @@ fn legacy_v1_backup_restores() {
     assert_eq!(restored.messages_with(&peer).unwrap(), messages);
     assert_eq!(restored.reset_markers().unwrap(), reset_peers);
     assert!(restored.groups().unwrap().is_empty());
+    assert!(restored.note_messages().unwrap().is_empty());
 }
 
 /// A pre-local-metadata `KKR2` file still restores with empty F5 state.
@@ -368,6 +376,61 @@ fn legacy_v2_backup_restores() {
     assert_eq!(restored.reset_markers().unwrap(), reset_peers);
     assert!(restored.groups().unwrap().is_empty());
     assert!(restored.local_metadata().unwrap().is_empty());
+    assert!(restored.note_messages().unwrap().is_empty());
+}
+
+/// A pre-note-to-self `KKR3` file restores its F5 state with empty note history.
+#[test]
+fn legacy_v3_backup_restores() {
+    let mut rng = StdRng::seed_from_u64(15);
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::generate(&mut rng);
+    let contacts = Vec::<ContactRecord>::new();
+    let messages = Vec::<MessageRecord>::new();
+    let reset_peers = Vec::<[u8; 32]>::new();
+    let groups = Vec::<()>::new();
+    let group_messages = Vec::<GroupMessageRecord>::new();
+    let local_metadata = vec![LocalMetadataRecord::Draft(DraftRecord {
+        conversation: ConversationId::NoteToSelf,
+        content: b"old KKR3 draft".to_vec(),
+        updated_at: NOW,
+    })];
+    let payload = postcard::to_allocvec(&(
+        NOW,
+        identity.to_bytes().to_vec(),
+        &contacts,
+        &messages,
+        &reset_peers,
+        &groups,
+        &group_messages,
+        &local_metadata,
+    ))
+    .unwrap();
+
+    let entropy = [0x44u8; 32];
+    let mnemonic = kult_crypto::mnemonic_from_entropy(&entropy);
+    let salt = [9u8; 16];
+    let kek = kult_crypto::derive_kek(&entropy, &salt, TEST_KDF).unwrap();
+    let key = kult_crypto::StorageKey::from_bytes(*kek);
+    let mut file = Vec::new();
+    file.extend_from_slice(b"KKR3");
+    file.extend_from_slice(&TEST_KDF.m_cost_kib.to_le_bytes());
+    file.extend_from_slice(&TEST_KDF.t_cost.to_le_bytes());
+    file.extend_from_slice(&TEST_KDF.p_cost.to_le_bytes());
+    file.extend_from_slice(&salt);
+    file.extend_from_slice(&key.seal(b"KK-backup-v1", &payload, &mut rng));
+
+    let restored = Store::restore_backup(
+        &dir.path().join("v3.db"),
+        &file,
+        &mnemonic,
+        b"new-pass",
+        TEST_KDF,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(restored.local_metadata().unwrap(), local_metadata);
+    assert!(restored.note_messages().unwrap().is_empty());
 }
 
 #[test]
@@ -444,7 +507,7 @@ fn restore_fails_closed() {
         Err(StoreError::NotABackup)
     ));
     let mut mislabeled = file.clone();
-    mislabeled[..4].copy_from_slice(b"KKR2");
+    mislabeled[..4].copy_from_slice(b"KKR3");
     assert!(matches!(
         Store::restore_backup(
             &dir.path().join("d.db"),

@@ -80,8 +80,9 @@ cargo run --example sneakernet_demo
 > Membership is creator-managed with a monotonic generation counter and
 > announce-until-acked distribution (a member served late still reads
 > everything since they were entitled; removal re-keys and rotates every
-> remaining chain); backups are now `KKR3` (older `KKR1`/`KKR2` files still
-> restore) and carry group identities, history, and sealed local metadata but
+> remaining chain); backups are now `KKR4` (older `KKR1`/`KKR2`/`KKR3` files
+> still restore) and carry group identities, history, sealed local metadata,
+> and sealed note-to-self history but
 > never chains: a
 > restored node announces a fresh chain and co-members redistribute
 > theirs on the re-handshake, both directions pinned by the `kult-node`
@@ -89,7 +90,10 @@ cargo run --example sneakernet_demo
 > shipped too: `kultd` RPC, the `kult` CLI, and `kult-ffi` expose group
 > records, history, events, membership operations, and honest per-member
 > delivery states, pinned by RPC and bindings e2e tests. Desktop, Android,
-> and iOS group UX are shipped with truthful partial-delivery rows. The shared
+> and iOS group UX are shipped with truthful partial-delivery rows. The local
+> note-to-self conversation is shipped through storage, node, RPC/CLI, UniFFI,
+> desktop, Android, and iOS under the same reserved `note_to_self` identity; it
+> never creates envelopes, queue entries, receipts, or transport work. The shared
 > versioned message-content foundation is shipped too
 > ([ADR-0014](docs/adr/0014-versioned-message-content.md), Accepted): bounded
 > encrypted `Text` frames negotiate conservatively while legacy text remains

@@ -25,6 +25,7 @@ use kult_protocol::{CapabilityControl, Envelope};
 mod backup;
 mod local_metadata;
 mod media;
+mod note;
 
 pub use backup::BACKUP_MAGIC;
 pub use local_metadata::{
@@ -38,6 +39,7 @@ pub use media::{
     MediaTransferRecord, MediaTransferState, MediaUsage, DEFAULT_MEDIA_STORE_QUOTA,
     MAX_MEDIA_STORE_QUOTA,
 };
+pub use note::{NoteMessageRecord, MAX_NOTE_TEXT_BYTES, NOTE_TO_SELF_CONVERSATION_ID};
 
 /// Failures surfaced by the store.
 #[derive(Debug)]
@@ -67,6 +69,8 @@ pub enum StoreError {
     MediaState,
     /// A local metadata record exceeds its documented resource bound.
     LocalMetadataBounds,
+    /// A note-to-self text record is empty or exceeds its documented bound.
+    NoteBounds,
 }
 
 impl std::fmt::Display for StoreError {
@@ -83,6 +87,7 @@ impl std::fmt::Display for StoreError {
             Self::LowStorage => f.write_str("insufficient reserved filesystem space"),
             Self::MediaState => f.write_str("invalid media transfer state"),
             Self::LocalMetadataBounds => f.write_str("local metadata bounds exceeded"),
+            Self::NoteBounds => f.write_str("note-to-self text bounds exceeded"),
         }
     }
 }
@@ -329,6 +334,7 @@ CREATE TABLE IF NOT EXISTS group_msgs   (rowid_ INTEGER PRIMARY KEY AUTOINCREMEN
 CREATE TABLE IF NOT EXISTS media_transfers (id BLOB PRIMARY KEY, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS media_objects   (id BLOB PRIMARY KEY, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS local_metadata  (rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS note_messages   (rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
 ";
 
 /// An open, unlocked Komms store.
@@ -347,6 +353,7 @@ pub struct Store {
     k_groups: StorageKey,
     k_media: StorageKey,
     k_local_metadata: StorageKey,
+    k_notes: StorageKey,
     media_dir: PathBuf,
     media_limits: MediaLimits,
 }
@@ -439,6 +446,7 @@ impl Store {
             k_groups: master.derive(b"KK-store-groups"),
             k_media: master.derive(b"KK-store-media"),
             k_local_metadata: master.derive(b"KK-store-local-metadata"),
+            k_notes: master.derive(b"KK-store-notes"),
             media_dir,
             media_limits: MediaLimits::default(),
             conn,

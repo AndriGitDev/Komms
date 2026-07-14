@@ -154,6 +154,31 @@ class SessionE2eTest {
     }
 
     @Test
+    fun `note to self is local sealed and durable`() {
+        val dir = tempDir()
+        val events = Events()
+        var session = open(dir, "notes", events)
+
+        assertEquals("note_to_self", session.noteToSelfId())
+        val id = session.sendNoteToSelf("remember the glacier map")
+        val added = events.wait("local note event") {
+            (it as? Event.NoteToSelfMessageAdded)?.takeIf { event -> event.id == id }
+        }
+        assertEquals(session.noteToSelfId(), added.conversation)
+        assertEquals("remember the glacier map", added.body)
+        assertEquals(0uL, session.status().queued)
+        assertEquals(0uL, session.status().contacts)
+        assertEquals("remember the glacier map", session.noteToSelfMessages().single().body)
+
+        session.stop()
+        session = open(dir, "notes", Events())
+        assertEquals("note_to_self", session.noteToSelfMessages().single().conversation)
+        assertEquals("remember the glacier map", session.noteToSelfMessages().single().body)
+        assertEquals(0uL, session.status().queued)
+        session.stop()
+    }
+
+    @Test
     fun `group ux creates manages messages and shows partial delivery`() {
         val dir = tempDir()
         val aEv = Events()
@@ -266,6 +291,7 @@ class SessionE2eTest {
             (it as? Event.DeliveryUpdated)
                 ?.takeIf { e -> e.id == msgId && e.state == DeliveryState.DELIVERED }
         }
+        alice.sendNoteToSelf("packed in the backup")
 
         // The backup dialog: mnemonic comes back exactly once, 24 words;
         // an existing file is refused, not clobbered.
@@ -297,6 +323,7 @@ class SessionE2eTest {
         val history = alice.messages(bobPeer)
         assertEquals(1, history.size)
         assertEquals("before the backup", history[0].body)
+        assertEquals("packed in the backup", alice.noteToSelfMessages().single().body)
 
         // The restored node re-handshakes automatically; after Bob learns
         // the new address, messaging resumes in both directions.

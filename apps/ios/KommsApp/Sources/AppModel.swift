@@ -16,6 +16,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var histories: [String: [Message]] = [:] // peer → history
     @Published private(set) var groups: [Group] = []
     @Published private(set) var groupHistories: [String: [GroupMessage]] = [:]
+    @Published private(set) var noteHistory: [NoteMessage] = []
     @Published private(set) var status: Status?
     /// Surfaced node happenings: key changes, held-for-faster-link verdicts.
     @Published var notices: [String] = []
@@ -96,6 +97,7 @@ final class AppModel: ObservableObject {
         histories = [:]
         groups = []
         groupHistories = [:]
+        noteHistory = []
         status = nil
         notices = []
     }
@@ -120,7 +122,8 @@ final class AppModel: ObservableObject {
 
     private func handle(_ event: Event) {
         switch event {
-        case .deliveryUpdated, .messageReceived,
+        case .deliveryUpdated, .messageReceived, .noteToSelfMessageAdded,
+             .carrierCapabilityChanged,
              .groupUpdated, .groupMessageReceived, .groupDeliveryUpdated:
             Task { await refresh() }
         case .contactAdded:
@@ -148,7 +151,8 @@ final class AppModel: ObservableObject {
         let followedGroups = Array(groupHistories.keys)
         do {
             let snapshot = try await run { () -> (
-                Status, [Contact], [String: [Message]], [Group], [String: [GroupMessage]]
+                Status, [Contact], [String: [Message]], [Group], [String: [GroupMessage]],
+                [NoteMessage]
             ) in
                 var fresh: [String: [Message]] = [:]
                 for peer in peers {
@@ -162,13 +166,14 @@ final class AppModel: ObservableObject {
                 }
                 return (
                     try session.status(), try session.contacts(), fresh,
-                    liveGroups, freshGroups)
+                    liveGroups, freshGroups, try session.noteToSelfMessages())
             }
             status = snapshot.0
             contacts = snapshot.1
             histories.merge(snapshot.2) { _, new in new }
             groups = snapshot.3
             groupHistories.merge(snapshot.4) { _, new in new }
+            noteHistory = snapshot.5
         } catch {
             // A stopped handle answers honestly; the gate is already up.
         }
@@ -188,11 +193,20 @@ final class AppModel: ObservableObject {
         groupHistories[group] = history
     }
 
+    /// Stable identity used by the local note-to-self route in every shell.
+    func noteToSelfId() -> String { session?.noteToSelfId() ?? "" }
+
     // MARK: commands (all forwarded verbatim to the session layer)
 
     func send(peer: String, body: String) async throws {
         guard let session else { return }
         _ = try await run { try session.send(peer: peer, body: body) }
+        await refresh()
+    }
+
+    func sendNoteToSelf(body: String) async throws {
+        guard let session else { return }
+        _ = try await run { try session.sendNoteToSelf(body: body) }
         await refresh()
     }
 
