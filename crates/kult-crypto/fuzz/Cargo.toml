@@ -40,5 +40,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "attachment_chunk_open"
+path = "fuzz_targets/attachment_chunk_open.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

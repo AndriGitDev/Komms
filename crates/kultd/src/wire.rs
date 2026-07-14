@@ -316,6 +316,9 @@ fn render_stored_content(bytes: &[u8]) -> (String, &'static str) {
     match kult_protocol::decode_content(bytes) {
         kult_protocol::DecodedContent::LegacyText(text) => (text.to_owned(), "legacy_text"),
         kult_protocol::DecodedContent::Text { text, .. } => (text.to_owned(), "text"),
+        kult_protocol::DecodedContent::Attachment { .. } => {
+            (UNSUPPORTED_MESSAGE.to_owned(), "unsupported")
+        }
         kult_protocol::DecodedContent::Unsupported { .. } => {
             (UNSUPPORTED_MESSAGE.to_owned(), "unsupported")
         }
@@ -394,5 +397,28 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(r.op, Op::AddContact { .. }));
+    }
+
+    #[test]
+    fn attachment_foundation_never_exposes_manifest_metadata() {
+        let manifest = kult_protocol::AttachmentManifest {
+            attachment_key: [0x41; 32],
+            primary: kult_protocol::AttachmentObject {
+                role: kult_protocol::AttachmentRole::Primary,
+                object_id: [0x42; 16],
+                total_len: 1,
+                chunk_data_len: kult_protocol::ATTACHMENT_CHUNK_DATA_LEN,
+                chunk_count: 1,
+                content_hash: [0x43; 32],
+                media_type: "image/png",
+                filename: Some("private.png"),
+            },
+            preview: None,
+        };
+        let frame = kult_protocol::encode_attachment([0x44; 16], &manifest).unwrap();
+        let (body, kind) = render_stored_content(&frame);
+        assert_eq!(body, UNSUPPORTED_MESSAGE);
+        assert_eq!(kind, "unsupported");
+        assert!(!body.contains("private.png"));
     }
 }

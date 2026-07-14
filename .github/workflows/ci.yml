@@ -27,6 +27,8 @@ jobs:
         run: cargo test --workspace --all-features
       - name: no_std build (kult-crypto)
         run: cargo build -p kult-crypto --no-default-features
+      - name: no_std build (kult-protocol)
+        run: cargo build -p kult-protocol --no-default-features
 
   desktop:
     name: desktop app (fmt, clippy, tests)
@@ -80,13 +82,13 @@ jobs:
       - name: fuzz kult-crypto targets
         working-directory: crates/kult-crypto
         run: |
-          for t in envelope_decode handshake_decode bundle_decode mnemonic_decode; do
+          for t in envelope_decode handshake_decode bundle_decode mnemonic_decode attachment_chunk_open; do
             cargo +nightly fuzz run "$t" -- -max_total_time=60
           done
       - name: fuzz kult-protocol targets
         working-directory: crates/kult-protocol
         run: |
-          for t in protocol_envelope_decode bundle_import reassembler_insert content_decode capability_decode; do
+          for t in protocol_envelope_decode bundle_import reassembler_insert content_decode capability_decode attachment_manifest_decode attachment_bulk_decode attachment_ranges; do
             cargo +nightly fuzz run "$t" -- -max_total_time=60
           done
 

@@ -21,6 +21,7 @@
 extern crate alloc;
 
 mod anonbox;
+mod attachment;
 mod error;
 mod fingerprint;
 mod group;
@@ -35,6 +36,11 @@ mod util;
 mod wordlist;
 
 pub use anonbox::{open_anonymous, seal_anonymous};
+pub use attachment::{
+    attachment_pairwise_scope_id, open_attachment_chunk, seal_attachment_chunk,
+    AttachmentChunkContext, AttachmentChunkScope, ATTACHMENT_CHUNK_DATA_LEN,
+    ATTACHMENT_CHUNK_PLAINTEXT_LEN, ATTACHMENT_SEALED_CHUNK_LEN,
+};
 pub use error::CryptoError;
 pub use fingerprint::{safety_number, SafetyNumber};
 pub use group::{

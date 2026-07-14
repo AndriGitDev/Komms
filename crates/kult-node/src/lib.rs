@@ -47,9 +47,11 @@ use kult_protocol::{
     decode_content, delivery_token, encode_text, epoch_day, fragment, intro_token,
     is_capability_control, pad, unpad, CapabilityControl, DecodedContent, Envelope, EnvelopeKind,
     FormatCapabilities, MailboxKey, Reassembler, ReceiptPayload, CONTENT_FORMAT_V1,
-    CONTENT_KIND_TEXT, ENVELOPE_HEADER_LEN, REASSEMBLY_WINDOW_SECS,
+    CONTENT_KIND_ATTACHMENT, CONTENT_KIND_TEXT, ENVELOPE_HEADER_LEN, REASSEMBLY_WINDOW_SECS,
 };
-use kult_store::{ContactRecord, DeliveryState, Direction, MessageRecord, QueueItem, Store};
+use kult_store::{
+    ContactRecord, DeliveryState, Direction, MessageRecord, QueueClass, QueueItem, Store,
+};
 use kult_transport::{CostClass, DeliveryHint, Discovery, Reachability, Transport};
 
 mod api;
@@ -755,6 +757,7 @@ impl Node {
                 peer: *peer,
                 msg_id: Some(id),
                 group_msg_id: None,
+                class: QueueClass::Normal,
                 envelope,
             },
             rng,
@@ -959,6 +962,7 @@ impl Node {
                     peer,
                     msg_id: None,
                     group_msg_id: None,
+                    class: QueueClass::Normal,
                     envelope,
                 },
                 rng,
@@ -1184,12 +1188,14 @@ impl Node {
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
         let decoded = decode_content(&body);
-        if let DecodedContent::Text { id, .. } = decoded {
+        if let DecodedContent::Text { id, .. } | DecodedContent::Attachment { id, .. } = decoded {
             let duplicate = self.store.messages_with(&peer)?.iter().any(|record| {
                 record.direction == Direction::Inbound
                     && matches!(
                         decode_content(&record.body),
-                        DecodedContent::Text { id: stored_id, .. } if stored_id == id
+                        DecodedContent::Text { id: stored_id, .. }
+                            | DecodedContent::Attachment { id: stored_id, .. }
+                            if stored_id == id
                     )
             });
             if duplicate {
@@ -1205,6 +1211,16 @@ impl Node {
             DecodedContent::Text { id, text } => {
                 (id, text.as_bytes().to_vec(), ContentStatus::Text { id })
             }
+            // F3 foundation decodes and retains the manifest but does not
+            // activate transfer state or surface attachment APIs yet.
+            DecodedContent::Attachment { id, .. } => (
+                id,
+                Vec::new(),
+                ContentStatus::Unsupported {
+                    format_version: Some(CONTENT_FORMAT_V1),
+                    kind: Some(CONTENT_KIND_ATTACHMENT),
+                },
+            ),
             DecodedContent::Unsupported {
                 format_version,
                 kind,
@@ -1301,6 +1317,7 @@ impl Node {
                 peer: *peer,
                 msg_id: None,
                 group_msg_id: None,
+                class: QueueClass::Normal,
                 envelope: Envelope::new(EnvelopeKind::Receipt, token, msg.encode()),
             },
             rng,
@@ -1337,6 +1354,7 @@ impl Node {
                         peer: *peer,
                         msg_id: None,
                         group_msg_id: None,
+                        class: QueueClass::Normal,
                         envelope: Envelope::new(EnvelopeKind::Fragment, cached.token, body.clone()),
                     },
                     rng,
@@ -1457,6 +1475,7 @@ impl Node {
                 peer: *peer,
                 msg_id: None,
                 group_msg_id: None,
+                class: QueueClass::Normal,
                 envelope: Envelope::new(EnvelopeKind::Receipt, token, msg.encode()),
             },
             rng,
