@@ -291,8 +291,8 @@ timer until the ordinary encrypted receipt acknowledges it, so an envelope lost
 on a lossy carrier never leaves a member permanently deaf to a sender. Removal
 re-keys the group secret and rotates every remaining chain (the removed member
 gets a notice that deliberately carries nothing else); rotation also triggers
-on leave, on a message-count threshold (PCS), and on restore. Backups (now
-`KKR2`; `KKR1` files still restore) carry group identities and history but
+on leave, on a message-count threshold (PCS), and on restore. Backups (`KKR3`;
+older `KKR1`/`KKR2` files still restore) carry group identities and history but
 never chains: a restored node announces a fresh chain, and co-members
 redistribute theirs on the re-handshake, both directions pinned by the
 `kult-node` e2e suite (`groups_e2e.rs`) alongside encrypt-once-on-the-wire,
@@ -315,12 +315,18 @@ The Attachment core proposed by
 [ADR-0015](adr/0015-encrypted-attachment-pipeline.md) is implemented: bounded
 manifests and bulk records, independently sealed resumable chunks, explicit
 consent/cancel/reject state, pairwise and encrypt-once group transfer,
-quota-bound sealed-file storage, KKR2 media exclusion, streamed export, and a
+quota-bound sealed-file storage, KKR3 media exclusion, streamed export, and a
 hard no-airtime bulk class. The F4 application-facing carrier verdict is now
 shared across the node scheduler, RPC/CLI, and UniFFI as an expiring snapshot
 with change events; attachment activation consumes that same verdict. Remaining
 F3 work is attachment RPC/UniFFI plus shell file-picker, progress, preview,
 background-transfer, and protected-export integration.
+
+The F5 sealed local-metadata foundation is shipped in `kult-store`: typed and
+bounded conversation, folder, pin, label, draft, preference, and custom-icon
+records use an isolated storage key and reveal no local organization keys in a
+copied database. User-authored metadata is included in `KKR3`; note-to-self and
+the individual organization/theme/icon shell experiences remain separate work.
 
 **Acceptance**: audit findings triaged with public report; reproducible-build attestation
 for all release artifacts.

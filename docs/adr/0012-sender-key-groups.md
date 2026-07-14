@@ -84,7 +84,8 @@ and lost every receiving chain). On removal the creator also mints a fresh
 group secret; the previous one is kept for header-decrypting in-flight
 traffic, one generation deep.
 
-**Backup** (format `KKR2`; `KKR1` files still restore): carries each group's
+**Backup** (introduced in format `KKR2`; current `KKR3` and older `KKR1`/`KKR2`
+files restore): carries each group's
 identity (id, name, creator, roster, secret, generation) and the group
 message history, but never chains, mirroring ADR-0011: a restored node mints
 a fresh sending chain and announces it, and co-members redistribute theirs

@@ -36,6 +36,12 @@ indistinguishable: uniform AEAD failure, no oracle. The wordlist and codec
 live in-tree in `kult-crypto` (`no_std`, KAT-tested against the reference
 vectors); no new dependency.
 
+The same header and AEAD construction is versioned by magic as payload domains
+grow: `KKR2` added sender-key group identities/history, and `KKR3` adds F5
+user-authored local metadata (organization, drafts, preferences, and custom
+icons). Restore remains backward-compatible with both earlier payload shapes;
+live cryptographic/session state and re-creatable caches remain excluded.
+
 **Contents**: identity, contacts (bundles, hints, petnames, verification
 state), full message history, and the peers holding a live session at export
 time, recorded as **session-reset markers**. Excluded on purpose: ratchet

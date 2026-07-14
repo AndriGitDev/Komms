@@ -33,6 +33,7 @@ HKDF per-domain keys.
 | `prekeys` | Own signed/PQ/one-time prekey secrets | One-time prekeys deleted on use |
 | `pending` | Inbound envelopes not yet readable (arrived before their session) | Ciphertext only; TTL-bounded |
 | `media` | Attachment blobs, chunked | Each chunk sealed; keys stored in `messages` |
+| `local_metadata` | Conversation types, folders, pins, labels, drafts, UI preferences, custom icons | Local-only; keys and relationships are inside sealed blobs |
 
 Every blob is individually AEAD-sealed (XChaCha20-Poly1305, random 24-byte nonce, table
 name + row purpose as associated data), a copied database file leaks only row counts and
@@ -48,10 +49,12 @@ trade for this project.)
 ## 4. Backup & portability
 
 - **Encrypted backup file**: single-file export (identity + contacts + history +
-  session-reset markers), sealed under a key derived from a BIP-39-style mnemonic via
-  Argon2id. Restoring on a new device resumes identity; sessions re-handshake (ratchet
-  states are deliberately *not* portable, importing stale ratchet state is a
-  correctness and security hazard). Format and mechanism: ADR-0011.
+  local organization/drafts/preferences/icons + session-reset markers), sealed under a
+  key derived from a BIP-39-style mnemonic via Argon2id. `KKR3` adds the sealed local
+  metadata domain; older `KKR1` and `KKR2` files remain restorable. Restoring on a new
+  device resumes identity; sessions re-handshake (ratchet states are deliberately *not*
+  portable, importing stale ratchet state is a correctness and security hazard). Format
+  and mechanism: ADR-0011.
 - **Plaintext export**: JSON-lines + media directory, clearly warned as plaintext.
   The user's data is the user's.
 - **Panic wipe** (roadmap M6): duress passphrase unlocking a decoy profile while

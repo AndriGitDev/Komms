@@ -80,8 +80,9 @@ cargo run --example sneakernet_demo
 > Membership is creator-managed with a monotonic generation counter and
 > announce-until-acked distribution (a member served late still reads
 > everything since they were entitled; removal re-keys and rotates every
-> remaining chain); backups are now `KKR2` (older `KKR1` files still
-> restore) and carry group identities and history but never chains: a
+> remaining chain); backups are now `KKR3` (older `KKR1`/`KKR2` files still
+> restore) and carry group identities, history, and sealed local metadata but
+> never chains: a
 > restored node announces a fresh chain and co-members redistribute
 > theirs on the re-handshake, both directions pinned by the `kult-node`
 > group e2e suite (`groups_e2e.rs`). The shared group front door is now
@@ -93,6 +94,8 @@ cargo run --example sneakernet_demo
 > ([ADR-0014](docs/adr/0014-versioned-message-content.md), Accepted): bounded
 > encrypted `Text` frames negotiate conservatively while legacy text remains
 > permanently readable and unknown authenticated content stays durable.
+> The F5 local-metadata foundation is shipped as well: typed folders, pins,
+> labels, drafts, preferences, and custom icons remain sealed and strictly local.
 > Remaining per the [roadmap](docs/08-roadmap.md): the physical two-radio bench (M4); a
 > hands-on device pass of the iOS app layer (M5); the wider M6 hardening list;
 > and the external security audit.

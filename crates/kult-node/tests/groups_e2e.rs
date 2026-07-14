@@ -400,7 +400,7 @@ async fn membership_changes_rotate_and_exclude() {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Backup/restore (KKR2): groups and history ride the backup; the
+// 3. Backup/restore (KKR3): groups and history ride the backup; the
 //    restored node re-handshakes, announces a fresh chain, co-members
 //    redistribute theirs, and messaging resumes in both directions.
 // ---------------------------------------------------------------------------
