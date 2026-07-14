@@ -17,6 +17,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var groups: [Group] = []
     @Published private(set) var groupHistories: [String: [GroupMessage]] = [:]
     @Published private(set) var scheduledMessages: [ScheduledMessage] = []
+    @Published private(set) var attachments: [Attachment] = []
     @Published private(set) var noteHistory: [NoteMessage] = []
     @Published private(set) var status: Status?
     /// Surfaced node happenings: key changes, held-for-faster-link verdicts.
@@ -99,6 +100,7 @@ final class AppModel: ObservableObject {
         groups = []
         groupHistories = [:]
         scheduledMessages = []
+        attachments = []
         noteHistory = []
         status = nil
         notices = []
@@ -157,7 +159,7 @@ final class AppModel: ObservableObject {
         do {
             let snapshot = try await run { () -> (
                 Status, [Contact], [String: [Message]], [Group], [String: [GroupMessage]],
-                [ScheduledMessage], [NoteMessage]
+                [ScheduledMessage], [Attachment], [NoteMessage]
             ) in
                 var fresh: [String: [Message]] = [:]
                 for peer in peers {
@@ -172,7 +174,7 @@ final class AppModel: ObservableObject {
                 return (
                     try session.status(), try session.contacts(), fresh,
                     liveGroups, freshGroups, try session.scheduledMessages(),
-                    try session.noteToSelfMessages())
+                    try session.attachments(), try session.noteToSelfMessages())
             }
             status = snapshot.0
             contacts = snapshot.1
@@ -180,7 +182,8 @@ final class AppModel: ObservableObject {
             groups = snapshot.3
             groupHistories.merge(snapshot.4) { _, new in new }
             scheduledMessages = snapshot.5
-            noteHistory = snapshot.6
+            attachments = snapshot.6
+            noteHistory = snapshot.7
         } catch {
             // A stopped handle answers honestly; the gate is already up.
         }
@@ -208,6 +211,83 @@ final class AppModel: ObservableObject {
     func send(peer: String, body: String) async throws {
         guard let session else { return }
         _ = try await run { try session.send(peer: peer, body: body) }
+        await refresh()
+    }
+
+    func sendAttachment(
+        peer: String,
+        source: URL,
+        mediaType: String,
+        filename: String?
+    ) async throws {
+        guard let session else { return }
+        let staged = try await run { try stageAttachment(source) }
+        defer { try? FileManager.default.removeItem(at: staged) }
+        _ = try await run {
+            try session.sendAttachment(
+                peer: peer, path: staged, mediaType: mediaType, filename: filename)
+        }
+        await refresh()
+    }
+
+    func sendGroupAttachment(
+        group: String,
+        source: URL,
+        mediaType: String,
+        filename: String?
+    ) async throws {
+        guard let session else { return }
+        let staged = try await run { try stageAttachment(source) }
+        defer { try? FileManager.default.removeItem(at: staged) }
+        _ = try await run {
+            try session.sendGroupAttachment(
+                group: group, path: staged, mediaType: mediaType, filename: filename)
+        }
+        await refresh()
+    }
+
+    func acceptAttachment(transfer: String) async throws {
+        try await attachmentAction { try $0.acceptAttachment(transfer: transfer) }
+    }
+
+    func rejectAttachment(transfer: String) async throws {
+        try await attachmentAction { try $0.rejectAttachment(transfer: transfer) }
+    }
+
+    func cancelAttachment(transfer: String) async throws {
+        try await attachmentAction { try $0.cancelAttachment(transfer: transfer) }
+    }
+
+    func pauseAttachment(transfer: String) async throws {
+        try await attachmentAction { try $0.pauseAttachment(transfer: transfer) }
+    }
+
+    func resumeAttachment(transfer: String) async throws {
+        try await attachmentAction { try $0.resumeAttachment(transfer: transfer) }
+    }
+
+    /// Materialize a completed primary object at a unique app-private URL.
+    /// The document picker exports a copy, then the view deletes this source.
+    func prepareAttachmentExport(transfer: String, filename: String?) async throws -> URL {
+        guard let session else { throw InputError("node is locked") }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("komms-export-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let basename = URL(fileURLWithPath: filename ?? "attachment").lastPathComponent
+        let destination = directory.appendingPathComponent(
+            basename.isEmpty ? "attachment" : basename, isDirectory: false)
+        do {
+            try await run { try session.exportAttachment(transfer: transfer, to: destination) }
+            return destination
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw error
+        }
+    }
+
+    private func attachmentAction(_ action: @escaping @Sendable (Session) throws -> Void) async throws {
+        guard let session else { return }
+        try await run { try action(session) }
         await refresh()
     }
 
@@ -328,6 +408,39 @@ final class AppModel: ObservableObject {
     func exportBackup(to path: URL) async throws -> String {
         guard let session else { throw InputError("node is locked") }
         return try await run { try session.exportBackup(to: path) }
+    }
+}
+
+private let attachmentLimit = 512 * 1024 * 1024
+private let attachmentCopySize = 64 * 1024
+
+/// Copy one security-scoped provider document into a unique app-private file
+/// with bounded memory and an explicit size ceiling. The caller holds the
+/// security scope open for this blocking operation.
+private func stageAttachment(_ source: URL) throws -> URL {
+    let staged = FileManager.default.temporaryDirectory
+        .appendingPathComponent("komms-attachment-\(UUID().uuidString)")
+    guard FileManager.default.createFile(atPath: staged.path, contents: nil) else {
+        throw InputError("the selected document could not be staged")
+    }
+    do {
+        let input = try FileHandle(forReadingFrom: source)
+        defer { try? input.close() }
+        let output = try FileHandle(forWritingTo: staged)
+        defer { try? output.close() }
+        var copied = 0
+        while let chunk = try input.read(upToCount: attachmentCopySize), !chunk.isEmpty {
+            copied += chunk.count
+            guard copied <= attachmentLimit else {
+                throw InputError("this attachment exceeds the 512 MiB limit")
+            }
+            try output.write(contentsOf: chunk)
+        }
+        try output.synchronize()
+        return staged
+    } catch {
+        try? FileManager.default.removeItem(at: staged)
+        throw error
     }
 }
 

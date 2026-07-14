@@ -21,6 +21,11 @@ are the node's own, verbatim.
 - **Schedule pairwise or group text** in local time: distinct scheduled rows
   stay editable/cancellable until the core activates them at the stored
   absolute UTC instant and they enter the ordinary delivery ladder.
+- **Send and receive pairwise or group attachments** through iOS document
+  pickers, with explicit consent, exact verified-byte progress,
+  pause/resume/cancel/reject controls, and caller-selected export.
+  Security-scoped provider files are copied with bounded memory through unique
+  app-private staging paths that are deleted after each operation.
 - **Create and use sender-key groups** from stored contacts: list and read
   group history, send messages, add/remove members as the creator, and leave
   as any member while local history remains stored. Inbound rows name the
@@ -63,7 +68,10 @@ states via listener events, safety numbers, backup → mnemonic → restore →
 automatic re-handshake) against the host-built `libkult_ffi`, no
 simulator required. Its group acceptance scenario adds a real offline third
 identity and pins creator authority, add/remove/leave convergence, history,
-and honest partial delivery per recipient. `KommsApp` is UI only.
+and honest partial delivery per recipient. Pairwise and group attachment
+acceptance covers offer/consent/completion, exact bytes and metadata, lifecycle
+controls, exact export, and overwrite refusal. `KommsApp` remains UI-only
+document-picker and rendering glue.
 
 Generated bindings are never committed; `scripts/generate-bindings.sh`
 produces them fresh from the crate. The package is deliberately outside

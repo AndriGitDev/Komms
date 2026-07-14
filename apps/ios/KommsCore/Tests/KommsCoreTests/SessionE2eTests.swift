@@ -134,6 +134,73 @@ final class SessionE2eTests: XCTestCase {
         XCTAssertEqual(.inbound, inbox[0].direction)
         XCTAssertEqual(.received, inbox[0].state)
 
+        // The document picker grants a security-scoped URL; the app stages a
+        // bounded app-private copy before Session imports it. The render-safe
+        // transfer surface exposes exact authenticated metadata and progress.
+        let attachmentBytes = Data("iOS attachment bytes\u{0}exact".utf8)
+        let source = dir.appendingPathComponent("ios-source.bin")
+        try attachmentBytes.write(to: source)
+        let contentId = try alice.sendAttachment(
+            peer: bobPeer,
+            path: source,
+            mediaType: "application/octet-stream",
+            filename: "field-notes.bin")
+        let outbound = try XCTUnwrap(
+            alice.attachments().first(where: { $0.contentId == contentId }))
+        XCTAssertEqual(.pairwise, outbound.conversation)
+        XCTAssertEqual(.outbound, outbound.direction)
+        XCTAssertEqual("field-notes.bin", outbound.objects.first?.filename)
+        XCTAssertEqual(UInt64(attachmentBytes.count), outbound.objects.first?.totalBytes)
+        XCTAssertEqual("application/octet-stream", outbound.objects.first?.mediaType)
+
+        try alice.pauseAttachment(transfer: outbound.transferId)
+        XCTAssertEqual(
+            .paused,
+            try alice.attachments().first(where: { $0.transferId == outbound.transferId })?.state)
+        try alice.resumeAttachment(transfer: outbound.transferId)
+
+        let offer = try bEv.wait("pairwise attachment offer") { event -> Attachment? in
+            if case let .attachmentUpdated(attachment) = event,
+               attachment.contentId == contentId,
+               attachment.direction == .inbound,
+               attachment.peer == alicePeer {
+                return attachment
+            }
+            return nil
+        }
+        XCTAssertEqual(.awaitingConsent, offer.state)
+        XCTAssertEqual(0, offer.objects.first?.verifiedBytes)
+        try bob.acceptAttachment(transfer: offer.transferId)
+        _ = try bEv.wait("pairwise attachment completion") { event -> Void? in
+            if case let .attachmentUpdated(attachment) = event,
+               attachment.transferId == offer.transferId,
+               attachment.state == .complete {
+                return ()
+            }
+            return nil
+        }
+        let received = try XCTUnwrap(
+            bob.attachments().first(where: { $0.transferId == offer.transferId }))
+        XCTAssertEqual(UInt64(attachmentBytes.count), received.objects.first?.verifiedBytes)
+
+        // iOS exports to a unique protected source URL before presenting the
+        // system destination picker. The node refuses an existing path.
+        let exported = dir.appendingPathComponent("ios-export.bin")
+        try bob.exportAttachment(transfer: offer.transferId, to: exported)
+        XCTAssertEqual(attachmentBytes, try Data(contentsOf: exported))
+        XCTAssertThrowsError(
+            try bob.exportAttachment(transfer: offer.transferId, to: exported))
+        XCTAssertEqual(attachmentBytes, try Data(contentsOf: exported))
+
+        try bob.rejectAttachment(transfer: offer.transferId)
+        XCTAssertEqual(
+            .rejected,
+            try bob.attachments().first(where: { $0.transferId == offer.transferId })?.state)
+        try alice.cancelAttachment(transfer: outbound.transferId)
+        XCTAssertEqual(
+            .cancelled,
+            try alice.attachments().first(where: { $0.transferId == outbound.transferId })?.state)
+
         // The verify screen: identical digits and QR payloads on both ends
         // (also identical to what the desktop and Android apps render), and
         // the "mark verified" button reflects into the contact list badge.
@@ -253,6 +320,57 @@ final class SessionE2eTests: XCTestCase {
         XCTAssertEqual("Trail crew", listed[0].name)
         XCTAssertEqual(2, listed[0].members.count)
 
+        // Capability negotiation is authenticated session state. Establish
+        // the pairwise session before the group attachment composer asks the
+        // node whether every recipient supports attachments.
+        let capabilityProbe = try alice.send(
+            peer: bobPeer, body: "attachment capability handshake")
+        _ = try bEv.wait("attachment capability handshake") { event -> Void? in
+            if case let .messageReceived(peer, _, _, body, _) = event,
+               peer == aliceAtBob, body == "attachment capability handshake" {
+                return ()
+            }
+            return nil
+        }
+        _ = try aEv.wait("attachment capability receipt") { event -> Void? in
+            if case let .deliveryUpdated(id, state) = event,
+               id == capabilityProbe, state == .delivered {
+                return ()
+            }
+            return nil
+        }
+
+        // The same Session surface covers one encrypt-once group attachment.
+        let groupBytes = Data("one encrypted iOS group object".utf8)
+        let groupSource = dir.appendingPathComponent("ios-group-source.bin")
+        try groupBytes.write(to: groupSource)
+        let groupContent = try alice.sendGroupAttachment(
+            group: group,
+            path: groupSource,
+            mediaType: "application/octet-stream",
+            filename: "route.bin")
+        let groupOffer = try bEv.wait("group attachment offer") { event -> Attachment? in
+            if case let .attachmentUpdated(attachment) = event,
+               attachment.contentId == groupContent,
+               attachment.conversation == .group,
+               attachment.group == group {
+                return attachment
+            }
+            return nil
+        }
+        try bob.acceptAttachment(transfer: groupOffer.transferId)
+        _ = try bEv.wait("group attachment completion") { event -> Void? in
+            if case let .attachmentUpdated(attachment) = event,
+               attachment.transferId == groupOffer.transferId,
+               attachment.state == .complete {
+                return ()
+            }
+            return nil
+        }
+        let groupExport = dir.appendingPathComponent("ios-group-export.bin")
+        try bob.exportAttachment(transfer: groupOffer.transferId, to: groupExport)
+        XCTAssertEqual(groupBytes, try Data(contentsOf: groupExport))
+
         try alice.addGroupMember(group: group, peer: carolPeer)
         listed = try alice.groups()
         XCTAssertEqual(3, listed[0].members.count)
@@ -283,7 +401,9 @@ final class SessionE2eTests: XCTestCase {
             }
             return nil
         }
-        let history = try alice.groupMessages(group: group)
+        let allHistory = try alice.groupMessages(group: group)
+        XCTAssertEqual(1, allHistory.filter { $0.contentKind == .attachment }.count)
+        let history = allHistory.filter { $0.contentKind != .attachment }
         XCTAssertEqual(1, history.count)
         XCTAssertEqual(.outbound, history[0].direction)
         XCTAssertEqual(2, history[0].deliveries.count)
@@ -292,7 +412,9 @@ final class SessionE2eTests: XCTestCase {
             history[0].deliveries.first(where: { $0.peer == bobPeer })?.state)
         let carolState = history[0].deliveries.first(where: { $0.peer == carolPeer })?.state
         XCTAssertTrue(carolState == .queued || carolState == .sent)
-        let bobHistory = try bob.groupMessages(group: group)
+        let bobHistory = try bob.groupMessages(group: group).filter {
+            $0.contentKind != .attachment
+        }
         XCTAssertEqual(aliceAtBob, bobHistory[0].sender)
         XCTAssertEqual(.inbound, bobHistory[0].direction)
         XCTAssertTrue(bobHistory[0].deliveries.isEmpty)
