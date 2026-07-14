@@ -2,11 +2,15 @@
 
 use std::collections::BTreeSet;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::sync::Arc;
 
 use rand_core::CryptoRngCore;
 use zeroize::Zeroizing;
 
+use crate::api::{
+    AttachmentConversation, AttachmentDirection, AttachmentInfo, AttachmentMetadata,
+    AttachmentObjectInfo,
+};
+use crate::{Event, Node, NodeError, Result};
 use kult_crypto::{
     attachment_pairwise_scope_id, open_attachment_chunk, seal_attachment_chunk,
     AttachmentChunkContext, AttachmentChunkScope,
@@ -24,13 +28,6 @@ use kult_store::{
     MediaRecord, MediaScope, MediaTransferRecord, MediaTransferState, MessageRecord, QueueClass,
     QueueItem, StoreError,
 };
-use kult_transport::{CostClass, Reachability};
-
-use crate::api::{
-    AttachmentConversation, AttachmentDirection, AttachmentInfo, AttachmentMetadata,
-    AttachmentObjectInfo,
-};
-use crate::{Event, Node, NodeError, Result};
 
 const BULK_CONTROL_PADDING_FLOOR: usize = 4096;
 const MISSING_RETRY_SECS: u64 = 30;
@@ -685,7 +682,7 @@ impl Node {
                 continue;
             }
             if !self.peer_supports_attachment(&transfer.peer)?
-                || !self.fresh_bulk_route(&transfer.peer, now, rng).await?
+                || !self.carrier_allows_bulk(&transfer.peer, now)?
             {
                 continue;
             }
@@ -818,7 +815,7 @@ impl Node {
             for transfer in &copies {
                 if transfer.state != MediaTransferState::Queued
                     || !self.peer_supports_attachment(&transfer.peer)?
-                    || !self.fresh_bulk_route(&transfer.peer, now, rng).await?
+                    || !self.carrier_allows_bulk(&transfer.peer, now)?
                 {
                     eligible = false;
                     break;
@@ -1148,29 +1145,6 @@ impl Node {
             .is_some_and(|capabilities| {
                 capabilities.supports(CONTENT_FORMAT_V1, CONTENT_KIND_ATTACHMENT)
             }))
-    }
-
-    async fn fresh_bulk_route(
-        &mut self,
-        peer: &[u8; 32],
-        now: u64,
-        rng: &mut impl CryptoRngCore,
-    ) -> Result<bool> {
-        let hints = self.resolve_hints(peer, now, rng).await?;
-        let transports: Vec<Arc<_>> = self
-            .transports
-            .iter()
-            .filter(|transport| transport.profile().cost != CostClass::Airtime)
-            .cloned()
-            .collect();
-        for transport in transports {
-            for hint in &hints {
-                if !matches!(transport.reachable(hint).await, Reachability::Unreachable) {
-                    return Ok(true);
-                }
-            }
-        }
-        Ok(false)
     }
 
     fn queue_pairwise_attachment_manifest(

@@ -580,6 +580,15 @@ async fn handle_op(
                 .collect();
             Ok(json!({ "contacts": contacts }))
         }
+        Op::CarrierCapabilities => {
+            let snapshots = node
+                .carrier_capabilities(now())
+                .map_err(fail)?
+                .iter()
+                .map(wire::carrier_json)
+                .collect::<Vec<_>>();
+            Ok(json!({ "capabilities": snapshots }))
+        }
         Op::Messages { peer } => {
             let peer = wire::parse_peer(&peer)?;
             let messages: Vec<Value> = node

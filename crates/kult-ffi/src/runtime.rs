@@ -18,7 +18,7 @@ use rand::rngs::OsRng;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use kult_crypto::{KdfProfile, SafetyNumber};
-use kult_node::{Event, GroupInfo, Node};
+use kult_node::{CarrierCapabilitySnapshot, Event, GroupInfo, Node};
 use kult_store::{ContactRecord, GroupMessageRecord, MessageRecord};
 use kult_transport::{
     DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, Transport, TransportOptions,
@@ -117,6 +117,9 @@ pub(crate) enum Msg {
     },
     Contacts {
         resp: Resp<Vec<ContactRecord>>,
+    },
+    CarrierCapabilities {
+        resp: Resp<Vec<CarrierCapabilitySnapshot>>,
     },
     Messages {
         peer: [u8; 32],
@@ -505,6 +508,9 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         }
         Msg::Contacts { resp } => {
             let _ = resp.send(node.contacts().map_err(fail));
+        }
+        Msg::CarrierCapabilities { resp } => {
+            let _ = resp.send(node.carrier_capabilities(now).map_err(fail));
         }
         Msg::Messages { peer, resp } => {
             let _ = resp.send(node.messages_with(&peer).map_err(fail));

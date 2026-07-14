@@ -34,6 +34,7 @@ COMMANDS:
     groups                            list groups
     group-messages GROUP_HEX         group message history
     contacts                        list contacts
+    carriers                        list per-peer carrier capability snapshots
     messages PEER_HEX               message history with a peer
     safety PEER_HEX                 safety number for out-of-band verification
     verify PEER_HEX                 mark a contact verified
@@ -127,6 +128,7 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
             json!({ "op": "group_messages", "group": args[0] })
         }
         "contacts" => json!({ "op": "contacts" }),
+        "carriers" => json!({ "op": "carrier_capabilities" }),
         "messages" => {
             need(1)?;
             json!({ "op": "messages", "peer": args[0] })
@@ -259,5 +261,9 @@ mod tests {
             json!({ "op": "groups" })
         );
         assert!(build_request("group-add", &["03".repeat(32)]).is_err());
+        assert_eq!(
+            build_request("carriers", &[]).unwrap(),
+            json!({ "op": "carrier_capabilities" })
+        );
     }
 }

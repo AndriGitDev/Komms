@@ -56,13 +56,15 @@ use kult_transport::{CostClass, DeliveryHint, Discovery, Reachability, Transport
 
 mod api;
 mod attachment;
+mod carrier;
 mod error;
 mod groups;
 mod vault;
 
 pub use api::{
     AttachmentConversation, AttachmentDirection, AttachmentInfo, AttachmentMetadata,
-    AttachmentObjectInfo, Command, ContentStatus, Event, GroupInfo,
+    AttachmentObjectInfo, CarrierCapability, CarrierCapabilitySnapshot, Command, ContentStatus,
+    Event, GroupInfo,
 };
 pub use error::NodeError;
 
@@ -280,6 +282,7 @@ pub struct Node {
     capabilities_advertised: HashSet<[u8; 32]>,
     media_reconciled: bool,
     attachment_request_at: HashMap<[u8; 16], u64>,
+    carrier_capabilities: HashMap<[u8; 32], CarrierCapabilitySnapshot>,
     reassembler: Reassembler,
     backoff: HashMap<i64, Backoff>,
     frag_meta: HashMap<[u8; 4], PartialMeta>,
@@ -368,6 +371,7 @@ impl Node {
             capabilities_advertised: HashSet::new(),
             media_reconciled: false,
             attachment_request_at: HashMap::new(),
+            carrier_capabilities: HashMap::new(),
             reassembler: Reassembler::new(),
             backoff: HashMap::new(),
             frag_meta: HashMap::new(),
@@ -881,8 +885,13 @@ impl Node {
         //     members whose session appeared after a group send.
         self.tick_groups(now, rng).await?;
 
-        // 2c. Attachment offers and resumable missing-range requests activate
-        //     only after a fresh non-airtime reachability check.
+        // 2c. Publish one authoritative, expiring carrier verdict per peer.
+        //     Attachment activation consumes this exact snapshot rather than
+        //     independently inferring capacity from a route.
+        self.refresh_carrier_capabilities(now, rng).await?;
+
+        // 2d. Attachment offers and resumable missing-range requests activate
+        //     only under a fresh F4 bulk-capable verdict.
         self.activate_attachment_transfers(now, rng).await?;
 
         // 3. Acknowledge consumed messages with end-to-end encrypted

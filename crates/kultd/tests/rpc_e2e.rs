@@ -137,6 +137,21 @@ async fn listen_addr(client: &mut Client) -> String {
     panic!("no listen address within 5s");
 }
 
+async fn wait_carrier(client: &mut Client, peer: &str, expected: &str) -> Value {
+    for _ in 0..100 {
+        let snapshots = client.ok(json!({ "op": "carrier_capabilities" })).await;
+        if let Some(snapshot) = snapshots["capabilities"].as_array().and_then(|items| {
+            items.iter().find(|snapshot| {
+                snapshot["peer"] == json!(peer) && snapshot["capability"] == json!(expected)
+            })
+        }) {
+            return snapshot.clone();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("no {expected} carrier verdict for {peer} within 5s");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn two_daemons_message_via_rpc_only() {
     let dir = tempfile::tempdir().unwrap();
@@ -198,6 +213,9 @@ async fn two_daemons_message_via_rpc_only() {
         json!({ "subscribed": true })
     );
     b_events.ok(json!({ "op": "subscribe" })).await;
+
+    let carrier = wait_carrier(&mut a, &bob_peer, "realtime").await;
+    assert!(carrier["expires_at"].as_u64().unwrap() > carrier["observed_at"].as_u64().unwrap());
 
     let sent = a
         .ok(json!({ "op": "send", "peer": bob_peer, "body": "hello over the daemon" }))
