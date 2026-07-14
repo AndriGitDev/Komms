@@ -311,11 +311,15 @@ bounded typed `Text` frames, stable encrypted content ids, scoped deduplication,
 and honest durable retention of unknown future kinds across the node, store,
 RPC, UniFFI, and shells.
 
-The next typed-content decision is proposed in
-[ADR-0015](adr/0015-encrypted-attachment-pipeline.md): a bounded Attachment
-manifest, independently sealed resumable chunks, explicit consent and quotas,
-sealed-file storage, KKR2 media exclusion, and a hard no-airtime bulk policy.
-Activation is gated on the F4 per-peer `bulk` carrier verdict.
+The Attachment core proposed by
+[ADR-0015](adr/0015-encrypted-attachment-pipeline.md) is implemented: bounded
+manifests and bulk records, independently sealed resumable chunks, explicit
+consent/cancel/reject state, pairwise and encrypt-once group transfer,
+quota-bound sealed-file storage, KKR2 media exclusion, streamed export, and a
+hard no-airtime bulk class. Core activation rechecks non-airtime reachability
+before queueing an offer or missing-range request. Remaining F3 work is the F4
+application-facing carrier verdict plus RPC/UniFFI and shell file-picker,
+progress, preview, background-transfer, and protected-export integration.
 
 **Acceptance**: audit findings triaged with public report; reproducible-build attestation
 for all release artifacts.

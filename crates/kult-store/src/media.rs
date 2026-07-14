@@ -281,6 +281,35 @@ impl Store {
         self.media_records("media_transfers", MEDIA_TRANSFER_AD)
     }
 
+    /// Transition transfer-level lifecycle state and authenticated progress
+    /// time while retaining its sealed entitlement snapshot.
+    pub fn set_media_transfer_state(
+        &self,
+        local_id: &[u8; 16],
+        state: MediaTransferState,
+        updated_at: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let mut transfer = self.require_transfer(local_id)?;
+        transfer.state = state;
+        transfer.updated_at = updated_at;
+        self.put_media_transfer(&transfer, rng)
+    }
+
+    /// Delete one transfer row after its object rows have been removed.
+    pub fn delete_media_transfer(&self, local_id: &[u8; 16]) -> Result<()> {
+        if self.media_objects()?.into_iter().any(
+            |record| matches!(record, MediaRecord::Available(object) if object.transfer_id == *local_id),
+        ) {
+            return Err(StoreError::MediaState);
+        }
+        self.conn.execute(
+            "DELETE FROM media_transfers WHERE id = ?1",
+            params![local_id.as_slice()],
+        )?;
+        Ok(())
+    }
+
     /// Insert or replace one sealed object record after enforcing bounds.
     pub fn put_media_object(
         &self,
@@ -311,6 +340,26 @@ impl Store {
     /// Read every object metadata row.
     pub fn media_objects(&self) -> Result<Vec<MediaRecord<MediaObjectRecord>>> {
         self.media_records("media_objects", MEDIA_OBJECT_AD)
+    }
+
+    /// Read supported object rows belonging to one transfer, preserving
+    /// manifest role order.
+    pub fn media_objects_for_transfer(
+        &self,
+        transfer_id: &[u8; 16],
+    ) -> Result<Vec<MediaObjectRecord>> {
+        let mut objects: Vec<_> = self
+            .media_objects()?
+            .into_iter()
+            .filter_map(|record| match record {
+                MediaRecord::Available(object) if object.transfer_id == *transfer_id => {
+                    Some(object)
+                }
+                _ => None,
+            })
+            .collect();
+        objects.sort_by_key(|object| object.role);
+        Ok(objects)
     }
 
     /// Transition an object state while retaining sealed progress metadata.

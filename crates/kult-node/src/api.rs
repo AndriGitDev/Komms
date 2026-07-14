@@ -1,7 +1,8 @@
 //! The node's command/event surface (docs/09-implementation-guide.md §3.5).
-//! `kult-ffi` exposes exactly this shape — nothing more.
+//! Render-safe attachment state lands here before the planned RPC/UniFFI and
+//! shell adapters; protocol secrets and storage internals never cross it.
 
-use kult_store::DeliveryState;
+use kult_store::{DeliveryState, MediaTransferState};
 use kult_transport::DeliveryHint;
 
 /// Instructions the application layer gives the node. Every command is also
@@ -75,6 +76,101 @@ pub enum Command {
         /// The group id.
         group: [u8; 32],
     },
+    /// Accept an offered attachment and request its missing chunks when a
+    /// fresh non-airtime route is available.
+    AttachmentAccept {
+        /// Random local transfer id returned by attachment state APIs.
+        transfer: [u8; 16],
+    },
+    /// Durably reject an offered attachment.
+    AttachmentReject {
+        /// Random local transfer id returned by attachment state APIs.
+        transfer: [u8; 16],
+    },
+    /// Cancel local transfer activity and release unreferenced partial data.
+    AttachmentCancel {
+        /// Random local transfer id returned by attachment state APIs.
+        transfer: [u8; 16],
+    },
+    /// Pause automatic attachment requests or serving while retaining
+    /// durable verified progress.
+    AttachmentPause {
+        /// Random local transfer id returned by attachment state APIs.
+        transfer: [u8; 16],
+    },
+    /// Resume an explicitly or automatically paused attachment.
+    AttachmentResume {
+        /// Random local transfer id returned by attachment state APIs.
+        transfer: [u8; 16],
+    },
+}
+
+/// Conversation scope of an attachment offer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttachmentConversation {
+    /// Pairwise conversation with one contact.
+    Pairwise,
+    /// Sender-key group conversation.
+    Group,
+}
+
+/// Local direction of an attachment transfer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttachmentDirection {
+    /// Bytes are being received from the manifest author.
+    Inbound,
+    /// This device authored and may serve the bytes.
+    Outbound,
+}
+
+/// Render-safe object progress and authenticated display hints.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttachmentObjectInfo {
+    /// `false` for the primary object and `true` for its optional preview.
+    pub preview: bool,
+    /// Exact object size.
+    pub total_bytes: u64,
+    /// Bytes represented by durably committed, authenticated chunks.
+    pub verified_bytes: u64,
+    /// Untrusted authenticated media-type display hint.
+    pub media_type: String,
+    /// Optional sanitized filename display hint.
+    pub filename: Option<String>,
+    /// Durable lifecycle state.
+    pub state: MediaTransferState,
+}
+
+/// Render-safe transfer state. Keys, chunk paths, bitmaps, ciphertext
+/// addresses, and raw unsupported payloads deliberately remain private.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttachmentInfo {
+    /// Random local transfer id used by consent/cancel APIs.
+    pub transfer_id: [u8; 16],
+    /// Peer served by or serving this transfer.
+    pub peer: [u8; 32],
+    /// Pairwise or group conversation.
+    pub conversation: AttachmentConversation,
+    /// Group id for group attachments; pairwise scope hashes are not exposed.
+    pub group: Option<[u8; 32]>,
+    /// Inbound or outbound local direction.
+    pub direction: AttachmentDirection,
+    /// Original manifest author.
+    pub author: [u8; 32],
+    /// Stable encrypted content id of the attachment offer.
+    pub content_id: [u8; 16],
+    /// Transfer-level lifecycle state.
+    pub state: MediaTransferState,
+    /// Primary object followed by an optional preview.
+    pub objects: Vec<AttachmentObjectInfo>,
+}
+
+/// Authenticated display metadata supplied while importing one attachment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttachmentMetadata {
+    /// Lowercase IANA-style media type without parameters.
+    pub media_type: String,
+    /// Optional sanitized basename.
+    pub filename: Option<String>,
 }
 
 /// A group as the application layer sees it — never the secrets.
@@ -103,6 +199,13 @@ pub enum ContentStatus {
     Text {
         /// Content id scoped to the conversation and author.
         id: [u8; 16],
+    },
+    /// Supported Attachment manifest with durable local transfer state.
+    Attachment {
+        /// Content id scoped to the conversation and author.
+        id: [u8; 16],
+        /// Random local transfer id used by attachment state APIs.
+        transfer: [u8; 16],
     },
     /// Authenticated content this client version cannot interpret.
     Unsupported {
@@ -198,5 +301,11 @@ pub enum Event {
         peer: [u8; 32],
         /// The new state.
         state: DeliveryState,
+    },
+    /// Attachment offer, consent, progress, completion, or terminal state
+    /// changed; the included state is safe to render directly.
+    AttachmentUpdated {
+        /// Current transfer state.
+        attachment: AttachmentInfo,
     },
 }

@@ -33,6 +33,15 @@ pub enum NodeError {
     UnknownGroup,
     /// Only the group's creator may add, remove, or re-key (ADR-0012).
     NotGroupCreator,
+    /// The peer has not authenticated support for the complete attachment
+    /// manifest and bulk-lane contract.
+    AttachmentUnsupported,
+    /// A local attachment transfer id does not exist or is quarantined.
+    UnknownAttachment,
+    /// Attachment input or a requested lifecycle transition is invalid.
+    InvalidAttachment,
+    /// Streaming import or export failed.
+    MediaIo(std::io::Error),
 }
 
 impl std::fmt::Display for NodeError {
@@ -49,6 +58,12 @@ impl std::fmt::Display for NodeError {
             Self::BundleNotFound => f.write_str("no verifiable prekey bundle found for address"),
             Self::UnknownGroup => f.write_str("group id names no stored group"),
             Self::NotGroupCreator => f.write_str("only the group creator may change it"),
+            Self::AttachmentUnsupported => {
+                f.write_str("peer does not advertise attachment support")
+            }
+            Self::UnknownAttachment => f.write_str("attachment transfer does not exist"),
+            Self::InvalidAttachment => f.write_str("invalid attachment state or metadata"),
+            Self::MediaIo(e) => write!(f, "attachment stream error: {e}"),
         }
     }
 }
@@ -73,5 +88,10 @@ impl From<kult_protocol::ProtocolError> for NodeError {
 impl From<kult_transport::TransportError> for NodeError {
     fn from(e: kult_transport::TransportError) -> Self {
         Self::Transport(e)
+    }
+}
+impl From<std::io::Error> for NodeError {
+    fn from(e: std::io::Error) -> Self {
+        Self::MediaIo(e)
     }
 }

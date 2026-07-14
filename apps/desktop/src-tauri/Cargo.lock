@@ -2581,6 +2581,7 @@ dependencies = [
 name = "kult-node"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "kult-crypto",
  "kult-protocol",
  "kult-store",

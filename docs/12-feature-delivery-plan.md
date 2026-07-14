@@ -99,10 +99,15 @@ The ADR must define:
 
 ### F3. Attachment and media pipeline
 
-**State:** design proposed in
-[ADR-0015](adr/0015-encrypted-attachment-pipeline.md). The implementation is
-gated on F4's fresh `bulk` carrier verdict; attachment activation must not infer
-capacity from an available route alone.
+**State:** core implemented behind node APIs; product-surface integration is
+planned. [ADR-0015](adr/0015-encrypted-attachment-pipeline.md) now has bounded
+manifest/bulk codecs, deterministic chunk cryptography, sealed quota-bound
+storage, explicit consent/cancel/reject/resume state, pairwise and encrypt-once
+group transfer, streamed export, and a scheduler-enforced no-airtime class.
+Activation performs a fresh non-airtime reachability check on every offer or
+missing-range request. F4 still supplies the stable, time-bounded verdict and
+change events that applications need for user-facing feature gating; shells
+must not infer capacity from an available route alone.
 
 The existing envelope path is suitable for small payloads, not an unbounded file
 transfer. Define attachments as encrypted, content-addressed chunks with a sealed

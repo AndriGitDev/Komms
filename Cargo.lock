@@ -1642,6 +1642,7 @@ name = "kult-node"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "blake3",
  "kult-crypto",
  "kult-protocol",
  "kult-store",
