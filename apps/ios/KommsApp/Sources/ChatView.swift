@@ -79,6 +79,9 @@ struct ChatView: View {
                 AttachmentPickerButton(destination: .peer(peer)) { error in
                     self.error = error
                 }
+                AudioComposerButton(destination: .peer(peer)) { error in
+                    self.error = error
+                }
                 TextField("Message", text: $draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...4)

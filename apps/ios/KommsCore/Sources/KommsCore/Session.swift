@@ -185,6 +185,54 @@ public final class Session: @unchecked Sendable {
         try node.exportAttachmentPreview(transfer: transfer, path: path.path)
     }
 
+    /// Rewrite native PCM WAVE into Komms's bounded metadata-free profile.
+    public func canonicalizeAudio(source: URL, destination: URL) throws -> AudioInfo {
+        try canonicalizeRecordedAudio(source: source.path, destination: destination.path)
+    }
+
+    /// Validate canonical audio and derive duration/waveform only on this device.
+    public func probeAudio(_ path: URL) throws -> AudioInfo {
+        try probeRecordedAudio(path: path.path)
+    }
+
+    /// Current authoritative carrier explanation for pairwise audio confirmation.
+    public func audioCarrierExplanation(peer: String) throws -> String {
+        try audioCarrierExplanation(recipients: [peer])
+    }
+
+    /// Current authoritative carrier explanation for every other current group member.
+    public func groupAudioCarrierExplanation(group: String) throws -> String {
+        guard let group = try groups().first(where: { $0.id == group }) else {
+            throw InputError("unknown group")
+        }
+        return try audioCarrierExplanation(recipients: group.members.filter { $0 != peer })
+    }
+
+    private func audioCarrierExplanation(recipients: [String]) throws -> String {
+        let snapshots = Dictionary(uniqueKeysWithValues: try node.carrierCapabilities().map {
+            ($0.peer, $0.capability)
+        })
+        let mesh = recipients.filter { snapshots[$0] == .meshOnly }.count
+        let unavailable = recipients.filter {
+            guard let capability = snapshots[$0] else { return true }
+            return capability != .realtime && capability != .bulk && capability != .meshOnly
+        }.count
+        if recipients.isEmpty {
+            return "This group has no other current recipients; no audio delivery will be created."
+        }
+        if mesh > 0 && unavailable > 0 {
+            return "\(mesh) recipient(s) have only a mesh route, so audio waits for a faster link and emits zero mesh bulk frames; "
+                + "\(unavailable) more have no fresh route. Recipients with a fresh realtime or bulk link can proceed."
+        }
+        if mesh > 0 {
+            return "Will send when a faster link exists for \(mesh) recipient(s). Audio emits zero mesh bulk frames."
+        }
+        if unavailable > 0 {
+            return "Will remain queued locally until \(unavailable) recipient(s) have a fresh faster link."
+        }
+        return "Every current recipient has a fresh realtime or bulk link; normal attachment quotas apply."
+    }
+
     /// Schedule pairwise text at an absolute UTC Unix instant.
     public func schedule(peer: String, body: String, notBefore: UInt64) throws -> String {
         try node.schedule(peer: peer, body: body, notBefore: notBefore)

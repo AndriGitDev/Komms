@@ -29,6 +29,7 @@ targets:
       # references SystemConfiguration; the app must link the system framework
       # that provides those SC*/kSC* symbols.
       - sdk: SystemConfiguration.framework
+      - sdk: AVFoundation.framework
     info:
       path: Info.plist
       properties:
@@ -40,6 +41,9 @@ targets:
         NSLocalNetworkUsageDescription: >-
           Komms discovers peers on your local network (mDNS) so messages can
           be delivered LAN-only, with no internet at all.
+        NSMicrophoneUsageDescription: >-
+          Komms uses the microphone only while you explicitly record an audio
+          message for review and encrypted sending.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: is.andri.komms

@@ -25,6 +25,8 @@ const state = {
   groupUnread: new Map(), // group id → count
   msgEls: new Map(), // message id → bubble element (for state updates)
   attachmentNotified: new Set(), // inbound transfer ids already announced
+  recording: null,
+  audioDraft: null,
   statusTimer: null,
 };
 
@@ -109,6 +111,294 @@ function guessedMime(filename) {
 function exactBytes(verified, total) {
   return `${Number(verified).toLocaleString()} / ${Number(total).toLocaleString()} bytes`;
 }
+
+function formatDuration(milliseconds) {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function waveformFromSamples(samples) {
+  const peaks = new Array(64).fill(0);
+  for (let i = 0; i < samples.length; i += 1) {
+    const bin = Math.min(63, Math.floor((i * 64) / samples.length));
+    peaks[bin] = Math.max(peaks[bin], Math.abs(samples[i]));
+  }
+  return peaks.map((peak) => Math.round(peak * 32768));
+}
+
+function renderWaveform(peaks, label) {
+  const waveform = document.createElement("div");
+  waveform.className = "audio-waveform";
+  waveform.setAttribute("role", "img");
+  waveform.setAttribute("aria-label", label);
+  const max = Math.max(1, ...peaks);
+  for (const peak of peaks) {
+    const bar = document.createElement("span");
+    bar.style.height = `${Math.max(5, Math.round((peak / max) * 100))}%`;
+    waveform.append(bar);
+  }
+  return waveform;
+}
+
+function renderAudioPlayer(container, source, durationMs, waveform, label) {
+  const meta = document.createElement("div");
+  meta.className = "audio-meta";
+  meta.textContent = `${formatDuration(durationMs)} · mono PCM WAV · 16 kHz`;
+  const audio = document.createElement("audio");
+  audio.controls = true;
+  audio.preload = "metadata";
+  audio.src = source;
+  audio.setAttribute("aria-label", label);
+  container.append(meta, renderWaveform(waveform, `${label} waveform`), audio);
+}
+
+function resampleMono(samples, sourceRate) {
+  if (sourceRate === 16000) return samples;
+  const length = Math.max(1, Math.floor((samples.length * 16000) / sourceRate));
+  const output = new Float32Array(length);
+  const ratio = sourceRate / 16000;
+  for (let i = 0; i < length; i += 1) {
+    const at = i * ratio;
+    const left = Math.floor(at);
+    const right = Math.min(samples.length - 1, left + 1);
+    const fraction = at - left;
+    output[i] = samples[left] * (1 - fraction) + samples[right] * fraction;
+  }
+  return output;
+}
+
+function canonicalWave(samples) {
+  if (samples.length === 0 || samples.length > 16000 * 60) {
+    throw new Error("recording is empty or exceeds 60 seconds");
+  }
+  const bytes = new Uint8Array(44 + samples.length * 2);
+  const view = new DataView(bytes.buffer);
+  const ascii = (offset, text) => [...text].forEach((character, index) => {
+    bytes[offset + index] = character.charCodeAt(0);
+  });
+  ascii(0, "RIFF");
+  view.setUint32(4, bytes.length - 8, true);
+  ascii(8, "WAVE");
+  ascii(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, 16000, true);
+  view.setUint32(28, 32000, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  ascii(36, "data");
+  view.setUint32(40, samples.length * 2, true);
+  samples.forEach((sample, index) => {
+    const bounded = Math.max(-1, Math.min(1, sample));
+    view.setInt16(44 + index * 2, bounded < 0 ? bounded * 32768 : bounded * 32767, true);
+  });
+  return bytes;
+}
+
+function bytesBase64(bytes) {
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 32768) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
+  }
+  return btoa(binary);
+}
+
+function discardAudioDraft() {
+  if (!state.audioDraft) return;
+  URL.revokeObjectURL(state.audioDraft.url);
+  state.audioDraft = null;
+  $("#recording-status").textContent = "Audio recording discarded.";
+}
+
+function releaseRecorder(recorder) {
+  clearInterval(recorder.timer);
+  recorder.processor.onaudioprocess = null;
+  recorder.source.disconnect();
+  recorder.processor.disconnect();
+  recorder.stream.getTracks().forEach((track) => {
+    track.onended = null;
+    track.stop();
+  });
+  recorder.context.close().catch(() => {});
+  state.recording = null;
+  const button = $("#btn-record");
+  button.classList.remove("recording");
+  button.setAttribute("aria-pressed", "false");
+  button.textContent = "Record audio";
+}
+
+function abortRecording(reason) {
+  const recorder = state.recording;
+  if (!recorder) return;
+  releaseRecorder(recorder);
+  recorder.chunks.length = 0;
+  $("#recording-status").textContent = reason;
+  toast(reason, true);
+}
+
+async function stopRecording(capped = false) {
+  const recorder = state.recording;
+  if (!recorder) return;
+  releaseRecorder(recorder);
+  const sourceSamples = new Float32Array(recorder.sampleCount);
+  let offset = 0;
+  for (const chunk of recorder.chunks) {
+    sourceSamples.set(chunk, offset);
+    offset += chunk.length;
+  }
+  recorder.chunks.length = 0;
+  try {
+    const samples = resampleMono(sourceSamples, recorder.context.sampleRate);
+    const bytes = canonicalWave(samples);
+    discardAudioDraft();
+    const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+    state.audioDraft = {
+      bytes,
+      url,
+      durationMs: Math.floor((samples.length * 1000) / 16000),
+      waveform: waveformFromSamples(samples),
+    };
+    $("#recording-status").textContent = capped
+      ? "Maximum duration reached. Recording stopped; review before sending."
+      : "Recording stopped. Review before sending.";
+    const carrier = await call("audio_carrier_explanation", {
+      conversation: state.currentKind === "group" ? "group" : "pairwise",
+      destination: state.currentId,
+    });
+    const root = openModal("Review audio message", "tpl-audio-review");
+    renderAudioPlayer(
+      root.querySelector('[data-f="audio-review"]'),
+      url,
+      state.audioDraft.durationMs,
+      state.audioDraft.waveform,
+      "Review recorded audio"
+    );
+    const carrierText = root.querySelector('[data-f="carrier"]');
+    carrierText.textContent = carrier;
+    carrierText.dataset.snapshot = carrier;
+    root.addEventListener("click", async (event) => {
+      if (event.target.matches('[data-act="discard-audio"]')) {
+        discardAudioDraft();
+        closeModal();
+      }
+      if (!event.target.matches('[data-act="send-audio"]')) return;
+      const button = event.target;
+      button.disabled = true;
+      try {
+        const latestCarrier = await call("audio_carrier_explanation", {
+          conversation: state.currentKind === "group" ? "group" : "pairwise",
+          destination: state.currentId,
+        });
+        if (latestCarrier !== carrierText.dataset.snapshot) {
+          carrierText.textContent = latestCarrier;
+          carrierText.dataset.snapshot = latestCarrier;
+          button.disabled = false;
+          showError(root, "Carrier state changed. Review the updated explanation, then choose Send audio again.");
+          return;
+        }
+        const encoded = bytesBase64(state.audioDraft.bytes);
+        if (state.currentKind === "group") {
+          await invoke("send_group_recorded_audio", { group: state.currentId, encoded });
+        } else {
+          await invoke("send_recorded_audio", { peer: state.currentId, encoded });
+        }
+        discardAudioDraft();
+        closeModal();
+        await renderMessages();
+      } catch (error) {
+        button.disabled = false;
+        showError(root, error);
+      }
+    });
+  } catch (error) {
+    discardAudioDraft();
+    $("#recording-status").textContent = `Recording failed: ${error}`;
+    toast(String(error), true);
+  }
+}
+
+async function startRecording() {
+  if (!state.currentId || state.currentKind === "note" || state.recording) return;
+  discardAudioDraft();
+  let stream;
+  let context;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+      video: false,
+    });
+    context = new AudioContext();
+    await context.resume();
+    const source = context.createMediaStreamSource(stream);
+    const processor = context.createScriptProcessor(4096, 1, 1);
+    const recorder = {
+      stream,
+      context,
+      source,
+      processor,
+      chunks: [],
+      sampleCount: 0,
+      started: performance.now(),
+      timer: null,
+      stopping: false,
+    };
+    const maximum = context.sampleRate * 60;
+    processor.onaudioprocess = (event) => {
+      if (recorder.stopping) return;
+      const input = event.inputBuffer.getChannelData(0);
+      const remaining = maximum - recorder.sampleCount;
+      const take = Math.min(remaining, input.length);
+      if (take > 0) {
+        recorder.chunks.push(new Float32Array(input.slice(0, take)));
+        recorder.sampleCount += take;
+      }
+      if (recorder.sampleCount >= maximum) {
+        recorder.stopping = true;
+        setTimeout(() => stopRecording(true), 0);
+      }
+    };
+    source.connect(processor);
+    processor.connect(context.destination);
+    stream.getAudioTracks().forEach((track) => {
+      track.onended = () => abortRecording("Microphone input was interrupted; recording discarded.");
+    });
+    state.recording = recorder;
+    const button = $("#btn-record");
+    button.classList.add("recording");
+    button.setAttribute("aria-pressed", "true");
+    button.textContent = "Stop 0:00";
+    $("#recording-status").textContent = "Recording audio. Activate Stop when finished.";
+    recorder.timer = setInterval(() => {
+      const elapsed = Math.min(60, Math.floor((performance.now() - recorder.started) / 1000));
+      button.textContent = `Stop ${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
+      $("#recording-status").textContent = `Recording audio, ${elapsed} seconds elapsed.`;
+    }, 1000);
+  } catch (error) {
+    stream?.getTracks().forEach((track) => track.stop());
+    if (context && context.state !== "closed") await context.close().catch(() => {});
+    $("#recording-status").textContent = "Microphone permission was denied or unavailable.";
+    toast(`Microphone unavailable: ${error}`, true);
+  }
+}
+
+$("#btn-record").addEventListener("click", () => {
+  if (state.recording) stopRecording();
+  else startRecording();
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) return;
+  abortRecording("Recording stopped and discarded because Komms was hidden or locked.");
+  if (state.audioDraft) {
+    closeModal();
+    $("#recording-status").textContent = "Audio review discarded because Komms was hidden or locked.";
+  }
+});
+window.addEventListener("pagehide", () => {
+  abortRecording("Recording discarded on shutdown.");
+  discardAudioDraft();
+});
 
 // ── gate (create / unlock / restore) ────────────────────────────────────
 
@@ -229,6 +519,8 @@ function enterApp(address) {
 }
 
 async function leaveApp() {
+  abortRecording("Recording stopped and discarded because Komms was locked.");
+  closeModal();
   clearInterval(state.statusTimer);
   state.statusTimer = null;
   state.currentKind = null;
@@ -239,6 +531,8 @@ async function leaveApp() {
   state.unread.clear();
   state.groupUnread.clear();
   state.msgEls.clear();
+  $("#messages").replaceChildren();
+  $("#attachment-transfers").replaceChildren();
   $("#app").hidden = true;
   $("#gate").hidden = false;
   $("#chat-pane").hidden = true;
@@ -366,6 +660,7 @@ function updateChatHead() {
   $("#btn-hints").hidden = isGroup || isNote;
   $("#btn-group-details").hidden = !isGroup;
   $("#btn-attach").hidden = isNote;
+  $("#btn-record").hidden = isNote;
   $("#btn-schedule").hidden = isNote;
   $("#note-to-self").classList.toggle("active", isNote);
 }
@@ -542,7 +837,8 @@ function attachmentRow(attachment) {
   head.className = "attachment-head";
   const title = document.createElement("span");
   title.className = "attachment-title";
-  title.textContent = primary?.filename ?? "Attachment";
+  const isAudio = primary?.media_type === "audio/wav";
+  title.textContent = isAudio ? "Audio message" : (primary?.filename ?? "Attachment");
   const transferState = document.createElement("span");
   transferState.className = `attachment-state ${attachment.state}`;
   transferState.textContent = `${attachment.direction} · ${attachment.state.replaceAll("_", " ")}`;
@@ -563,6 +859,32 @@ function attachmentRow(attachment) {
         image.hidden = false;
       })
       .catch(() => image.remove());
+  }
+
+  if (isAudio && attachment.state === "complete") {
+    const audioCard = document.createElement("div");
+    audioCard.className = "audio-card";
+    audioCard.setAttribute("aria-busy", "true");
+    audioCard.textContent = "Preparing protected audio playback…";
+    row.append(audioCard);
+    invoke("attachment_audio", { transfer: attachment.transfer_id })
+      .then((media) => {
+        if (!audioCard.isConnected) return;
+        audioCard.textContent = "";
+        audioCard.setAttribute("aria-busy", "false");
+        renderAudioPlayer(
+          audioCard,
+          media.data_url,
+          media.duration_ms,
+          media.waveform,
+          `Audio message from ${attachment.direction === "inbound" ? "sender" : "you"}`
+        );
+      })
+      .catch((error) => {
+        if (!audioCard.isConnected) return;
+        audioCard.setAttribute("aria-busy", "false");
+        audioCard.textContent = `Audio unavailable: ${error}`;
+      });
   }
 
   for (const object of attachment.objects) {
@@ -898,6 +1220,7 @@ function openModal(title, tplId) {
 }
 
 function closeModal() {
+  discardAudioDraft();
   $("#modal-backdrop").hidden = true;
   $("#modal-body").textContent = "";
 }

@@ -11,9 +11,31 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use kult_ffi::{
-    default_config, AttachmentDirection, AttachmentState, CarrierCapability, Config, ContentKind,
-    DeliveryState, Event, EventListener, Hint, KdfChoice, KultNode, ScheduledConversation,
+    default_config, probe_recorded_audio, AttachmentDirection, AttachmentState, CarrierCapability,
+    Config, ContentKind, DeliveryState, Event, EventListener, Hint, KdfChoice, KultNode,
+    ScheduledConversation,
 };
+
+fn canonical_audio(samples: usize) -> Vec<u8> {
+    let data_len = (samples * 2) as u32;
+    let mut bytes = Vec::with_capacity(44 + data_len as usize);
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&16_000u32.to_le_bytes());
+    bytes.extend_from_slice(&32_000u32.to_le_bytes());
+    bytes.extend_from_slice(&2u16.to_le_bytes());
+    bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&data_len.to_le_bytes());
+    for index in 0..samples {
+        bytes.extend_from_slice(&((index as i16 % 2_000) - 1_000).to_le_bytes());
+    }
+    bytes
+}
 
 /// Records every event; tests poll it like an app's view-model would.
 #[derive(Clone, Default)]
@@ -351,6 +373,47 @@ fn two_nodes_message_via_ffi_only() {
         AttachmentState::Cancelled
     );
 
+    // The same deterministic canonical clip is imported, transferred, and
+    // probed through the exact public surface every shell consumes.
+    let audio_bytes = canonical_audio(1_600);
+    let audio_source = dir.path().join("ffi-audio-message.wav");
+    std::fs::write(&audio_source, &audio_bytes).unwrap();
+    let audio_info = probe_recorded_audio(audio_source.display().to_string()).unwrap();
+    assert_eq!(audio_info.duration_ms, 100);
+    let audio_content = alice
+        .send_attachment(
+            bob_peer.clone(),
+            audio_source.display().to_string(),
+            "audio/wav".to_owned(),
+            Some("audio-message.wav".to_owned()),
+        )
+        .unwrap();
+    let audio_offer = b_rec.wait("audio attachment offer", |event| {
+        matches!(event, Event::AttachmentUpdated { attachment }
+            if attachment.content_id == audio_content
+                && attachment.direction == AttachmentDirection::Inbound)
+    });
+    let audio_transfer = match audio_offer {
+        Event::AttachmentUpdated { attachment } => attachment.transfer_id,
+        other => panic!("wrong event: {other:?}"),
+    };
+    bob.accept_attachment(audio_transfer.clone()).unwrap();
+    b_rec.wait("audio attachment completion", |event| {
+        matches!(event, Event::AttachmentUpdated { attachment }
+            if attachment.transfer_id == audio_transfer
+                && attachment.state == AttachmentState::Complete)
+    });
+    let audio_export = dir.path().join("ffi-audio-received.wav");
+    bob.export_attachment(audio_transfer, audio_export.display().to_string())
+        .unwrap();
+    assert_eq!(std::fs::read(&audio_export).unwrap(), audio_bytes);
+    assert_eq!(
+        probe_recorded_audio(audio_export.display().to_string())
+            .unwrap()
+            .duration_ms,
+        100
+    );
+
     // Bob replies over the established session; Alice sees it.
     bob.send(alice_peer.clone(), "loud and clear".to_owned())
         .unwrap();
@@ -673,15 +736,15 @@ fn groups_via_ffi_only() {
         .flat_map(|message| &message.deliveries)
         .all(|delivery| delivery.state == DeliveryState::Delivered));
 
-    let group_attachment_bytes = b"one ciphertext set through UniFFI";
+    let group_attachment_bytes = canonical_audio(1_600);
     let group_source = dir.path().join("ffi-group-source.bin");
-    std::fs::write(&group_source, group_attachment_bytes).unwrap();
+    std::fs::write(&group_source, &group_attachment_bytes).unwrap();
     let group_content_id = alice
         .send_group_attachment(
             group.clone(),
             group_source.display().to_string(),
-            "application/octet-stream".to_owned(),
-            Some("group.bin".to_owned()),
+            "audio/wav".to_owned(),
+            Some("audio-message.wav".to_owned()),
         )
         .unwrap();
     let group_offer = b_rec.wait("group attachment offer", |event| {
@@ -711,7 +774,16 @@ fn groups_via_ffi_only() {
     let group_export = dir.path().join("ffi-group-export.bin");
     bob.export_attachment(group_transfer, group_export.display().to_string())
         .unwrap();
-    assert_eq!(std::fs::read(group_export).unwrap(), group_attachment_bytes);
+    assert_eq!(
+        std::fs::read(&group_export).unwrap(),
+        group_attachment_bytes
+    );
+    assert_eq!(
+        probe_recorded_audio(group_export.display().to_string())
+            .unwrap()
+            .duration_ms,
+        100
+    );
 
     alice
         .remove_group_member(group.clone(), bob_peer.clone())

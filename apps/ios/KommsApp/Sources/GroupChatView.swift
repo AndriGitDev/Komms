@@ -79,6 +79,10 @@ struct GroupChatView: View {
                 ) { error in
                     self.error = error
                 }
+                AudioComposerButton(destination: .group(groupId)) { error in
+                    self.error = error
+                }
+                .disabled(group == nil)
                 TextField("Message", text: $draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...4)

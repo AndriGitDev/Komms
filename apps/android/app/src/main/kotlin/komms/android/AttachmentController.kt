@@ -52,10 +52,11 @@ class AttachmentController(
     private val activity: AppCompatActivity,
     private val belongsHere: (Attachment) -> Boolean,
     private val send: (Session, File, String, String?, File?) -> String,
+    private val bindAudio: (Attachment, LinearLayout) -> Unit,
     private val refresh: () -> Unit,
     savedState: Bundle?,
 ) {
-    private val adapter = AttachmentAdapter(::runAction, ::beginExport, ::bindPreview)
+    private val adapter = AttachmentAdapter(::runAction, ::beginExport, ::bindPreview, bindAudio)
     private val previewCache = mutableMapOf<String, Bitmap>()
     private val loadingPreviews = mutableSetOf<String>()
     private var pendingExport = savedState?.getString(PENDING_EXPORT_KEY)
@@ -304,6 +305,7 @@ private class AttachmentAdapter(
     private val action: (Attachment, AttachmentAction) -> Unit,
     private val export: (Attachment) -> Unit,
     private val preview: (Attachment, ImageView) -> Unit,
+    private val audio: (Attachment, LinearLayout) -> Unit,
 ) : RecyclerView.Adapter<AttachmentAdapter.Holder>() {
     private var items = listOf<Attachment>()
 
@@ -340,6 +342,7 @@ private class AttachmentAdapter(
             context.attachmentState(attachment.state),
         )
         preview(attachment, view.findViewById(R.id.attachment_preview_image))
+        audio(attachment, view.findViewById(R.id.attachment_audio_container))
 
         val objects = view.findViewById<LinearLayout>(R.id.attachment_objects)
         objects.removeAllViews()

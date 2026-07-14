@@ -278,7 +278,15 @@ label.check input { width: auto; margin: 0; }
   border-top: 1px solid var(--line);
 }
 #composer input { margin: 0; }
-#composer #btn-attach, #composer #btn-schedule { white-space: nowrap; }
+#composer #btn-record, #composer #btn-attach, #composer #btn-schedule { white-space: nowrap; }
+#composer #btn-record.recording { color: var(--danger); border-color: var(--danger); }
+.sr-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
 
 #attachment-transfers {
   max-height: 42%;
@@ -328,6 +336,27 @@ label.check input { width: auto; margin: 0; }
 .attachment-actions { justify-content: flex-end; margin-top: 0.55em; }
 .attachment-actions button { font-size: 0.78em; }
 .attachment-selection { word-break: break-word; }
+.audio-card, .audio-review {
+  margin-top: 0.6em;
+  padding: 0.65em;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+}
+.audio-card audio, .audio-review audio { width: 100%; }
+.audio-meta { color: var(--text-dim); font-size: 0.8em; margin-bottom: 0.4em; }
+.audio-waveform {
+  height: 2.5rem;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0.35em 0 0.55em;
+}
+.audio-waveform span {
+  flex: 1;
+  min-height: 2px;
+  background: var(--accent);
+  border-radius: 2px;
+}
 
 /* ── Modals ── */
 #modal-backdrop {

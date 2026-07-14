@@ -121,6 +121,33 @@
     <string name="hints_save">Replace hints</string>
     <string name="hints_saved">Hints replaced</string>
 
+    <!-- Recorded audio messages -->
+    <string name="audio_record">Record</string>
+    <string name="audio_record_description">Record an audio message</string>
+    <string name="audio_stop">Stop</string>
+    <string name="audio_stop_description">Stop recording and review the audio message</string>
+    <string name="audio_recording">Recording audio. Stop to review; it is not sent yet.</string>
+    <string name="audio_record_failed">Audio recording failed and was discarded.</string>
+    <string name="audio_focus_failed">Another app is using audio; recording did not start.</string>
+    <string name="audio_limit_reached">The 60 second limit was reached. Recording stopped for review.</string>
+    <string name="audio_review_ready">Recording stopped. Review it before explicitly sending or discarding.</string>
+    <string name="audio_review_title">Review audio message</string>
+    <string name="audio_send">Send audio</string>
+    <string name="audio_discard">Discard</string>
+    <string name="audio_discarded">Audio recording discarded.</string>
+    <string name="audio_interrupted_discarded">Recording stopped and was discarded when Komms left the foreground.</string>
+    <string name="audio_play">Play</string>
+    <string name="audio_pause">Pause</string>
+    <string name="audio_play_description">Play or pause this audio message; playback never starts automatically</string>
+    <string name="audio_seek_description">Audio playback position</string>
+    <string name="audio_waveform_description">Locally derived audio waveform</string>
+    <string name="audio_permission_title">Microphone permission</string>
+    <string name="audio_permission_denied">Microphone permission was denied. The message composer remains usable.</string>
+    <string name="audio_permission_settings">Microphone access is disabled for Komms. Enable it in system settings to record audio messages.</string>
+    <string name="audio_open_settings">Open settings</string>
+    <string name="audio_locked">Komms locked; discard this recording and unlock again.</string>
+    <string name="audio_carrier_changed">Carrier state changed. Review the updated explanation, then choose Send audio again.</string>
+
     <!-- Groups -->
     <string name="group_create_title">Create group</string>
     <string name="group_create_action">Create</string>

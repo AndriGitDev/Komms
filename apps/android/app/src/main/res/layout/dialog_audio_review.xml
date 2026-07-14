@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:orientation="vertical"
+    android:padding="12dp"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content">
+
+    <TextView
+        android:id="@+id/audio_review_duration"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
+    <komms.android.AudioWaveformView
+        android:id="@+id/audio_review_waveform"
+        android:importantForAccessibility="yes"
+        android:layout_marginTop="8dp"
+        android:layout_width="match_parent"
+        android:layout_height="48dp" />
+
+    <SeekBar
+        android:id="@+id/audio_review_seek"
+        android:contentDescription="@string/audio_seek_description"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
+    <Button
+        android:id="@+id/audio_review_play"
+        android:text="@string/audio_play"
+        android:contentDescription="@string/audio_play_description"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content" />
+
+    <TextView
+        android:id="@+id/audio_review_carrier"
+        android:layout_marginTop="8dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+</LinearLayout>

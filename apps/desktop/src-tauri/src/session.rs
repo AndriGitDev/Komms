@@ -22,9 +22,10 @@ use image::{ImageFormat, ImageReader};
 use serde::{Deserialize, Serialize};
 
 use kult_ffi::{
-    default_config, Attachment, AttachmentConversation, AttachmentDirection, AttachmentState,
-    CarrierCapability, Config, ContentKind, DeliveryState, Direction, Event, EventListener, Hint,
-    KdfChoice, KultNode, NatVerdict, ScheduledConversation,
+    canonicalize_recorded_audio, default_config, probe_recorded_audio, Attachment,
+    AttachmentConversation, AttachmentDirection, AttachmentState, AudioInfo, CarrierCapability,
+    Config, ContentKind, DeliveryState, Direction, Event, EventListener, Hint, KdfChoice, KultNode,
+    NatVerdict, ScheduledConversation, AUDIO_MAX_BYTES, AUDIO_MEDIA_TYPE,
 };
 
 use crate::qr;
@@ -38,14 +39,14 @@ impl PrivateTemp {
         for _ in 0..32 {
             let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                "komms-preview-{}-{sequence}.{extension}",
+                "komms-media-{}-{sequence}.{extension}",
                 std::process::id()
             ));
             if !path.exists() {
                 return Ok(Self(path));
             }
         }
-        Err("could not allocate a private preview path".to_owned())
+        Err("could not allocate a private media path".to_owned())
     }
 
     fn empty(extension: &str) -> Result<Self, String> {
@@ -54,7 +55,7 @@ impl PrivateTemp {
         for _ in 0..32 {
             let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                "komms-preview-{}-{sequence}.{extension}",
+                "komms-media-{}-{sequence}.{extension}",
                 std::process::id()
             ));
             let mut options = std::fs::OpenOptions::new();
@@ -73,7 +74,7 @@ impl PrivateTemp {
                 Err(error) => return Err(error.to_string()),
             }
         }
-        Err("could not allocate a private preview path".to_owned())
+        Err("could not allocate a private media path".to_owned())
     }
 
     fn with_bytes(extension: &str, bytes: &[u8]) -> Result<Self, String> {
@@ -98,6 +99,21 @@ impl PrivateTemp {
 impl Drop for PrivateTemp {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn cleanup_media_temps() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with("komms-media-"))
+        {
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
 }
 
@@ -447,6 +463,17 @@ pub struct UiAttachment {
     pub objects: Vec<UiAttachmentObject>,
 }
 
+/// Bounded protected playback material plus locally derived presentation data.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiAudioMedia {
+    /// Bounded canonical audio bytes for the webview's explicit player.
+    pub data_url: String,
+    /// Exact locally derived duration.
+    pub duration_ms: u64,
+    /// Sixty-four local peak amplitudes; never sent over the network.
+    pub waveform: Vec<u16>,
+}
+
 impl UiAttachment {
     fn from_ffi(attachment: Attachment) -> Self {
         Self {
@@ -747,6 +774,7 @@ impl Session {
         kdf: KdfChoice,
         sink: EventSink,
     ) -> Result<Self, String> {
+        cleanup_media_temps();
         let config = build_config(data_dir, passphrase, settings, kdf);
         let node = KultNode::start(config, Box::new(Forwarder(sink))).map_err(|e| e.to_string())?;
         Ok(Self { node })
@@ -763,6 +791,7 @@ impl Session {
         kdf: KdfChoice,
         sink: EventSink,
     ) -> Result<Self, String> {
+        cleanup_media_temps();
         let config = build_config(data_dir, passphrase, settings, kdf);
         let node = KultNode::restore(config, backup_path, mnemonic, Box::new(Forwarder(sink)))
             .map_err(|e| e.to_string())?;
@@ -928,6 +957,125 @@ impl Session {
         }
     }
 
+    fn canonical_audio(&self, encoded: &str) -> Result<(PrivateTemp, AudioInfo), String> {
+        let max_encoded = AUDIO_MAX_BYTES.div_ceil(3) * 4;
+        if encoded.len() as u64 > max_encoded {
+            return Err("recorded audio exceeds the 60 second limit".to_owned());
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|_| "recorded audio is not valid base64".to_owned())?;
+        if bytes.len() as u64 > AUDIO_MAX_BYTES {
+            return Err("recorded audio exceeds the 60 second limit".to_owned());
+        }
+        let source = PrivateTemp::with_bytes("native.wav", &bytes)?;
+        let canonical = PrivateTemp::destination("wav")?;
+        let info = canonicalize_recorded_audio(
+            source.path().display().to_string(),
+            canonical.path().display().to_string(),
+        )
+        .map_err(|error| error.to_string())?;
+        Ok((canonical, info))
+    }
+
+    /// Validate, strip metadata from, and import one explicitly confirmed
+    /// pairwise recording through the existing attachment pipeline.
+    pub fn send_recorded_audio(&self, peer: String, encoded: String) -> Result<String, String> {
+        let (audio, _) = self.canonical_audio(&encoded)?;
+        self.node
+            .send_attachment(
+                peer,
+                audio.path().display().to_string(),
+                AUDIO_MEDIA_TYPE.to_owned(),
+                Some("audio-message.wav".to_owned()),
+            )
+            .map_err(|error| error.to_string())
+    }
+
+    /// Validate, strip metadata from, and import one explicitly confirmed
+    /// encrypt-once sender-key group recording.
+    pub fn send_group_recorded_audio(
+        &self,
+        group: String,
+        encoded: String,
+    ) -> Result<String, String> {
+        let (audio, _) = self.canonical_audio(&encoded)?;
+        self.node
+            .send_group_attachment(
+                group,
+                audio.path().display().to_string(),
+                AUDIO_MEDIA_TYPE.to_owned(),
+                Some("audio-message.wav".to_owned()),
+            )
+            .map_err(|error| error.to_string())
+    }
+
+    /// Explain the authoritative current carrier gate at audio confirmation.
+    pub fn audio_carrier_explanation(
+        &self,
+        conversation: String,
+        destination: String,
+    ) -> Result<String, String> {
+        let snapshots = self
+            .node
+            .carrier_capabilities()
+            .map_err(|error| error.to_string())?;
+        let members = if conversation == "group" {
+            self.node
+                .groups()
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .find(|group| group.id == destination)
+                .ok_or_else(|| "unknown group".to_owned())?
+                .members
+                .into_iter()
+                .filter(|peer| peer != &self.node.peer())
+                .collect::<Vec<_>>()
+        } else {
+            vec![destination]
+        };
+        let mut mesh = 0usize;
+        let mut unavailable = 0usize;
+        for peer in &members {
+            match snapshots
+                .iter()
+                .find(|snapshot| &snapshot.peer == peer)
+                .map(|snapshot| snapshot.capability)
+                .unwrap_or(CarrierCapability::OfflineOrUnknown)
+            {
+                CarrierCapability::Realtime | CarrierCapability::Bulk => {}
+                CarrierCapability::MeshOnly => mesh += 1,
+                CarrierCapability::OfflineOrUnknown => unavailable += 1,
+            }
+        }
+        Ok(if members.is_empty() {
+            "This group has no other current recipients; no audio delivery will be created."
+                .to_owned()
+        } else if mesh > 0 && unavailable > 0 {
+            format!(
+                "{mesh} recipient{} ha{} only a mesh route, so audio waits for a faster link and emits zero mesh bulk frames; {unavailable} more ha{} no fresh route. Recipients with a fresh realtime or bulk link can proceed.",
+                if mesh == 1 { "" } else { "s" },
+                if mesh == 1 { "s" } else { "ve" },
+                if unavailable == 1 { "s" } else { "ve" }
+            )
+        } else if mesh > 0 {
+            format!(
+                "Will send when a faster link exists for {mesh} recipient{}. Audio emits zero mesh bulk frames.",
+                if mesh == 1 { "" } else { "s" }
+            )
+        } else if unavailable > 0 {
+            format!(
+                "Will remain queued locally until {} recipient{} ha{} a fresh faster link.",
+                unavailable,
+                if unavailable == 1 { "" } else { "s" },
+                if unavailable == 1 { "s" } else { "ve" }
+            )
+        } else {
+            "Every current recipient has a fresh realtime or bulk link; normal attachment quotas apply."
+                .to_owned()
+        })
+    }
+
     /// Every supported transfer as render-safe state. No keys, hashes,
     /// chunk paths, missing ranges, frames, or transport addresses cross
     /// into the shell.
@@ -1016,6 +1164,43 @@ impl Session {
             "data:{media_type};base64,{}",
             base64::engine::general_purpose::STANDARD.encode(bytes)
         ))
+    }
+
+    /// Decrypt a completed canonical audio object through a protected transient,
+    /// validate it, derive duration/waveform locally, and return bounded playback bytes.
+    pub fn attachment_audio(&self, transfer: String) -> Result<UiAudioMedia, String> {
+        let media_type = self
+            .node
+            .attachments()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|attachment| attachment.transfer_id == transfer)
+            .and_then(|attachment| {
+                attachment
+                    .objects
+                    .into_iter()
+                    .find(|object| !object.preview)
+                    .map(|object| object.media_type)
+            })
+            .ok_or_else(|| "audio attachment is unavailable".to_owned())?;
+        if media_type != AUDIO_MEDIA_TYPE {
+            return Err("attachment is not canonical recorded audio".to_owned());
+        }
+        let audio = PrivateTemp::destination("wav")?;
+        self.node
+            .export_attachment(transfer, audio.path().display().to_string())
+            .map_err(|error| error.to_string())?;
+        let info = probe_recorded_audio(audio.path().display().to_string())
+            .map_err(|error| error.to_string())?;
+        let bytes = std::fs::read(audio.path()).map_err(|error| error.to_string())?;
+        Ok(UiAudioMedia {
+            data_url: format!(
+                "data:{AUDIO_MEDIA_TYPE};base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            ),
+            duration_ms: info.duration_ms,
+            waveform: info.waveform,
+        })
     }
 
     /// Schedule pairwise text for an absolute UTC Unix instant.

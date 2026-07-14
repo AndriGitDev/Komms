@@ -8,6 +8,8 @@
 package komms.core
 
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -71,6 +73,23 @@ private fun listenAddr(session: Session): String {
 private fun multiaddrHint(addr: String) = listOf(HintSpec("multiaddr", addr))
 
 class SessionE2eTest {
+    private fun canonicalAudio(samples: Int = 1_600): ByteArray {
+        val dataBytes = samples * 2
+        val bytes = ByteBuffer.allocate(44 + dataBytes).order(ByteOrder.LITTLE_ENDIAN)
+        bytes.put("RIFF".toByteArray()).putInt(36 + dataBytes).put("WAVEfmt ".toByteArray())
+        bytes.putInt(16).putShort(1).putShort(1).putInt(16_000).putInt(32_000)
+            .putShort(2).putShort(16).put("data".toByteArray()).putInt(dataBytes)
+        repeat(samples) { bytes.putShort(((it % 2_000) - 1_000).toShort()) }
+        return bytes.array()
+    }
+    private fun nativeAudioWithMetadata(canonical: ByteArray): ByteArray {
+        val bytes = ByteBuffer.allocate(canonical.size + 12).order(ByteOrder.LITTLE_ENDIAN)
+        bytes.put("RIFF".toByteArray()).putInt(canonical.size + 4)
+        bytes.put(canonical, 8, 28)
+        bytes.put("LIST".toByteArray()).putInt(4).put("leak".toByteArray())
+        bytes.put(canonical, 36, canonical.size - 36)
+        return bytes.array()
+    }
     private fun tempDir(): File = Files.createTempDirectory("komms-e2e").toFile()
 
     @Test
@@ -110,6 +129,7 @@ class SessionE2eTest {
             (it as? Event.DeliveryUpdated)
                 ?.takeIf { e -> e.id == msgId && e.state == DeliveryState.DELIVERED }
         }
+        assertTrue(alice.audioCarrierExplanation(bobPeer).contains("fresh realtime or bulk link"))
 
         // History rows carry what the bubbles render.
         val history = alice.messages(bobPeer)
@@ -192,6 +212,35 @@ class SessionE2eTest {
             AttachmentState.CANCELLED,
             alice.attachments().single { it.transferId == outbound.transferId }.state,
         )
+
+        val audioBytes = canonicalAudio()
+        val nativeAudio = File(dir, "android-native-audio.wav").apply {
+            writeBytes(nativeAudioWithMetadata(audioBytes))
+        }
+        val audio = File(dir, "android-audio-message.wav")
+        assertEquals(100uL, alice.canonicalizeAudio(nativeAudio, audio).durationMs)
+        assertContentEquals(audioBytes, audio.readBytes())
+        assertEquals(100uL, alice.probeAudio(audio).durationMs)
+        val audioContent = alice.sendAttachment(
+            bobPeer, audio, "audio/wav", "audio-message.wav",
+        )
+        val audioOffer = bEv.wait("pairwise audio offer") {
+            (it as? Event.AttachmentUpdated)?.takeIf { event ->
+                event.attachment.contentId == audioContent &&
+                    event.attachment.direction == AttachmentDirection.INBOUND
+            }
+        }.attachment
+        bob.acceptAttachment(audioOffer.transferId)
+        bEv.wait("pairwise audio completion") {
+            (it as? Event.AttachmentUpdated)?.takeIf { event ->
+                event.attachment.transferId == audioOffer.transferId &&
+                    event.attachment.state == AttachmentState.COMPLETE
+            }
+        }
+        val audioExport = File(dir, "android-audio-received.wav")
+        bob.exportAttachment(audioOffer.transferId, audioExport)
+        assertContentEquals(audioBytes, audioExport.readBytes())
+        assertEquals(100uL, bob.probeAudio(audioExport).durationMs)
 
         // The verify screen: identical digits and QR payloads on both
         // ends (also identical to what the desktop app renders), and the
@@ -309,15 +358,15 @@ class SessionE2eTest {
         }
 
         // The same Session methods cover one encrypt-once group attachment.
-        val groupBytes = "one encrypted Android group object".toByteArray()
-        val groupSource = File(dir, "android-group-source.bin").apply {
+        val groupBytes = canonicalAudio()
+        val groupSource = File(dir, "android-group-source.wav").apply {
             writeBytes(groupBytes)
         }
         val groupContent = alice.sendGroupAttachment(
             group,
             groupSource,
-            "application/octet-stream",
-            "route.bin",
+            "audio/wav",
+            "audio-message.wav",
         )
         val groupOffer = bEv.wait("group attachment offer") {
             (it as? Event.AttachmentUpdated)?.takeIf { event ->
@@ -336,6 +385,7 @@ class SessionE2eTest {
         val groupExport = File(dir, "android-group-export.bin")
         bob.exportAttachment(groupOffer.transferId, groupExport)
         assertContentEquals(groupBytes, groupExport.readBytes())
+        assertEquals(100uL, bob.probeAudio(groupExport).durationMs)
 
         alice.addGroupMember(group, carolPeer)
         listed = alice.groups()

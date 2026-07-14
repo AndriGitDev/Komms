@@ -142,10 +142,12 @@
         <section id="attachment-transfers" aria-label="Attachment transfers" hidden></section>
         <form id="composer" autocomplete="off">
           <input type="text" id="composer-input" placeholder="Message…" />
+          <button type="button" id="btn-record" class="ghost" aria-pressed="false">Record audio</button>
           <button type="button" id="btn-attach" class="ghost">Attach</button>
           <button type="button" id="btn-schedule" class="ghost">Schedule</button>
           <button type="submit" class="primary">Send</button>
         </form>
+        <p id="recording-status" class="sr-status" role="status" aria-live="polite"></p>
       </div>
     </main>
   </section>
@@ -193,6 +195,17 @@
     <p class="error" data-f="error" hidden></p>
     <div class="row end">
       <button class="primary" data-act="send-attachment">Send attachment</button>
+    </div>
+  </template>
+
+  <template id="tpl-audio-review">
+    <p class="modal-note">Review this recording before choosing Send audio. It will never play automatically.</p>
+    <div class="audio-review" data-f="audio-review"></div>
+    <p class="modal-note warn" data-f="carrier"></p>
+    <p class="error" data-f="error" hidden></p>
+    <div class="row split">
+      <button type="button" class="danger" data-act="discard-audio">Discard</button>
+      <button type="button" class="primary" data-act="send-audio">Send audio</button>
     </div>
   </template>
 
