@@ -235,10 +235,146 @@ pub enum ContentKind {
     LegacyText,
     /// Canonical framed text.
     Text,
+    /// Supported encrypted attachment offer.
+    Attachment,
     /// Authenticated content this version cannot interpret.
     Unsupported,
     /// A typed frame that violated the canonical contract.
     Malformed,
+}
+
+/// Pairwise or sender-key group attachment conversation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum AttachmentConversation {
+    /// Conversation with one contact.
+    Pairwise,
+    /// Sender-key group conversation.
+    Group,
+}
+
+/// Local direction of an attachment transfer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum AttachmentDirection {
+    /// Bytes are being received from the manifest author.
+    Inbound,
+    /// This device authored and may serve the bytes.
+    Outbound,
+}
+
+/// Durable attachment lifecycle state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum AttachmentState {
+    /// Valid offer retained in history.
+    Offered,
+    /// Waiting for explicit local consent.
+    AwaitingConsent,
+    /// Accepted and waiting for an eligible carrier.
+    Queued,
+    /// Authenticated transfer work is active.
+    Transferring,
+    /// Explicitly paused while verified progress remains durable.
+    Paused,
+    /// Every chunk and the final object hash were verified.
+    Complete,
+    /// Durable receiver refusal.
+    Rejected,
+    /// Transfer activity was cancelled.
+    Cancelled,
+    /// Authentication or final integrity failed.
+    Corrupt,
+    /// Required local state or sealed files are unavailable.
+    Unavailable,
+}
+
+impl AttachmentState {
+    fn from_store(state: kult_store::MediaTransferState) -> Self {
+        match state {
+            kult_store::MediaTransferState::Offered => Self::Offered,
+            kult_store::MediaTransferState::AwaitingConsent => Self::AwaitingConsent,
+            kult_store::MediaTransferState::Queued => Self::Queued,
+            kult_store::MediaTransferState::Transferring => Self::Transferring,
+            kult_store::MediaTransferState::Paused => Self::Paused,
+            kult_store::MediaTransferState::Complete => Self::Complete,
+            kult_store::MediaTransferState::Rejected => Self::Rejected,
+            kult_store::MediaTransferState::Cancelled => Self::Cancelled,
+            kult_store::MediaTransferState::Corrupt => Self::Corrupt,
+            kult_store::MediaTransferState::Unavailable => Self::Unavailable,
+        }
+    }
+}
+
+/// Render-safe progress for one primary or preview object.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct AttachmentObject {
+    /// Whether this object is the optional preview.
+    pub preview: bool,
+    /// Exact authenticated object size.
+    pub total_bytes: u64,
+    /// Bytes represented by durably verified chunks.
+    pub verified_bytes: u64,
+    /// Authenticated but untrusted media-type display hint.
+    pub media_type: String,
+    /// Optional sanitized display basename.
+    pub filename: Option<String>,
+    /// Object lifecycle state.
+    pub state: AttachmentState,
+}
+
+/// Render-safe attachment state. Cryptographic keys, object ids, hashes,
+/// chunk paths, bitmaps, ranges, frames, and transport addresses stay private.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct Attachment {
+    /// Random local transfer id (hex), used by lifecycle methods.
+    pub transfer_id: String,
+    /// Peer serving or being served (hex).
+    pub peer: String,
+    /// Pairwise or group conversation.
+    pub conversation: AttachmentConversation,
+    /// Group id for group attachments; absent for pairwise transfers.
+    pub group: Option<String>,
+    /// Inbound or outbound on this device.
+    pub direction: AttachmentDirection,
+    /// Original manifest author (hex).
+    pub author: String,
+    /// Stable encrypted content id (hex).
+    pub content_id: String,
+    /// Transfer lifecycle state.
+    pub state: AttachmentState,
+    /// Primary object followed by an optional preview.
+    pub objects: Vec<AttachmentObject>,
+}
+
+impl Attachment {
+    fn from_node(attachment: kult_node::AttachmentInfo) -> Self {
+        Self {
+            transfer_id: hex_encode(&attachment.transfer_id),
+            peer: hex_encode(&attachment.peer),
+            conversation: match attachment.conversation {
+                kult_node::AttachmentConversation::Pairwise => AttachmentConversation::Pairwise,
+                kult_node::AttachmentConversation::Group => AttachmentConversation::Group,
+            },
+            group: attachment.group.map(|group| hex_encode(&group)),
+            direction: match attachment.direction {
+                kult_node::AttachmentDirection::Inbound => AttachmentDirection::Inbound,
+                kult_node::AttachmentDirection::Outbound => AttachmentDirection::Outbound,
+            },
+            author: hex_encode(&attachment.author),
+            content_id: hex_encode(&attachment.content_id),
+            state: AttachmentState::from_store(attachment.state),
+            objects: attachment
+                .objects
+                .into_iter()
+                .map(|object| AttachmentObject {
+                    preview: object.preview,
+                    total_bytes: object.total_bytes,
+                    verified_bytes: object.verified_bytes,
+                    media_type: object.media_type,
+                    filename: object.filename,
+                    state: AttachmentState::from_store(object.state),
+                })
+                .collect(),
+        }
+    }
 }
 
 /// A stored contact.
@@ -553,6 +689,12 @@ pub enum Event {
         /// Delivery state for this member's copy.
         state: DeliveryState,
     },
+    /// Attachment offer, consent, progress, completion, or terminal state
+    /// changed.
+    AttachmentUpdated {
+        /// Current render-safe transfer state.
+        attachment: Attachment,
+    },
 }
 
 impl Event {
@@ -636,6 +778,9 @@ impl Event {
                     state: DeliveryState::from_store(state),
                 }
             }
+            kult_node::Event::AttachmentUpdated { attachment } => Self::AttachmentUpdated {
+                attachment: Attachment::from_node(attachment),
+            },
             _ => return None,
         })
     }
@@ -774,6 +919,102 @@ impl KultNode {
             resp,
         })
         .map(|id| hex_encode(&id))
+    }
+
+    /// Import a caller-selected file as a pairwise attachment without
+    /// buffering the complete object in memory. Returns its content id (hex).
+    pub fn send_attachment(
+        &self,
+        peer: String,
+        path: String,
+        media_type: String,
+        filename: Option<String>,
+    ) -> Result<String, FfiError> {
+        let peer = parse_peer(&peer)?;
+        let metadata = kult_node::AttachmentMetadata {
+            media_type,
+            filename,
+        };
+        self.call(|resp| Msg::AttachmentSend {
+            peer,
+            metadata,
+            path: PathBuf::from(path),
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
+    /// Import a caller-selected file as one encrypt-once sender-key group
+    /// attachment. Returns its content id (hex).
+    pub fn send_group_attachment(
+        &self,
+        group: String,
+        path: String,
+        media_type: String,
+        filename: Option<String>,
+    ) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        let metadata = kult_node::AttachmentMetadata {
+            media_type,
+            filename,
+        };
+        self.call(|resp| Msg::GroupAttachmentSend {
+            group,
+            metadata,
+            path: PathBuf::from(path),
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
+    /// Every supported attachment transfer as render-safe state.
+    pub fn attachments(&self) -> Result<Vec<Attachment>, FfiError> {
+        Ok(self
+            .call(|resp| Msg::Attachments { resp })?
+            .into_iter()
+            .map(Attachment::from_node)
+            .collect())
+    }
+
+    /// Accept an inbound attachment offer.
+    pub fn accept_attachment(&self, transfer: String) -> Result<(), FfiError> {
+        let transfer = parse_transfer(&transfer)?;
+        self.call(|resp| Msg::AttachmentAccept { transfer, resp })
+    }
+
+    /// Durably reject an inbound attachment offer.
+    pub fn reject_attachment(&self, transfer: String) -> Result<(), FfiError> {
+        let transfer = parse_transfer(&transfer)?;
+        self.call(|resp| Msg::AttachmentReject { transfer, resp })
+    }
+
+    /// Cancel local attachment activity and release unreferenced partial data.
+    pub fn cancel_attachment(&self, transfer: String) -> Result<(), FfiError> {
+        let transfer = parse_transfer(&transfer)?;
+        self.call(|resp| Msg::AttachmentCancel { transfer, resp })
+    }
+
+    /// Pause attachment activity while retaining verified progress.
+    pub fn pause_attachment(&self, transfer: String) -> Result<(), FfiError> {
+        let transfer = parse_transfer(&transfer)?;
+        self.call(|resp| Msg::AttachmentPause { transfer, resp })
+    }
+
+    /// Resume a paused attachment and reset its retry window.
+    pub fn resume_attachment(&self, transfer: String) -> Result<(), FfiError> {
+        let transfer = parse_transfer(&transfer)?;
+        self.call(|resp| Msg::AttachmentResume { transfer, resp })
+    }
+
+    /// Stream a completed primary object to a new caller-selected path. The
+    /// destination is created protected and is never overwritten.
+    pub fn export_attachment(&self, transfer: String, path: String) -> Result<(), FfiError> {
+        let transfer = parse_transfer(&transfer)?;
+        self.call(|resp| Msg::AttachmentExport {
+            transfer,
+            path: PathBuf::from(path),
+            resp,
+        })
     }
 
     /// Schedule pairwise text at an absolute UTC Unix instant. The returned
@@ -1152,6 +1393,7 @@ fn content_kind(status: kult_node::ContentStatus) -> ContentKind {
     match status {
         kult_node::ContentStatus::LegacyText => ContentKind::LegacyText,
         kult_node::ContentStatus::Text { .. } => ContentKind::Text,
+        kult_node::ContentStatus::Attachment { .. } => ContentKind::Attachment,
         kult_node::ContentStatus::Unsupported { .. } => ContentKind::Unsupported,
         kult_node::ContentStatus::Malformed => ContentKind::Malformed,
         _ => ContentKind::Unsupported,
@@ -1163,6 +1405,7 @@ fn render_event_body(body: &[u8], status: kult_node::ContentStatus) -> String {
         kult_node::ContentStatus::LegacyText | kult_node::ContentStatus::Text { .. } => {
             String::from_utf8(body.to_vec()).expect("node exposes only validated UTF-8 text")
         }
+        kult_node::ContentStatus::Attachment { .. } => String::new(),
         kult_node::ContentStatus::Unsupported { .. } | kult_node::ContentStatus::Malformed => {
             UNSUPPORTED_MESSAGE.to_owned()
         }
@@ -1177,7 +1420,7 @@ fn render_stored_content(bytes: &[u8]) -> (String, ContentKind) {
         }
         kult_protocol::DecodedContent::Text { text, .. } => (text.to_owned(), ContentKind::Text),
         kult_protocol::DecodedContent::Attachment { .. } => {
-            (UNSUPPORTED_MESSAGE.to_owned(), ContentKind::Unsupported)
+            (String::new(), ContentKind::Attachment)
         }
         kult_protocol::DecodedContent::Unsupported { .. } => {
             (UNSUPPORTED_MESSAGE.to_owned(), ContentKind::Unsupported)
@@ -1211,6 +1454,25 @@ fn parse_group(s: &str) -> Result<[u8; 32], FfiError> {
 fn parse_message(s: &str) -> Result<[u8; 16], FfiError> {
     let fail = || FfiError::Node {
         reason: "message id must be 32 hex chars".to_owned(),
+    };
+    if s.len() != 32 {
+        return Err(fail());
+    }
+    let digits: Vec<u32> = s
+        .chars()
+        .map(|c| c.to_digit(16))
+        .collect::<Option<_>>()
+        .ok_or_else(fail)?;
+    let mut out = [0u8; 16];
+    for (i, pair) in digits.chunks_exact(2).enumerate() {
+        out[i] = ((pair[0] << 4) | pair[1]) as u8;
+    }
+    Ok(out)
+}
+
+fn parse_transfer(s: &str) -> Result<[u8; 16], FfiError> {
+    let fail = || FfiError::Node {
+        reason: "transfer id must be 32 hex chars".to_owned(),
     };
     if s.len() != 32 {
         return Err(fail());
@@ -1290,7 +1552,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_content_never_crosses_as_lossy_or_raw_text() {
+    fn non_text_content_never_crosses_as_lossy_or_raw_text() {
         let mut unknown = kult_protocol::CONTENT_MAGIC.to_vec();
         unknown.push(2);
         let (body, kind) = render_stored_content(&unknown);
@@ -1318,8 +1580,37 @@ mod tests {
         };
         let frame = kult_protocol::encode_attachment([0x44; 16], &manifest).unwrap();
         let (body, kind) = render_stored_content(&frame);
-        assert_eq!(body, UNSUPPORTED_MESSAGE);
-        assert_eq!(kind, ContentKind::Unsupported);
+        assert!(body.is_empty());
+        assert_eq!(kind, ContentKind::Attachment);
         assert!(!body.contains("private.png"));
+
+        let event = Event::from_node(kult_node::Event::AttachmentUpdated {
+            attachment: kult_node::AttachmentInfo {
+                transfer_id: [0x11; 16],
+                peer: [0x12; 32],
+                conversation: kult_node::AttachmentConversation::Pairwise,
+                group: None,
+                direction: kult_node::AttachmentDirection::Inbound,
+                author: [0x12; 32],
+                content_id: [0x13; 16],
+                state: kult_store::MediaTransferState::AwaitingConsent,
+                objects: vec![kult_node::AttachmentObjectInfo {
+                    preview: false,
+                    total_bytes: 1,
+                    verified_bytes: 0,
+                    media_type: "image/png".to_owned(),
+                    filename: Some("private.png".to_owned()),
+                    state: kult_store::MediaTransferState::AwaitingConsent,
+                }],
+            },
+        })
+        .unwrap();
+        assert!(matches!(
+            event,
+            Event::AttachmentUpdated { attachment }
+                if attachment.transfer_id == "11".repeat(16)
+                    && attachment.state == AttachmentState::AwaitingConsent
+                    && attachment.objects[0].filename.as_deref() == Some("private.png")
+        ));
     }
 }

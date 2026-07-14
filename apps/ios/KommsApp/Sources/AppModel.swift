@@ -128,7 +128,8 @@ final class AppModel: ObservableObject {
              .scheduledMessageActivated, .deliveryUpdated, .messageReceived,
              .noteToSelfMessageAdded,
              .carrierCapabilityChanged,
-             .groupUpdated, .groupMessageReceived, .groupDeliveryUpdated:
+             .groupUpdated, .groupMessageReceived, .groupDeliveryUpdated,
+             .attachmentUpdated:
             Task { await refresh() }
         case .contactAdded:
             Task { await refresh() }

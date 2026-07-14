@@ -26,6 +26,18 @@ COMMANDS:
                                     add a contact from an out-of-band bundle
     add NAME ADDRESS                add a contact from a kult address (DHT)
     send PEER_HEX TEXT...           queue a message
+    attachment-send PEER_HEX PATH MEDIA_TYPE [FILENAME]
+                                    import and queue a pairwise attachment
+    group-attachment-send GROUP_HEX PATH MEDIA_TYPE [FILENAME]
+                                    import and queue a group attachment
+    attachments                     list render-safe attachment transfers
+    attachment-accept TRANSFER_HEX  accept an inbound offer
+    attachment-reject TRANSFER_HEX  reject an inbound offer
+    attachment-cancel TRANSFER_HEX  cancel transfer activity
+    attachment-pause TRANSFER_HEX   pause and retain verified progress
+    attachment-resume TRANSFER_HEX  resume a paused transfer
+    attachment-export TRANSFER_HEX PATH
+                                    stream a completed object to a new file
     schedule PEER_HEX UNIX_SECS TEXT... schedule pairwise text at a UTC instant
     group-schedule GROUP_HEX UNIX_SECS TEXT... schedule group text
     scheduled                       list scheduled messages
@@ -108,6 +120,57 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
         "send" => {
             need(2)?;
             json!({ "op": "send", "peer": args[0], "body": args[1..].join(" ") })
+        }
+        "attachment-send" => {
+            need(3)?;
+            if args.len() > 4 {
+                return Err("attachment-send: too many arguments".to_owned());
+            }
+            json!({
+                "op": "attachment_send",
+                "peer": args[0],
+                "path": args[1],
+                "media_type": args[2],
+                "filename": args.get(3),
+            })
+        }
+        "group-attachment-send" => {
+            need(3)?;
+            if args.len() > 4 {
+                return Err("group-attachment-send: too many arguments".to_owned());
+            }
+            json!({
+                "op": "group_attachment_send",
+                "group": args[0],
+                "path": args[1],
+                "media_type": args[2],
+                "filename": args.get(3),
+            })
+        }
+        "attachments" => json!({ "op": "attachments" }),
+        "attachment-accept" => {
+            need(1)?;
+            json!({ "op": "attachment_accept", "transfer": args[0] })
+        }
+        "attachment-reject" => {
+            need(1)?;
+            json!({ "op": "attachment_reject", "transfer": args[0] })
+        }
+        "attachment-cancel" => {
+            need(1)?;
+            json!({ "op": "attachment_cancel", "transfer": args[0] })
+        }
+        "attachment-pause" => {
+            need(1)?;
+            json!({ "op": "attachment_pause", "transfer": args[0] })
+        }
+        "attachment-resume" => {
+            need(1)?;
+            json!({ "op": "attachment_resume", "transfer": args[0] })
+        }
+        "attachment-export" => {
+            need(2)?;
+            json!({ "op": "attachment_export", "transfer": args[0], "path": args[1] })
         }
         "schedule" => {
             need(3)?;
@@ -348,5 +411,34 @@ mod tests {
             &["01".repeat(16), "not-a-time".to_owned(), "x".to_owned()]
         )
         .is_err());
+
+        let request = build_request(
+            "attachment-send",
+            &[
+                "05".repeat(32),
+                "/tmp/photo.jpg".to_owned(),
+                "image/jpeg".to_owned(),
+                "photo.jpg".to_owned(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(request["op"], json!("attachment_send"));
+        assert_eq!(request["filename"], json!("photo.jpg"));
+        assert_eq!(
+            build_request("attachment-accept", &["06".repeat(16)]).unwrap(),
+            json!({ "op": "attachment_accept", "transfer": "06".repeat(16) })
+        );
+        assert_eq!(
+            build_request(
+                "attachment-export",
+                &["06".repeat(16), "/tmp/export.jpg".to_owned()]
+            )
+            .unwrap(),
+            json!({
+                "op": "attachment_export",
+                "transfer": "06".repeat(16),
+                "path": "/tmp/export.jpg",
+            })
+        );
     }
 }

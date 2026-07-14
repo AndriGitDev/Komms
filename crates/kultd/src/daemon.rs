@@ -366,6 +366,12 @@ fn now() -> u64 {
 /// existing file is never overwritten (pick a new name or remove it first).
 fn write_private(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write;
+    open_private(path)?.write_all(bytes)
+}
+
+/// Create a caller-selected plaintext destination without ever clobbering an
+/// existing file. Attachment exports stream directly into this handle.
+fn open_private(path: &std::path::Path) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -373,7 +379,7 @@ fn write_private(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    options.open(path)?.write_all(bytes)
+    options.open(path)
 }
 
 /// The hints this node publishes: every live listen address (circuit
@@ -511,6 +517,92 @@ async fn handle_op(
                 .send_message(&peer, body.as_bytes(), now(), &mut OsRng)
                 .map_err(fail)?;
             Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::AttachmentSend {
+            peer,
+            path,
+            media_type,
+            filename,
+        } => {
+            let peer = wire::parse_peer(&peer)?;
+            let mut source =
+                std::fs::File::open(&path).map_err(|e| format!("attachment source: {e}"))?;
+            let metadata = kult_node::AttachmentMetadata {
+                media_type,
+                filename,
+            };
+            let id = node
+                .send_attachment(&peer, &metadata, &mut source, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::GroupAttachmentSend {
+            group,
+            path,
+            media_type,
+            filename,
+        } => {
+            let group = wire::parse_group(&group)?;
+            let mut source =
+                std::fs::File::open(&path).map_err(|e| format!("attachment source: {e}"))?;
+            let metadata = kult_node::AttachmentMetadata {
+                media_type,
+                filename,
+            };
+            let id = node
+                .send_group_attachment(&group, &metadata, &mut source, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::Attachments => Ok(json!({
+            "attachments": node
+                .attachments()
+                .map_err(fail)?
+                .iter()
+                .map(wire::attachment_json)
+                .collect::<Vec<_>>(),
+        })),
+        Op::AttachmentAccept { transfer } => {
+            let transfer = wire::parse_transfer(&transfer)?;
+            node.accept_attachment(&transfer, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({}))
+        }
+        Op::AttachmentReject { transfer } => {
+            let transfer = wire::parse_transfer(&transfer)?;
+            node.reject_attachment(&transfer, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({}))
+        }
+        Op::AttachmentCancel { transfer } => {
+            let transfer = wire::parse_transfer(&transfer)?;
+            node.cancel_attachment(&transfer, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({}))
+        }
+        Op::AttachmentPause { transfer } => {
+            let transfer = wire::parse_transfer(&transfer)?;
+            node.pause_attachment(&transfer, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({}))
+        }
+        Op::AttachmentResume { transfer } => {
+            let transfer = wire::parse_transfer(&transfer)?;
+            node.resume_attachment(&transfer, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({}))
+        }
+        Op::AttachmentExport { transfer, path } => {
+            let transfer = wire::parse_transfer(&transfer)?;
+            let destination_path = std::path::Path::new(&path);
+            let mut destination =
+                open_private(destination_path).map_err(|e| format!("attachment export: {e}"))?;
+            if let Err(error) = node.export_attachment(&transfer, &mut destination) {
+                drop(destination);
+                let _ = std::fs::remove_file(destination_path);
+                return Err(fail(error));
+            }
+            Ok(json!({ "path": path }))
         }
         Op::Schedule {
             peer,
