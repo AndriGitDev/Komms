@@ -454,6 +454,11 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
 
     bob.reject_attachment(inbound_transfer).unwrap();
     assert_eq!(bob.attachments().unwrap()[0].state, "rejected");
+    a_ev.wait("sender observes attachment rejection", |event| {
+        matches!(event, UiEvent::AttachmentUpdated { attachment }
+            if attachment.transfer_id == outbound[0].transfer_id
+                && attachment.state == "rejected")
+    });
     alice
         .cancel_attachment(outbound[0].transfer_id.clone())
         .unwrap();

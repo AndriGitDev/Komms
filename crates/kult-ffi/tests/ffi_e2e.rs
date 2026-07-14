@@ -415,6 +415,14 @@ fn two_nodes_message_via_ffi_only() {
         bob.attachments().unwrap()[0].state,
         AttachmentState::Rejected
     );
+    a_rec.wait("sender observes attachment rejection", |event| {
+        matches!(
+            event,
+            Event::AttachmentUpdated { attachment }
+                if attachment.transfer_id == outbound[0].transfer_id
+                    && attachment.state == AttachmentState::Rejected
+        )
+    });
     alice
         .cancel_attachment(outbound[0].transfer_id.clone())
         .unwrap();
