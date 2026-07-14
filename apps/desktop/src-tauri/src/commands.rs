@@ -11,8 +11,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::session::{
-    NetworkSettings, Session, UiBundle, UiContact, UiGroup, UiGroupMessage, UiHint, UiMessage,
-    UiNoteMessage, UiSafetyNumber, UiScheduledMessage, UiStatus,
+    NetworkSettings, Session, UiAttachment, UiBundle, UiContact, UiGroup, UiGroupMessage, UiHint,
+    UiMessage, UiNoteMessage, UiSafetyNumber, UiScheduledMessage, UiStatus,
 };
 
 /// The one piece of managed state: the running session, if unlocked.
@@ -240,6 +240,54 @@ forward!(
 forward!(
     /// Queue a message; progress arrives as `node-event`s.
     send(peer: String, body: String) -> String, |s| s.send(peer, body)
+);
+forward!(
+    /// Import a caller-selected file as a pairwise attachment.
+    send_attachment(
+        peer: String,
+        path: String,
+        media_type: String,
+        filename: Option<String>
+    ) -> String,
+    |s| s.send_attachment(peer, path, media_type, filename)
+);
+forward!(
+    /// Import a caller-selected file as an encrypt-once group attachment.
+    send_group_attachment(
+        group: String,
+        path: String,
+        media_type: String,
+        filename: Option<String>
+    ) -> String,
+    |s| s.send_group_attachment(group, path, media_type, filename)
+);
+forward!(
+    /// Every attachment transfer as render-safe state.
+    attachments() -> Vec<UiAttachment>, |s| s.attachments()
+);
+forward!(
+    /// Accept an inbound attachment offer.
+    accept_attachment(transfer: String) -> (), |s| s.accept_attachment(transfer)
+);
+forward!(
+    /// Durably reject an inbound attachment offer.
+    reject_attachment(transfer: String) -> (), |s| s.reject_attachment(transfer)
+);
+forward!(
+    /// Cancel local transfer activity.
+    cancel_attachment(transfer: String) -> (), |s| s.cancel_attachment(transfer)
+);
+forward!(
+    /// Pause transfer activity while retaining verified progress.
+    pause_attachment(transfer: String) -> (), |s| s.pause_attachment(transfer)
+);
+forward!(
+    /// Resume a paused transfer.
+    resume_attachment(transfer: String) -> (), |s| s.resume_attachment(transfer)
+);
+forward!(
+    /// Export a completed primary object to a protected new path.
+    export_attachment(transfer: String, path: String) -> (), |s| s.export_attachment(transfer, path)
 );
 forward!(
     /// Stable reserved identity for the local note-to-self conversation.

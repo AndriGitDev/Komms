@@ -139,8 +139,10 @@
           </div>
         </header>
         <div id="messages"></div>
+        <section id="attachment-transfers" aria-label="Attachment transfers" hidden></section>
         <form id="composer" autocomplete="off">
           <input type="text" id="composer-input" placeholder="Message…" />
+          <button type="button" id="btn-attach" class="ghost">Attach</button>
           <button type="button" id="btn-schedule" class="ghost">Schedule</button>
           <button type="submit" class="primary">Send</button>
         </form>
@@ -176,6 +178,21 @@
     <div class="row">
       <button class="ghost" data-act="copy-hex">Copy bundle</button>
       <button class="ghost" data-act="publish">Publish to DHT</button>
+    </div>
+  </template>
+
+  <template id="tpl-attachment-send">
+    <p class="modal-note">The selected file is streamed into encrypted storage. Its source path is not shared.</p>
+    <p class="attachment-selection"><strong>Selected:</strong> <span data-f="selected-name"></span></p>
+    <label>Display filename
+      <input type="text" data-f="filename" spellcheck="false" />
+    </label>
+    <label>MIME type
+      <input type="text" data-f="media-type" spellcheck="false" placeholder="application/octet-stream" />
+    </label>
+    <p class="error" data-f="error" hidden></p>
+    <div class="row end">
+      <button class="primary" data-act="send-attachment">Send attachment</button>
     </div>
   </template>
 

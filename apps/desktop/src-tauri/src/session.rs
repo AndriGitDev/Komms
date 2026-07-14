@@ -764,6 +764,89 @@ impl Session {
         self.node.send(peer, body).map_err(|e| e.to_string())
     }
 
+    /// Import a caller-selected path as a pairwise attachment. The complete
+    /// object stays behind the path/streaming boundary.
+    pub fn send_attachment(
+        &self,
+        peer: String,
+        path: String,
+        media_type: String,
+        filename: Option<String>,
+    ) -> Result<String, String> {
+        self.node
+            .send_attachment(peer, path, media_type, filename)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Import a caller-selected path as one encrypt-once group attachment.
+    pub fn send_group_attachment(
+        &self,
+        group: String,
+        path: String,
+        media_type: String,
+        filename: Option<String>,
+    ) -> Result<String, String> {
+        self.node
+            .send_group_attachment(group, path, media_type, filename)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Every supported transfer as render-safe state. No keys, hashes,
+    /// chunk paths, missing ranges, frames, or transport addresses cross
+    /// into the shell.
+    pub fn attachments(&self) -> Result<Vec<UiAttachment>, String> {
+        Ok(self
+            .node
+            .attachments()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(UiAttachment::from_ffi)
+            .collect())
+    }
+
+    /// Accept an inbound attachment offer.
+    pub fn accept_attachment(&self, transfer: String) -> Result<(), String> {
+        self.node
+            .accept_attachment(transfer)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Durably reject an inbound attachment offer.
+    pub fn reject_attachment(&self, transfer: String) -> Result<(), String> {
+        self.node
+            .reject_attachment(transfer)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Cancel local transfer activity and release unreferenced partial data.
+    pub fn cancel_attachment(&self, transfer: String) -> Result<(), String> {
+        self.node
+            .cancel_attachment(transfer)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Pause transfer activity while retaining verified progress.
+    pub fn pause_attachment(&self, transfer: String) -> Result<(), String> {
+        self.node
+            .pause_attachment(transfer)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Resume a paused transfer from its durable verified progress.
+    pub fn resume_attachment(&self, transfer: String) -> Result<(), String> {
+        self.node
+            .resume_attachment(transfer)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Stream a completed primary object to a protected, new caller-selected
+    /// path. Existing destinations are never overwritten.
+    pub fn export_attachment(&self, transfer: String, path: String) -> Result<(), String> {
+        self.node
+            .export_attachment(transfer, path)
+            .map_err(|e| e.to_string())
+    }
+
     /// Schedule pairwise text for an absolute UTC Unix instant.
     pub fn schedule(&self, peer: String, body: String, not_before: u64) -> Result<String, String> {
         self.node

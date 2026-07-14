@@ -214,6 +214,169 @@ fn two_desktops_pair_by_bundle_hex_and_message() {
 }
 
 #[test]
+fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
+    let dir = tempfile::tempdir().unwrap();
+    let a_ev = Events::default();
+    let b_ev = Events::default();
+    let alice = open(dir.path(), "attachment-alice", &a_ev);
+    let bob = open(dir.path(), "attachment-bob", &b_ev);
+
+    let alice_addr = listen_addr(&alice);
+    let bob_addr = listen_addr(&bob);
+    let alice_bundle = alice.my_bundle().unwrap();
+    let bob_bundle = bob.my_bundle().unwrap();
+    let bob_peer = alice
+        .add_contact("Bob".to_owned(), &bob_bundle.hex, &multiaddr_hint(bob_addr))
+        .unwrap();
+    let alice_peer = bob
+        .add_contact(
+            "Alice".to_owned(),
+            &alice_bundle.hex,
+            &multiaddr_hint(alice_addr),
+        )
+        .unwrap();
+
+    // Attachment support is an authenticated session capability. Establish
+    // the session first, exactly as the UI does through ordinary messaging.
+    let hello = alice
+        .send(bob_peer.clone(), "attachment setup".to_owned())
+        .unwrap();
+    b_ev.wait("attachment setup message", |event| {
+        matches!(event, UiEvent::MessageReceived { body, .. } if body == "attachment setup")
+    });
+    a_ev.wait(
+        "attachment setup delivered",
+        |event| matches!(event, UiEvent::DeliveryUpdated { id, state: "delivered" } if *id == hello),
+    );
+
+    // The path chosen by the desktop dialog stays a path across the shell
+    // boundary. The render model carries only honest object metadata and
+    // verified-byte progress.
+    let bytes = b"desktop attachment bytes\0exact";
+    let source = dir.path().join("desktop-source.bin");
+    std::fs::write(&source, bytes).unwrap();
+    let content_id = alice
+        .send_attachment(
+            bob_peer,
+            source.display().to_string(),
+            "application/octet-stream".to_owned(),
+            Some("field-notes.bin".to_owned()),
+        )
+        .unwrap();
+    let outbound = alice.attachments().unwrap();
+    assert_eq!(outbound.len(), 1);
+    assert_eq!(outbound[0].content_id, content_id);
+    assert_eq!(outbound[0].conversation, "pairwise");
+    assert_eq!(outbound[0].direction, "outbound");
+    assert_eq!(outbound[0].objects.len(), 1);
+    assert_eq!(
+        outbound[0].objects[0].filename.as_deref(),
+        Some("field-notes.bin")
+    );
+    assert_eq!(outbound[0].objects[0].total_bytes, bytes.len() as u64);
+    assert_eq!(
+        outbound[0].objects[0].media_type,
+        "application/octet-stream"
+    );
+
+    alice
+        .pause_attachment(outbound[0].transfer_id.clone())
+        .unwrap();
+    assert_eq!(alice.attachments().unwrap()[0].state, "paused");
+    alice
+        .resume_attachment(outbound[0].transfer_id.clone())
+        .unwrap();
+
+    let offered = b_ev.wait("pairwise attachment offer", |event| {
+        matches!(event, UiEvent::AttachmentUpdated { attachment }
+            if attachment.content_id == content_id
+                && attachment.direction == "inbound"
+                && attachment.peer == alice_peer)
+    });
+    let inbound_transfer = match offered {
+        UiEvent::AttachmentUpdated { attachment } => {
+            assert_eq!(attachment.state, "awaiting_consent");
+            assert_eq!(attachment.objects[0].verified_bytes, 0);
+            attachment.transfer_id
+        }
+        other => panic!("wrong event: {other:?}"),
+    };
+    bob.accept_attachment(inbound_transfer.clone()).unwrap();
+    b_ev.wait("pairwise attachment completion", |event| {
+        matches!(event, UiEvent::AttachmentUpdated { attachment }
+            if attachment.transfer_id == inbound_transfer && attachment.state == "complete")
+    });
+    let inbound = bob
+        .attachments()
+        .unwrap()
+        .into_iter()
+        .find(|attachment| attachment.transfer_id == inbound_transfer)
+        .unwrap();
+    assert_eq!(inbound.objects[0].verified_bytes, bytes.len() as u64);
+
+    // Export is caller-selected, exact, protected, and refuses overwrite.
+    let exported = dir.path().join("desktop-export.bin");
+    bob.export_attachment(inbound_transfer.clone(), exported.display().to_string())
+        .unwrap();
+    assert_eq!(std::fs::read(&exported).unwrap(), bytes);
+    let err = bob
+        .export_attachment(inbound_transfer.clone(), exported.display().to_string())
+        .unwrap_err();
+    assert!(err.contains("exist"), "got: {err}");
+    assert_eq!(std::fs::read(&exported).unwrap(), bytes);
+
+    bob.reject_attachment(inbound_transfer).unwrap();
+    assert_eq!(bob.attachments().unwrap()[0].state, "rejected");
+    alice
+        .cancel_attachment(outbound[0].transfer_id.clone())
+        .unwrap();
+    assert_eq!(alice.attachments().unwrap()[0].state, "cancelled");
+
+    // The same thin shell methods cover an encrypt-once group offer and
+    // consent/completion/export flow without adding group-specific protocol.
+    let group = alice
+        .create_group("Attachment crew".to_owned(), vec![outbound[0].peer.clone()])
+        .unwrap();
+    b_ev.wait(
+        "group invite",
+        |event| matches!(event, UiEvent::GroupUpdated { group: id } if *id == group),
+    );
+    let group_bytes = b"one encrypted object for the group";
+    let group_source = dir.path().join("desktop-group-source.bin");
+    std::fs::write(&group_source, group_bytes).unwrap();
+    let group_content_id = alice
+        .send_group_attachment(
+            group.clone(),
+            group_source.display().to_string(),
+            "application/octet-stream".to_owned(),
+            Some("route.bin".to_owned()),
+        )
+        .unwrap();
+    let group_offer = b_ev.wait("group attachment offer", |event| {
+        matches!(event, UiEvent::AttachmentUpdated { attachment }
+            if attachment.content_id == group_content_id
+                && attachment.conversation == "group"
+                && attachment.group.as_deref() == Some(group.as_str()))
+    });
+    let group_transfer = match group_offer {
+        UiEvent::AttachmentUpdated { attachment } => attachment.transfer_id,
+        other => panic!("wrong event: {other:?}"),
+    };
+    bob.accept_attachment(group_transfer.clone()).unwrap();
+    b_ev.wait("group attachment completion", |event| {
+        matches!(event, UiEvent::AttachmentUpdated { attachment }
+            if attachment.transfer_id == group_transfer && attachment.state == "complete")
+    });
+    let group_export = dir.path().join("desktop-group-export.bin");
+    bob.export_attachment(group_transfer, group_export.display().to_string())
+        .unwrap();
+    assert_eq!(std::fs::read(group_export).unwrap(), group_bytes);
+
+    alice.stop();
+    bob.stop();
+}
+
+#[test]
 fn desktop_group_ux_create_roster_message_and_partial_delivery() {
     let dir = tempfile::tempdir().unwrap();
     let a_ev = Events::default();

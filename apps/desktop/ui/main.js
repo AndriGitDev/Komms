@@ -7,6 +7,7 @@
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
+const { open: openPath, save: savePath } = window.__TAURI__.dialog;
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -23,6 +24,7 @@ const state = {
   unread: new Map(), // peer id → count
   groupUnread: new Map(), // group id → count
   msgEls: new Map(), // message id → bubble element (for state updates)
+  attachmentNotified: new Set(), // inbound transfer ids already announced
   statusTimer: null,
 };
 
@@ -76,6 +78,37 @@ function dateTimeLocalValue(unixSecs) {
 }
 
 const STATE_GLYPH = { queued: "queued ○", sent: "sent ✓", delivered: "delivered ✓✓" };
+
+const MIME_BY_EXTENSION = {
+  txt: "text/plain",
+  json: "application/json",
+  pdf: "application/pdf",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  mp3: "audio/mpeg",
+  m4a: "audio/mp4",
+  wav: "audio/wav",
+  mp4: "video/mp4",
+  mov: "video/quicktime",
+  zip: "application/zip",
+};
+
+function pathBasename(path) {
+  return String(path).replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? "attachment";
+}
+
+function guessedMime(filename) {
+  const extension = filename.includes(".") ? filename.split(".").pop().toLowerCase() : "";
+  return MIME_BY_EXTENSION[extension] ?? "application/octet-stream";
+}
+
+function exactBytes(verified, total) {
+  return `${Number(verified).toLocaleString()} / ${Number(total).toLocaleString()} bytes`;
+}
 
 // ── gate (create / unlock / restore) ────────────────────────────────────
 
@@ -332,6 +365,7 @@ function updateChatHead() {
   $("#btn-verify").hidden = isGroup || isNote;
   $("#btn-hints").hidden = isGroup || isNote;
   $("#btn-group-details").hidden = !isGroup;
+  $("#btn-attach").hidden = isNote;
   $("#btn-schedule").hidden = isNote;
   $("#note-to-self").classList.toggle("active", isNote);
 }
@@ -464,27 +498,136 @@ function scheduledBubble(message) {
   return el;
 }
 
+function attachmentBelongsHere(attachment) {
+  if (state.currentKind === "contact") {
+    return attachment.conversation === "pairwise" && attachment.peer === state.currentId;
+  }
+  if (state.currentKind === "group") {
+    return attachment.conversation === "group" && attachment.group === state.currentId;
+  }
+  return false;
+}
+
+function attachmentButton(label, className, action) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = className;
+  button.textContent = label;
+  button.addEventListener("click", action);
+  return button;
+}
+
+async function runAttachmentAction(command, transfer) {
+  await call(command, { transfer });
+  await renderMessages();
+}
+
+async function exportAttachment(attachment) {
+  const primary = attachment.objects.find((object) => !object.preview) ?? attachment.objects[0];
+  const path = await savePath({
+    title: "Export attachment",
+    defaultPath: primary?.filename ?? "attachment",
+  });
+  if (!path) return;
+  await call("export_attachment", { transfer: attachment.transfer_id, path });
+  toast(`Exported ${primary?.filename ?? "attachment"}`);
+}
+
+function attachmentRow(attachment) {
+  const primary = attachment.objects.find((object) => !object.preview) ?? attachment.objects[0];
+  const row = document.createElement("article");
+  row.className = "attachment-transfer";
+
+  const head = document.createElement("div");
+  head.className = "attachment-head";
+  const title = document.createElement("span");
+  title.className = "attachment-title";
+  title.textContent = primary?.filename ?? "Attachment";
+  const transferState = document.createElement("span");
+  transferState.className = `attachment-state ${attachment.state}`;
+  transferState.textContent = `${attachment.direction} · ${attachment.state.replaceAll("_", " ")}`;
+  head.append(title, transferState);
+  row.append(head);
+
+  for (const object of attachment.objects) {
+    const objectRow = document.createElement("div");
+    objectRow.className = "attachment-object";
+    const objectHead = document.createElement("div");
+    objectHead.className = "attachment-object-head";
+    const description = document.createElement("span");
+    description.textContent = `${object.preview ? "Preview" : "Primary"} · ${object.media_type}`;
+    const progressText = document.createElement("span");
+    progressText.textContent = `${exactBytes(object.verified_bytes, object.total_bytes)} · ${object.state.replaceAll("_", " ")}`;
+    objectHead.append(description, progressText);
+    const progress = document.createElement("progress");
+    progress.max = Math.max(1, Number(object.total_bytes));
+    progress.value = Math.min(Number(object.verified_bytes), progress.max);
+    progress.setAttribute("aria-label", `${object.preview ? "Preview" : "Primary"} verified progress`);
+    objectRow.append(objectHead, progress);
+    row.append(objectRow);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "attachment-actions";
+  const inbound = attachment.direction === "inbound";
+  const awaitingConsent = inbound && ["offered", "awaiting_consent"].includes(attachment.state);
+  const active = ["offered", "awaiting_consent", "queued", "transferring", "paused"].includes(attachment.state);
+
+  if (awaitingConsent) {
+    actions.append(
+      attachmentButton("Accept", "primary", () => runAttachmentAction("accept_attachment", attachment.transfer_id)),
+      attachmentButton("Reject", "danger", () => runAttachmentAction("reject_attachment", attachment.transfer_id))
+    );
+  } else {
+    if (attachment.state === "paused") {
+      actions.append(attachmentButton("Resume", "ghost", () => runAttachmentAction("resume_attachment", attachment.transfer_id)));
+    } else if (["offered", "queued", "transferring"].includes(attachment.state)) {
+      actions.append(attachmentButton("Pause", "ghost", () => runAttachmentAction("pause_attachment", attachment.transfer_id)));
+    }
+    if (active) {
+      actions.append(attachmentButton("Cancel", "danger", () => runAttachmentAction("cancel_attachment", attachment.transfer_id)));
+    }
+  }
+  if (inbound && attachment.state === "complete") {
+    actions.append(attachmentButton("Export…", "primary", () => exportAttachment(attachment)));
+  }
+  if (actions.childElementCount > 0) row.append(actions);
+  return row;
+}
+
+function renderAttachments(attachments) {
+  const panel = $("#attachment-transfers");
+  panel.textContent = "";
+  const matching = attachments.filter(attachmentBelongsHere);
+  panel.hidden = matching.length === 0;
+  for (const attachment of matching) panel.append(attachmentRow(attachment));
+}
+
 async function renderMessages() {
   const isNote = state.currentKind === "note";
   const isGroup = state.currentKind === "group";
-  const [msgs, scheduled] = await Promise.all([
+  const [msgs, scheduled, attachments] = await Promise.all([
     isNote
       ? call("note_to_self_messages")
       : isGroup
       ? call("group_messages", { group: state.currentId })
       : call("messages", { peer: state.currentId }),
     isNote ? Promise.resolve([]) : call("scheduled_messages"),
+    isNote ? Promise.resolve([]) : call("attachments"),
   ]);
   const box = $("#messages");
   box.textContent = "";
   state.msgEls.clear();
-  for (const m of msgs) box.append(isNote ? noteBubble(m) : isGroup ? groupBubble(m) : bubble(m));
+  for (const m of msgs.filter((message) => message.content_kind !== "attachment")) {
+    box.append(isNote ? noteBubble(m) : isGroup ? groupBubble(m) : bubble(m));
+  }
   for (const message of scheduled
     .filter((item) => item.destination === state.currentId
       && item.conversation === (isGroup ? "group" : "peer"))
     .sort((a, b) => a.not_before - b.not_before)) {
     box.append(scheduledBubble(message));
   }
+  renderAttachments(attachments);
   box.scrollTop = box.scrollHeight;
 }
 
@@ -554,6 +697,52 @@ function openScheduleModal(message = null) {
 
 $("#btn-schedule").addEventListener("click", () => openScheduleModal());
 
+$("#btn-attach").addEventListener("click", async () => {
+  if (!state.currentId || state.currentKind === "note") return;
+  const path = await openPath({
+    title: state.currentKind === "group" ? "Choose a group attachment" : "Choose an attachment",
+    multiple: false,
+    directory: false,
+  });
+  if (!path || typeof path !== "string") return;
+
+  const selectedName = pathBasename(path);
+  const root = openModal("Send attachment", "tpl-attachment-send");
+  root.querySelector('[data-f="selected-name"]').textContent = selectedName;
+  root.querySelector('[data-f="filename"]').value = selectedName;
+  root.querySelector('[data-f="media-type"]').value = guessedMime(selectedName);
+  root.addEventListener("click", async (event) => {
+    if (!event.target.matches('[data-act="send-attachment"]')) return;
+    const button = event.target;
+    const filename = root.querySelector('[data-f="filename"]').value.trim();
+    const mediaType = root.querySelector('[data-f="media-type"]').value.trim();
+    try {
+      if (!mediaType) throw "enter a MIME type";
+      button.disabled = true;
+      if (state.currentKind === "group") {
+        await invoke("send_group_attachment", {
+          group: state.currentId,
+          path,
+          mediaType,
+          filename: filename || null,
+        });
+      } else {
+        await invoke("send_attachment", {
+          peer: state.currentId,
+          path,
+          mediaType,
+          filename: filename || null,
+        });
+      }
+      closeModal();
+      await renderMessages();
+    } catch (err) {
+      button.disabled = false;
+      showError(root, err);
+    }
+  });
+});
+
 // ── node events ─────────────────────────────────────────────────────────
 
 listen("node-event", async ({ payload: ev }) => {
@@ -583,12 +772,30 @@ listen("node-event", async ({ payload: ev }) => {
       break;
     }
     case "message_received": {
+      if (ev.content_kind === "attachment") {
+        if (state.currentKind === "contact" && ev.peer === state.currentId) await renderMessages();
+        break;
+      }
       if (state.currentKind === "contact" && ev.peer === state.currentId) {
         await renderMessages();
       } else {
         state.unread.set(ev.peer, (state.unread.get(ev.peer) ?? 0) + 1);
         toast(`${contactName(ev.peer)}: ${ev.body.slice(0, 80)}`);
         refreshContacts();
+      }
+      break;
+    }
+    case "attachment_updated": {
+      const attachment = ev.attachment;
+      if (attachmentBelongsHere(attachment)) await renderMessages();
+      if (
+        attachment.direction === "inbound"
+        && ["offered", "awaiting_consent"].includes(attachment.state)
+        && !state.attachmentNotified.has(attachment.transfer_id)
+      ) {
+        state.attachmentNotified.add(attachment.transfer_id);
+        const primary = attachment.objects.find((object) => !object.preview) ?? attachment.objects[0];
+        toast(`Attachment offered: ${primary?.filename ?? "attachment"}`);
       }
       break;
     }
@@ -608,6 +815,10 @@ listen("node-event", async ({ payload: ev }) => {
       break;
     }
     case "group_message_received": {
+      if (ev.content_kind === "attachment") {
+        if (state.currentKind === "group" && ev.group === state.currentId) await renderMessages();
+        break;
+      }
       if (state.currentKind === "group" && ev.group === state.currentId) {
         await renderMessages();
       } else {

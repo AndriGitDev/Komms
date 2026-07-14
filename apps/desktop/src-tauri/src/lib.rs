@@ -27,6 +27,7 @@ use tauri::Manager;
 /// Build and run the Tauri application (called from `main`).
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(commands::AppState::default())
         .invoke_handler(tauri::generate_handler![
             commands::probe,
@@ -41,6 +42,15 @@ pub fn run() {
             commands::contacts,
             commands::messages,
             commands::send,
+            commands::send_attachment,
+            commands::send_group_attachment,
+            commands::attachments,
+            commands::accept_attachment,
+            commands::reject_attachment,
+            commands::cancel_attachment,
+            commands::pause_attachment,
+            commands::resume_attachment,
+            commands::export_attachment,
             commands::schedule,
             commands::schedule_group,
             commands::scheduled_messages,
