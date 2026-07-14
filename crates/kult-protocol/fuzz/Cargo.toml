@@ -47,5 +47,26 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "attachment_manifest_decode"
+path = "fuzz_targets/attachment_manifest_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "attachment_bulk_decode"
+path = "fuzz_targets/attachment_bulk_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "attachment_ranges"
+path = "fuzz_targets/attachment_ranges.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

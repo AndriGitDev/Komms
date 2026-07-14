@@ -6,7 +6,10 @@
 
 use alloc::vec::Vec;
 
-use crate::{ProtocolError, Result};
+use crate::{
+    decode_attachment_manifest, encode_attachment_manifest, AttachmentManifest,
+    DecodedAttachmentManifest, ProtocolError, Result,
+};
 
 /// Prefix that unambiguously distinguishes typed content from valid UTF-8.
 pub const CONTENT_MAGIC: [u8; 4] = [0xff, b'K', b'M', b'C'];
@@ -14,6 +17,8 @@ pub const CONTENT_MAGIC: [u8; 4] = [0xff, b'K', b'M', b'C'];
 pub const CONTENT_FORMAT_V1: u8 = 1;
 /// The v1 kind assigned to UTF-8 text.
 pub const CONTENT_KIND_TEXT: u16 = 1;
+/// The v1 kind assigned to encrypted attachment manifests.
+pub const CONTENT_KIND_ATTACHMENT: u16 = 2;
 /// Size of the fixed v1 content header.
 pub const CONTENT_HEADER_LEN: usize = 28;
 /// Maximum unpadded content frame size.
@@ -30,6 +35,7 @@ pub const MAX_NESTING_DEPTH: usize = 4;
 /// Callers retain the original input bytes for `Unsupported` and `Malformed`
 /// outcomes. Unknown bytes are deliberately never exposed as guessed text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)] // keeps authenticated content classification allocation-free
 pub enum DecodedContent<'a> {
     /// A permanent legacy path for valid UTF-8 messages without content magic.
     LegacyText(&'a str),
@@ -39,6 +45,13 @@ pub enum DecodedContent<'a> {
         id: [u8; 16],
         /// Exact authenticated UTF-8 text, without normalization.
         text: &'a str,
+    },
+    /// A canonical v1 encrypted attachment offer.
+    Attachment {
+        /// Random author-minted manifest id, scoped to conversation and author.
+        id: [u8; 16],
+        /// Canonical borrowed attachment manifest.
+        manifest: AttachmentManifest<'a>,
     },
     /// Authenticated bytes the current client cannot interpret.
     Unsupported {
@@ -66,6 +79,20 @@ pub fn encode_text(id: [u8; 16], text: &str) -> Result<Vec<u8>> {
     frame.extend_from_slice(&id);
     frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     frame.extend_from_slice(payload);
+    Ok(frame)
+}
+
+/// Encode a canonical attachment manifest as a v1 content frame.
+pub fn encode_attachment(id: [u8; 16], manifest: &AttachmentManifest<'_>) -> Result<Vec<u8>> {
+    let payload = encode_attachment_manifest(manifest)?;
+    let mut frame = Vec::with_capacity(CONTENT_HEADER_LEN + payload.len());
+    frame.extend_from_slice(&CONTENT_MAGIC);
+    frame.push(CONTENT_FORMAT_V1);
+    frame.extend_from_slice(&CONTENT_KIND_ATTACHMENT.to_le_bytes());
+    frame.push(0);
+    frame.extend_from_slice(&id);
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    frame.extend_from_slice(&payload);
     Ok(frame)
 }
 
@@ -114,16 +141,33 @@ pub fn decode_content(bytes: &[u8]) -> DecodedContent<'_> {
         return DecodedContent::Malformed;
     }
 
-    if flags != 0 || kind != CONTENT_KIND_TEXT {
+    if flags != 0 {
         return DecodedContent::Unsupported {
             format_version: Some(format_version),
             kind: Some(kind),
         };
     }
 
-    match core::str::from_utf8(&bytes[CONTENT_HEADER_LEN..]) {
-        Ok(text) => DecodedContent::Text { id, text },
-        Err(_) => DecodedContent::Malformed,
+    let payload = &bytes[CONTENT_HEADER_LEN..];
+    match kind {
+        CONTENT_KIND_TEXT => match core::str::from_utf8(payload) {
+            Ok(text) => DecodedContent::Text { id, text },
+            Err(_) => DecodedContent::Malformed,
+        },
+        CONTENT_KIND_ATTACHMENT => match decode_attachment_manifest(payload) {
+            DecodedAttachmentManifest::Manifest(manifest) => {
+                DecodedContent::Attachment { id, manifest }
+            }
+            DecodedAttachmentManifest::Unsupported => DecodedContent::Unsupported {
+                format_version: Some(format_version),
+                kind: Some(kind),
+            },
+            DecodedAttachmentManifest::Malformed => DecodedContent::Malformed,
+        },
+        _ => DecodedContent::Unsupported {
+            format_version: Some(format_version),
+            kind: Some(kind),
+        },
     }
 }
 
@@ -180,12 +224,12 @@ mod tests {
         );
 
         frame = encode_text([7; 16], "x").unwrap();
-        frame[5..7].copy_from_slice(&2u16.to_le_bytes());
+        frame[5..7].copy_from_slice(&3u16.to_le_bytes());
         assert_eq!(
             decode_content(&frame),
             DecodedContent::Unsupported {
                 format_version: Some(1),
-                kind: Some(2)
+                kind: Some(3)
             }
         );
 

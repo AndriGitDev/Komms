@@ -12,7 +12,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rand_core::CryptoRngCore;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -23,8 +23,14 @@ use kult_crypto::{derive_kek, CryptoError, Identity, KdfProfile, Session, Storag
 use kult_protocol::{CapabilityControl, Envelope};
 
 mod backup;
+mod media;
 
 pub use backup::BACKUP_MAGIC;
+pub use media::{
+    MediaDirection, MediaLimits, MediaObjectRecord, MediaReconciliation, MediaRecord, MediaScope,
+    MediaTransferRecord, MediaTransferState, MediaUsage, DEFAULT_MEDIA_STORE_QUOTA,
+    MAX_MEDIA_STORE_QUOTA,
+};
 
 /// Failures surfaced by the store.
 #[derive(Debug)]
@@ -44,6 +50,14 @@ pub enum StoreError {
     NotABackup,
     /// (De)serialization of a stored record failed.
     Serialization,
+    /// Filesystem operation for the private media store failed.
+    Io(std::io::Error),
+    /// Configured or protocol-hard media quota would be exceeded.
+    MediaQuota,
+    /// Committing a media chunk would violate the free-space reserve.
+    LowStorage,
+    /// Media state or a chunk transition is inconsistent.
+    MediaState,
 }
 
 impl std::fmt::Display for StoreError {
@@ -55,6 +69,10 @@ impl std::fmt::Display for StoreError {
             Self::NotAStore => f.write_str("not a Komms store"),
             Self::NotABackup => f.write_str("not a Komms backup file"),
             Self::Serialization => f.write_str("record serialization failure"),
+            Self::Io(e) => write!(f, "media filesystem error: {e}"),
+            Self::MediaQuota => f.write_str("media quota exceeded"),
+            Self::LowStorage => f.write_str("insufficient reserved filesystem space"),
+            Self::MediaState => f.write_str("invalid media transfer state"),
         }
     }
 }
@@ -74,6 +92,11 @@ impl From<CryptoError> for StoreError {
 impl From<kult_protocol::ProtocolError> for StoreError {
     fn from(e: kult_protocol::ProtocolError) -> Self {
         Self::Protocol(e)
+    }
+}
+impl From<std::io::Error> for StoreError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
     }
 }
 
@@ -156,8 +179,20 @@ pub struct QueueItem {
     /// The group message record this envelope is one member's copy of, if
     /// any (drives the per-member delivery ladder, ADR-0012).
     pub group_msg_id: Option<[u8; 16]>,
+    /// Durable traffic class used by schedulers independently of size.
+    pub class: QueueClass,
     /// The sealed envelope to deliver.
     pub envelope: Envelope,
+}
+
+/// Durable outbound traffic class.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum QueueClass {
+    /// Ordinary messages, receipts, and control traffic.
+    #[default]
+    Normal,
+    /// Attachment manifests and bulk-lane records; never eligible for airtime.
+    Bulk,
 }
 
 /// A group member as stored: peer id plus their encoded public identity
@@ -251,8 +286,17 @@ pub struct GroupMessageRecord {
     pub wire_body: Option<Vec<u8>>,
 }
 
-/// What one queue row unseals to: `(peer, msg_id, group_msg_id, envelope)`.
-type QueueRow = ([u8; 32], Option<[u8; 16]>, Option<[u8; 16]>, Vec<u8>);
+/// Legacy queue row: `(peer, msg_id, group_msg_id, envelope)`.
+type LegacyQueueRow = ([u8; 32], Option<[u8; 16]>, Option<[u8; 16]>, Vec<u8>);
+#[derive(Serialize, Deserialize)]
+struct QueueRowV1 {
+    peer: [u8; 32],
+    msg_id: Option<[u8; 16]>,
+    group_msg_id: Option<[u8; 16]>,
+    class: QueueClass,
+    envelope: Vec<u8>,
+}
+const QUEUE_ROW_MAGIC_V1: &[u8; 4] = b"KQ\0\x01";
 /// One member's receiving-chain row: `(peer, opaque chain blob)`.
 type GroupChainRow = ([u8; 32], Zeroizing<Vec<u8>>);
 
@@ -272,6 +316,8 @@ CREATE TABLE IF NOT EXISTS resets   (peer BLOB PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS groups       (gid BLOB PRIMARY KEY, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS group_chains (gid BLOB NOT NULL, peer BLOB NOT NULL, blob BLOB NOT NULL, PRIMARY KEY (gid, peer));
 CREATE TABLE IF NOT EXISTS group_msgs   (rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS media_transfers (id BLOB PRIMARY KEY, blob BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS media_objects   (id BLOB PRIMARY KEY, blob BLOB NOT NULL);
 ";
 
 /// An open, unlocked Komms store.
@@ -288,6 +334,9 @@ pub struct Store {
     /// One key for the three group tables; the associated-data strings
     /// (`group` / `group-chain` / `group-msg`) keep the domains disjoint.
     k_groups: StorageKey,
+    k_media: StorageKey,
+    media_dir: PathBuf,
+    media_limits: MediaLimits,
 }
 
 impl Store {
@@ -332,7 +381,7 @@ impl Store {
             params![wrapped],
         )?;
 
-        Ok(Self::with_master(conn, StorageKey::from_bytes(*sk_bytes)))
+        Self::with_master(conn, StorageKey::from_bytes(*sk_bytes), path)
     }
 
     /// Open and unlock an existing store.
@@ -361,11 +410,12 @@ impl Store {
         let sk_vec = Zeroizing::new(kek_key.open(WRAP_AD, &wrapped)?); // wrong passphrase fails here
         let sk_bytes: [u8; 32] = sk_vec[..].try_into().map_err(|_| StoreError::NotAStore)?;
 
-        Ok(Self::with_master(conn, StorageKey::from_bytes(sk_bytes)))
+        Self::with_master(conn, StorageKey::from_bytes(sk_bytes), path)
     }
 
-    fn with_master(conn: Connection, master: StorageKey) -> Self {
-        Self {
+    fn with_master(conn: Connection, master: StorageKey, path: &Path) -> Result<Self> {
+        let media_dir = media::prepare_media_directory(path)?;
+        Ok(Self {
             k_identity: master.derive(b"KK-store-identity"),
             k_sessions: master.derive(b"KK-store-sessions"),
             k_capabilities: master.derive(b"KK-store-capabilities"),
@@ -375,8 +425,11 @@ impl Store {
             k_prekeys: master.derive(b"KK-store-prekeys"),
             k_pending: master.derive(b"KK-store-pending"),
             k_groups: master.derive(b"KK-store-groups"),
+            k_media: master.derive(b"KK-store-media"),
+            media_dir,
+            media_limits: MediaLimits::default(),
             conn,
-        }
+        })
     }
 
     // ---- identity ---------------------------------------------------------
@@ -625,13 +678,17 @@ impl Store {
 
     /// Enqueue an envelope for delivery (sealed at rest; survives restarts).
     pub fn queue_push(&self, item: &QueueItem, rng: &mut impl CryptoRngCore) -> Result<i64> {
-        let plain = postcard::to_allocvec(&(
-            item.peer,
-            item.msg_id,
-            item.group_msg_id,
-            item.envelope.encode(),
-        ))
-        .map_err(|_| StoreError::Serialization)?;
+        let row = QueueRowV1 {
+            peer: item.peer,
+            msg_id: item.msg_id,
+            group_msg_id: item.group_msg_id,
+            class: item.class,
+            envelope: item.envelope.encode(),
+        };
+        let encoded = postcard::to_allocvec(&row).map_err(|_| StoreError::Serialization)?;
+        let mut plain = Vec::with_capacity(QUEUE_ROW_MAGIC_V1.len() + encoded.len());
+        plain.extend_from_slice(QUEUE_ROW_MAGIC_V1);
+        plain.extend_from_slice(&encoded);
         let sealed = self.k_queue.seal(b"queue", &plain, rng);
         self.conn
             .execute("INSERT INTO queue (blob) VALUES (?1)", params![sealed])?;
@@ -648,14 +705,35 @@ impl Store {
         for row in rows {
             let (seq, sealed) = row?;
             let plain = self.k_queue.open(b"queue", &sealed)?;
-            let (peer, msg_id, group_msg_id, env_bytes): QueueRow =
-                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
+            let (peer, msg_id, group_msg_id, class, env_bytes) =
+                if let Some(encoded) = plain.strip_prefix(QUEUE_ROW_MAGIC_V1) {
+                    let (row, remainder): (QueueRowV1, &[u8]) = postcard::take_from_bytes(encoded)
+                        .map_err(|_| StoreError::Serialization)?;
+                    if !remainder.is_empty() {
+                        return Err(StoreError::Serialization);
+                    }
+                    (
+                        row.peer,
+                        row.msg_id,
+                        row.group_msg_id,
+                        row.class,
+                        row.envelope,
+                    )
+                } else {
+                    let (legacy, remainder): (LegacyQueueRow, &[u8]) =
+                        postcard::take_from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
+                    if !remainder.is_empty() {
+                        return Err(StoreError::Serialization);
+                    }
+                    (legacy.0, legacy.1, legacy.2, QueueClass::Normal, legacy.3)
+                };
             out.push((
                 seq,
                 QueueItem {
                     peer,
                     msg_id,
                     group_msg_id,
+                    class,
                     envelope: Envelope::decode(&env_bytes)?,
                 },
             ));
@@ -923,5 +1001,58 @@ impl Store {
             )
             .optional()?;
         Ok(found.is_some())
+    }
+}
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+    use kult_crypto::KdfProfile;
+    use kult_protocol::EnvelopeKind;
+    use rand::{rngs::StdRng, SeedableRng};
+
+    const TEST_KDF: KdfProfile = KdfProfile {
+        m_cost_kib: 8,
+        t_cost: 1,
+        p_cost: 1,
+    };
+
+    #[test]
+    fn queue_v1_class_round_trips_and_legacy_rows_default_normal() {
+        let mut rng = StdRng::seed_from_u64(0x511ce);
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            Store::create(&dir.path().join("queue.db"), b"pass", TEST_KDF, &mut rng).unwrap();
+        let envelope = Envelope::new(EnvelopeKind::Receipt, [2; 32], vec![3]);
+        store
+            .queue_push(
+                &QueueItem {
+                    peer: [1; 32],
+                    msg_id: None,
+                    group_msg_id: None,
+                    class: QueueClass::Bulk,
+                    envelope: envelope.clone(),
+                },
+                &mut rng,
+            )
+            .unwrap();
+
+        let legacy = postcard::to_allocvec(&(
+            [4u8; 32],
+            None::<[u8; 16]>,
+            None::<[u8; 16]>,
+            envelope.encode(),
+        ))
+        .unwrap();
+        let sealed = store.k_queue.seal(b"queue", &legacy, &mut rng);
+        store
+            .conn
+            .execute("INSERT INTO queue (blob) VALUES (?1)", params![sealed])
+            .unwrap();
+
+        let rows = store.queue_all().unwrap();
+        assert_eq!(rows[0].1.class, QueueClass::Bulk);
+        assert_eq!(rows[1].1.class, QueueClass::Normal);
+        assert_eq!(rows[1].1.peer, [4; 32]);
     }
 }

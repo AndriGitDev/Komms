@@ -8,4 +8,8 @@ fuzz_target!(|data: &[u8]| {
         let encoded = kult_protocol::encode_text(id, text).unwrap();
         assert_eq!(kult_protocol::decode_content(&encoded), decoded);
     }
+    if let kult_protocol::DecodedContent::Attachment { id, manifest } = decoded {
+        let encoded = kult_protocol::encode_attachment(id, &manifest).unwrap();
+        assert_eq!(kult_protocol::decode_content(&encoded), decoded);
+    }
 });

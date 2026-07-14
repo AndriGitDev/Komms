@@ -14,7 +14,7 @@ use kult_protocol::{
     bundle_export, bundle_import, delivery_token, epoch_day, intro_token, pad, unpad, Envelope,
     EnvelopeKind, MailboxKey,
 };
-use kult_store::{DeliveryState, Direction, MessageRecord, QueueItem, Store};
+use kult_store::{DeliveryState, Direction, MessageRecord, QueueClass, QueueItem, Store};
 
 const NOW: u64 = 1_800_000_000;
 const HS_AD: &[u8] = b"KK-handshake-v1";
@@ -93,6 +93,7 @@ fn sneakernet_end_to_end_with_restart() {
                     peer: bob_id_pub.ed,
                     msg_id: Some([0u8; 16]),
                     group_msg_id: None,
+                    class: QueueClass::Normal,
                     envelope: hs_env,
                 },
                 &mut rng,
@@ -113,6 +114,7 @@ fn sneakernet_end_to_end_with_restart() {
                     peer: bob_id_pub.ed,
                     msg_id: Some([1u8; 16]),
                     group_msg_id: None,
+                    class: QueueClass::Normal,
                     envelope: msg_env,
                 },
                 &mut rng,
@@ -226,6 +228,7 @@ fn sneakernet_end_to_end_with_restart() {
                 peer: alice_id.ed,
                 msg_id: None,
                 group_msg_id: None,
+                class: QueueClass::Normal,
                 envelope: Envelope::new(EnvelopeKind::Message, token, reply.encode()),
             },
             &mut rng,

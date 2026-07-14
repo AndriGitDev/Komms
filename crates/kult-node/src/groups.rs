@@ -17,10 +17,11 @@ use kult_crypto::{
 use kult_protocol::{
     decode_content, delivery_token, encode_text, epoch_day, pad, unpad, DecodedContent, Envelope,
     EnvelopeKind, GroupAnnounce, GroupControlPayload, GroupMemberInfo, MailboxKey,
+    CONTENT_FORMAT_V1, CONTENT_KIND_ATTACHMENT,
 };
 use kult_store::{
     ContactRecord, DeliveryState, Direction, GroupDelivery, GroupMember, GroupMessageRecord,
-    GroupRecord, PendingAnnounce, QueueItem,
+    GroupRecord, PendingAnnounce, QueueClass, QueueItem,
 };
 
 use crate::api::GroupInfo;
@@ -526,13 +527,16 @@ impl Node {
             };
 
             let decoded = decode_content(&body);
-            if let DecodedContent::Text { id, .. } = decoded {
+            if let DecodedContent::Text { id, .. } | DecodedContent::Attachment { id, .. } = decoded
+            {
                 let duplicate = self.store.group_messages(&rec.id)?.iter().any(|record| {
                     record.direction == Direction::Inbound
                         && record.sender == peer
                         && matches!(
                             decode_content(&record.body),
-                            DecodedContent::Text { id: stored_id, .. } if stored_id == id
+                            DecodedContent::Text { id: stored_id, .. }
+                                | DecodedContent::Attachment { id: stored_id, .. }
+                                if stored_id == id
                         )
                 });
                 if duplicate {
@@ -549,6 +553,14 @@ impl Node {
                 DecodedContent::Text { id, text } => {
                     (id, text.as_bytes().to_vec(), ContentStatus::Text { id })
                 }
+                DecodedContent::Attachment { id, .. } => (
+                    id,
+                    Vec::new(),
+                    ContentStatus::Unsupported {
+                        format_version: Some(CONTENT_FORMAT_V1),
+                        kind: Some(CONTENT_KIND_ATTACHMENT),
+                    },
+                ),
                 DecodedContent::Unsupported {
                     format_version,
                     kind,
@@ -949,6 +961,7 @@ impl Node {
                 peer: *peer,
                 msg_id: None,
                 group_msg_id: Some(group_msg_id),
+                class: QueueClass::Normal,
                 envelope,
             },
             rng,
@@ -985,6 +998,7 @@ impl Node {
                     peer: *peer,
                     msg_id: None,
                     group_msg_id: None,
+                    class: QueueClass::Normal,
                     envelope: flight,
                 },
                 rng,
@@ -1009,6 +1023,7 @@ impl Node {
                 peer: *peer,
                 msg_id: None,
                 group_msg_id: None,
+                class: QueueClass::Normal,
                 envelope,
             },
             rng,
