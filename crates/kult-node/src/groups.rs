@@ -17,7 +17,6 @@ use kult_crypto::{
 use kult_protocol::{
     decode_content, delivery_token, encode_text, epoch_day, pad, unpad, DecodedContent, Envelope,
     EnvelopeKind, GroupAnnounce, GroupControlPayload, GroupMemberInfo, MailboxKey,
-    CONTENT_FORMAT_V1, CONTENT_KIND_ATTACHMENT,
 };
 use kult_store::{
     ContactRecord, DeliveryState, Direction, GroupDelivery, GroupMember, GroupMessageRecord,
@@ -191,7 +190,7 @@ impl Node {
 
         let mut unserved = false;
         for d in record.deliveries.iter_mut() {
-            match self.queue_group_copy(&d.peer, &wire, id, now, rng)? {
+            match self.queue_group_copy(&d.peer, &wire, id, QueueClass::Normal, now, rng)? {
                 Some(cid) => d.wire_id = Some(cid),
                 None => unserved = true,
             }
@@ -406,7 +405,14 @@ impl Node {
                 if d.wire_id.is_some() {
                     continue;
                 }
-                match self.queue_group_copy(&d.peer, &wire, record.id, now, rng)? {
+                match self.queue_group_copy(
+                    &d.peer,
+                    &wire,
+                    record.id,
+                    QueueClass::Normal,
+                    now,
+                    rng,
+                )? {
                     Some(cid) => {
                         d.wire_id = Some(cid);
                         changed = true;
@@ -553,14 +559,21 @@ impl Node {
                 DecodedContent::Text { id, text } => {
                     (id, text.as_bytes().to_vec(), ContentStatus::Text { id })
                 }
-                DecodedContent::Attachment { id, .. } => (
-                    id,
-                    Vec::new(),
-                    ContentStatus::Unsupported {
-                        format_version: Some(CONTENT_FORMAT_V1),
-                        kind: Some(CONTENT_KIND_ATTACHMENT),
-                    },
-                ),
+                DecodedContent::Attachment { id, manifest } => {
+                    let entitled_peers = rec.members.iter().map(|member| member.peer).collect();
+                    let transfer = self.record_group_attachment_offer(
+                        crate::attachment::GroupAttachmentOffer {
+                            group: rec.id,
+                            author: peer,
+                            entitled_peers,
+                        },
+                        id,
+                        &manifest,
+                        now,
+                        rng,
+                    )?;
+                    (id, Vec::new(), ContentStatus::Attachment { id, transfer })
+                }
                 DecodedContent::Unsupported {
                     format_version,
                     kind,
@@ -943,6 +956,7 @@ impl Node {
         peer: &[u8; 32],
         wire: &[u8],
         group_msg_id: [u8; 16],
+        class: QueueClass,
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Option<[u8; 16]>> {
@@ -961,12 +975,74 @@ impl Node {
                 peer: *peer,
                 msg_id: None,
                 group_msg_id: Some(group_msg_id),
-                class: QueueClass::Normal,
+                class,
                 envelope,
             },
             rng,
         )?;
         Ok(Some(cid))
+    }
+
+    /// Encrypt one already-persisted Attachment manifest exactly once on the
+    /// group's sender chain and queue its pairwise envelope copies as bulk.
+    /// The attachment engine calls this only after every intended member has
+    /// authenticated support and a fresh non-airtime route.
+    pub(crate) fn queue_group_attachment_manifest(
+        &mut self,
+        group: &[u8; 32],
+        content_id: &[u8; 16],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<bool> {
+        let mut rec = self
+            .store
+            .get_group(group)?
+            .ok_or(NodeError::UnknownGroup)?;
+        let mut record = self
+            .store
+            .group_messages(group)?
+            .into_iter()
+            .find(|record| record.direction == Direction::Outbound && &record.id == content_id)
+            .ok_or(NodeError::UnknownAttachment)?;
+        if record
+            .deliveries
+            .iter()
+            .any(|delivery| delivery.wire_id.is_some())
+        {
+            return Ok(false);
+        }
+        if record
+            .deliveries
+            .iter()
+            .any(|delivery| !self.sessions.contains_key(&delivery.peer))
+        {
+            return Ok(false);
+        }
+        if rec.sent_since_rotation >= GROUP_ROTATE_MSGS {
+            self.rotate_group(&mut rec, rng)?;
+        }
+        let mut chain = decode_chain(&rec.sender_chain)?;
+        let hk = GroupHeaderKey::derive(&rec.secret);
+        let wire = chain.seal(&hk, group, &pad(&record.body)?, rng).encode();
+        rec.sender_chain = encode_chain(&chain)?;
+        rec.sent_since_rotation += 1;
+        for delivery in record.deliveries.iter_mut() {
+            delivery.wire_id = self.queue_group_copy(
+                &delivery.peer,
+                &wire,
+                record.id,
+                QueueClass::Bulk,
+                now,
+                rng,
+            )?;
+            if delivery.wire_id.is_none() {
+                return Ok(false);
+            }
+        }
+        record.wire_body = None;
+        self.store.update_group_message(&record, rng)?;
+        self.store.put_group(&rec, rng)?;
+        Ok(true)
     }
 
     /// Encrypt and queue one control payload to a peer over the pairwise

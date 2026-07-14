@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+blake3 = "1"
 kult-crypto = { version = "0.1.0", path = "../kult-crypto" }
 kult-protocol = { version = "0.1.0", path = "../kult-protocol" }
 kult-store = { version = "0.1.0", path = "../kult-store" }

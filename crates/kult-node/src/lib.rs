@@ -55,11 +55,15 @@ use kult_store::{
 use kult_transport::{CostClass, DeliveryHint, Discovery, Reachability, Transport};
 
 mod api;
+mod attachment;
 mod error;
 mod groups;
 mod vault;
 
-pub use api::{Command, ContentStatus, Event, GroupInfo};
+pub use api::{
+    AttachmentConversation, AttachmentDirection, AttachmentInfo, AttachmentMetadata,
+    AttachmentObjectInfo, Command, ContentStatus, Event, GroupInfo,
+};
 pub use error::NodeError;
 
 use vault::PrekeyVault;
@@ -274,6 +278,8 @@ pub struct Node {
     discoveries: Vec<Arc<dyn Discovery>>,
     sessions: HashMap<[u8; 32], kult_crypto::Session>,
     capabilities_advertised: HashSet<[u8; 32]>,
+    media_reconciled: bool,
+    attachment_request_at: HashMap<[u8; 16], u64>,
     reassembler: Reassembler,
     backoff: HashMap<i64, Backoff>,
     frag_meta: HashMap<[u8; 4], PartialMeta>,
@@ -360,6 +366,8 @@ impl Node {
             discoveries: Vec::new(),
             sessions,
             capabilities_advertised: HashSet::new(),
+            media_reconciled: false,
+            attachment_request_at: HashMap::new(),
             reassembler: Reassembler::new(),
             backoff: HashMap::new(),
             frag_meta: HashMap::new(),
@@ -683,6 +691,19 @@ impl Node {
             Command::GroupAdd { group, peer } => self.group_add(&group, &peer, rng)?,
             Command::GroupRemove { group, peer } => self.group_remove(&group, &peer, now, rng)?,
             Command::GroupLeave { group } => self.group_leave(&group, now, rng)?,
+            Command::AttachmentAccept { transfer } => {
+                self.accept_attachment(&transfer, now, rng)?
+            }
+            Command::AttachmentReject { transfer } => {
+                self.reject_attachment(&transfer, now, rng)?
+            }
+            Command::AttachmentCancel { transfer } => {
+                self.cancel_attachment(&transfer, now, rng)?
+            }
+            Command::AttachmentPause { transfer } => self.pause_attachment(&transfer, now, rng)?,
+            Command::AttachmentResume { transfer } => {
+                self.resume_attachment(&transfer, now, rng)?
+            }
         }
         Ok(())
     }
@@ -777,6 +798,10 @@ impl Node {
     /// receipts for consumed messages, then flush the outbound queue through
     /// the transport scheduler. Returns all events produced.
     pub async fn tick(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<Vec<Event>> {
+        if !self.media_reconciled {
+            self.store.reconcile_media(rng)?;
+            self.media_reconciled = true;
+        }
         // 0. Session-reset markers (a restore happened): queue fresh
         //    handshakes so re-keyed traffic flows without waiting for the
         //    user to send first.
@@ -855,6 +880,10 @@ impl Node {
         //     pairwise sessions where possible) and serve late fan-out to
         //     members whose session appeared after a group send.
         self.tick_groups(now, rng).await?;
+
+        // 2c. Attachment offers and resumable missing-range requests activate
+        //     only after a fresh non-airtime reachability check.
+        self.activate_attachment_transfers(now, rng).await?;
 
         // 3. Acknowledge consumed messages with end-to-end encrypted
         //    receipts, and NACK the missing fragment indices of stale
@@ -1154,7 +1183,9 @@ impl Node {
             }
             EnvelopeKind::Receipt => {
                 // Receipts are terminal: they are not themselves receipted.
-                if is_capability_control(&body) {
+                if kult_protocol::is_attachment_bulk_record(&body) {
+                    self.apply_attachment_bulk(peer, &body, now, rng)?;
+                } else if is_capability_control(&body) {
                     if let Ok(capabilities) = CapabilityControl::decode(&body) {
                         self.store.put_capabilities(&peer, &capabilities, rng)?;
                         if !self.capabilities_advertised.contains(&peer) {
@@ -1211,16 +1242,11 @@ impl Node {
             DecodedContent::Text { id, text } => {
                 (id, text.as_bytes().to_vec(), ContentStatus::Text { id })
             }
-            // F3 foundation decodes and retains the manifest but does not
-            // activate transfer state or surface attachment APIs yet.
-            DecodedContent::Attachment { id, .. } => (
-                id,
-                Vec::new(),
-                ContentStatus::Unsupported {
-                    format_version: Some(CONTENT_FORMAT_V1),
-                    kind: Some(CONTENT_KIND_ATTACHMENT),
-                },
-            ),
+            DecodedContent::Attachment { id, manifest } => {
+                let transfer =
+                    self.record_pairwise_attachment_offer(peer, id, &manifest, now, rng)?;
+                (id, Vec::new(), ContentStatus::Attachment { id, transfer })
+            }
             DecodedContent::Unsupported {
                 format_version,
                 kind,
@@ -1277,7 +1303,7 @@ impl Node {
         CapabilityControl {
             formats: vec![FormatCapabilities {
                 format_version: CONTENT_FORMAT_V1,
-                kinds: vec![CONTENT_KIND_TEXT],
+                kinds: vec![CONTENT_KIND_TEXT, CONTENT_KIND_ATTACHMENT],
             }],
         }
     }
@@ -1509,7 +1535,9 @@ impl Node {
                 let profile = transport.profile();
                 // Rule 3: media-sized payloads never hog the mesh — hold
                 // for a faster carrier instead.
-                if oversize && profile.cost == CostClass::Airtime {
+                if (oversize || item.class == QueueClass::Bulk)
+                    && profile.cost == CostClass::Airtime
+                {
                     held_for_airtime = true;
                     continue;
                 }

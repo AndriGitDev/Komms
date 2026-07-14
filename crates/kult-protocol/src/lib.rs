@@ -66,7 +66,7 @@ pub use envelope::{Envelope, EnvelopeKind, ENVELOPE_HEADER_LEN};
 pub use error::ProtocolError;
 pub use fragmentation::{fragment, Reassembler, FRAG_HEADER_LEN, REASSEMBLY_WINDOW_SECS};
 pub use group::{GroupAnnounce, GroupControlPayload, GroupMemberInfo};
-pub use padding::{pad, unpad, PAD_BUCKETS};
+pub use padding::{pad, pad_to_minimum, unpad, PAD_BUCKETS};
 pub use receipt::ReceiptPayload;
 pub use token::{delivery_token, epoch_day, intro_token, MailboxKey};
 
