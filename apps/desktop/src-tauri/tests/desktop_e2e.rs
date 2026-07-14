@@ -375,8 +375,8 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
         .contains("fresh realtime or bulk link"));
 
     let audio_bytes = canonical_audio(1_600);
-    let encoded = base64::engine::general_purpose::STANDARD
-        .encode(native_audio_with_metadata(&audio_bytes));
+    let encoded =
+        base64::engine::general_purpose::STANDARD.encode(native_audio_with_metadata(&audio_bytes));
     let audio_content = alice
         .send_recorded_audio(outbound[0].peer.clone(), encoded.clone())
         .unwrap();

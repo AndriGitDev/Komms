@@ -317,7 +317,7 @@ class AudioMessageController(
                 sendButton.isEnabled = false
                 releasePlayer()
                 reviewFile = null
-                runNode(
+                activity.runNode(
                     work = { send(active, file) },
                     onError = {
                         if (activity.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
