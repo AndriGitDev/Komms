@@ -335,6 +335,17 @@ foreground service continues data-sync work while backgrounded, desktop
 continues while open or minimized, and iOS resumes on foreground without
 claiming unsupported continuous execution.
 
+B2 recorded audio is shipped end to end on top of that unchanged F3/F4 path.
+Desktop, Android, and iOS record only while foregrounded, stop into a local review
+with no autoplay, show locally derived duration/waveform and the current carrier
+explanation, and require explicit send or discard. All three canonicalize to one
+metadata-free profile—mono signed 16-bit little-endian PCM WAV at 16 kHz, bounded
+to 60 seconds / 1,920,044 bytes—and deliver exact bytes pairwise or through the
+encrypt-once sender-key group flow. Protected playback and failure, interruption,
+lock, restart, and orphan cleanup are covered. The ADR-0015 invariant remains
+absolute: mesh-only recorded audio waits for a faster link and emits zero bulk
+airtime frames.
+
 The F5 sealed local-metadata foundation is shipped in `kult-store`: typed and
 bounded conversation, folder, pin, label, draft, preference, and custom-icon
 records use an isolated storage key and reveal no local organization keys in a

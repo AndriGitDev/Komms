@@ -30,6 +30,14 @@ are the node's own, verbatim.
   rendered only after a protected transient export. The UI states iOS's actual
   lifecycle contract: work continues only while the OS permits execution and
   resumes from durable verified progress on foreground.
+- **Record pairwise or group audio messages** with explicit microphone consent
+  and foreground-only capture, then stop into a no-autoplay review with locally
+  derived duration/waveform and an F4 carrier explanation before explicit send
+  or discard. AVFoundation's native recording is canonicalized to the shared
+  metadata-free mono 16-bit PCM WAV / 16 kHz / 60-second profile before F3
+  import. Interruption, route change, background, lock, view teardown, failure,
+  discard, and restart clean the Data-Protection-complete transient; received
+  clips are validated and materialized only for explicit protected playback.
 - **Create and use sender-key groups** from stored contacts: list and read
   group history, send messages, add/remove members as the creator, and leave
   as any member while local history remains stored. Inbound rows name the
@@ -74,8 +82,10 @@ simulator required. Its group acceptance scenario adds a real offline third
 identity and pins creator authority, add/remove/leave convergence, history,
 and honest partial delivery per recipient. Pairwise and group attachment
 acceptance covers offer/consent/completion, exact bytes and metadata, lifecycle
-controls, exact export, and overwrite refusal. `KommsApp` remains UI-only
-document-picker and rendering glue.
+controls, exact export, and overwrite refusal. Audio acceptance additionally
+strips an injected native metadata chunk and pins identical canonical bytes and
+duration across pairwise and sender-key group delivery. `KommsApp` remains
+UI-only document-picker, recorder, and rendering glue.
 
 Generated bindings are never committed; `scripts/generate-bindings.sh`
 produces them fresh from the crate. The package is deliberately outside

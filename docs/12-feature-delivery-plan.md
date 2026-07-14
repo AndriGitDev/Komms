@@ -21,15 +21,15 @@ not.
 
 ## 2. Current baseline
 
-Komms already has a strong transport and security foundation, but its public
-message model is still effectively `Vec<u8>` in the node and UTF-8 text at the
-FFI boundary. Attachments, edits, polls, expiry, and calls therefore need shared
-content and capability foundations before individual shells implement UI.
+Komms has a strong transport and security foundation plus shared versioned
+content, attachment, and carrier-capability front doors. New replicated content
+types such as edits, polls, expiry, and call signaling still require their own
+accepted designs before individual shells implement UI.
 
 | Feature from scope | Current status | Main gap |
 |---|---|---|
 | Text messages | Shipped | Product polish and accessibility only. |
-| Recorded audio messages | Planned | Attachment/media model, recording UI, carrier policy. |
+| Recorded audio messages | Shipped | Keep the canonical profile, lifecycle cleanup, F3/F4 behavior, and cross-platform acceptance gates stable. |
 | End-to-end encryption | Assurance | Continuous audit, KAT, fuzz, and regression gates. |
 | Post-quantum handshake | Assurance | Crypto-agility and downgrade-safe future upgrades. |
 | Contact names / usernames | Partial | Local petnames exist; rename UX and optional signed self-display name do not. |
@@ -47,7 +47,7 @@ content and capability foundations before individual shells implement UI.
 | Local media editing | Planned | Pre-encryption transforms and temporary-file hygiene. |
 | Mentions | Planned | Typed peer reference, group-aware composer, and navigation. |
 | Labels | Planned | Local contact/conversation/message metadata and filtering. |
-| File sharing | Partial | Desktop path-based send/consent/progress/export is shipped; mobile and richer media UX remain. |
+| File sharing | Partial | Bounded cross-shell F3 delivery is shipped; generic file confirmation still needs the pre-send F4 explanation and richer media polish. |
 | Linked devices | Planned | Proximate linking, device keys, sync, revocation, and recovery. |
 | Message editing | Planned | Authenticated revisions and deterministic offline reconciliation. |
 | Disappearing/view-once messages | Planned | Expiry semantics, relay metadata design, deletion limits. |
@@ -202,22 +202,47 @@ Acceptance:
 
 ### B2. Recorded audio messages
 
+**State:** shipped across desktop, Android, and iOS.
+
 **Depends on:** F2, F3, F4.
 
-Deliver a press/hold or tap-to-record composer, local playback, waveform/duration
-metadata, and explicit send confirmation. Prefer an interoperable low-bitrate
-codec such as Opus where platform support and licensing pass review. Strip
-container metadata that could leak device/location information.
+Every shell implements the accessible foreground-only sequence record → stop →
+review → explicitly send or discard. Review and received-message playback never
+autoplay; duration and the 64-bin waveform are derived locally from the actual
+bytes and are not attachment metadata. Pairwise and sender-key group delivery
+reuse the ordinary F3 attachment pipeline without new wire, cryptographic, or
+transport behavior.
+
+The single interoperable profile is a canonical 44-byte RIFF/WAVE header followed
+by mono signed 16-bit little-endian PCM at 16 kHz, MIME `audio/wav`, filename
+`audio-message.wav`, at most 60 seconds and 1,920,044 encoded bytes. The shared
+canonicalizer validates the native recording, streams only the PCM data into a
+new protected destination, and strips every extra container chunk. PCM WAV is
+the common native floor across the supported webview, Android, and iOS versions;
+introducing a compressed codec or a different wire/media profile requires a
+separate compatibility decision rather than per-platform formats.
 
 Policy:
 
-- internet/LAN: normal attachment limits;
-- mailbox/sneakernet: allowed within configured quotas;
-- LoRa: tiny clips may be queued only under an explicit conservative cap;
-  otherwise show "will send when a faster link exists" before committing airtime.
+- fresh internet/LAN or other F4 realtime/bulk route: ordinary attachment quotas;
+- mailbox/sneakernet: ordinary configured attachment quotas and durable resume;
+- mesh-only: hold for a faster link and emit zero manifest, chunk, missing-range,
+  or other bulk airtime frames, with that reason shown before explicit send;
+- offline/unknown: remain queued locally until a fresh faster route exists.
 
-Acceptance includes interrupted recording cleanup, background upload resumption,
-locked-device behavior, and a cross-platform encode/decode test.
+Permission denial leaves the ordinary composer usable. Microphone capture stops
+and plaintext is discarded on interruption, background/lock, view teardown, or
+shutdown; recording never continues in the background. Review and playback use
+app-private/protected transients, clean failure paths, and startup orphan cleanup.
+Desktop continues F3 transfers while open/minimized, Android uses the shipped
+data-sync foreground service, and iOS resumes durable verified progress when the
+OS returns the app to the foreground.
+
+Acceptance injects a metadata-bearing native WAV and proves identical canonical
+bytes, duration, pairwise delivery, sender-key group delivery, and protected
+playback through Rust FFI plus every platform wrapper. Malformed, spoofed,
+truncated, noncanonical, oversized, and overwrite cases fail closed. A dedicated
+ADR-0015 regression proves audio on a mesh-only route emits zero airtime frames.
 
 ### B3. End-to-end encryption
 
@@ -447,17 +472,21 @@ filter controls.
 
 ### C1. File sharing
 
-**Depends on:** F2, F3, F4. **ADR required.**
+**State:** partial. Bounded attachments are shipped across desktop, Android, and
+iOS; the remaining UI work is the generic pre-send F4 explanation and richer
+media polish.
 
-Ship in tiers:
+**Depends on:** F2, F3, F4. **Governed by:** ADR-0015.
+
+The shipped tiers are:
 
 1. small files over internet/LAN with explicit user download;
 2. resumable transfer over mailbox/sneakernet within local quotas;
-3. an intentionally tiny mesh allowance, or a hard mesh block, chosen from
-   measured airtime rather than intuition.
+3. a hard mesh block: every bulk attachment waits for a faster link and emits
+   zero airtime-class frames under ADR-0015.
 
 The sender UI must show the active policy before sending. The scheduler must
-hold oversized content for a faster link instead of fragmenting it across LoRa.
+hold all bulk content for a faster link instead of fragmenting it across LoRa.
 Reject dangerous filenames/paths, never auto-open executables, scan only locally
 if an engine is present, and do not promise malware detection.
 
