@@ -640,9 +640,7 @@ impl Session {
 
     /// Append one sealed local-only note; no transport work is created.
     pub fn send_note_to_self(&self, body: String) -> Result<String, String> {
-        self.node
-            .send_note_to_self(body)
-            .map_err(|e| e.to_string())
+        self.node.send_note_to_self(body).map_err(|e| e.to_string())
     }
 
     /// Create a sender-key group from stored contacts. Returns its id.
