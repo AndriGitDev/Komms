@@ -21,11 +21,16 @@ security indicators are the node's own, verbatim.
   remain visibly separate from ordinary history and can be edited or cancelled
   until the core activates them at the stored absolute UTC instant.
 - **Send and receive pairwise or group attachments** through native path
-  pickers with consent, exact progress, lifecycle controls, protected export,
-  and media-aware local previews. JPEG/PNG thumbnails are generated through a
-  bounded decoder, stripped to a capped JPEG, stored sealed, and decrypted only
-  into a protected transient rendering path. Transfers continue while Komms is
-  open or minimized and resume from verified progress after restart.
+  pickers with consent, exact progress, lifecycle controls, and protected export.
+  Generic files show a fresh F4 carrier explanation and explicit send/discard.
+  JPEG/PNG selections enter the shared bounded Rust editor for orientation
+  normalization, free/preset crop, 90-degree rotation, and user-positioned blur
+  or pixelation; the keyboard/screen-reader-accessible dialog reviews the exact
+  metadata-free final PNG, and only that asset enters F3. Protected originals
+  and intermediates are cleared on send, discard, failure, hide/lock, shutdown,
+  and restart. Completed edited images render only through validated protected
+  transients. Transfers continue while Komms is open or minimized and resume
+  from verified progress after restart.
 - **Record pairwise or group audio messages** only while Komms is visible, stop
   into a no-autoplay review with duration/waveform and the current F4 carrier
   explanation, then explicitly send or discard. The shell rewrites every clip

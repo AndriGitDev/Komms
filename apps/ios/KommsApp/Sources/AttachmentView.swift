@@ -383,6 +383,7 @@ enum AttachmentDestination {
 
 struct AttachmentPickerButton: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.scenePhase) private var scenePhase
 
     let destination: AttachmentDestination
     var disabled = false
@@ -390,6 +391,7 @@ struct AttachmentPickerButton: View {
 
     @State private var picking = false
     @State private var working = false
+    @State private var review: PreparedAttachment?
 
     var body: some View {
         Button {
@@ -415,6 +417,18 @@ struct AttachmentPickerButton: View {
                 reportError(errorText(error))
             }
         }
+        .sheet(item: $review) { prepared in
+            AttachmentReviewSheet(
+                destination: destination,
+                initial: prepared,
+                reportError: reportError)
+                .environmentObject(model)
+        }
+        .onChange(of: scenePhase) { phase in
+            guard phase != .active else { return }
+            review?.remove()
+            review = nil
+        }
     }
 
     private func importDocument(_ url: URL) {
@@ -429,16 +443,314 @@ struct AttachmentPickerButton: View {
                 ?? "application/octet-stream"
             let filename = url.lastPathComponent.isEmpty ? nil : url.lastPathComponent
             do {
-                switch destination {
-                case .peer(let peer):
-                    try await model.sendAttachment(
-                        peer: peer, source: url, mediaType: mediaType, filename: filename)
-                case .group(let group):
-                    try await model.sendGroupAttachment(
-                        group: group, source: url, mediaType: mediaType, filename: filename)
-                }
+                review = try await model.prepareAttachment(
+                    source: url, mediaType: mediaType, filename: filename)
             } catch {
                 reportError(errorText(error))
+            }
+        }
+    }
+}
+
+private struct AttachmentReviewSheet: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+
+    let destination: AttachmentDestination
+    let reportError: (String?) -> Void
+
+    @State private var prepared: PreparedAttachment
+    @State private var carrier = "Loading current carrier policy…"
+    @State private var carrierSnapshot = ""
+    @State private var busy = false
+    @State private var localError: String?
+    @State private var history: [LocalImageRecipe] = []
+    @State private var cropPreset = "Original"
+    @State private var cropX = "0"
+    @State private var cropY = "0"
+    @State private var cropWidth = "1"
+    @State private var cropHeight = "1"
+    @State private var regionKind = LocalImageRegionKind.blur
+    @State private var regionX = "0"
+    @State private var regionY = "0"
+    @State private var regionWidth = "32"
+    @State private var regionHeight = "32"
+    @State private var regionStrength = "8"
+    @State private var filename: String
+
+    init(
+        destination: AttachmentDestination,
+        initial: PreparedAttachment,
+        reportError: @escaping (String?) -> Void
+    ) {
+        self.destination = destination
+        self.reportError = reportError
+        _prepared = State(initialValue: initial)
+        switch initial.kind {
+        case .image(let image):
+            _cropWidth = State(initialValue: String(image.orientedWidth))
+            _cropHeight = State(initialValue: String(image.orientedHeight))
+            _regionWidth = State(initialValue: String(min(64, image.width)))
+            _regionHeight = State(initialValue: String(min(64, image.height)))
+            _filename = State(initialValue: image.filename)
+        case .generic(let file):
+            _filename = State(initialValue: file.filename)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                switch prepared.kind {
+                case .generic(let file): genericReview(file)
+                case .image(let image): imageEditor(image)
+                }
+                Section("Current carrier policy") {
+                    Text(carrier)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Current attachment carrier policy: \(carrier)")
+                }
+                if let localError {
+                    Text(localError).foregroundStyle(.red)
+                        .accessibilityLabel("Attachment error: \(localError)")
+                }
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Discard", role: .destructive) { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(sendLabel) { send() }
+                        .disabled(busy || carrierSnapshot.isEmpty)
+                }
+            }
+        }
+        .task { await loadCarrier() }
+        .onDisappear { prepared.remove() }
+        .onChange(of: scenePhase) { phase in
+            if phase != .active { dismiss() }
+        }
+    }
+
+    private var title: String {
+        if case .image = prepared.kind { return "Edit and review image" }
+        return "Review attachment"
+    }
+
+    private var sendLabel: String {
+        if case .image = prepared.kind { return "Send exact final" }
+        return "Send attachment"
+    }
+
+    @ViewBuilder
+    private func genericReview(_ file: PreparedFile) -> some View {
+        Section("Exact file") {
+            TextField("Display filename", text: $filename)
+            LabeledContent("Type", value: file.mediaType)
+            Text("The security-scoped source was copied into protected app-private storage. It is deleted after send or discard.")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func imageEditor(_ image: PreparedImage) -> some View {
+        Section("Exact final review") {
+            if let uiImage = UIImage(contentsOfFile: image.finalAsset.path) {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .scaledToFit()
+                    .accessibilityLabel("Exact final edited image review")
+            } else {
+                Label("Preview unavailable", systemImage: "photo")
+            }
+            Text("\(image.width) × \(image.height) pixels · \(image.encodedBytes) bytes · exact metadata-free PNG")
+                .font(.footnote).foregroundStyle(.secondary)
+            TextField("Display filename", text: $filename)
+        }
+        Section("Crop in oriented pixels") {
+            Picker("Crop preset", selection: $cropPreset) {
+                ForEach(["Original", "Free", "Square 1:1", "4:3", "16:9"], id: \.self) {
+                    Text($0)
+                }
+            }
+            integerField("Crop X", text: $cropX)
+            integerField("Crop Y", text: $cropY)
+            integerField("Crop width", text: $cropWidth)
+            integerField("Crop height", text: $cropHeight)
+            Button("Apply crop") { applyCrop(image) }
+        }
+        Section("Rotation") {
+            HStack {
+                Button("Rotate left") { rotate(image, delta: 3) }
+                    .accessibilityLabel("Rotate 90 degrees counter-clockwise")
+                Spacer()
+                Button("Rotate right") { rotate(image, delta: 1) }
+                    .accessibilityLabel("Rotate 90 degrees clockwise")
+            }
+        }
+        Section("Manual privacy region") {
+            Picker("Operation", selection: $regionKind) {
+                ForEach(LocalImageRegionKind.allCases, id: \.self) {
+                    Text($0.rawValue.capitalized)
+                }
+            }
+            integerField("Region X", text: $regionX)
+            integerField("Region Y", text: $regionY)
+            integerField("Region width", text: $regionWidth)
+            integerField("Region height", text: $regionHeight)
+            integerField("Strength", text: $regionStrength)
+            Button("Add privacy region") { addRegion(image) }
+            ForEach(image.recipe.regions) { region in
+                HStack {
+                    Text("\(region.kind.rawValue), x \(region.x), y \(region.y), \(region.width) × \(region.height), strength \(region.strength)")
+                    Spacer()
+                    Button("Remove", role: .destructive) {
+                        var recipe = image.recipe
+                        recipe.regions.removeAll { $0.id == region.id }
+                        update(image, recipe: recipe)
+                    }
+                    .accessibilityLabel("Remove \(region.kind.rawValue) region")
+                }
+            }
+        }
+        Section("Edit history") {
+            HStack {
+                Button("Undo") {
+                    guard let recipe = history.popLast() else { return }
+                    update(image, recipe: recipe, remember: false)
+                }.disabled(history.isEmpty)
+                Spacer()
+                Button("Reset") { update(image, recipe: LocalImageRecipe()) }
+            }
+            Text("Edits stay on this device. The original is never sent.")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    private func integerField(_ title: String, text: Binding<String>) -> some View {
+        TextField(title, text: text).keyboardType(.numberPad)
+            .accessibilityLabel(title)
+    }
+
+    private func integer(_ value: String, _ name: String) throws -> UInt32 {
+        guard let parsed = UInt32(value) else { throw InputError("\(name) must be a whole number") }
+        return parsed
+    }
+
+    private func centeredCrop(_ image: PreparedImage, wide: UInt32, high: UInt32) -> LocalImageCrop {
+        var width = image.orientedWidth
+        var height = UInt32(UInt64(width) * UInt64(high) / UInt64(wide))
+        if height > image.orientedHeight {
+            height = image.orientedHeight
+            width = UInt32(UInt64(height) * UInt64(wide) / UInt64(high))
+        }
+        return LocalImageCrop(
+            x: (image.orientedWidth - width) / 2,
+            y: (image.orientedHeight - height) / 2,
+            width: width, height: height)
+    }
+
+    private func applyCrop(_ image: PreparedImage) {
+        do {
+            var recipe = image.recipe
+            switch cropPreset {
+            case "Original": recipe.crop = nil
+            case "Square 1:1": recipe.crop = centeredCrop(image, wide: 1, high: 1)
+            case "4:3": recipe.crop = centeredCrop(image, wide: 4, high: 3)
+            case "16:9": recipe.crop = centeredCrop(image, wide: 16, high: 9)
+            default:
+                recipe.crop = LocalImageCrop(
+                    x: try integer(cropX, "crop X"), y: try integer(cropY, "crop Y"),
+                    width: try integer(cropWidth, "crop width"),
+                    height: try integer(cropHeight, "crop height"))
+            }
+            update(image, recipe: recipe)
+        } catch { localError = errorText(error) }
+    }
+
+    private func rotate(_ image: PreparedImage, delta: UInt8) {
+        var recipe = image.recipe
+        recipe.rotation = (recipe.rotation + delta) % 4
+        recipe.regions = []
+        update(image, recipe: recipe)
+    }
+
+    private func addRegion(_ image: PreparedImage) {
+        do {
+            var recipe = image.recipe
+            recipe.regions.append(LocalImageRegion(
+                kind: regionKind,
+                x: try integer(regionX, "region X"), y: try integer(regionY, "region Y"),
+                width: try integer(regionWidth, "region width"),
+                height: try integer(regionHeight, "region height"),
+                strength: try integer(regionStrength, "strength")))
+            update(image, recipe: recipe)
+        } catch { localError = errorText(error) }
+    }
+
+    private func update(
+        _ image: PreparedImage, recipe: LocalImageRecipe, remember: Bool = true
+    ) {
+        busy = true
+        localError = nil
+        Task {
+            do {
+                let updated = try await model.updatePreparedImage(image, recipe: recipe)
+                if remember { history.append(image.recipe) }
+                try? FileManager.default.removeItem(at: image.finalAsset)
+                prepared.kind = .image(updated)
+            } catch {
+                prepared.remove()
+                localError = errorText(error)
+                reportError(localError)
+                dismiss()
+            }
+            busy = false
+        }
+    }
+
+    private func loadCarrier() async {
+        do {
+            let explanation = try await model.attachmentCarrierExplanation(destination: destination)
+            carrier = explanation
+            carrierSnapshot = explanation
+        } catch {
+            localError = errorText(error)
+        }
+    }
+
+    private func send() {
+        busy = true
+        localError = nil
+        if case .image(var image) = prepared.kind {
+            image.filename = filename.isEmpty ? "edited-image.png" : filename
+            prepared.kind = .image(image)
+        } else if case .generic(var file) = prepared.kind {
+            file.filename = filename.isEmpty ? "attachment" : filename
+            prepared.kind = .generic(file)
+        }
+        Task {
+            do {
+                try await model.sendPreparedAttachment(
+                    destination: destination, prepared: prepared,
+                    expectedCarrier: carrierSnapshot)
+                dismiss()
+            } catch {
+                let message = errorText(error)
+                if message.hasPrefix("carrier_changed:") {
+                    let changed = String(message.dropFirst("carrier_changed:".count))
+                    carrier = changed
+                    carrierSnapshot = changed
+                    localError = "Carrier state changed. Review the updated explanation, then confirm again."
+                    busy = false
+                } else {
+                    prepared.remove()
+                    reportError(message)
+                    dismiss()
+                }
             }
         }
     }
@@ -574,8 +886,9 @@ struct AttachmentTransferView: View {
     }
 
     private var previewTaskKey: String {
-        let complete = attachment.objects.contains { $0.preview && $0.state == .complete }
-        return "\(attachment.transferId):\(complete)"
+        let sealed = attachment.objects.contains { $0.preview && $0.state == .complete }
+        let canonical = primary?.mediaType == "image/png" && attachment.state == .complete
+        return "\(attachment.transferId):\(sealed):\(canonical)"
     }
 
     private var audioTaskKey: String {
@@ -597,13 +910,20 @@ struct AttachmentTransferView: View {
     }
 
     private func loadPreview() async {
-        guard attachment.objects.contains(where: { $0.preview && $0.state == .complete }) else {
+        let sealed = attachment.objects.contains { $0.preview && $0.state == .complete }
+        let canonical = primary?.mediaType == "image/png" && attachment.state == .complete
+        guard sealed || canonical else {
             previewImage = nil
             return
         }
         do {
-            previewImage = UIImage(data: try await model.attachmentPreview(
-                transfer: attachment.transferId))
+            let data: Data
+            if sealed {
+                data = try await model.attachmentPreview(transfer: attachment.transferId)
+            } else {
+                data = try await model.attachmentImage(transfer: attachment.transferId)
+            }
+            previewImage = UIImage(data: data)
         } catch {
             previewImage = nil
         }

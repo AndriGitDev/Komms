@@ -24,12 +24,16 @@ are the node's own, verbatim.
 - **Send and receive pairwise or group attachments** through iOS document
   pickers, with explicit consent, exact verified-byte progress,
   pause/resume/cancel/reject controls, and caller-selected export.
-  Security-scoped provider files are copied with bounded memory through unique
-  app-private staging paths that are deleted after each operation. ImageIO
-  creates bounded, metadata-stripped JPEG previews, which are stored sealed and
-  rendered only after a protected transient export. The UI states iOS's actual
-  lifecycle contract: work continues only while the OS permits execution and
-  resumes from durable verified progress on foreground.
+  Security-scoped provider files are copied with bounded memory through unique,
+  backup-excluded, Data-Protection-complete staging paths; no photo-library
+  permission is required. Generic files show and recheck F4 before explicit
+  send/discard. JPEG/PNG selections use the shared Rust editor for orientation
+  normalization, free/preset crop, 90-degree rotation, and user-positioned blur
+  or pixelation, then review and send only the exact metadata-free PNG.
+  Originals, intermediates, receiver previews, and protected export sources are
+  cleaned on send, discard, denial, failure, background/lock, low storage, and
+  restart. The UI states iOS's actual lifecycle contract: work continues only
+  while the OS permits execution and resumes from durable verified progress.
 - **Record pairwise or group audio messages** with explicit microphone consent
   and foreground-only capture, then stop into a no-autoplay review with locally
   derived duration/waveform and an F4 carrier explanation before explicit send

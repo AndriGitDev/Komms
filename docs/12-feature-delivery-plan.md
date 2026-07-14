@@ -44,10 +44,10 @@ accepted designs before individual shells implement UI.
 | Custom icons | Planned | Local-only contact/group/conversation artwork. |
 | Screen security | Planned | Platform protections and documented limitations. |
 | Incognito keyboard | Planned | Android control; best available behavior and honest limits elsewhere. |
-| Local media editing | Planned | Pre-encryption transforms and temporary-file hygiene. |
+| Local still-image editing | Shipped | Keep shared deterministic semantics, cleanup, exact-review, and metadata-removal gates stable; video remains out of scope. |
 | Mentions | Planned | Typed peer reference, group-aware composer, and navigation. |
 | Labels | Planned | Local contact/conversation/message metadata and filtering. |
-| File sharing | Partial | Bounded cross-shell F3 delivery is shipped; generic file confirmation still needs the pre-send F4 explanation and richer media polish. |
+| File sharing | Partial | Bounded cross-shell F3 delivery and generic pre-send F4 confirmation are shipped; richer non-image media presentation remains. |
 | Linked devices | Planned | Proximate linking, device keys, sync, revocation, and recovery. |
 | Message editing | Planned | Authenticated revisions and deterministic offline reconciliation. |
 | Disappearing/view-once messages | Planned | Expiry semantics, relay metadata design, deletion limits. |
@@ -432,16 +432,35 @@ automated UI assertions cover the flags where platforms expose them.
 
 ### B16. Local media editing
 
+**State:** shipped for still JPEG/PNG across desktop, Android, and iOS.
+
 **Depends on:** F3.
 
-Start with image crop/rotate, metadata stripping, and face/pixel blur before
-adding video trimming/redaction. Transform before attachment encryption; retain
-neither the original nor intermediate plaintext unless the user explicitly asks.
-Use platform-native codecs where possible and never send media to a cloud API.
+One path-based Rust/UniFFI helper performs content-verified bounded decoding
+(32 MiB encoded, 4096 per edge, 12 megapixels), EXIF-orientation normalization,
+exact integer crop then quarter-turn rotation, ordered user-positioned blur or
+pixelation, and deterministic metadata-free RGBA PNG encoding. Output is
+create-new and re-probed before F3 import; malformed, spoofed, truncated,
+animated, unsupported, over-dimension, decompression-bomb-like, and overwrite
+cases fail closed.
 
-Acceptance includes EXIF/GPS removal, cancellation cleanup, low-storage failure,
-orientation/color preservation, and byte-level proof that only the edited asset
-enters the attachment pipeline.
+Desktop provides a keyboard/screen-reader-operable editor, Android stages SAF
+streams without broad storage permission, and iOS stages security-scoped files
+under complete Data Protection without photo-library permission. All show the
+exact final asset and require explicit send or discard for pairwise or
+sender-key groups. Only that final PNG enters F3. Protected originals, decoded
+review state, and intermediates are removed on send, discard, denial, failure,
+low storage, background/lock, shutdown, and restart orphan recovery.
+
+Video editing, cloud processing, automatic face recognition, filters/effects,
+generative editing, and editable projects are not part of this delivery. Any
+new content kind, manifest field, wire metadata, crypto, or transport behavior
+still requires an ADR.
+
+Acceptance covers deterministic Rust/FFI/wrapper semantics, EXIF/GPS/XMP/comment
+and thumbnail removal, orientation/crop/rotation/blur/pixelation, cancellation
+and low-storage cleanup, exact pairwise/group delivery, protected receiver
+preview/export, F4 reconfirmation, and zero mesh airtime.
 
 ### B17. Mentions
 
@@ -472,9 +491,10 @@ filter controls.
 
 ### C1. File sharing
 
-**State:** partial. Bounded attachments are shipped across desktop, Android, and
-iOS; the remaining UI work is the generic pre-send F4 explanation and richer
-media polish.
+**State:** partial. Bounded attachments and the generic pre-send F4 explanation,
+fresh verdict recheck, changed-verdict reconfirmation, and explicit send/discard
+flow are shipped across desktop, Android, and iOS. Richer non-image media polish
+remains.
 
 **Depends on:** F2, F3, F4. **Governed by:** ADR-0015.
 

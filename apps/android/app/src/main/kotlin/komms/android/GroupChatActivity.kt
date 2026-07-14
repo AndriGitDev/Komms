@@ -95,6 +95,9 @@ class GroupChatActivity : AppCompatActivity() {
                     )
                 }
             },
+            carrierExplanation = { session ->
+                session.groupAttachmentCarrierExplanation(groupId)
+            },
             bindAudio = audioController::bindAttachment,
             refresh = ::refresh,
             savedState = savedInstanceState,
@@ -122,6 +125,7 @@ class GroupChatActivity : AppCompatActivity() {
     }
 
     override fun onStop() {
+        if (::attachmentController.isInitialized) attachmentController.onStop()
         if (::audioController.isInitialized) audioController.onStop()
         super.onStop()
     }

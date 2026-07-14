@@ -11,6 +11,7 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.file.Files
+import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -27,6 +28,10 @@ import uniffi.kult_ffi.Direction
 import uniffi.kult_ffi.Event
 import uniffi.kult_ffi.FfiException
 import uniffi.kult_ffi.KdfChoice
+import uniffi.kult_ffi.ImageCrop
+import uniffi.kult_ffi.ImageEditRecipe
+import uniffi.kult_ffi.ImageEditRegion
+import uniffi.kult_ffi.ImageEditRegionKind
 
 /** Collects node events exactly as an activity's sink would. */
 private class Events {
@@ -73,6 +78,19 @@ private fun listenAddr(session: Session): String {
 private fun multiaddrHint(addr: String) = listOf(HintSpec("multiaddr", addr))
 
 class SessionE2eTest {
+    private fun imageSource(): ByteArray = Base64.getDecoder().decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAQAAAADAgMAAADJmkZVAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAMUExURRAgMHhwaODAoP///zpo6RQAAAADdFJOU9nZ2dfb3kcAAAABYktHRAMRDEzyAAAAB3RJTUUH6gcOFCoDxLmvWQAAACV0RVh0ZGF0ZTpjcmVhdGUAMjAyNi0wNy0xNFQyMDo0MjowMyswMDowMANuTXIAAAAldEVYdGRhdGU6bW9kaWZ5ADIwMjYtMDctMTRUMjA6NDI6MDMrMDA6MDByM/XOAAAAKHRFWHRkYXRlOnRpbWVzdGFtcAAyMDI2LTA3LTE0VDIwOjQyOjAzKzAwOjAwJSbUEQAAAA5JREFUCNdjYGAIZVgFAAGvAQCmulOkAAAAAElFTkSuQmCC",
+    )
+
+    private fun imageRecipe() = ImageEditRecipe(
+        ImageCrop(1u, 0u, 3u, 3u),
+        1u.toUByte(),
+        listOf(
+            ImageEditRegion(ImageEditRegionKind.PIXELATE, 0u, 0u, 2u, 2u, 2u),
+            ImageEditRegion(ImageEditRegionKind.BLUR, 1u, 0u, 2u, 3u, 1u),
+        ),
+    )
+
     private fun canonicalAudio(samples: Int = 1_600): ByteArray {
         val dataBytes = samples * 2
         val bytes = ByteBuffer.allocate(44 + dataBytes).order(ByteOrder.LITTLE_ENDIAN)
@@ -242,6 +260,42 @@ class SessionE2eTest {
         assertContentEquals(audioBytes, audioExport.readBytes())
         assertEquals(100uL, bob.probeAudio(audioExport).durationMs)
 
+        // Every platform wrapper passes the same integer recipe to Rust and
+        // imports only the exact canonical result, never the selected source.
+        val imageSource = File(dir, "android-selected-image.png").apply {
+            writeBytes(imageSource())
+        }
+        val imageFinal = File(dir, "android-edited-image.png")
+        val imageDirect = File(dir, "android-edited-image-direct.png")
+        val imageInfo = alice.editImage(imageSource, imageFinal, imageRecipe())
+        uniffi.kult_ffi.editImage(
+            imageSource.absolutePath,
+            imageDirect.absolutePath,
+            imageRecipe(),
+        )
+        assertContentEquals(imageDirect.readBytes(), imageFinal.readBytes())
+        assertEquals(imageInfo, alice.probeImage(imageFinal))
+        val imageContent = alice.sendAttachment(
+            bobPeer, imageFinal, "image/png", "edited-image.png",
+        )
+        val imageOffer = bEv.wait("pairwise edited image offer") {
+            (it as? Event.AttachmentUpdated)?.takeIf { event ->
+                event.attachment.contentId == imageContent &&
+                    event.attachment.direction == AttachmentDirection.INBOUND
+            }
+        }.attachment
+        bob.acceptAttachment(imageOffer.transferId)
+        bEv.wait("pairwise edited image completion") {
+            (it as? Event.AttachmentUpdated)?.takeIf { event ->
+                event.attachment.transferId == imageOffer.transferId &&
+                    event.attachment.state == AttachmentState.COMPLETE
+            }
+        }
+        val imageExport = File(dir, "android-edited-image-received.png")
+        bob.exportAttachment(imageOffer.transferId, imageExport)
+        assertContentEquals(imageFinal.readBytes(), imageExport.readBytes())
+        assertEquals(imageInfo, bob.probeImage(imageExport))
+
         // The verify screen: identical digits and QR payloads on both
         // ends (also identical to what the desktop app renders), and the
         // "mark verified" button reflects into the contact list badge.
@@ -358,15 +412,23 @@ class SessionE2eTest {
         }
 
         // The same Session methods cover one encrypt-once group attachment.
-        val groupBytes = canonicalAudio()
-        val groupSource = File(dir, "android-group-source.wav").apply {
-            writeBytes(groupBytes)
+        val selectedImage = File(dir, "android-group-selected.png").apply {
+            writeBytes(imageSource())
         }
+        val groupSource = File(dir, "android-group-edited.png")
+        val directImage = File(dir, "android-group-edited-direct.png")
+        val groupImageInfo = alice.editImage(selectedImage, groupSource, imageRecipe())
+        uniffi.kult_ffi.editImage(
+            selectedImage.absolutePath,
+            directImage.absolutePath,
+            imageRecipe(),
+        )
+        assertContentEquals(directImage.readBytes(), groupSource.readBytes())
         val groupContent = alice.sendGroupAttachment(
             group,
             groupSource,
-            "audio/wav",
-            "audio-message.wav",
+            "image/png",
+            "edited-image.png",
         )
         val groupOffer = bEv.wait("group attachment offer") {
             (it as? Event.AttachmentUpdated)?.takeIf { event ->
@@ -384,8 +446,8 @@ class SessionE2eTest {
         }
         val groupExport = File(dir, "android-group-export.bin")
         bob.exportAttachment(groupOffer.transferId, groupExport)
-        assertContentEquals(groupBytes, groupExport.readBytes())
-        assertEquals(100uL, bob.probeAudio(groupExport).durationMs)
+        assertContentEquals(groupSource.readBytes(), groupExport.readBytes())
+        assertEquals(groupImageInfo, bob.probeImage(groupExport))
 
         alice.addGroupMember(group, carolPeer)
         listed = alice.groups()

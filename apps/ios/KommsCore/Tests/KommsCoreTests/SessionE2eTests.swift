@@ -111,6 +111,22 @@ private func nativeAudioWithMetadata(_ canonical: Data) -> Data {
     return bytes
 }
 
+private func imageSource() -> Data {
+    Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAQAAAADAgMAAADJmkZVAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAMUExURRAgMHhwaODAoP///zpo6RQAAAADdFJOU9nZ2dfb3kcAAAABYktHRAMRDEzyAAAAB3RJTUUH6gcOFCoDxLmvWQAAACV0RVh0ZGF0ZTpjcmVhdGUAMjAyNi0wNy0xNFQyMDo0MjowMyswMDowMANuTXIAAAAldEVYdGRhdGU6bW9kaWZ5ADIwMjYtMDctMTRUMjA6NDI6MDMrMDA6MDByM/XOAAAAKHRFWHRkYXRlOnRpbWVzdGFtcAAyMDI2LTA3LTE0VDIwOjQyOjAzKzAwOjAwJSbUEQAAAA5JREFUCNdjYGAIZVgFAAGvAQCmulOkAAAAAElFTkSuQmCC")!
+}
+
+private func imageRecipe() -> ImageEditRecipe {
+    ImageEditRecipe(
+        crop: ImageCrop(x: 1, y: 0, width: 3, height: 3),
+        rotationQuarterTurns: 1,
+        regions: [
+            ImageEditRegion(
+                kind: .pixelate, x: 0, y: 0, width: 2, height: 2, strength: 2),
+            ImageEditRegion(
+                kind: .blur, x: 1, y: 0, width: 2, height: 3, strength: 1),
+        ])
+}
+
 final class SessionE2eTests: XCTestCase {
     private func tempDir() throws -> URL {
         let dir = FileManager.default.temporaryDirectory
@@ -282,6 +298,41 @@ final class SessionE2eTests: XCTestCase {
         XCTAssertEqual(audioBytes, try Data(contentsOf: audioExport))
         XCTAssertEqual(100, try bob.probeAudio(audioExport).durationMs)
 
+        // Every platform wrapper passes the same integer recipe to Rust and
+        // imports only the exact canonical result, never the selected source.
+        let imageSourceURL = dir.appendingPathComponent("ios-selected-image.png")
+        let imageFinal = dir.appendingPathComponent("ios-edited-image.png")
+        let imageDirect = dir.appendingPathComponent("ios-edited-image-direct.png")
+        try imageSource().write(to: imageSourceURL)
+        let imageInfo = try alice.renderEditedImage(
+            source: imageSourceURL, destination: imageFinal, recipe: imageRecipe())
+        _ = try editImage(
+            source: imageSourceURL.path, destination: imageDirect.path, recipe: imageRecipe())
+        XCTAssertEqual(try Data(contentsOf: imageDirect), try Data(contentsOf: imageFinal))
+        XCTAssertEqual(imageInfo, try alice.probeImage(imageFinal))
+        let imageContent = try alice.sendAttachment(
+            peer: bobPeer, path: imageFinal, mediaType: "image/png",
+            filename: "edited-image.png")
+        let imageOffer = try bEv.wait("pairwise edited image offer") { event -> Attachment? in
+            if case let .attachmentUpdated(attachment) = event,
+               attachment.contentId == imageContent,
+               attachment.direction == .inbound {
+                return attachment
+            }
+            return nil
+        }
+        try bob.acceptAttachment(transfer: imageOffer.transferId)
+        _ = try bEv.wait("pairwise edited image completion") { event -> Void? in
+            if case let .attachmentUpdated(attachment) = event,
+               attachment.transferId == imageOffer.transferId,
+               attachment.state == .complete { return () }
+            return nil
+        }
+        let imageExport = dir.appendingPathComponent("ios-edited-image-received.png")
+        try bob.exportAttachment(transfer: imageOffer.transferId, to: imageExport)
+        XCTAssertEqual(try Data(contentsOf: imageFinal), try Data(contentsOf: imageExport))
+        XCTAssertEqual(imageInfo, try bob.probeImage(imageExport))
+
         // The verify screen: identical digits and QR payloads on both ends
         // (also identical to what the desktop and Android apps render), and
         // the "mark verified" button reflects into the contact list badge.
@@ -422,14 +473,20 @@ final class SessionE2eTests: XCTestCase {
         }
 
         // The same Session surface covers one encrypt-once group attachment.
-        let groupBytes = canonicalAudio()
-        let groupSource = dir.appendingPathComponent("ios-group-source.wav")
-        try groupBytes.write(to: groupSource)
+        let selectedImage = dir.appendingPathComponent("ios-group-selected.png")
+        let groupSource = dir.appendingPathComponent("ios-group-edited.png")
+        let directImage = dir.appendingPathComponent("ios-group-edited-direct.png")
+        try imageSource().write(to: selectedImage)
+        let groupImageInfo = try alice.renderEditedImage(
+            source: selectedImage, destination: groupSource, recipe: imageRecipe())
+        _ = try editImage(
+            source: selectedImage.path, destination: directImage.path, recipe: imageRecipe())
+        XCTAssertEqual(try Data(contentsOf: directImage), try Data(contentsOf: groupSource))
         let groupContent = try alice.sendGroupAttachment(
             group: group,
             path: groupSource,
-            mediaType: "audio/wav",
-            filename: "audio-message.wav")
+            mediaType: "image/png",
+            filename: "edited-image.png")
         let groupOffer = try bEv.wait("group attachment offer") { event -> Attachment? in
             if case let .attachmentUpdated(attachment) = event,
                attachment.contentId == groupContent,
@@ -450,8 +507,8 @@ final class SessionE2eTests: XCTestCase {
         }
         let groupExport = dir.appendingPathComponent("ios-group-export.bin")
         try bob.exportAttachment(transfer: groupOffer.transferId, to: groupExport)
-        XCTAssertEqual(groupBytes, try Data(contentsOf: groupExport))
-        XCTAssertEqual(100, try bob.probeAudio(groupExport).durationMs)
+        XCTAssertEqual(try Data(contentsOf: groupSource), try Data(contentsOf: groupExport))
+        XCTAssertEqual(groupImageInfo, try bob.probeImage(groupExport))
 
         try alice.addGroupMember(group: group, peer: carolPeer)
         listed = try alice.groups()

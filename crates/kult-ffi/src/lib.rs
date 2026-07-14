@@ -26,12 +26,18 @@
 #![deny(missing_docs)]
 
 mod audio;
+mod image_edit;
 mod runtime;
 
 pub use audio::{
     canonicalize_recorded_audio, probe_recorded_audio, AudioInfo, AUDIO_BITS_PER_SAMPLE,
     AUDIO_CHANNELS, AUDIO_MAX_BYTES, AUDIO_MAX_DURATION_MS, AUDIO_MEDIA_TYPE, AUDIO_SAMPLE_RATE,
     AUDIO_WAVEFORM_BINS,
+};
+pub use image_edit::{
+    edit_image, probe_edited_image, ImageCrop, ImageEditRecipe, ImageEditRegion,
+    ImageEditRegionKind, ImageInfo, IMAGE_MAX_DIMENSION, IMAGE_MAX_INPUT_BYTES,
+    IMAGE_MAX_OUTPUT_BYTES, IMAGE_MAX_PIXELS, IMAGE_MAX_REGIONS, IMAGE_MEDIA_TYPE,
 };
 
 use std::path::PathBuf;

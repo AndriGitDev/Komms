@@ -195,9 +195,35 @@ public final class Session: @unchecked Sendable {
         try probeRecordedAudio(path: path.path)
     }
 
+    /// Apply the shared bounded image recipe into a protected create-new destination.
+    public func renderEditedImage(
+        source: URL, destination: URL, recipe: ImageEditRecipe
+    ) throws -> ImageInfo {
+        try editImage(source: source.path, destination: destination.path, recipe: recipe)
+    }
+
+    /// Validate the exact metadata-free canonical image profile before import or preview.
+    public func probeImage(_ path: URL) throws -> ImageInfo {
+        try probeEditedImage(path: path.path)
+    }
+
+    /// Current authoritative carrier explanation for pairwise file/image confirmation.
+    public func attachmentCarrierExplanation(peer: String) throws -> String {
+        try carrierExplanation(recipients: [peer], subject: "attachment")
+    }
+
+    /// Current authoritative carrier explanation for every current group recipient.
+    public func groupAttachmentCarrierExplanation(group: String) throws -> String {
+        guard let group = try groups().first(where: { $0.id == group }) else {
+            throw InputError("unknown group")
+        }
+        return try carrierExplanation(
+            recipients: group.members.filter { $0 != peer }, subject: "attachment")
+    }
+
     /// Current authoritative carrier explanation for pairwise audio confirmation.
     public func audioCarrierExplanation(peer: String) throws -> String {
-        try audioCarrierExplanation(recipients: [peer])
+        try carrierExplanation(recipients: [peer], subject: "audio")
     }
 
     /// Current authoritative carrier explanation for every other current group member.
@@ -205,10 +231,11 @@ public final class Session: @unchecked Sendable {
         guard let group = try groups().first(where: { $0.id == group }) else {
             throw InputError("unknown group")
         }
-        return try audioCarrierExplanation(recipients: group.members.filter { $0 != peer })
+        return try carrierExplanation(
+            recipients: group.members.filter { $0 != peer }, subject: "audio")
     }
 
-    private func audioCarrierExplanation(recipients: [String]) throws -> String {
+    private func carrierExplanation(recipients: [String], subject: String) throws -> String {
         let snapshots = Dictionary(uniqueKeysWithValues: try node.carrierCapabilities().map {
             ($0.peer, $0.capability)
         })
@@ -218,14 +245,14 @@ public final class Session: @unchecked Sendable {
             return capability != .realtime && capability != .bulk && capability != .meshOnly
         }.count
         if recipients.isEmpty {
-            return "This group has no other current recipients; no audio delivery will be created."
+            return "This group has no other current recipients; no \(subject) delivery will be created."
         }
         if mesh > 0 && unavailable > 0 {
-            return "\(mesh) recipient(s) have only a mesh route, so audio waits for a faster link and emits zero mesh bulk frames; "
+            return "\(mesh) recipient(s) have only a mesh route, so \(subject) waits for a faster link and emits zero manifest, chunk, missing-range, or other bulk mesh frames; "
                 + "\(unavailable) more have no fresh route. Recipients with a fresh realtime or bulk link can proceed."
         }
         if mesh > 0 {
-            return "Will send when a faster link exists for \(mesh) recipient(s). Audio emits zero mesh bulk frames."
+            return "Will send when a faster link exists for \(mesh) recipient(s). This \(subject) emits zero manifest, chunk, missing-range, or other bulk mesh frames."
         }
         if unavailable > 0 {
             return "Will remain queued locally until \(unavailable) recipient(s) have a fresh faster link."

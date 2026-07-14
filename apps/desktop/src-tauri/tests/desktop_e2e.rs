@@ -12,8 +12,72 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use komms_desktop::session::{hex_decode, NetworkSettings, Session, UiEvent, UiHint};
-use kult_ffi::KdfChoice;
+use komms_desktop::session::{
+    hex_decode, NetworkSettings, Session, UiEvent, UiHint, UiImageCrop, UiImageEditRecipe,
+    UiImageRegion,
+};
+use kult_ffi::{
+    edit_image, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, KdfChoice,
+};
+
+fn image_recipe() -> (UiImageEditRecipe, ImageEditRecipe) {
+    (
+        UiImageEditRecipe {
+            crop: Some(UiImageCrop {
+                x: 1,
+                y: 0,
+                width: 23,
+                height: 16,
+            }),
+            rotation_quarter_turns: 1,
+            regions: vec![
+                UiImageRegion {
+                    kind: "pixelate".to_owned(),
+                    x: 0,
+                    y: 0,
+                    width: 8,
+                    height: 8,
+                    strength: 4,
+                },
+                UiImageRegion {
+                    kind: "blur".to_owned(),
+                    x: 8,
+                    y: 0,
+                    width: 8,
+                    height: 12,
+                    strength: 2,
+                },
+            ],
+        },
+        ImageEditRecipe {
+            crop: Some(ImageCrop {
+                x: 1,
+                y: 0,
+                width: 23,
+                height: 16,
+            }),
+            rotation_quarter_turns: 1,
+            regions: vec![
+                ImageEditRegion {
+                    kind: ImageEditRegionKind::Pixelate,
+                    x: 0,
+                    y: 0,
+                    width: 8,
+                    height: 8,
+                    strength: 4,
+                },
+                ImageEditRegion {
+                    kind: ImageEditRegionKind::Blur,
+                    x: 8,
+                    y: 0,
+                    width: 8,
+                    height: 12,
+                    strength: 2,
+                },
+            ],
+        },
+    )
+}
 
 fn canonical_audio(samples: usize) -> Vec<u8> {
     let data_len = (samples * 2) as u32;
@@ -290,13 +354,37 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
     })
     .save(&source)
     .unwrap();
-    let bytes = std::fs::read(&source).unwrap();
+    let original_bytes = std::fs::read(&source).unwrap();
+    let direct = dir.path().join("desktop-edited-direct.png");
+    let (ui_recipe, ffi_recipe) = image_recipe();
+    edit_image(
+        source.display().to_string(),
+        direct.display().to_string(),
+        ffi_recipe,
+    )
+    .unwrap();
+    let review = alice
+        .begin_image_edit(source.display().to_string())
+        .unwrap();
+    let review = alice.update_image_edit(review.token, ui_recipe).unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(review.data_url.split_once(',').unwrap().1)
+        .unwrap();
+    assert_eq!(bytes, std::fs::read(&direct).unwrap());
+    assert_ne!(
+        bytes, original_bytes,
+        "the selected original must not be imported"
+    );
+    let carrier = alice
+        .attachment_carrier_explanation("pairwise".to_owned(), bob_peer.clone())
+        .unwrap();
     let content_id = alice
-        .send_attachment(
+        .send_image_edit(
+            review.token,
+            "pairwise".to_owned(),
             bob_peer,
-            source.display().to_string(),
-            "image/png".to_owned(),
             Some("field-photo.png".to_owned()),
+            carrier,
         )
         .unwrap();
     let outbound = alice.attachments().unwrap();
@@ -304,7 +392,7 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
     assert_eq!(outbound[0].content_id, content_id);
     assert_eq!(outbound[0].conversation, "pairwise");
     assert_eq!(outbound[0].direction, "outbound");
-    assert_eq!(outbound[0].objects.len(), 2);
+    assert_eq!(outbound[0].objects.len(), 1);
     assert_eq!(
         outbound[0].objects[0].filename.as_deref(),
         Some("field-photo.png")
@@ -346,11 +434,12 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
         .find(|attachment| attachment.transfer_id == inbound_transfer)
         .unwrap();
     assert_eq!(inbound.objects[0].verified_bytes, bytes.len() as u64);
-    assert!(inbound.objects[1].preview);
-    assert!(bob
-        .attachment_preview(inbound_transfer.clone())
-        .unwrap()
-        .starts_with("data:image/jpeg;base64,"));
+    let protected_preview = bob.attachment_image(inbound_transfer.clone()).unwrap();
+    assert!(protected_preview.starts_with("data:image/png;base64,"));
+    let preview_bytes = base64::engine::general_purpose::STANDARD
+        .decode(protected_preview.split_once(',').unwrap().1)
+        .unwrap();
+    assert_eq!(preview_bytes, bytes);
 
     // Export is caller-selected, exact, protected, and refuses overwrite.
     let exported = dir.path().join("desktop-export.bin");
@@ -365,20 +454,66 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
 
     bob.reject_attachment(inbound_transfer).unwrap();
     assert_eq!(bob.attachments().unwrap()[0].state, "rejected");
+    a_ev.wait("sender observes attachment rejection", |event| {
+        matches!(event, UiEvent::AttachmentUpdated { attachment }
+            if attachment.transfer_id == outbound[0].transfer_id
+                && attachment.state == "rejected")
+    });
     alice
         .cancel_attachment(outbound[0].transfer_id.clone())
         .unwrap();
     assert_eq!(alice.attachments().unwrap()[0].state, "cancelled");
-    assert!(alice
-        .audio_carrier_explanation("pairwise".to_owned(), outbound[0].peer.clone())
-        .unwrap()
-        .contains("fresh realtime or bulk link"));
+    let file_source = dir.path().join("desktop-generic.bin");
+    let file_bytes = b"generic file exact bytes\0private";
+    std::fs::write(&file_source, file_bytes).unwrap();
+    let stale = alice
+        .send_confirmed_attachment(
+            "pairwise".to_owned(),
+            outbound[0].peer.clone(),
+            file_source.display().to_string(),
+            "application/octet-stream".to_owned(),
+            Some("field-notes.bin".to_owned()),
+            "stale explanation".to_owned(),
+        )
+        .unwrap_err();
+    assert!(stale.starts_with("carrier_changed:"));
+    let file_carrier = alice
+        .attachment_carrier_explanation("pairwise".to_owned(), outbound[0].peer.clone())
+        .unwrap();
+    assert!(file_carrier.contains("fresh realtime or bulk link"));
+    let file_content = alice
+        .send_confirmed_attachment(
+            "pairwise".to_owned(),
+            outbound[0].peer.clone(),
+            file_source.display().to_string(),
+            "application/octet-stream".to_owned(),
+            Some("field-notes.bin".to_owned()),
+            file_carrier,
+        )
+        .unwrap();
+    let file_offer = b_ev.wait("generic file offer", |event| {
+        matches!(event, UiEvent::AttachmentUpdated { attachment }
+            if attachment.content_id == file_content && attachment.direction == "inbound")
+    });
+    let file_transfer = match file_offer {
+        UiEvent::AttachmentUpdated { attachment } => attachment.transfer_id,
+        other => panic!("wrong event: {other:?}"),
+    };
+    bob.accept_attachment(file_transfer.clone()).unwrap();
+    b_ev.wait("generic file completion", |event| {
+        matches!(event, UiEvent::AttachmentUpdated { attachment }
+            if attachment.transfer_id == file_transfer && attachment.state == "complete")
+    });
+    let file_export = dir.path().join("desktop-generic-received.bin");
+    bob.export_attachment(file_transfer, file_export.display().to_string())
+        .unwrap();
+    assert_eq!(std::fs::read(file_export).unwrap(), file_bytes);
 
     let audio_bytes = canonical_audio(1_600);
     let encoded =
         base64::engine::general_purpose::STANDARD.encode(native_audio_with_metadata(&audio_bytes));
     let audio_content = alice
-        .send_recorded_audio(outbound[0].peer.clone(), encoded.clone())
+        .send_recorded_audio(outbound[0].peer.clone(), encoded)
         .unwrap();
     let audio_offer = b_ev.wait("pairwise audio offer", |event| {
         matches!(event, UiEvent::AttachmentUpdated { attachment }
@@ -411,8 +546,24 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
         "group invite",
         |event| matches!(event, UiEvent::GroupUpdated { group: id } if *id == group),
     );
+    let group_review = alice
+        .begin_image_edit(source.display().to_string())
+        .unwrap();
+    let (group_recipe, _) = image_recipe();
+    let group_review = alice
+        .update_image_edit(group_review.token, group_recipe)
+        .unwrap();
+    let group_carrier = alice
+        .attachment_carrier_explanation("group".to_owned(), group.clone())
+        .unwrap();
     let group_content_id = alice
-        .send_group_recorded_audio(group.clone(), encoded)
+        .send_image_edit(
+            group_review.token,
+            "group".to_owned(),
+            group.clone(),
+            Some("edited-image.png".to_owned()),
+            group_carrier,
+        )
         .unwrap();
     let group_offer = b_ev.wait("group attachment offer", |event| {
         matches!(event, UiEvent::AttachmentUpdated { attachment }
@@ -429,9 +580,11 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
         matches!(event, UiEvent::AttachmentUpdated { attachment }
             if attachment.transfer_id == group_transfer && attachment.state == "complete")
     });
-    let group_audio = bob.attachment_audio(group_transfer).unwrap();
-    assert_eq!(group_audio.duration_ms, 100);
-    assert_eq!(group_audio.waveform.len(), 64);
+    let group_image = bob.attachment_image(group_transfer).unwrap();
+    let group_bytes = base64::engine::general_purpose::STANDARD
+        .decode(group_image.split_once(',').unwrap().1)
+        .unwrap();
+    assert_eq!(group_bytes, bytes);
 
     alice.stop();
     bob.stop();

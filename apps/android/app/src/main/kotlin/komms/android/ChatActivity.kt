@@ -90,6 +90,7 @@ class ChatActivity : AppCompatActivity() {
                     session.sendAttachmentWithPreview(peer, path, mediaType, filename, preview)
                 }
             },
+            carrierExplanation = { session -> session.attachmentCarrierExplanation(peer) },
             bindAudio = audioController::bindAttachment,
             refresh = ::refresh,
             savedState = savedInstanceState,
@@ -120,6 +121,7 @@ class ChatActivity : AppCompatActivity() {
     }
 
     override fun onStop() {
+        if (::attachmentController.isInitialized) attachmentController.onStop()
         if (::audioController.isInitialized) audioController.onStop()
         super.onStop()
     }
