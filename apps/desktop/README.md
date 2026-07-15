@@ -41,6 +41,13 @@ security indicators are the node's own, verbatim.
 - **Use sender-key groups**: create and list groups, read history, send,
   add/remove members, and leave. Outbound bubbles show a separate honest
   delivery state for every recipient, so partial delivery stays visible.
+- **Mention current group members** through an explicit roster picker with
+  Arrow/Enter/Escape keyboard operation, screen-reader announcements, duplicate-
+  petname disambiguation, and non-color-only highlighted history. Mention tokens
+  remain ordinary readable text for selection, copy, and search. Send rechecks
+  the exact roster and authenticated capabilities; when semantic Mention is not
+  safe, an explicit confirmation can send the exact text without semantics or a
+  notification.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends, compared out-of-band, with a visible verified badge.
 - **Transport indicators**: NAT verdict, LAN peers discovered over mDNS,
@@ -99,3 +106,6 @@ directory.
   and crosses IPC once per unlock; it is never persisted by the shell.
 - QR codes render black-on-white on their own card regardless of theme;
   phone cameras need the contrast.
+- Mention target ids, ranges, and text stay inside the encrypted content body.
+  Desktop notification handling receives only an endpoint-local render-safe
+  signal; it does not promise server push or online delivery.

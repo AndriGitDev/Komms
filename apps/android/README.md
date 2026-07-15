@@ -45,6 +45,14 @@ own, verbatim.
   as any member while local history remains stored. Inbound rows name the
   sender; outbound rows show every recipient's actual delivery state instead
   of a misleading group-level checkmark.
+- **Mention current group members** through an explicit accessible roster picker.
+  The composer preserves semantic spans across IME input and recreation, removes
+  a mention rather than silently retargeting it when edited across, restores
+  app-private drafts after process restart, and distinguishes duplicate petnames
+  without exposing peer ids. TalkBack, scalable text, Unicode/bidi content, and
+  highlighted selectable history use the exact visible fallback text. Send
+  rechecks roster and capabilities and offers an explicit ordinary-text fallback
+  with no mention notification.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends (desktop included), compared aloud or by scanning each other's
   code, with a visible verified badge. Key changes are surfaced, never
@@ -82,6 +90,12 @@ export, and overwrite refusal. Audio acceptance additionally strips an injected
 native metadata chunk and pins identical canonical bytes and duration across
 pairwise and sender-key group delivery. `:app` remains UI-only SAF, recorder, and
 rendering glue.
+
+Mention acceptance pins byte-for-byte Rust/UniFFI semantics, invalid Unicode
+range rejection, exact peer targeting, and zero signal for plain text or similar
+petnames. Android notifications use only a generic private preview and remain
+subject to the existing user-controlled notification permission and platform
+policy; they do not provide server push or an online-delivery guarantee.
 
 This is deliberately its own Gradle build, outside the cargo workspace:
 the Android dependency tree stays out of the core crates' lockfile and

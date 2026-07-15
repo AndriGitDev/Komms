@@ -45,7 +45,7 @@ accepted designs before individual shells implement UI.
 | Screen security | Planned | Platform protections and documented limitations. |
 | Incognito keyboard | Planned | Android control; best available behavior and honest limits elsewhere. |
 | Local still-image editing | Shipped | Keep shared deterministic semantics, cleanup, exact-review, and metadata-removal gates stable; video remains out of scope. |
-| Mentions | Planned | Typed peer reference, group-aware composer, and navigation. |
+| Mentions | Shipped | ADR-0016 canonical peer targets, current-roster composers, conservative group capability gating, and local navigation/notification. |
 | Labels | Planned | Local contact/conversation/message metadata and filtering. |
 | File sharing | Partial | Bounded cross-shell F3 delivery and generic pre-send F4 confirmation are shipped; richer non-image media presentation remains. |
 | Linked devices | Planned | Proximate linking, device keys, sync, revocation, and recovery. |
@@ -464,7 +464,9 @@ preview/export, F4 reconfirmation, and zero mesh airtime.
 
 ### B17. Mentions
 
-**Depends on:** F1, F2.
+**State:** shipped across protocol, node, storage/backup, RPC/CLI, UniFFI,
+desktop, Android, and iOS. **Governed by:**
+[ADR-0016](adr/0016-group-mention-content.md). **Depends on:** F1, F2.
 
 Compose mentions in group message text using an explicit member picker rather
 than ambiguous free-form names. Encode a stable peer reference alongside fallback
@@ -472,9 +474,26 @@ display text so every client can highlight the intended member despite different
 local petnames. Mention notifications remain local and opportunistic: there is no
 server push guarantee.
 
+The shipped kind `0x0003` uses exact authenticated fallback UTF-8 and canonical
+sorted, non-overlapping UTF-8 byte ranges into a bounded target table. It never
+normalizes Unicode or exposes kind, target, or range fields outside the existing
+encrypted padded content. Historic resolution remains scoped to the exact group
+peer and cannot retarget after a petname collision, rename, or departure.
+
+Semantic send consumes a review token bound to the current roster, identity
+mapping, and fresh authenticated per-peer capability snapshots. Every current
+co-member must support Mention before the ordinary sender-key encrypt-once fanout;
+unknown, stale, removed, changed, or incompatible members force a new review.
+The explicit fallback sends the exact visible text as ordinary text and emits no
+mention signal. RPC/CLI and UniFFI accept exact peer targets and byte ranges and
+return render-safe records without raw authenticated payload bytes.
+
 Acceptance covers duplicate petnames, roster changes, removed members, Unicode,
-plain-text fallback, and no notification for a peer merely sharing a similar
-display name.
+plain-text fallback, backup/restart, unknown and malformed durable retention,
+mixed-version capability changes, accessibility, exact encrypt-once fanout, and
+no notification for a peer merely sharing a similar display name. Endpoint-local
+notifications use private generic previews and remain subject to mute/platform
+policy; they provide no server-push or online-delivery guarantee.
 
 ### B18. Labels
 
@@ -666,11 +685,12 @@ Do not combine these into one oversized design decision.
 |---|---|---|
 | 1 (done) | ADR-0014: versioned typed message content and compatibility | Audio, files, edits, polls, structured mentions. |
 | 2 (proposed) | ADR-0015: encrypted attachment/chunk transfer and carrier policy | Audio, files, media editing. |
-| 3 | Expiry/retention metadata and deletion semantics | Disappearing and view-once content. |
-| 4 | Edit event ordering and tombstones | Message editing and multi-device convergence. |
-| 5 | Group roles/capabilities and authority transfer | Admin controls and moderated polls. |
-| 6 | Multi-device identity, device certificates, sync, revocation | Linked devices. |
-| 7 | Accept ADR-0013 after measured media spike | Voice/video calls. |
+| 3 (done) | ADR-0016: canonical group-mention content | B17 stable encrypted targets, range semantics, compatibility, and local notification. |
+| 4 | Expiry/retention metadata and deletion semantics | Disappearing and view-once content. |
+| 5 | Edit event ordering and tombstones | Message editing and multi-device convergence. |
+| 6 | Group roles/capabilities and authority transfer | Admin controls and moderated polls. |
+| 7 | Multi-device identity, device certificates, sync, revocation | Linked devices. |
+| 8 | Accept ADR-0013 after measured media spike | Voice/video calls. |
 | As needed | Signed optional self-display name in bundle records | Non-global username suggestion. |
 | Before next PQ suite | Downgrade-safe crypto agility | Future post-quantum upgrades. |
 
