@@ -21,7 +21,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Appearance") {
+                Section {
                     Picker("Theme", selection: Binding(
                         get: { model.themePreference },
                         set: { preference in Task { await model.setTheme(preference) } }
@@ -31,6 +31,8 @@ struct SettingsView: View {
                         Text("Dark").tag(ThemePreference.dark)
                     }
                     .pickerStyle(.segmented)
+                } header: {
+                    Text("Appearance")
                 } footer: {
                     Text("System follows iOS live. The choice is private, sealed locally, and restored from encrypted backups. Color is never the only security or delivery cue.")
                 }
