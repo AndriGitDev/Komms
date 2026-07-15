@@ -4,8 +4,8 @@ This is the normative specification of Komms's cryptographic core (`kult-crypto`
 Design rationale lives in the ADRs; this document says *what* is built.
 Threat mapping: [02: Threat Model](02-threat-model.md).
 
-> **Status**: design-frozen for M1 implementation. Any deviation during implementation
-> requires a new ADR.
+> **Status**: implemented and normative. Any cryptographic or wire-format
+> deviation requires a new accepted ADR plus compatibility and migration review.
 
 ## 1. Primitives
 

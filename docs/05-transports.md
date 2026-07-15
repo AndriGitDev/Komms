@@ -7,8 +7,9 @@ several at once.
 
 ## 1. The `Transport` trait (contract)
 
-Every transport implementation in `kult-transport` fulfills one contract (sketch;
-authoritative signatures in [09: Implementation Guide](09-implementation-guide.md)):
+Every transport implementation in `kult-transport` fulfills one contract. The
+following trait is an architectural sketch; the checked-in Rust trait is
+authoritative (see [09: Implementation Guide](09-implementation-guide.md)):
 
 ```rust
 #[async_trait]
@@ -83,9 +84,9 @@ HTTPS. Complete failure falls back to the unchanged transports in this document.
   addresses (rule 2 above), and honoring rule 3, sealed envelopes need nothing more
   from the link. Off by default in the library (`TransportOptions::lan_discovery`),
   on by default in `kultd` (`--no-mdns` opts out).
-- **BLE direct**: phone-to-phone exchange without any infrastructure, chunked over GATT
-  (effective MTU ~180–500 B → uses the fragmentation layer, §4). Also the pairing channel
-  for QR-less contact exchange at close range.
+- **BLE direct (planned)**: phone-to-phone exchange without any infrastructure,
+  chunked over GATT (effective MTU ~180–500 B → uses the fragmentation layer,
+  §4). The current mobile shells do not yet ship this carrier.
 - **Wi-Fi Aware / Direct**: roadmap (M6); higher bandwidth than BLE where OS support
   allows.
 
@@ -101,13 +102,14 @@ flowchart LR
     Radio["Meshtastic radio<br/>(T-Beam, Heltec, RAK…)"]
     Mesh(("LoRa mesh<br/>(other radios)"))
     Peer["Recipient's<br/>Komms app"]
-    App -- "BLE / USB-serial<br/>(Meshtastic client protobufs)" --> Radio
+    App -- "USB-serial / TCP radio API<br/>(Meshtastic client protobufs)" --> Radio
     Radio -- "LoRa" --> Mesh -- "LoRa" --> Peer
 ```
 
-- The app speaks the standard Meshtastic client API (protobuf over BLE/serial/TCP) to a
-  stock Meshtastic device: **no custom firmware required**. Owning any supported ~30€
-  board is the only hardware requirement.
+- The Meshtastic client API is standardized over BLE, serial, and TCP. The
+  shipped Komms carrier attaches over USB-serial or the radio's TCP API to a
+  stock Meshtastic device: **no custom firmware required**. Owning any supported
+  ~30€ board is the only hardware requirement.
 - Komms envelopes are carried as Meshtastic packets on a **dedicated private app
   port** (`PortNum` from the private range), so Komms traffic coexists with normal
   Meshtastic use.
@@ -162,8 +164,9 @@ The zero-RF, zero-network fallback and the simplest transport to implement:
 - Carried by USB stick, SD card, or any file channel; imported bundles feed the normal
   receive path (dedup makes double-import harmless). Bundles are also relay-able by
   people who can't read them: a courier learns only bundle size.
-- Small bundles (≤ ~2 KiB) render as **animated QR sequences** for camera-to-camera
-  transfer between two phones with no link at all.
+- Animated QR sequences for small bundle transfer remain planned. Current QR
+  flows exchange pairing/prekey material; shipped message sneakernet uses `.kkb`
+  files.
 
 ## 6. Transport comparison
 
@@ -171,6 +174,6 @@ The zero-RF, zero-network fallback and the simplest transport to implement:
 |---|---|---|---|---|---|
 | libp2p QUIC/TCP | ~64 KiB practical | ms–s | Global | Internet access | M3 |
 | mDNS/LAN | ~64 KiB | ms | Site | Shared LAN | M3 |
-| BLE direct | ~0.2–0.5 KiB/frame | s | ~10–100 m | None | M5 |
+| BLE direct | ~0.2–0.5 KiB/frame | s | ~10–100 m | None | Planned (M6) |
 | Meshtastic/LoRa | ~0.2 KiB/frame | s–hours | km–100 km (multi-hop) | ~30€ radio per user | M4 |
-| Sneakernet/QR | Unbounded / ~2 KiB | Human-scale | Anywhere humans go | None | M2 (bundles), M5 (QR) |
+| Sneakernet file / animated QR | Unbounded / ~2 KiB target | Human-scale | Anywhere humans go | None | M2 files shipped; animated QR planned |

@@ -78,10 +78,11 @@ squatting, no impersonation surface, no takedown target.
 
 ## 6. Multi-device (roadmap, M6)
 
-Design direction (recorded now so M1–M5 don't paint us into a corner): each physical
-device holds its own device keypair; the identity key signs a device manifest; sessions
-are per-device (Sesame-style fan-out). Until then: one identity = one device, with the
-encrypted-backup path for migration.
+Design direction for C2: each physical device holds its own device keypair; the
+identity key signs a device manifest; sessions are per-device (Sesame-style
+fan-out). The shipped contract remains one identity = one active device, with
+the encrypted-backup path for migration. No current shell silently synchronizes
+folders, labels, drafts, or other local organization.
 
 ## 7. First-contact abuse controls
 

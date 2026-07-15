@@ -17,6 +17,7 @@ not.
 | **Shipped** | Present through the relevant core and application surfaces, with tests. |
 | **Partial** | A usable foundation exists, but some promised behavior or application surface is missing. |
 | **Planned** | In scope but not implemented. |
+| **Design-only** | A proposed ADR or design track exists, but product implementation is not authorized or shipped. |
 | **Assurance** | Shipped security behavior that remains a permanent release gate rather than a feature backlog item. |
 
 ## 2. Current baseline
@@ -36,10 +37,10 @@ accepted designs before individual shells implement UI.
 | Secure backups | Shipped | Future feature data must be added without leaking or silently omitting it. |
 | Note to self | Shipped (text) | Attachments follow F3 shell integration. |
 | Queued messages | Shipped | Already part of the honest delivery engine. |
-| Scheduled messages | Planned | Durable `not_before` gate and UI. |
+| Scheduled messages | Shipped | Preserve the sealed absolute-UTC gate, edit/cancel-before-activation semantics, and distinct cross-shell lifecycle. |
 | Text formatting | Planned | Safe common subset and consistent rendering. |
-| Folders | Planned | Local organization metadata and UI. |
-| Pins | Planned | Local conversation/message pin metadata and UI. |
+| Folders | Shipped | Preserve single-folder membership, All/Unfiled views, deterministic order, stale cleanup, label composition, and zero-network behavior. |
+| Pins | Planned | Ship conversation pins over the existing F5 record; message pins need a separate stable-reference design. |
 | Dark mode | Planned | Shared theme semantics and shell implementations. |
 | Custom icons | Planned | Local-only contact/group/conversation artwork. |
 | Screen security | Planned | Platform protections and documented limitations. |
@@ -53,8 +54,8 @@ accepted designs before individual shells implement UI.
 | Disappearing/view-once messages | Planned | Expiry semantics, relay metadata design, deletion limits. |
 | Group polls | Planned | Typed group content and convergent vote updates. |
 | Admin/role controls | Planned | Cryptographic group capabilities and authority transitions. |
-| Live voice/video calls | Planned | ADR-0013 spike, call signaling/media, and carrier gating. |
-| Optional hybrid reachability/wake | Planned | Accept ADR-0017 through ADR-0019, then implement mode boundaries, rotating rendezvous, and best-effort native wake. |
+| Live voice/video calls | Design-only | ADR-0013 remains Proposed; measured media transport and carrier gating precede implementation. |
+| Optional hybrid reachability/wake | Design-only | ADR-0017 through ADR-0019 remain Proposed; acceptance precedes mode boundaries, rotating rendezvous, and best-effort native wake. |
 
 ## 3. Shared foundations
 
@@ -82,10 +83,10 @@ encrypted capability negotiation, scoped stable content ids, bounded
 unknown-content behavior, sealed capability state, and render-safe RPC/UniFFI
 outcomes are shared across pairwise and sender-key group messages.
 
-Add a versioned, length-bounded message-content codec while keeping legacy raw
-text readable. Start with `Text`; add typed variants only as their feature lands.
-Candidate variants are `Attachment`, `Edit`, `Poll`, `PollVote`, and `Mention`;
-their exact shapes remain decisions for the content ADR. Call signaling remains
+The shipped codec keeps legacy raw text readable and carries bounded typed
+`Text`, `Attachment`, and `Mention` content under their accepted feature
+contracts. Future candidates include `Edit`, `Poll`, and `PollVote`; each exact
+shape still requires its own accepted design. Call signaling remains
 the separate `CallSignal` envelope proposed by ADR-0013. Formatting remains text
 plus local rendering metadata and does not need a distinct wire type.
 
@@ -339,9 +340,10 @@ history after activation.
 
 This is a core queue/storage change, not part of the F5 local UI metadata store.
 
-Persist an optional UTC `not_before` timestamp in core storage and enforce it in
-the node scheduler so delivery survives app exit, background suspension, and
-restart. The UI handles local time zones and daylight-saving display, but it
+The implementation persists an optional UTC `not_before` timestamp in core
+storage and enforces it in the node scheduler so delivery survives app exit,
+background suspension, and restart. The UI handles local time zones and
+daylight-saving display, but it
 must not be the only gate. Define behavior for clock rollback/advance and permit
 edit/cancel until encryption/queue activation.
 
@@ -767,19 +769,19 @@ Standard mode can be recommended to non-test users.
 The order below maximizes usable increments while keeping protocol dependencies
 honest. Parallel work is safe only where rows do not share a foundation.
 
-| Wave | Outcome | Features |
+| Wave | Progress | Outcome and features |
 |---|---|---|
-| **0: Finish current foundations** | Existing group core is usable; product can make carrier-aware decisions. | F1, F4; design F2/F3/F5. |
-| **Parallel: mobile reachability** | Optional convenience without a new message authority. | Accept ADR-0017–0019, then C8 behind feature gates. |
-| **1: Local-first product polish** | High-value features with no new network semantics. | B5 rename UX, B7, B9–B15, B18; preserve B1/B3/B4/B6 gates. |
-| **2: Typed content and asynchronous media** | Shared content/attachment path across all shells. | F2, F3, B2, B16, C1; B17 after F2. |
-| **3: Replicated conversation features** | Offline-convergent edits, expiry, polls, and group authority. | C3, C4, C5, C6. |
-| **4: Multi-device** | Proximate device linking and convergent state. | C2, followed by cross-device hardening of Wave 3. |
-| **5: Real-time media** | Direct internet/LAN audio, then video. | ADR-0013 spike and C7. |
+| **0: Shared foundations** | Complete | F1–F5 are implemented; ADR-0015 remains formally Proposed despite the shipped attachment pipeline. |
+| **Parallel: mobile reachability** | Design-only | Accept ADR-0017–0019, then implement C8 behind reversible feature gates. |
+| **1: Local-first product polish** | In progress | B7, B8, B10, and B18 are shipped; B5, B9, and B11–B15 remain. |
+| **2: Typed content and asynchronous media** | Substantially complete | F2/F3, B2, B16, and B17 are shipped; C1 is usable across all shells with richer media polish remaining. |
+| **3: Replicated conversation features** | Planned | C3, C4, C5, and C6. |
+| **4: Multi-device** | Planned | C2, followed by cross-device hardening of Wave 3. |
+| **5: Real-time media** | Design-only | ADR-0013 spike and C7, restricted to qualified internet/LAN paths. |
 
-Scheduled messages (B8) may land in Wave 1 as a small isolated core PR. Persist
-the durable gate in the shared queue/storage schema rather than F5 or the UI, and
-do not couple it to the content codec.
+Scheduled messages (B8) completed as the intended isolated core-plus-shell
+delivery. Its durable gate remains in the shared queue/storage schema rather
+than F5 or UI-only state and is not coupled to the content codec.
 
 ## 7. ADR and format queue
 
@@ -788,7 +790,7 @@ Do not combine these into one oversized design decision.
 | Order | Decision | Unlocks |
 |---|---|---|
 | 1 (done) | ADR-0014: versioned typed message content and compatibility | Audio, files, edits, polls, structured mentions. |
-| 2 (proposed) | ADR-0015: encrypted attachment/chunk transfer and carrier policy | Audio, files, media editing. |
+| 2 (proposed; implemented) | ADR-0015: encrypted attachment/chunk transfer and carrier policy | Audio, files, media editing; formal ADR acceptance remains. |
 | 3 (done) | ADR-0016: canonical group-mention content | B17 stable encrypted targets, range semantics, compatibility, and local notification. |
 | 4 (proposed) | ADR-0017: optional hybrid modes and threat boundary | C8 mode guarantees and honest product claims. |
 | 5 (proposed) | ADR-0018: rotating pairwise rendezvous | C8 private post-pairing route refresh. |
@@ -832,7 +834,7 @@ No feature is done until all applicable gates pass:
     `cargo-deny` are green; platform-specific behavior has device/simulator
     evidence where CI cannot prove it.
 
-## 9. Recommended first execution program
+## 9. Completed foundation program and next priorities
 
 Keep each numbered item, and each shell named within an item, in a separate
 reviewable PR:
@@ -845,10 +847,11 @@ reviewable PR:
 4. completed through B10 folders and B18 labels: add the sealed local metadata
    foundation, note-to-self, private single-membership conversation folders, and
    private contact/conversation labels; message labels remain deferred and
-   scheduled delivery remains its own core queue/storage PR;
-5. completed: write the typed-content and attachment ADRs as separate design
-   changes before implementation.
+   scheduled delivery completed separately in the core queue/storage path;
+5. completed: ship typed content, attachments, audio, image editing, and mentions
+   through every front door and shell; ADR-0015's formal status remains Proposed.
 
-This program unlocks the largest number of approved features without combining
-unrelated review surfaces or starting with the two riskiest programs,
-linked-device identity and real-time media.
+The next high-value local-first slice is B11 conversation pins over the existing
+F5 record, followed by the remaining bounded shell-local polish where useful.
+Replicated edits/expiry/polls/roles, linked-device identity, real-time media, and
+optional hybrid services remain separate programs with their stated ADR gates.
