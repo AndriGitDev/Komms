@@ -11,8 +11,9 @@ use serde_json::{json, Value};
 
 use kult_node::{
     AttachmentConversation, AttachmentDirection, AttachmentInfo, CarrierCapability,
-    CarrierCapabilitySnapshot, ContentStatus, Event, GroupInfo, ScheduledConversation,
-    ScheduledMessageInfo, NOTE_TO_SELF_CONVERSATION_ID,
+    CarrierCapabilitySnapshot, ContentStatus, Event, GroupInfo, GroupMentionCapability,
+    MentionCapabilityIssueReason, ScheduledConversation, ScheduledMessageInfo,
+    NOTE_TO_SELF_CONVERSATION_ID,
 };
 use kult_store::{
     DeliveryState, Direction, GroupMessageRecord, MediaTransferState, MessageRecord,
@@ -190,6 +191,22 @@ pub enum Op {
         /// Message body (UTF-8 text).
         body: String,
     },
+    /// Read the current all-member Mention support verdict and review token.
+    GroupMentionCapability {
+        /// Group id (hex).
+        group: String,
+    },
+    /// Queue canonical semantic Mention content using explicit peer targets.
+    GroupMentionSend {
+        /// Group id (hex).
+        group: String,
+        /// Exact UTF-8 fallback message text.
+        text: String,
+        /// Canonical UTF-8 byte ranges and explicit peer ids.
+        spans: Vec<MentionSpanInput>,
+        /// Review token from `group_mention_capability` (hex).
+        review_token: String,
+    },
     /// Add a stored contact to a group (creator only).
     GroupAdd {
         /// Group id (hex).
@@ -256,6 +273,17 @@ pub enum Op {
     },
     /// Turn this connection into an event stream.
     Subscribe,
+}
+
+/// One structured semantic Mention range supplied by a local RPC caller.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct MentionSpanInput {
+    /// Inclusive UTF-8 byte offset.
+    pub start: u32,
+    /// Exclusive UTF-8 byte offset.
+    pub end: u32,
+    /// Exact target peer id (hex), never a display name.
+    pub target: String,
 }
 
 /// A delivery hint on the wire.
@@ -327,8 +355,9 @@ pub fn event_line(event: &Event) -> String {
             "peer": hex_encode(peer),
             "id": hex_encode(id),
             "timestamp": timestamp,
-            "body": render_event_body(body, *content),
-            "content_kind": content_kind(*content),
+            "body": render_event_body(body, content),
+            "content_kind": content_kind(content),
+            "mention_spans": mention_status_json(content),
         }),
         Event::NoteToSelfMessageAdded {
             id,
@@ -374,8 +403,13 @@ pub fn event_line(event: &Event) -> String {
             "sender": hex_encode(sender),
             "id": hex_encode(id),
             "timestamp": timestamp,
-            "body": render_event_body(body, *content),
-            "content_kind": content_kind(*content),
+            "body": render_event_body(body, content),
+            "content_kind": content_kind(content),
+            "mention_spans": mention_status_json(content),
+        }),
+        Event::MentionReceived { id } => json!({
+            "type": "mention_received",
+            "id": hex_encode(id),
         }),
         Event::GroupDeliveryUpdated { id, peer, state } => json!({
             "type": "group_delivery",
@@ -447,6 +481,22 @@ pub fn group_json(group: &GroupInfo) -> Value {
     })
 }
 
+/// The current conservative semantic Mention capability verdict.
+pub fn group_mention_capability_json(capability: &GroupMentionCapability) -> Value {
+    json!({
+        "group": hex_encode(&capability.group),
+        "supported": capability.supported(),
+        "review_token": hex_encode(&capability.review_token),
+        "issues": capability.issues.iter().map(|issue| json!({
+            "peer": hex_encode(&issue.peer),
+            "reason": match issue.reason {
+                MentionCapabilityIssueReason::Unknown => "unknown",
+                MentionCapabilityIssueReason::Unsupported => "unsupported",
+            },
+        })).collect::<Vec<_>>(),
+    })
+}
+
 /// One render-safe, time-bounded carrier snapshot as JSON.
 pub fn carrier_json(snapshot: &CarrierCapabilitySnapshot) -> Value {
     json!({
@@ -468,7 +518,7 @@ fn carrier_str(capability: CarrierCapability) -> &'static str {
 
 /// A group message record as JSON, including honest per-member delivery.
 pub fn group_message_json(rec: &GroupMessageRecord) -> Value {
-    let (body, content_kind) = render_stored_content(&rec.body);
+    let (body, content_kind, mention_spans) = render_stored_content(&rec.body, true);
     json!({
         "id": hex_encode(&rec.id),
         "group": hex_encode(&rec.group),
@@ -480,6 +530,7 @@ pub fn group_message_json(rec: &GroupMessageRecord) -> Value {
         "timestamp": rec.timestamp,
         "body": body,
         "content_kind": content_kind,
+        "mention_spans": mention_spans,
         "deliveries": rec.deliveries.iter().map(|delivery| json!({
             "peer": hex_encode(&delivery.peer),
             "state": state_str(delivery.state),
@@ -489,7 +540,7 @@ pub fn group_message_json(rec: &GroupMessageRecord) -> Value {
 
 /// A message record as JSON.
 pub fn message_json(rec: &MessageRecord) -> Value {
-    let (body, content_kind) = render_stored_content(&rec.body);
+    let (body, content_kind, mention_spans) = render_stored_content(&rec.body, false);
     json!({
         "id": hex_encode(&rec.id),
         "peer": hex_encode(&rec.peer),
@@ -501,6 +552,7 @@ pub fn message_json(rec: &MessageRecord) -> Value {
         "timestamp": rec.timestamp,
         "body": body,
         "content_kind": content_kind,
+        "mention_spans": mention_spans,
     })
 }
 
@@ -533,20 +585,21 @@ pub fn scheduled_message_json(message: &ScheduledMessageInfo) -> Value {
 
 const UNSUPPORTED_MESSAGE: &str = "Unsupported message — update Komms";
 
-fn content_kind(status: ContentStatus) -> &'static str {
+fn content_kind(status: &ContentStatus) -> &'static str {
     match status {
         ContentStatus::LegacyText => "legacy_text",
         ContentStatus::Text { .. } => "text",
         ContentStatus::Attachment { .. } => "attachment",
+        ContentStatus::Mention { .. } => "mention",
         ContentStatus::Unsupported { .. } => "unsupported",
         ContentStatus::Malformed => "malformed",
         _ => "unsupported",
     }
 }
 
-fn render_event_body(body: &[u8], status: ContentStatus) -> String {
+fn render_event_body(body: &[u8], status: &ContentStatus) -> String {
     match status {
-        ContentStatus::LegacyText | ContentStatus::Text { .. } => {
+        ContentStatus::LegacyText | ContentStatus::Text { .. } | ContentStatus::Mention { .. } => {
             String::from_utf8(body.to_vec()).expect("node exposes only validated UTF-8 text")
         }
         ContentStatus::Attachment { .. } => String::new(),
@@ -557,15 +610,57 @@ fn render_event_body(body: &[u8], status: ContentStatus) -> String {
     }
 }
 
-fn render_stored_content(bytes: &[u8]) -> (String, &'static str) {
+fn mention_status_json(status: &ContentStatus) -> Value {
+    match status {
+        ContentStatus::Mention { spans, .. } => mention_spans_json(spans),
+        _ => json!([]),
+    }
+}
+
+fn mention_spans_json(spans: &[kult_node::MentionSpan]) -> Value {
+    Value::Array(
+        spans
+            .iter()
+            .map(|span| {
+                json!({
+                    "start": span.start,
+                    "end": span.end,
+                    "target": hex_encode(&span.target),
+                })
+            })
+            .collect(),
+    )
+}
+
+fn render_stored_content(bytes: &[u8], allow_group_mention: bool) -> (String, &'static str, Value) {
     match kult_protocol::decode_content(bytes) {
-        kult_protocol::DecodedContent::LegacyText(text) => (text.to_owned(), "legacy_text"),
-        kult_protocol::DecodedContent::Text { text, .. } => (text.to_owned(), "text"),
-        kult_protocol::DecodedContent::Attachment { .. } => (String::new(), "attachment"),
-        kult_protocol::DecodedContent::Unsupported { .. } => {
-            (UNSUPPORTED_MESSAGE.to_owned(), "unsupported")
+        kult_protocol::DecodedContent::LegacyText(text) => {
+            (text.to_owned(), "legacy_text", json!([]))
         }
-        kult_protocol::DecodedContent::Malformed => (UNSUPPORTED_MESSAGE.to_owned(), "malformed"),
+        kult_protocol::DecodedContent::Text { text, .. } => (text.to_owned(), "text", json!([])),
+        kult_protocol::DecodedContent::Attachment { .. } => {
+            (String::new(), "attachment", json!([]))
+        }
+        kult_protocol::DecodedContent::Mention { mention, .. } if allow_group_mention => {
+            let spans = mention
+                .spans()
+                .map(kult_node::MentionSpan::from)
+                .collect::<Vec<_>>();
+            (
+                mention.text.to_owned(),
+                "mention",
+                mention_spans_json(&spans),
+            )
+        }
+        kult_protocol::DecodedContent::Mention { .. } => {
+            (UNSUPPORTED_MESSAGE.to_owned(), "malformed", json!([]))
+        }
+        kult_protocol::DecodedContent::Unsupported { .. } => {
+            (UNSUPPORTED_MESSAGE.to_owned(), "unsupported", json!([]))
+        }
+        kult_protocol::DecodedContent::Malformed => {
+            (UNSUPPORTED_MESSAGE.to_owned(), "malformed", json!([]))
+        }
     }
 }
 
@@ -622,6 +717,14 @@ pub fn parse_message(s: &str) -> Result<[u8; 16], String> {
         .ok_or_else(|| "message id must be hex".to_owned())?
         .try_into()
         .map_err(|_| "message id must be 16 bytes".to_owned())
+}
+
+/// Parse a 16-byte local Mention review token.
+pub fn parse_review_token(s: &str) -> Result<[u8; 16], String> {
+    hex_decode(s)
+        .ok_or_else(|| "review token must be hex".to_owned())?
+        .try_into()
+        .map_err(|_| "review token must be 16 bytes".to_owned())
 }
 
 /// Parse a 16-byte local attachment transfer id.
@@ -697,9 +800,10 @@ mod tests {
             preview: None,
         };
         let frame = kult_protocol::encode_attachment([0x44; 16], &manifest).unwrap();
-        let (body, kind) = render_stored_content(&frame);
+        let (body, kind, mention_spans) = render_stored_content(&frame, false);
         assert!(body.is_empty());
         assert_eq!(kind, "attachment");
+        assert_eq!(mention_spans, json!([]));
         assert!(!body.contains("private.png"));
     }
 }

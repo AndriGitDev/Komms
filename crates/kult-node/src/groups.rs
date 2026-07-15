@@ -15,15 +15,19 @@ use kult_crypto::{
     GroupHeaderKey, GroupMessage, GroupReceiverChain, GroupSenderChain, IdentityPublic,
 };
 use kult_protocol::{
-    decode_content, delivery_token, encode_text, epoch_day, pad, unpad, DecodedContent, Envelope,
-    EnvelopeKind, GroupAnnounce, GroupControlPayload, GroupMemberInfo, MailboxKey,
+    decode_content, delivery_token, encode_mention, encode_text, epoch_day, pad, unpad,
+    DecodedContent, Envelope, EnvelopeKind, GroupAnnounce, GroupControlPayload, GroupMemberInfo,
+    MailboxKey, CONTENT_FORMAT_V1, CONTENT_KIND_MENTION,
 };
 use kult_store::{
     ContactRecord, DeliveryState, Direction, GroupDelivery, GroupMember, GroupMessageRecord,
     GroupRecord, PendingAnnounce, QueueClass, QueueItem,
 };
 
-use crate::api::GroupInfo;
+use crate::api::{
+    GroupInfo, GroupMentionCapability, MentionCapabilityIssue, MentionCapabilityIssueReason,
+    MentionSpan,
+};
 use crate::{Consumed, ContentStatus, Event, Node, NodeError, Result};
 
 /// Rotate the sending chain after this many messages (PCS via periodic
@@ -126,6 +130,12 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 16]> {
+        // The generic group API is the permanent text/legacy path. A caller
+        // must not smuggle an already-encoded Mention around the exact-roster
+        // capability and review-token gate below.
+        if matches!(decode_content(body), DecodedContent::Mention { .. }) {
+            return Err(NodeError::InvalidMention);
+        }
         let mut id = [0u8; 16];
         rng.fill_bytes(&mut id);
         self.group_send_with_id(group, body, id, now, now, rng)
@@ -140,7 +150,7 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 16]> {
-        let mut rec = self
+        let rec = self
             .store
             .get_group(group)?
             .ok_or(NodeError::UnknownGroup)?;
@@ -160,6 +170,121 @@ impl Node {
         } else {
             body.to_vec()
         };
+        self.group_send_content_with_id(group, wire_content, id, timestamp, now, rng)
+    }
+
+    /// Current exact Mention capability intersection and review binding.
+    pub fn group_mention_capability(&self, group: &[u8; 32]) -> Result<GroupMentionCapability> {
+        let rec = self
+            .store
+            .get_group(group)?
+            .ok_or(NodeError::UnknownGroup)?;
+        let me = self.identity.public().ed;
+        let mut members = rec.members.iter().collect::<Vec<_>>();
+        members.sort_unstable_by_key(|member| member.peer);
+
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"KK-group-mention-review-v1");
+        hasher.update(&rec.id);
+        hasher.update(&rec.generation.to_le_bytes());
+        hasher.update(&(rec.name.len() as u32).to_le_bytes());
+        hasher.update(rec.name.as_bytes());
+        let mut issues = Vec::new();
+        for member in members {
+            let state = if member.peer == me {
+                1u8
+            } else {
+                match self.store.get_capabilities(&member.peer)? {
+                    None => 0,
+                    Some(capabilities)
+                        if capabilities.supports(CONTENT_FORMAT_V1, CONTENT_KIND_MENTION) =>
+                    {
+                        1
+                    }
+                    Some(_) => 2,
+                }
+            };
+            hasher.update(&member.peer);
+            hasher.update(&[state]);
+            hasher.update(&(member.identity.len() as u32).to_le_bytes());
+            hasher.update(&member.identity);
+            let local_name = self
+                .store
+                .get_contact(&member.peer)?
+                .map(|contact| contact.name)
+                .unwrap_or_default();
+            hasher.update(&(local_name.len() as u32).to_le_bytes());
+            hasher.update(local_name.as_bytes());
+            if member.peer != me && state != 1 {
+                issues.push(MentionCapabilityIssue {
+                    peer: member.peer,
+                    reason: if state == 0 {
+                        MentionCapabilityIssueReason::Unknown
+                    } else {
+                        MentionCapabilityIssueReason::Unsupported
+                    },
+                });
+            }
+        }
+        let mut review_token = [0u8; 16];
+        review_token.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
+        Ok(GroupMentionCapability {
+            group: rec.id,
+            review_token,
+            issues,
+        })
+    }
+
+    /// Queue canonical group Mention content after atomic roster, local
+    /// presentation mapping, and authenticated capability revalidation.
+    pub fn group_send_mention(
+        &mut self,
+        group: &[u8; 32],
+        text: &str,
+        spans: &[MentionSpan],
+        review_token: [u8; 16],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        let verdict = self.group_mention_capability(group)?;
+        if !bool::from(review_token.ct_eq(&verdict.review_token)) {
+            return Err(NodeError::MentionReviewRequired);
+        }
+        if !verdict.supported() {
+            return Err(NodeError::MentionUnsupported);
+        }
+        let rec = self
+            .store
+            .get_group(group)?
+            .ok_or(NodeError::UnknownGroup)?;
+        if spans
+            .iter()
+            .any(|span| !rec.members.iter().any(|member| member.peer == span.target))
+        {
+            return Err(NodeError::InvalidMention);
+        }
+        let protocol_spans = spans.iter().copied().map(Into::into).collect::<Vec<_>>();
+        let mut id = [0u8; 16];
+        rng.fill_bytes(&mut id);
+        let wire_content =
+            encode_mention(id, text, &protocol_spans).map_err(|_| NodeError::InvalidMention)?;
+        self.group_send_content_with_id(group, wire_content, id, now, now, rng)
+    }
+
+    fn group_send_content_with_id(
+        &mut self,
+        group: &[u8; 32],
+        wire_content: Vec<u8>,
+        id: [u8; 16],
+        timestamp: u64,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        let mut rec = self
+            .store
+            .get_group(group)?
+            .ok_or(NodeError::UnknownGroup)?;
+        let me = self.identity.public().ed;
         let mut record = GroupMessageRecord {
             id,
             group: *group,
@@ -500,6 +625,7 @@ impl Node {
         let Some(peer) = self.match_session(&env.token, now) else {
             return Ok(Consumed::Later);
         };
+        let me = self.identity.public().ed;
         let done = |node: &mut Self| -> Result<Consumed> {
             node.store.mark_seen(&env.content_id())?;
             Ok(Consumed::Done)
@@ -544,7 +670,9 @@ impl Node {
             };
 
             let decoded = decode_content(&body);
-            if let DecodedContent::Text { id, .. } | DecodedContent::Attachment { id, .. } = decoded
+            if let DecodedContent::Text { id, .. }
+            | DecodedContent::Attachment { id, .. }
+            | DecodedContent::Mention { id, .. } = decoded
             {
                 let duplicate = self.store.group_messages(&rec.id)?.iter().any(|record| {
                     record.direction == Direction::Inbound
@@ -553,6 +681,7 @@ impl Node {
                             decode_content(&record.body),
                             DecodedContent::Text { id: stored_id, .. }
                                 | DecodedContent::Attachment { id: stored_id, .. }
+                                | DecodedContent::Mention { id: stored_id, .. }
                                 if stored_id == id
                         )
                 });
@@ -561,6 +690,7 @@ impl Node {
                     return done(self);
                 }
             }
+            let mut mentions_local_peer = false;
             let (id, event_body, content) = match decoded {
                 DecodedContent::LegacyText(text) => {
                     let mut id = [0u8; 16];
@@ -584,6 +714,15 @@ impl Node {
                         rng,
                     )?;
                     (id, Vec::new(), ContentStatus::Attachment { id, transfer })
+                }
+                DecodedContent::Mention { id, mention } => {
+                    let spans = mention.spans().map(MentionSpan::from).collect::<Vec<_>>();
+                    mentions_local_peer = spans.iter().any(|span| span.target == me);
+                    (
+                        id,
+                        mention.text.as_bytes().to_vec(),
+                        ContentStatus::Mention { id, spans },
+                    )
                 }
                 DecodedContent::Unsupported {
                     format_version,
@@ -627,6 +766,9 @@ impl Node {
                 body: event_body,
                 content,
             });
+            if mentions_local_peer {
+                self.events.push_back(Event::MentionReceived { id });
+            }
             acks.push((peer, env.content_id()));
             return done(self);
         }
@@ -1176,4 +1318,126 @@ fn pending_for(
             last_sent: 0,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use rand::{rngs::StdRng, SeedableRng};
+
+    use kult_crypto::KdfProfile;
+    use kult_protocol::{CapabilityControl, FormatCapabilities, CONTENT_KIND_TEXT};
+
+    use super::*;
+
+    const TEST_KDF: KdfProfile = KdfProfile {
+        m_cost_kib: 8,
+        t_cost: 1,
+        p_cost: 1,
+    };
+
+    #[test]
+    fn mention_intersection_fails_closed_on_downgrade_and_missing_snapshot() {
+        let mut rng = StdRng::seed_from_u64(0xB17);
+        let directory = tempfile::tempdir().unwrap();
+        let mut alice =
+            Node::create(&directory.path().join("alice.db"), b"a", TEST_KDF, &mut rng).unwrap();
+        let mut bob =
+            Node::create(&directory.path().join("bob.db"), b"b", TEST_KDF, &mut rng).unwrap();
+        let bob_bundle = bob.handshake_bundle(1_800_000_000, &mut rng).unwrap();
+        let bob_peer = alice
+            .add_contact("same name", &bob_bundle, &[], 1_800_000_000, &mut rng)
+            .unwrap();
+        let group = alice
+            .create_group("capabilities", &[bob_peer], &mut rng)
+            .unwrap();
+
+        let supported_snapshot = CapabilityControl {
+            formats: vec![FormatCapabilities {
+                format_version: CONTENT_FORMAT_V1,
+                kinds: vec![CONTENT_KIND_TEXT, CONTENT_KIND_MENTION],
+            }],
+        };
+        alice
+            .store
+            .put_capabilities(&bob_peer, &supported_snapshot, &mut rng)
+            .unwrap();
+        let supported = alice.group_mention_capability(&group).unwrap();
+        assert!(supported.supported());
+
+        let span = [MentionSpan {
+            start: 0,
+            end: 2,
+            target: bob_peer,
+        }];
+        let mut renamed_contact = alice.store.get_contact(&bob_peer).unwrap().unwrap();
+        renamed_contact.name = "\u{2067}同名\u{2069}".to_owned();
+        alice.store.put_contact(&renamed_contact, &mut rng).unwrap();
+        let renamed = alice.group_mention_capability(&group).unwrap();
+        assert!(renamed.supported());
+        assert_ne!(supported.review_token, renamed.review_token);
+        assert!(matches!(
+            alice.group_send_mention(
+                &group,
+                "@b",
+                &span,
+                supported.review_token,
+                1_800_000_001,
+                &mut rng
+            ),
+            Err(NodeError::MentionReviewRequired)
+        ));
+
+        let downgraded_snapshot = CapabilityControl {
+            formats: vec![FormatCapabilities {
+                format_version: CONTENT_FORMAT_V1,
+                kinds: vec![CONTENT_KIND_TEXT],
+            }],
+        };
+        alice
+            .store
+            .put_capabilities(&bob_peer, &downgraded_snapshot, &mut rng)
+            .unwrap();
+        let downgraded = alice.group_mention_capability(&group).unwrap();
+        assert_eq!(
+            downgraded.issues,
+            vec![MentionCapabilityIssue {
+                peer: bob_peer,
+                reason: MentionCapabilityIssueReason::Unsupported,
+            }]
+        );
+        assert_ne!(renamed.review_token, downgraded.review_token);
+        assert!(matches!(
+            alice.group_send_mention(
+                &group,
+                "@b",
+                &span,
+                renamed.review_token,
+                1_800_000_001,
+                &mut rng
+            ),
+            Err(NodeError::MentionReviewRequired)
+        ));
+        assert!(matches!(
+            alice.group_send_mention(
+                &group,
+                "@b",
+                &span,
+                downgraded.review_token,
+                1_800_000_001,
+                &mut rng
+            ),
+            Err(NodeError::MentionUnsupported)
+        ));
+
+        alice.store.delete_capabilities(&bob_peer).unwrap();
+        let missing = alice.group_mention_capability(&group).unwrap();
+        assert_eq!(
+            missing.issues,
+            vec![MentionCapabilityIssue {
+                peer: bob_peer,
+                reason: MentionCapabilityIssueReason::Unknown,
+            }]
+        );
+        assert_ne!(downgraded.review_token, missing.review_token);
+    }
 }

@@ -23,12 +23,14 @@ import uniffi.kult_ffi.Event
 import uniffi.kult_ffi.EventListener
 import uniffi.kult_ffi.FfiException
 import uniffi.kult_ffi.Group
+import uniffi.kult_ffi.GroupMentionCapability
 import uniffi.kult_ffi.GroupMessage
 import uniffi.kult_ffi.KdfChoice
 import uniffi.kult_ffi.KultNode
 import uniffi.kult_ffi.ImageEditRecipe
 import uniffi.kult_ffi.ImageInfo
 import uniffi.kult_ffi.Message
+import uniffi.kult_ffi.MentionSpan
 import uniffi.kult_ffi.NoteMessage
 import uniffi.kult_ffi.SafetyNumber
 import uniffi.kult_ffi.ScheduledMessage
@@ -290,6 +292,18 @@ class Session private constructor(private val node: KultNode) {
 
     /** Queue a group message; progress is reported independently per member. */
     fun sendGroup(group: String, body: String): String = node.sendGroup(group, body)
+
+    /** Current exact-roster semantic Mention capability and review binding. */
+    fun groupMentionCapability(group: String): GroupMentionCapability =
+        node.groupMentionCapability(group)
+
+    /** Send exact fallback text with explicit peer-targeted UTF-8 byte spans. */
+    fun sendGroupMention(
+        group: String,
+        text: String,
+        spans: List<MentionSpan>,
+        reviewToken: String,
+    ): String = node.sendGroupMention(group, text, spans, reviewToken)
 
     /** Add a stored contact to a group (creator only). */
     fun addGroupMember(group: String, peer: String) = node.addGroupMember(group, peer)

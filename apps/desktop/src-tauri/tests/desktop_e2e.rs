@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 use komms_desktop::session::{
     hex_decode, NetworkSettings, Session, UiEvent, UiHint, UiImageCrop, UiImageEditRecipe,
-    UiImageRegion,
+    UiImageRegion, UiMentionSpan,
 };
 use kult_ffi::{
     edit_image, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, KdfChoice,
@@ -129,6 +129,15 @@ impl Events {
             assert!(Instant::now() < deadline, "timed out waiting for {what}");
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    fn count(&self, pred: impl Fn(&UiEvent) -> bool) -> usize {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| pred(event))
+            .count()
     }
 }
 
@@ -585,6 +594,141 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
         .decode(group_image.split_once(',').unwrap().1)
         .unwrap();
     assert_eq!(group_bytes, bytes);
+
+    alice.stop();
+    bob.stop();
+}
+
+#[test]
+fn desktop_group_mentions_preserve_exact_utf8_spans_and_notify_only_the_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let a_ev = Events::default();
+    let b_ev = Events::default();
+    let alice = open(dir.path(), "mention-alice", &a_ev);
+    let bob = open(dir.path(), "mention-bob", &b_ev);
+
+    let alice_addr = listen_addr(&alice);
+    let bob_addr = listen_addr(&bob);
+    let alice_bundle = alice.my_bundle().unwrap();
+    let bob_bundle = bob.my_bundle().unwrap();
+    let bob_peer = alice
+        .add_contact(
+            "Same name".to_owned(),
+            &bob_bundle.hex,
+            &multiaddr_hint(bob_addr),
+        )
+        .unwrap();
+    let alice_at_bob = bob
+        .add_contact(
+            "Same name".to_owned(),
+            &alice_bundle.hex,
+            &multiaddr_hint(alice_addr),
+        )
+        .unwrap();
+    let group = alice
+        .create_group("Unicode crew".to_owned(), vec![bob_peer.clone()])
+        .unwrap();
+    b_ev.wait(
+        "mention group invite",
+        |event| matches!(event, UiEvent::GroupUpdated { group: updated } if updated == &group),
+    );
+
+    let handshake = alice
+        .send(bob_peer.clone(), "mention capability handshake".to_owned())
+        .unwrap();
+    b_ev.wait("mention capability handshake", |event| {
+        matches!(event, UiEvent::MessageReceived { peer, body, .. }
+            if peer == &alice_at_bob && body == "mention capability handshake")
+    });
+    a_ev.wait("mention capability receipt", |event| {
+        matches!(event, UiEvent::DeliveryUpdated { id, state: "delivered" }
+            if id == &handshake)
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let capability = loop {
+        let capability = alice.group_mention_capability(group.clone()).unwrap();
+        if capability.supported {
+            break capability;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "mention capability did not become supported: {:?}",
+            capability.issues
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(capability.issues.is_empty());
+
+    let text = "Meet 👩🏽‍🚀 @Same name by e\u{301}ast";
+    let visible = "@Same name";
+    let start = text.find(visible).unwrap() as u32;
+    let end = start + visible.len() as u32;
+    let expected_spans = vec![UiMentionSpan {
+        start,
+        end,
+        target: bob_peer.clone(),
+    }];
+    let mention_id = alice
+        .send_group_mention(
+            group.clone(),
+            text.to_owned(),
+            expected_spans.clone(),
+            capability.review_token,
+        )
+        .unwrap();
+    let received = b_ev.wait("semantic mention", |event| {
+        matches!(event, UiEvent::GroupMessageReceived {
+            group: received_group,
+            id,
+            body,
+            content_kind: "mention",
+            mention_spans,
+            ..
+        } if received_group == &group && id == &mention_id && body == text
+            && mention_spans == &expected_spans)
+    });
+    b_ev.wait("local mention signal", |event| {
+        matches!(
+            (event, &received),
+            (
+                UiEvent::MentionReceived { id },
+                UiEvent::GroupMessageReceived { id: received_id, .. }
+            ) if id == received_id
+        )
+    });
+    let stored = bob
+        .group_messages(group.clone())
+        .unwrap()
+        .into_iter()
+        .find(|message| message.id == mention_id)
+        .unwrap();
+    assert_eq!(stored.body, text);
+    assert_eq!(stored.content_kind, "mention");
+    assert_eq!(stored.mention_spans, expected_spans);
+
+    let plain_id = alice.send_group(group.clone(), text.to_owned()).unwrap();
+    b_ev.wait("plain fallback", |event| {
+        matches!(event, UiEvent::GroupMessageReceived {
+            id,
+            body,
+            content_kind: "text",
+            mention_spans,
+            ..
+        } if id == &plain_id && body == text && mention_spans.is_empty())
+    });
+    a_ev.wait("plain fallback receipt", |event| {
+        matches!(event, UiEvent::GroupDeliveryUpdated {
+            id,
+            peer,
+            state: "delivered",
+        } if id == &plain_id && peer == &bob_peer)
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        b_ev.count(|event| matches!(event, UiEvent::MentionReceived { .. })),
+        1
+    );
 
     alice.stop();
     bob.stop();

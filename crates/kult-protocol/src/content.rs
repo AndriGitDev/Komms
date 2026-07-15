@@ -7,8 +7,9 @@
 use alloc::vec::Vec;
 
 use crate::{
-    decode_attachment_manifest, encode_attachment_manifest, AttachmentManifest,
-    DecodedAttachmentManifest, ProtocolError, Result,
+    decode_attachment_manifest, decode_mention_payload, encode_attachment_manifest,
+    encode_mention_payload, AttachmentManifest, DecodedAttachmentManifest, DecodedMention, Mention,
+    MentionSpan, ProtocolError, Result,
 };
 
 /// Prefix that unambiguously distinguishes typed content from valid UTF-8.
@@ -19,6 +20,8 @@ pub const CONTENT_FORMAT_V1: u8 = 1;
 pub const CONTENT_KIND_TEXT: u16 = 1;
 /// The v1 kind assigned to encrypted attachment manifests.
 pub const CONTENT_KIND_ATTACHMENT: u16 = 2;
+/// The v1 kind assigned to canonical group mentions.
+pub const CONTENT_KIND_MENTION: u16 = 3;
 /// Size of the fixed v1 content header.
 pub const CONTENT_HEADER_LEN: usize = 28;
 /// Maximum unpadded content frame size.
@@ -52,6 +55,14 @@ pub enum DecodedContent<'a> {
         id: [u8; 16],
         /// Canonical borrowed attachment manifest.
         manifest: AttachmentManifest<'a>,
+    },
+    /// A canonical v1 group mention. Conversation validity is enforced by
+    /// the node because the common content decoder has no envelope context.
+    Mention {
+        /// Random author-minted id, scoped to conversation and author.
+        id: [u8; 16],
+        /// Exact fallback text plus stable semantic peer spans.
+        mention: Mention<'a>,
     },
     /// Authenticated bytes the current client cannot interpret.
     Unsupported {
@@ -89,6 +100,20 @@ pub fn encode_attachment(id: [u8; 16], manifest: &AttachmentManifest<'_>) -> Res
     frame.extend_from_slice(&CONTENT_MAGIC);
     frame.push(CONTENT_FORMAT_V1);
     frame.extend_from_slice(&CONTENT_KIND_ATTACHMENT.to_le_bytes());
+    frame.push(0);
+    frame.extend_from_slice(&id);
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    frame.extend_from_slice(&payload);
+    Ok(frame)
+}
+
+/// Encode a canonical group Mention as a v1 content frame.
+pub fn encode_mention(id: [u8; 16], text: &str, spans: &[MentionSpan]) -> Result<Vec<u8>> {
+    let payload = encode_mention_payload(text, spans)?;
+    let mut frame = Vec::with_capacity(CONTENT_HEADER_LEN + payload.len());
+    frame.extend_from_slice(&CONTENT_MAGIC);
+    frame.push(CONTENT_FORMAT_V1);
+    frame.extend_from_slice(&CONTENT_KIND_MENTION.to_le_bytes());
     frame.push(0);
     frame.extend_from_slice(&id);
     frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
@@ -164,6 +189,14 @@ pub fn decode_content(bytes: &[u8]) -> DecodedContent<'_> {
             },
             DecodedAttachmentManifest::Malformed => DecodedContent::Malformed,
         },
+        CONTENT_KIND_MENTION => match decode_mention_payload(payload) {
+            DecodedMention::Mention(mention) => DecodedContent::Mention { id, mention },
+            DecodedMention::Unsupported => DecodedContent::Unsupported {
+                format_version: Some(format_version),
+                kind: Some(kind),
+            },
+            DecodedMention::Malformed => DecodedContent::Malformed,
+        },
         _ => DecodedContent::Unsupported {
             format_version: Some(format_version),
             kind: Some(kind),
@@ -192,6 +225,36 @@ mod tests {
             decode_content(&expected),
             DecodedContent::Text { id, text: "hi" }
         );
+    }
+
+    #[test]
+    fn mention_content_golden_vector() {
+        let id = [0x11; 16];
+        let frame = encode_mention(
+            id,
+            "x",
+            &[MentionSpan {
+                start: 0,
+                end: 1,
+                target: [0x22; 32],
+            }],
+        )
+        .unwrap();
+
+        let mut expected = vec![0xff, b'K', b'M', b'C', 1, 3, 0, 0];
+        expected.extend_from_slice(&id);
+        expected.extend_from_slice(&50u32.to_le_bytes());
+        expected.extend_from_slice(&[1, 0, 1, 1, 1, 0, 0, 0]);
+        expected.extend_from_slice(&[0x22; 32]);
+        expected.push(b'x');
+        expected.extend_from_slice(&[0, 0, 0, 0, 1, 0, 0, 0, 0]);
+        assert_eq!(frame, expected);
+
+        assert!(matches!(
+            decode_content(&frame),
+            DecodedContent::Mention { id: decoded_id, mention }
+                if decoded_id == id && mention.text == "x"
+        ));
     }
 
     #[test]
@@ -224,12 +287,12 @@ mod tests {
         );
 
         frame = encode_text([7; 16], "x").unwrap();
-        frame[5..7].copy_from_slice(&3u16.to_le_bytes());
+        frame[5..7].copy_from_slice(&4u16.to_le_bytes());
         assert_eq!(
             decode_content(&frame),
             DecodedContent::Unsupported {
                 format_version: Some(1),
-                kind: Some(3)
+                kind: Some(4)
             }
         );
 

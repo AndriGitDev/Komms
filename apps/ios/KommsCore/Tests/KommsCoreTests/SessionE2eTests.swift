@@ -527,7 +527,7 @@ final class SessionE2eTests: XCTestCase {
         // history exposes one truthful state per recipient.
         let first = try alice.sendGroup(group: group, body: "Meet at the north trailhead")
         _ = try bEv.wait("Bob's group message") { event -> Void? in
-            if case let .groupMessageReceived(receivedGroup, _, _, _, body, _) = event,
+            if case let .groupMessageReceived(receivedGroup, _, _, _, body, _, _) = event,
                receivedGroup == group, body == "Meet at the north trailhead" {
                 return ()
             }
@@ -569,6 +569,114 @@ final class SessionE2eTests: XCTestCase {
             guard Date() < deadline else { throw Timeout(what: "creator applying Bob's leave") }
             Thread.sleep(forTimeInterval: 0.05)
         }
+    }
+
+    func testGroupMentionsPreserveExactUTF8SpansAndNotifyOnlyTheTarget() throws {
+        let dir = try tempDir()
+        let aEv = Events()
+        let bEv = Events()
+        let alice = try open(dir, "mention-alice", aEv)
+        let bob = try open(dir, "mention-bob", bEv)
+        defer {
+            alice.stop()
+            bob.stop()
+        }
+
+        let aliceAddr = try listenAddr(alice)
+        let bobAddr = try listenAddr(bob)
+        let bobPeer = try alice.addContact(
+            name: "Same name", bundleHex: bob.myBundleHex(), hints: multiaddrHint(bobAddr))
+        let aliceAtBob = try bob.addContact(
+            name: "Same name", bundleHex: alice.myBundleHex(), hints: multiaddrHint(aliceAddr))
+        let group = try alice.createGroup(name: "Unicode crew", members: [bobPeer])
+        _ = try bEv.wait("mention group invite") { event -> Void? in
+            if case let .groupUpdated(updated) = event, updated == group { return () }
+            return nil
+        }
+
+        let handshake = try alice.send(peer: bobPeer, body: "mention capability handshake")
+        _ = try bEv.wait("mention capability handshake") { event -> Void? in
+            if case let .messageReceived(peer, _, _, body, _) = event,
+               peer == aliceAtBob, body == "mention capability handshake" { return () }
+            return nil
+        }
+        _ = try aEv.wait("mention capability receipt") { event -> Void? in
+            if case let .deliveryUpdated(id, state) = event,
+               id == handshake, state == .delivered { return () }
+            return nil
+        }
+
+        let capabilityDeadline = Date().addingTimeInterval(5)
+        var capability = try alice.groupMentionCapability(group: group)
+        while !capability.supported {
+            guard Date() < capabilityDeadline else {
+                throw Timeout(what: "mention capability support: \(capability.issues)")
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+            capability = try alice.groupMentionCapability(group: group)
+        }
+        XCTAssertTrue(capability.issues.isEmpty)
+
+        XCTAssertThrowsError(
+            try alice.sendGroupMention(
+                group: group,
+                text: "👩",
+                spans: [MentionSpan(start: 1, end: 4, target: bobPeer)],
+                reviewToken: capability.reviewToken))
+        XCTAssertTrue(
+            try alice.groupMessages(group: group).isEmpty,
+            "Invalid Swift byte ranges must fail before persistence or send")
+
+        let text = "Meet 👩🏽‍🚀 @Same name by e\u{301}ast"
+        let visible = "@Same name"
+        let visibleRange = try XCTUnwrap(text.range(of: visible))
+        let start = UInt32(text[..<visibleRange.lowerBound].utf8.count)
+        let end = start + UInt32(visible.utf8.count)
+        let expectedSpans = [MentionSpan(start: start, end: end, target: bobPeer)]
+        let mentionId = try alice.sendGroupMention(
+            group: group,
+            text: text,
+            spans: expectedSpans,
+            reviewToken: capability.reviewToken)
+        let received = try bEv.wait("semantic mention") { event -> (
+            id: String, spans: [MentionSpan]
+        )? in
+            if case let .groupMessageReceived(
+                receivedGroup, _, id, _, body, kind, spans
+            ) = event,
+               id == mentionId, receivedGroup == group, body == text, kind == .mention {
+                return (id, spans)
+            }
+            return nil
+        }
+        XCTAssertEqual(expectedSpans, received.spans)
+        _ = try bEv.wait("local mention signal") { event -> Void? in
+            if case let .mentionReceived(id) = event, id == received.id { return () }
+            return nil
+        }
+
+        let stored = try XCTUnwrap(
+            bob.groupMessages(group: group).first(where: { $0.id == received.id }))
+        XCTAssertEqual(text, stored.body)
+        XCTAssertEqual(.mention, stored.contentKind)
+        XCTAssertEqual(expectedSpans, stored.mentionSpans)
+
+        let plainId = try alice.sendGroup(group: group, body: text)
+        _ = try bEv.wait("plain fallback") { event -> Void? in
+            if case let .groupMessageReceived(_, _, id, _, body, kind, spans) = event,
+               id == plainId, body == text, kind == .text, spans.isEmpty { return () }
+            return nil
+        }
+        _ = try aEv.wait("plain fallback receipt") { event -> Void? in
+            if case let .groupDeliveryUpdated(id, peer, state) = event,
+               id == plainId, peer == bobPeer, state == .delivered { return () }
+            return nil
+        }
+        Thread.sleep(forTimeInterval: 0.1)
+        XCTAssertEqual(1, bEv.count {
+            if case .mentionReceived = $0 { return true }
+            return false
+        })
     }
 
     func testBackupMnemonicRestoreFlow() throws {

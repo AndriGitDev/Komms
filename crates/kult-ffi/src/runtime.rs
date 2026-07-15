@@ -19,8 +19,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use kult_crypto::{KdfProfile, SafetyNumber};
 use kult_node::{
-    AttachmentInfo, AttachmentMetadata, CarrierCapabilitySnapshot, Event, GroupInfo, Node,
-    ScheduledMessageInfo,
+    AttachmentInfo, AttachmentMetadata, CarrierCapabilitySnapshot, Event, GroupInfo,
+    GroupMentionCapability, MentionSpan, Node, ScheduledMessageInfo,
 };
 use kult_store::{ContactRecord, GroupMessageRecord, MessageRecord, NoteMessageRecord};
 use kult_transport::{
@@ -170,6 +170,17 @@ pub(crate) enum Msg {
     GroupSend {
         group: [u8; 32],
         body: Vec<u8>,
+        resp: Resp<[u8; 16]>,
+    },
+    GroupMentionCapability {
+        group: [u8; 32],
+        resp: Resp<GroupMentionCapability>,
+    },
+    GroupMentionSend {
+        group: [u8; 32],
+        text: String,
+        spans: Vec<MentionSpan>,
+        review_token: [u8; 16],
         resp: Resp<[u8; 16]>,
     },
     GroupAdd {
@@ -734,6 +745,21 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         Msg::GroupSend { group, body, resp } => {
             let _ = resp.send(
                 node.group_send(&group, &body, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::GroupMentionCapability { group, resp } => {
+            let _ = resp.send(node.group_mention_capability(&group).map_err(fail));
+        }
+        Msg::GroupMentionSend {
+            group,
+            text,
+            spans,
+            review_token,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.group_send_mention(&group, &text, &spans, review_token, now, &mut OsRng)
                     .map_err(fail),
             );
         }

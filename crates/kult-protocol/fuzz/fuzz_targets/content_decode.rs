@@ -12,4 +12,9 @@ fuzz_target!(|data: &[u8]| {
         let encoded = kult_protocol::encode_attachment(id, &manifest).unwrap();
         assert_eq!(kult_protocol::decode_content(&encoded), decoded);
     }
+    if let kult_protocol::DecodedContent::Mention { id, mention } = decoded {
+        let spans = mention.spans().collect::<Vec<_>>();
+        let encoded = kult_protocol::encode_mention(id, mention.text, &spans).unwrap();
+        assert_eq!(kult_protocol::decode_content(&encoded), decoded);
+    }
 });

@@ -314,6 +314,22 @@ public final class Session: @unchecked Sendable {
         try node.sendGroup(group: group, body: body)
     }
 
+    /// Current exact-roster semantic Mention capability and review binding.
+    public func groupMentionCapability(group: String) throws -> GroupMentionCapability {
+        try node.groupMentionCapability(group: group)
+    }
+
+    /// Send exact fallback text with explicit peer-targeted UTF-8 byte spans.
+    public func sendGroupMention(
+        group: String,
+        text: String,
+        spans: [MentionSpan],
+        reviewToken: String
+    ) throws -> String {
+        try node.sendGroupMention(
+            group: group, text: text, spans: spans, reviewToken: reviewToken)
+    }
+
     /// Add a stored contact to a group (creator only).
     public func addGroupMember(group: String, peer: String) throws {
         try node.addGroupMember(group: group, peer: peer)

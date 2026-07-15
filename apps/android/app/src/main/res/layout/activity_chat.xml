@@ -84,6 +84,14 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content" />
 
+        <Button
+            android:id="@+id/chat_mention"
+            android:text="@string/mention_member"
+            android:contentDescription="@string/mention_member_description"
+            android:visibility="gone"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+
         <EditText
             android:id="@+id/chat_input"
             android:hint="@string/chat_hint"
@@ -106,6 +114,31 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content" />
     </LinearLayout>
+
+    <HorizontalScrollView
+        android:id="@+id/chat_mention_tokens_scroll"
+        android:visibility="gone"
+        android:fillViewport="true"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <LinearLayout
+            android:id="@+id/chat_mention_tokens"
+            android:orientation="horizontal"
+            android:paddingHorizontal="8dp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+    </HorizontalScrollView>
+
+    <TextView
+        android:id="@+id/chat_mention_status"
+        android:visibility="gone"
+        android:accessibilityLiveRegion="polite"
+        android:paddingHorizontal="12dp"
+        android:paddingBottom="4dp"
+        android:textSize="12sp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
 
     <TextView
         android:id="@+id/chat_recording_status"

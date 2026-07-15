@@ -250,6 +250,8 @@ pub enum ContentKind {
     Text,
     /// Supported encrypted attachment offer.
     Attachment,
+    /// Canonical group Mention with stable peer-targeted UTF-8 byte spans.
+    Mention,
     /// Authenticated content this version cannot interpret.
     Unsupported,
     /// A typed frame that violated the canonical contract.
@@ -530,6 +532,49 @@ pub struct GroupDelivery {
     pub state: DeliveryState,
 }
 
+/// One render-safe semantic Mention span. Offsets address the exact fallback
+/// text in UTF-8 bytes and `target` is an explicit peer id, never a petname.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct MentionSpan {
+    /// Inclusive UTF-8 byte offset.
+    pub start: u32,
+    /// Exclusive UTF-8 byte offset.
+    pub end: u32,
+    /// Exact target peer id (hex).
+    pub target: String,
+}
+
+/// Why one current group co-member blocks semantic Mention content.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum MentionCapabilityIssueReason {
+    /// No authenticated capability exists for the current session.
+    Unknown,
+    /// The current authenticated capability omits exact Mention kind v1.
+    Unsupported,
+}
+
+/// One current group co-member that blocks semantic Mention content.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct MentionCapabilityIssue {
+    /// Exact member peer id (hex).
+    pub peer: String,
+    /// Unknown or explicitly unsupported.
+    pub reason: MentionCapabilityIssueReason,
+}
+
+/// Current all-member Mention support and immutable local review binding.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct GroupMentionCapability {
+    /// Group id (hex).
+    pub group: String,
+    /// True only when every current co-member advertises exact Mention v1.
+    pub supported: bool,
+    /// Opaque token binding current roster, display mapping, and support.
+    pub review_token: String,
+    /// Incompatible or unknown current co-members.
+    pub issues: Vec<MentionCapabilityIssue>,
+}
+
 /// One message in a group's history.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct GroupMessage {
@@ -547,6 +592,8 @@ pub struct GroupMessage {
     pub body: String,
     /// Explicit content interpretation.
     pub content_kind: ContentKind,
+    /// Stable semantic Mention spans; empty for every other content kind.
+    pub mention_spans: Vec<MentionSpan>,
     /// Per-member delivery states (outbound only).
     pub deliveries: Vec<GroupDelivery>,
 }
@@ -692,6 +739,14 @@ pub enum Event {
         body: String,
         /// Explicit content interpretation.
         content_kind: ContentKind,
+        /// Stable semantic spans; empty for every other content kind.
+        mention_spans: Vec<MentionSpan>,
+    },
+    /// A stored canonical group Mention targets this exact local peer.
+    MentionReceived {
+        /// Stored group message id (hex). Text and target lists stay out of
+        /// the notification signal and are read from protected history.
+        id: String,
     },
     /// One member's copy of an outbound group message changed state.
     GroupDeliveryUpdated {
@@ -739,8 +794,8 @@ impl Event {
                 peer: hex_encode(&peer),
                 id: hex_encode(&id),
                 timestamp,
-                body: render_event_body(&body, content),
-                content_kind: content_kind(content),
+                body: render_event_body(&body, &content),
+                content_kind: content_kind(&content),
             },
             kult_node::Event::NoteToSelfMessageAdded {
                 id,
@@ -781,8 +836,12 @@ impl Event {
                 sender: hex_encode(&sender),
                 id: hex_encode(&id),
                 timestamp,
-                body: render_event_body(&body, content),
-                content_kind: content_kind(content),
+                body: render_event_body(&body, &content),
+                content_kind: content_kind(&content),
+                mention_spans: mention_status(&content),
+            },
+            kult_node::Event::MentionReceived { id } => Self::MentionReceived {
+                id: hex_encode(&id),
             },
             kult_node::Event::GroupDeliveryUpdated { id, peer, state } => {
                 Self::GroupDeliveryUpdated {
@@ -1248,6 +1307,67 @@ impl KultNode {
         .map(|id| hex_encode(&id))
     }
 
+    /// Conservative current-roster Mention support and review binding.
+    pub fn group_mention_capability(
+        &self,
+        group: String,
+    ) -> Result<GroupMentionCapability, FfiError> {
+        let group = parse_group(&group)?;
+        let capability = self.call(|resp| Msg::GroupMentionCapability { group, resp })?;
+        Ok(GroupMentionCapability {
+            group: hex_encode(&capability.group),
+            supported: capability.supported(),
+            review_token: hex_encode(&capability.review_token),
+            issues: capability
+                .issues
+                .into_iter()
+                .map(|issue| MentionCapabilityIssue {
+                    peer: hex_encode(&issue.peer),
+                    reason: match issue.reason {
+                        kult_node::MentionCapabilityIssueReason::Unknown => {
+                            MentionCapabilityIssueReason::Unknown
+                        }
+                        kult_node::MentionCapabilityIssueReason::Unsupported => {
+                            MentionCapabilityIssueReason::Unsupported
+                        }
+                    },
+                })
+                .collect(),
+        })
+    }
+
+    /// Queue canonical semantic Mention content after atomic roster and
+    /// capability revalidation. Targets are explicit peer ids; display names
+    /// are never parsed or inferred.
+    pub fn send_group_mention(
+        &self,
+        group: String,
+        text: String,
+        spans: Vec<MentionSpan>,
+        review_token: String,
+    ) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        let review_token = parse_review_token(&review_token)?;
+        let spans = spans
+            .into_iter()
+            .map(|span| {
+                Ok(kult_node::MentionSpan {
+                    start: span.start,
+                    end: span.end,
+                    target: parse_peer(&span.target)?,
+                })
+            })
+            .collect::<Result<Vec<_>, FfiError>>()?;
+        self.call(|resp| Msg::GroupMentionSend {
+            group,
+            text,
+            spans,
+            review_token,
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
     /// Add a stored contact to a group (creator only).
     pub fn add_group_member(&self, group: String, peer: String) -> Result<(), FfiError> {
         let group = parse_group(&group)?;
@@ -1289,7 +1409,8 @@ impl KultNode {
             .call(|resp| Msg::GroupMessages { group, resp })?
             .iter()
             .map(|message| {
-                let (body, content_kind) = render_stored_content(&message.body);
+                let (body, content_kind, mention_spans) =
+                    render_stored_content(&message.body, true);
                 GroupMessage {
                     id: hex_encode(&message.id),
                     group: hex_encode(&message.group),
@@ -1301,6 +1422,7 @@ impl KultNode {
                     timestamp: message.timestamp,
                     body,
                     content_kind,
+                    mention_spans,
                     deliveries: message
                         .deliveries
                         .iter()
@@ -1344,7 +1466,7 @@ impl KultNode {
         Ok(messages
             .iter()
             .map(|m| {
-                let (body, content_kind) = render_stored_content(&m.body);
+                let (body, content_kind, _) = render_stored_content(&m.body, false);
                 Message {
                     id: hex_encode(&m.id),
                     peer: hex_encode(&m.peer),
@@ -1484,20 +1606,23 @@ fn runtime_config(
 
 const UNSUPPORTED_MESSAGE: &str = "Unsupported message — update Komms";
 
-fn content_kind(status: kult_node::ContentStatus) -> ContentKind {
+fn content_kind(status: &kult_node::ContentStatus) -> ContentKind {
     match status {
         kult_node::ContentStatus::LegacyText => ContentKind::LegacyText,
         kult_node::ContentStatus::Text { .. } => ContentKind::Text,
         kult_node::ContentStatus::Attachment { .. } => ContentKind::Attachment,
+        kult_node::ContentStatus::Mention { .. } => ContentKind::Mention,
         kult_node::ContentStatus::Unsupported { .. } => ContentKind::Unsupported,
         kult_node::ContentStatus::Malformed => ContentKind::Malformed,
         _ => ContentKind::Unsupported,
     }
 }
 
-fn render_event_body(body: &[u8], status: kult_node::ContentStatus) -> String {
+fn render_event_body(body: &[u8], status: &kult_node::ContentStatus) -> String {
     match status {
-        kult_node::ContentStatus::LegacyText | kult_node::ContentStatus::Text { .. } => {
+        kult_node::ContentStatus::LegacyText
+        | kult_node::ContentStatus::Text { .. }
+        | kult_node::ContentStatus::Mention { .. } => {
             String::from_utf8(body.to_vec()).expect("node exposes only validated UTF-8 text")
         }
         kult_node::ContentStatus::Attachment { .. } => String::new(),
@@ -1508,21 +1633,60 @@ fn render_event_body(body: &[u8], status: kult_node::ContentStatus) -> String {
     }
 }
 
-fn render_stored_content(bytes: &[u8]) -> (String, ContentKind) {
+fn mention_status(status: &kult_node::ContentStatus) -> Vec<MentionSpan> {
+    match status {
+        kult_node::ContentStatus::Mention { spans, .. } => spans
+            .iter()
+            .map(|span| MentionSpan {
+                start: span.start,
+                end: span.end,
+                target: hex_encode(&span.target),
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn render_stored_content(
+    bytes: &[u8],
+    allow_group_mention: bool,
+) -> (String, ContentKind, Vec<MentionSpan>) {
     match kult_protocol::decode_content(bytes) {
         kult_protocol::DecodedContent::LegacyText(text) => {
-            (text.to_owned(), ContentKind::LegacyText)
+            (text.to_owned(), ContentKind::LegacyText, Vec::new())
         }
-        kult_protocol::DecodedContent::Text { text, .. } => (text.to_owned(), ContentKind::Text),
+        kult_protocol::DecodedContent::Text { text, .. } => {
+            (text.to_owned(), ContentKind::Text, Vec::new())
+        }
         kult_protocol::DecodedContent::Attachment { .. } => {
-            (String::new(), ContentKind::Attachment)
+            (String::new(), ContentKind::Attachment, Vec::new())
         }
-        kult_protocol::DecodedContent::Unsupported { .. } => {
-            (UNSUPPORTED_MESSAGE.to_owned(), ContentKind::Unsupported)
+        kult_protocol::DecodedContent::Mention { mention, .. } if allow_group_mention => {
+            let spans = mention
+                .spans()
+                .map(|span| MentionSpan {
+                    start: span.start,
+                    end: span.end,
+                    target: hex_encode(&span.target),
+                })
+                .collect();
+            (mention.text.to_owned(), ContentKind::Mention, spans)
         }
-        kult_protocol::DecodedContent::Malformed => {
-            (UNSUPPORTED_MESSAGE.to_owned(), ContentKind::Malformed)
-        }
+        kult_protocol::DecodedContent::Mention { .. } => (
+            UNSUPPORTED_MESSAGE.to_owned(),
+            ContentKind::Malformed,
+            Vec::new(),
+        ),
+        kult_protocol::DecodedContent::Unsupported { .. } => (
+            UNSUPPORTED_MESSAGE.to_owned(),
+            ContentKind::Unsupported,
+            Vec::new(),
+        ),
+        kult_protocol::DecodedContent::Malformed => (
+            UNSUPPORTED_MESSAGE.to_owned(),
+            ContentKind::Malformed,
+            Vec::new(),
+        ),
     }
 }
 
@@ -1549,6 +1713,25 @@ fn parse_group(s: &str) -> Result<[u8; 32], FfiError> {
 fn parse_message(s: &str) -> Result<[u8; 16], FfiError> {
     let fail = || FfiError::Node {
         reason: "message id must be 32 hex chars".to_owned(),
+    };
+    if s.len() != 32 {
+        return Err(fail());
+    }
+    let digits: Vec<u32> = s
+        .chars()
+        .map(|c| c.to_digit(16))
+        .collect::<Option<_>>()
+        .ok_or_else(fail)?;
+    let mut out = [0u8; 16];
+    for (i, pair) in digits.chunks_exact(2).enumerate() {
+        out[i] = ((pair[0] << 4) | pair[1]) as u8;
+    }
+    Ok(out)
+}
+
+fn parse_review_token(s: &str) -> Result<[u8; 16], FfiError> {
+    let fail = || FfiError::Node {
+        reason: "review token must be 32 hex chars".to_owned(),
     };
     if s.len() != 32 {
         return Err(fail());
@@ -1650,14 +1833,16 @@ mod tests {
     fn non_text_content_never_crosses_as_lossy_or_raw_text() {
         let mut unknown = kult_protocol::CONTENT_MAGIC.to_vec();
         unknown.push(2);
-        let (body, kind) = render_stored_content(&unknown);
+        let (body, kind, spans) = render_stored_content(&unknown, false);
         assert_eq!(body, UNSUPPORTED_MESSAGE);
         assert_eq!(kind, ContentKind::Unsupported);
         assert!(!body.contains('\u{fffd}'));
+        assert!(spans.is_empty());
 
-        let (body, kind) = render_stored_content(&kult_protocol::CONTENT_MAGIC);
+        let (body, kind, spans) = render_stored_content(&kult_protocol::CONTENT_MAGIC, false);
         assert_eq!(body, UNSUPPORTED_MESSAGE);
         assert_eq!(kind, ContentKind::Malformed);
+        assert!(spans.is_empty());
 
         let manifest = kult_protocol::AttachmentManifest {
             attachment_key: [0x41; 32],
@@ -1674,10 +1859,11 @@ mod tests {
             preview: None,
         };
         let frame = kult_protocol::encode_attachment([0x44; 16], &manifest).unwrap();
-        let (body, kind) = render_stored_content(&frame);
+        let (body, kind, spans) = render_stored_content(&frame, false);
         assert!(body.is_empty());
         assert_eq!(kind, ContentKind::Attachment);
         assert!(!body.contains("private.png"));
+        assert!(spans.is_empty());
 
         let event = Event::from_node(kult_node::Event::AttachmentUpdated {
             attachment: kult_node::AttachmentInfo {

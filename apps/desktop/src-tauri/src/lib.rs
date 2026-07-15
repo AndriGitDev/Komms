@@ -73,6 +73,8 @@ pub fn run() {
             commands::groups,
             commands::group_messages,
             commands::send_group,
+            commands::group_mention_capability,
+            commands::send_group_mention,
             commands::add_group_member,
             commands::remove_group_member,
             commands::leave_group,

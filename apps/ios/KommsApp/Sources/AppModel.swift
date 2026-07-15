@@ -147,6 +147,9 @@ final class AppModel: ObservableObject {
              .groupUpdated, .groupMessageReceived, .groupDeliveryUpdated,
              .attachmentUpdated:
             Task { await refresh() }
+        case .mentionReceived:
+            notices.append("You were mentioned in a group.")
+            Task { await refresh() }
         case .contactAdded:
             Task { await refresh() }
         case .sessionEstablished(let peer):
@@ -574,6 +577,25 @@ final class AppModel: ObservableObject {
     func sendGroup(group: String, body: String) async throws {
         guard let session else { return }
         _ = try await run { try session.sendGroup(group: group, body: body) }
+        await refresh()
+    }
+
+    func groupMentionCapability(group: String) async throws -> GroupMentionCapability {
+        guard let session else { throw InputError("node is locked") }
+        return try await run { try session.groupMentionCapability(group: group) }
+    }
+
+    func sendGroupMention(
+        group: String,
+        text: String,
+        spans: [MentionSpan],
+        reviewToken: String
+    ) async throws {
+        guard let session else { return }
+        _ = try await run {
+            try session.sendGroupMention(
+                group: group, text: text, spans: spans, reviewToken: reviewToken)
+        }
         await refresh()
     }
 
