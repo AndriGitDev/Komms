@@ -46,7 +46,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var session: Session?
     @Published private(set) var contacts: [Contact] = []
     @Published private(set) var histories: [String: [Message]] = [:] // peer → history
-    @Published private(set) var groups: [Group] = []
+    @Published private(set) var groups: [KommsCore.Group] = []
     @Published private(set) var groupHistories: [String: [GroupMessage]] = [:]
     @Published private(set) var scheduledMessages: [ScheduledMessage] = []
     @Published private(set) var attachments: [Attachment] = []
@@ -999,7 +999,7 @@ private struct AppRefreshSnapshot: Sendable {
     let status: Status
     let contacts: [Contact]
     let histories: [String: [Message]]
-    let groups: [Group]
+    let groups: [KommsCore.Group]
     let groupHistories: [String: [GroupMessage]]
     let scheduled: [ScheduledMessage]
     let attachments: [Attachment]
