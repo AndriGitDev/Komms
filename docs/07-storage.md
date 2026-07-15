@@ -43,6 +43,12 @@ Every blob is individually AEAD-sealed (XChaCha20-Poly1305, random 24-byte nonce
 name + row purpose as associated data), a copied database file leaks only row counts and
 approximate sizes; rows can't be transplanted across tables or databases.
 
+B12 stores only the canonical `system`, `light`, or `dark` bytes under the sealed
+UI-preference key `appearance.theme`. Missing or unknown legacy values render as
+System without a read-time rewrite. The small shell cache used before unlock is
+non-sensitive presentation state; after unlock the sealed F5 value is
+authoritative and is the only value carried by `KKR4` to another device.
+
 ### Protected application transients
 
 Desktop and mobile shells sometimes must materialize plaintext because native

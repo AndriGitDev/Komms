@@ -50,6 +50,7 @@ import uniffi.kult_ffi.LabelTargetKind
 import uniffi.kult_ffi.PinErrorCode
 import uniffi.kult_ffi.PinTarget
 import uniffi.kult_ffi.PinTargetKind
+import uniffi.kult_ffi.ThemePreference
 
 /** Collects node events exactly as an activity's sink would. */
 private class Events {
@@ -107,6 +108,38 @@ class SessionE2eTest {
     private val pinFixture by lazy {
         val root = File(checkNotNull(System.getProperty("komms.repo.root")))
         Json.parseToJsonElement(File(root, "fixtures/b11-pin-parity.json").readText()).jsonObject
+    }
+    private val themeFixture by lazy {
+        val root = File(checkNotNull(System.getProperty("komms.repo.root")))
+        Json.parseToJsonElement(File(root, "fixtures/b12-theme-parity.json").readText()).jsonObject
+    }
+
+    @Test
+    fun `private theme defaults persists restarts and emits one local event`() {
+        assertEquals(
+            listOf("system", "light", "dark"),
+            themeFixture["preferences"]!!.jsonArray.map { it.jsonPrimitive.content },
+        )
+        assertEquals(
+            THEME_SEMANTIC_ROLES,
+            themeFixture["semantic_roles"]!!.jsonArray.map { it.jsonPrimitive.content },
+        )
+        val dir = tempDir()
+        val events = Events()
+        var session = open(dir, "theme", events)
+        val queued = session.status().queued
+        assertEquals(ThemePreference.SYSTEM, session.theme().preference)
+        assertFalse(session.theme().persisted)
+        assertTrue(session.setTheme(ThemePreference.DARK))
+        assertFalse(session.setTheme(ThemePreference.DARK))
+        events.wait("theme changed") { it as? Event.ThemeChanged }
+        assertEquals(queued, session.status().queued)
+        session.stop()
+
+        session = open(dir, "theme", Events())
+        assertEquals(ThemePreference.DARK, session.theme().preference)
+        assertTrue(session.theme().persisted)
+        session.stop()
     }
     private fun imageSource(): ByteArray = Base64.getDecoder().decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAQAAAADAgMAAADJmkZVAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAMUExURRAgMHhwaODAoP///zpo6RQAAAADdFJOU9nZ2dfb3kcAAAABYktHRAMRDEzyAAAAB3RJTUUH6gcOFCoDxLmvWQAAACV0RVh0ZGF0ZTpjcmVhdGUAMjAyNi0wNy0xNFQyMDo0MjowMyswMDowMANuTXIAAAAldEVYdGRhdGU6bW9kaWZ5ADIwMjYtMDctMTRUMjA6NDI6MDMrMDA6MDByM/XOAAAAKHRFWHRkYXRlOnRpbWVzdGFtcAAyMDI2LTA3LTE0VDIwOjQyOjAzKzAwOjAwJSbUEQAAAA5JREFUCNdjYGAIZVgFAAGvAQCmulOkAAAAAElFTkSuQmCC",

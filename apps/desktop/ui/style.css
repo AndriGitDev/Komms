@@ -1,4 +1,4 @@
-/* Komms desktop — single dark theme, no framework. */
+/* Komms desktop — native system/light/dark semantic palettes, no framework. */
 
 :root {
   --bg: #101418;
@@ -6,13 +6,16 @@
   --bg-hover: #1d252e;
   --line: #26303a;
   --text: #e8e6e3;
-  --text-dim: #8b98a5;
-  --accent: #3fb98c;
-  --accent-dim: #2c8465;
+  --text-dim: #b7c1c9;
+  --accent: #2c8465;
+  --accent-dim: #246f56;
   --danger: #e06c5b;
   --warn: #d9a441;
   --bubble-out: #234739;
   --bubble-in: #1d252e;
+  --focus: #7ed8b6;
+  --on-accent: #ffffff;
+  color-scheme: dark;
   font-size: 15px;
 }
 
@@ -40,13 +43,13 @@ button {
   cursor: pointer;
 }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
-  outline: 3px solid #7ed8b6;
+  outline: 3px solid var(--focus);
   outline-offset: 2px;
 }
 
 .primary {
   background: var(--accent-dim);
-  color: #fff;
+  color: var(--on-accent);
   border-radius: 8px;
   padding: 0.55em 1.2em;
 }
@@ -579,18 +582,31 @@ fieldset.hints legend { color: var(--text-dim); font-size: 0.85em; padding: 0 0.
 }
 .toast.error { border-left-color: var(--danger); }
 
-@media (prefers-color-scheme: light) {
-  :root {
+[data-resolved-theme="light"] {
     --bg: #f8fafb; --bg-raised: #ffffff; --bg-hover: #e9f0f2; --line: #b9c5ca;
     --text: #172126; --text-dim: #4d5f68; --accent: #087b59; --accent-dim: #096849;
     --danger: #a72e23; --warn: #805900; --bubble-out: #d8eee5; --bubble-in: #edf1f3;
-  }
-  .label-chip { background: #fff; }
-  .label-color-neutral { color: #53616a; }.label-color-red { color: #a72e23; }
-  .label-color-orange { color: #8d4800; }.label-color-yellow { color: #6c5700; }
-  .label-color-green { color: #237332; }.label-color-teal { color: #006e64; }
-  .label-color-blue { color: #205ea6; }.label-color-purple { color: #6645a5; }
-  .label-color-pink { color: #9b2863; }
+    --focus: #005f46; --on-accent: #ffffff;
+    color-scheme: light;
+}
+[data-resolved-theme="light"] .label-chip { background: #fff; }
+[data-resolved-theme="light"] .label-color-neutral { color: #53616a; }
+[data-resolved-theme="light"] .label-color-red { color: #a72e23; }
+[data-resolved-theme="light"] .label-color-orange { color: #8d4800; }
+[data-resolved-theme="light"] .label-color-yellow { color: #6c5700; }
+[data-resolved-theme="light"] .label-color-green { color: #237332; }
+[data-resolved-theme="light"] .label-color-teal { color: #006e64; }
+[data-resolved-theme="light"] .label-color-blue { color: #205ea6; }
+[data-resolved-theme="light"] .label-color-purple { color: #6645a5; }
+[data-resolved-theme="light"] .label-color-pink { color: #9b2863; }
+
+.theme-options { border: 1px solid var(--line); border-radius: 8px; }
+.theme-options label { display: flex; gap: 0.55em; align-items: center; color: var(--text); }
+
+@media (prefers-contrast: more) {
+  :root { --line: #91a0aa; --text-dim: #c5cdd3; --focus: #b5ffe2; }
+  [data-resolved-theme="light"] { --line: #46545b; --text-dim: #2f3c42; --focus: #004735; }
+  button, input, textarea, select, fieldset { border-width: 2px !important; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }

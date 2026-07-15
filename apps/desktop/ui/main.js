@@ -12,6 +12,29 @@ const { open: openPath, save: savePath } = window.__TAURI__.dialog;
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
+const THEME_KEY = "komms.appearance.theme";
+const THEME_VALUES = new Set(["system", "light", "dark"]);
+const systemTheme = matchMedia("(prefers-color-scheme: dark)");
+
+function cachedTheme() {
+  const value = localStorage.getItem(THEME_KEY);
+  return THEME_VALUES.has(value) ? value : "system";
+}
+
+function applyTheme(preference, cache = true) {
+  const safe = THEME_VALUES.has(preference) ? preference : "system";
+  if (cache) localStorage.setItem(THEME_KEY, safe);
+  document.documentElement.dataset.theme = safe;
+  document.documentElement.dataset.resolvedTheme = safe === "system"
+    ? (systemTheme.matches ? "dark" : "light") : safe;
+  const gate = $("#gate-theme");
+  if (gate) gate.value = safe;
+}
+
+systemTheme.addEventListener("change", () => {
+  if (document.documentElement.dataset.theme === "system") applyTheme("system", false);
+});
+
 const state = {
   dataDir: "",
   address: "",
@@ -483,6 +506,9 @@ window.addEventListener("pagehide", () => {
 
 let gateMode = "open";
 
+applyTheme(cachedTheme(), false);
+$("#gate-theme").addEventListener("change", (event) => applyTheme(event.target.value));
+
 function readSettings() {
   const lines = (el) => el.value.split("\n").map((s) => s.trim()).filter(Boolean);
   const opt = (el) => (el.value.trim() ? el.value.trim() : null);
@@ -595,8 +621,24 @@ function enterApp(address) {
   refreshFolders();
   refreshLabels();
   call("note_to_self_id").then((id) => { state.noteToSelfId = id; });
+  syncThemeAfterUnlock();
   refreshStatus();
   state.statusTimer = setInterval(refreshStatus, 5000);
+}
+
+async function syncThemeAfterUnlock() {
+  try {
+    const sealed = await invoke("theme");
+    if (sealed.persisted) {
+      applyTheme(sealed.preference);
+      return;
+    }
+    const preference = cachedTheme();
+    await invoke("set_theme", { preference });
+    applyTheme(preference);
+  } catch (error) {
+    toast(String(error), true);
+  }
 }
 
 async function leaveApp() {
@@ -2025,6 +2067,11 @@ $("#btn-attach").addEventListener("click", async () => {
 
 listen("node-event", async ({ payload: ev }) => {
   switch (ev.type) {
+    case "theme_changed": {
+      const theme = await invoke("theme");
+      applyTheme(theme.preference);
+      break;
+    }
     case "folders_changed": {
       await refreshFolders(true);
       break;
@@ -2841,6 +2888,26 @@ $("#btn-hints").addEventListener("click", () => {
     } catch (err) {
       showError(root, err);
     }
+  });
+});
+
+// appearance is applied immediately and sealed through the shared F5 record
+$("#btn-theme").addEventListener("click", async () => {
+  const root = openModal("Appearance", "tpl-theme");
+  const info = await call("theme");
+  const checked = root.querySelector('input[value="' + info.preference + '"]');
+  if (checked) checked.checked = true;
+  root.addEventListener("change", async (event) => {
+    if (!event.target.matches('input[name="theme-preference"]')) return;
+    applyTheme(event.target.value);
+    try {
+      await invoke("set_theme", { preference: event.target.value });
+    } catch (error) {
+      showError(root, error);
+    }
+  });
+  root.addEventListener("click", (event) => {
+    if (event.target.matches('[data-act="close"]')) closeModal();
   });
 });
 

@@ -2,10 +2,12 @@ package komms.android
 
 import android.os.Bundle
 import android.widget.EditText
+import android.widget.RadioGroup
 import android.widget.Switch
 import androidx.appcompat.app.AppCompatActivity
 import komms.core.NetworkSettings
 import komms.core.SettingsException
+import uniffi.kult_ffi.ThemePreference
 
 /**
  * Network settings — the same knobs as `kultd`'s flags and the desktop
@@ -21,6 +23,23 @@ class SettingsActivity : AppCompatActivity() {
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
 
         val dataDir = KommsApp.dataDir(application)
+        val theme = findViewById<RadioGroup>(R.id.set_theme)
+        theme.check(
+            when (ThemeController.cached()) {
+                ThemePreference.SYSTEM -> R.id.set_theme_system
+                ThemePreference.LIGHT -> R.id.set_theme_light
+                ThemePreference.DARK -> R.id.set_theme_dark
+            },
+        )
+        theme.setOnCheckedChangeListener { _, checked ->
+            ThemeController.select(
+                when (checked) {
+                    R.id.set_theme_light -> ThemePreference.LIGHT
+                    R.id.set_theme_dark -> ThemePreference.DARK
+                    else -> ThemePreference.SYSTEM
+                },
+            )
+        }
         val loaded = try {
             NetworkSettings.load(dataDir)
         } catch (e: SettingsException) {

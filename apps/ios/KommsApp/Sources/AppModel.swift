@@ -8,6 +8,38 @@
 
 import Foundation
 import KommsCore
+import SwiftUI
+
+private enum ThemePreferenceStore {
+    static let key = "komms.appearance.theme"
+
+    static func load() -> ThemePreference {
+        switch UserDefaults.standard.string(forKey: key) {
+        case "light": return .light
+        case "dark": return .dark
+        default: return .system
+        }
+    }
+
+    static func save(_ preference: ThemePreference) {
+        let token = switch preference {
+        case .system: "system"
+        case .light: "light"
+        case .dark: "dark"
+        }
+        UserDefaults.standard.set(token, forKey: key)
+    }
+}
+
+extension ThemePreference {
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+}
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -32,6 +64,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var pins: [Pin] = []
     @Published private(set) var pinRows: [PinConversation] = []
     @Published private(set) var stalePinRecords: [Pin] = []
+    @Published private(set) var themePreference: ThemePreference = ThemePreferenceStore.load()
     /// Surfaced node happenings: key changes, held-for-faster-link verdicts.
     @Published var notices: [String] = []
 
@@ -103,7 +136,7 @@ final class AppModel: ObservableObject {
                 dataDir: dir, passphrase: passphrase,
                 settings: settings, kdf: .mobile, sink: sink)
         }
-        adopt(session)
+        await adopt(session)
         try? excludeFromBackup(dir)
     }
 
@@ -119,7 +152,7 @@ final class AppModel: ObservableObject {
                 backupPath: backup, mnemonic: mnemonic,
                 settings: settings, kdf: .mobile, sink: sink)
         }
-        adopt(session)
+        await adopt(session)
         try? excludeFromBackup(dir)
     }
 
@@ -149,7 +182,16 @@ final class AppModel: ObservableObject {
         stalePinRecords = []
     }
 
-    private func adopt(_ session: Session) {
+    private func adopt(_ session: Session) async {
+        if let info = try? await run({ try session.theme() }) {
+            if info.persisted {
+                themePreference = info.preference
+                ThemePreferenceStore.save(info.preference)
+            } else {
+                let cached = themePreference
+                _ = try? await run { try session.setTheme(cached) }
+            }
+        }
         self.session = session
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) {
             [weak self] _ in
@@ -169,6 +211,8 @@ final class AppModel: ObservableObject {
 
     private func handle(_ event: Event) {
         switch event {
+        case .themeChanged:
+            Task { await refreshTheme() }
         case .scheduledMessageUpdated, .scheduledMessageCancelled,
              .scheduledMessageActivated, .deliveryUpdated, .messageReceived,
              .noteToSelfMessageAdded,
@@ -193,6 +237,19 @@ final class AppModel: ObservableObject {
         case .awaitingFasterLink:
             notices.append("A message is held — will send when a faster link exists.")
         }
+    }
+
+    func setTheme(_ preference: ThemePreference) async {
+        themePreference = preference
+        ThemePreferenceStore.save(preference)
+        guard let session else { return }
+        _ = try? await run { try session.setTheme(preference) }
+    }
+
+    private func refreshTheme() async {
+        guard let session, let info = try? await run({ try session.theme() }) else { return }
+        themePreference = info.preference
+        ThemePreferenceStore.save(info.preference)
     }
 
     // MARK: queries

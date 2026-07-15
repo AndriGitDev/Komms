@@ -59,7 +59,10 @@ class GateActivity : AppCompatActivity() {
             }
             busy(true)
             runNode(
-                work = { Session.open(dataDir, pass, loadSettings(), KdfChoice.MOBILE, NodeHolder.sink) },
+                work = {
+                    Session.open(dataDir, pass, loadSettings(), KdfChoice.MOBILE, NodeHolder.sink)
+                        .also(ThemeController::reconcile)
+                },
                 onError = { busy(false); toast(it) },
             ) { session ->
                 NodeHolder.attach(session)
@@ -92,7 +95,7 @@ class GateActivity : AppCompatActivity() {
                         Session.restore(
                             dataDir, pass, local, mnemonic,
                             loadSettings(), KdfChoice.MOBILE, NodeHolder.sink,
-                        )
+                        ).also(ThemeController::reconcile)
                     } finally {
                         local.delete()
                     }

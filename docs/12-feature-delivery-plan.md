@@ -41,7 +41,7 @@ accepted designs before individual shells implement UI.
 | Text formatting | Planned | Safe common subset and consistent rendering. |
 | Folders | Shipped | Preserve single-folder membership, All/Unfiled views, deterministic order, stale cleanup, label composition, and zero-network behavior. |
 | Pins | Shipped (conversation) | Preserve exact typed targets, complete durable reorder, stale reactivation/cleanup, folder → label → pin composition, and zero-network behavior; message pins remain separate. |
-| Dark mode | Planned | Shared theme semantics and shell implementations. |
+| Dark mode | Shipped | Sealed system/light/dark preference, shared semantic roles, and native live switching in every shell. |
 | Custom icons | Planned | Local-only contact/group/conversation artwork. |
 | Screen security | Planned | Platform protections and documented limitations. |
 | Incognito keyboard | Planned | Android control; best available behavior and honest limits elsewhere. |
@@ -173,9 +173,9 @@ single-folder membership, pins, labels and multi-label membership, drafts, UI
 preferences, and custom icons. The table exposes only row count and approximate
 sealed sizes in a copied database; `KKR4` backs up every user-authored record
 and note-to-self history while `KKR1`, `KKR2`, and `KKR3` remain restorable.
-Feature behavior and shell UX remain separate B7/B12-B13 slices. B10 folders,
-B11 conversation pins, and B18 labels use the shipped record shapes and `KKR4`
-contract unchanged.
+Feature behavior and shell UX remain separate B7/B13 slices. B10 folders,
+B11 conversation pins, B12 appearance, and B18 labels use the shipped record
+shapes and `KKR4` contract unchanged.
 
 Add sealed local-only records for conversation type, folders, pins, labels,
 drafts, UI preferences, and custom icons. Keep local organization out of network
@@ -421,12 +421,28 @@ notification, capability, crypto, or transport work.
 
 ### B12. Dark mode
 
-Define system/light/dark choices and a shared semantic color token set with WCAG
-contrast targets. Each shell uses native/system theme signals; no security or
-delivery state may be conveyed by color alone.
+**State:** shipped end to end. The canonical `system`, `light`, and `dark`
+choice is stored in the existing independently sealed F5 UI-preference record at
+`appearance.theme`. Missing or unknown legacy values safely render as System;
+idempotent writes emit only the endpoint-local `ThemeChanged` event and create
+no envelope, queue, capability, notification, cryptographic, or transport work.
+`kult-node`, strict RPC operations `theme` / `theme_set`, CLI commands `theme` /
+`theme-set`, UniFFI, and every platform wrapper expose the same contract.
 
-Acceptance includes first-run system mode, live switching, high contrast,
-reduced motion, and screenshots of the major surfaces in both themes.
+Every shell applies a non-sensitive device-local cache before unlock to prevent
+a theme flash, then reconciles after unlock: a canonical sealed value wins
+(including after `KKR4` restore), while a missing value is initialized from the
+cached/default System choice. Desktop resolves shared semantic CSS roles and
+live `prefers-color-scheme` / `prefers-contrast` / `prefers-reduced-motion`;
+Android applies AppCompat DayNight before the first Activity and uses matching
+light/night semantic resources; iOS applies SwiftUI's preferred color scheme and
+adaptive platform colors. The shared B12 fixture pins the exact vocabulary,
+semantic roles, WCAG 2 contrast thresholds, and reference-palette ratios.
+
+Acceptance covers first-run System, strict input, idempotency, restart, `KKR4`
+restore, local-only events, zero delivery work, live native switching, high
+contrast, reduced motion, and light/dark major-surface rendering. Security and
+delivery states retain text, icons, or accessible labels and never rely on color.
 
 ### B13. Custom icons
 
@@ -787,7 +803,7 @@ honest. Parallel work is safe only where rows do not share a foundation.
 |---|---|---|
 | **0: Shared foundations** | Complete | F1–F5 are implemented; ADR-0015 remains formally Proposed despite the shipped attachment pipeline. |
 | **Parallel: mobile reachability** | Design-only | Accept ADR-0017–0019, then implement C8 behind reversible feature gates. |
-| **1: Local-first product polish** | In progress | B7, B8, B10, B11, and B18 are shipped; B5, B9, and B12–B15 remain. |
+| **1: Local-first product polish** | In progress | B7, B8, B10–B12, and B18 are shipped; B5, B9, and B13–B15 remain. |
 | **2: Typed content and asynchronous media** | Substantially complete | F2/F3, B2, B16, and B17 are shipped; C1 is usable across all shells with richer media polish remaining. |
 | **3: Replicated conversation features** | Planned | C3, C4, C5, and C6. |
 | **4: Multi-device** | Planned | C2, followed by cross-device hardening of Wave 3. |
@@ -858,17 +874,17 @@ reviewable PR:
 2. completed: add group list/history/create/send UI to desktop, Android, and iOS;
 3. completed: build the per-peer carrier capability API and pin mesh-only
    decisions in node, scheduler, and FFI tests;
-4. completed through B10 folders, B11 conversation pins, and B18 labels: add the
+4. completed through B10 folders, B11 conversation pins, B12 appearance, and B18 labels: add the
    sealed local metadata foundation, note-to-self, private single-membership
    conversation folders, exact typed conversation pins, and private
-   contact/conversation labels; message pins and message labels remain deferred
-   and scheduled delivery completed separately in the core queue/storage path;
+   contact/conversation labels plus a sealed local theme choice; message pins and
+   message labels remain deferred and scheduled delivery completed separately in
+   the core queue/storage path;
 5. completed: ship typed content, attachments, audio, image editing, and mentions
    through every front door and shell; ADR-0015's formal status remains Proposed.
 
-The next high-value local-first slice is B12 dark mode with shared semantic
-roles, native system switching, accessibility contrast, and no color-only
-security or delivery signals, followed by the remaining bounded shell-local
-polish where useful.
+The next high-value local-first slice is B13 custom icons over the shipped F5
+record, with bounded local crop/re-encode, metadata stripping, quotas, safe
+fallbacks, and no remote avatar lookup or synchronization.
 Replicated edits/expiry/polls/roles, linked-device identity, real-time media, and
 optional hybrid services remain separate programs with their stated ADR gates.

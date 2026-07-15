@@ -41,6 +41,9 @@ object NodeHolder {
             is Event.AwaitingFasterLink -> held.add(event.id)
             is Event.DeliveryUpdated ->
                 if (event.state != DeliveryState.QUEUED) held.remove(event.id)
+            is Event.ThemeChanged -> session?.let { active ->
+                executor.execute { ThemeController.reconcile(active) }
+            }
             else -> {}
         }
         for (listener in listeners) listener(event)

@@ -75,6 +75,12 @@ own, verbatim.
   provides button reorder, unavailable-record cleanup, and durable restart
   behavior. The shared cap is 8,192 and pin work requests no permission or
   network/notification/transport activity.
+- **Choose System, Light, or Dark appearance** from Settings, including before
+  unlock. AppCompat DayNight is applied in `Application.onCreate` so the gate
+  does not flash the wrong palette; after unlock the sealed F5 value wins and is
+  restored by `KKR4`. Light/night resources use semantic roles and WCAG-tested
+  reference contrast, Android high-contrast text and disabled-animation settings
+  remain native, and delivery/security rows retain non-color cues.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends (desktop included), compared aloud or by scanning each other's
   code, with a visible verified badge. Key changes are surfaced, never
@@ -139,6 +145,11 @@ and Swift, covering exact typed peer/group/note targets, append and complete-set
 reorder, folder/label composition, activity ordering, stale cleanup/reactivation,
 restart, structured limits/errors, and zero delivery work. `KKR4` is the only
 portability path; message pins and linked-device pin sync remain deferred.
+
+Theme acceptance drives the shared B12 fixture through Rust RPC, UniFFI, Kotlin,
+and Swift: exact vocabulary/roles, first-run System, idempotency, restart,
+`KKR4`, one local event, and zero queued or transport work. The ordinary private
+preference cache carries no identity, message, contact, or network data.
 
 This is deliberately its own Gradle build, outside the cargo workspace:
 the Android dependency tree stays out of the core crates' lockfile and

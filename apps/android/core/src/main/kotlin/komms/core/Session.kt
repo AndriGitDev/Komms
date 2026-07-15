@@ -50,6 +50,8 @@ import uniffi.kult_ffi.NoteMessage
 import uniffi.kult_ffi.SafetyNumber
 import uniffi.kult_ffi.ScheduledMessage
 import uniffi.kult_ffi.Status
+import uniffi.kult_ffi.ThemeInfo
+import uniffi.kult_ffi.ThemePreference
 import uniffi.kult_ffi.defaultConfig
 import uniffi.kult_ffi.canonicalizeRecordedAudio
 import uniffi.kult_ffi.editImage as ffiEditImage
@@ -85,6 +87,12 @@ const val MAX_FOLDERS = 128
 const val MAX_PINS = 8192
 const val MAX_FOLDER_ASSIGNMENTS = 8_192
 const val MAX_FOLDER_NAME_BYTES = 256
+/** B12 semantic roles mapped to native adaptive resources by each shell. */
+val THEME_SEMANTIC_ROLES: List<String> = listOf(
+    "background", "surface", "surface_raised", "surface_hover", "border",
+    "text_primary", "text_secondary", "accent", "on_accent", "danger",
+    "warning", "success", "bubble_outgoing", "bubble_incoming", "focus",
+)
 
 private fun validateFolderWrite(name: String) {
     val fixedWhitespace = setOf(
@@ -345,6 +353,12 @@ class Session private constructor(private val node: KultNode) {
 
     /** All sealed local-only note-to-self entries. */
     fun noteToSelfMessages(): List<NoteMessage> = node.noteToSelfMessages()
+
+    /** Current safe system/light/dark choice and sealed persistence state. */
+    fun theme(): ThemeInfo = node.theme()
+
+    /** Idempotently persist one canonical private local appearance choice. */
+    fun setTheme(preference: ThemePreference): Boolean = node.setTheme(preference)
 
     /** Append one sealed local-only note; no transport work is created. */
     fun sendNoteToSelf(body: String): String = node.sendNoteToSelf(body)

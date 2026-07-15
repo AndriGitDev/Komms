@@ -77,6 +77,12 @@ are the node's own, verbatim.
   manager provides button reorder plus unavailable-record cleanup. The shared
   8,192-pin limit, restart/`KKR4` behavior, and zero-network contract live in
   `KommsCore`, with no new permission or synchronized state.
+- **Choose System, Light, or Dark appearance** in Settings, including at the
+  gate. SwiftUI applies the cached choice immediately, then treats the sealed F5
+  value as authoritative after unlock or `KKR4` restore. System follows iOS
+  changes live; adaptive semantic colors preserve Increase Contrast,
+  Differentiate Without Color, Dynamic Type, and Reduce Motion behavior, while
+  delivery/security meaning always retains text, symbols, or accessible labels.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends (all platforms), compared aloud or by scanning each other's code,
   with a visible verified badge. Key changes are surfaced, never hidden.
@@ -147,6 +153,12 @@ covering exact typed peer/group/note targets, append and exact complete-set
 reorder, folder/label composition, activity order, stale cleanup/reactivation,
 restart, structured errors, and zero delivery work. `KKR4` is the only
 portability path; message pins and linked-device pin sync remain deferred.
+
+Theme acceptance uses the same B12 fixture as Rust RPC, UniFFI, and Kotlin,
+covering the exact vocabulary/roles, first-run System, idempotency, restart,
+`KKR4`, one local change event, and zero queued or transport work. The ordinary
+non-synchronizing `UserDefaults` cache contains only the pre-unlock theme token;
+it is not a portability or backup channel.
 
 Generated bindings are never committed; `scripts/generate-bindings.sh`
 produces them fresh from the crate. The package is deliberately outside

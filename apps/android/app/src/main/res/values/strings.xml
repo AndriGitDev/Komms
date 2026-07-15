@@ -273,7 +273,12 @@
     <string name="verify_done">Marked verified</string>
 
     <!-- Settings -->
-    <string name="settings_title">Network settings</string>
+    <string name="settings_title">Settings</string>
+    <string name="appearance_title">Appearance</string>
+    <string name="theme_system">System</string>
+    <string name="theme_light">Light</string>
+    <string name="theme_dark">Dark</string>
+    <string name="theme_note">System follows Android live. The choice is private, sealed locally, and restored from encrypted backups. Color is never the only security or delivery cue.</string>
     <string name="settings_note">Same knobs as kultd\'s flags; stored without secrets in settings.json. Applied when the node next starts (lock, then unlock).</string>
     <string name="set_listen">Listen multiaddrs (one per line)</string>
     <string name="set_bootstrap">DHT bootstrap peers (one per line)</string>

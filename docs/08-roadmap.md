@@ -396,8 +396,8 @@ bounded conversation, folder, pin, label, draft, preference, and custom-icon
 records use an isolated storage key and reveal no local organization keys in a
 copied database. User-authored metadata and sealed note-to-self history are
 included in `KKR4`. Note-to-self text is shipped through every shell under one
-reserved identity; folders, conversation pins, and labels now ship as separate
-organization experiences while theme and icon experiences remain work.
+reserved identity; folders, conversation pins, labels, and appearance now ship
+as separate local experiences while custom icons remain work.
 
 B10 private local conversation folders are shipped end to end across the
 unchanged F5 record contract, `kult-node`, RPC/CLI, UniFFI, desktop, Android,
@@ -421,6 +421,17 @@ and unpinned rows then use deterministic manual/activity/typed-ID ordering.
 Every operation creates zero network, transport, notification, or cryptographic
 work. `KKR4` is the only pin portability path; message pins and linked-device
 pin synchronization remain separate work.
+
+B12 private appearance is shipped end to end across the unchanged F5 UI
+preference record, `kult-node`, strict RPC/CLI, UniFFI, desktop, Android, and
+iOS. The exact `system`, `light`, and `dark` vocabulary defaults safely to System,
+persists at `appearance.theme`, emits one local change event only on mutation,
+and survives restart and `KKR4` restore with zero delivery or transport work.
+All shells apply a non-sensitive pre-unlock cache and then treat the sealed value
+as authoritative; desktop uses semantic CSS roles, Android native DayNight
+resources, and iOS adaptive system colors. Native high-contrast/reduced-motion
+signals remain live, shared reference palettes meet WCAG text contrast, and
+security or delivery meaning always retains non-color cues.
 
 B18 private labels are shipped end to end across the unchanged F5 record
 contract, `kult-node`, RPC/CLI, UniFFI, desktop, Android, and iOS. Labels target

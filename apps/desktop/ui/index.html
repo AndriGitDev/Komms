@@ -4,6 +4,17 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Komms</title>
+  <script>
+    (() => {
+      const values = new Set(["system", "light", "dark"]);
+      const cached = localStorage.getItem("komms.appearance.theme");
+      const preference = values.has(cached) ? cached : "system";
+      const systemDark = matchMedia("(prefers-color-scheme: dark)").matches;
+      document.documentElement.dataset.theme = preference;
+      document.documentElement.dataset.resolvedTheme = preference === "system"
+        ? (systemDark ? "dark" : "light") : preference;
+    })();
+  </script>
   <link rel="stylesheet" href="style.css" />
   <script src="main.js" defer></script>
 </head>
@@ -36,6 +47,14 @@
 
         <label><span id="gate-pass-label">Passphrase</span>
           <input type="password" id="gate-pass" />
+        </label>
+
+        <label>Appearance
+          <select id="gate-theme">
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
         </label>
 
         <details id="gate-advanced">
@@ -82,6 +101,7 @@
         <div class="me-actions">
           <button id="btn-copy-address" class="ghost" title="Copy address">Copy</button>
           <button id="btn-share" class="ghost" title="Show pairing QR / bundle">Share</button>
+          <button id="btn-theme" class="ghost" title="Appearance">Theme</button>
           <button id="btn-backup" class="ghost" title="Export encrypted backup">Backup</button>
         </div>
       </header>
@@ -405,6 +425,19 @@
     <div class="row end">
       <button class="primary" data-act="export">Export backup</button>
     </div>
+  </template>
+
+  <template id="tpl-theme">
+    <p class="modal-note">System follows your operating-system appearance live. This private choice is sealed locally and included in encrypted backups.</p>
+    <fieldset class="theme-options" aria-describedby="theme-status">
+      <legend>Appearance</legend>
+      <label><input type="radio" name="theme-preference" value="system" /> System</label>
+      <label><input type="radio" name="theme-preference" value="light" /> Light</label>
+      <label><input type="radio" name="theme-preference" value="dark" /> Dark</label>
+    </fieldset>
+    <p id="theme-status" class="hint" role="status" aria-live="polite">Color is never the only delivery or security cue.</p>
+    <p class="error" data-f="error" hidden></p>
+    <div class="row end"><button class="ghost" data-act="close">Done</button></div>
   </template>
 
   <template id="tpl-schedule">

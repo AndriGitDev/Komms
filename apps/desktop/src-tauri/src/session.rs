@@ -38,8 +38,8 @@ use kult_ffi::{
     Pin as FfiPin, PinConversation as FfiPinConversation,
     PinConversationResult as FfiPinConversationResult, PinTarget as FfiPinTarget,
     PinTargetKind as FfiPinTargetKind, ScheduledConversation, StaleFolder as FfiStaleFolder,
-    StaleLabel as FfiStaleLabel, AUDIO_MAX_BYTES, AUDIO_MEDIA_TYPE, IMAGE_MAX_INPUT_BYTES,
-    IMAGE_MEDIA_TYPE,
+    StaleLabel as FfiStaleLabel, ThemePreference as FfiThemePreference, AUDIO_MAX_BYTES,
+    AUDIO_MEDIA_TYPE, IMAGE_MAX_INPUT_BYTES, IMAGE_MEDIA_TYPE,
 };
 
 use crate::qr;
@@ -1209,6 +1209,8 @@ pub enum UiEvent {
         /// Current render-safe transfer state.
         attachment: UiAttachment,
     },
+    /// Private local appearance preference changed.
+    ThemeChanged,
     /// Private local folder definitions, order, or assignments changed.
     FoldersChanged,
     /// Private local label definitions or memberships changed.
@@ -1294,9 +1296,50 @@ impl UiEvent {
             Event::AttachmentUpdated { attachment } => Self::AttachmentUpdated {
                 attachment: UiAttachment::from_ffi(attachment),
             },
+            Event::ThemeChanged => Self::ThemeChanged,
             Event::FoldersChanged => Self::FoldersChanged,
             Event::LabelsChanged => Self::LabelsChanged,
             Event::PinsChanged => Self::PinsChanged,
+        }
+    }
+}
+
+/// Canonical appearance choice used by the dependency-free webview.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UiThemePreference {
+    /// Follow the operating system live.
+    #[default]
+    System,
+    /// Force the light palette.
+    Light,
+    /// Force the dark palette.
+    Dark,
+}
+
+/// Current sealed theme choice plus first-run persistence state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UiThemeInfo {
+    /// Canonical choice.
+    pub preference: UiThemePreference,
+    /// Whether the sealed F5 record already exists.
+    pub persisted: bool,
+}
+
+impl UiThemePreference {
+    fn from_ffi(value: FfiThemePreference) -> Self {
+        match value {
+            FfiThemePreference::System => Self::System,
+            FfiThemePreference::Light => Self::Light,
+            FfiThemePreference::Dark => Self::Dark,
+        }
+    }
+
+    fn into_ffi(self) -> FfiThemePreference {
+        match self {
+            Self::System => FfiThemePreference::System,
+            Self::Light => FfiThemePreference::Light,
+            Self::Dark => FfiThemePreference::Dark,
         }
     }
 }
@@ -2123,6 +2166,22 @@ impl Session {
     /// Stable reserved identity for the local note-to-self conversation.
     pub fn note_to_self_id(&self) -> String {
         self.node.note_to_self_id()
+    }
+
+    /// Read the private local appearance choice.
+    pub fn theme(&self) -> Result<UiThemeInfo, String> {
+        let theme = self.node.theme().map_err(|error| error.to_string())?;
+        Ok(UiThemeInfo {
+            preference: UiThemePreference::from_ffi(theme.preference),
+            persisted: theme.persisted,
+        })
+    }
+
+    /// Idempotently persist one canonical appearance choice.
+    pub fn set_theme(&self, preference: UiThemePreference) -> Result<bool, String> {
+        self.node
+            .set_theme(preference.into_ffi())
+            .map_err(|error| error.to_string())
     }
 
     /// Create one private local folder.

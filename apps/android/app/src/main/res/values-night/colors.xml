@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#145C49</color>
+    <color name="primary_dark">#0B4033</color>
+    <color name="accent">#5FD1A6</color>
+    <color name="ok">#72D58A</color>
+    <color name="danger">#FF9B8D</color>
+    <color name="warning">#F0C66B</color>
+    <color name="warning_surface">#3B321C</color>
+    <color name="transfer_surface">#1C3344</color>
+    <color name="bubble_out">#234739</color>
+    <color name="bubble_in">#1D252E</color>
+    <color name="surface">#101418</color>
+    <color name="surface_raised">#161C22</color>
+    <color name="text_primary">#E8E6E3</color>
+    <color name="text_secondary">#B7C1C9</color>
+</resources>

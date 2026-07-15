@@ -70,8 +70,15 @@ status and prerequisites are tracked in the delivery plan.
   The limit is 8,192, `KKR4` is the only portability path, and every operation
   creates zero network, notification, crypto, or transport work. Message pins
   remain a separate design because they require stable message references.
-- **Dark mode.** Planned as shared semantic color roles rendered natively by
-  each shell; color can never be the only security or delivery signal.
+- **Dark mode.** Shipped as the exact `system` / `light` / `dark` preference
+  under the sealed F5 `appearance.theme` key, exposed through node, RPC/CLI,
+  UniFFI, and every shell. System is the first-run default and follows native
+  changes live; desktop uses semantic CSS roles, Android uses DayNight resources,
+  and iOS uses adaptive system colors. Reference palettes meet WCAG normal-text
+  contrast, high-contrast and reduced-motion behavior remains native, and color
+  is never the only security or delivery signal. `KKR4` is the authoritative
+  portability path; a small non-sensitive device cache exists only to style the
+  pre-unlock gate without a flash.
 - **Custom icons.** Planned over the shipped F5 icon record with bounded local
   crop/re-encode and no remote avatar lookup or synchronization.
 - **Screen-security / incognito keyboard.** Platform APIs in the mobile UI layer

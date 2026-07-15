@@ -19,7 +19,7 @@
 
         <TextView
             android:id="@+id/scheduled_time"
-            android:textColor="#9A6A00"
+            android:textColor="@color/warning"
             android:textSize="12sp"
             android:layout_width="0dp"
             android:layout_weight="1"

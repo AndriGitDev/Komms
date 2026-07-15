@@ -67,6 +67,8 @@ pub fn run() {
             commands::edit_scheduled,
             commands::cancel_scheduled,
             commands::note_to_self_id,
+            commands::theme,
+            commands::set_theme,
             commands::create_folder,
             commands::folders,
             commands::folder,

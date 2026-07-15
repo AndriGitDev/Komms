@@ -16,7 +16,7 @@ use crate::session::{
     UiGroupMessage, UiHint, UiImageEditRecipe, UiImageReview, UiLabel, UiLabelConversation,
     UiLabelFilterResult, UiLabelTarget, UiMentionCapability, UiMentionSpan, UiMessage,
     UiNoteMessage, UiPin, UiPinConversationResult, UiPinTarget, UiSafetyNumber, UiScheduledMessage,
-    UiStaleFolder, UiStaleLabel, UiStatus,
+    UiStaleFolder, UiStaleLabel, UiStatus, UiThemeInfo, UiThemePreference,
 };
 
 /// The one piece of managed state: the running session, if unlocked.
@@ -353,6 +353,14 @@ forward!(
 forward!(
     /// Stable reserved identity for the local note-to-self conversation.
     note_to_self_id() -> String, |s| Ok(s.note_to_self_id())
+);
+forward!(
+    /// Read the private local appearance choice.
+    theme() -> UiThemeInfo, |s| s.theme()
+);
+forward!(
+    /// Idempotently persist one canonical appearance choice.
+    set_theme(preference: UiThemePreference) -> bool, |s| s.set_theme(preference)
 );
 forward!(
     /// Create one private local folder.

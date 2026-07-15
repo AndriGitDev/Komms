@@ -19,6 +19,7 @@ struct KommsApp: App {
                     MainView().environmentObject(model)
                 }
             }
+            .preferredColorScheme(model.themePreference.colorScheme)
             .onChange(of: scenePhase) { phase in
                 if phase == .active {
                     Task { await model.refresh() }

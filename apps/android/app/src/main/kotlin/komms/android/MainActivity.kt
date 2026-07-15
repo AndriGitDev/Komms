@@ -87,6 +87,7 @@ class MainActivity : AppCompatActivity() {
                 is Event.FoldersChanged -> refreshLabelsAndLists(true)
                 is Event.LabelsChanged -> refreshLabelsAndLists(true)
                 is Event.PinsChanged -> refreshLabelsAndLists(true)
+                is Event.ThemeChanged -> Unit // ThemeController applies process-wide DayNight.
                 else -> {}
             }
         }
