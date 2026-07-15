@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "initial_target_kinds": ["peer", "group", "note_to_self"],
+  "expected_append_orders": [0, 1, 2],
+  "reordered_target_kinds": ["note_to_self", "group", "peer"],
+  "composed_pinned_target_kinds": ["note_to_self", "group", "peer"],
+  "maximum_pins": 8192,
+  "error_codes": {
+    "unavailable_target": "target_unavailable",
+    "incomplete_reorder": "invalid_pin_order",
+    "duplicate_reorder": "invalid_pin_order",
+    "active_stale_cleanup": "stale_pin_active",
+    "reorder_limit": "pin_reorder_limit",
+    "pin_limit": "pin_limit"
+  }
+}

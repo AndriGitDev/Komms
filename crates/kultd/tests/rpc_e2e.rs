@@ -23,6 +23,11 @@ fn folder_parity_fixture() -> Value {
         .expect("valid shared B10 folder fixture")
 }
 
+fn pin_parity_fixture() -> Value {
+    serde_json::from_str(include_str!("../../../fixtures/b11-pin-parity.json"))
+        .expect("valid shared B11 pin fixture")
+}
+
 /// Argon2id light enough for tests (same profile the node e2e tests use).
 const TEST_KDF: kult_crypto::KdfProfile = kult_crypto::KdfProfile {
     m_cost_kib: 8,
@@ -741,6 +746,7 @@ async fn backup_and_restore_via_rpc() {
 async fn groups_via_rpc_only() {
     let label_fixture = label_parity_fixture();
     let folder_fixture = folder_parity_fixture();
+    let pin_fixture = pin_parity_fixture();
     let dir = tempfile::tempdir().unwrap();
     let alice = Daemon::start(test_config(dir.path(), "group-alice"))
         .await
@@ -1255,6 +1261,124 @@ async fn groups_via_rpc_only() {
     assert_eq!(
         a.ok(json!({ "op": "status" })).await["queued"],
         queued_before_labels
+    );
+
+    // B11 remains private and local through RPC. Exact typed ids append
+    // idempotently, reorder only as the complete durable set, and form the
+    // leading block after folder and label eligibility have been applied.
+    let queued_before_pins = a.ok(json!({ "op": "status" })).await["queued"].clone();
+    let pin_targets = [
+        json!({ "type": "peer", "id": bob_peer }),
+        json!({ "type": "group", "id": group }),
+        json!({ "type": "note_to_self" }),
+    ];
+    for (index, target) in pin_targets.iter().enumerate() {
+        let pinned = a.ok(json!({ "op": "pin", "target": target })).await;
+        assert_eq!(pinned["changed"], json!(true));
+        assert_eq!(
+            pinned["pin"]["order"],
+            pin_fixture["expected_append_orders"][index]
+        );
+    }
+    assert_eq!(
+        a.ok(json!({ "op": "pin", "target": pin_targets[0] })).await["changed"],
+        json!(false)
+    );
+    let pins = a.ok(json!({ "op": "pins" })).await;
+    assert_eq!(
+        pins["pins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|pin| pin["target"]["type"].clone())
+            .collect::<Vec<_>>(),
+        pin_fixture["initial_target_kinds"]
+            .as_array()
+            .unwrap()
+            .clone()
+    );
+    assert_eq!(
+        a.ok(json!({ "op": "pin_state", "target": pin_targets[1] }))
+            .await["pin"]["active"],
+        json!(true)
+    );
+    let reordered_targets = [
+        pin_targets[2].clone(),
+        pin_targets[1].clone(),
+        pin_targets[0].clone(),
+    ];
+    let reordered = a
+        .ok(json!({ "op": "pin_reorder", "targets": reordered_targets }))
+        .await;
+    assert_eq!(
+        reordered["pins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|pin| pin["target"]["type"].clone())
+            .collect::<Vec<_>>(),
+        pin_fixture["reordered_target_kinds"]
+            .as_array()
+            .unwrap()
+            .clone()
+    );
+    assert!(a
+        .call(json!({ "op": "pin_reorder", "targets": [pin_targets[0]] }))
+        .await
+        .unwrap_err()
+        .contains("complete pin order"));
+    assert!(a
+        .call(json!({
+            "op": "pin_stale_cleanup",
+            "target": pin_targets[1],
+        }))
+        .await
+        .unwrap_err()
+        .contains("active"));
+    let composed = a
+        .ok(json!({
+            "op": "pin_conversations",
+            "selection": { "type": "all" },
+            "labels": [],
+            "mode": "any",
+        }))
+        .await;
+    assert_eq!(
+        composed["conversations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .take(3)
+            .map(|conversation| conversation["target"]["type"].clone())
+            .collect::<Vec<_>>(),
+        pin_fixture["composed_pinned_target_kinds"]
+            .as_array()
+            .unwrap()
+            .clone()
+    );
+    assert!(composed["conversations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .take(3)
+        .all(|conversation| conversation["pinned"] == json!(true)));
+    assert!(a.ok(json!({ "op": "pin_stale" })).await["stale"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        a.ok(json!({ "op": "unpin", "target": pin_targets[0] }))
+            .await["changed"],
+        json!(true)
+    );
+    assert_eq!(
+        a.ok(json!({ "op": "unpin", "target": pin_targets[0] }))
+            .await["changed"],
+        json!(false)
+    );
+    assert_eq!(
+        a.ok(json!({ "op": "status" })).await["queued"],
+        queued_before_pins
     );
 
     let group_attachment_bytes = b"one ciphertext set for the group";

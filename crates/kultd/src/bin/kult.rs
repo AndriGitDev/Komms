@@ -84,6 +84,15 @@ COMMANDS:
                                     remove one exact membership only if stale
     label-filter any|all [LABEL_ID]...
                                     filter eligible conversations locally
+    pin TARGET                      pin peer:HEX, group:HEX, or note-to-self
+    unpin TARGET                    idempotently remove one exact pin
+    pin-state TARGET                inspect one typed conversation's pin state
+    pins                            list durable pins, including stale entries
+    pin-reorder TARGET...           atomically set the complete durable pin order
+    pin-stale                       inspect render-safe unavailable pins
+    pin-stale-cleanup TARGET        remove one exact pin only if unavailable
+    pin-conversations all|unfiled|FOLDER_ID [any|all [LABEL_ID]...]
+                                    compose folder, label, then pin ordering
     group-create NAME [MEMBER_HEX]... create a sender-key group
     group-send GROUP_HEX TEXT...     queue a group message
     group-mention-capability GROUP_HEX
@@ -612,6 +621,58 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
                 .map(|id| parse_label_id(id))
                 .collect::<Result<Vec<_>, _>>()?;
             json!({ "op": "label_filter", "mode": args[0], "labels": labels })
+        }
+        "pin" | "unpin" | "pin-state" | "pin-stale-cleanup" => {
+            need(1)?;
+            if args.len() != 1 {
+                return Err(format!("{command}: too many arguments"));
+            }
+            let op = match command {
+                "pin" => "pin",
+                "unpin" => "unpin",
+                "pin-state" => "pin_state",
+                "pin-stale-cleanup" => "pin_stale_cleanup",
+                _ => unreachable!(),
+            };
+            json!({ "op": op, "target": parse_label_target(&args[0])? })
+        }
+        "pins" | "pin-stale" => {
+            if !args.is_empty() {
+                return Err(format!("{command}: too many arguments"));
+            }
+            json!({ "op": if command == "pins" { "pins" } else { "pin_stale" } })
+        }
+        "pin-reorder" => {
+            if args.len() > 8192 {
+                return Err("pin-reorder accepts at most 8192 targets".to_owned());
+            }
+            let targets = args
+                .iter()
+                .map(|target| parse_label_target(target))
+                .collect::<Result<Vec<_>, _>>()?;
+            json!({ "op": "pin_reorder", "targets": targets })
+        }
+        "pin-conversations" => {
+            need(1)?;
+            let selection = match args[0].as_str() {
+                "all" => json!({ "type": "all" }),
+                "unfiled" => json!({ "type": "unfiled" }),
+                id => json!({ "type": "folder", "id": parse_folder_id(id)? }),
+            };
+            let (mode, label_args) = match args.get(1).map(String::as_str) {
+                None => ("any", &args[1..]),
+                Some("any") => ("any", &args[2..]),
+                Some("all") => ("all", &args[2..]),
+                Some(_) => return Err("pin-conversations label mode must be any or all".to_owned()),
+            };
+            if label_args.len() > 128 {
+                return Err("pin-conversations accepts at most 128 label ids".to_owned());
+            }
+            let labels = label_args
+                .iter()
+                .map(|id| parse_label_id(id))
+                .collect::<Result<Vec<_>, _>>()?;
+            json!({ "op": "pin_conversations", "selection": selection, "mode": mode, "labels": labels })
         }
         "group-create" => {
             need(1)?;
@@ -1151,6 +1212,61 @@ mod tests {
             &std::iter::once("any".to_owned())
                 .chain(std::iter::repeat_n(id.clone(), 129))
                 .collect::<Vec<_>>()
+        )
+        .is_err());
+
+        let peer_target = format!("peer:{}", "12".repeat(32));
+        let group_target = format!("group:{}", "34".repeat(32));
+        assert_eq!(
+            build_request("pin", std::slice::from_ref(&peer_target)).unwrap(),
+            json!({ "op": "pin", "target": { "type": "peer", "id": "12".repeat(32) } })
+        );
+        assert_eq!(
+            build_request("unpin", &["note-to-self".to_owned()]).unwrap(),
+            json!({ "op": "unpin", "target": { "type": "note_to_self" } })
+        );
+        assert_eq!(
+            build_request("pin-state", std::slice::from_ref(&group_target)).unwrap(),
+            json!({ "op": "pin_state", "target": { "type": "group", "id": "34".repeat(32) } })
+        );
+        assert_eq!(build_request("pins", &[]).unwrap(), json!({ "op": "pins" }));
+        assert_eq!(
+            build_request("pin-reorder", &[group_target.clone(), peer_target.clone()]).unwrap(),
+            json!({
+                "op": "pin_reorder",
+                "targets": [
+                    { "type": "group", "id": "34".repeat(32) },
+                    { "type": "peer", "id": "12".repeat(32) },
+                ],
+            })
+        );
+        assert_eq!(
+            build_request("pin-stale", &[]).unwrap(),
+            json!({ "op": "pin_stale" })
+        );
+        assert_eq!(
+            build_request("pin-stale-cleanup", std::slice::from_ref(&group_target)).unwrap(),
+            json!({ "op": "pin_stale_cleanup", "target": { "type": "group", "id": "34".repeat(32) } })
+        );
+        assert_eq!(
+            build_request(
+                "pin-conversations",
+                &["unfiled".to_owned(), "all".to_owned(), id.clone()]
+            )
+            .unwrap(),
+            json!({
+                "op": "pin_conversations",
+                "selection": { "type": "unfiled" },
+                "mode": "all",
+                "labels": [id],
+            })
+        );
+        assert!(build_request("pin", &[]).is_err());
+        assert!(build_request("pins", &["trailing".to_owned()]).is_err());
+        assert!(build_request("pin-reorder", &["bob".to_owned()]).is_err());
+        assert!(build_request(
+            "pin-conversations",
+            &["all".to_owned(), "neither".to_owned()]
         )
         .is_err());
 

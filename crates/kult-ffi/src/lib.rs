@@ -112,6 +112,23 @@ pub enum LabelErrorCode {
     StorageFailure,
 }
 
+/// Stable private-pin failure categories shared by Kotlin and Swift wrappers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum PinErrorCode {
+    /// Typed peer/group/note-to-self target was malformed.
+    InvalidTarget,
+    /// Exact typed conversation is unavailable and cannot be newly pinned.
+    UnavailableTarget,
+    /// The durable pin definition limit is exhausted.
+    Limit,
+    /// Reorder input was not the exact durable target set once each.
+    InvalidOrder,
+    /// Requested stale pin is now active or absent.
+    StalePinActive,
+    /// Storage or another local implementation failure occurred.
+    StorageFailure,
+}
+
 /// Errors crossing the FFI boundary. Messages are the node's own, verbatim
 /// — honest and human-readable, never downgraded to a fake success.
 ///
@@ -145,6 +162,13 @@ pub enum FfiError {
         /// Generic render-safe explanation with no label text or relationship.
         reason: String,
     },
+    /// A private-pin operation failed with a stable programmatic category.
+    Pin {
+        /// Stable category shared across Rust, Kotlin, and Swift.
+        code: PinErrorCode,
+        /// Generic render-safe explanation with no relationship data.
+        reason: String,
+    },
     /// The node was stopped; the handle is spent.
     Stopped,
 }
@@ -156,6 +180,7 @@ impl std::fmt::Display for FfiError {
             Self::Node { reason } => write!(f, "{reason}"),
             Self::Folder { reason, .. } => write!(f, "{reason}"),
             Self::Label { reason, .. } => write!(f, "{reason}"),
+            Self::Pin { reason, .. } => write!(f, "{reason}"),
             Self::Stopped => write!(f, "node is stopped"),
         }
     }
@@ -658,6 +683,67 @@ pub struct LabelFilterResult {
     pub conversations: Vec<LabelConversation>,
 }
 
+/// Exact typed target kind for private local conversation pins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum PinTargetKind {
+    /// Pairwise conversation keyed by peer identity.
+    Peer,
+    /// Sender-key group keyed by group id.
+    Group,
+    /// Reserved device-local note-to-self conversation.
+    NoteToSelf,
+}
+
+/// Exact technical target used by pin mutations and complete-set reorder.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct PinTarget {
+    /// Target type; display names are never accepted here.
+    pub kind: PinTargetKind,
+    /// 64-hex-character peer/group id, or absent for note-to-self.
+    pub id: Option<String>,
+}
+
+/// Render-safe durable pin, including unavailable stale targets.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct Pin {
+    /// Exact stable typed identity.
+    pub target: PinTarget,
+    /// Current local name while available; absent for stale/note-to-self.
+    pub display_name: Option<String>,
+    /// Exact persisted manual order.
+    pub order: u32,
+    /// Whether the exact conversation is currently available.
+    pub active: bool,
+}
+
+/// One eligible conversation after folder, label, and pin composition.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct PinConversation {
+    /// Exact stable typed identity.
+    pub target: PinTarget,
+    /// Current local display name; absent for note-to-self.
+    pub display_name: Option<String>,
+    /// Whether this row belongs to the leading pinned block.
+    pub pinned: bool,
+    /// Exact persisted order when pinned.
+    pub pin_order: Option<u32>,
+    /// Latest ordinary local message activity, or zero with no history.
+    pub recent_activity: u64,
+}
+
+/// Folder-first, label-second, pin-order-last conversation presentation.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct PinConversationResult {
+    /// Exact applied folder selection.
+    pub selection: FolderSelection,
+    /// Deduplicated available selected label ids.
+    pub selected_labels: Vec<String>,
+    /// Selected label ids whose definitions are unavailable.
+    pub unavailable_labels: Vec<String>,
+    /// Eligible rows with one leading pinned block and no duplicates.
+    pub conversations: Vec<PinConversation>,
+}
+
 /// Best currently known carrier class for one contact. Positive verdicts are
 /// advisory and expire at the time carried by [`CarrierCapabilitySnapshot`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
@@ -907,6 +993,8 @@ pub enum Event {
     FoldersChanged,
     /// Private local labels changed; shells re-read local label state.
     LabelsChanged,
+    /// Private local pins changed; shells re-read local pin state.
+    PinsChanged,
     /// A scheduled message was created or edited.
     ScheduledMessageUpdated {
         /// Stable message id (hex).
@@ -1032,6 +1120,7 @@ impl Event {
         Some(match event {
             kult_node::Event::FoldersChanged => Self::FoldersChanged,
             kult_node::Event::LabelsChanged => Self::LabelsChanged,
+            kult_node::Event::PinsChanged => Self::PinsChanged,
             kult_node::Event::ScheduledMessageUpdated { id } => Self::ScheduledMessageUpdated {
                 id: hex_encode(&id),
             },
@@ -1870,6 +1959,99 @@ impl KultNode {
         })
     }
 
+    /// Idempotently append one exact available conversation to pin order.
+    pub fn pin_conversation(&self, target: PinTarget) -> Result<bool, FfiError> {
+        let target = parse_pin_target_ffi(&target)?;
+        self.pin_call(|resp| Msg::Pin { target, resp })
+    }
+
+    /// Idempotently remove one exact active or stale pin.
+    pub fn unpin_conversation(&self, target: PinTarget) -> Result<bool, FfiError> {
+        let target = parse_pin_target_ffi(&target)?;
+        self.pin_call(|resp| Msg::Unpin { target, resp })
+    }
+
+    /// Get the durable pin state for one exact typed target.
+    pub fn pin_state(&self, target: PinTarget) -> Result<Option<Pin>, FfiError> {
+        let target = parse_pin_target_ffi(&target)?;
+        Ok(self
+            .pin_call(|resp| Msg::PinState { target, resp })?
+            .map(Pin::from_node))
+    }
+
+    /// List every durable pin, including unavailable stale targets.
+    pub fn pins(&self) -> Result<Vec<Pin>, FfiError> {
+        Ok(self
+            .pin_call(|resp| Msg::Pins { resp })?
+            .into_iter()
+            .map(Pin::from_node)
+            .collect())
+    }
+
+    /// Atomically reorder the exact complete durable pin target set.
+    pub fn reorder_pins(&self, targets: Vec<PinTarget>) -> Result<Vec<Pin>, FfiError> {
+        if targets.len() > kult_node::MAX_PINS {
+            return Err(pin_error(
+                PinErrorCode::InvalidOrder,
+                "pin reorder count exceeds 8192",
+            ));
+        }
+        let targets = targets
+            .iter()
+            .map(parse_pin_target_ffi)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(self
+            .pin_call(|resp| Msg::PinReorder { targets, resp })?
+            .into_iter()
+            .map(Pin::from_node)
+            .collect())
+    }
+
+    /// List unavailable durable pins for explicit diagnosis and cleanup.
+    pub fn stale_pins(&self) -> Result<Vec<Pin>, FfiError> {
+        Ok(self
+            .pin_call(|resp| Msg::PinStale { resp })?
+            .into_iter()
+            .map(Pin::from_node)
+            .collect())
+    }
+
+    /// Remove one exact pin only while its target remains unavailable.
+    pub fn cleanup_stale_pin(&self, target: PinTarget) -> Result<bool, FfiError> {
+        let target = parse_pin_target_ffi(&target)?;
+        self.pin_call(|resp| Msg::PinStaleCleanup { target, resp })
+    }
+
+    /// Classify by folder, filter by labels, then apply pin/activity ordering.
+    pub fn pin_conversations(
+        &self,
+        selection: FolderSelection,
+        labels: Vec<String>,
+        mode: LabelMatchMode,
+    ) -> Result<PinConversationResult, FfiError> {
+        if labels.len() > kult_node::MAX_LABELS {
+            return Err(label_error(
+                LabelErrorCode::DefinitionLimit,
+                "selected label count exceeds 128",
+            ));
+        }
+        let selection = parse_folder_selection_ffi(&selection)?;
+        let labels = labels
+            .iter()
+            .map(|label| parse_label_ffi(label))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.pin_call(|resp| Msg::PinConversations {
+            selection,
+            labels,
+            mode: match mode {
+                LabelMatchMode::Any => kult_node::LabelMatchMode::Any,
+                LabelMatchMode::All => kult_node::LabelMatchMode::All,
+            },
+            resp,
+        })
+        .map(PinConversationResult::from_node)
+    }
+
     /// Create a sender-key group with stored contacts. Returns its id (hex).
     pub fn create_group(&self, name: String, members: Vec<String>) -> Result<String, FfiError> {
         let members = members
@@ -2171,6 +2353,13 @@ impl KultNode {
     ) -> Result<T, FfiError> {
         self.call(build).map_err(folder_ffi_error)
     }
+
+    fn pin_call<T>(
+        &self,
+        build: impl FnOnce(oneshot::Sender<Result<T, String>>) -> Msg,
+    ) -> Result<T, FfiError> {
+        self.call(build).map_err(pin_ffi_error)
+    }
 }
 
 impl Folder {
@@ -2271,6 +2460,52 @@ impl StaleLabel {
     }
 }
 
+impl Pin {
+    fn from_node(pin: kult_node::PinInfo) -> Self {
+        Self {
+            target: pin_target_from_store(&pin.conversation),
+            display_name: pin.display_name,
+            order: pin.order,
+            active: pin.active,
+        }
+    }
+}
+
+impl PinConversation {
+    fn from_node(conversation: kult_node::PinConversationInfo) -> Self {
+        Self {
+            target: pin_target_from_store(&conversation.conversation),
+            display_name: conversation.display_name,
+            pinned: conversation.pinned,
+            pin_order: conversation.pin_order,
+            recent_activity: conversation.recent_activity,
+        }
+    }
+}
+
+impl PinConversationResult {
+    fn from_node(result: kult_node::PinConversationList) -> Self {
+        Self {
+            selection: folder_selection_from_node(result.selection),
+            selected_labels: result
+                .selected_labels
+                .iter()
+                .map(|id| hex_encode(id))
+                .collect(),
+            unavailable_labels: result
+                .unavailable_labels
+                .iter()
+                .map(|id| hex_encode(id))
+                .collect(),
+            conversations: result
+                .conversations
+                .into_iter()
+                .map(PinConversation::from_node)
+                .collect(),
+        }
+    }
+}
+
 fn label_target_from_store(target: &kult_store::ConversationId) -> LabelTarget {
     match target {
         kult_store::ConversationId::Peer(peer) => LabelTarget {
@@ -2283,6 +2518,23 @@ fn label_target_from_store(target: &kult_store::ConversationId) -> LabelTarget {
         },
         kult_store::ConversationId::NoteToSelf => LabelTarget {
             kind: LabelTargetKind::NoteToSelf,
+            id: None,
+        },
+    }
+}
+
+fn pin_target_from_store(target: &kult_store::ConversationId) -> PinTarget {
+    match target {
+        kult_store::ConversationId::Peer(peer) => PinTarget {
+            kind: PinTargetKind::Peer,
+            id: Some(hex_encode(peer)),
+        },
+        kult_store::ConversationId::Group(group) => PinTarget {
+            kind: PinTargetKind::Group,
+            id: Some(hex_encode(group)),
+        },
+        kult_store::ConversationId::NoteToSelf => PinTarget {
+            kind: PinTargetKind::NoteToSelf,
             id: None,
         },
     }
@@ -2462,6 +2714,40 @@ fn label_ffi_error(error: FfiError) -> FfiError {
         _ => LabelErrorCode::StorageFailure,
     };
     FfiError::Label { code, reason }
+}
+
+fn parse_pin_target_ffi(target: &PinTarget) -> Result<kult_store::ConversationId, FfiError> {
+    match (&target.kind, &target.id) {
+        (PinTargetKind::Peer, Some(id)) => parse_peer(id)
+            .map(kult_store::ConversationId::Peer)
+            .map_err(|_| pin_error(PinErrorCode::InvalidTarget, "invalid pin target")),
+        (PinTargetKind::Group, Some(id)) => parse_group(id)
+            .map(kult_store::ConversationId::Group)
+            .map_err(|_| pin_error(PinErrorCode::InvalidTarget, "invalid pin target")),
+        (PinTargetKind::NoteToSelf, None) => Ok(kult_store::ConversationId::NoteToSelf),
+        _ => Err(pin_error(PinErrorCode::InvalidTarget, "invalid pin target")),
+    }
+}
+
+fn pin_error(code: PinErrorCode, reason: &str) -> FfiError {
+    FfiError::Pin {
+        code,
+        reason: reason.to_owned(),
+    }
+}
+
+fn pin_ffi_error(error: FfiError) -> FfiError {
+    let FfiError::Node { reason } = error else {
+        return error;
+    };
+    let code = match reason.as_str() {
+        "store error: typed conversation target is unavailable" => PinErrorCode::UnavailableTarget,
+        "store error: conversation pin limit exhausted" => PinErrorCode::Limit,
+        "store error: invalid complete pin order" => PinErrorCode::InvalidOrder,
+        "store error: conversation pin is active or absent" => PinErrorCode::StalePinActive,
+        _ => PinErrorCode::StorageFailure,
+    };
+    FfiError::Pin { code, reason }
 }
 
 /// Validate and convert the FFI-facing [`Config`], creating the data

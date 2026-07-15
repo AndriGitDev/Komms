@@ -967,6 +967,84 @@ async fn handle_op(
                 .map_err(fail)?;
             Ok(wire::label_filter_json(&filtered))
         }
+        Op::Pin { target } => {
+            let target = wire::parse_label_target(&target)?;
+            let changed = node.pin_conversation(&target, &mut OsRng).map_err(fail)?;
+            Ok(json!({
+                "changed": changed,
+                "target": wire::label_target_json(&target),
+                "pin": node.pin_state(&target).map_err(fail)?.as_ref().map(wire::pin_json),
+            }))
+        }
+        Op::Unpin { target } => {
+            let target = wire::parse_label_target(&target)?;
+            let changed = node.unpin_conversation(&target).map_err(fail)?;
+            Ok(json!({
+                "changed": changed,
+                "target": wire::label_target_json(&target),
+            }))
+        }
+        Op::PinState { target } => {
+            let target = wire::parse_label_target(&target)?;
+            Ok(json!({
+                "target": wire::label_target_json(&target),
+                "pin": node.pin_state(&target).map_err(fail)?.as_ref().map(wire::pin_json),
+            }))
+        }
+        Op::Pins => Ok(json!({
+            "pins": node
+                .pins()
+                .map_err(fail)?
+                .iter()
+                .map(wire::pin_json)
+                .collect::<Vec<_>>(),
+        })),
+        Op::PinReorder { targets } => {
+            let targets = wire::parse_pin_order(&targets)?;
+            Ok(json!({
+                "pins": node
+                    .reorder_pins(&targets, &mut OsRng)
+                    .map_err(fail)?
+                    .iter()
+                    .map(wire::pin_json)
+                    .collect::<Vec<_>>(),
+            }))
+        }
+        Op::PinStale => Ok(json!({
+            "stale": node
+                .stale_pins()
+                .map_err(fail)?
+                .iter()
+                .map(wire::pin_json)
+                .collect::<Vec<_>>(),
+        })),
+        Op::PinStaleCleanup { target } => {
+            let target = wire::parse_label_target(&target)?;
+            let changed = node.cleanup_stale_pin(&target).map_err(fail)?;
+            Ok(json!({
+                "changed": changed,
+                "target": wire::label_target_json(&target),
+            }))
+        }
+        Op::PinConversations {
+            selection,
+            labels,
+            mode,
+        } => {
+            let selection = wire::parse_folder_selection(&selection)?;
+            let labels = wire::parse_selected_labels(&labels)?;
+            let listed = node
+                .pin_conversations(
+                    selection,
+                    &labels,
+                    match mode {
+                        wire::LabelMatchInput::Any => LabelMatchMode::Any,
+                        wire::LabelMatchInput::All => LabelMatchMode::All,
+                    },
+                )
+                .map_err(fail)?;
+            Ok(wire::pin_conversation_list_json(&listed))
+        }
         Op::GroupCreate { name, members } => {
             let members = members
                 .iter()

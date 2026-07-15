@@ -14,13 +14,14 @@ use kult_node::{
     CarrierCapabilitySnapshot, ContentStatus, Event, FolderConversationInfo,
     FolderConversationList, FolderInfo, FolderSelection, GroupInfo, GroupMentionCapability,
     LabelConversationInfo, LabelFilterInfo, LabelInfo, MentionCapabilityIssueReason,
-    NodeStaleFolderReason, NodeStaleLabelReason, ScheduledConversation, ScheduledMessageInfo,
-    StaleFolderInfo, StaleLabelInfo, NOTE_TO_SELF_CONVERSATION_ID,
+    NodeStaleFolderReason, NodeStaleLabelReason, PinConversationInfo, PinConversationList, PinInfo,
+    ScheduledConversation, ScheduledMessageInfo, StaleFolderInfo, StaleLabelInfo,
+    NOTE_TO_SELF_CONVERSATION_ID,
 };
 use kult_store::{
     valid_folder_name, valid_label_color, valid_label_name, ConversationId, DeliveryState,
     Direction, GroupMessageRecord, MediaTransferState, MessageRecord, NoteMessageRecord,
-    MAX_FOLDERS, MAX_LABELS,
+    MAX_FOLDERS, MAX_LABELS, MAX_PINS,
 };
 use kult_transport::DeliveryHint;
 
@@ -76,6 +77,10 @@ fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
         }
         "labels_for_conversation" => Some(&["id", "op", "target"]),
         "label_filter" => Some(&["id", "op", "labels", "mode"]),
+        "pin" | "unpin" | "pin_state" | "pin_stale_cleanup" => Some(&["id", "op", "target"]),
+        "pins" | "pin_stale" => Some(&["id", "op"]),
+        "pin_reorder" => Some(&["id", "op", "targets"]),
+        "pin_conversations" => Some(&["id", "op", "selection", "labels", "mode"]),
         _ => None,
     }
 }
@@ -377,6 +382,44 @@ pub enum Op {
         /// Match-any or match-all semantics.
         mode: LabelMatchInput,
     },
+    /// Idempotently append one exact available conversation to the pin order.
+    Pin {
+        /// Exact pairwise/group/note-to-self target.
+        target: LabelTargetInput,
+    },
+    /// Idempotently unpin one exact active or stale target.
+    Unpin {
+        /// Exact pairwise/group/note-to-self target.
+        target: LabelTargetInput,
+    },
+    /// Get the durable pin state for one exact target.
+    PinState {
+        /// Exact pairwise/group/note-to-self target.
+        target: LabelTargetInput,
+    },
+    /// List every durable active or stale pin in manual order.
+    Pins,
+    /// Atomically reorder the complete durable pin target set.
+    PinReorder {
+        /// Every durable typed target exactly once, in desired order.
+        targets: Vec<LabelTargetInput>,
+    },
+    /// List unavailable durable pins.
+    PinStale,
+    /// Remove one exact pin only while its target remains unavailable.
+    PinStaleCleanup {
+        /// Exact unavailable typed target.
+        target: LabelTargetInput,
+    },
+    /// Apply folder classification, label filtering, and pin-aware ordering.
+    PinConversations {
+        /// Exact virtual or stable-folder selection.
+        selection: FolderSelectionInput,
+        /// Stable label ids for the second-stage filter.
+        labels: Vec<String>,
+        /// Match-any or match-all label semantics.
+        mode: LabelMatchInput,
+    },
     /// Create a sender-key group with stored contacts.
     GroupCreate {
         /// Display name.
@@ -584,6 +627,9 @@ pub fn event_line(event: &Event) -> String {
         Event::LabelsChanged => json!({
             "type": "labels_changed",
         }),
+        Event::PinsChanged => json!({
+            "type": "pins_changed",
+        }),
         Event::ScheduledMessageUpdated { id } => json!({
             "type": "scheduled_updated",
             "id": hex_encode(id),
@@ -735,6 +781,43 @@ pub fn folder_selection_json(selection: FolderSelection) -> Value {
     }
 }
 
+/// Render one durable pin without sealed storage material.
+pub fn pin_json(pin: &PinInfo) -> Value {
+    let mut value = json!({
+        "target": conversation_id_json(&pin.conversation),
+        "order": pin.order,
+        "active": pin.active,
+    });
+    if let Some(name) = &pin.display_name {
+        value["name"] = json!(name);
+    }
+    value
+}
+
+/// Render one eligible pin-aware conversation row.
+pub fn pin_conversation_json(conversation: &PinConversationInfo) -> Value {
+    let mut value = json!({
+        "target": conversation_id_json(&conversation.conversation),
+        "pinned": conversation.pinned,
+        "pin_order": conversation.pin_order,
+        "recent_activity": conversation.recent_activity,
+    });
+    if let Some(name) = &conversation.display_name {
+        value["name"] = json!(name);
+    }
+    value
+}
+
+/// Render folder/label selection plus one pin-aware ordered conversation list.
+pub fn pin_conversation_list_json(list: &PinConversationList) -> Value {
+    json!({
+        "selection": folder_selection_json(list.selection),
+        "selected_labels": list.selected_labels.iter().map(|id| hex_encode(id)).collect::<Vec<_>>(),
+        "unavailable_labels": list.unavailable_labels.iter().map(|id| hex_encode(id)).collect::<Vec<_>>(),
+        "conversations": list.conversations.iter().map(pin_conversation_json).collect::<Vec<_>>(),
+    })
+}
+
 /// Render one label without sealed bytes, nonces, or unrelated metadata.
 pub fn label_json(label: &LabelInfo) -> Value {
     json!({
@@ -826,6 +909,14 @@ pub fn parse_selected_labels(values: &[String]) -> Result<Vec<[u8; 16]>, String>
     values.iter().map(|value| parse_label(value)).collect()
 }
 
+/// Parse and bound the explicit complete pin reorder target list.
+pub fn parse_pin_order(values: &[LabelTargetInput]) -> Result<Vec<ConversationId>, String> {
+    if values.len() > MAX_PINS {
+        return Err("pin reorder count exceeds 8192".to_owned());
+    }
+    values.iter().map(parse_label_target).collect()
+}
+
 /// Enforce the shared name/color contract at the RPC boundary.
 pub fn validate_label_write(name: &str, color: &str) -> Result<(), String> {
     if !valid_label_name(name) {
@@ -887,6 +978,10 @@ fn error_code(message: &str) -> &'static str {
         "store error: label assignment is active or absent" => "stale_assignment_active",
         "label deletion requires explicit confirmation" => "confirmation_required",
         "selected label count exceeds 128" => "selected_label_limit",
+        "pin reorder count exceeds 8192" => "pin_reorder_limit",
+        "store error: conversation pin limit exhausted" => "pin_limit",
+        "store error: invalid complete pin order" => "invalid_pin_order",
+        "store error: conversation pin is active or absent" => "stale_pin_active",
         _ if message.starts_with("bad request:") => "bad_request",
         _ if message.starts_with("store error:") => "storage_failure",
         _ => "operation_failed",
