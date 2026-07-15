@@ -20,6 +20,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var attachments: [Attachment] = []
     @Published private(set) var noteHistory: [NoteMessage] = []
     @Published private(set) var status: Status?
+    @Published private(set) var folders: [KommsCore.Folder] = []
+    @Published private(set) var staleFolderRecords: [StaleFolder] = []
+    @Published private(set) var folderSelection = FolderSelection(kind: .all, id: nil)
     @Published private(set) var labels: [KommsCore.Label] = []
     @Published private(set) var staleLabelRecords: [StaleLabel] = []
     @Published private(set) var conversationLabels: [String: [KommsCore.Label]] = [:]
@@ -43,6 +46,11 @@ final class AppModel: ObservableObject {
         let filter = LabelFilterStore.load()
         selectedLabelIds = filter.ids
         labelFilterMode = filter.mode == "all" ? .all : .any
+        folderSelection = switch filter.folderKind {
+        case "unfiled": FolderSelection(kind: .unfiled, id: nil)
+        case "folder": FolderSelection(kind: .folder, id: filter.folderId)
+        default: FolderSelection(kind: .all, id: nil)
+        }
         let temporary = FileManager.default.temporaryDirectory
         let entries = try? FileManager.default.contentsOfDirectory(
             at: temporary, includingPropertiesForKeys: nil
@@ -127,6 +135,8 @@ final class AppModel: ObservableObject {
         noteHistory = []
         status = nil
         notices = []
+        folders = []
+        staleFolderRecords = []
         labels = []
         staleLabelRecords = []
         conversationLabels = [:]
@@ -158,7 +168,7 @@ final class AppModel: ObservableObject {
              .noteToSelfMessageAdded,
              .carrierCapabilityChanged,
              .groupUpdated, .groupMessageReceived, .groupDeliveryUpdated,
-             .attachmentUpdated, .labelsChanged:
+             .attachmentUpdated, .foldersChanged, .labelsChanged:
             Task { await refresh() }
         case .mentionReceived:
             notices.append("You were mentioned in a group.")
@@ -189,6 +199,7 @@ final class AppModel: ObservableObject {
         do {
             let selected = selectedLabelIds
             let filterMode = labelFilterMode
+            let requestedFolder = folderSelection
             let snapshot = try await run { () -> AppRefreshSnapshot in
                 var fresh: [String: [Message]] = [:]
                 for peer in peers {
@@ -201,7 +212,13 @@ final class AppModel: ObservableObject {
                     freshGroups[group] = try session.groupMessages(group: group)
                 }
                 let liveContacts = try session.contacts()
-                let filter = try session.filterLabels(ids: selected, mode: filterMode)
+                let folders = try session.folders()
+                let missingFolder = requestedFolder.kind == .folder &&
+                    folders.contains(where: { $0.id == requestedFolder.id }) == false
+                let appliedFolder = missingFolder
+                    ? FolderSelection(kind: .all, id: nil) : requestedFolder
+                let filter = try session.folderConversations(
+                    selection: appliedFolder, labels: selected, mode: filterMode)
                 var memberships: [String: [KommsCore.Label]] = [:]
                 for contact in liveContacts {
                     let target = LabelTarget(kind: .peer, id: contact.peer)
@@ -220,8 +237,10 @@ final class AppModel: ObservableObject {
                     status: try session.status(), contacts: liveContacts, histories: fresh,
                     groups: liveGroups, groupHistories: freshGroups,
                     scheduled: try session.scheduledMessages(), attachments: try session.attachments(),
-                    notes: try session.noteToSelfMessages(), labels: try session.labels(),
-                    stale: try session.staleLabels(), filter: filter, memberships: memberships)
+                    notes: try session.noteToSelfMessages(), folders: folders,
+                    staleFolders: try session.staleFolders(), folderWasMissing: missingFolder,
+                    labels: try session.labels(), stale: try session.staleLabels(),
+                    filter: filter, memberships: memberships)
             }
             status = snapshot.status
             contacts = snapshot.contacts
@@ -231,14 +250,20 @@ final class AppModel: ObservableObject {
             scheduledMessages = snapshot.scheduled
             attachments = snapshot.attachments
             noteHistory = snapshot.notes
+            folders = snapshot.folders
+            staleFolderRecords = snapshot.staleFolders
+            folderSelection = snapshot.filter.selection
             labels = snapshot.labels
             staleLabelRecords = snapshot.stale
             conversationLabels = snapshot.memberships
             matchingLabelTargets = Set(snapshot.filter.conversations.map { Self.labelTargetKey($0.target) })
-            if snapshot.filter.unavailableSelected.isEmpty == false {
-                notices.append("\(snapshot.filter.unavailableSelected.count) unavailable selected label(s) were removed.")
+            if snapshot.folderWasMissing {
+                notices.append("The selected private folder is unavailable; showing All conversations.")
             }
-            selectedLabelIds = snapshot.filter.selected
+            if snapshot.filter.unavailableLabels.isEmpty == false {
+                notices.append("\(snapshot.filter.unavailableLabels.count) unavailable selected label(s) were removed.")
+            }
+            selectedLabelIds = snapshot.filter.selectedLabels
             persistLabelFilter()
         } catch {
             // A stopped handle answers honestly; the gate is already up.
@@ -270,12 +295,26 @@ final class AppModel: ObservableObject {
         }
     }
 
+    nonisolated static func labelTargetKey(_ target: FolderTarget) -> String {
+        switch target.kind {
+        case .peer: return "peer:\(target.id ?? "")"
+        case .group: return "group:\(target.id ?? "")"
+        case .noteToSelf: return "note_to_self:"
+        }
+    }
+
     func labelsForTarget(_ target: LabelTarget) -> [KommsCore.Label] {
         conversationLabels[Self.labelTargetKey(target)] ?? []
     }
 
     func targetMatchesLabelFilter(_ target: LabelTarget) -> Bool {
-        selectedLabelIds.isEmpty || matchingLabelTargets.contains(Self.labelTargetKey(target))
+        matchingLabelTargets.contains(Self.labelTargetKey(target))
+    }
+
+    func selectFolder(_ selection: FolderSelection) {
+        folderSelection = selection
+        persistLabelFilter()
+        Task { await refresh() }
     }
 
     func setLabelSelected(_ id: String, selected: Bool) {
@@ -298,9 +337,17 @@ final class AppModel: ObservableObject {
     }
 
     private func persistLabelFilter() {
+        let folderKind: String
+        switch folderSelection.kind {
+        case .all: folderKind = "all"
+        case .unfiled: folderKind = "unfiled"
+        case .folder: folderKind = "folder"
+        }
         LabelFilterStore.save(.init(
             ids: selectedLabelIds,
-            mode: labelFilterMode == .all ? "all" : "any"))
+            mode: labelFilterMode == .all ? "all" : "any",
+            folderKind: folderKind,
+            folderId: folderSelection.id))
     }
 
     // MARK: commands (all forwarded verbatim to the session layer)
@@ -732,6 +779,60 @@ final class AppModel: ObservableObject {
         try await run { try session.setHints(peer: peer, hints: hints) }
     }
 
+    func createFolder(name: String) async throws -> KommsCore.Folder {
+        guard let session else { throw InputError("node is locked") }
+        let folder = try await run { try session.createFolder(name: name) }
+        await refresh()
+        return folder
+    }
+
+    func renameFolder(id: String, name: String) async throws -> KommsCore.Folder {
+        guard let session else { throw InputError("node is locked") }
+        let folder = try await run { try session.renameFolder(id: id, name: name) }
+        await refresh()
+        return folder
+    }
+
+    func reorderFolders(ids: [String]) async throws {
+        guard let session else { throw InputError("node is locked") }
+        _ = try await run { try session.reorderFolders(ids: ids) }
+        await refresh()
+    }
+
+    func folderDeleteAssignmentCount(id: String) async throws -> UInt64 {
+        guard let session else { throw InputError("node is locked") }
+        return try await run { try session.folderDeleteAssignmentCount(id: id) }
+    }
+
+    func deleteFolder(id: String) async throws -> UInt64 {
+        guard let session else { throw InputError("node is locked") }
+        let count = try await run { try session.deleteFolder(id: id, confirm: true) }
+        await refresh()
+        return count
+    }
+
+    func conversationFolder(target: FolderTarget) async throws -> KommsCore.Folder? {
+        guard let session else { throw InputError("node is locked") }
+        return try await run { try session.conversationFolder(target: target) }
+    }
+
+    func setFolder(_ id: String?, target: FolderTarget) async throws -> KommsCore.Folder? {
+        guard let session else { throw InputError("node is locked") }
+        let final = try await run {
+            if let id { _ = try session.moveToFolder(id: id, target: target) }
+            else { _ = try session.unfileConversation(target: target) }
+            return try session.conversationFolder(target: target)
+        }
+        await refresh()
+        return final
+    }
+
+    func cleanupStaleFolder(id: String, target: FolderTarget) async throws {
+        guard let session else { throw InputError("node is locked") }
+        _ = try await run { try session.cleanupStaleFolder(id: id, target: target) }
+        await refresh()
+    }
+
     func createLabel(name: String, color: String) async throws -> KommsCore.Label {
         guard let session else { throw InputError("node is locked") }
         let label = try await run { try session.createLabel(name: name, color: color) }
@@ -791,9 +892,12 @@ private struct AppRefreshSnapshot: Sendable {
     let scheduled: [ScheduledMessage]
     let attachments: [Attachment]
     let notes: [NoteMessage]
+    let folders: [KommsCore.Folder]
+    let staleFolders: [StaleFolder]
+    let folderWasMissing: Bool
     let labels: [KommsCore.Label]
     let stale: [StaleLabel]
-    let filter: LabelFilterResult
+    let filter: FolderConversationResult
     let memberships: [String: [KommsCore.Label]]
 }
 

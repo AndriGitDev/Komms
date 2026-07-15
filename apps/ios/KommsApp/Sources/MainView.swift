@@ -12,6 +12,7 @@ struct MainView: View {
     @State private var showBackup = false
     @State private var showSettings = false
     @State private var showCreateGroup = false
+    @State private var showFolders = false
     @State private var showLabels = false
     @State private var navigation = NavigationPath()
 
@@ -30,6 +31,23 @@ struct MainView: View {
 
                 if let status = model.status {
                     StatusSection(status: status)
+                }
+
+                Section("Private conversation folder") {
+                    Picker("Folder", selection: Binding(
+                        get: { model.folderSelection },
+                        set: { model.selectFolder($0) })) {
+                        Text("All").tag(FolderSelection(kind: .all, id: nil))
+                        Text("Unfiled").tag(FolderSelection(kind: .unfiled, id: nil))
+                        ForEach(model.folders, id: \.id) { folder in
+                            Text(verbatim: folder.name)
+                                .tag(FolderSelection(kind: .folder, id: folder.id))
+                                .accessibilityLabel(Text(verbatim: folderSummary(folder)))
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    Text("Folder selection is applied first; the label filter below is then applied independently.")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
 
                 Section("Filter conversations by labels") {
@@ -132,6 +150,7 @@ struct MainView: View {
                         Button("My pairing QR") { showMyQr = true }
                         Button("Backup…") { showBackup = true }
                         Button("Network settings") { showSettings = true }
+                        Button("Manage folders") { showFolders = true }
                         Button("Manage labels") { showLabels = true }
                         Button("Lock", role: .destructive) { model.lock() }
                     } label: {
@@ -143,6 +162,7 @@ struct MainView: View {
             .sheet(isPresented: $showAdd) { AddContactView() }
             .sheet(isPresented: $showBackup) { BackupView() }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .sheet(isPresented: $showFolders) { FolderManagerView() }
             .sheet(isPresented: $showLabels) { LabelManagerView() }
             .sheet(isPresented: $showCreateGroup) {
                 CreateGroupView { group in

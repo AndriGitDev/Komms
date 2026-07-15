@@ -22,6 +22,8 @@ import uniffi.kult_ffi.ContentKind
 import uniffi.kult_ffi.DeliveryState
 import uniffi.kult_ffi.Direction
 import uniffi.kult_ffi.Event
+import uniffi.kult_ffi.FolderTarget
+import uniffi.kult_ffi.FolderTargetKind
 import uniffi.kult_ffi.Message
 import uniffi.kult_ffi.LabelTarget
 import uniffi.kult_ffi.LabelTargetKind
@@ -151,6 +153,10 @@ class ChatActivity : AppCompatActivity() {
                     .putExtra("name", contactName),
             )
             R.id.menu_hints -> editHints()
+            R.id.menu_folder -> showFolderAssignment(
+                FolderTarget(FolderTargetKind.PEER, peer),
+                contactName,
+            )
             R.id.menu_labels -> showLabelAssignments(
                 LabelTarget(LabelTargetKind.PEER, peer),
                 contactName,

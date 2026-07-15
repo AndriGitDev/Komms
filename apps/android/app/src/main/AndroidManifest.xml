@@ -40,6 +40,7 @@
         <activity android:name=".ScanActivity" android:exported="false" />
         <activity android:name=".SettingsActivity" android:exported="false" />
         <activity android:name=".LabelManagerActivity" android:exported="false" />
+        <activity android:name=".FolderManagerActivity" android:exported="false" />
 
         <service
             android:name=".NodeService"

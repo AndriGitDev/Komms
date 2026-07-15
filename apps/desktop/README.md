@@ -48,6 +48,11 @@ security indicators are the node's own, verbatim.
   the exact roster and authenticated capabilities; when semantic Mention is not
   safe, an explicit confirmation can send the exact text without semantics or a
   notification.
+- **Manage private local conversation folders** for pairwise contacts, groups,
+  and note-to-self. All and Unfiled navigation, exact duplicate-capable Unicode
+  names, durable keyboard reorder, explicit single-folder moves, deletion review,
+  stale cleanup, and folder-first composition with label filters remain sealed
+  local presentation and create no delivery or transport work.
 - **Manage private contact and conversation labels** for pairwise contacts,
   groups, and note-to-self. The accessible manager supports exact Unicode names,
   duplicate-name disambiguation by translated color name plus stable order,

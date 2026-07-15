@@ -11,10 +11,11 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::session::{
-    NetworkSettings, Session, UiAttachment, UiAudioMedia, UiBundle, UiContact, UiGroup,
+    NetworkSettings, Session, UiAttachment, UiAudioMedia, UiBundle, UiContact, UiFolder,
+    UiFolderConversation, UiFolderConversationResult, UiFolderSelection, UiFolderTarget, UiGroup,
     UiGroupMessage, UiHint, UiImageEditRecipe, UiImageReview, UiLabel, UiLabelConversation,
     UiLabelFilterResult, UiLabelTarget, UiMentionCapability, UiMentionSpan, UiMessage,
-    UiNoteMessage, UiSafetyNumber, UiScheduledMessage, UiStaleLabel, UiStatus,
+    UiNoteMessage, UiSafetyNumber, UiScheduledMessage, UiStaleFolder, UiStaleLabel, UiStatus,
 };
 
 /// The one piece of managed state: the running session, if unlocked.
@@ -351,6 +352,67 @@ forward!(
 forward!(
     /// Stable reserved identity for the local note-to-self conversation.
     note_to_self_id() -> String, |s| Ok(s.note_to_self_id())
+);
+forward!(
+    /// Create one private local folder.
+    create_folder(name: String) -> UiFolder, |s| s.create_folder(name)
+);
+forward!(
+    /// List private folders in deterministic manual order.
+    folders() -> Vec<UiFolder>, |s| s.folders()
+);
+forward!(
+    /// Get one private folder by exact id.
+    folder(folder: String) -> UiFolder, |s| s.folder(folder)
+);
+forward!(
+    /// Rename one folder without changing identity or membership.
+    rename_folder(folder: String, name: String) -> UiFolder, |s| s.rename_folder(folder, name)
+);
+forward!(
+    /// Atomically reorder the complete active folder id set.
+    reorder_folders(folders: Vec<String>) -> Vec<UiFolder>, |s| s.reorder_folders(folders)
+);
+forward!(
+    /// Preview assignment count before destructive folder deletion.
+    folder_delete_assignment_count(folder: String) -> u64,
+    |s| s.folder_delete_assignment_count(folder)
+);
+forward!(
+    /// Atomically delete a folder and cascade assignments to Unfiled.
+    delete_folder(folder: String, confirm: bool) -> u64, |s| s.delete_folder(folder, confirm)
+);
+forward!(
+    /// Idempotently move one exact typed conversation into a folder.
+    move_to_folder(folder: String, target: UiFolderTarget) -> bool,
+    |s| s.move_to_folder(folder, target)
+);
+forward!(
+    /// Idempotently move one exact typed conversation to Unfiled.
+    unfile_conversation(target: UiFolderTarget) -> bool, |s| s.unfile_conversation(target)
+);
+forward!(
+    /// Active typed conversations for one folder.
+    folder_membership(folder: String) -> Vec<UiFolderConversation>, |s| s.folder_membership(folder)
+);
+forward!(
+    /// Active folder for one exact typed conversation.
+    conversation_folder(target: UiFolderTarget) -> Option<UiFolder>,
+    |s| s.conversation_folder(target)
+);
+forward!(
+    /// Folder-first navigation composed with label filtering.
+    folder_conversations(selection: UiFolderSelection, labels: Vec<String>, mode: String) -> UiFolderConversationResult,
+    |s| s.folder_conversations(selection, labels, mode)
+);
+forward!(
+    /// Render-safe stale local folder assignments.
+    stale_folders() -> Vec<UiStaleFolder>, |s| s.stale_folders()
+);
+forward!(
+    /// Remove one exact folder assignment only while it remains stale.
+    cleanup_stale_folder(folder: String, target: UiFolderTarget) -> bool,
+    |s| s.cleanup_stale_folder(folder, target)
 );
 forward!(
     /// Create one private local label.

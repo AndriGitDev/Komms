@@ -386,6 +386,17 @@ included in `KKR4`. Note-to-self text is shipped through every shell under one
 reserved identity; the individual organization/theme/icon experiences remain
 separate work.
 
+B10 private local conversation folders are shipped end to end across the
+unchanged F5 record contract, `kult-node`, RPC/CLI, UniFFI, desktop, Android,
+and iOS. Cryptorandom stable IDs remain separate from exact duplicate-capable
+UTF-8 names and durable manual order. Pairwise, group, and note-to-self targets
+have at most one folder assignment; All and Unfiled are virtual views. Atomic
+create, rename, complete-set reorder, move/unfile, delete cascade, stale cleanup,
+and folder-first composition with independent B18 label filters create zero
+network or transport work. Limits are 128 folders, 8,192 assignments, and 256
+UTF-8 bytes per name. `KKR4` preserves exact identity, order, membership, and
+stale behavior; there is no remote or linked-device folder synchronization.
+
 B18 private labels are shipped end to end across the unchanged F5 record
 contract, `kult-node`, RPC/CLI, UniFFI, desktop, Android, and iOS. Labels target
 stable pairwise, group, and note-to-self conversation IDs; message labels remain

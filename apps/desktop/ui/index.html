@@ -89,6 +89,18 @@
       <div id="conversation-lists">
         <section class="conversation-section">
           <div class="contacts-head">
+            <span>Folders</span>
+            <button id="btn-folder-manager" class="ghost" type="button">Manage</button>
+          </div>
+          <nav id="folder-navigation" class="folder-navigation" aria-label="Conversation folders">
+            <button type="button" class="ghost active" data-folder-kind="all">All conversations</button>
+            <button type="button" class="ghost" data-folder-kind="unfiled">Unfiled</button>
+            <div id="folder-navigation-items"></div>
+          </nav>
+          <p id="folder-navigation-status" class="sr-status" role="status" aria-live="polite"></p>
+        </section>
+        <section class="conversation-section">
+          <div class="contacts-head">
             <span>Labels</span>
             <button id="btn-label-manager" class="ghost" type="button">Manage</button>
           </div>
@@ -150,6 +162,7 @@
             <span id="chat-label-badges" class="label-badges"></span>
           </div>
           <div>
+            <button id="btn-conversation-folder" class="ghost">Move</button>
             <button id="btn-conversation-labels" class="ghost">Labels</button>
             <button id="btn-verify" class="ghost">Verify</button>
             <button id="btn-hints" class="ghost">Delivery</button>
@@ -454,6 +467,40 @@
       <div data-f="stale"></div>
     </section>
     <p class="sr-status" data-f="result" role="status" aria-live="polite"></p>
+  </template>
+
+  <template id="tpl-folder-manager">
+    <p class="modal-note">Folders stay sealed on this device. Duplicate exact names remain distinct; order is changed atomically with the keyboard controls.</p>
+    <form data-f="folder-form" autocomplete="off">
+      <input type="hidden" data-f="folder-id" />
+      <label>Exact folder name
+        <input type="text" data-f="folder-name" maxlength="256" dir="auto" aria-describedby="folder-name-help" />
+      </label>
+      <p id="folder-name-help" class="hint">Maximum 256 UTF-8 bytes. Fixed Pattern White Space-only names are rejected.</p>
+      <p class="error" data-f="error" role="alert" hidden></p>
+      <div class="row end">
+        <button type="button" class="ghost" data-act="cancel-edit" hidden>Cancel edit</button>
+        <button type="submit" class="primary" data-act="save-folder">Create folder</button>
+      </div>
+    </form>
+    <div class="folder-manager-list" data-f="folders" aria-label="Private folders"></div>
+    <section data-f="stale-section" hidden>
+      <h3>Unavailable assignments</h3>
+      <p class="modal-note">Cleanup removes only the selected stale local assignment.</p>
+      <div data-f="stale"></div>
+    </section>
+    <p class="sr-status" data-f="result" role="status" aria-live="polite"></p>
+  </template>
+
+  <template id="tpl-conversation-folder">
+    <p class="modal-note" data-f="target-summary"></p>
+    <fieldset class="folder-assignment-list">
+      <legend>Move to</legend>
+      <div data-f="folders"></div>
+    </fieldset>
+    <p class="error" data-f="error" role="alert" hidden></p>
+    <p class="sr-status" data-f="result" role="status" aria-live="polite"></p>
+    <div class="row end"><button type="button" class="primary" data-act="done">Done</button></div>
   </template>
 
   <template id="tpl-conversation-labels">

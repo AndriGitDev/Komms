@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use komms_desktop::session::{
-    hex_decode, NetworkSettings, Session, UiEvent, UiHint, UiImageCrop, UiImageEditRecipe,
-    UiImageRegion, UiLabelTarget, UiMentionSpan,
+    hex_decode, NetworkSettings, Session, UiEvent, UiFolderSelection, UiFolderTarget, UiHint,
+    UiImageCrop, UiImageEditRecipe, UiImageRegion, UiLabelTarget, UiMentionSpan,
 };
 use kult_ffi::{
     edit_image, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, KdfChoice,
@@ -1153,6 +1153,138 @@ fn desktop_private_label_manager_assignment_filters_and_restart() {
     assert_eq!(restored[0].order, 0);
     assert_eq!(alice.labels_for_conversation(note).unwrap(), restored);
     assert!(alice.stale_labels().unwrap().is_empty());
+    alice.stop();
+    bob.stop();
+}
+
+#[test]
+fn desktop_private_folder_manager_navigation_composition_and_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let events = Events::default();
+    let bob_events = Events::default();
+    let alice = open(dir.path(), "alice-folders", &events);
+    let bob = open(dir.path(), "bob-folders", &bob_events);
+    let bob_peer = alice
+        .add_contact(
+            "Same visible target".to_owned(),
+            &bob.my_bundle().unwrap().hex,
+            &multiaddr_hint(listen_addr(&bob)),
+        )
+        .unwrap();
+    let group = alice
+        .create_group("Same visible target".to_owned(), vec![bob_peer.clone()])
+        .unwrap();
+    let peer = UiFolderTarget {
+        kind: "peer".to_owned(),
+        id: Some(bob_peer.clone()),
+    };
+    let group_target = UiFolderTarget {
+        kind: "group".to_owned(),
+        id: Some(group.clone()),
+    };
+    let note = UiFolderTarget {
+        kind: "note_to_self".to_owned(),
+        id: None,
+    };
+    let queued_before = alice.status().unwrap().queued;
+
+    let first = alice
+        .create_folder("\u{2067}e\u{301} 🧭\u{2069}".to_owned())
+        .unwrap();
+    let second = alice
+        .create_folder("\u{2067}e\u{301} 🧭\u{2069}".to_owned())
+        .unwrap();
+    assert_ne!(first.id, second.id);
+    assert_eq!((first.order, second.order), (0, 1));
+    assert_eq!(
+        alice
+            .reorder_folders(vec![second.id.clone(), first.id.clone()])
+            .unwrap()
+            .iter()
+            .map(|folder| folder.id.clone())
+            .collect::<Vec<_>>(),
+        vec![second.id.clone(), first.id.clone()]
+    );
+    assert!(alice
+        .move_to_folder(first.id.clone(), peer.clone())
+        .unwrap());
+    assert!(alice
+        .move_to_folder(first.id.clone(), group_target.clone())
+        .unwrap());
+    assert!(alice
+        .move_to_folder(second.id.clone(), note.clone())
+        .unwrap());
+    assert!(!alice
+        .move_to_folder(second.id.clone(), note.clone())
+        .unwrap());
+
+    let label = alice
+        .create_label("folder composition".to_owned(), "teal".to_owned())
+        .unwrap();
+    alice
+        .assign_label(
+            label.id.clone(),
+            UiLabelTarget {
+                kind: "peer".to_owned(),
+                id: Some(bob_peer),
+            },
+        )
+        .unwrap();
+    alice
+        .assign_label(
+            label.id.clone(),
+            UiLabelTarget {
+                kind: "group".to_owned(),
+                id: Some(group),
+            },
+        )
+        .unwrap();
+    let composed = alice
+        .folder_conversations(
+            UiFolderSelection {
+                kind: "folder".to_owned(),
+                id: Some(first.id.clone()),
+            },
+            vec![label.id],
+            "any".to_owned(),
+        )
+        .unwrap();
+    assert_eq!(composed.conversations.len(), 2);
+    assert!(alice.unfile_conversation(peer.clone()).unwrap());
+    assert!(!alice.unfile_conversation(peer).unwrap());
+    assert_eq!(
+        alice
+            .folder_delete_assignment_count(first.id.clone())
+            .unwrap(),
+        1
+    );
+    assert!(alice.delete_folder(first.id.clone(), false).is_err());
+    assert_eq!(alice.status().unwrap().queued, queued_before);
+    events.wait("local folder change", |event| {
+        matches!(event, UiEvent::FoldersChanged)
+    });
+
+    alice.stop();
+    let alice = open(dir.path(), "alice-folders", &Events::default());
+    assert_eq!(
+        alice
+            .folders()
+            .unwrap()
+            .iter()
+            .map(|folder| folder.id.clone())
+            .collect::<Vec<_>>(),
+        vec![second.id.clone(), first.id.clone()]
+    );
+    assert_eq!(
+        alice.conversation_folder(note).unwrap().unwrap().id,
+        second.id
+    );
+    assert_eq!(alice.folder_membership(first.id.clone()).unwrap().len(), 1);
+    assert_eq!(alice.delete_folder(first.id.clone(), true).unwrap(), 1);
+    let replacement = alice.create_folder(first.name).unwrap();
+    assert_ne!(replacement.id, first.id);
+    assert!(alice.folder_membership(replacement.id).unwrap().is_empty());
+    assert!(alice.stale_folders().unwrap().is_empty());
     alice.stop();
     bob.stop();
 }

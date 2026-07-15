@@ -15,6 +15,8 @@ import androidx.recyclerview.widget.RecyclerView
 import java.text.DateFormat
 import java.util.Date
 import uniffi.kult_ffi.Event
+import uniffi.kult_ffi.FolderTarget
+import uniffi.kult_ffi.FolderTargetKind
 import uniffi.kult_ffi.NoteMessage
 import uniffi.kult_ffi.LabelTarget
 import uniffi.kult_ffi.LabelTargetKind
@@ -80,6 +82,13 @@ class NoteToSelfActivity : AppCompatActivity() {
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
+        R.id.menu_folder -> {
+            showFolderAssignment(
+                FolderTarget(FolderTargetKind.NOTE_TO_SELF, null),
+                getString(R.string.note_to_self_title),
+            )
+            true
+        }
         R.id.menu_labels -> {
             showLabelAssignments(
                 LabelTarget(LabelTargetKind.NOTE_TO_SELF, null),

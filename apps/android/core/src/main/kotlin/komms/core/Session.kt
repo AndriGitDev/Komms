@@ -22,6 +22,11 @@ import uniffi.kult_ffi.Contact
 import uniffi.kult_ffi.Event
 import uniffi.kult_ffi.EventListener
 import uniffi.kult_ffi.FfiException
+import uniffi.kult_ffi.Folder
+import uniffi.kult_ffi.FolderConversation
+import uniffi.kult_ffi.FolderConversationResult
+import uniffi.kult_ffi.FolderSelection
+import uniffi.kult_ffi.FolderTarget
 import uniffi.kult_ffi.Group
 import uniffi.kult_ffi.GroupMentionCapability
 import uniffi.kult_ffi.GroupMessage
@@ -33,6 +38,7 @@ import uniffi.kult_ffi.LabelFilterResult
 import uniffi.kult_ffi.LabelMatchMode
 import uniffi.kult_ffi.LabelTarget
 import uniffi.kult_ffi.StaleLabel
+import uniffi.kult_ffi.StaleFolder
 import uniffi.kult_ffi.ImageEditRecipe
 import uniffi.kult_ffi.ImageInfo
 import uniffi.kult_ffi.Message
@@ -55,6 +61,7 @@ import uniffi.kult_ffi.probeEditedImage
 fun FfiException.reasonText(): String = when (this) {
     is FfiException.Startup -> "startup: $reason"
     is FfiException.Node -> reason
+    is FfiException.Folder -> reason
     is FfiException.Label -> reason
     is FfiException.Stopped -> "node is stopped"
 }
@@ -67,6 +74,28 @@ const val MAX_LABEL_NAME_BYTES = 256
 val LABEL_COLORS: List<String> = listOf(
     "neutral", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink",
 )
+
+/** B10 private local folder limits shared by every wrapper. */
+const val MAX_FOLDERS = 128
+const val MAX_FOLDER_ASSIGNMENTS = 8_192
+const val MAX_FOLDER_NAME_BYTES = 256
+
+private fun validateFolderWrite(name: String) {
+    val fixedWhitespace = setOf(
+        0x0009, 0x000a, 0x000b, 0x000c, 0x000d, 0x0020,
+        0x0085, 0x200e, 0x200f, 0x2028, 0x2029,
+    )
+    var offset = 0
+    var fixedOnly = name.isNotEmpty()
+    while (offset < name.length) {
+        val scalar = name.codePointAt(offset)
+        if (scalar !in fixedWhitespace) fixedOnly = false
+        offset += Character.charCount(scalar)
+    }
+    require(name.isNotEmpty() && name.toByteArray(Charsets.UTF_8).size <= MAX_FOLDER_NAME_BYTES && !fixedOnly) {
+        "invalid folder name"
+    }
+}
 
 private fun validateLabelWrite(name: String, color: String) {
     val fixedWhitespace = setOf(
@@ -313,6 +342,65 @@ class Session private constructor(private val node: KultNode) {
 
     /** Append one sealed local-only note; no transport work is created. */
     fun sendNoteToSelf(body: String): String = node.sendNoteToSelf(body)
+
+    /** Create a private folder with exact UTF-8. */
+    fun createFolder(name: String): Folder {
+        validateFolderWrite(name)
+        return node.createFolder(name)
+    }
+
+    /** All folders in deterministic persisted manual order. */
+    fun folders(): List<Folder> = node.folders()
+
+    /** One folder by its explicit stable id. */
+    fun folder(id: String): Folder = node.folder(id)
+
+    /** Rename while retaining id, membership, and order. */
+    fun renameFolder(id: String, name: String): Folder {
+        validateFolderWrite(name)
+        return node.renameFolder(id, name)
+    }
+
+    /** Atomically reorder the complete active folder id set. */
+    fun reorderFolders(ids: List<String>): List<Folder> {
+        require(ids.size <= MAX_FOLDERS) { "invalid folder order" }
+        return node.reorderFolders(ids)
+    }
+
+    /** Assignment count shown before destructive deletion review. */
+    fun folderDeleteAssignmentCount(id: String): ULong = node.folderDeleteAssignmentCount(id)
+
+    /** Atomic delete cascade to virtual Unfiled; [confirm] must be true. */
+    fun deleteFolder(id: String, confirm: Boolean): ULong = node.deleteFolder(id, confirm)
+
+    /** Idempotently move one exact typed target into one exact folder. */
+    fun moveToFolder(id: String, target: FolderTarget): Boolean = node.moveToFolder(id, target)
+
+    /** Idempotently move one exact typed target to virtual Unfiled. */
+    fun unfileConversation(target: FolderTarget): Boolean = node.unfileConversation(target)
+
+    /** Active typed targets in one folder. */
+    fun folderMembership(id: String): List<FolderConversation> = node.folderMembership(id)
+
+    /** Active folder for one exact available typed target. */
+    fun conversationFolder(target: FolderTarget): Folder? = node.conversationFolder(target)
+
+    /** Folder-first navigation composed deterministically with label matching. */
+    fun folderConversations(
+        selection: FolderSelection,
+        labels: List<String>,
+        mode: LabelMatchMode,
+    ): FolderConversationResult {
+        require(labels.size <= MAX_LABELS) { "selected label count exceeds $MAX_LABELS" }
+        return node.folderConversations(selection, labels, mode)
+    }
+
+    /** Render-safe stale local folder-assignment diagnostics. */
+    fun staleFolders(): List<StaleFolder> = node.staleFolders()
+
+    /** Remove one exact assignment only while it remains stale. */
+    fun cleanupStaleFolder(id: String, target: FolderTarget): Boolean =
+        node.cleanupStaleFolder(id, target)
 
     /** Create a private label with exact UTF-8 and canonical color. */
     fun createLabel(name: String, color: String): Label {

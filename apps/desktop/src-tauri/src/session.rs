@@ -27,13 +27,16 @@ use kult_ffi::{
     canonicalize_recorded_audio, default_config, edit_image, probe_edited_image,
     probe_recorded_audio, Attachment, AttachmentConversation, AttachmentDirection, AttachmentState,
     AudioInfo, CarrierCapability, Config, ContentKind, DeliveryState, Direction, Event,
-    EventListener, Hint, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind,
-    ImageInfo, KdfChoice, KultNode, Label as FfiLabel, LabelConversation as FfiLabelConversation,
-    LabelFilterResult as FfiLabelFilterResult, LabelMatchMode as FfiLabelMatchMode,
-    LabelTarget as FfiLabelTarget, LabelTargetKind as FfiLabelTargetKind,
-    MentionCapabilityIssueReason, MentionSpan, NatVerdict, ScheduledConversation,
-    StaleLabel as FfiStaleLabel, AUDIO_MAX_BYTES, AUDIO_MEDIA_TYPE, IMAGE_MAX_INPUT_BYTES,
-    IMAGE_MEDIA_TYPE,
+    EventListener, Folder as FfiFolder, FolderConversation as FfiFolderConversation,
+    FolderConversationResult as FfiFolderConversationResult, FolderSelection as FfiFolderSelection,
+    FolderSelectionKind as FfiFolderSelectionKind, FolderTarget as FfiFolderTarget,
+    FolderTargetKind as FfiFolderTargetKind, Hint, ImageCrop, ImageEditRecipe, ImageEditRegion,
+    ImageEditRegionKind, ImageInfo, KdfChoice, KultNode, Label as FfiLabel,
+    LabelConversation as FfiLabelConversation, LabelFilterResult as FfiLabelFilterResult,
+    LabelMatchMode as FfiLabelMatchMode, LabelTarget as FfiLabelTarget,
+    LabelTargetKind as FfiLabelTargetKind, MentionCapabilityIssueReason, MentionSpan, NatVerdict,
+    ScheduledConversation, StaleFolder as FfiStaleFolder, StaleLabel as FfiStaleLabel,
+    AUDIO_MAX_BYTES, AUDIO_MEDIA_TYPE, IMAGE_MAX_INPUT_BYTES, IMAGE_MEDIA_TYPE,
 };
 
 use crate::qr;
@@ -376,6 +379,172 @@ pub struct UiContact {
     pub name: String,
     /// Whether safety numbers were verified out-of-band.
     pub verified: bool,
+}
+
+/// Exact typed conversation target for local folder operations.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiFolderTarget {
+    /// `peer`, `group`, or `note_to_self`.
+    pub kind: String,
+    /// Stable peer/group id, absent for note-to-self.
+    pub id: Option<String>,
+}
+
+impl UiFolderTarget {
+    fn to_ffi(&self) -> Result<FfiFolderTarget, String> {
+        let kind = match self.kind.as_str() {
+            "peer" => FfiFolderTargetKind::Peer,
+            "group" => FfiFolderTargetKind::Group,
+            "note_to_self" => FfiFolderTargetKind::NoteToSelf,
+            _ => return Err("folder target kind must be peer, group, or note_to_self".to_owned()),
+        };
+        Ok(FfiFolderTarget {
+            kind,
+            id: self.id.clone(),
+        })
+    }
+
+    fn from_ffi(target: FfiFolderTarget) -> Self {
+        Self {
+            kind: match target.kind {
+                FfiFolderTargetKind::Peer => "peer",
+                FfiFolderTargetKind::Group => "group",
+                FfiFolderTargetKind::NoteToSelf => "note_to_self",
+            }
+            .to_owned(),
+            id: target.id,
+        }
+    }
+}
+
+/// Render-safe private folder definition.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UiFolder {
+    /// Stable random 32-hex-character technical id.
+    pub id: String,
+    /// Exact UTF-8 folder text.
+    pub name: String,
+    /// Persisted manual order.
+    pub order: u32,
+}
+
+impl UiFolder {
+    fn from_ffi(folder: FfiFolder) -> Self {
+        Self {
+            id: folder.id,
+            name: folder.name,
+            order: folder.order,
+        }
+    }
+}
+
+/// One currently available conversation in folder output.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UiFolderConversation {
+    /// Exact typed target.
+    pub target: UiFolderTarget,
+    /// Current render-only local name, absent for note-to-self.
+    pub display_name: Option<String>,
+}
+
+impl UiFolderConversation {
+    fn from_ffi(value: FfiFolderConversation) -> Self {
+        Self {
+            target: UiFolderTarget::from_ffi(value.target),
+            display_name: value.display_name,
+        }
+    }
+}
+
+/// Explicit virtual or stable-folder navigation selection.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiFolderSelection {
+    /// `all`, `unfiled`, or `folder`.
+    pub kind: String,
+    /// Stable folder id only for `folder`.
+    pub id: Option<String>,
+}
+
+impl UiFolderSelection {
+    fn to_ffi(&self) -> Result<FfiFolderSelection, String> {
+        let kind = match self.kind.as_str() {
+            "all" => FfiFolderSelectionKind::All,
+            "unfiled" => FfiFolderSelectionKind::Unfiled,
+            "folder" => FfiFolderSelectionKind::Folder,
+            _ => return Err("folder selection must be all, unfiled, or folder".to_owned()),
+        };
+        Ok(FfiFolderSelection {
+            kind,
+            id: self.id.clone(),
+        })
+    }
+
+    fn from_ffi(value: FfiFolderSelection) -> Self {
+        Self {
+            kind: match value.kind {
+                FfiFolderSelectionKind::All => "all",
+                FfiFolderSelectionKind::Unfiled => "unfiled",
+                FfiFolderSelectionKind::Folder => "folder",
+            }
+            .to_owned(),
+            id: value.id,
+        }
+    }
+}
+
+/// Render-safe stale folder-assignment cleanup row.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UiStaleFolder {
+    /// Stable technical folder id.
+    pub folder: String,
+    /// Exact typed target.
+    pub target: UiFolderTarget,
+    /// Stable diagnostic reason.
+    pub reason: &'static str,
+}
+
+impl UiStaleFolder {
+    fn from_ffi(value: FfiStaleFolder) -> Self {
+        Self {
+            folder: value.folder,
+            target: UiFolderTarget::from_ffi(value.target),
+            reason: match value.reason {
+                kult_ffi::StaleFolderReason::MissingFolder => "missing_folder",
+                kult_ffi::StaleFolderReason::UnavailableConversation => "unavailable_conversation",
+                kult_ffi::StaleFolderReason::MissingFolderAndConversation => {
+                    "missing_folder_and_conversation"
+                }
+            },
+        }
+    }
+}
+
+/// Deterministic folder-first navigation composed with label filtering.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UiFolderConversationResult {
+    /// Exact applied folder selection.
+    pub selection: UiFolderSelection,
+    /// Available selected label ids.
+    pub selected_labels: Vec<String>,
+    /// Selected label ids whose definitions are unavailable.
+    pub unavailable_labels: Vec<String>,
+    /// Conversations matching both controls.
+    pub conversations: Vec<UiFolderConversation>,
+}
+
+impl UiFolderConversationResult {
+    fn from_ffi(value: FfiFolderConversationResult) -> Self {
+        Self {
+            selection: UiFolderSelection::from_ffi(value.selection),
+            selected_labels: value.selected_labels,
+            unavailable_labels: value.unavailable_labels,
+            conversations: value
+                .conversations
+                .into_iter()
+                .map(UiFolderConversation::from_ffi)
+                .collect(),
+        }
+    }
 }
 
 /// Exact typed conversation target for local label operations.
@@ -922,6 +1091,8 @@ pub enum UiEvent {
         /// Current render-safe transfer state.
         attachment: UiAttachment,
     },
+    /// Private local folder definitions, order, or assignments changed.
+    FoldersChanged,
     /// Private local label definitions or memberships changed.
     LabelsChanged,
 }
@@ -1003,6 +1174,7 @@ impl UiEvent {
             Event::AttachmentUpdated { attachment } => Self::AttachmentUpdated {
                 attachment: UiAttachment::from_ffi(attachment),
             },
+            Event::FoldersChanged => Self::FoldersChanged,
             Event::LabelsChanged => Self::LabelsChanged,
         }
     }
@@ -1830,6 +2002,140 @@ impl Session {
     /// Stable reserved identity for the local note-to-self conversation.
     pub fn note_to_self_id(&self) -> String {
         self.node.note_to_self_id()
+    }
+
+    /// Create one private local folder.
+    pub fn create_folder(&self, name: String) -> Result<UiFolder, String> {
+        self.node
+            .create_folder(name)
+            .map(UiFolder::from_ffi)
+            .map_err(|e| e.to_string())
+    }
+
+    /// List folders in deterministic persisted manual order.
+    pub fn folders(&self) -> Result<Vec<UiFolder>, String> {
+        Ok(self
+            .node
+            .folders()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(UiFolder::from_ffi)
+            .collect())
+    }
+
+    /// Get one folder by exact technical id.
+    pub fn folder(&self, folder: String) -> Result<UiFolder, String> {
+        self.node
+            .folder(folder)
+            .map(UiFolder::from_ffi)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Rename one folder without changing identity, order, or membership.
+    pub fn rename_folder(&self, folder: String, name: String) -> Result<UiFolder, String> {
+        self.node
+            .rename_folder(folder, name)
+            .map(UiFolder::from_ffi)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Atomically reorder the complete active folder id set.
+    pub fn reorder_folders(&self, folders: Vec<String>) -> Result<Vec<UiFolder>, String> {
+        Ok(self
+            .node
+            .reorder_folders(folders)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(UiFolder::from_ffi)
+            .collect())
+    }
+
+    /// Preview assignment count before destructive folder deletion.
+    pub fn folder_delete_assignment_count(&self, folder: String) -> Result<u64, String> {
+        self.node
+            .folder_delete_assignment_count(folder)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Atomically delete a folder and cascade assignments to Unfiled.
+    pub fn delete_folder(&self, folder: String, confirm: bool) -> Result<u64, String> {
+        self.node
+            .delete_folder(folder, confirm)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Idempotently move one exact typed conversation into a folder.
+    pub fn move_to_folder(&self, folder: String, target: UiFolderTarget) -> Result<bool, String> {
+        self.node
+            .move_to_folder(folder, target.to_ffi()?)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Idempotently move one exact typed conversation to virtual Unfiled.
+    pub fn unfile_conversation(&self, target: UiFolderTarget) -> Result<bool, String> {
+        self.node
+            .unfile_conversation(target.to_ffi()?)
+            .map_err(|e| e.to_string())
+    }
+
+    /// List active typed membership for one folder.
+    pub fn folder_membership(&self, folder: String) -> Result<Vec<UiFolderConversation>, String> {
+        Ok(self
+            .node
+            .folder_membership(folder)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(UiFolderConversation::from_ffi)
+            .collect())
+    }
+
+    /// Return one exact typed conversation's active folder.
+    pub fn conversation_folder(&self, target: UiFolderTarget) -> Result<Option<UiFolder>, String> {
+        Ok(self
+            .node
+            .conversation_folder(target.to_ffi()?)
+            .map_err(|e| e.to_string())?
+            .map(UiFolder::from_ffi))
+    }
+
+    /// Classify a folder selection, then independently apply labels.
+    pub fn folder_conversations(
+        &self,
+        selection: UiFolderSelection,
+        labels: Vec<String>,
+        mode: String,
+    ) -> Result<UiFolderConversationResult, String> {
+        let mode = match mode.as_str() {
+            "any" => FfiLabelMatchMode::Any,
+            "all" => FfiLabelMatchMode::All,
+            _ => return Err("label filter mode must be any or all".to_owned()),
+        };
+        self.node
+            .folder_conversations(selection.to_ffi()?, labels, mode)
+            .map(UiFolderConversationResult::from_ffi)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Render-safe stale local folder-assignment diagnostics.
+    pub fn stale_folders(&self) -> Result<Vec<UiStaleFolder>, String> {
+        Ok(self
+            .node
+            .stale_folders()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(UiStaleFolder::from_ffi)
+            .collect())
+    }
+
+    /// Remove one exact folder assignment only while it remains stale.
+    pub fn cleanup_stale_folder(
+        &self,
+        folder: String,
+        target: UiFolderTarget,
+    ) -> Result<bool, String> {
+        self.node
+            .cleanup_stale_folder(folder, target.to_ffi()?)
+            .map_err(|e| e.to_string())
     }
 
     /// Create one private local label.

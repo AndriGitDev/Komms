@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "id_symbols": ["first", "second"],
+  "duplicate_name": "é 🧭 ⁧טיול⁩",
+  "renamed_name": "exact renamed 🧭",
+  "expected_initial_orders": [0, 1],
+  "reordered_symbols": ["second", "first"],
+  "membership_target_kinds": ["peer", "group", "note_to_self"],
+  "first_folder_target_kinds": ["peer", "group"],
+  "second_folder_target_kinds": ["note_to_self"],
+  "folder_then_any_label_target_kinds": ["peer", "group"],
+  "unfiled_after_move_target_kinds": ["peer"],
+  "whitespace_only_name": " ‎ ",
+  "invalid_id": "not-a-folder-name",
+  "expected_delete_assignment_count": 1,
+  "error_codes": {
+    "whitespace_only_name": "invalid_name",
+    "invalid_id": "invalid_id",
+    "unavailable_target": "target_unavailable",
+    "incomplete_reorder": "invalid_order",
+    "duplicate_reorder": "invalid_order",
+    "unconfirmed_delete": "confirmation_required"
+  }
+}

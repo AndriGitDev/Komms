@@ -10,6 +10,7 @@ struct NoteToSelfView: View {
 
     @State private var draft = ""
     @State private var error: String?
+    @State private var showFolder = false
     @State private var showLabels = false
 
     var body: some View {
@@ -62,7 +63,15 @@ struct NoteToSelfView: View {
         .navigationTitle("Note to self")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) { Button("Labels") { showLabels = true } }
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button("Folder") { showFolder = true }
+                Button("Labels") { showLabels = true }
+            }
+        }
+        .sheet(isPresented: $showFolder) {
+            FolderAssignmentView(
+                target: FolderTarget(kind: .noteToSelf, id: nil),
+                targetName: "Note to self")
         }
         .sheet(isPresented: $showLabels) {
             LabelAssignmentView(

@@ -32,6 +32,11 @@ import uniffi.kult_ffi.DeliveryState
 import uniffi.kult_ffi.Direction
 import uniffi.kult_ffi.Event
 import uniffi.kult_ffi.FfiException
+import uniffi.kult_ffi.FolderErrorCode
+import uniffi.kult_ffi.FolderSelection
+import uniffi.kult_ffi.FolderSelectionKind
+import uniffi.kult_ffi.FolderTarget
+import uniffi.kult_ffi.FolderTargetKind
 import uniffi.kult_ffi.KdfChoice
 import uniffi.kult_ffi.ImageCrop
 import uniffi.kult_ffi.ImageEditRecipe
@@ -88,6 +93,10 @@ private fun listenAddr(session: Session): String {
 private fun multiaddrHint(addr: String) = listOf(HintSpec("multiaddr", addr))
 
 class SessionE2eTest {
+    private val folderFixture by lazy {
+        val root = File(checkNotNull(System.getProperty("komms.repo.root")))
+        Json.parseToJsonElement(File(root, "fixtures/b10-folder-parity.json").readText()).jsonObject
+    }
     private val labelFixture by lazy {
         val root = File(checkNotNull(System.getProperty("komms.repo.root")))
         Json.parseToJsonElement(File(root, "fixtures/b18-label-parity.json").readText()).jsonObject
@@ -812,6 +821,81 @@ class SessionE2eTest {
         assertEquals(assignmentCount, session.deleteLabel(first.id, true))
         assertEquals(listOf(second.id), session.labelsForConversation(noteTarget).map { it.id })
         assertTrue(session.staleLabels().isEmpty())
+        session.stop()
+    }
+
+    @Test
+    fun `private folders are exact typed composed local and restart safe`() {
+        val fixture = folderFixture
+        val dir = tempDir()
+        val events = Events()
+        var session = open(dir, "folders", events)
+        val queuedBefore = session.status().queued
+        val peer = session.addContact("\u2067duplicate\u2069", session.myBundleHex(), emptyList())
+        val group = session.createGroup("e\u0301 group", emptyList())
+        val first = session.createFolder(fixture.getValue("duplicate_name").jsonPrimitive.content)
+        val second = session.createFolder(fixture.getValue("duplicate_name").jsonPrimitive.content)
+        assertNotEquals(first.id, second.id)
+        assertEquals(
+            fixture.getValue("expected_initial_orders").jsonArray.map { it.jsonPrimitive.content.toUInt() },
+            listOf(first.order, second.order),
+        )
+        events.wait("folders changed") { it as? Event.FoldersChanged }
+        assertEquals(
+            listOf(second.id, first.id),
+            session.reorderFolders(listOf(second.id, first.id)).map { it.id },
+        )
+
+        val peerTarget = FolderTarget(FolderTargetKind.PEER, peer)
+        val groupTarget = FolderTarget(FolderTargetKind.GROUP, group)
+        val noteTarget = FolderTarget(FolderTargetKind.NOTE_TO_SELF, null)
+        assertTrue(session.moveToFolder(first.id, peerTarget))
+        assertTrue(session.moveToFolder(first.id, groupTarget))
+        assertTrue(session.moveToFolder(second.id, noteTarget))
+        assertFalse(session.moveToFolder(second.id, noteTarget))
+        assertEquals(
+            fixture.getValue("first_folder_target_kinds").jsonArray.map { it.jsonPrimitive.content },
+            session.folderMembership(first.id).map { it.target.kind.name.lowercase() },
+        )
+
+        val label = session.createLabel("folder composition", "teal")
+        assertTrue(session.assignLabel(label.id, LabelTarget(LabelTargetKind.PEER, peer)))
+        assertTrue(session.assignLabel(label.id, LabelTarget(LabelTargetKind.GROUP, group)))
+        val composed = session.folderConversations(
+            FolderSelection(FolderSelectionKind.FOLDER, first.id),
+            listOf(label.id),
+            LabelMatchMode.ANY,
+        )
+        assertEquals(
+            fixture.getValue("folder_then_any_label_target_kinds").jsonArray.map { it.jsonPrimitive.content },
+            composed.conversations.map { it.target.kind.name.lowercase() },
+        )
+        assertTrue(session.unfileConversation(peerTarget))
+        assertFalse(session.unfileConversation(peerTarget))
+        assertEquals(
+            fixture.getValue("unfiled_after_move_target_kinds").jsonArray.map { it.jsonPrimitive.content },
+            session.folderConversations(
+                FolderSelection(FolderSelectionKind.UNFILED, null), emptyList(), LabelMatchMode.ANY,
+            ).conversations.map { it.target.kind.name.lowercase() },
+        )
+        assertEquals(second.id, session.conversationFolder(noteTarget)?.id)
+        assertFailsWith<FfiException.Folder> { session.deleteFolder(first.id, false) }
+        assertFailsWith<IllegalArgumentException> {
+            session.createFolder(fixture.getValue("whitespace_only_name").jsonPrimitive.content)
+        }
+        val invalid = assertFailsWith<FfiException.Folder> {
+            session.folder(fixture.getValue("invalid_id").jsonPrimitive.content)
+        }
+        assertEquals(FolderErrorCode.INVALID_ID, invalid.code)
+        assertEquals(queuedBefore, session.status().queued)
+        session.stop()
+
+        session = open(dir, "folders", Events())
+        assertEquals(listOf(second.id, first.id), session.folders().map { it.id })
+        assertEquals(1uL, session.folderDeleteAssignmentCount(first.id))
+        assertEquals(1uL, session.deleteFolder(first.id, true))
+        assertTrue(session.folderMembership(session.createFolder(first.name).id).isEmpty())
+        assertTrue(session.staleFolders().isEmpty())
         session.stop()
     }
 }

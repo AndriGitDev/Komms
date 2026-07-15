@@ -53,6 +53,12 @@ own, verbatim.
   highlighted selectable history use the exact visible fallback text. Send
   rechecks roster and capabilities and offers an explicit ordinary-text fallback
   with no mention notification.
+- **Manage private local conversation folders** for pairwise contacts, groups,
+  and note-to-self. TalkBack/switch/keyboard actions cover All and Unfiled
+  navigation, exact duplicate-capable Unicode names, durable non-drag reorder,
+  explicit single-folder moves, deletion review, stale cleanup, and folder-first
+  composition with label filters. The selected folder survives recreation only
+  inside the same Android Keystore AES-GCM ciphertext as label filter state.
 - **Manage private contact and conversation labels** for pairwise contacts,
   groups, and note-to-self using app-local data only. TalkBack/switch/keyboard
   actions expose exact targets, translated color names, non-color membership
@@ -115,6 +121,12 @@ network permission. Label data never appears in notification channels, lock
 screen metadata, recent-task titles, logs, crash/analytics payloads, or
 unprotected state. `KKR4` preserves exact definitions and memberships; message
 labels and linked-device synchronization remain deferred.
+
+Folder acceptance drives the shared B10 fixture through Rust RPC, UniFFI,
+Kotlin, and Swift, including exact Unicode, duplicate names, stable manual order,
+typed peer/group/note targets, single membership, label composition, restart,
+deletion, and structured errors. Folder state requests no additional permission,
+never leaves sealed local storage, and `KKR4` is its only portability path.
 
 This is deliberately its own Gradle build, outside the cargo workspace:
 the Android dependency tree stays out of the core crates' lockfile and

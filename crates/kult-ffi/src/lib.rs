@@ -52,6 +52,35 @@ use runtime::{Msg, RestoreSource, Runtime, RuntimeConfig};
 
 uniffi::setup_scaffolding!();
 
+/// Stable folder failure categories shared by Kotlin and Swift wrappers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum FolderErrorCode {
+    /// Folder id was not exactly 16 bytes of hexadecimal.
+    InvalidId,
+    /// Typed peer/group/note-to-self target was malformed.
+    InvalidTarget,
+    /// Name violated the exact UTF-8 length or fixed whitespace rule.
+    InvalidName,
+    /// Stable folder id has no definition.
+    UnknownFolder,
+    /// Exact typed conversation is unavailable.
+    UnavailableTarget,
+    /// Definition limit is exhausted.
+    DefinitionLimit,
+    /// Aggregate assignment limit is exhausted.
+    AssignmentLimit,
+    /// Cryptorandom id collision retry budget was exhausted.
+    IdCollision,
+    /// Reorder input was not the exact active id set once each.
+    InvalidOrder,
+    /// Requested stale assignment is now active or absent.
+    StaleAssignmentActive,
+    /// Explicit destructive confirmation was absent.
+    ConfirmationRequired,
+    /// Storage or another local implementation failure occurred.
+    StorageFailure,
+}
+
 /// Stable label failure categories shared by Kotlin and Swift wrappers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum LabelErrorCode {
@@ -102,6 +131,13 @@ pub enum FfiError {
         /// The node's error, verbatim.
         reason: String,
     },
+    /// A private-folder operation failed with a stable programmatic category.
+    Folder {
+        /// Stable category shared across Rust, Kotlin, and Swift.
+        code: FolderErrorCode,
+        /// Generic render-safe explanation with no folder text or relationship.
+        reason: String,
+    },
     /// A private-label operation failed with a stable programmatic category.
     Label {
         /// Stable category shared across Rust, Kotlin, and Swift.
@@ -118,6 +154,7 @@ impl std::fmt::Display for FfiError {
         match self {
             Self::Startup { reason } => write!(f, "startup: {reason}"),
             Self::Node { reason } => write!(f, "{reason}"),
+            Self::Folder { reason, .. } => write!(f, "{reason}"),
             Self::Label { reason, .. } => write!(f, "{reason}"),
             Self::Stopped => write!(f, "node is stopped"),
         }
@@ -440,6 +477,101 @@ pub struct Contact {
     pub name: String,
     /// Whether safety numbers were verified out-of-band.
     pub verified: bool,
+}
+
+/// Exact typed target kind for local folder assignment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum FolderTargetKind {
+    /// Pairwise conversation keyed by peer identity.
+    Peer,
+    /// Sender-key group keyed by group id.
+    Group,
+    /// Reserved device-local note-to-self conversation.
+    NoteToSelf,
+}
+
+/// Exact technical target used by folder mutations.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct FolderTarget {
+    /// Target type; display names are never accepted here.
+    pub kind: FolderTargetKind,
+    /// 64-hex-character peer/group id, or absent for note-to-self.
+    pub id: Option<String>,
+}
+
+/// Render-safe available conversation in folder membership/navigation output.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct FolderConversation {
+    /// Exact technical typed target.
+    pub target: FolderTarget,
+    /// Current local petname/group name; absent for note-to-self.
+    pub display_name: Option<String>,
+}
+
+/// Render-safe private folder definition.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct Folder {
+    /// Stable random 32-hex-character id for technical mutation calls.
+    pub id: String,
+    /// Exact user-authored UTF-8 folder name.
+    pub name: String,
+    /// Persisted manual order.
+    pub order: u32,
+}
+
+/// One explicit local folder-navigation selection kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum FolderSelectionKind {
+    /// Every available conversation.
+    All,
+    /// Available conversations with no active assignment.
+    Unfiled,
+    /// One exact stable folder id.
+    Folder,
+}
+
+/// Exact virtual or stable-folder navigation selection.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct FolderSelection {
+    /// Selection kind.
+    pub kind: FolderSelectionKind,
+    /// 32-hex-character folder id only when kind is Folder.
+    pub id: Option<String>,
+}
+
+/// Why a durable folder assignment is stale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum StaleFolderReason {
+    /// Folder definition is unavailable.
+    MissingFolder,
+    /// Exact conversation target is unavailable.
+    UnavailableConversation,
+    /// Both definition and target are unavailable.
+    MissingFolderAndConversation,
+}
+
+/// Render-safe stale folder-assignment diagnostic.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct StaleFolder {
+    /// Stable technical folder id.
+    pub folder: String,
+    /// Exact typed target.
+    pub target: FolderTarget,
+    /// The unavailable side or sides.
+    pub reason: StaleFolderReason,
+}
+
+/// Deterministic folder-first navigation result with label-filter state.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct FolderConversationResult {
+    /// Exact applied folder selection.
+    pub selection: FolderSelection,
+    /// Deduplicated available selected label ids.
+    pub selected_labels: Vec<String>,
+    /// Selected label ids whose definitions are unavailable.
+    pub unavailable_labels: Vec<String>,
+    /// Conversations matching both independent controls.
+    pub conversations: Vec<FolderConversation>,
 }
 
 /// Exact typed target kind for local label membership.
@@ -771,6 +903,8 @@ pub struct Status {
 /// (docs/09-implementation-guide.md §3.5).
 #[derive(Clone, Debug, uniffi::Enum)]
 pub enum Event {
+    /// Private local folders changed; shells re-read local folder state.
+    FoldersChanged,
     /// Private local labels changed; shells re-read local label state.
     LabelsChanged,
     /// A scheduled message was created or edited.
@@ -896,6 +1030,7 @@ impl Event {
     /// update, never silently mislabeled.
     fn from_node(event: kult_node::Event) -> Option<Self> {
         Some(match event {
+            kult_node::Event::FoldersChanged => Self::FoldersChanged,
             kult_node::Event::LabelsChanged => Self::LabelsChanged,
             kult_node::Event::ScheduledMessageUpdated { id } => Self::ScheduledMessageUpdated {
                 id: hex_encode(&id),
@@ -1407,6 +1542,165 @@ impl KultNode {
             .collect())
     }
 
+    /// Create one private local folder with a collision-safe random stable id.
+    pub fn create_folder(&self, name: String) -> Result<Folder, FfiError> {
+        validate_folder_write_ffi(&name)?;
+        self.folder_call(|resp| Msg::FolderCreate { name, resp })
+            .map(Folder::from_node)
+    }
+
+    /// List private folders in deterministic persisted manual order.
+    pub fn folders(&self) -> Result<Vec<Folder>, FfiError> {
+        Ok(self
+            .folder_call(|resp| Msg::Folders { resp })?
+            .into_iter()
+            .map(Folder::from_node)
+            .collect())
+    }
+
+    /// Get one private folder by exact 32-hex-character id.
+    pub fn folder(&self, folder: String) -> Result<Folder, FfiError> {
+        let folder = parse_folder_ffi(&folder)?;
+        self.folder_call(|resp| Msg::FolderGet { folder, resp })
+            .map(Folder::from_node)
+    }
+
+    /// Rename one folder while preserving id, order, and membership.
+    pub fn rename_folder(&self, folder: String, name: String) -> Result<Folder, FfiError> {
+        validate_folder_write_ffi(&name)?;
+        let folder = parse_folder_ffi(&folder)?;
+        self.folder_call(|resp| Msg::FolderRename { folder, name, resp })
+            .map(Folder::from_node)
+    }
+
+    /// Atomically reorder the complete active folder id set.
+    pub fn reorder_folders(&self, folders: Vec<String>) -> Result<Vec<Folder>, FfiError> {
+        if folders.len() > kult_node::MAX_FOLDERS {
+            return Err(folder_error(
+                FolderErrorCode::InvalidOrder,
+                "invalid folder order",
+            ));
+        }
+        let folders = folders
+            .iter()
+            .map(|folder| parse_folder_ffi(folder))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(self
+            .folder_call(|resp| Msg::FolderReorder { folders, resp })?
+            .into_iter()
+            .map(Folder::from_node)
+            .collect())
+    }
+
+    /// Count every assignment before an explicit destructive delete decision.
+    pub fn folder_delete_assignment_count(&self, folder: String) -> Result<u64, FfiError> {
+        let folder = parse_folder_ffi(&folder)?;
+        let count = self.folder_call(|resp| Msg::FolderDeletePreview { folder, resp })?;
+        Ok(u64::try_from(count).unwrap_or(u64::MAX))
+    }
+
+    /// Atomically delete a folder and cascade every assignment to Unfiled.
+    pub fn delete_folder(&self, folder: String, confirm: bool) -> Result<u64, FfiError> {
+        if !confirm {
+            return Err(folder_error(
+                FolderErrorCode::ConfirmationRequired,
+                "folder deletion requires explicit confirmation",
+            ));
+        }
+        let folder = parse_folder_ffi(&folder)?;
+        let count = self.folder_call(|resp| Msg::FolderDelete { folder, resp })?;
+        Ok(u64::try_from(count).unwrap_or(u64::MAX))
+    }
+
+    /// Idempotently move one exact typed conversation into one exact folder.
+    pub fn move_to_folder(&self, folder: String, target: FolderTarget) -> Result<bool, FfiError> {
+        let folder = parse_folder_ffi(&folder)?;
+        let target = parse_folder_target_ffi(&target)?;
+        self.folder_call(|resp| Msg::FolderMove {
+            folder,
+            target,
+            resp,
+        })
+    }
+
+    /// Idempotently move one exact typed conversation to virtual Unfiled.
+    pub fn unfile_conversation(&self, target: FolderTarget) -> Result<bool, FfiError> {
+        let target = parse_folder_target_ffi(&target)?;
+        self.folder_call(|resp| Msg::FolderUnfile { target, resp })
+    }
+
+    /// List active typed conversation membership for one folder.
+    pub fn folder_membership(&self, folder: String) -> Result<Vec<FolderConversation>, FfiError> {
+        let folder = parse_folder_ffi(&folder)?;
+        Ok(self
+            .folder_call(|resp| Msg::FolderMembership { folder, resp })?
+            .into_iter()
+            .map(FolderConversation::from_node)
+            .collect())
+    }
+
+    /// Get the active folder for one exact available typed conversation.
+    pub fn conversation_folder(&self, target: FolderTarget) -> Result<Option<Folder>, FfiError> {
+        let target = parse_folder_target_ffi(&target)?;
+        Ok(self
+            .folder_call(|resp| Msg::ConversationFolder { target, resp })?
+            .map(Folder::from_node))
+    }
+
+    /// Classify All/Unfiled/one folder, then independently apply labels.
+    pub fn folder_conversations(
+        &self,
+        selection: FolderSelection,
+        labels: Vec<String>,
+        mode: LabelMatchMode,
+    ) -> Result<FolderConversationResult, FfiError> {
+        if labels.len() > kult_node::MAX_LABELS {
+            return Err(label_error(
+                LabelErrorCode::DefinitionLimit,
+                "selected label count exceeds 128",
+            ));
+        }
+        let selection = parse_folder_selection_ffi(&selection)?;
+        let labels = labels
+            .iter()
+            .map(|label| parse_label_ffi(label))
+            .collect::<Result<Vec<_>, _>>()?;
+        let result = self.folder_call(|resp| Msg::FolderConversations {
+            selection,
+            labels,
+            mode: match mode {
+                LabelMatchMode::Any => kult_node::LabelMatchMode::Any,
+                LabelMatchMode::All => kult_node::LabelMatchMode::All,
+            },
+            resp,
+        })?;
+        Ok(FolderConversationResult::from_node(result))
+    }
+
+    /// Render-safe diagnostics for stale local folder assignments.
+    pub fn stale_folders(&self) -> Result<Vec<StaleFolder>, FfiError> {
+        Ok(self
+            .folder_call(|resp| Msg::FolderStale { resp })?
+            .into_iter()
+            .map(StaleFolder::from_node)
+            .collect())
+    }
+
+    /// Remove one exact folder assignment only while it remains stale.
+    pub fn cleanup_stale_folder(
+        &self,
+        folder: String,
+        target: FolderTarget,
+    ) -> Result<bool, FfiError> {
+        let folder = parse_folder_ffi(&folder)?;
+        let target = parse_folder_target_ffi(&target)?;
+        self.folder_call(|resp| Msg::FolderStaleCleanup {
+            folder,
+            target,
+            resp,
+        })
+    }
+
     /// Create one private local label with a collision-safe random stable id.
     pub fn create_label(&self, name: String, color: String) -> Result<Label, FfiError> {
         validate_label_write_ffi(&name, &color)?;
@@ -1870,6 +2164,73 @@ impl KultNode {
     ) -> Result<T, FfiError> {
         self.call(build).map_err(label_ffi_error)
     }
+
+    fn folder_call<T>(
+        &self,
+        build: impl FnOnce(oneshot::Sender<Result<T, String>>) -> Msg,
+    ) -> Result<T, FfiError> {
+        self.call(build).map_err(folder_ffi_error)
+    }
+}
+
+impl Folder {
+    fn from_node(folder: kult_node::FolderInfo) -> Self {
+        Self {
+            id: hex_encode(&folder.id),
+            name: folder.name,
+            order: folder.order,
+        }
+    }
+}
+
+impl FolderConversation {
+    fn from_node(conversation: kult_node::FolderConversationInfo) -> Self {
+        Self {
+            target: folder_target_from_store(&conversation.conversation),
+            display_name: conversation.display_name,
+        }
+    }
+}
+
+impl StaleFolder {
+    fn from_node(stale: kult_node::StaleFolderInfo) -> Self {
+        Self {
+            folder: hex_encode(&stale.folder),
+            target: folder_target_from_store(&stale.conversation),
+            reason: match stale.reason {
+                kult_node::NodeStaleFolderReason::MissingFolder => StaleFolderReason::MissingFolder,
+                kult_node::NodeStaleFolderReason::UnavailableConversation => {
+                    StaleFolderReason::UnavailableConversation
+                }
+                kult_node::NodeStaleFolderReason::MissingFolderAndConversation => {
+                    StaleFolderReason::MissingFolderAndConversation
+                }
+            },
+        }
+    }
+}
+
+impl FolderConversationResult {
+    fn from_node(result: kult_node::FolderConversationList) -> Self {
+        Self {
+            selection: folder_selection_from_node(result.selection),
+            selected_labels: result
+                .selected_labels
+                .iter()
+                .map(|id| hex_encode(id))
+                .collect(),
+            unavailable_labels: result
+                .unavailable_labels
+                .iter()
+                .map(|id| hex_encode(id))
+                .collect(),
+            conversations: result
+                .conversations
+                .into_iter()
+                .map(FolderConversation::from_node)
+                .collect(),
+        }
+    }
 }
 
 impl Label {
@@ -1925,6 +2286,116 @@ fn label_target_from_store(target: &kult_store::ConversationId) -> LabelTarget {
             id: None,
         },
     }
+}
+
+fn folder_target_from_store(target: &kult_store::ConversationId) -> FolderTarget {
+    match target {
+        kult_store::ConversationId::Peer(peer) => FolderTarget {
+            kind: FolderTargetKind::Peer,
+            id: Some(hex_encode(peer)),
+        },
+        kult_store::ConversationId::Group(group) => FolderTarget {
+            kind: FolderTargetKind::Group,
+            id: Some(hex_encode(group)),
+        },
+        kult_store::ConversationId::NoteToSelf => FolderTarget {
+            kind: FolderTargetKind::NoteToSelf,
+            id: None,
+        },
+    }
+}
+
+fn folder_selection_from_node(selection: kult_node::FolderSelection) -> FolderSelection {
+    match selection {
+        kult_node::FolderSelection::All => FolderSelection {
+            kind: FolderSelectionKind::All,
+            id: None,
+        },
+        kult_node::FolderSelection::Unfiled => FolderSelection {
+            kind: FolderSelectionKind::Unfiled,
+            id: None,
+        },
+        kult_node::FolderSelection::Folder(folder) => FolderSelection {
+            kind: FolderSelectionKind::Folder,
+            id: Some(hex_encode(&folder)),
+        },
+    }
+}
+
+fn parse_folder_ffi(value: &str) -> Result<[u8; 16], FfiError> {
+    parse_message(value).map_err(|_| folder_error(FolderErrorCode::InvalidId, "invalid folder id"))
+}
+
+fn parse_folder_target_ffi(target: &FolderTarget) -> Result<kult_store::ConversationId, FfiError> {
+    match (&target.kind, &target.id) {
+        (FolderTargetKind::Peer, Some(id)) => parse_peer(id)
+            .map(kult_store::ConversationId::Peer)
+            .map_err(|_| folder_error(FolderErrorCode::InvalidTarget, "invalid folder target")),
+        (FolderTargetKind::Group, Some(id)) => parse_group(id)
+            .map(kult_store::ConversationId::Group)
+            .map_err(|_| folder_error(FolderErrorCode::InvalidTarget, "invalid folder target")),
+        (FolderTargetKind::NoteToSelf, None) => Ok(kult_store::ConversationId::NoteToSelf),
+        _ => Err(folder_error(
+            FolderErrorCode::InvalidTarget,
+            "invalid folder target",
+        )),
+    }
+}
+
+fn parse_folder_selection_ffi(
+    selection: &FolderSelection,
+) -> Result<kult_node::FolderSelection, FfiError> {
+    match (&selection.kind, &selection.id) {
+        (FolderSelectionKind::All, None) => Ok(kult_node::FolderSelection::All),
+        (FolderSelectionKind::Unfiled, None) => Ok(kult_node::FolderSelection::Unfiled),
+        (FolderSelectionKind::Folder, Some(id)) => {
+            parse_folder_ffi(id).map(kult_node::FolderSelection::Folder)
+        }
+        _ => Err(folder_error(
+            FolderErrorCode::InvalidId,
+            "invalid folder selection",
+        )),
+    }
+}
+
+fn validate_folder_write_ffi(name: &str) -> Result<(), FfiError> {
+    if kult_store::valid_folder_name(name) {
+        Ok(())
+    } else {
+        Err(folder_error(
+            FolderErrorCode::InvalidName,
+            "invalid folder name",
+        ))
+    }
+}
+
+fn folder_error(code: FolderErrorCode, reason: &str) -> FfiError {
+    FfiError::Folder {
+        code,
+        reason: reason.to_owned(),
+    }
+}
+
+fn folder_ffi_error(error: FfiError) -> FfiError {
+    let FfiError::Node { reason } = error else {
+        return error;
+    };
+    let code = match reason.as_str() {
+        "store error: invalid folder name" => FolderErrorCode::InvalidName,
+        "store error: folder id does not exist" => FolderErrorCode::UnknownFolder,
+        "store error: typed conversation target is unavailable" => {
+            FolderErrorCode::UnavailableTarget
+        }
+        "store error: folder definition limit exhausted" => FolderErrorCode::DefinitionLimit,
+        "store error: folder assignment limit exhausted" => FolderErrorCode::AssignmentLimit,
+        "store error: folder id collision budget exhausted" => FolderErrorCode::IdCollision,
+        "store error: invalid complete folder order" => FolderErrorCode::InvalidOrder,
+        "store error: folder assignment is active or absent" => {
+            FolderErrorCode::StaleAssignmentActive
+        }
+        _ => FolderErrorCode::StorageFailure,
+    };
+    FfiError::Folder { code, reason }
 }
 
 fn parse_label_ffi(value: &str) -> Result<[u8; 16], FfiError> {

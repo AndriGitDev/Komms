@@ -19,9 +19,10 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use kult_crypto::{KdfProfile, SafetyNumber};
 use kult_node::{
-    AttachmentInfo, AttachmentMetadata, CarrierCapabilitySnapshot, Event, GroupInfo,
-    GroupMentionCapability, LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode,
-    MentionSpan, Node, ScheduledMessageInfo, StaleLabelInfo,
+    AttachmentInfo, AttachmentMetadata, CarrierCapabilitySnapshot, Event, FolderConversationInfo,
+    FolderConversationList, FolderInfo, FolderSelection, GroupInfo, GroupMentionCapability,
+    LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode, MentionSpan, Node,
+    ScheduledMessageInfo, StaleFolderInfo, StaleLabelInfo,
 };
 use kult_store::{
     ContactRecord, ConversationId, GroupMessageRecord, MessageRecord, NoteMessageRecord,
@@ -164,6 +165,65 @@ pub(crate) enum Msg {
     },
     NoteToSelfMessages {
         resp: Resp<Vec<NoteMessageRecord>>,
+    },
+    FolderCreate {
+        name: String,
+        resp: Resp<FolderInfo>,
+    },
+    Folders {
+        resp: Resp<Vec<FolderInfo>>,
+    },
+    FolderGet {
+        folder: [u8; 16],
+        resp: Resp<FolderInfo>,
+    },
+    FolderRename {
+        folder: [u8; 16],
+        name: String,
+        resp: Resp<FolderInfo>,
+    },
+    FolderReorder {
+        folders: Vec<[u8; 16]>,
+        resp: Resp<Vec<FolderInfo>>,
+    },
+    FolderDeletePreview {
+        folder: [u8; 16],
+        resp: Resp<usize>,
+    },
+    FolderDelete {
+        folder: [u8; 16],
+        resp: Resp<usize>,
+    },
+    FolderMove {
+        folder: [u8; 16],
+        target: ConversationId,
+        resp: Resp<bool>,
+    },
+    FolderUnfile {
+        target: ConversationId,
+        resp: Resp<bool>,
+    },
+    FolderMembership {
+        folder: [u8; 16],
+        resp: Resp<Vec<FolderConversationInfo>>,
+    },
+    ConversationFolder {
+        target: ConversationId,
+        resp: Resp<Option<FolderInfo>>,
+    },
+    FolderConversations {
+        selection: FolderSelection,
+        labels: Vec<[u8; 16]>,
+        mode: LabelMatchMode,
+        resp: Resp<FolderConversationList>,
+    },
+    FolderStale {
+        resp: Resp<Vec<StaleFolderInfo>>,
+    },
+    FolderStaleCleanup {
+        folder: [u8; 16],
+        target: ConversationId,
+        resp: Resp<bool>,
     },
     LabelCreate {
         name: String,
@@ -794,6 +854,70 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         }
         Msg::NoteToSelfMessages { resp } => {
             let _ = resp.send(node.note_to_self_messages().map_err(fail));
+        }
+        Msg::FolderCreate { name, resp } => {
+            let _ = resp.send(node.create_folder(&name, &mut OsRng).map_err(fail));
+        }
+        Msg::Folders { resp } => {
+            let _ = resp.send(node.folders().map_err(fail));
+        }
+        Msg::FolderGet { folder, resp } => {
+            let _ = resp.send(node.folder(&folder).map_err(fail));
+        }
+        Msg::FolderRename { folder, name, resp } => {
+            let _ = resp.send(node.rename_folder(&folder, &name, &mut OsRng).map_err(fail));
+        }
+        Msg::FolderReorder { folders, resp } => {
+            let _ = resp.send(node.reorder_folders(&folders, &mut OsRng).map_err(fail));
+        }
+        Msg::FolderDeletePreview { folder, resp } => {
+            let _ = resp.send(node.folder_delete_assignment_count(&folder).map_err(fail));
+        }
+        Msg::FolderDelete { folder, resp } => {
+            let _ = resp.send(node.delete_folder(&folder).map_err(fail));
+        }
+        Msg::FolderMove {
+            folder,
+            target,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.move_conversation_to_folder(&target, &folder, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::FolderUnfile { target, resp } => {
+            let _ = resp.send(node.unfile_conversation(&target).map_err(fail));
+        }
+        Msg::FolderMembership { folder, resp } => {
+            let _ = resp.send(node.folder_members(&folder).map_err(fail));
+        }
+        Msg::ConversationFolder { target, resp } => {
+            let _ = resp.send(node.folder_for_conversation(&target).map_err(fail));
+        }
+        Msg::FolderConversations {
+            selection,
+            labels,
+            mode,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.folder_conversations(selection, &labels, mode)
+                    .map_err(fail),
+            );
+        }
+        Msg::FolderStale { resp } => {
+            let _ = resp.send(node.stale_folder_assignments().map_err(fail));
+        }
+        Msg::FolderStaleCleanup {
+            folder,
+            target,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.cleanup_stale_folder_assignment(&folder, &target)
+                    .map_err(fail),
+            );
         }
         Msg::LabelCreate { name, color, resp } => {
             let _ = resp.send(node.create_label(&name, &color, &mut OsRng).map_err(fail));

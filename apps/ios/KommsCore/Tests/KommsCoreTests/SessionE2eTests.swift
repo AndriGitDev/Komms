@@ -39,7 +39,35 @@ private struct LabelParityFixture: Decodable {
     }
 }
 
+private struct FolderParityFixture: Decodable {
+    let duplicateName: String
+    let expectedInitialOrders: [UInt32]
+    let firstFolderTargetKinds: [String]
+    let folderThenAnyLabelTargetKinds: [String]
+    let unfiledAfterMoveTargetKinds: [String]
+    let whitespaceOnlyName: String
+    let invalidId: String
+    let expectedDeleteAssignmentCount: UInt64
+
+    static func load() throws -> Self {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let data = try Data(contentsOf: root.appendingPathComponent("fixtures/b10-folder-parity.json"))
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(Self.self, from: data)
+    }
+}
+
 private func labelTargetKindName(_ kind: LabelTargetKind) -> String {
+    switch kind {
+    case .peer: "peer"
+    case .group: "group"
+    case .noteToSelf: "note_to_self"
+    }
+}
+
+private func folderTargetKindName(_ kind: FolderTargetKind) -> String {
     switch kind {
     case .peer: "peer"
     case .group: "group"
@@ -901,6 +929,87 @@ final class SessionE2eTests: XCTestCase {
         XCTAssertEqual(
             [second.id], try session.labelsForConversation(target: noteTarget).map(\.id))
         XCTAssertTrue(try session.staleLabels().isEmpty)
+        session.stop()
+    }
+
+    func testPrivateFoldersAreExactTypedComposedLocalAndRestartSafe() throws {
+        let fixture = try FolderParityFixture.load()
+        let dir = try tempDir()
+        let events = Events()
+        var session = try open(dir, "folders", events)
+        let queuedBefore = try session.status().queued
+        let peer = try session.addContact(
+            name: "\u{2067}duplicate\u{2069}", bundleHex: session.myBundleHex(), hints: [])
+        let group = try session.createGroup(name: "e\u{301} group", members: [])
+        let first = try session.createFolder(name: fixture.duplicateName)
+        let second = try session.createFolder(name: fixture.duplicateName)
+        XCTAssertNotEqual(first.id, second.id)
+        XCTAssertEqual(fixture.expectedInitialOrders, [first.order, second.order])
+        _ = try events.wait("folders changed") { event -> Void? in
+            if case .foldersChanged = event { return () }
+            return nil
+        }
+        XCTAssertEqual(
+            [second.id, first.id],
+            try session.reorderFolders(ids: [second.id, first.id]).map(\.id))
+
+        let peerTarget = FolderTarget(kind: .peer, id: peer)
+        let groupTarget = FolderTarget(kind: .group, id: group)
+        let noteTarget = FolderTarget(kind: .noteToSelf, id: nil)
+        XCTAssertTrue(try session.moveToFolder(id: first.id, target: peerTarget))
+        XCTAssertTrue(try session.moveToFolder(id: first.id, target: groupTarget))
+        XCTAssertTrue(try session.moveToFolder(id: second.id, target: noteTarget))
+        XCTAssertFalse(try session.moveToFolder(id: second.id, target: noteTarget))
+        XCTAssertEqual(
+            fixture.firstFolderTargetKinds,
+            try session.folderMembership(id: first.id).map {
+                folderTargetKindName($0.target.kind)
+            })
+
+        let label = try session.createLabel(name: "folder composition", color: "teal")
+        XCTAssertTrue(try session.assignLabel(
+            id: label.id, target: LabelTarget(kind: .peer, id: peer)))
+        XCTAssertTrue(try session.assignLabel(
+            id: label.id, target: LabelTarget(kind: .group, id: group)))
+        XCTAssertEqual(
+            fixture.folderThenAnyLabelTargetKinds,
+            try session.folderConversations(
+                selection: FolderSelection(kind: .folder, id: first.id),
+                labels: [label.id], mode: .any
+            ).conversations.map { folderTargetKindName($0.target.kind) })
+
+        XCTAssertTrue(try session.unfileConversation(target: peerTarget))
+        XCTAssertFalse(try session.unfileConversation(target: peerTarget))
+        XCTAssertEqual(
+            fixture.unfiledAfterMoveTargetKinds,
+            try session.folderConversations(
+                selection: FolderSelection(kind: .unfiled, id: nil), labels: [], mode: .any
+            ).conversations.map { folderTargetKindName($0.target.kind) })
+        XCTAssertEqual(second.id, try session.conversationFolder(target: noteTarget)?.id)
+        XCTAssertThrowsError(try session.deleteFolder(id: first.id, confirm: false))
+        XCTAssertThrowsError(try session.createFolder(name: fixture.whitespaceOnlyName))
+        XCTAssertThrowsError(try session.folder(id: fixture.invalidId)) { error in
+            guard let ffi = error as? FfiError,
+                  case .Folder(let code, _) = ffi else {
+                return XCTFail("expected structured folder error, got: \(error)")
+            }
+            XCTAssertEqual(.invalidId, code)
+        }
+        XCTAssertEqual(queuedBefore, try session.status().queued)
+        session.stop()
+
+        session = try open(dir, "folders", Events())
+        XCTAssertEqual([second.id, first.id], try session.folders().map(\.id))
+        XCTAssertEqual(
+            fixture.expectedDeleteAssignmentCount,
+            try session.folderDeleteAssignmentCount(id: first.id))
+        XCTAssertEqual(
+            fixture.expectedDeleteAssignmentCount,
+            try session.deleteFolder(id: first.id, confirm: true))
+        let replacement = try session.createFolder(name: first.name)
+        XCTAssertNotEqual(replacement.id, first.id)
+        XCTAssertTrue(try session.folderMembership(id: replacement.id).isEmpty)
+        XCTAssertTrue(try session.staleFolders().isEmpty)
         session.stop()
     }
 }

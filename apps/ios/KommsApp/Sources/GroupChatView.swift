@@ -22,6 +22,7 @@ struct GroupChatView: View {
     @State private var mentionStatus = "Use Mention to choose an exact current roster identity."
     @State private var showMentionPicker = false
     @State private var showPlainFallback = false
+    @State private var showFolder = false
     @State private var showLabels = false
 
     private var group: KommsCore.Group? { model.groups.first { $0.id == groupId } }
@@ -72,12 +73,18 @@ struct GroupChatView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
+                    Button("Folder") { showFolder = true }
                     Button("Labels") { showLabels = true }
                     Button("Members") { showMembers = true }
                         .disabled(group == nil)
                 }
             }
             .sheet(isPresented: $showMembers) { GroupMembersView(groupId: groupId) }
+            .sheet(isPresented: $showFolder) {
+                FolderAssignmentView(
+                    target: FolderTarget(kind: .group, id: groupId),
+                    targetName: group?.name ?? "Group")
+            }
             .sheet(isPresented: $showLabels) {
                 LabelAssignmentView(
                     target: LabelTarget(kind: .group, id: groupId),

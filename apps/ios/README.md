@@ -55,6 +55,12 @@ are the node's own, verbatim.
   semantics rather than silently retargeting it. Send rechecks roster and
   capabilities and offers an explicit ordinary-text fallback with no mention
   notification.
+- **Manage private local conversation folders** for pairwise contacts, groups,
+  and note-to-self. SwiftUI exposes All and Unfiled navigation, exact
+  duplicate-capable Unicode names, durable button reorder, explicit
+  single-folder moves, deletion review, stale cleanup, and folder-first
+  composition with label filters. The selected folder survives recreation only
+  in the same non-synchronizing, this-device-only Keychain item as label filters.
 - **Manage private contact and conversation labels** for pairwise contacts,
   groups, and note-to-self. The SwiftUI manager and assignment sheets support
   VoiceOver, Dynamic Type, Increased Contrast, Reduce Motion, hardware keyboard
@@ -123,6 +129,12 @@ categories, Spotlight, widgets, Siri/App Intents, pasteboard, previews, logs,
 crash/analytics payloads, or ordinary scene restoration. `KKR4` preserves exact
 definitions and memberships; message labels and linked-device synchronization
 remain deferred.
+
+Folder acceptance uses the same B10 fixture as Rust RPC, UniFFI, and Kotlin,
+covering exact Unicode, duplicate names, stable manual order, typed
+peer/group/note targets, single membership, label composition, restart,
+deletion, and structured errors. Folder state requests no additional permission,
+never leaves sealed local storage, and `KKR4` is its only portability path.
 
 Generated bindings are never committed; `scripts/generate-bindings.sh`
 produces them fresh from the crate. The package is deliberately outside

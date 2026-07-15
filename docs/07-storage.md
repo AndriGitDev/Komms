@@ -40,6 +40,24 @@ Every blob is individually AEAD-sealed (XChaCha20-Poly1305, random 24-byte nonce
 name + row purpose as associated data), a copied database file leaks only row counts and
 approximate sizes; rows can't be transplanted across tables or databases.
 
+### Private local conversation folders (B10)
+
+`FolderRecord` stores a locally minted random 16-byte ID, an exact UTF-8 name,
+and a persisted manual order. `FolderAssignment` is keyed by the stable typed
+`ConversationId` for a pairwise peer, group, or note-to-self, so replacing the
+row enforces at most one active folder per conversation. All and Unfiled are
+virtual views, not definitions. Names retain their exact bytes and follow the
+same 256-byte fixed Pattern White Space rule as labels; duplicates are allowed.
+
+Create, rename, complete-set reorder, move/unfile, and delete cascade use local
+transactions. Deleting a folder removes only its assignments, making those
+conversations Unfiled without changing messages or conversations. The shared
+limits are 128 live folders and 8,192 assignments. Missing definitions or
+conversation targets remain sealed and appear only through render-safe stale
+diagnostics until explicit cleanup. Folder classification runs before the
+independent label filter and never changes delivery, notifications, unread
+truth, search, queue work, or history.
+
 ### Private contact and conversation labels (B18)
 
 `LabelRecord` stores a locally minted random 16-byte ID, an exact UTF-8 name,
@@ -86,6 +104,9 @@ trade for this project.)
 - **B18 label backup behavior**: `KKR4` preserves exact label IDs, names, color
   tokens, insertion order, assignments, and stale-reference behavior. Labels
   have no independent cloud, server, or linked-device synchronization path.
+- **B10 folder backup behavior**: `KKR4` preserves exact folder IDs, names,
+  manual order, single-membership assignments, and stale-reference behavior.
+  Folders have no independent cloud, server, or linked-device synchronization.
 - **Scheduled outbox state is not a backup payload.** Like the live encrypted
   delivery queue, it is device runtime state rather than conversation history;
   it survives ordinary process/app restarts on that device but is not resurrected

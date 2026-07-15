@@ -171,8 +171,8 @@ single-folder membership, pins, labels and multi-label membership, drafts, UI
 preferences, and custom icons. The table exposes only row count and approximate
 sealed sizes in a copied database; `KKR4` backs up every user-authored record
 and note-to-self history while `KKR1`, `KKR2`, and `KKR3` remain restorable.
-Feature behavior and shell UX remain separate B7/B10-B13 slices. B18 uses the
-shipped label record shapes and `KKR4` contract unchanged.
+Feature behavior and shell UX remain separate B7/B11-B13 slices. B10 folders
+and B18 labels use the shipped record shapes and `KKR4` contract unchanged.
 
 Add sealed local-only records for conversation type, folders, pins, labels,
 drafts, UI preferences, and custom icons. Keep local organization out of network
@@ -367,6 +367,9 @@ text behavior.
 
 **Depends on:** F5.
 
+**State:** shipped end to end across `kult-store`, `kult-node`, RPC/CLI,
+UniFFI, desktop, Android, and iOS.
+
 Folders are local views over conversation IDs. Support create, rename, reorder,
 move, delete-without-deleting-conversations, and an unfiled/default view. Do not
 sync folders to contacts or leak them onto the wire.
@@ -374,6 +377,15 @@ sync folders to contacts or leak them onto the wire.
 Acceptance covers restart, backup/restore, deleted contacts/groups, and the same
 conversation appearing in at most one folder unless multi-folder behavior is
 explicitly chosen before implementation.
+
+The shipped contract chooses single-folder membership. Exact names retain their
+UTF-8 bytes and may duplicate; cryptorandom 16-byte IDs and persisted manual
+order disambiguate them. All and Unfiled are virtual views. Complete-set reorder,
+move/unfile, delete cascade, and stale cleanup are atomic, and folder selection
+composes before the independent B18 any/all label filter. Shared limits are 128
+folders, 8,192 assignments, and 256 UTF-8 bytes per name. `KKR4` preserves exact
+IDs, names, order, membership, and stale behavior. Every mutation creates zero
+envelope, queue, receipt, capability, or transport work.
 
 ### B11. Pins
 
@@ -769,9 +781,10 @@ reviewable PR:
 2. completed: add group list/history/create/send UI to desktop, Android, and iOS;
 3. completed: build the per-peer carrier capability API and pin mesh-only
    decisions in node, scheduler, and FFI tests;
-4. completed through B18 labels: add the sealed local metadata foundation,
-   note-to-self, and private contact/conversation labels; message labels remain
-   deferred and scheduled delivery remains its own core queue/storage PR;
+4. completed through B10 folders and B18 labels: add the sealed local metadata
+   foundation, note-to-self, private single-membership conversation folders, and
+   private contact/conversation labels; message labels remain deferred and
+   scheduled delivery remains its own core queue/storage PR;
 5. completed: write the typed-content and attachment ADRs as separate design
    changes before implementation.
 

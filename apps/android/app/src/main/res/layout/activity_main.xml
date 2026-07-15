@@ -26,6 +26,35 @@
         android:paddingHorizontal="16dp"
         android:layout_width="match_parent"
         android:layout_height="wrap_content">
+        <TextView android:text="@string/folders_title" android:textStyle="bold" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" />
+        <Button android:id="@+id/main_manage_folders" style="?attr/borderlessButtonStyle" android:text="@string/folders_manage" android:textAllCaps="false" android:layout_width="wrap_content" android:layout_height="wrap_content" />
+    </LinearLayout>
+
+    <HorizontalScrollView
+        android:fillViewport="true"
+        android:scrollbars="horizontal"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+        <RadioGroup
+            android:id="@+id/main_folder_filters"
+            android:orientation="horizontal"
+            android:paddingHorizontal="12dp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+    </HorizontalScrollView>
+
+    <TextView
+        android:id="@+id/main_folder_filter_status"
+        android:accessibilityLiveRegion="polite"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
+    <LinearLayout
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingHorizontal="16dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
         <TextView
             android:text="@string/label_filter_heading"
             android:textStyle="bold"

@@ -18,6 +18,11 @@ fn label_parity_fixture() -> Value {
         .expect("valid shared B18 label fixture")
 }
 
+fn folder_parity_fixture() -> Value {
+    serde_json::from_str(include_str!("../../../fixtures/b10-folder-parity.json"))
+        .expect("valid shared B10 folder fixture")
+}
+
 /// Argon2id light enough for tests (same profile the node e2e tests use).
 const TEST_KDF: kult_crypto::KdfProfile = kult_crypto::KdfProfile {
     m_cost_kib: 8,
@@ -735,6 +740,7 @@ async fn backup_and_restore_via_rpc() {
 #[tokio::test(flavor = "multi_thread")]
 async fn groups_via_rpc_only() {
     let label_fixture = label_parity_fixture();
+    let folder_fixture = folder_parity_fixture();
     let dir = tempfile::tempdir().unwrap();
     let alice = Daemon::start(test_config(dir.path(), "group-alice"))
         .await
@@ -929,6 +935,80 @@ async fn groups_via_rpc_only() {
         .unwrap_err();
     assert!(err.contains("peer") && err.contains("hex"), "got: {err}");
 
+    // B10 stays local and structured through RPC: explicit random folder ids,
+    // complete-set reorder, and exact typed targets without name inference.
+    let queued_before_folders = a.ok(json!({ "op": "status" })).await["queued"].clone();
+    let first_folder = a
+        .ok(json!({
+            "op": "folder_create",
+            "name": folder_fixture["duplicate_name"],
+        }))
+        .await;
+    let second_folder = a
+        .ok(json!({
+            "op": "folder_create",
+            "name": folder_fixture["duplicate_name"],
+        }))
+        .await;
+    let first_folder_id = first_folder["id"].as_str().unwrap().to_owned();
+    let second_folder_id = second_folder["id"].as_str().unwrap().to_owned();
+    assert_ne!(first_folder_id, second_folder_id);
+    assert_eq!(
+        first_folder["order"],
+        folder_fixture["expected_initial_orders"][0]
+    );
+    assert_eq!(
+        second_folder["order"],
+        folder_fixture["expected_initial_orders"][1]
+    );
+    let reordered = a
+        .ok(json!({
+            "op": "folder_reorder",
+            "folders": [second_folder_id, first_folder_id],
+        }))
+        .await;
+    assert_eq!(reordered["folders"][0]["id"], json!(second_folder_id));
+    assert_eq!(reordered["folders"][1]["id"], json!(first_folder_id));
+    for target in [
+        json!({ "type": "peer", "id": bob_peer }),
+        json!({ "type": "group", "id": group }),
+    ] {
+        assert_eq!(
+            a.ok(json!({ "op": "folder_move", "folder": first_folder_id, "target": target }))
+                .await["changed"],
+            json!(true)
+        );
+    }
+    assert_eq!(
+        a.ok(json!({
+            "op": "folder_move",
+            "folder": second_folder_id,
+            "target": { "type": "note_to_self" },
+        }))
+        .await["changed"],
+        json!(true)
+    );
+    assert_eq!(
+        a.ok(json!({
+            "op": "folder_move",
+            "folder": second_folder_id,
+            "target": { "type": "note_to_self" },
+        }))
+        .await["changed"],
+        json!(false)
+    );
+    let membership = a
+        .ok(json!({ "op": "folder_membership", "folder": first_folder_id }))
+        .await;
+    assert_eq!(
+        membership["members"][0]["type"],
+        folder_fixture["first_folder_target_kinds"][0]
+    );
+    assert_eq!(
+        membership["members"][1]["type"],
+        folder_fixture["first_folder_target_kinds"][1]
+    );
+
     // B18 stays local and structured through RPC: exact label ids plus exact
     // typed targets, never display-name inference. Duplicate names are
     // disambiguated by canonical color and durable order.
@@ -1050,6 +1130,92 @@ async fn groups_via_rpc_only() {
             .as_array()
             .unwrap()
             .clone()
+    );
+
+    let composed = a
+        .ok(json!({
+            "op": "folder_conversations",
+            "selection": { "type": "folder", "id": first_folder_id },
+            "labels": [first_id],
+            "mode": "any",
+        }))
+        .await;
+    assert_eq!(
+        composed["conversations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["type"].clone())
+            .collect::<Vec<_>>(),
+        folder_fixture["folder_then_any_label_target_kinds"]
+            .as_array()
+            .unwrap()
+            .clone()
+    );
+    assert_eq!(
+        a.ok(json!({
+            "op": "folder_unfile",
+            "target": { "type": "peer", "id": bob_peer },
+        }))
+        .await["changed"],
+        json!(true)
+    );
+    let unfiled = a
+        .ok(json!({
+            "op": "folder_conversations",
+            "selection": { "type": "unfiled" },
+            "labels": [],
+            "mode": "any",
+        }))
+        .await;
+    assert_eq!(
+        unfiled["conversations"][0]["type"],
+        folder_fixture["unfiled_after_move_target_kinds"][0]
+    );
+    assert_eq!(
+        a.ok(json!({
+            "op": "conversation_folder",
+            "target": { "type": "note_to_self" },
+        }))
+        .await["folder"]["id"],
+        json!(second_folder_id)
+    );
+    assert!(a
+        .call(json!({
+            "op": "folder_delete",
+            "folder": first_folder_id,
+            "confirm": false,
+        }))
+        .await
+        .unwrap_err()
+        .contains("confirmation"));
+    assert_eq!(
+        a.ok(json!({ "op": "folder_delete_preview", "folder": first_folder_id }))
+            .await["assignments"],
+        folder_fixture["expected_delete_assignment_count"]
+    );
+    assert_eq!(
+        a.ok(json!({ "op": "folder_delete", "folder": first_folder_id, "confirm": true }))
+            .await["assignments_deleted"],
+        folder_fixture["expected_delete_assignment_count"]
+    );
+    let replacement = a
+        .ok(json!({ "op": "folder_create", "name": folder_fixture["duplicate_name"] }))
+        .await;
+    assert_ne!(replacement["id"], json!(first_folder_id));
+    assert!(a
+        .ok(json!({ "op": "folder_membership", "folder": replacement["id"] }))
+        .await["members"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(a.ok(json!({ "op": "folder_stale" })).await["stale"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        a.ok(json!({ "op": "status" })).await["queued"],
+        queued_before_folders
     );
 
     let updated = a

@@ -18,6 +18,9 @@ const state = {
   peer: "",
   contacts: [],
   groups: [],
+  folders: [],
+  folderSelection: { kind: "all", id: null },
+  folderMatches: null,
   labels: [],
   labelFilter: { selected: [], mode: "any", matches: null },
   noteToSelfId: null,
@@ -110,6 +113,21 @@ function labelTarget(kind = state.currentKind, id = state.currentId) {
 
 function labelTargetKey(target) {
   return `${target.kind}:${target.id ?? ""}`;
+}
+
+function folderTarget(kind = state.currentKind, id = state.currentId) {
+  if (kind === "contact") return { kind: "peer", id };
+  if (kind === "group") return { kind: "group", id };
+  if (kind === "note") return { kind: "note_to_self", id: null };
+  return null;
+}
+
+function folderAccessibleName(folder) {
+  return `${folder.name}, folder ${folder.order + 1}`;
+}
+
+function exactFolderNameValid(name) {
+  return exactLabelNameValid(name);
 }
 
 function currentTargetName() {
@@ -572,6 +590,7 @@ function enterApp(address) {
   $("#gate-mnemonic").value = "";
   refreshContacts();
   refreshGroups();
+  refreshFolders();
   refreshLabels();
   call("note_to_self_id").then((id) => { state.noteToSelfId = id; });
   refreshStatus();
@@ -587,6 +606,9 @@ async function leaveApp() {
   state.currentId = null;
   state.contacts = [];
   state.groups = [];
+  state.folders = [];
+  state.folderSelection = { kind: "all", id: null };
+  state.folderMatches = null;
   state.labels = [];
   state.labelFilter = { selected: [], mode: "any", matches: null };
   state.noteToSelfId = null;
@@ -649,9 +671,8 @@ async function renderTargetBadges(container, target) {
 }
 
 function applyLabelFilterVisibility() {
-  const active = state.labelFilter.selected.length > 0;
-  const matches = state.labelFilter.matches;
-  const visible = (target) => !active || matches?.has(labelTargetKey(target));
+  const matches = state.folderMatches;
+  const visible = (target) => matches === null || matches.has(labelTargetKey(target));
   for (const button of $$("#contact-list .contact")) {
     button.hidden = !visible({ kind: "peer", id: button.dataset.peer });
   }
@@ -663,14 +684,17 @@ function applyLabelFilterVisibility() {
 
 async function runLabelFilter(announce = false) {
   const prior = state.labelFilter.selected.length;
-  const result = await call("filter_labels", {
+  const result = await call("folder_conversations", {
+    selection: state.folderSelection,
     labels: state.labelFilter.selected,
     mode: state.labelFilter.mode,
   });
-  state.labelFilter.selected = result.selected;
+  state.folderSelection = result.selection;
+  state.labelFilter.selected = result.selected_labels;
   state.labelFilter.matches = new Set(result.conversations.map((conversation) => labelTargetKey(conversation.target)));
-  if (result.unavailable_selected.length > 0) {
-    $("#label-filter-status").textContent = `${result.unavailable_selected.length} unavailable selected label ${result.unavailable_selected.length === 1 ? "was" : "were"} removed.`;
+  state.folderMatches = state.labelFilter.matches;
+  if (result.unavailable_labels.length > 0) {
+    $("#label-filter-status").textContent = `${result.unavailable_labels.length} unavailable selected label ${result.unavailable_labels.length === 1 ? "was" : "were"} removed.`;
   } else if (announce) {
     $("#label-filter-status").textContent = state.labelFilter.selected.length === 0
       ? "Label filter cleared; every conversation is shown."
@@ -681,6 +705,64 @@ async function runLabelFilter(announce = false) {
   $("#btn-clear-label-filter").hidden = state.labelFilter.selected.length === 0;
   applyLabelFilterVisibility();
 }
+
+async function refreshFolders(announce = false) {
+  state.folders = await call("folders");
+  if (state.folderSelection.kind === "folder" && !state.folders.some((folder) => folder.id === state.folderSelection.id)) {
+    state.folderSelection = { kind: "all", id: null };
+    $("#folder-navigation-status").textContent = "The selected folder is unavailable; showing All conversations.";
+  }
+  const items = $("#folder-navigation-items");
+  items.replaceChildren();
+  for (const folder of state.folders) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost";
+    button.dataset.folderKind = "folder";
+    button.dataset.folderId = folder.id;
+    button.setAttribute("aria-label", `Show ${folderAccessibleName(folder)}`);
+    const name = document.createElement("bdi");
+    name.dir = "auto";
+    name.textContent = folder.name;
+    button.append(name);
+    button.addEventListener("click", async () => {
+      state.folderSelection = { kind: "folder", id: folder.id };
+      await runLabelFilter(true);
+      renderFolderNavigationSelection();
+      $("#folder-navigation-status").textContent = `Showing ${folderAccessibleName(folder)}.`;
+    });
+    items.append(button);
+  }
+  renderFolderNavigationSelection();
+  await runLabelFilter(announce);
+}
+
+function renderFolderNavigationSelection() {
+  for (const button of $$("#folder-navigation button")) {
+    const selected = button.dataset.folderKind === state.folderSelection.kind
+      && (button.dataset.folderKind !== "folder" || button.dataset.folderId === state.folderSelection.id);
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-current", selected ? "true" : "false");
+  }
+}
+
+for (const button of $$('#folder-navigation > button[data-folder-kind]')) {
+  button.addEventListener("click", async () => {
+    state.folderSelection = { kind: button.dataset.folderKind, id: null };
+    await runLabelFilter(true);
+    renderFolderNavigationSelection();
+    $("#folder-navigation-status").textContent = `Showing ${button.textContent}.`;
+  });
+}
+
+$("#folder-navigation").addEventListener("keydown", (event) => {
+  if (!["ArrowDown", "ArrowUp"].includes(event.key)) return;
+  const buttons = $$("button", event.currentTarget).filter((button) => !button.hidden);
+  const index = buttons.indexOf(document.activeElement);
+  if (index < 0) return;
+  event.preventDefault();
+  buttons[(index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length].focus();
+});
 
 async function refreshLabels(announce = false) {
   state.labels = await call("labels");
@@ -1830,6 +1912,10 @@ $("#btn-attach").addEventListener("click", async () => {
 
 listen("node-event", async ({ payload: ev }) => {
   switch (ev.type) {
+    case "folders_changed": {
+      await refreshFolders(true);
+      break;
+    }
     case "labels_changed": {
       await refreshLabels(true);
       break;
@@ -2021,6 +2107,195 @@ function showError(root, err) {
     el.hidden = false;
   }
 }
+
+function resetFolderEditor(root) {
+  root.querySelector('[data-f="folder-id"]').value = "";
+  root.querySelector('[data-f="folder-name"]').value = "";
+  root.querySelector('[data-act="save-folder"]').textContent = "Create folder";
+  root.querySelector('[data-act="cancel-edit"]').hidden = true;
+  root.querySelector('[data-f="error"]').hidden = true;
+}
+
+async function renderFolderManager(root) {
+  state.folders = await invoke("folders");
+  const list = root.querySelector('[data-f="folders"]');
+  list.replaceChildren();
+  if (state.folders.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "modal-note";
+    empty.textContent = "No folders. Create one above.";
+    list.append(empty);
+  }
+  for (const [index, folder] of state.folders.entries()) {
+    const row = document.createElement("div");
+    row.className = "folder-manager-row";
+    const description = document.createElement("span");
+    description.className = "folder-description";
+    const name = document.createElement("bdi");
+    name.dir = "auto";
+    name.textContent = folder.name;
+    description.append(name, document.createTextNode(` · folder ${index + 1}`));
+    const actions = document.createElement("span");
+    actions.className = "folder-actions";
+    for (const [label, delta] of [["Move up", -1], ["Move down", 1]]) {
+      const reorder = document.createElement("button");
+      reorder.type = "button";
+      reorder.className = "ghost";
+      reorder.textContent = delta < 0 ? "↑" : "↓";
+      reorder.disabled = index + delta < 0 || index + delta >= state.folders.length;
+      reorder.setAttribute("aria-label", `${label} ${folderAccessibleName(folder)}`);
+      reorder.addEventListener("click", async () => {
+        try {
+          const ids = state.folders.map((item) => item.id);
+          [ids[index], ids[index + delta]] = [ids[index + delta], ids[index]];
+          await invoke("reorder_folders", { folders: ids });
+          root.querySelector('[data-f="result"]').textContent = `${folderAccessibleName(folder)} ${delta < 0 ? "moved up" : "moved down"}.`;
+          await renderFolderManager(root);
+          await refreshFolders(true);
+          root.querySelector(`[data-folder-action="${delta < 0 ? "up" : "down"}"][data-folder-position="${Math.max(0, index + delta)}"]`)?.focus();
+        } catch (error) { showError(root, error); }
+      });
+      reorder.dataset.folderAction = delta < 0 ? "up" : "down";
+      reorder.dataset.folderPosition = String(index);
+      actions.append(reorder);
+    }
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "ghost";
+    edit.textContent = "Edit";
+    edit.setAttribute("aria-label", `Rename ${folderAccessibleName(folder)}`);
+    edit.addEventListener("click", () => {
+      root.querySelector('[data-f="folder-id"]').value = folder.id;
+      root.querySelector('[data-f="folder-name"]').value = folder.name;
+      root.querySelector('[data-act="save-folder"]').textContent = "Save folder";
+      root.querySelector('[data-act="cancel-edit"]').hidden = false;
+      root.querySelector('[data-f="folder-name"]').focus();
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "danger";
+    remove.textContent = "Delete";
+    remove.setAttribute("aria-label", `Delete ${folderAccessibleName(folder)}`);
+    remove.addEventListener("click", async () => {
+      try {
+        const count = await invoke("folder_delete_assignment_count", { folder: folder.id });
+        const reviewed = window.confirm(`Delete “${folder.name}” (folder ${index + 1})? ${count} conversation${count === 1 ? "" : "s"} will become Unfiled; messages and conversations are unchanged.`);
+        if (!reviewed) {
+          root.querySelector('[data-f="result"]').textContent = "Folder deletion cancelled.";
+          remove.focus();
+          return;
+        }
+        const deleted = await invoke("delete_folder", { folder: folder.id, confirm: true });
+        root.querySelector('[data-f="result"]').textContent = `Folder deleted; ${deleted} conversation${deleted === 1 ? " is" : "s are"} now Unfiled.`;
+        resetFolderEditor(root);
+        await renderFolderManager(root);
+        await refreshFolders(true);
+        root.querySelector('[data-f="folder-name"]').focus();
+      } catch (error) { showError(root, error); }
+    });
+    actions.append(edit, remove);
+    row.append(description, actions);
+    list.append(row);
+  }
+
+  const stale = await invoke("stale_folders");
+  const section = root.querySelector('[data-f="stale-section"]');
+  const staleList = root.querySelector('[data-f="stale"]');
+  section.hidden = stale.length === 0;
+  staleList.replaceChildren();
+  for (const record of stale) {
+    const row = document.createElement("div");
+    row.className = "stale-folder-row";
+    const reason = document.createElement("span");
+    const targetName = record.target.kind === "note_to_self" ? "note-to-self" : `${record.target.kind} conversation`;
+    reason.textContent = `${record.reason.replaceAll("_", " ")} · ${targetName}`;
+    const cleanup = document.createElement("button");
+    cleanup.type = "button";
+    cleanup.className = "danger";
+    cleanup.textContent = "Clean up";
+    cleanup.setAttribute("aria-label", `Clean up selected stale ${targetName} folder assignment`);
+    cleanup.addEventListener("click", async () => {
+      try {
+        await invoke("cleanup_stale_folder", { folder: record.folder, target: record.target });
+        root.querySelector('[data-f="result"]').textContent = `Selected stale ${targetName} assignment removed.`;
+        await renderFolderManager(root);
+        await refreshFolders(true);
+      } catch (error) { showError(root, error); }
+    });
+    row.append(reason, cleanup);
+    staleList.append(row);
+  }
+}
+
+async function openFolderManager() {
+  const root = openModal("Private conversation folders", "tpl-folder-manager");
+  const form = root.querySelector('[data-f="folder-form"]');
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const name = root.querySelector('[data-f="folder-name"]').value;
+    const id = root.querySelector('[data-f="folder-id"]').value;
+    try {
+      if (!exactFolderNameValid(name)) throw new Error("Name must contain a non-Pattern-White-Space character and be at most 256 UTF-8 bytes.");
+      const saved = id
+        ? await invoke("rename_folder", { folder: id, name })
+        : await invoke("create_folder", { name });
+      root.querySelector('[data-f="result"]').textContent = `${id ? "Renamed" : "Created"} ${folderAccessibleName(saved)}.`;
+      resetFolderEditor(root);
+      await renderFolderManager(root);
+      await refreshFolders(true);
+      root.querySelector('[data-f="folder-name"]').focus();
+    } catch (error) { showError(root, error); }
+  });
+  root.querySelector('[data-act="cancel-edit"]').addEventListener("click", () => {
+    resetFolderEditor(root);
+    root.querySelector('[data-f="result"]').textContent = "Rename cancelled; the folder is unchanged.";
+    root.querySelector('[data-f="folder-name"]').focus();
+  });
+  await renderFolderManager(root);
+}
+
+$("#btn-folder-manager").addEventListener("click", openFolderManager);
+
+async function openConversationFolder() {
+  const target = folderTarget();
+  if (!target) return;
+  const exactTarget = currentTargetName();
+  const root = openModal(`Move ${exactTarget}`, "tpl-conversation-folder");
+  root.querySelector('[data-f="target-summary"]').textContent = `Choose the exact final folder for ${exactTarget}. This changes local navigation only.`;
+  const current = await invoke("conversation_folder", { target });
+  const list = root.querySelector('[data-f="folders"]');
+  const choices = [{ id: null, name: "Unfiled", order: -1 }, ...state.folders];
+  for (const folder of choices) {
+    const row = document.createElement("label");
+    row.className = "folder-assignment-option";
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = "conversation-folder";
+    input.checked = folder.id === (current?.id ?? null);
+    const cue = folder.id ? folderAccessibleName(folder) : "Unfiled virtual view";
+    input.setAttribute("aria-label", `Move ${exactTarget} to ${cue}`);
+    const name = document.createElement("bdi");
+    name.dir = "auto";
+    name.textContent = folder.name;
+    input.addEventListener("change", async () => {
+      if (!input.checked) return;
+      input.disabled = true;
+      try {
+        if (folder.id) await invoke("move_to_folder", { folder: folder.id, target });
+        else await invoke("unfile_conversation", { target });
+        const finalFolder = await invoke("conversation_folder", { target });
+        root.querySelector('[data-f="result"]').textContent = `${exactTarget} is now in ${finalFolder ? folderAccessibleName(finalFolder) : "Unfiled"}.`;
+        await refreshFolders(true);
+      } catch (error) { showError(root, error); }
+      finally { input.disabled = false; input.focus(); }
+    });
+    row.append(input, name, document.createTextNode(folder.id ? ` · folder ${folder.order + 1}` : ""));
+    list.append(row);
+  }
+  root.querySelector('[data-act="done"]').addEventListener("click", closeModal);
+}
+
+$("#btn-conversation-folder").addEventListener("click", openConversationFolder);
 
 function resetLabelEditor(root) {
   root.querySelector('[data-f="label-id"]').value = "";

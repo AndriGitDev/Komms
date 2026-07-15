@@ -60,7 +60,7 @@ status and prerequisites are tracked in the delivery plan.
   so app exit or suspension cannot send early. Desktop, Android, and iOS now
   provide local-time composer controls plus distinct editable/cancellable
   scheduled rows before the ordinary queued, sent, and delivered states.
-- **Text formatting, folders, pins, dark mode, custom icons.** These stay off the
+- **Text formatting, pins, dark mode, custom icons.** These stay off the
   wire. Persistent organization and artwork use sealed local storage; formatting
   and themes are rendered by each shell.
 - **Screen-security / incognito keyboard.** Platform APIs in the mobile UI layer
@@ -87,7 +87,18 @@ status and prerequisites are tracked in the delivery plan.
   UTF-8 bytes per name. `KKR4` preserves exact identity, ordering, membership,
   and stale behavior. Labels do not affect messages, delivery, search, unread
   truth, notifications, or transports and do not sync remotely. Message labels,
-  folders, pins, shared tags, and linked-device label sync remain separate work.
+  pins, shared tags, and linked-device label sync remain separate work.
+- **Private conversation folders.** Shipped for pairwise contacts, groups, and
+  note-to-self through F5 and every wrapper and shell. One stable typed
+  conversation belongs to at most one folder; All and Unfiled are virtual views.
+  Exact duplicate-capable names use stable random IDs plus durable manual order,
+  never display-name inference. Create, rename, complete-set reorder, move,
+  unfile, deletion review/cascade, and stale cleanup are atomic local operations.
+  Folder selection runs before the independent B18 any/all label filter. Limits
+  are 128 folders, 8,192 assignments, and 256 UTF-8 bytes per name. `KKR4`
+  preserves exact identity, order, membership, and stale behavior. Folders do
+  not affect messages, delivery, search, unread truth, notifications, transports,
+  or remote state and are not synchronized between devices.
 
 ## Build with constraints (needs transport-awareness or local-first sync)
 
