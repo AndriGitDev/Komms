@@ -35,8 +35,11 @@ use kult_ffi::{
     LabelConversation as FfiLabelConversation, LabelFilterResult as FfiLabelFilterResult,
     LabelMatchMode as FfiLabelMatchMode, LabelTarget as FfiLabelTarget,
     LabelTargetKind as FfiLabelTargetKind, MentionCapabilityIssueReason, MentionSpan, NatVerdict,
-    ScheduledConversation, StaleFolder as FfiStaleFolder, StaleLabel as FfiStaleLabel,
-    AUDIO_MAX_BYTES, AUDIO_MEDIA_TYPE, IMAGE_MAX_INPUT_BYTES, IMAGE_MEDIA_TYPE,
+    Pin as FfiPin, PinConversation as FfiPinConversation,
+    PinConversationResult as FfiPinConversationResult, PinTarget as FfiPinTarget,
+    PinTargetKind as FfiPinTargetKind, ScheduledConversation, StaleFolder as FfiStaleFolder,
+    StaleLabel as FfiStaleLabel, AUDIO_MAX_BYTES, AUDIO_MEDIA_TYPE, IMAGE_MAX_INPUT_BYTES,
+    IMAGE_MEDIA_TYPE,
 };
 
 use crate::qr;
@@ -677,6 +680,121 @@ impl UiLabelFilterResult {
     }
 }
 
+/// Exact typed conversation target for private local pin operations.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiPinTarget {
+    /// `peer`, `group`, or `note_to_self`.
+    pub kind: String,
+    /// Stable peer/group id, absent for note-to-self.
+    pub id: Option<String>,
+}
+
+impl UiPinTarget {
+    fn to_ffi(&self) -> Result<FfiPinTarget, String> {
+        let kind = match self.kind.as_str() {
+            "peer" => FfiPinTargetKind::Peer,
+            "group" => FfiPinTargetKind::Group,
+            "note_to_self" => FfiPinTargetKind::NoteToSelf,
+            _ => return Err("pin target kind must be peer, group, or note_to_self".to_owned()),
+        };
+        Ok(FfiPinTarget {
+            kind,
+            id: self.id.clone(),
+        })
+    }
+
+    fn from_ffi(target: FfiPinTarget) -> Self {
+        Self {
+            kind: match target.kind {
+                FfiPinTargetKind::Peer => "peer",
+                FfiPinTargetKind::Group => "group",
+                FfiPinTargetKind::NoteToSelf => "note_to_self",
+            }
+            .to_owned(),
+            id: target.id,
+        }
+    }
+}
+
+/// Render-safe durable private local pin.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UiPin {
+    /// Exact typed target.
+    pub target: UiPinTarget,
+    /// Current local display name when available.
+    pub display_name: Option<String>,
+    /// Persisted manual order.
+    pub order: u32,
+    /// Whether the exact target is currently available.
+    pub active: bool,
+}
+
+impl UiPin {
+    fn from_ffi(value: FfiPin) -> Self {
+        Self {
+            target: UiPinTarget::from_ffi(value.target),
+            display_name: value.display_name,
+            order: value.order,
+            active: value.active,
+        }
+    }
+}
+
+/// One available row after folder, label, and pin composition.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UiPinConversation {
+    /// Exact typed target.
+    pub target: UiPinTarget,
+    /// Current local display name.
+    pub display_name: Option<String>,
+    /// Whether this row is in the leading pinned block.
+    pub pinned: bool,
+    /// Persisted order when pinned.
+    pub pin_order: Option<u32>,
+    /// Latest local message activity.
+    pub recent_activity: u64,
+}
+
+impl UiPinConversation {
+    fn from_ffi(value: FfiPinConversation) -> Self {
+        Self {
+            target: UiPinTarget::from_ffi(value.target),
+            display_name: value.display_name,
+            pinned: value.pinned,
+            pin_order: value.pin_order,
+            recent_activity: value.recent_activity,
+        }
+    }
+}
+
+/// Deterministic folder-first, label-second, pin-aware navigation result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UiPinConversationResult {
+    /// Applied folder selection.
+    pub selection: UiFolderSelection,
+    /// Available selected label ids.
+    pub selected_labels: Vec<String>,
+    /// Selected unavailable label ids.
+    pub unavailable_labels: Vec<String>,
+    /// Ordered eligible conversations.
+    pub conversations: Vec<UiPinConversation>,
+}
+
+impl UiPinConversationResult {
+    fn from_ffi(value: FfiPinConversationResult) -> Self {
+        Self {
+            selection: UiFolderSelection::from_ffi(value.selection),
+            selected_labels: value.selected_labels,
+            unavailable_labels: value.unavailable_labels,
+            conversations: value
+                .conversations
+                .into_iter()
+                .map(UiPinConversation::from_ffi)
+                .collect(),
+        }
+    }
+}
+
 /// A message row for the UI. `state` is one of `queued`, `sent`,
 /// `delivered`, `received` — never anything the node didn't report.
 #[derive(Clone, Debug, Serialize)]
@@ -1095,6 +1213,8 @@ pub enum UiEvent {
     FoldersChanged,
     /// Private local label definitions or memberships changed.
     LabelsChanged,
+    /// Private local pin definitions or order changed.
+    PinsChanged,
 }
 
 impl UiEvent {
@@ -1176,6 +1296,7 @@ impl UiEvent {
             },
             Event::FoldersChanged => Self::FoldersChanged,
             Event::LabelsChanged => Self::LabelsChanged,
+            Event::PinsChanged => Self::PinsChanged,
         }
     }
 }
@@ -2264,6 +2385,91 @@ impl Session {
         self.node
             .filter_labels(labels, mode)
             .map(UiLabelFilterResult::from_ffi)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Idempotently append one exact available conversation to pin order.
+    pub fn pin_conversation(&self, target: UiPinTarget) -> Result<bool, String> {
+        self.node
+            .pin_conversation(target.to_ffi()?)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Idempotently remove one exact active or stale pin.
+    pub fn unpin_conversation(&self, target: UiPinTarget) -> Result<bool, String> {
+        self.node
+            .unpin_conversation(target.to_ffi()?)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Inspect one exact target's durable pin state.
+    pub fn pin_state(&self, target: UiPinTarget) -> Result<Option<UiPin>, String> {
+        Ok(self
+            .node
+            .pin_state(target.to_ffi()?)
+            .map_err(|e| e.to_string())?
+            .map(UiPin::from_ffi))
+    }
+
+    /// List every durable active or stale pin.
+    pub fn pins(&self) -> Result<Vec<UiPin>, String> {
+        Ok(self
+            .node
+            .pins()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(UiPin::from_ffi)
+            .collect())
+    }
+
+    /// Atomically reorder the exact complete durable pin set.
+    pub fn reorder_pins(&self, targets: Vec<UiPinTarget>) -> Result<Vec<UiPin>, String> {
+        let targets = targets
+            .iter()
+            .map(UiPinTarget::to_ffi)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(self
+            .node
+            .reorder_pins(targets)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(UiPin::from_ffi)
+            .collect())
+    }
+
+    /// List unavailable durable pins.
+    pub fn stale_pins(&self) -> Result<Vec<UiPin>, String> {
+        Ok(self
+            .node
+            .stale_pins()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(UiPin::from_ffi)
+            .collect())
+    }
+
+    /// Remove one exact pin only while unavailable.
+    pub fn cleanup_stale_pin(&self, target: UiPinTarget) -> Result<bool, String> {
+        self.node
+            .cleanup_stale_pin(target.to_ffi()?)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Compose folder, label, and pin-aware conversation ordering.
+    pub fn pin_conversations(
+        &self,
+        selection: UiFolderSelection,
+        labels: Vec<String>,
+        mode: String,
+    ) -> Result<UiPinConversationResult, String> {
+        let mode = match mode.as_str() {
+            "any" => FfiLabelMatchMode::Any,
+            "all" => FfiLabelMatchMode::All,
+            _ => return Err("label filter mode must be any or all".to_owned()),
+        };
+        self.node
+            .pin_conversations(selection.to_ffi()?, labels, mode)
+            .map(UiPinConversationResult::from_ffi)
             .map_err(|e| e.to_string())
     }
 

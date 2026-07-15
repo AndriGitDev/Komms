@@ -59,6 +59,20 @@ private struct FolderParityFixture: Decodable {
     }
 }
 
+private struct PinParityFixture: Decodable {
+    let initialTargetKinds: [String]
+    let composedPinnedTargetKinds: [String]
+
+    static func load() throws -> Self {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let data = try Data(contentsOf: root.appendingPathComponent("fixtures/b11-pin-parity.json"))
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(Self.self, from: data)
+    }
+}
+
 private func labelTargetKindName(_ kind: LabelTargetKind) -> String {
     switch kind {
     case .peer: "peer"
@@ -68,6 +82,14 @@ private func labelTargetKindName(_ kind: LabelTargetKind) -> String {
 }
 
 private func folderTargetKindName(_ kind: FolderTargetKind) -> String {
+    switch kind {
+    case .peer: "peer"
+    case .group: "group"
+    case .noteToSelf: "note_to_self"
+    }
+}
+
+private func pinTargetKindName(_ kind: PinTargetKind) -> String {
     switch kind {
     case .peer: "peer"
     case .group: "group"
@@ -1010,6 +1032,49 @@ final class SessionE2eTests: XCTestCase {
         XCTAssertNotEqual(replacement.id, first.id)
         XCTAssertTrue(try session.folderMembership(id: replacement.id).isEmpty)
         XCTAssertTrue(try session.staleFolders().isEmpty)
+        session.stop()
+    }
+
+    func testPrivatePinsAreTypedOrderedLocalAndRestartSafe() throws {
+        let fixture = try PinParityFixture.load()
+        let dir = try tempDir()
+        let events = Events()
+        var session = try open(dir, "pins", events)
+        let queuedBefore = try session.status().queued
+        let peer = try session.addContact(
+            name: "same name", bundleHex: session.myBundleHex(), hints: [])
+        let group = try session.createGroup(name: "same name", members: [])
+        let targets = [
+            PinTarget(kind: .peer, id: peer),
+            PinTarget(kind: .group, id: group),
+            PinTarget(kind: .noteToSelf, id: nil),
+        ]
+        for target in targets { XCTAssertTrue(try session.pinConversation(target: target)) }
+        XCTAssertFalse(try session.pinConversation(target: targets[0]))
+        _ = try events.wait("pins changed") { event -> Void? in
+            if case .pinsChanged = event { return () }
+            return nil
+        }
+        XCTAssertEqual(
+            fixture.initialTargetKinds,
+            try session.pins().map { pinTargetKindName($0.target.kind) })
+        let reordered = Array(targets.reversed())
+        XCTAssertEqual(reordered, try session.reorderPins(targets: reordered).map(\.target))
+        XCTAssertThrowsError(try session.reorderPins(targets: [targets[0]]))
+        let composed = try session.pinConversations(
+            selection: FolderSelection(kind: .all, id: nil), labels: [], mode: .any)
+        XCTAssertEqual(
+            fixture.composedPinnedTargetKinds,
+            composed.conversations.prefix(3).map { pinTargetKindName($0.target.kind) })
+        XCTAssertTrue(composed.conversations.prefix(3).allSatisfy(\.pinned))
+        XCTAssertTrue(try session.stalePins().isEmpty)
+        XCTAssertEqual(queuedBefore, try session.status().queued)
+        session.stop()
+
+        session = try open(dir, "pins", Events())
+        XCTAssertEqual(reordered, try session.pins().map(\.target))
+        XCTAssertTrue(try session.unpinConversation(target: targets[0]))
+        XCTAssertFalse(try session.unpinConversation(target: targets[0]))
         session.stop()
     }
 }

@@ -75,6 +75,9 @@ struct GroupChatView: View {
                 ToolbarItemGroup(placement: .primaryAction) {
                     Button("Folder") { showFolder = true }
                     Button("Labels") { showLabels = true }
+                    Button(model.isPinned(PinTarget(kind: .group, id: groupId)) ? "Unpin" : "Pin") {
+                        model.togglePin(PinTarget(kind: .group, id: groupId))
+                    }
                     Button("Members") { showMembers = true }
                         .disabled(group == nil)
                 }

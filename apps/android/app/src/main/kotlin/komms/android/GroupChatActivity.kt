@@ -211,8 +211,21 @@ class GroupChatActivity : AppCompatActivity() {
                 showFolderAssignment(FolderTarget(FolderTargetKind.GROUP, groupId), groupName)
                 true
             }
+            R.id.menu_pin -> {
+                togglePin(uniffi.kult_ffi.PinTarget(uniffi.kult_ffi.PinTargetKind.GROUP, groupId))
+                true
+            }
             else -> super.onOptionsItemSelected(item)
         }
+    }
+
+    private fun togglePin(target: uniffi.kult_ffi.PinTarget) {
+        val session = NodeHolder.session ?: return
+        runNode(work = {
+            val wasPinned = session.pinState(target) != null
+            if (wasPinned) session.unpinConversation(target) else session.pinConversation(target)
+            !wasPinned
+        }) { pinned -> toast(if (pinned) getString(R.string.pins_title) else getString(R.string.menu_pin_toggle)) }
     }
 
     override fun onSupportNavigateUp(): Boolean {

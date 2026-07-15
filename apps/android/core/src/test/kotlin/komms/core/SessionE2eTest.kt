@@ -47,6 +47,9 @@ import uniffi.kult_ffi.LabelErrorCode
 import uniffi.kult_ffi.LabelMatchMode
 import uniffi.kult_ffi.LabelTarget
 import uniffi.kult_ffi.LabelTargetKind
+import uniffi.kult_ffi.PinErrorCode
+import uniffi.kult_ffi.PinTarget
+import uniffi.kult_ffi.PinTargetKind
 
 /** Collects node events exactly as an activity's sink would. */
 private class Events {
@@ -100,6 +103,10 @@ class SessionE2eTest {
     private val labelFixture by lazy {
         val root = File(checkNotNull(System.getProperty("komms.repo.root")))
         Json.parseToJsonElement(File(root, "fixtures/b18-label-parity.json").readText()).jsonObject
+    }
+    private val pinFixture by lazy {
+        val root = File(checkNotNull(System.getProperty("komms.repo.root")))
+        Json.parseToJsonElement(File(root, "fixtures/b11-pin-parity.json").readText()).jsonObject
     }
     private fun imageSource(): ByteArray = Base64.getDecoder().decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAQAAAADAgMAAADJmkZVAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAMUExURRAgMHhwaODAoP///zpo6RQAAAADdFJOU9nZ2dfb3kcAAAABYktHRAMRDEzyAAAAB3RJTUUH6gcOFCoDxLmvWQAAACV0RVh0ZGF0ZTpjcmVhdGUAMjAyNi0wNy0xNFQyMDo0MjowMyswMDowMANuTXIAAAAldEVYdGRhdGU6bW9kaWZ5ADIwMjYtMDctMTRUMjA6NDI6MDMrMDA6MDByM/XOAAAAKHRFWHRkYXRlOnRpbWVzdGFtcAAyMDI2LTA3LTE0VDIwOjQyOjAzKzAwOjAwJSbUEQAAAA5JREFUCNdjYGAIZVgFAAGvAQCmulOkAAAAAElFTkSuQmCC",
@@ -896,6 +903,50 @@ class SessionE2eTest {
         assertEquals(1uL, session.deleteFolder(first.id, true))
         assertTrue(session.folderMembership(session.createFolder(first.name).id).isEmpty())
         assertTrue(session.staleFolders().isEmpty())
+        session.stop()
+    }
+
+    @Test
+    fun `private pins are typed ordered local and restart safe`() {
+        val fixture = pinFixture
+        val dir = tempDir()
+        val events = Events()
+        var session = open(dir, "pins", events)
+        val queuedBefore = session.status().queued
+        val peer = session.addContact("same name", session.myBundleHex(), emptyList())
+        val group = session.createGroup("same name", emptyList())
+        val targets = listOf(
+            PinTarget(PinTargetKind.PEER, peer),
+            PinTarget(PinTargetKind.GROUP, group),
+            PinTarget(PinTargetKind.NOTE_TO_SELF, null),
+        )
+        targets.forEach { assertTrue(session.pinConversation(it)) }
+        assertFalse(session.pinConversation(targets[0]))
+        events.wait("pins changed") { it as? Event.PinsChanged }
+        assertEquals(
+            fixture.getValue("initial_target_kinds").jsonArray.map { it.jsonPrimitive.content },
+            session.pins().map { it.target.kind.name.lowercase() },
+        )
+        val reordered = targets.reversed()
+        assertEquals(reordered, session.reorderPins(reordered).map { it.target })
+        val incomplete = assertFailsWith<FfiException.Pin> { session.reorderPins(listOf(targets[0])) }
+        assertEquals(PinErrorCode.INVALID_ORDER, incomplete.code)
+        val composed = session.pinConversations(
+            FolderSelection(FolderSelectionKind.ALL, null), emptyList(), LabelMatchMode.ANY,
+        )
+        assertEquals(
+            fixture.getValue("composed_pinned_target_kinds").jsonArray.map { it.jsonPrimitive.content },
+            composed.conversations.take(3).map { it.target.kind.name.lowercase() },
+        )
+        assertTrue(composed.conversations.take(3).all { it.pinned })
+        assertTrue(session.stalePins().isEmpty())
+        assertEquals(queuedBefore, session.status().queued)
+        session.stop()
+
+        session = open(dir, "pins", Events())
+        assertEquals(reordered, session.pins().map { it.target })
+        assertTrue(session.unpinConversation(targets[0]))
+        assertFalse(session.unpinConversation(targets[0]))
         session.stop()
     }
 }

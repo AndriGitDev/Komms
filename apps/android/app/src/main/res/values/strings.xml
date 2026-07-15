@@ -1,5 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="pins_title">Pinned</string>
+    <string name="pin_unavailable">Unavailable conversation</string>
+    <string name="pin_order">Pin %1$d</string>
+    <string name="menu_pin_toggle">Pin / unpin</string>
+    <string name="pins_manage">Manage pins</string>
+    <string name="pins_earlier">Earlier</string>
+    <string name="pins_later">Later</string>
+    <string name="pins_unpin">Unpin</string>
+    <string name="pins_cleanup">Clean up</string>
     <string name="app_name">Komms</string>
     <string name="notif_channel">Node</string>
     <string name="notif_running">Node running — messages deliver in the background</string>

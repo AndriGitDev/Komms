@@ -66,6 +66,9 @@ struct NoteToSelfView: View {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button("Folder") { showFolder = true }
                 Button("Labels") { showLabels = true }
+                Button(model.isPinned(PinTarget(kind: .noteToSelf, id: nil)) ? "Unpin" : "Pin") {
+                    model.togglePin(PinTarget(kind: .noteToSelf, id: nil))
+                }
             }
         }
         .sheet(isPresented: $showFolder) {

@@ -99,6 +99,11 @@
           </nav>
           <p id="folder-navigation-status" class="sr-status" role="status" aria-live="polite"></p>
         </section>
+        <section id="pinned-section" class="conversation-section" hidden>
+          <div class="contacts-head"><span>Pinned</span></div>
+          <nav id="pinned-list" aria-label="Pinned conversations"></nav>
+          <p id="pin-status" class="sr-status" role="status" aria-live="polite"></p>
+        </section>
         <section class="conversation-section">
           <div class="contacts-head">
             <span>Labels</span>
@@ -164,6 +169,7 @@
           <div>
             <button id="btn-conversation-folder" class="ghost">Move</button>
             <button id="btn-conversation-labels" class="ghost">Labels</button>
+            <button id="btn-conversation-pin" class="ghost" aria-pressed="false">Pin</button>
             <button id="btn-verify" class="ghost">Verify</button>
             <button id="btn-hints" class="ghost">Delivery</button>
             <button id="btn-group-details" class="ghost" hidden>Members</button>
