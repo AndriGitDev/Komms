@@ -37,6 +37,7 @@
     <string name="menu_backup">Backup…</string>
     <string name="menu_settings">Settings</string>
     <string name="menu_lock">Lock</string>
+    <string name="menu_labels">Labels</string>
     <string name="verified_badge">✓ verified</string>
     <string name="my_qr_title">My pairing QR</string>
     <string name="my_qr_caption">Scan on another device, or add by address:\n%1$s</string>
@@ -45,6 +46,58 @@
     <string name="backup_done_title">Backup written — recovery mnemonic</string>
     <string name="backup_done_body">Write these 24 words down on paper. They are shown exactly once and stored nowhere:\n\n%1$s</string>
     <string name="backup_done_ack">I wrote them down</string>
+
+    <!-- Private local labels -->
+    <string name="labels_title">Private labels</string>
+    <string name="labels_manage">Manage labels</string>
+    <string name="labels_empty">No labels. Create one to organize conversations locally.</string>
+    <string name="labels_empty_assignment">No labels exist. Open Manage labels from the conversation list first.</string>
+    <string name="label_create">Create label</string>
+    <string name="label_create_description">Create a private local label</string>
+    <string name="label_edit">Edit</string>
+    <string name="label_edit_description">Edit %1$s</string>
+    <string name="label_save">Save label</string>
+    <string name="label_delete">Delete</string>
+    <string name="label_delete_description">Delete %1$s</string>
+    <string name="label_delete_title">Delete private label?</string>
+    <string name="label_delete_review">Delete %1$s? This atomically removes %2$d conversation assignments. Review before continuing.</string>
+    <string name="label_delete_cancelled">Label deletion cancelled. Nothing changed.</string>
+    <string name="label_deleted">Label deleted with %1$d assignments removed.</string>
+    <string name="label_name">Exact label name</string>
+    <string name="label_color">Label color</string>
+    <string name="label_invalid_name">Use 1–256 UTF-8 bytes and at least one character outside the fixed Pattern White Space set.</string>
+    <string name="label_created">Created %1$s</string>
+    <string name="label_updated">Updated %1$s</string>
+    <string name="label_edit_cancelled">Label edit cancelled. Nothing changed.</string>
+    <string name="label_done">Done</string>
+    <string name="label_accessible_summary">%1$s — %2$s, label %3$d</string>
+    <string name="label_color_neutral">Neutral</string>
+    <string name="label_color_red">Red</string>
+    <string name="label_color_orange">Orange</string>
+    <string name="label_color_yellow">Yellow</string>
+    <string name="label_color_green">Green</string>
+    <string name="label_color_teal">Teal</string>
+    <string name="label_color_blue">Blue</string>
+    <string name="label_color_purple">Purple</string>
+    <string name="label_color_pink">Pink</string>
+    <string name="label_assignment_title">Labels for %1$s</string>
+    <string name="label_assignment_list_description">Private label membership for exactly %1$s</string>
+    <string name="label_assignment_result">%1$s for %2$s is now %3$s. Final membership: %4$d labels.</string>
+    <string name="label_applied">applied</string>
+    <string name="label_removed">removed</string>
+    <string name="label_filter_heading">Filter conversations by labels</string>
+    <string name="label_filter_any">Match any selected label</string>
+    <string name="label_filter_all">Match all selected labels</string>
+    <string name="label_filter_clear">Clear label filter</string>
+    <string name="label_filter_result">%1$d conversations match %2$s selected labels.</string>
+    <string name="label_filter_unavailable">%1$d unavailable selected labels were removed.</string>
+    <string name="label_stale_heading">Unavailable memberships</string>
+    <string name="label_stale_help">These sealed local rows no longer resolve to both a label and an available conversation.</string>
+    <string name="label_stale_cleanup">Clean up unavailable %1$s membership</string>
+    <string name="label_stale_cleanup_description">Remove exactly this stale %1$s label membership</string>
+    <string name="label_stale_cleaned">Unavailable %1$s membership removed.</string>
+    <string name="label_contact_conversation">contact conversation</string>
+    <string name="label_group_conversation">group conversation</string>
 
     <!-- Add contact -->
     <string name="add_title">Add contact</string>

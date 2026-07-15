@@ -46,7 +46,7 @@ accepted designs before individual shells implement UI.
 | Incognito keyboard | Planned | Android control; best available behavior and honest limits elsewhere. |
 | Local still-image editing | Shipped | Keep shared deterministic semantics, cleanup, exact-review, and metadata-removal gates stable; video remains out of scope. |
 | Mentions | Shipped | ADR-0016 canonical peer targets, current-roster composers, conservative group capability gating, and local navigation/notification. |
-| Labels | Planned | Local contact/conversation/message metadata and filtering. |
+| Labels | Shipped (contact/conversation) | Private pairwise, group, and note-to-self labels with fixed limits, stale cleanup, and accessible any/all filtering; message labels remain deferred. |
 | File sharing | Partial | Bounded cross-shell F3 delivery and generic pre-send F4 confirmation are shipped; richer non-image media presentation remains. |
 | Linked devices | Planned | Proximate linking, device keys, sync, revocation, and recovery. |
 | Message editing | Planned | Authenticated revisions and deterministic offline reconciliation. |
@@ -171,8 +171,8 @@ single-folder membership, pins, labels and multi-label membership, drafts, UI
 preferences, and custom icons. The table exposes only row count and approximate
 sealed sizes in a copied database; `KKR4` backs up every user-authored record
 and note-to-self history while `KKR1`, `KKR2`, and `KKR3` remain restorable.
-Feature behavior and shell UX remain
-separate B7/B10-B13/B18 slices.
+Feature behavior and shell UX remain separate B7/B10-B13 slices. B18 uses the
+shipped label record shapes and `KKR4` contract unchanged.
 
 Add sealed local-only records for conversation type, folders, pins, labels,
 drafts, UI preferences, and custom icons. Keep local organization out of network
@@ -499,12 +499,46 @@ policy; they provide no server-push or online-delivery guarantee.
 
 **Depends on:** F5.
 
-Implement private local labels for contacts and conversations first; add message
-labels only if the UI demonstrates value. Support color/name, filtering, and
-multi-label membership. Labels never enter DHT, group state, or message content.
+**State:** shipped through `kult-store`, `kult-node`, RPC/CLI, UniFFI, desktop,
+Android, and iOS. PR #43/B17 was only the administrative branch base; labels have
+no semantic dependency on Mention content. B18 stays inside the accepted F5
+`LabelRecord` and `LabelAssignment` shapes and `KKR4`, so it requires no new
+payload ADR.
 
-Acceptance covers rename/delete, backup/restore, stale references, and accessible
-filter controls.
+Labels target stable pairwise, group, and note-to-self `ConversationId` values.
+Definitions use independently minted random 16-byte IDs, exact UTF-8 names, and
+the canonical `neutral`, `red`, `orange`, `yellow`, `green`, `teal`, `blue`,
+`purple`, and `pink` tokens. Duplicate visible names remain distinct and are
+presented with color plus deterministic insertion order. Empty or fixed
+Pattern_White_Space-only names are rejected without otherwise normalizing or
+rewriting text. Shared limits are 128 live definitions, 8,192 assignments, 32
+labels per conversation, and 256 UTF-8 bytes per name.
+
+Create, get, update, delete, assign, unassign, membership, labels-for-target,
+stale inspection/cleanup, and deterministic match-any/match-all filtering are
+bounded node operations shared by every wrapper. Deletion cascades atomically;
+assign/unassign are idempotent. Unavailable definitions and conversation targets
+stay durably diagnosable but are excluded from active filters. Filters affect
+presentation only, never receipt, notification, delivery, search, unread truth,
+queue work, ordering, or history. `KKR4` preserves exact IDs, names, colors,
+ordering, membership, and stale behavior while KKR1–KKR3 restore unchanged.
+
+All shells provide accessible managers, non-color badges, assignment actions,
+duplicate disambiguation, deletion review, stale states, and any/all filters.
+Android and iOS retain selected filters only in protected device-local state.
+Label data never enters logs, crash reports, OS metadata, envelopes, DHT, group
+state, capability advertisements, sender keys, ratchets, transport hints,
+analytics, or remote notifications; label operations create zero network work.
+There is no server, remote, shared, or linked-device label synchronization.
+
+Acceptance covers exact Unicode and whitespace boundaries, collision retry,
+unknown colors, duplicate names, limit exhaustion, atomic failure/restart,
+arbitrary operation sequences, stale references, delete/recreate isolation,
+KKR1–KKR4 interoperability, copied-database scans, wrapper fixture parity,
+cross-shell accessibility and protected restoration, and zero-network-work
+matrices. Message labels remain deferred pending demonstrated UI value. Folders,
+pins, sorting, roles, shared tags, and generic organization frameworks remain
+outside B18.
 
 ## 5. Build-with-constraints features
 
@@ -735,9 +769,9 @@ reviewable PR:
 2. completed: add group list/history/create/send UI to desktop, Android, and iOS;
 3. completed: build the per-peer carrier capability API and pin mesh-only
    decisions in node, scheduler, and FFI tests;
-4. completed through note-to-self: add the sealed local metadata foundation and
-   first local conversation; scheduled delivery remains its own core
-   queue/storage PR;
+4. completed through B18 labels: add the sealed local metadata foundation,
+   note-to-self, and private contact/conversation labels; message labels remain
+   deferred and scheduled delivery remains its own core queue/storage PR;
 5. completed: write the typed-content and attachment ADRs as separate design
    changes before implementation.
 

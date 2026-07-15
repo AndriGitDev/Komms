@@ -55,6 +55,16 @@ are the node's own, verbatim.
   semantics rather than silently retargeting it. Send rechecks roster and
   capabilities and offers an explicit ordinary-text fallback with no mention
   notification.
+- **Manage private contact and conversation labels** for pairwise contacts,
+  groups, and note-to-self. The SwiftUI manager and assignment sheets support
+  VoiceOver, Dynamic Type, Increased Contrast, Reduce Motion, hardware keyboard
+  operation, exact Unicode/bidi text, duplicate-name color/order cues, non-color
+  badges, destructive review, stale cleanup, and match-any/match-all filters.
+  Selected ids and mode survive scene/background recreation only in a
+  non-synchronizing, this-device-only Keychain item. Shared limits are 128
+  definitions, 8,192 assignments, 32 labels per conversation, and 256 UTF-8
+  bytes per name; canonical colors are `neutral`, `red`, `orange`, `yellow`,
+  `green`, `teal`, `blue`, `purple`, and `pink`.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends (all platforms), compared aloud or by scanning each other's code,
   with a visible verified badge. Key changes are surfaced, never hidden.
@@ -104,6 +114,15 @@ range rejection, exact peer targeting, restoration, and zero signal for plain
 text or similar petnames. Rendering requests no contacts or notification
 permission. Any notification remains on the existing user-controlled path, uses
 a private generic preview, and offers no server-push or online-delivery guarantee.
+
+Label acceptance uses the same deterministic fixture as Rust RPC, UniFFI, and
+Kotlin, covering exact Unicode, stable ids/order, duplicate names, typed targets,
+any/all results, restart, and errors. Labels request no Contacts, Photos,
+notification, local-network, or other permission and never enter notification
+categories, Spotlight, widgets, Siri/App Intents, pasteboard, previews, logs,
+crash/analytics payloads, or ordinary scene restoration. `KKR4` preserves exact
+definitions and memberships; message labels and linked-device synchronization
+remain deferred.
 
 Generated bindings are never committed; `scripts/generate-bindings.sh`
 produces them fresh from the crate. The package is deliberately outside

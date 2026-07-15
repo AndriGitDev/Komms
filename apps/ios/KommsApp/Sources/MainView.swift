@@ -12,6 +12,7 @@ struct MainView: View {
     @State private var showBackup = false
     @State private var showSettings = false
     @State private var showCreateGroup = false
+    @State private var showLabels = false
     @State private var navigation = NavigationPath()
 
     var body: some View {
@@ -31,14 +32,40 @@ struct MainView: View {
                     StatusSection(status: status)
                 }
 
+                Section("Filter conversations by labels") {
+                    if model.labels.isEmpty {
+                        Text("No labels yet").foregroundStyle(.secondary)
+                    }
+                    ForEach(model.labels, id: \.id) { label in
+                        Toggle(isOn: Binding(
+                            get: { model.selectedLabelIds.contains(label.id) },
+                            set: { model.setLabelSelected(label.id, selected: $0) })) {
+                            LabelChip(label: label)
+                        }
+                    }
+                    Picker("Matching", selection: Binding(
+                        get: { model.labelFilterMode },
+                        set: { model.setLabelFilterMode($0) })) {
+                        Text("Match any").tag(LabelMatchMode.any)
+                        Text("Match all").tag(LabelMatchMode.all)
+                    }
+                    .pickerStyle(.segmented)
+                    if model.selectedLabelIds.isEmpty == false {
+                        Button("Clear label filter") { model.clearLabelFilter() }
+                    }
+                }
+
                 Section("Local") {
-                    NavigationLink(value: NoteRoute(id: model.noteToSelfId())) {
+                    if model.targetMatchesLabelFilter(LabelTarget(kind: .noteToSelf, id: nil)) {
+                      NavigationLink(value: NoteRoute(id: model.noteToSelfId())) {
                         VStack(alignment: .leading) {
                             Text("Note to self")
                             Text("Local only")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            LabelBadgeRow(labels: model.labelsForTarget(LabelTarget(kind: .noteToSelf, id: nil)))
                         }
+                      }
                     }
                 }
 
@@ -47,15 +74,18 @@ struct MainView: View {
                         Text("No contacts yet — pair with a friend's QR code.")
                             .foregroundStyle(.secondary)
                     }
-                    ForEach(model.contacts, id: \.peer) { contact in
+                    ForEach(model.contacts.filter { model.targetMatchesLabelFilter(LabelTarget(kind: .peer, id: $0.peer)) }, id: \.peer) { contact in
                         NavigationLink(value: contact.peer) {
-                            HStack {
-                                Text(contact.name)
-                                if contact.verified {
-                                    Image(systemName: "checkmark.seal.fill")
-                                        .foregroundStyle(.green)
-                                        .accessibilityLabel("verified")
+                            VStack(alignment: .leading) {
+                                HStack {
+                                    Text(verbatim: contact.name)
+                                    if contact.verified {
+                                        Image(systemName: "checkmark.seal.fill")
+                                            .foregroundStyle(.green)
+                                            .accessibilityLabel("verified")
+                                    }
                                 }
+                                LabelBadgeRow(labels: model.labelsForTarget(LabelTarget(kind: .peer, id: contact.peer)))
                             }
                         }
                     }
@@ -66,7 +96,7 @@ struct MainView: View {
                         Text("No groups yet — create one from stored contacts.")
                             .foregroundStyle(.secondary)
                     }
-                    ForEach(model.groups.sorted(by: { $0.name < $1.name }), id: \.id) { group in
+                    ForEach(model.groups.filter { model.targetMatchesLabelFilter(LabelTarget(kind: .group, id: $0.id)) }.sorted(by: { $0.name < $1.name }), id: \.id) { group in
                         NavigationLink(value: GroupRoute(id: group.id)) {
                             VStack(alignment: .leading) {
                                 Text(group.name)
@@ -74,6 +104,7 @@ struct MainView: View {
                                      + (group.members.count == 1 ? "member" : "members"))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                                LabelBadgeRow(labels: model.labelsForTarget(LabelTarget(kind: .group, id: group.id)))
                             }
                         }
                     }
@@ -101,6 +132,7 @@ struct MainView: View {
                         Button("My pairing QR") { showMyQr = true }
                         Button("Backup…") { showBackup = true }
                         Button("Network settings") { showSettings = true }
+                        Button("Manage labels") { showLabels = true }
                         Button("Lock", role: .destructive) { model.lock() }
                     } label: {
                         Label("More", systemImage: "ellipsis.circle")
@@ -111,6 +143,7 @@ struct MainView: View {
             .sheet(isPresented: $showAdd) { AddContactView() }
             .sheet(isPresented: $showBackup) { BackupView() }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .sheet(isPresented: $showLabels) { LabelManagerView() }
             .sheet(isPresented: $showCreateGroup) {
                 CreateGroupView { group in
                     showCreateGroup = false

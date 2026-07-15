@@ -20,9 +20,31 @@ extension FfiError {
         switch self {
         case .Startup(let reason): return "startup: \(reason)"
         case .Node(let reason): return reason
+        case .Label(_, let reason): return reason
         case .Stopped: return "node is stopped"
         }
     }
+}
+
+/// B18 resource limits and canonical persisted presentation tokens.
+public let maxLabels = 128
+public let maxLabelAssignments = 8_192
+public let maxLabelsPerConversation = 32
+public let maxLabelNameBytes = 256
+public let labelColors = [
+    "neutral", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink",
+]
+
+private func validateLabelWrite(name: String, color: String) throws {
+    let fixedWhitespace: Set<UInt32> = [
+        0x0009, 0x000a, 0x000b, 0x000c, 0x000d, 0x0020,
+        0x0085, 0x200e, 0x200f, 0x2028, 0x2029,
+    ]
+    guard !name.isEmpty, name.utf8.count <= maxLabelNameBytes,
+          !name.unicodeScalars.allSatisfy({ fixedWhitespace.contains($0.value) }) else {
+        throw InputError("invalid label name")
+    }
+    guard labelColors.contains(color) else { throw InputError("unsupported label color") }
 }
 
 /// QR text for a prekey bundle's hex: uppercase keeps the QR in its compact
@@ -294,6 +316,70 @@ public final class Session: @unchecked Sendable {
     /// Append one sealed local-only note; no transport work is created.
     public func sendNoteToSelf(body: String) throws -> String {
         try node.sendNoteToSelf(body: body)
+    }
+
+    /// Create a private label with exact UTF-8 and canonical color.
+    public func createLabel(name: String, color: String) throws -> Label {
+        try validateLabelWrite(name: name, color: color)
+        return try node.createLabel(name: name, color: color)
+    }
+
+    /// All labels in stable local insertion order.
+    public func labels() throws -> [Label] { try node.labels() }
+
+    /// One label by its explicit stable id.
+    public func label(id: String) throws -> Label { try node.label(label: id) }
+
+    /// Rename/recolor while retaining id, membership, and order.
+    public func updateLabel(id: String, name: String, color: String) throws -> Label {
+        try validateLabelWrite(name: name, color: color)
+        return try node.updateLabel(label: id, name: name, color: color)
+    }
+
+    /// Membership count shown before destructive deletion review.
+    public func labelDeleteAssignmentCount(id: String) throws -> UInt64 {
+        try node.labelDeleteAssignmentCount(label: id)
+    }
+
+    /// Atomic cascade; `confirm` must be true.
+    public func deleteLabel(id: String, confirm: Bool) throws -> UInt64 {
+        try node.deleteLabel(label: id, confirm: confirm)
+    }
+
+    /// Idempotently apply one explicit typed target.
+    public func assignLabel(id: String, target: LabelTarget) throws -> Bool {
+        try node.assignLabel(label: id, target: target)
+    }
+
+    /// Idempotently remove one explicit typed target.
+    public func unassignLabel(id: String, target: LabelTarget) throws -> Bool {
+        try node.unassignLabel(label: id, target: target)
+    }
+
+    /// Active typed targets for one label.
+    public func labelMembership(id: String) throws -> [LabelConversation] {
+        try node.labelMembership(label: id)
+    }
+
+    /// Active labels for one exact typed target.
+    public func labelsForConversation(target: LabelTarget) throws -> [Label] {
+        try node.labelsForConversation(target: target)
+    }
+
+    /// Render-safe stale local membership diagnostics.
+    public func staleLabels() throws -> [StaleLabel] { try node.staleLabels() }
+
+    /// Remove one exact membership only while it remains stale.
+    public func cleanupStaleLabel(id: String, target: LabelTarget) throws -> Bool {
+        try node.cleanupStaleLabel(label: id, target: target)
+    }
+
+    /// Deterministic local any/all filter; empty ids mean no label filter.
+    public func filterLabels(ids: [String], mode: LabelMatchMode) throws -> LabelFilterResult {
+        guard ids.count <= maxLabels else {
+            throw InputError("selected label count exceeds \(maxLabels)")
+        }
+        return try node.filterLabels(labels: ids, mode: mode)
     }
 
     /// Create a sender-key group from stored contacts; returns its id.

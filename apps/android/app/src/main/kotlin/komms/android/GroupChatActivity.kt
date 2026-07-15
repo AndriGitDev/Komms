@@ -38,6 +38,8 @@ import uniffi.kult_ffi.Event
 import uniffi.kult_ffi.Group
 import uniffi.kult_ffi.GroupMentionCapability
 import uniffi.kult_ffi.GroupMessage
+import uniffi.kult_ffi.LabelTarget
+import uniffi.kult_ffi.LabelTargetKind
 import uniffi.kult_ffi.MentionSpan
 import uniffi.kult_ffi.ScheduledConversation
 import uniffi.kult_ffi.ScheduledMessage
@@ -197,6 +199,10 @@ class GroupChatActivity : AppCompatActivity() {
         return when (item.itemId) {
             R.id.menu_group_members -> {
                 showMembers()
+                true
+            }
+            R.id.menu_labels -> {
+                showLabelAssignments(LabelTarget(LabelTargetKind.GROUP, groupId), groupName)
                 true
             }
             else -> super.onOptionsItemSelected(item)

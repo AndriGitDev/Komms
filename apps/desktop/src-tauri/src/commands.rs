@@ -12,8 +12,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::session::{
     NetworkSettings, Session, UiAttachment, UiAudioMedia, UiBundle, UiContact, UiGroup,
-    UiGroupMessage, UiHint, UiImageEditRecipe, UiImageReview, UiMentionCapability, UiMentionSpan,
-    UiMessage, UiNoteMessage, UiSafetyNumber, UiScheduledMessage, UiStatus,
+    UiGroupMessage, UiHint, UiImageEditRecipe, UiImageReview, UiLabel, UiLabelConversation,
+    UiLabelFilterResult, UiLabelTarget, UiMentionCapability, UiMentionSpan, UiMessage,
+    UiNoteMessage, UiSafetyNumber, UiScheduledMessage, UiStaleLabel, UiStatus,
 };
 
 /// The one piece of managed state: the running session, if unlocked.
@@ -350,6 +351,63 @@ forward!(
 forward!(
     /// Stable reserved identity for the local note-to-self conversation.
     note_to_self_id() -> String, |s| Ok(s.note_to_self_id())
+);
+forward!(
+    /// Create one private local label.
+    create_label(name: String, color: String) -> UiLabel, |s| s.create_label(name, color)
+);
+forward!(
+    /// List private labels in stable insertion order.
+    labels() -> Vec<UiLabel>, |s| s.labels()
+);
+forward!(
+    /// Get one private label by exact id.
+    label(label: String) -> UiLabel, |s| s.label(label)
+);
+forward!(
+    /// Rename/recolor one label without changing identity.
+    update_label(label: String, name: String, color: String) -> UiLabel,
+    |s| s.update_label(label, name, color)
+);
+forward!(
+    /// Preview membership count before destructive deletion.
+    label_delete_assignment_count(label: String) -> u64,
+    |s| s.label_delete_assignment_count(label)
+);
+forward!(
+    /// Atomically delete a label and memberships after explicit confirmation.
+    delete_label(label: String, confirm: bool) -> u64, |s| s.delete_label(label, confirm)
+);
+forward!(
+    /// Idempotently assign one label to an exact typed target.
+    assign_label(label: String, target: UiLabelTarget) -> bool, |s| s.assign_label(label, target)
+);
+forward!(
+    /// Idempotently unassign one exact membership.
+    unassign_label(label: String, target: UiLabelTarget) -> bool, |s| s.unassign_label(label, target)
+);
+forward!(
+    /// Active typed conversations for one label.
+    label_membership(label: String) -> Vec<UiLabelConversation>, |s| s.label_membership(label)
+);
+forward!(
+    /// Active labels for one exact typed conversation.
+    labels_for_conversation(target: UiLabelTarget) -> Vec<UiLabel>,
+    |s| s.labels_for_conversation(target)
+);
+forward!(
+    /// Render-safe stale local label memberships.
+    stale_labels() -> Vec<UiStaleLabel>, |s| s.stale_labels()
+);
+forward!(
+    /// Remove one exact membership only while it remains stale.
+    cleanup_stale_label(label: String, target: UiLabelTarget) -> bool,
+    |s| s.cleanup_stale_label(label, target)
+);
+forward!(
+    /// Deterministically filter eligible conversations by labels.
+    filter_labels(labels: Vec<String>, mode: String) -> UiLabelFilterResult,
+    |s| s.filter_labels(labels, mode)
 );
 forward!(
     /// All sealed local-only note-to-self entries.

@@ -30,10 +30,13 @@ mod scheduled;
 
 pub use backup::BACKUP_MAGIC;
 pub use local_metadata::{
-    ConversationId, ConversationMetadata, CustomIconRecord, CustomIconTarget, DraftRecord,
-    FolderAssignment, FolderRecord, LabelAssignment, LabelRecord, LocalMetadataKey,
-    LocalMetadataRecord, PinRecord, UiPreferenceRecord, MAX_CUSTOM_ICON_BYTES, MAX_DRAFT_BYTES,
-    MAX_LOCAL_METADATA_STRING_BYTES, MAX_UI_PREFERENCE_VALUE_BYTES,
+    render_label_color, valid_label_color, valid_label_name, ConversationId, ConversationMetadata,
+    CustomIconRecord, CustomIconTarget, DraftRecord, FolderAssignment, FolderRecord,
+    LabelAssignment, LabelFilterMode, LabelFilterResult, LabelRecord, LocalMetadataKey,
+    LocalMetadataRecord, PinRecord, StaleLabelAssignment, StaleLabelReason, UiPreferenceRecord,
+    LABEL_COLORS, LABEL_ID_RETRY_LIMIT, MAX_CUSTOM_ICON_BYTES, MAX_DRAFT_BYTES, MAX_LABELS,
+    MAX_LABELS_PER_CONVERSATION, MAX_LABEL_ASSIGNMENTS, MAX_LOCAL_METADATA_STRING_BYTES,
+    MAX_UI_PREFERENCE_VALUE_BYTES,
 };
 pub use media::{
     MediaDirection, MediaLimits, MediaObjectRecord, MediaReconciliation, MediaRecord, MediaScope,
@@ -71,6 +74,24 @@ pub enum StoreError {
     MediaState,
     /// A local metadata record exceeds its documented resource bound.
     LocalMetadataBounds,
+    /// A new label name is empty, fixed-Pattern_White_Space-only, or too long.
+    InvalidLabelName,
+    /// A new label color is outside the canonical vocabulary.
+    InvalidLabelColor,
+    /// The stable label id has no durable definition.
+    UnknownLabel,
+    /// The exact typed pairwise/group conversation is unavailable.
+    UnavailableConversation,
+    /// The durable label-definition limit is exhausted.
+    LabelLimit,
+    /// The durable aggregate assignment limit is exhausted.
+    LabelAssignmentLimit,
+    /// One conversation already carries the maximum number of labels.
+    ConversationLabelLimit,
+    /// Random label-id generation exhausted its bounded collision budget.
+    LabelIdCollision,
+    /// A stale-cleanup request now names an active or absent membership.
+    LabelAssignmentActive,
     /// A note-to-self text record is empty or exceeds its documented bound.
     NoteBounds,
 }
@@ -89,6 +110,17 @@ impl std::fmt::Display for StoreError {
             Self::LowStorage => f.write_str("insufficient reserved filesystem space"),
             Self::MediaState => f.write_str("invalid media transfer state"),
             Self::LocalMetadataBounds => f.write_str("local metadata bounds exceeded"),
+            Self::InvalidLabelName => f.write_str("invalid label name"),
+            Self::InvalidLabelColor => f.write_str("unsupported label color"),
+            Self::UnknownLabel => f.write_str("label id does not exist"),
+            Self::UnavailableConversation => {
+                f.write_str("typed conversation target is unavailable")
+            }
+            Self::LabelLimit => f.write_str("label definition limit exhausted"),
+            Self::LabelAssignmentLimit => f.write_str("label assignment limit exhausted"),
+            Self::ConversationLabelLimit => f.write_str("conversation label limit exhausted"),
+            Self::LabelIdCollision => f.write_str("label id collision budget exhausted"),
+            Self::LabelAssignmentActive => f.write_str("label assignment is active or absent"),
             Self::NoteBounds => f.write_str("note-to-self text bounds exceeded"),
         }
     }

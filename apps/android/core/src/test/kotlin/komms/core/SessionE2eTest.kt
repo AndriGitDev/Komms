@@ -18,7 +18,12 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import uniffi.kult_ffi.AttachmentConversation
 import uniffi.kult_ffi.AttachmentDirection
 import uniffi.kult_ffi.AttachmentState
@@ -33,6 +38,10 @@ import uniffi.kult_ffi.ImageEditRecipe
 import uniffi.kult_ffi.ImageEditRegion
 import uniffi.kult_ffi.ImageEditRegionKind
 import uniffi.kult_ffi.MentionSpan
+import uniffi.kult_ffi.LabelErrorCode
+import uniffi.kult_ffi.LabelMatchMode
+import uniffi.kult_ffi.LabelTarget
+import uniffi.kult_ffi.LabelTargetKind
 
 /** Collects node events exactly as an activity's sink would. */
 private class Events {
@@ -79,6 +88,10 @@ private fun listenAddr(session: Session): String {
 private fun multiaddrHint(addr: String) = listOf(HintSpec("multiaddr", addr))
 
 class SessionE2eTest {
+    private val labelFixture by lazy {
+        val root = File(checkNotNull(System.getProperty("komms.repo.root")))
+        Json.parseToJsonElement(File(root, "fixtures/b18-label-parity.json").readText()).jsonObject
+    }
     private fun imageSource(): ByteArray = Base64.getDecoder().decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAQAAAADAgMAAADJmkZVAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAMUExURRAgMHhwaODAoP///zpo6RQAAAADdFJOU9nZ2dfb3kcAAAABYktHRAMRDEzyAAAAB3RJTUUH6gcOFCoDxLmvWQAAACV0RVh0ZGF0ZTpjcmVhdGUAMjAyNi0wNy0xNFQyMDo0MjowMyswMDowMANuTXIAAAAldEVYdGRhdGU6bW9kaWZ5ADIwMjYtMDctMTRUMjA6NDI6MDMrMDA6MDByM/XOAAAAKHRFWHRkYXRlOnRpbWVzdGFtcAAyMDI2LTA3LTE0VDIwOjQyOjAzKzAwOjAwJSbUEQAAAA5JREFUCNdjYGAIZVgFAAGvAQCmulOkAAAAAElFTkSuQmCC",
     )
@@ -715,5 +728,90 @@ class SessionE2eTest {
 
         // A spent handle answers honestly instead of half-working.
         assertFailsWith<FfiException.Stopped> { again.status() }
+    }
+
+    @Test
+    fun `private labels are exact typed local and restart safe`() {
+        val fixture = labelFixture
+        val duplicateName = fixture.getValue("duplicate_name").jsonPrimitive.content
+        val colors = fixture.getValue("create_colors").jsonArray.map { it.jsonPrimitive.content }
+        val dir = tempDir()
+        val events = Events()
+        var session = open(dir, "labels", events)
+        val queuedBefore = session.status().queued
+        val peer = session.addContact("\u2067duplicate\u2069", session.myBundleHex(), emptyList())
+        val group = session.createGroup("e\u0301 group", emptyList())
+        val first = session.createLabel(duplicateName, colors[0])
+        val second = session.createLabel(duplicateName, colors[1])
+        assertNotEquals(first.id, second.id)
+        assertEquals(
+            fixture.getValue("expected_orders").jsonArray.map { it.jsonPrimitive.content.toUInt() },
+            listOf(first.order, second.order),
+        )
+        events.wait("labels changed") { it as? Event.LabelsChanged }
+
+        val peerTarget = LabelTarget(LabelTargetKind.PEER, peer)
+        val groupTarget = LabelTarget(LabelTargetKind.GROUP, group)
+        val noteTarget = LabelTarget(LabelTargetKind.NOTE_TO_SELF, null)
+        listOf(peerTarget, groupTarget, noteTarget).forEach {
+            assertTrue(session.assignLabel(first.id, it))
+        }
+        listOf(groupTarget, noteTarget).forEach {
+            assertTrue(session.assignLabel(second.id, it))
+        }
+        assertFalse(session.assignLabel(second.id, noteTarget))
+        assertEquals(3, session.labelMembership(first.id).size)
+        assertEquals(
+            listOf(LabelTargetKind.PEER, LabelTargetKind.GROUP, LabelTargetKind.NOTE_TO_SELF),
+            session.labelMembership(first.id).map { it.target.kind },
+        )
+        assertEquals(
+            fixture.getValue("membership_target_kinds").jsonArray.map { it.jsonPrimitive.content },
+            session.labelMembership(first.id).map { it.target.kind.name.lowercase() },
+        )
+        assertEquals(
+            listOf(first.id),
+            session.filterLabels(listOf(first.id, first.id), LabelMatchMode.ANY).selected,
+        )
+        assertEquals(
+            fixture.getValue("match_any_target_kinds").jsonArray.map { it.jsonPrimitive.content },
+            session.filterLabels(listOf(first.id), LabelMatchMode.ANY).conversations
+                .map { it.target.kind.name.lowercase() },
+        )
+        assertEquals(
+            fixture.getValue("match_all_target_kinds").jsonArray.map { it.jsonPrimitive.content },
+            session.filterLabels(listOf(first.id, second.id), LabelMatchMode.ALL).conversations
+                .map { it.target.kind.name.lowercase() },
+        )
+        val updated = session.updateLabel(
+            first.id,
+            fixture.getValue("renamed_name").jsonPrimitive.content,
+            fixture.getValue("renamed_color").jsonPrimitive.content,
+        )
+        assertEquals(first.id, updated.id)
+        assertEquals(0u, updated.order)
+        val assignmentCount = fixture.getValue("expected_assignment_count").jsonPrimitive.content.toULong()
+        assertEquals(assignmentCount, session.labelDeleteAssignmentCount(first.id))
+        assertFailsWith<FfiException.Label> { session.deleteLabel(first.id, false) }
+        assertFailsWith<IllegalArgumentException> {
+            session.createLabel(fixture.getValue("whitespace_only_name").jsonPrimitive.content, "red")
+        }
+        assertFailsWith<IllegalArgumentException> {
+            session.createLabel("valid", fixture.getValue("unsupported_color").jsonPrimitive.content)
+        }
+        val invalid = assertFailsWith<FfiException.Label> {
+            session.label(fixture.getValue("invalid_id").jsonPrimitive.content)
+        }
+        assertEquals(LabelErrorCode.INVALID_ID, invalid.code)
+        assertEquals(queuedBefore, session.status().queued)
+        session.stop()
+
+        session = open(dir, "labels", Events())
+        assertEquals(listOf(first.id, second.id), session.labels().map { it.id })
+        assertEquals(3, session.labelMembership(first.id).size)
+        assertEquals(assignmentCount, session.deleteLabel(first.id, true))
+        assertEquals(listOf(second.id), session.labelsForConversation(noteTarget).map { it.id })
+        assertTrue(session.staleLabels().isEmpty())
+        session.stop()
     }
 }

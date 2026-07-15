@@ -12,12 +12,13 @@ use serde_json::{json, Value};
 use kult_node::{
     AttachmentConversation, AttachmentDirection, AttachmentInfo, CarrierCapability,
     CarrierCapabilitySnapshot, ContentStatus, Event, GroupInfo, GroupMentionCapability,
-    MentionCapabilityIssueReason, ScheduledConversation, ScheduledMessageInfo,
+    LabelConversationInfo, LabelFilterInfo, LabelInfo, MentionCapabilityIssueReason,
+    NodeStaleLabelReason, ScheduledConversation, ScheduledMessageInfo, StaleLabelInfo,
     NOTE_TO_SELF_CONVERSATION_ID,
 };
 use kult_store::{
-    DeliveryState, Direction, GroupMessageRecord, MediaTransferState, MessageRecord,
-    NoteMessageRecord,
+    valid_label_color, valid_label_name, ConversationId, DeliveryState, Direction,
+    GroupMessageRecord, MediaTransferState, MessageRecord, NoteMessageRecord, MAX_LABELS,
 };
 use kult_transport::DeliveryHint;
 
@@ -29,6 +30,41 @@ pub struct Request {
     /// The operation.
     #[serde(flatten)]
     pub op: Op,
+}
+
+/// Strictly parse one complete RPC request, rejecting unknown fields and
+/// non-whitespace trailing input instead of silently accepting ambiguity.
+pub fn parse_request(line: &str) -> Result<Request, String> {
+    let mut deserializer = serde_json::Deserializer::from_str(line);
+    let value = Value::deserialize(&mut deserializer).map_err(|error| error.to_string())?;
+    deserializer.end().map_err(|error| error.to_string())?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "request must be a JSON object".to_owned())?;
+    if let Some(op) = object.get("op").and_then(Value::as_str) {
+        if let Some(allowed) = label_request_fields(op) {
+            if let Some(unknown) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
+                return Err(format!("unknown request field: {unknown}"));
+            }
+        }
+    }
+    serde_json::from_value(value).map_err(|error| error.to_string())
+}
+
+fn label_request_fields(op: &str) -> Option<&'static [&'static str]> {
+    match op {
+        "label_create" => Some(&["id", "op", "name", "color"]),
+        "labels" | "label_stale" => Some(&["id", "op"]),
+        "label_get" | "label_delete_preview" | "label_membership" => Some(&["id", "op", "label"]),
+        "label_update" => Some(&["id", "op", "label", "name", "color"]),
+        "label_delete" => Some(&["id", "op", "label", "confirm"]),
+        "label_assign" | "label_unassign" | "label_stale_cleanup" => {
+            Some(&["id", "op", "label", "target"])
+        }
+        "labels_for_conversation" => Some(&["id", "op", "target"]),
+        "label_filter" => Some(&["id", "op", "labels", "mode"]),
+        _ => None,
+    }
 }
 
 /// Every operation the daemon serves. Mirrors the node's command/event API
@@ -177,6 +213,81 @@ pub enum Op {
     },
     /// Read the reserved local note-to-self history.
     NoteToSelfMessages,
+    /// Create one private local label.
+    LabelCreate {
+        /// Exact UTF-8 label name.
+        name: String,
+        /// Canonical color token.
+        color: String,
+    },
+    /// List all private labels in stable insertion order.
+    Labels,
+    /// Get one private label by explicit 32-hex-character id.
+    LabelGet {
+        /// Stable label id.
+        label: String,
+    },
+    /// Rename and recolor one label without changing its id or memberships.
+    LabelUpdate {
+        /// Stable label id.
+        label: String,
+        /// Exact replacement UTF-8 name.
+        name: String,
+        /// Canonical replacement color token.
+        color: String,
+    },
+    /// Read assignment count before destructive label deletion.
+    LabelDeletePreview {
+        /// Stable label id.
+        label: String,
+    },
+    /// Atomically delete one label and all memberships.
+    LabelDelete {
+        /// Stable label id.
+        label: String,
+        /// Must be true; automation cannot delete implicitly.
+        confirm: bool,
+    },
+    /// Idempotently apply a label to an explicit typed conversation.
+    LabelAssign {
+        /// Stable label id.
+        label: String,
+        /// Exact pairwise/group/note-to-self target.
+        target: LabelTargetInput,
+    },
+    /// Idempotently remove one exact membership.
+    LabelUnassign {
+        /// Stable label id.
+        label: String,
+        /// Exact pairwise/group/note-to-self target.
+        target: LabelTargetInput,
+    },
+    /// List active typed conversation membership for one label.
+    LabelMembership {
+        /// Stable label id.
+        label: String,
+    },
+    /// List active labels for one explicit typed conversation.
+    LabelsForConversation {
+        /// Exact pairwise/group/note-to-self target.
+        target: LabelTargetInput,
+    },
+    /// Inspect render-safe stale local label memberships.
+    LabelStale,
+    /// Remove one exact membership only if it remains stale.
+    LabelStaleCleanup {
+        /// Stable label id.
+        label: String,
+        /// Exact pairwise/group/note-to-self target.
+        target: LabelTargetInput,
+    },
+    /// Filter eligible conversations by explicit label ids.
+    LabelFilter {
+        /// Stable label ids, canonically deduplicated by the node.
+        labels: Vec<String>,
+        /// Match-any or match-all semantics.
+        mode: LabelMatchInput,
+    },
     /// Create a sender-key group with stored contacts.
     GroupCreate {
         /// Display name.
@@ -286,6 +397,34 @@ pub struct MentionSpanInput {
     pub target: String,
 }
 
+/// An explicit typed local conversation target for label RPC operations.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum LabelTargetInput {
+    /// Pairwise conversation with an exact peer identity.
+    Peer {
+        /// 64-hex-character peer id.
+        id: String,
+    },
+    /// Sender-key group conversation with an exact group id.
+    Group {
+        /// 64-hex-character group id.
+        id: String,
+    },
+    /// The reserved device-local note-to-self conversation.
+    NoteToSelf,
+}
+
+/// Label filter matching mode on the RPC surface.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LabelMatchInput {
+    /// Match at least one selected label.
+    Any,
+    /// Match every selected label.
+    All,
+}
+
 /// A delivery hint on the wire.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -321,12 +460,23 @@ pub fn ok(id: u64, value: Value) -> String {
 /// A failed response line. Errors are honest and human-readable; nothing is
 /// downgraded to a fake success (docs/09-implementation-guide.md rule 4).
 pub fn err(id: u64, message: &str) -> String {
-    json!({ "id": id, "err": message }).to_string()
+    json!({
+        "id": id,
+        "err": message,
+        "error": {
+            "code": error_code(message),
+            "message": message,
+        },
+    })
+    .to_string()
 }
 
 /// An event line for subscribed connections.
 pub fn event_line(event: &Event) -> String {
     let body = match event {
+        Event::LabelsChanged => json!({
+            "type": "labels_changed",
+        }),
         Event::ScheduledMessageUpdated { id } => json!({
             "type": "scheduled_updated",
             "id": hex_encode(id),
@@ -424,6 +574,120 @@ pub fn event_line(event: &Event) -> String {
         _ => json!({ "type": "unknown" }),
     };
     json!({ "event": body }).to_string()
+}
+
+/// Render one label without sealed bytes, nonces, or unrelated metadata.
+pub fn label_json(label: &LabelInfo) -> Value {
+    json!({
+        "id": hex_encode(&label.id),
+        "name": label.name,
+        "color": label.color,
+        "order": label.order,
+    })
+}
+
+/// Render one exact available typed target and its current local name.
+pub fn label_conversation_json(conversation: &LabelConversationInfo) -> Value {
+    let mut value = conversation_id_json(&conversation.conversation);
+    if let Some(name) = &conversation.display_name {
+        value["name"] = json!(name);
+    }
+    value
+}
+
+/// Render one stale membership diagnostic without storage internals.
+pub fn stale_label_json(stale: &StaleLabelInfo) -> Value {
+    json!({
+        "label": hex_encode(&stale.label),
+        "target": conversation_id_json(&stale.conversation),
+        "reason": match stale.reason {
+            NodeStaleLabelReason::MissingLabel => "missing_label",
+            NodeStaleLabelReason::UnavailableConversation => "unavailable_conversation",
+            NodeStaleLabelReason::MissingLabelAndConversation => "missing_label_and_conversation",
+        },
+    })
+}
+
+/// Render deterministic local filter output.
+pub fn label_filter_json(filter: &LabelFilterInfo) -> Value {
+    json!({
+        "selected": filter.selected.iter().map(|id| hex_encode(id)).collect::<Vec<_>>(),
+        "unavailable_selected": filter.unavailable_selected.iter().map(|id| hex_encode(id)).collect::<Vec<_>>(),
+        "conversations": filter.conversations.iter().map(label_conversation_json).collect::<Vec<_>>(),
+    })
+}
+
+/// Parse one exact typed label target without display-name inference.
+pub fn parse_label_target(target: &LabelTargetInput) -> Result<ConversationId, String> {
+    match target {
+        LabelTargetInput::Peer { id } => Ok(ConversationId::Peer(parse_peer(id)?)),
+        LabelTargetInput::Group { id } => Ok(ConversationId::Group(parse_group(id)?)),
+        LabelTargetInput::NoteToSelf => Ok(ConversationId::NoteToSelf),
+    }
+}
+
+/// Parse one unambiguous 16-byte label id.
+pub fn parse_label(value: &str) -> Result<[u8; 16], String> {
+    hex_decode(value)
+        .ok_or_else(|| "label id must be 32 hexadecimal characters".to_owned())?
+        .try_into()
+        .map_err(|_| "label id must be 32 hexadecimal characters".to_owned())
+}
+
+/// Parse and bound selected ids before avoidable allocation or storage work.
+pub fn parse_selected_labels(values: &[String]) -> Result<Vec<[u8; 16]>, String> {
+    if values.len() > MAX_LABELS {
+        return Err("selected label count exceeds 128".to_owned());
+    }
+    values.iter().map(|value| parse_label(value)).collect()
+}
+
+/// Enforce the shared name/color contract at the RPC boundary.
+pub fn validate_label_write(name: &str, color: &str) -> Result<(), String> {
+    if !valid_label_name(name) {
+        return Err("invalid label name".to_owned());
+    }
+    if !valid_label_color(color) {
+        return Err("unsupported label color".to_owned());
+    }
+    Ok(())
+}
+
+fn conversation_id_json(conversation: &ConversationId) -> Value {
+    match conversation {
+        ConversationId::Peer(peer) => json!({ "type": "peer", "id": hex_encode(peer) }),
+        ConversationId::Group(group) => json!({ "type": "group", "id": hex_encode(group) }),
+        ConversationId::NoteToSelf => json!({ "type": "note_to_self" }),
+    }
+}
+
+/// Render one exact typed target without a display name.
+pub fn label_target_json(conversation: &ConversationId) -> Value {
+    conversation_id_json(conversation)
+}
+
+fn error_code(message: &str) -> &'static str {
+    match message {
+        "invalid label name" | "store error: invalid label name" => "invalid_label_name",
+        "unsupported label color" | "store error: unsupported label color" => "invalid_label_color",
+        "label id must be 32 hexadecimal characters" => "invalid_label_id",
+        "store error: label id does not exist" => "unknown_label",
+        "peer must be hex"
+        | "peer must be 32 bytes"
+        | "group must be hex"
+        | "group must be 32 bytes" => "invalid_target_id",
+        "store error: typed conversation target is unavailable" => "unavailable_target",
+        "store error: label definition limit exhausted" => "label_limit",
+        "store error: label assignment limit exhausted" => "label_assignment_limit",
+        "store error: conversation label limit exhausted" => "conversation_label_limit",
+        "store error: label id collision budget exhausted" => "label_id_collision",
+        "store error: label assignment is active or absent" => "stale_assignment_active",
+        "label deletion requires explicit confirmation" => "confirmation_required",
+        "selected label count exceeds 128" => "selected_label_limit",
+        _ if message.starts_with("bad request:") => "bad_request",
+        _ if message.starts_with("store error:") => "storage_failure",
+        _ => "operation_failed",
+    }
 }
 
 /// One render-safe attachment transfer as JSON. No manifest key, object id,
@@ -765,6 +1029,47 @@ mod tests {
             serde_json::from_str(r#"{"id":4,"op":"note_to_self_send","body":"remember this"}"#)
                 .unwrap();
         assert!(matches!(r.op, Op::NoteToSelfSend { .. }));
+
+        let r = parse_request(
+            &json!({
+                "id": 5,
+                "op": "label_assign",
+                "label": "ab".repeat(16),
+                "target": { "type": "group", "id": "cd".repeat(32) },
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(matches!(r.op, Op::LabelAssign { .. }));
+        assert!(parse_request(
+            &json!({
+                "id": 6,
+                "op": "label_assign",
+                "label": "ab".repeat(16),
+                "target": { "type": "group", "id": "cd".repeat(32), "name": "ambiguous" },
+            })
+            .to_string(),
+        )
+        .is_err());
+        assert!(parse_request(
+            r#"{"id":7,"op":"label_create","name":"private","color":"red","extra":true}"#
+        )
+        .is_err());
+        assert!(parse_request(r#"{"id":8,"op":"labels"} {"id":9,"op":"labels"}"#).is_err());
+    }
+
+    #[test]
+    fn label_errors_are_stable_and_structured() {
+        let value: Value =
+            serde_json::from_str(&err(4, "store error: conversation label limit exhausted"))
+                .unwrap();
+        assert_eq!(value["id"], json!(4));
+        assert_eq!(value["error"]["code"], json!("conversation_label_limit"));
+        assert_eq!(
+            value["err"],
+            json!("store error: conversation label limit exhausted")
+        );
+        assert!(value.to_string().find("label name").is_none());
     }
 
     #[test]

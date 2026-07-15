@@ -3,6 +3,8 @@ package komms.android
 import android.os.Bundle
 import android.view.Gravity
 import android.view.LayoutInflater
+import android.view.Menu
+import android.view.MenuItem
 import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -14,6 +16,8 @@ import java.text.DateFormat
 import java.util.Date
 import uniffi.kult_ffi.Event
 import uniffi.kult_ffi.NoteMessage
+import uniffi.kult_ffi.LabelTarget
+import uniffi.kult_ffi.LabelTargetKind
 
 /** The reserved sealed local conversation. Notes have no transport or delivery state. */
 class NoteToSelfActivity : AppCompatActivity() {
@@ -68,6 +72,22 @@ class NoteToSelfActivity : AppCompatActivity() {
     override fun onSupportNavigateUp(): Boolean {
         finish()
         return true
+    }
+
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menuInflater.inflate(R.menu.note_to_self, menu)
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
+        R.id.menu_labels -> {
+            showLabelAssignments(
+                LabelTarget(LabelTargetKind.NOTE_TO_SELF, null),
+                getString(R.string.note_to_self_title),
+            )
+            true
+        }
+        else -> super.onOptionsItemSelected(item)
     }
 
     private fun refresh() {

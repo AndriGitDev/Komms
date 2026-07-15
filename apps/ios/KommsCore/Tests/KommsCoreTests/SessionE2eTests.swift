@@ -15,6 +15,38 @@ private struct Timeout: Error, CustomStringConvertible {
     var description: String { "timed out waiting for \(what)" }
 }
 
+private struct LabelParityFixture: Decodable {
+    let duplicateName: String
+    let createColors: [String]
+    let expectedOrders: [UInt32]
+    let membershipTargetKinds: [String]
+    let matchAnyTargetKinds: [String]
+    let matchAllTargetKinds: [String]
+    let renamedName: String
+    let renamedColor: String
+    let whitespaceOnlyName: String
+    let unsupportedColor: String
+    let invalidId: String
+    let expectedAssignmentCount: UInt64
+
+    static func load() throws -> Self {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let data = try Data(contentsOf: root.appendingPathComponent("fixtures/b18-label-parity.json"))
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(Self.self, from: data)
+    }
+}
+
+private func labelTargetKindName(_ kind: LabelTargetKind) -> String {
+    switch kind {
+    case .peer: "peer"
+    case .group: "group"
+    case .noteToSelf: "note_to_self"
+    }
+}
+
 /// Collects node events exactly as the app's sink would.
 private final class Events: @unchecked Sendable {
     private var all: [Event] = []
@@ -796,5 +828,79 @@ final class SessionE2eTests: XCTestCase {
                 return XCTFail("expected FfiError.Stopped, got: \(err)")
             }
         }
+    }
+
+    func testPrivateLabelsAreExactTypedLocalAndRestartSafe() throws {
+        let fixture = try LabelParityFixture.load()
+        let dir = try tempDir()
+        let events = Events()
+        var session = try open(dir, "labels", events)
+        let queuedBefore = try session.status().queued
+        let peer = try session.addContact(
+            name: "\u{2067}duplicate\u{2069}", bundleHex: session.myBundleHex(), hints: [])
+        let group = try session.createGroup(name: "e\u{301} group", members: [])
+        let first = try session.createLabel(name: fixture.duplicateName, color: fixture.createColors[0])
+        let second = try session.createLabel(name: fixture.duplicateName, color: fixture.createColors[1])
+        XCTAssertNotEqual(first.id, second.id)
+        XCTAssertEqual(fixture.expectedOrders, [first.order, second.order])
+        _ = try events.wait("labels changed") { event -> Void? in
+            if case .labelsChanged = event { return () }
+            return nil
+        }
+
+        let peerTarget = LabelTarget(kind: .peer, id: peer)
+        let groupTarget = LabelTarget(kind: .group, id: group)
+        let noteTarget = LabelTarget(kind: .noteToSelf, id: nil)
+        for target in [peerTarget, groupTarget, noteTarget] {
+            XCTAssertTrue(try session.assignLabel(id: first.id, target: target))
+        }
+        for target in [groupTarget, noteTarget] {
+            XCTAssertTrue(try session.assignLabel(id: second.id, target: target))
+        }
+        XCTAssertFalse(try session.assignLabel(id: second.id, target: noteTarget))
+        XCTAssertEqual(3, try session.labelMembership(id: first.id).count)
+        XCTAssertEqual(
+            [.peer, .group, .noteToSelf],
+            try session.labelMembership(id: first.id).map(\.target.kind))
+        XCTAssertEqual(
+            fixture.membershipTargetKinds,
+            try session.labelMembership(id: first.id).map { labelTargetKindName($0.target.kind) })
+        XCTAssertEqual(
+            [first.id],
+            try session.filterLabels(ids: [first.id, first.id], mode: .any).selected)
+        XCTAssertEqual(
+            fixture.matchAnyTargetKinds,
+            try session.filterLabels(ids: [first.id], mode: .any).conversations
+                .map { labelTargetKindName($0.target.kind) })
+        XCTAssertEqual(
+            fixture.matchAllTargetKinds,
+            try session.filterLabels(ids: [first.id, second.id], mode: .all).conversations
+                .map { labelTargetKindName($0.target.kind) })
+        let updated = try session.updateLabel(
+            id: first.id, name: fixture.renamedName, color: fixture.renamedColor)
+        XCTAssertEqual(first.id, updated.id)
+        XCTAssertEqual(0, updated.order)
+        XCTAssertEqual(fixture.expectedAssignmentCount, try session.labelDeleteAssignmentCount(id: first.id))
+        XCTAssertThrowsError(try session.deleteLabel(id: first.id, confirm: false))
+        XCTAssertThrowsError(try session.createLabel(name: fixture.whitespaceOnlyName, color: "red"))
+        XCTAssertThrowsError(try session.createLabel(name: "valid", color: fixture.unsupportedColor))
+        XCTAssertThrowsError(try session.label(id: fixture.invalidId)) { error in
+            guard let ffi = error as? FfiError,
+                  case .Label(let code, _) = ffi else {
+                return XCTFail("expected structured label error, got: \(error)")
+            }
+            XCTAssertEqual(.invalidId, code)
+        }
+        XCTAssertEqual(queuedBefore, try session.status().queued)
+        session.stop()
+
+        session = try open(dir, "labels", Events())
+        XCTAssertEqual([first.id, second.id], try session.labels().map(\.id))
+        XCTAssertEqual(3, try session.labelMembership(id: first.id).count)
+        XCTAssertEqual(fixture.expectedAssignmentCount, try session.deleteLabel(id: first.id, confirm: true))
+        XCTAssertEqual(
+            [second.id], try session.labelsForConversation(target: noteTarget).map(\.id))
+        XCTAssertTrue(try session.staleLabels().isEmpty)
+        session.stop()
     }
 }

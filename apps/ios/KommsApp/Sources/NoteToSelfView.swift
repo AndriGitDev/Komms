@@ -10,9 +10,11 @@ struct NoteToSelfView: View {
 
     @State private var draft = ""
     @State private var error: String?
+    @State private var showLabels = false
 
     var body: some View {
         VStack(spacing: 0) {
+            LabelBadgeRow(labels: model.labelsForTarget(LabelTarget(kind: .noteToSelf, id: nil)))
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 8) {
@@ -59,6 +61,14 @@ struct NoteToSelfView: View {
         }
         .navigationTitle("Note to self")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) { Button("Labels") { showLabels = true } }
+        }
+        .sheet(isPresented: $showLabels) {
+            LabelAssignmentView(
+                target: LabelTarget(kind: .noteToSelf, id: nil),
+                targetName: "Note to self")
+        }
         .task {
             if conversationId != model.noteToSelfId() {
                 error = "Unknown local conversation"

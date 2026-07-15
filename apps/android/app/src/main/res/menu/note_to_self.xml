@@ -2,10 +2,6 @@
 <menu xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
     <item
-        android:id="@+id/menu_group_members"
-        android:title="@string/menu_group_members"
-        app:showAsAction="ifRoom" />
-    <item
         android:id="@+id/menu_labels"
         android:title="@string/menu_labels"
         app:showAsAction="ifRoom" />

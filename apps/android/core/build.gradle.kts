@@ -88,6 +88,7 @@ tasks.test {
     dependsOn(buildHostLibrary)
     // Where JNA finds the host-built libkult_ffi at test time.
     systemProperty("jna.library.path", hostLibDir.absolutePath)
+    systemProperty("komms.repo.root", repoRoot.absolutePath)
     // The e2e test boots real nodes (Argon2id, QUIC on loopback) — give it
     // room, and show which scenario is running.
     timeout.set(Duration.ofMinutes(15))

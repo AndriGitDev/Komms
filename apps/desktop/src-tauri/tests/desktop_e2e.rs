@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 use komms_desktop::session::{
     hex_decode, NetworkSettings, Session, UiEvent, UiHint, UiImageCrop, UiImageEditRecipe,
-    UiImageRegion, UiMentionSpan,
+    UiImageRegion, UiLabelTarget, UiMentionSpan,
 };
 use kult_ffi::{
     edit_image, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, KdfChoice,
@@ -1045,4 +1045,114 @@ fn unlock_refuses_wrong_passphrase_and_persists() {
     let saved = NetworkSettings::load(&dir.path().join("alice")).unwrap();
     assert!(!saved.mdns);
     alice.stop();
+}
+
+#[test]
+fn desktop_private_label_manager_assignment_filters_and_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let events = Events::default();
+    let bob_events = Events::default();
+    let alice = open(dir.path(), "alice-labels", &events);
+    let bob = open(dir.path(), "bob-labels", &bob_events);
+    let bob_peer = alice
+        .add_contact(
+            "Same visible target".to_owned(),
+            &bob.my_bundle().unwrap().hex,
+            &multiaddr_hint(listen_addr(&bob)),
+        )
+        .unwrap();
+    let group = alice
+        .create_group("Same visible target".to_owned(), vec![bob_peer.clone()])
+        .unwrap();
+    let peer = UiLabelTarget {
+        kind: "peer".to_owned(),
+        id: Some(bob_peer),
+    };
+    let group_target = UiLabelTarget {
+        kind: "group".to_owned(),
+        id: Some(group),
+    };
+    let note = UiLabelTarget {
+        kind: "note_to_self".to_owned(),
+        id: None,
+    };
+    let queued_before = alice.status().unwrap().queued;
+
+    let first = alice
+        .create_label("\u{2067}e\u{301} 🧭\u{2069}".to_owned(), "blue".to_owned())
+        .unwrap();
+    let duplicate = alice
+        .create_label("\u{2067}e\u{301} 🧭\u{2069}".to_owned(), "pink".to_owned())
+        .unwrap();
+    assert_ne!(first.id, duplicate.id);
+    assert_eq!((first.order, duplicate.order), (0, 1));
+    assert!(alice.assign_label(first.id.clone(), peer.clone()).unwrap());
+    assert!(!alice.assign_label(first.id.clone(), peer.clone()).unwrap());
+    assert!(alice
+        .assign_label(first.id.clone(), group_target.clone())
+        .unwrap());
+    assert!(alice
+        .assign_label(duplicate.id.clone(), peer.clone())
+        .unwrap());
+    assert!(alice
+        .assign_label(duplicate.id.clone(), note.clone())
+        .unwrap());
+
+    let any = alice
+        .filter_labels(
+            vec![first.id.clone(), duplicate.id.clone()],
+            "any".to_owned(),
+        )
+        .unwrap();
+    assert_eq!(any.conversations.len(), 3);
+    let all = alice
+        .filter_labels(
+            vec![duplicate.id.clone(), first.id.clone(), first.id.clone()],
+            "all".to_owned(),
+        )
+        .unwrap();
+    assert_eq!(all.selected, vec![duplicate.id.clone(), first.id.clone()]);
+    assert_eq!(
+        all.conversations,
+        vec![komms_desktop::session::UiLabelConversation {
+            target: peer.clone(),
+            display_name: Some("Same visible target".to_owned()),
+        }]
+    );
+
+    let renamed = alice
+        .update_label(
+            first.id.clone(),
+            " exact\tname ".to_owned(),
+            "teal".to_owned(),
+        )
+        .unwrap();
+    assert_eq!((renamed.id, renamed.order), (first.id.clone(), 0));
+    assert_eq!(alice.label_membership(first.id.clone()).unwrap().len(), 2);
+    assert!(alice.delete_label(first.id.clone(), false).is_err());
+    assert_eq!(
+        alice
+            .label_delete_assignment_count(first.id.clone())
+            .unwrap(),
+        2
+    );
+    assert_eq!(alice.delete_label(first.id, true).unwrap(), 2);
+    assert_eq!(alice.status().unwrap().queued, queued_before);
+    events.wait("local label change", |event| {
+        matches!(event, UiEvent::LabelsChanged)
+    });
+    assert!(events.count(|event| matches!(event, UiEvent::LabelsChanged)) >= 1);
+
+    alice.stop();
+    let alice = open(dir.path(), "alice-labels", &Events::default());
+    let restored = alice.labels().unwrap();
+    assert_eq!(
+        (&restored[0].id, &restored[0].name, &restored[0].color),
+        (&duplicate.id, &duplicate.name, &duplicate.color)
+    );
+    assert_eq!(restored[0].order, 0);
+    assert_eq!(alice.labels_for_conversation(note).unwrap(), restored);
+    assert!(alice.stale_labels().unwrap().is_empty());
+    alice.stop();
+    bob.stop();
 }

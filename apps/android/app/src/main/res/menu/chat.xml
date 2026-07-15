@@ -9,4 +9,8 @@
         android:id="@+id/menu_hints"
         android:title="@string/menu_hints"
         app:showAsAction="never" />
+    <item
+        android:id="@+id/menu_labels"
+        android:title="@string/menu_labels"
+        app:showAsAction="ifRoom" />
 </menu>

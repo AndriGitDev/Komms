@@ -88,10 +88,26 @@
 
       <div id="conversation-lists">
         <section class="conversation-section">
+          <div class="contacts-head">
+            <span>Labels</span>
+            <button id="btn-label-manager" class="ghost" type="button">Manage</button>
+          </div>
+          <fieldset id="label-filters" class="label-filters">
+            <legend class="sr-only">Filter conversations by labels</legend>
+            <div id="label-filter-options"></div>
+            <div class="label-filter-mode" role="radiogroup" aria-label="Label filter matching">
+              <label><input type="radio" name="label-filter-mode" value="any" checked /> Match any</label>
+              <label><input type="radio" name="label-filter-mode" value="all" /> Match all</label>
+            </div>
+            <button id="btn-clear-label-filter" class="ghost" type="button" hidden>Clear label filter</button>
+            <p id="label-filter-status" class="sr-status" role="status" aria-live="polite"></p>
+          </fieldset>
+        </section>
+        <section class="conversation-section">
           <nav aria-label="Local conversations">
             <button id="note-to-self" class="contact" type="button">
               <span class="avatar">N</span>
-              <span class="c-name">Note to self</span>
+              <span class="c-name">Note to self</span><span class="label-badges" data-label-target="note_to_self"></span>
               <span class="c-detail">Local only</span>
             </button>
           </nav>
@@ -131,8 +147,10 @@
           <div>
             <span id="chat-name"></span>
             <span id="chat-verified" class="badge" hidden>verified</span>
+            <span id="chat-label-badges" class="label-badges"></span>
           </div>
           <div>
+            <button id="btn-conversation-labels" class="ghost">Labels</button>
             <button id="btn-verify" class="ghost">Verify</button>
             <button id="btn-hints" class="ghost">Delivery</button>
             <button id="btn-group-details" class="ghost" hidden>Members</button>
@@ -404,6 +422,49 @@
       <input type="text" data-f="value" spellcheck="false" placeholder="/ip4/…/quic-v1/p2p/… or broadcast" />
       <button type="button" class="ghost" data-act="del-hint">✕</button>
     </div>
+  </template>
+
+  <template id="tpl-label-manager">
+    <p class="modal-note">Labels stay sealed on this device. Duplicate names are distinct and shown with color and insertion order.</p>
+    <form data-f="label-form" autocomplete="off">
+      <input type="hidden" data-f="label-id" />
+      <label>Exact label name
+        <input type="text" data-f="label-name" maxlength="256" dir="auto" aria-describedby="label-name-help" />
+      </label>
+      <p id="label-name-help" class="hint">Maximum 256 UTF-8 bytes. Whitespace-only names are rejected.</p>
+      <label>Color
+        <select data-f="label-color">
+          <option value="neutral">Neutral</option><option value="red">Red</option>
+          <option value="orange">Orange</option><option value="yellow">Yellow</option>
+          <option value="green">Green</option><option value="teal">Teal</option>
+          <option value="blue">Blue</option><option value="purple">Purple</option>
+          <option value="pink">Pink</option>
+        </select>
+      </label>
+      <p class="error" data-f="error" role="alert" hidden></p>
+      <div class="row end">
+        <button type="button" class="ghost" data-act="cancel-edit" hidden>Cancel edit</button>
+        <button type="submit" class="primary" data-act="save-label">Create label</button>
+      </div>
+    </form>
+    <div class="label-manager-list" data-f="labels" aria-label="Private labels"></div>
+    <section data-f="stale-section" hidden>
+      <h3>Unavailable memberships</h3>
+      <p class="modal-note">These sealed records no longer resolve to both a label and an available conversation. Cleanup removes only the exact stale record.</p>
+      <div data-f="stale"></div>
+    </section>
+    <p class="sr-status" data-f="result" role="status" aria-live="polite"></p>
+  </template>
+
+  <template id="tpl-conversation-labels">
+    <p class="modal-note" data-f="target-summary"></p>
+    <fieldset class="label-assignment-list">
+      <legend>Membership</legend>
+      <div data-f="labels"></div>
+    </fieldset>
+    <p class="error" data-f="error" role="alert" hidden></p>
+    <p class="sr-status" data-f="result" role="status" aria-live="polite"></p>
+    <div class="row end"><button type="button" class="primary" data-act="done">Done</button></div>
   </template>
 
 </body>

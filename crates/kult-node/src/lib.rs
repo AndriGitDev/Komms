@@ -62,16 +62,22 @@ mod attachment;
 mod carrier;
 mod error;
 mod groups;
+mod labels;
 mod vault;
 
 pub use api::{
     AttachmentConversation, AttachmentDirection, AttachmentInfo, AttachmentMetadata,
     AttachmentObjectInfo, CarrierCapability, CarrierCapabilitySnapshot, Command, ContentStatus,
-    Event, GroupInfo, GroupMentionCapability, MentionCapabilityIssue, MentionCapabilityIssueReason,
-    MentionSpan, ScheduledConversation, ScheduledMessageInfo,
+    Event, GroupInfo, GroupMentionCapability, LabelConversationInfo, LabelFilterInfo, LabelInfo,
+    LabelMatchMode, MentionCapabilityIssue, MentionCapabilityIssueReason, MentionSpan,
+    ScheduledConversation, ScheduledMessageInfo, StaleLabelInfo,
+    StaleLabelReason as NodeStaleLabelReason,
 };
 pub use error::NodeError;
-pub use kult_store::NOTE_TO_SELF_CONVERSATION_ID;
+pub use kult_store::{
+    ConversationId as LabelConversationId, LABEL_COLORS, MAX_LABELS, MAX_LABELS_PER_CONVERSATION,
+    MAX_LABEL_ASSIGNMENTS, MAX_LOCAL_METADATA_STRING_BYTES, NOTE_TO_SELF_CONVERSATION_ID,
+};
 
 use vault::PrekeyVault;
 

@@ -39,6 +39,10 @@ button {
   border: none;
   cursor: pointer;
 }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline: 3px solid #7ed8b6;
+  outline-offset: 2px;
+}
 
 .primary {
   background: var(--accent-dim);
@@ -167,6 +171,32 @@ label.check input { width: auto; margin: 0; }
   flex: none;
 }
 .contact .c-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.label-filters { border: 0; margin: 0; padding: 0 1em 0.65em; }
+.label-filter-option, .label-filter-mode label, .label-assignment-option {
+  display: flex; align-items: center; gap: 0.45em; margin: 0.35em 0; color: var(--text);
+}
+.label-filter-option input, .label-filter-mode input, .label-assignment-option input { width: auto; margin: 0; }
+.label-filter-mode { display: flex; gap: 0.75em; flex-wrap: wrap; }
+.label-filter-mode label { color: var(--text-dim); font-size: 0.78em; }
+.label-badges { display: inline-flex; gap: 0.25em; flex-wrap: wrap; align-items: center; }
+.contact .label-badges { max-width: 6rem; }
+.label-chip {
+  display: inline-flex; align-items: center; gap: 0.3em; max-width: 11rem;
+  border: 1px solid currentColor; border-radius: 999px; padding: 0.08em 0.45em;
+  font-size: 0.7rem; line-height: 1.35; background: var(--bg);
+}
+.label-chip bdi { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.label-chip::before { content: "●"; font-size: 0.7em; }
+.label-color-neutral { color: #aeb7c0; }.label-color-red { color: #ff897d; }
+.label-color-orange { color: #ffad66; }.label-color-yellow { color: #e6cc63; }
+.label-color-green { color: #79cc87; }.label-color-teal { color: #55cbbc; }
+.label-color-blue { color: #77aef8; }.label-color-purple { color: #b59afa; }
+.label-color-pink { color: #f393c5; }
+.label-manager-list, .label-assignment-list { border: 1px solid var(--line); border-radius: 8px; margin-top: 1rem; }
+.label-manager-row, .stale-label-row { display: flex; align-items: center; gap: 0.55em; padding: 0.65em; }
+.label-manager-row + .label-manager-row, .stale-label-row + .stale-label-row { border-top: 1px solid var(--line); }
+.label-manager-row .label-description, .stale-label-row span { flex: 1; min-width: 0; }
+.label-manager-row .label-actions { display: flex; gap: 0.35em; }
 .contact .unread {
   background: var(--accent);
   color: #06281c;
@@ -537,3 +567,20 @@ fieldset.hints legend { color: var(--text-dim); font-size: 0.85em; padding: 0 0.
   word-break: break-word;
 }
 .toast.error { border-left-color: var(--danger); }
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f8fafb; --bg-raised: #ffffff; --bg-hover: #e9f0f2; --line: #b9c5ca;
+    --text: #172126; --text-dim: #4d5f68; --accent: #087b59; --accent-dim: #096849;
+    --danger: #a72e23; --warn: #805900; --bubble-out: #d8eee5; --bubble-in: #edf1f3;
+  }
+  .label-chip { background: #fff; }
+  .label-color-neutral { color: #53616a; }.label-color-red { color: #a72e23; }
+  .label-color-orange { color: #8d4800; }.label-color-yellow { color: #6c5700; }
+  .label-color-green { color: #237332; }.label-color-teal { color: #006e64; }
+  .label-color-blue { color: #205ea6; }.label-color-purple { color: #6645a5; }
+  .label-color-pink { color: #9b2863; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
+}

@@ -48,6 +48,14 @@ security indicators are the node's own, verbatim.
   the exact roster and authenticated capabilities; when semantic Mention is not
   safe, an explicit confirmation can send the exact text without semantics or a
   notification.
+- **Manage private contact and conversation labels** for pairwise contacts,
+  groups, and note-to-self. The accessible manager supports exact Unicode names,
+  duplicate-name disambiguation by translated color name plus stable order,
+  keyboard create/edit/cancel/confirm/delete review, per-conversation assignment,
+  non-color badges, stale-record cleanup, and match-any/match-all navigation
+  filters. Limits are 128 definitions, 8,192 assignments, 32 labels per
+  conversation, and 256 UTF-8 bytes per name; colors persist only as `neutral`,
+  `red`, `orange`, `yellow`, `green`, `teal`, `blue`, `purple`, or `pink`.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends, compared out-of-band, with a visible verified badge.
 - **Transport indicators**: NAT verdict, LAN peers discovered over mDNS,
@@ -109,3 +117,8 @@ directory.
 - Mention target ids, ranges, and text stay inside the encrypted content body.
   Desktop notification handling receives only an endpoint-local render-safe
   signal; it does not promise server push or online delivery.
+- Label ids, names, colors, membership, filters, and stale diagnostics stay in
+  the existing sealed local store or process-local UI state. They never enter
+  envelopes, DHT records, capabilities, analytics, notifications, or logs;
+  filtering changes presentation only. `KKR4` preserves them exactly, while
+  multi-device synchronization and message labels are not implemented.

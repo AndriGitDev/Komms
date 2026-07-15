@@ -20,6 +20,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var attachments: [Attachment] = []
     @Published private(set) var noteHistory: [NoteMessage] = []
     @Published private(set) var status: Status?
+    @Published private(set) var labels: [KommsCore.Label] = []
+    @Published private(set) var staleLabelRecords: [StaleLabel] = []
+    @Published private(set) var conversationLabels: [String: [KommsCore.Label]] = [:]
+    @Published private(set) var matchingLabelTargets: Set<String> = []
+    @Published private(set) var selectedLabelIds: [String] = []
+    @Published private(set) var labelFilterMode: LabelMatchMode = .any
     /// Surfaced node happenings: key changes, held-for-faster-link verdicts.
     @Published var notices: [String] = []
 
@@ -34,6 +40,9 @@ final class AppModel: ObservableObject {
     private var refreshTimer: Timer?
 
     init() {
+        let filter = LabelFilterStore.load()
+        selectedLabelIds = filter.ids
+        labelFilterMode = filter.mode == "all" ? .all : .any
         let temporary = FileManager.default.temporaryDirectory
         let entries = try? FileManager.default.contentsOfDirectory(
             at: temporary, includingPropertiesForKeys: nil
@@ -118,6 +127,10 @@ final class AppModel: ObservableObject {
         noteHistory = []
         status = nil
         notices = []
+        labels = []
+        staleLabelRecords = []
+        conversationLabels = [:]
+        matchingLabelTargets = []
     }
 
     private func adopt(_ session: Session) {
@@ -145,7 +158,7 @@ final class AppModel: ObservableObject {
              .noteToSelfMessageAdded,
              .carrierCapabilityChanged,
              .groupUpdated, .groupMessageReceived, .groupDeliveryUpdated,
-             .attachmentUpdated:
+             .attachmentUpdated, .labelsChanged:
             Task { await refresh() }
         case .mentionReceived:
             notices.append("You were mentioned in a group.")
@@ -174,10 +187,9 @@ final class AppModel: ObservableObject {
         let peers = Array(histories.keys)
         let followedGroups = Array(groupHistories.keys)
         do {
-            let snapshot = try await run { () -> (
-                Status, [Contact], [String: [Message]], [Group], [String: [GroupMessage]],
-                [ScheduledMessage], [Attachment], [NoteMessage]
-            ) in
+            let selected = selectedLabelIds
+            let filterMode = labelFilterMode
+            let snapshot = try await run { () -> AppRefreshSnapshot in
                 var fresh: [String: [Message]] = [:]
                 for peer in peers {
                     fresh[peer] = try session.messages(peer: peer)
@@ -188,19 +200,46 @@ final class AppModel: ObservableObject {
                 for group in followedGroups where liveIds.contains(group) {
                     freshGroups[group] = try session.groupMessages(group: group)
                 }
-                return (
-                    try session.status(), try session.contacts(), fresh,
-                    liveGroups, freshGroups, try session.scheduledMessages(),
-                    try session.attachments(), try session.noteToSelfMessages())
+                let liveContacts = try session.contacts()
+                let filter = try session.filterLabels(ids: selected, mode: filterMode)
+                var memberships: [String: [KommsCore.Label]] = [:]
+                for contact in liveContacts {
+                    let target = LabelTarget(kind: .peer, id: contact.peer)
+                    memberships[AppModel.labelTargetKey(target)] =
+                        try session.labelsForConversation(target: target)
+                }
+                for group in liveGroups {
+                    let target = LabelTarget(kind: .group, id: group.id)
+                    memberships[AppModel.labelTargetKey(target)] =
+                        try session.labelsForConversation(target: target)
+                }
+                let note = LabelTarget(kind: .noteToSelf, id: nil)
+                memberships[AppModel.labelTargetKey(note)] =
+                    try session.labelsForConversation(target: note)
+                return AppRefreshSnapshot(
+                    status: try session.status(), contacts: liveContacts, histories: fresh,
+                    groups: liveGroups, groupHistories: freshGroups,
+                    scheduled: try session.scheduledMessages(), attachments: try session.attachments(),
+                    notes: try session.noteToSelfMessages(), labels: try session.labels(),
+                    stale: try session.staleLabels(), filter: filter, memberships: memberships)
             }
-            status = snapshot.0
-            contacts = snapshot.1
-            histories.merge(snapshot.2) { _, new in new }
-            groups = snapshot.3
-            groupHistories.merge(snapshot.4) { _, new in new }
-            scheduledMessages = snapshot.5
-            attachments = snapshot.6
-            noteHistory = snapshot.7
+            status = snapshot.status
+            contacts = snapshot.contacts
+            histories.merge(snapshot.histories) { _, new in new }
+            groups = snapshot.groups
+            groupHistories.merge(snapshot.groupHistories) { _, new in new }
+            scheduledMessages = snapshot.scheduled
+            attachments = snapshot.attachments
+            noteHistory = snapshot.notes
+            labels = snapshot.labels
+            staleLabelRecords = snapshot.stale
+            conversationLabels = snapshot.memberships
+            matchingLabelTargets = Set(snapshot.filter.conversations.map { Self.labelTargetKey($0.target) })
+            if snapshot.filter.unavailableSelected.isEmpty == false {
+                notices.append("\(snapshot.filter.unavailableSelected.count) unavailable selected label(s) were removed.")
+            }
+            selectedLabelIds = snapshot.filter.selected
+            persistLabelFilter()
         } catch {
             // A stopped handle answers honestly; the gate is already up.
         }
@@ -222,6 +261,47 @@ final class AppModel: ObservableObject {
 
     /// Stable identity used by the local note-to-self route in every shell.
     func noteToSelfId() -> String { session?.noteToSelfId() ?? "" }
+
+    nonisolated static func labelTargetKey(_ target: LabelTarget) -> String {
+        switch target.kind {
+        case .peer: return "peer:\(target.id ?? "")"
+        case .group: return "group:\(target.id ?? "")"
+        case .noteToSelf: return "note_to_self:"
+        }
+    }
+
+    func labelsForTarget(_ target: LabelTarget) -> [KommsCore.Label] {
+        conversationLabels[Self.labelTargetKey(target)] ?? []
+    }
+
+    func targetMatchesLabelFilter(_ target: LabelTarget) -> Bool {
+        selectedLabelIds.isEmpty || matchingLabelTargets.contains(Self.labelTargetKey(target))
+    }
+
+    func setLabelSelected(_ id: String, selected: Bool) {
+        if selected && selectedLabelIds.contains(id) == false { selectedLabelIds.append(id) }
+        else { selectedLabelIds.removeAll { $0 == id } }
+        persistLabelFilter()
+        Task { await refresh() }
+    }
+
+    func setLabelFilterMode(_ mode: LabelMatchMode) {
+        labelFilterMode = mode
+        persistLabelFilter()
+        Task { await refresh() }
+    }
+
+    func clearLabelFilter() {
+        selectedLabelIds = []
+        persistLabelFilter()
+        Task { await refresh() }
+    }
+
+    private func persistLabelFilter() {
+        LabelFilterStore.save(.init(
+            ids: selectedLabelIds,
+            mode: labelFilterMode == .all ? "all" : "any"))
+    }
 
     // MARK: commands (all forwarded verbatim to the session layer)
 
@@ -652,11 +732,69 @@ final class AppModel: ObservableObject {
         try await run { try session.setHints(peer: peer, hints: hints) }
     }
 
+    func createLabel(name: String, color: String) async throws -> KommsCore.Label {
+        guard let session else { throw InputError("node is locked") }
+        let label = try await run { try session.createLabel(name: name, color: color) }
+        await refresh()
+        return label
+    }
+
+    func updateLabel(id: String, name: String, color: String) async throws -> KommsCore.Label {
+        guard let session else { throw InputError("node is locked") }
+        let label = try await run { try session.updateLabel(id: id, name: name, color: color) }
+        await refresh()
+        return label
+    }
+
+    func labelDeleteAssignmentCount(id: String) async throws -> UInt64 {
+        guard let session else { throw InputError("node is locked") }
+        return try await run { try session.labelDeleteAssignmentCount(id: id) }
+    }
+
+    func deleteLabel(id: String) async throws -> UInt64 {
+        guard let session else { throw InputError("node is locked") }
+        let count = try await run { try session.deleteLabel(id: id, confirm: true) }
+        await refresh()
+        return count
+    }
+
+    func setLabel(_ id: String, assigned: Bool, target: LabelTarget) async throws -> [KommsCore.Label] {
+        guard let session else { throw InputError("node is locked") }
+        let final = try await run {
+            if assigned { _ = try session.assignLabel(id: id, target: target) }
+            else { _ = try session.unassignLabel(id: id, target: target) }
+            return try session.labelsForConversation(target: target)
+        }
+        conversationLabels[Self.labelTargetKey(target)] = final
+        return final
+    }
+
+    func cleanupStaleLabel(id: String, target: LabelTarget) async throws {
+        guard let session else { throw InputError("node is locked") }
+        _ = try await run { try session.cleanupStaleLabel(id: id, target: target) }
+        await refresh()
+    }
+
     /// Write the encrypted backup and hand back the one-time mnemonic.
     func exportBackup(to path: URL) async throws -> String {
         guard let session else { throw InputError("node is locked") }
         return try await run { try session.exportBackup(to: path) }
     }
+}
+
+private struct AppRefreshSnapshot: Sendable {
+    let status: Status
+    let contacts: [Contact]
+    let histories: [String: [Message]]
+    let groups: [Group]
+    let groupHistories: [String: [GroupMessage]]
+    let scheduled: [ScheduledMessage]
+    let attachments: [Attachment]
+    let notes: [NoteMessage]
+    let labels: [KommsCore.Label]
+    let stale: [StaleLabel]
+    let filter: LabelFilterResult
+    let memberships: [String: [KommsCore.Label]]
 }
 
 private let attachmentLimit = 512 * 1024 * 1024

@@ -2,8 +2,72 @@
 //! Render-safe attachment state lands here before the planned RPC/UniFFI and
 //! shell adapters; protocol secrets and storage internals never cross it.
 
-use kult_store::{DeliveryState, MediaTransferState};
+use kult_store::{ConversationId, DeliveryState, MediaTransferState};
 use kult_transport::DeliveryHint;
+
+/// Canonical local label filter semantics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LabelMatchMode {
+    /// Match at least one selected label.
+    Any,
+    /// Match every selected label.
+    All,
+}
+
+/// Render-safe local label definition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LabelInfo {
+    /// Random stable local id used by technical mutation APIs.
+    pub id: [u8; 16],
+    /// Exact user-authored UTF-8, without normalization or rewriting.
+    pub name: String,
+    /// Canonical presentation token; unknown stored values safely become neutral.
+    pub color: String,
+    /// Stable zero-based durable insertion order for duplicate disambiguation.
+    pub order: u32,
+}
+
+/// Render-safe available typed conversation target.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LabelConversationInfo {
+    /// Exact stable typed identity.
+    pub conversation: ConversationId,
+    /// Current local petname/group name; absent for note-to-self.
+    pub display_name: Option<String>,
+}
+
+/// Why one durable local label membership is stale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StaleLabelReason {
+    /// Its stable label id has no definition.
+    MissingLabel,
+    /// Its exact conversation target is unavailable.
+    UnavailableConversation,
+    /// Both the label definition and target are unavailable.
+    MissingLabelAndConversation,
+}
+
+/// Render-safe stale membership diagnostic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StaleLabelInfo {
+    /// Exact stable technical label id.
+    pub label: [u8; 16],
+    /// Exact typed target; never a name or list position.
+    pub conversation: ConversationId,
+    /// The unavailable side or sides.
+    pub reason: StaleLabelReason,
+}
+
+/// Deterministic result of a local any/all label filter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LabelFilterInfo {
+    /// Canonically deduplicated available selected ids in caller order.
+    pub selected: Vec<[u8; 16]>,
+    /// Selected ids that no longer have definitions.
+    pub unavailable_selected: Vec<[u8; 16]>,
+    /// Available conversations matching the active selection.
+    pub conversations: Vec<LabelConversationInfo>,
+}
 
 /// Application-facing summary of the best carrier currently known for one
 /// peer. The ordering is semantic rather than a promise that a particular
@@ -408,6 +472,9 @@ pub enum ContentStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event {
+    /// Local label definitions or memberships changed; re-read label state.
+    /// This event never enters an envelope, capability, group state, or transport.
+    LabelsChanged,
     /// A scheduled message was created or edited; re-read the scheduled
     /// outbox for the authoritative record.
     ScheduledMessageUpdated {
