@@ -192,11 +192,16 @@ label.check input { width: auto; margin: 0; }
 .label-color-green { color: #79cc87; }.label-color-teal { color: #55cbbc; }
 .label-color-blue { color: #77aef8; }.label-color-purple { color: #b59afa; }
 .label-color-pink { color: #f393c5; }
-.label-manager-list, .label-assignment-list { border: 1px solid var(--line); border-radius: 8px; margin-top: 1rem; }
-.label-manager-row, .stale-label-row { display: flex; align-items: center; gap: 0.55em; padding: 0.65em; }
-.label-manager-row + .label-manager-row, .stale-label-row + .stale-label-row { border-top: 1px solid var(--line); }
-.label-manager-row .label-description, .stale-label-row span { flex: 1; min-width: 0; }
-.label-manager-row .label-actions { display: flex; gap: 0.35em; }
+.label-manager-list, .label-assignment-list, .folder-manager-list, .folder-assignment-list { border: 1px solid var(--line); border-radius: 8px; margin-top: 1rem; }
+.label-manager-row, .stale-label-row, .folder-manager-row, .stale-folder-row { display: flex; align-items: center; gap: 0.55em; padding: 0.65em; }
+.label-manager-row + .label-manager-row, .stale-label-row + .stale-label-row, .folder-manager-row + .folder-manager-row, .stale-folder-row + .stale-folder-row { border-top: 1px solid var(--line); }
+.label-manager-row .label-description, .stale-label-row span, .folder-manager-row .folder-description, .stale-folder-row span { flex: 1; min-width: 0; }
+.label-manager-row .label-actions, .folder-manager-row .folder-actions { display: flex; gap: 0.35em; }
+.folder-navigation { display: grid; gap: 0.25rem; }
+.folder-navigation > button, #folder-navigation-items > button { width: 100%; text-align: start; }
+#folder-navigation-items { display: grid; gap: 0.25rem; }
+.folder-navigation .active { outline: 2px solid var(--accent); outline-offset: 1px; }
+.folder-assignment-option { display: flex; align-items: center; gap: 0.55rem; padding: 0.65rem; }
 .contact .unread {
   background: var(--accent);
   color: #06281c;
