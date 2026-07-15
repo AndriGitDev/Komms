@@ -14,9 +14,12 @@ for the good guys.** A backdoor is a backdoor; a scanner is a wiretap; infrastru
 built for one purpose is repurposed by the next government, the next breach, the next
 mission-creep amendment.
 
-Komms's answer is architectural rather than rhetorical: build a messenger with **no
-service provider to compel**. You cannot order a checkpoint installed where no
-intermediary exists. See [02: Threat Model](02-threat-model.md), adversary A1.
+Komms's answer is architectural rather than rhetorical: build a messenger with
+**no mandatory content-bearing service provider to compel**. Optional
+reachability and wake services may be pressured to log or deny their own work,
+but they never receive the message keys or plaintext needed for server-side
+scanning, and communication survives without them. See
+[02: Threat Model](02-threat-model.md), adversary A1.
 
 ## The position
 
@@ -40,8 +43,9 @@ serverless mesh messaging is possible but stops at the phone's own radios.
 
 The empty niche Komms targets:
 
-1. **Serverless by architecture**, not by promise: DHT + friend relays + mesh, no
-   component the project must run ([03: Architecture](03-architecture.md)).
+1. **A server-independent core**, not a provider promise: DHT + friend relays +
+   mesh, with no project service required to communicate
+   ([03: Architecture](03-architecture.md)).
 2. **Off-grid as a first-class transport**, not a demo: commodity Meshtastic LoRa radios
    give kilometers of range and multi-hop store-and-forward when networks are shut down
    or shut off ([05: Transports](05-transports.md)).
@@ -65,7 +69,10 @@ and the privacy comes with it.
 ## The commitments
 
 1. Every line of code public, AGPLv3, forkable forever.
-2. No servers we run, no accounts, no identifiers, no telemetry. Nothing to subpoena.
+2. No mandatory service, account, phone number, email, or telemetry. Optional
+   convenience services are public, replaceable, content-blind, and honest about
+   the bounded metadata they can be compelled to disclose or deny
+   ([ADR-0017](adr/0017-optional-hybrid-modes.md)).
 3. No custom crypto primitives; published constructions only; external audit before any
    "stable" label ([08: Roadmap](08-roadmap.md), M6).
 4. Honest limits, in writing: what Komms cannot protect against is documented as

@@ -26,9 +26,12 @@ Listed roughly in ascending order of capability.
 An actor with legal or technical leverage over *service providers*, compelling them to scan,
 filter, or report message content (client-side or server-side).
 
-**Defense**: there is no service provider to compel. No Komms component ever has access
-to plaintext other than the endpoints. There is no server operator who can be ordered to
-insert scanning, because there are no servers; see [03: Architecture](03-architecture.md).
+**Defense**: no service provider is required to communicate, and no relay or
+optional convenience service receives message plaintext or message keys. A
+provider can be compelled to log service-use metadata, deny service, or alter
+its own software, but it cannot add server-side content scanning to ciphertext
+it cannot open. Persistently compromised endpoint software remains A7; optional
+service boundaries are pinned by [ADR-0017](adr/0017-optional-hybrid-modes.md).
 
 ### A2: Passive network observer
 An ISP, IXP tap, or national passive-collection program recording traffic.
@@ -50,19 +53,25 @@ roadmap ([08: Roadmap](08-roadmap.md), M6).
 ### A4: Infrastructure seizure / shutdown
 Confiscation of relays, takedown of bootstrap nodes, or a regional internet blackout.
 
-**Defense**: no single point of failure by construction. Any node can relay; discovery is
-DHT-based with multiple bootstrap paths; the Meshtastic/LoRa fallback functions with zero
-internet infrastructure. Loss of any relay loses nothing but its queued ciphertexts, which
-are sealed and padded.
+**Defense**: no single point of failure exists in the core. Any node can relay;
+discovery is DHT-based with multiple bootstrap paths; the Meshtastic/LoRa
+fallback functions with zero internet infrastructure. Loss of any relay loses
+nothing but its queued ciphertexts, which are sealed and padded. Loss of every
+optional rendezvous or native-wake service removes convenience only and must
+fall back to the same direct, DHT, mailbox, LAN, mesh, and sneakernet paths.
 
-### A5: Malicious peer or relay
-A participant in the network (a relay holding mailboxes, a DHT node, a mesh repeater)
-that logs, drops, replays, or forges traffic.
+### A5: Malicious peer, relay, or optional service
+A participant in the network (a relay holding mailboxes, a DHT node, a mesh
+repeater, rendezvous provider, or native-wake gateway) that logs, drops,
+replays, correlates, or forges traffic.
 
-**Defense**: relays only ever see sealed envelopes (no sender identity, padded sizes,
-opaque recipient tokens). AEAD + ratchet ordering defeats forgery and replay. Dropping is
-mitigated by redundant delivery across transports and delivery receipts; a relay that
-drops everything degrades into adversary A4, already handled.
+**Defense**: relays only ever see sealed envelopes (no sender identity, padded
+sizes, opaque recipient tokens). Rendezvous stores fixed-size encrypted route
+records, and native push carries only a static wake shape. AEAD, ratchet
+ordering, rendezvous generation/expiry checks, and bounded wake capabilities
+defeat accepted-content forgery and stale-state rollback. Services can still
+observe their network metadata and deny work. Redundant core delivery and
+encrypted receipts make total dropping degrade into adversary A4.
 
 ### A6: Retrospective decryption ("harvest now, decrypt later")
 An actor recording ciphertext today, hoping to decrypt it with a future
@@ -90,11 +99,22 @@ user sees; no messenger can prevent that (§5).
 | **Forward secrecy** | Key compromise doesn't expose past messages. | Symmetric + DH ratchets; keys zeroized after use. |
 | **Post-compromise security** | Security self-heals after transient compromise. | DH ratchet steps on every round trip. |
 | **Post-quantum confidentiality** | A6 resistance for content. | Hybrid PQXDH-style handshake (ML-KEM-768). |
-| **Metadata minimization** | Network learns as little as possible about who/when/how much. | Sealed sender, encrypted headers, size-bucket padding, no central rendezvous. |
+| **Metadata minimization** | Network learns as little as possible about who/when/how much. | Sealed sender, encrypted headers, size-bucket padding, no mandatory identity-indexed rendezvous; optional pairwise capabilities. |
 | **Deniability** | Transcripts are not cryptographic proof of authorship to third parties. | No signatures over message content; authentication via shared MAC keys (Signal-style). |
 | **No mandatory identifiers** | No phone number, email, or real name, ever. | Keypair-as-identity ([06: Identity & Trust](06-identity-trust.md)). |
 | **Availability off-grid** | Communication survives infrastructure loss. | Transport abstraction with LoRa mesh + sneakernet fallbacks. |
 | **Sovereignty** | Users hold their own keys and data; anyone can run every component. | Local-first storage, AGPLv3, no privileged nodes. |
+
+Optional Hybrid Infrastructure Layer modes do not change the confidentiality,
+authenticity, deniability, identity, or off-grid goals above. They add a bounded
+metadata surface documented in
+[ADR-0017](adr/0017-optional-hybrid-modes.md): direct Standard-mode requests may
+expose a client address, opaque target, timing, and volume; a native wake gateway
+must learn the provider token it wakes; APNs/FCM observe app-instance delivery.
+Private mode separates client address from target request through Tor or a
+non-colluding OHTTP relay, but it does not promise anonymity against collusion
+or a global passive observer. Service compromise can suppress convenience work
+but cannot decrypt or forge an accepted Komms message.
 
 Private folders and labels are endpoint organization, never communications
 metadata. Their definitions, single-folder assignments, and many-to-many label
@@ -124,15 +144,22 @@ Honesty here is a security feature. Komms does **not** claim to provide:
    Abuse controls are local (blocklists, contact gating, proof-of-work on introductions).
 5. **Guaranteed delivery latency.** Store-and-forward over intermittent transports is
    eventually-consistent by design; the UI must communicate delivery state truthfully.
+6. **Metadata invisibility from an enabled convenience service.** Pairwise
+   capabilities prevent public enumeration, not observation of connections,
+   timing, volume, or a native provider destination at the component that must
+   process it.
+7. **Guaranteed mobile background execution.** APNs/FCM and the operating system
+   may throttle, delay, coalesce, or discard a wake; force-quit, permissions,
+   battery policy, and provider outage remain honest failure cases.
 
 ## 5. Residual-risk summary
 
 | Adversary | Residual risk |
 |---|---|
-| A1 | None by architecture (no scannable intermediary exists). |
-| A2 | Coarse traffic patterns on the internet transport until cover-traffic/Tor milestones land. |
+| A1 | No server-side content-scanning point exists; malicious or compelled endpoint software remains A7. |
+| A2 | Coarse traffic patterns on internet transport and enabled convenience services until cover-traffic/Tor mitigations apply. |
 | A3 | Determined national censor can degrade internet transport; off-grid transports remain. |
-| A4 | Regional mesh partitions until a bridge node appears; sneakernet covers the gap. |
-| A5 | Targeted denial by a well-placed relay; mitigated by multipath redundancy. |
+| A4 | Regional mesh partitions until a bridge node appears; optional-service outage loses convenience, not core communication. |
+| A5 | Targeted denial and service-use correlation by a well-placed component; denial is mitigated by multipath core fallback. |
 | A6 | Broken only if *both* X25519 and ML-KEM-768 fail. |
 | A7 | Persistent endpoint compromise is out of scope; transient compromise is healed. |

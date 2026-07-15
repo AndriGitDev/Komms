@@ -54,6 +54,23 @@ two users who exchange a QR code need no bootstrap at all.
 DPI resistance (pluggable obfuscated transports, arti/Tor onion services as a transport)
 is milestone M6: tracked, not hand-waved.
 
+### 2.1 Optional post-pairing reachability and native wake
+
+The Hybrid Infrastructure Layer is a proposed convenience adjunct, not another
+message transport. [ADR-0018](adr/0018-pairwise-rendezvous.md) lets established
+peers store fixed-size encrypted `DeliveryHint` records under rotating pairwise
+slots. The DHT remains first-contact discovery, and recipient-selected mailbox
+relays remain durable store-and-forward. Rendezvous success alone is not a
+`SendReceipt` or F4 capability; `kult-node` must probe the returned hint through
+the ordinary transport contract.
+
+[ADR-0019](adr/0019-native-wake-gateway.md) emits a static APNs/FCM tick only
+after a direct peer or mailbox acknowledged the sealed envelope. It carries no
+envelope or conversation data, and provider acknowledgement never changes
+delivery state. Sovereign mode registers with neither service. Private mode
+uses Tor or a non-colluding Oblivious HTTP ingress; Standard mode uses direct
+HTTPS. Complete failure falls back to the unchanged transports in this document.
+
 ## 3. Proximity transports
 
 - **mDNS/LAN**: automatic discovery and direct QUIC on shared Wi-Fi. Covers the

@@ -1,8 +1,11 @@
 # 03: Architecture
 
-Komms is a **local-first, serverless** messaging system. Every installation is a full
-peer: it holds its own keys, stores its own history, and can relay for others. There is no
-component in the system that must be operated by the project or any single party.
+Komms is a **local-first, server-independent** messaging system. Every
+installation is a full peer: it holds its own keys, stores its own history, and
+can relay for others. No component that carries or stores messages must be
+operated by the project or any single party. Optional post-pairing rendezvous
+and native-wake services may accelerate mobile reachability under ADR-0017, but
+they are neither message transports nor dependencies of the core.
 
 ## 1. Layer model
 
@@ -110,9 +113,31 @@ mechanisms, in preference order:
 
 A message may traverse all three; deduplication makes redundancy safe and encouraged.
 
+### 4.1 Optional reachability and wake acceleration
+
+[ADR-0017](adr/0017-optional-hybrid-modes.md) defines Sovereign, Private, and
+Standard modes over the same core. In the optional modes:
+
+1. [ADR-0018](adr/0018-pairwise-rendezvous.md) stores a fixed-size encrypted
+   route record under rotating provider- and direction-specific pairwise slots.
+   It supplements post-pairing hints; it never replaces signed DHT/QR first
+   contact or a mailbox.
+2. [ADR-0019](adr/0019-native-wake-gateway.md) lets a sender present a bounded
+   per-contact capability after a direct peer or mailbox accepted the sealed
+   envelope. APNs/FCM receives a static wake shape and no conversation data.
+3. `kult-node` merges source-scoped expiring hints, lets F4 probe them, and runs
+   one bounded generic collection cycle on wake. Optional-service responses do
+   not authenticate peers or change message delivery state.
+
+Pure derivation and record sealing remain in `kult-crypto`; bounded encodings
+remain in `kult-protocol`; I/O adapters receive only opaque requests in
+`kult-transport`; orchestration remains in `kult-node`. Rendezvous and wake
+server binaries are outside the client dependency graph. Blackholing every such
+server must reproduce Sovereign-mode behavior without migration or data loss.
+
 ## 5. What intermediaries see
 
-A relay, DHT node, or mesh repeater observes only:
+A relay, DHT node, or mesh repeater carrying Komms envelopes observes only:
 
 - an opaque, rotating **delivery token** (unlinkable to the recipient's identity key by
   anyone but the recipient and, per-message, the sender),
@@ -122,6 +147,10 @@ A relay, DHT node, or mesh repeater observes only:
 No sender identity, no recipient identity, no timestamps beyond arrival time, no
 conversation linkage. This is the **sealed sender** property; the construction is specified
 in [04: Cryptography §7](04-cryptography.md).
+
+This paragraph does not describe an enabled optional rendezvous or native-wake
+service. Their bounded but non-zero metadata surfaces are listed in
+[02: Threat Model](02-threat-model.md) and ADR-0017.
 
 ## 6. Groups
 

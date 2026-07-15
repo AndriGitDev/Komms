@@ -277,6 +277,15 @@ Sender-key groups polish → OpenMLS for large groups; censorship-resistant tran
 **external security audit** of `kult-crypto` + `kult-protocol`; F-Droid and store
 distribution.
 
+The optional Hybrid Infrastructure Layer is proposed as an independent M6
+adoption track under ADR-0017 through ADR-0019: explicit Sovereign/Private/
+Standard modes, rotating post-pairing rendezvous, and capability-gated
+content-free native wake. It is not implementation-ready until those ADRs are
+accepted. The track must preserve the Google-free Android artifact, keep DHT/
+QR as first-contact discovery and volunteer mailboxes as durable delivery, and
+pass a blackhole test proving that loss of every optional service leaves the
+existing direct, LAN, mesh, mailbox, and sneakernet paths intact.
+
 Sender-key groups v1 is in through the core stack (ADR-0012, construction pinned
 in [04: Cryptography §6](04-cryptography.md)): per-member forward-ratcheting
 chains in `kult-crypto` with the pairwise delay-tolerance bounds, group message

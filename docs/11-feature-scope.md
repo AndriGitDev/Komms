@@ -144,6 +144,18 @@ and degrade honestly, exactly as the delivery ladder already does.
   libp2p path vs. a constrained WebRTC media path), call-setup signaling that
   stays metadata-blind over the pairwise ratchet, and measured qualification of
   any relayed path for the carrier-gating rule.
+- **Optional hybrid reachability and native wake.** In scope only as a
+  reversible convenience plane over the unchanged server-independent core.
+  Established peers may use rotating provider-specific rendezvous slots for
+  encrypted route hints, and a sender may emit a content-free APNs/FCM wake only
+  after a direct peer or recipient-selected mailbox accepted the sealed
+  envelope. DHT/QR remains first-contact discovery, mailboxes remain durable
+  delivery, encrypted receipts remain delivery truth, and complete service
+  failure falls back to Sovereign mode. Standard mode discloses service-use
+  metadata; Private mode reduces source/target linkage through Tor or a
+  non-colluding OHTTP relay without promising global anonymity. The feature is
+  governed by proposed ADR-0017, ADR-0018, and ADR-0019 and does not ship until
+  all three are accepted.
 
 ## Deferred or declined (fights the model)
 
@@ -152,8 +164,9 @@ operation, or would collapse a mesh. Any of these would need a compelling ADR to
 move.
 
 - **Call links.** A reusable link needs a rendezvous and routing design for a
-  caller who has no established pairwise session with a reachable endpoint. No
-  metadata-preserving, serverless design has been accepted. Declined.
+  caller who has no established pairwise session with a reachable endpoint.
+  ADR-0018 deliberately creates slots only after pairing and does not solve this
+  first-contact problem. No acceptable design has been accepted. Declined.
 - **Very large groups (1,000+).** Over mesh/radio, fanning one message out to
   hundreds of members causes packet collisions and network collapse. Group caps
   stay low for mesh-reachable groups; large-group work (OpenMLS, M6) targets

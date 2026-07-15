@@ -7,14 +7,15 @@
 Komms is a messenger being built so that **nobody between you and the person
 you're writing to can read, scan, or block your messages**: not a company, not a
 government scanner, not the network itself. Not because a policy promises it, but
-because the system is built without any middleman who *could*.
+because the messages protect themselves and no mandatory provider can open them.
 
 Three things make it different from the messengers you know:
 
-1. **There is no company in the middle.** WhatsApp, Telegram, even Signal run servers
-   your messages pass through, operated by an organization that can be pressured,
-   banned, or ordered to install scanning. Komms has no servers. Messages travel
-   directly between devices, through volunteers, or over radio.
+1. **There is no mandatory company in the middle.** WhatsApp, Telegram, even
+   Signal depend on servers operated by one organization. Komms messages travel
+   directly between devices, through volunteers, or over radio. Optional
+   convenience services can help wake a sleeping phone or find a paired friend,
+   but they cannot read messages and communication still works without them.
 2. **It works when the internet doesn't.** Messages can travel over small,
    ~€30 [Meshtastic](https://meshtastic.org) radios (kilometres of range, no SIM card,
    no infrastructure), between phones nearby, or even on a USB stick carried in a
@@ -43,7 +44,8 @@ ability to communicate during internet shutdowns.
 
 **It cannot protect**: a phone that is already hacked or taken from you unlocked;
 the fact that a radio transmission physically happened (radio can be detected); you,
-if the person you message shares your messages. No honest tool claims otherwise.
+if the person you message shares your messages; or all timing/network metadata
+when you enable an optional convenience service. No honest tool claims otherwise.
 Our full, frank list is in the [threat model](02-threat-model.md).
 
 ## Can I use it today?
