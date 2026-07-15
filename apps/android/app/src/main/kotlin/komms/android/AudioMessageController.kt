@@ -141,13 +141,18 @@ class AudioMessageController(
         if (focus != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
             return activity.toast(activity.getString(R.string.audio_focus_failed))
         }
-        val audio = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-            AUDIO_RATE,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            minimum * 2,
-        )
+        val audio = try {
+            AudioRecord(
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                AUDIO_RATE,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                minimum * 2,
+            )
+        } catch (_: SecurityException) {
+            audioManager.abandonAudioFocus(focusListener)
+            return activity.toast(activity.getString(R.string.audio_record_failed))
+        }
         if (audio.state != AudioRecord.STATE_INITIALIZED) {
             audio.release()
             audioManager.abandonAudioFocus(focusListener)

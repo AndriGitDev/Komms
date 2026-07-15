@@ -28,8 +28,11 @@ use kult_ffi::{
     probe_recorded_audio, Attachment, AttachmentConversation, AttachmentDirection, AttachmentState,
     AudioInfo, CarrierCapability, Config, ContentKind, DeliveryState, Direction, Event,
     EventListener, Hint, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind,
-    ImageInfo, KdfChoice, KultNode, MentionCapabilityIssueReason, MentionSpan, NatVerdict,
-    ScheduledConversation, AUDIO_MAX_BYTES, AUDIO_MEDIA_TYPE, IMAGE_MAX_INPUT_BYTES,
+    ImageInfo, KdfChoice, KultNode, Label as FfiLabel, LabelConversation as FfiLabelConversation,
+    LabelFilterResult as FfiLabelFilterResult, LabelMatchMode as FfiLabelMatchMode,
+    LabelTarget as FfiLabelTarget, LabelTargetKind as FfiLabelTargetKind,
+    MentionCapabilityIssueReason, MentionSpan, NatVerdict, ScheduledConversation,
+    StaleLabel as FfiStaleLabel, AUDIO_MAX_BYTES, AUDIO_MEDIA_TYPE, IMAGE_MAX_INPUT_BYTES,
     IMAGE_MEDIA_TYPE,
 };
 
@@ -373,6 +376,136 @@ pub struct UiContact {
     pub name: String,
     /// Whether safety numbers were verified out-of-band.
     pub verified: bool,
+}
+
+/// Exact typed conversation target for local label operations.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiLabelTarget {
+    /// `peer`, `group`, or `note_to_self`.
+    pub kind: String,
+    /// Stable peer/group id, absent for note-to-self.
+    pub id: Option<String>,
+}
+
+impl UiLabelTarget {
+    fn to_ffi(&self) -> Result<FfiLabelTarget, String> {
+        let kind = match self.kind.as_str() {
+            "peer" => FfiLabelTargetKind::Peer,
+            "group" => FfiLabelTargetKind::Group,
+            "note_to_self" => FfiLabelTargetKind::NoteToSelf,
+            _ => return Err("label target kind must be peer, group, or note_to_self".to_owned()),
+        };
+        Ok(FfiLabelTarget {
+            kind,
+            id: self.id.clone(),
+        })
+    }
+
+    fn from_ffi(target: FfiLabelTarget) -> Self {
+        Self {
+            kind: match target.kind {
+                FfiLabelTargetKind::Peer => "peer",
+                FfiLabelTargetKind::Group => "group",
+                FfiLabelTargetKind::NoteToSelf => "note_to_self",
+            }
+            .to_owned(),
+            id: target.id,
+        }
+    }
+}
+
+/// Render-safe private label definition.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UiLabel {
+    /// Stable random 32-hex-character technical id.
+    pub id: String,
+    /// Exact UTF-8 label text.
+    pub name: String,
+    /// Canonical safe color token.
+    pub color: String,
+    /// Stable durable insertion order.
+    pub order: u32,
+}
+
+impl UiLabel {
+    fn from_ffi(label: FfiLabel) -> Self {
+        Self {
+            id: label.id,
+            name: label.name,
+            color: label.color,
+            order: label.order,
+        }
+    }
+}
+
+/// One currently available conversation in label output.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UiLabelConversation {
+    /// Exact typed target.
+    pub target: UiLabelTarget,
+    /// Current render-only local name, absent for note-to-self.
+    pub display_name: Option<String>,
+}
+
+impl UiLabelConversation {
+    fn from_ffi(value: FfiLabelConversation) -> Self {
+        Self {
+            target: UiLabelTarget::from_ffi(value.target),
+            display_name: value.display_name,
+        }
+    }
+}
+
+/// Render-safe stale membership cleanup row.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UiStaleLabel {
+    /// Stable technical label id.
+    pub label: String,
+    /// Exact typed target.
+    pub target: UiLabelTarget,
+    /// Stable diagnostic reason.
+    pub reason: &'static str,
+}
+
+impl UiStaleLabel {
+    fn from_ffi(value: FfiStaleLabel) -> Self {
+        Self {
+            label: value.label,
+            target: UiLabelTarget::from_ffi(value.target),
+            reason: match value.reason {
+                kult_ffi::StaleLabelReason::MissingLabel => "missing_label",
+                kult_ffi::StaleLabelReason::UnavailableConversation => "unavailable_conversation",
+                kult_ffi::StaleLabelReason::MissingLabelAndConversation => {
+                    "missing_label_and_conversation"
+                }
+            },
+        }
+    }
+}
+
+/// Deterministic local any/all label filter output.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UiLabelFilterResult {
+    /// Canonically deduplicated available selections.
+    pub selected: Vec<String>,
+    /// Selected ids that no longer exist.
+    pub unavailable_selected: Vec<String>,
+    /// Eligible matching targets.
+    pub conversations: Vec<UiLabelConversation>,
+}
+
+impl UiLabelFilterResult {
+    fn from_ffi(value: FfiLabelFilterResult) -> Self {
+        Self {
+            selected: value.selected,
+            unavailable_selected: value.unavailable_selected,
+            conversations: value
+                .conversations
+                .into_iter()
+                .map(UiLabelConversation::from_ffi)
+                .collect(),
+        }
+    }
 }
 
 /// A message row for the UI. `state` is one of `queued`, `sent`,
@@ -789,6 +922,8 @@ pub enum UiEvent {
         /// Current render-safe transfer state.
         attachment: UiAttachment,
     },
+    /// Private local label definitions or memberships changed.
+    LabelsChanged,
 }
 
 impl UiEvent {
@@ -868,6 +1003,7 @@ impl UiEvent {
             Event::AttachmentUpdated { attachment } => Self::AttachmentUpdated {
                 attachment: UiAttachment::from_ffi(attachment),
             },
+            Event::LabelsChanged => Self::LabelsChanged,
         }
     }
 }
@@ -1694,6 +1830,135 @@ impl Session {
     /// Stable reserved identity for the local note-to-self conversation.
     pub fn note_to_self_id(&self) -> String {
         self.node.note_to_self_id()
+    }
+
+    /// Create one private local label.
+    pub fn create_label(&self, name: String, color: String) -> Result<UiLabel, String> {
+        self.node
+            .create_label(name, color)
+            .map(UiLabel::from_ffi)
+            .map_err(|e| e.to_string())
+    }
+
+    /// List labels in stable insertion order.
+    pub fn labels(&self) -> Result<Vec<UiLabel>, String> {
+        Ok(self
+            .node
+            .labels()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(UiLabel::from_ffi)
+            .collect())
+    }
+
+    /// Get one label by exact technical id.
+    pub fn label(&self, label: String) -> Result<UiLabel, String> {
+        self.node
+            .label(label)
+            .map(UiLabel::from_ffi)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Rename/recolor one label without changing identity or membership.
+    pub fn update_label(
+        &self,
+        label: String,
+        name: String,
+        color: String,
+    ) -> Result<UiLabel, String> {
+        self.node
+            .update_label(label, name, color)
+            .map(UiLabel::from_ffi)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Preview the number of memberships removed by a label deletion.
+    pub fn label_delete_assignment_count(&self, label: String) -> Result<u64, String> {
+        self.node
+            .label_delete_assignment_count(label)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Atomically delete a label and all memberships after explicit confirmation.
+    pub fn delete_label(&self, label: String, confirm: bool) -> Result<u64, String> {
+        self.node
+            .delete_label(label, confirm)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Idempotently assign a label to an exact typed target.
+    pub fn assign_label(&self, label: String, target: UiLabelTarget) -> Result<bool, String> {
+        self.node
+            .assign_label(label, target.to_ffi()?)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Idempotently unassign a label from an exact typed target.
+    pub fn unassign_label(&self, label: String, target: UiLabelTarget) -> Result<bool, String> {
+        self.node
+            .unassign_label(label, target.to_ffi()?)
+            .map_err(|e| e.to_string())
+    }
+
+    /// List active membership for one label.
+    pub fn label_membership(&self, label: String) -> Result<Vec<UiLabelConversation>, String> {
+        Ok(self
+            .node
+            .label_membership(label)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(UiLabelConversation::from_ffi)
+            .collect())
+    }
+
+    /// List active labels for an exact typed conversation.
+    pub fn labels_for_conversation(&self, target: UiLabelTarget) -> Result<Vec<UiLabel>, String> {
+        Ok(self
+            .node
+            .labels_for_conversation(target.to_ffi()?)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(UiLabel::from_ffi)
+            .collect())
+    }
+
+    /// Render-safe stale local label membership diagnostics.
+    pub fn stale_labels(&self) -> Result<Vec<UiStaleLabel>, String> {
+        Ok(self
+            .node
+            .stale_labels()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(UiStaleLabel::from_ffi)
+            .collect())
+    }
+
+    /// Remove one exact membership only while it remains stale.
+    pub fn cleanup_stale_label(
+        &self,
+        label: String,
+        target: UiLabelTarget,
+    ) -> Result<bool, String> {
+        self.node
+            .cleanup_stale_label(label, target.to_ffi()?)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Filter eligible conversations locally with deterministic any/all semantics.
+    pub fn filter_labels(
+        &self,
+        labels: Vec<String>,
+        mode: String,
+    ) -> Result<UiLabelFilterResult, String> {
+        let mode = match mode.as_str() {
+            "any" => FfiLabelMatchMode::Any,
+            "all" => FfiLabelMatchMode::All,
+            _ => return Err("label filter mode must be any or all".to_owned()),
+        };
+        self.node
+            .filter_labels(labels, mode)
+            .map(UiLabelFilterResult::from_ffi)
+            .map_err(|e| e.to_string())
     }
 
     /// All sealed local-only note-to-self entries.

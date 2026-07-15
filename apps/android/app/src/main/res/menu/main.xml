@@ -14,6 +14,10 @@
         android:title="@string/menu_my_qr"
         app:showAsAction="never" />
     <item
+        android:id="@+id/menu_labels"
+        android:title="@string/labels_manage"
+        app:showAsAction="never" />
+    <item
         android:id="@+id/menu_backup"
         android:title="@string/menu_backup"
         app:showAsAction="never" />

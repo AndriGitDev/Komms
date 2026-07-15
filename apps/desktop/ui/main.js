@@ -18,6 +18,8 @@ const state = {
   peer: "",
   contacts: [],
   groups: [],
+  labels: [],
+  labelFilter: { selected: [], mode: "any", matches: null },
   noteToSelfId: null,
   currentKind: null, // "contact", "group", or "note"
   currentId: null,
@@ -73,6 +75,53 @@ function fmtTime(unixSecs) {
   return today
     ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     : d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+const LABEL_COLORS = ["neutral", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink"];
+const LABEL_COLOR_NAMES = Object.fromEntries(LABEL_COLORS.map((color) => [color, color[0].toUpperCase() + color.slice(1)]));
+
+function labelCue(label) {
+  return `${LABEL_COLOR_NAMES[label.color] ?? "Neutral"}, label ${label.order + 1}`;
+}
+
+function labelAccessibleName(label) {
+  return `${label.name}, ${labelCue(label)}`;
+}
+
+function labelChip(label) {
+  const chip = document.createElement("span");
+  const color = LABEL_COLORS.includes(label.color) ? label.color : "neutral";
+  chip.className = `label-chip label-color-${color}`;
+  chip.title = labelAccessibleName(label);
+  chip.setAttribute("aria-label", labelAccessibleName(label));
+  const name = document.createElement("bdi");
+  name.dir = "auto";
+  name.textContent = label.name;
+  chip.append(name);
+  return chip;
+}
+
+function labelTarget(kind = state.currentKind, id = state.currentId) {
+  if (kind === "contact") return { kind: "peer", id };
+  if (kind === "group") return { kind: "group", id };
+  if (kind === "note") return { kind: "note_to_self", id: null };
+  return null;
+}
+
+function labelTargetKey(target) {
+  return `${target.kind}:${target.id ?? ""}`;
+}
+
+function currentTargetName() {
+  if (state.currentKind === "contact") return contactName(state.currentId);
+  if (state.currentKind === "group") return currentGroup()?.name ?? "Unavailable group";
+  return "Note to self";
+}
+
+function exactLabelNameValid(name) {
+  if (!name || new TextEncoder().encode(name).length > 256) return false;
+  const whitespace = new Set([0x09,0x0a,0x0b,0x0c,0x0d,0x20,0x85,0x200e,0x200f,0x2028,0x2029]);
+  return ![...name].every((character) => whitespace.has(character.codePointAt(0)));
 }
 
 function dateTimeLocalValue(unixSecs) {
@@ -523,6 +572,7 @@ function enterApp(address) {
   $("#gate-mnemonic").value = "";
   refreshContacts();
   refreshGroups();
+  refreshLabels();
   call("note_to_self_id").then((id) => { state.noteToSelfId = id; });
   refreshStatus();
   state.statusTimer = setInterval(refreshStatus, 5000);
@@ -537,6 +587,8 @@ async function leaveApp() {
   state.currentId = null;
   state.contacts = [];
   state.groups = [];
+  state.labels = [];
+  state.labelFilter = { selected: [], mode: "any", matches: null };
   state.noteToSelfId = null;
   state.unread.clear();
   state.groupUnread.clear();
@@ -582,6 +634,119 @@ async function refreshStatus() {
 
 // ── contacts ────────────────────────────────────────────────────────────
 
+async function targetLabels(target) {
+  return invoke("labels_for_conversation", { target });
+}
+
+async function renderTargetBadges(container, target) {
+  container.replaceChildren();
+  try {
+    for (const label of await targetLabels(target)) container.append(labelChip(label));
+  } catch {
+    // A target can disappear between list and badge reads. The next refresh
+    // removes the row; no stale relationship is guessed from its name.
+  }
+}
+
+function applyLabelFilterVisibility() {
+  const active = state.labelFilter.selected.length > 0;
+  const matches = state.labelFilter.matches;
+  const visible = (target) => !active || matches?.has(labelTargetKey(target));
+  for (const button of $$("#contact-list .contact")) {
+    button.hidden = !visible({ kind: "peer", id: button.dataset.peer });
+  }
+  for (const button of $$("#group-list .contact")) {
+    button.hidden = !visible({ kind: "group", id: button.dataset.group });
+  }
+  $("#note-to-self").hidden = !visible({ kind: "note_to_self", id: null });
+}
+
+async function runLabelFilter(announce = false) {
+  const prior = state.labelFilter.selected.length;
+  const result = await call("filter_labels", {
+    labels: state.labelFilter.selected,
+    mode: state.labelFilter.mode,
+  });
+  state.labelFilter.selected = result.selected;
+  state.labelFilter.matches = new Set(result.conversations.map((conversation) => labelTargetKey(conversation.target)));
+  if (result.unavailable_selected.length > 0) {
+    $("#label-filter-status").textContent = `${result.unavailable_selected.length} unavailable selected label ${result.unavailable_selected.length === 1 ? "was" : "were"} removed.`;
+  } else if (announce) {
+    $("#label-filter-status").textContent = state.labelFilter.selected.length === 0
+      ? "Label filter cleared; every conversation is shown."
+      : `${result.conversations.length} conversation ${result.conversations.length === 1 ? "matches" : "match"} ${state.labelFilter.mode === "any" ? "any" : "all"} selected labels.`;
+  } else if (prior !== result.selected.length) {
+    $("#label-filter-status").textContent = "Unavailable label selections were removed.";
+  }
+  $("#btn-clear-label-filter").hidden = state.labelFilter.selected.length === 0;
+  applyLabelFilterVisibility();
+}
+
+async function refreshLabels(announce = false) {
+  state.labels = await call("labels");
+  const options = $("#label-filter-options");
+  options.replaceChildren();
+  if (state.labels.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = "No labels yet";
+    options.append(empty);
+  }
+  for (const label of state.labels) {
+    const row = document.createElement("label");
+    row.className = "label-filter-option";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = label.id;
+    input.checked = state.labelFilter.selected.includes(label.id);
+    input.setAttribute("aria-label", `Filter by ${labelAccessibleName(label)}`);
+    input.addEventListener("change", async () => {
+      state.labelFilter.selected = $$('input[type="checkbox"]', options).filter((item) => item.checked).map((item) => item.value);
+      await runLabelFilter(true);
+      await refreshConversationBadges();
+    });
+    row.append(input, labelChip(label));
+    options.append(row);
+  }
+  await runLabelFilter(announce);
+  await refreshConversationBadges();
+}
+
+async function refreshConversationBadges() {
+  const work = [];
+  for (const button of $$("#contact-list .contact")) {
+    work.push(renderTargetBadges($(".label-badges", button), { kind: "peer", id: button.dataset.peer }));
+  }
+  for (const button of $$("#group-list .contact")) {
+    work.push(renderTargetBadges($(".label-badges", button), { kind: "group", id: button.dataset.group }));
+  }
+  work.push(renderTargetBadges($("#note-to-self .label-badges"), { kind: "note_to_self", id: null }));
+  await Promise.all(work);
+  const target = labelTarget();
+  if (target) await renderTargetBadges($("#chat-label-badges"), target);
+}
+
+$("#label-filter-options").addEventListener("keydown", (event) => {
+  if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+  const inputs = $$('input[type="checkbox"]', event.currentTarget);
+  const index = inputs.indexOf(document.activeElement);
+  if (index < 0 || inputs.length === 0) return;
+  event.preventDefault();
+  inputs[(index + (event.key === 'ArrowDown' ? 1 : -1) + inputs.length) % inputs.length].focus();
+});
+
+$$('input[name="label-filter-mode"]').forEach((input) => input.addEventListener("change", async () => {
+  if (!input.checked) return;
+  state.labelFilter.mode = input.value;
+  await runLabelFilter(true);
+}));
+
+$("#btn-clear-label-filter").addEventListener("click", async () => {
+  state.labelFilter.selected = [];
+  await refreshLabels(true);
+  $("#label-filter-options input")?.focus();
+});
+
 async function refreshContacts() {
   state.contacts = await call("contacts");
   const list = $("#contact-list");
@@ -589,13 +754,16 @@ async function refreshContacts() {
   for (const c of state.contacts) {
     const btn = document.createElement("button");
     btn.className = "contact" + (state.currentKind === "contact" && c.peer === state.currentId ? " active" : "");
+    btn.dataset.peer = c.peer;
     const avatar = document.createElement("span");
     avatar.className = "avatar";
     avatar.textContent = (c.name || "?").slice(0, 1).toUpperCase();
     const name = document.createElement("span");
     name.className = "c-name";
     name.textContent = c.name || c.peer.slice(0, 12) + "…";
-    btn.append(avatar, name);
+    const labels = document.createElement("span");
+    labels.className = "label-badges";
+    btn.append(avatar, name, labels);
     if (c.verified) {
       const badge = document.createElement("span");
       badge.className = "badge";
@@ -613,6 +781,8 @@ async function refreshContacts() {
     btn.addEventListener("click", () => openChat(c.peer));
     list.append(btn);
   }
+  applyLabelFilterVisibility();
+  await refreshConversationBadges();
   if (state.currentKind === "contact") updateChatHead();
 }
 
@@ -854,7 +1024,9 @@ async function refreshGroups() {
     const detail = document.createElement("span");
     detail.className = "c-detail";
     detail.textContent = `${group.members.length} members`;
-    btn.append(avatar, name, detail);
+    const labels = document.createElement("span");
+    labels.className = "label-badges";
+    btn.append(avatar, name, labels, detail);
     const unread = state.groupUnread.get(group.id) ?? 0;
     if (unread > 0 && !(state.currentKind === "group" && group.id === state.currentId)) {
       const badge = document.createElement("span");
@@ -865,6 +1037,8 @@ async function refreshGroups() {
     btn.addEventListener("click", () => openGroup(group.id));
     list.append(btn);
   }
+  applyLabelFilterVisibility();
+  await refreshConversationBadges();
   if (state.currentKind === "group") updateChatHead();
 }
 
@@ -887,6 +1061,9 @@ function updateChatHead() {
   $("#btn-record").hidden = isNote;
   $("#btn-schedule").hidden = isNote;
   $("#note-to-self").classList.toggle("active", isNote);
+  const target = labelTarget();
+  if (target) renderTargetBadges($("#chat-label-badges"), target);
+  else $("#chat-label-badges").replaceChildren();
 }
 
 // ── conversation ────────────────────────────────────────────────────────
@@ -1653,6 +1830,10 @@ $("#btn-attach").addEventListener("click", async () => {
 
 listen("node-event", async ({ payload: ev }) => {
   switch (ev.type) {
+    case "labels_changed": {
+      await refreshLabels(true);
+      break;
+    }
     case "scheduled_message_updated":
     case "scheduled_message_cancelled":
     case "scheduled_message_activated": {
@@ -1840,6 +2021,186 @@ function showError(root, err) {
     el.hidden = false;
   }
 }
+
+function resetLabelEditor(root) {
+  root.querySelector('[data-f="label-id"]').value = "";
+  root.querySelector('[data-f="label-name"]').value = "";
+  root.querySelector('[data-f="label-color"]').value = "neutral";
+  root.querySelector('[data-act="save-label"]').textContent = "Create label";
+  root.querySelector('[data-act="cancel-edit"]').hidden = true;
+  root.querySelector('[data-f="error"]').hidden = true;
+}
+
+async function renderLabelManager(root) {
+  state.labels = await invoke("labels");
+  const list = root.querySelector('[data-f="labels"]');
+  list.replaceChildren();
+  if (state.labels.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "modal-note";
+    empty.textContent = "No labels. Create one above.";
+    list.append(empty);
+  }
+  for (const label of state.labels) {
+    const row = document.createElement("div");
+    row.className = "label-manager-row";
+    const description = document.createElement("span");
+    description.className = "label-description";
+    description.append(labelChip(label), document.createTextNode(` · ${labelCue(label)}`));
+    const actions = document.createElement("span");
+    actions.className = "label-actions";
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "ghost";
+    edit.textContent = "Edit";
+    edit.setAttribute("aria-label", `Edit ${labelAccessibleName(label)}`);
+    edit.addEventListener("click", () => {
+      root.querySelector('[data-f="label-id"]').value = label.id;
+      root.querySelector('[data-f="label-name"]').value = label.name;
+      root.querySelector('[data-f="label-color"]').value = label.color;
+      root.querySelector('[data-act="save-label"]').textContent = "Save label";
+      root.querySelector('[data-act="cancel-edit"]').hidden = false;
+      root.querySelector('[data-f="label-name"]').focus();
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "danger";
+    remove.textContent = "Delete";
+    remove.setAttribute("aria-label", `Delete ${labelAccessibleName(label)}`);
+    remove.addEventListener("click", async () => {
+      try {
+        const count = await invoke("label_delete_assignment_count", { label: label.id });
+        const reviewed = window.confirm(`Delete “${label.name}” (${labelCue(label)})? This atomically removes ${count} conversation assignment${count === 1 ? "" : "s"}.`);
+        if (!reviewed) {
+          root.querySelector('[data-f="result"]').textContent = "Label deletion cancelled.";
+          remove.focus();
+          return;
+        }
+        const deleted = await invoke("delete_label", { label: label.id, confirm: true });
+        root.querySelector('[data-f="result"]').textContent = `Label deleted with ${deleted} assignment${deleted === 1 ? "" : "s"}.`;
+        resetLabelEditor(root);
+        await renderLabelManager(root);
+        await refreshLabels(true);
+        root.querySelector('[data-f="label-name"]').focus();
+      } catch (error) { showError(root, error); }
+    });
+    actions.append(edit, remove);
+    row.append(description, actions);
+    list.append(row);
+  }
+
+  const stale = await invoke("stale_labels");
+  const section = root.querySelector('[data-f="stale-section"]');
+  const staleList = root.querySelector('[data-f="stale"]');
+  section.hidden = stale.length === 0;
+  staleList.replaceChildren();
+  for (const record of stale) {
+    const row = document.createElement("div");
+    row.className = "stale-label-row";
+    const reason = document.createElement("span");
+    const targetName = record.target.kind === "note_to_self" ? "note-to-self" : `${record.target.kind} conversation`;
+    reason.textContent = `${record.reason.replaceAll("_", " ")} · ${targetName}`;
+    const cleanup = document.createElement("button");
+    cleanup.type = "button";
+    cleanup.className = "danger";
+    cleanup.textContent = "Clean up";
+    cleanup.setAttribute("aria-label", `Clean up stale ${targetName} membership`);
+    cleanup.addEventListener("click", async () => {
+      try {
+        await invoke("cleanup_stale_label", { label: record.label, target: record.target });
+        root.querySelector('[data-f="result"]').textContent = `Stale ${targetName} membership removed.`;
+        await renderLabelManager(root);
+      } catch (error) { showError(root, error); }
+    });
+    row.append(reason, cleanup);
+    staleList.append(row);
+  }
+}
+
+async function openLabelManager() {
+  const root = openModal("Private labels", "tpl-label-manager");
+  const form = root.querySelector('[data-f="label-form"]');
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const name = root.querySelector('[data-f="label-name"]').value;
+    const color = root.querySelector('[data-f="label-color"]').value;
+    const id = root.querySelector('[data-f="label-id"]').value;
+    try {
+      if (!exactLabelNameValid(name)) throw new Error("Name must contain a non-Pattern-White-Space character and be at most 256 UTF-8 bytes.");
+      if (!LABEL_COLORS.includes(color)) throw new Error("Choose a supported label color.");
+      const saved = id
+        ? await invoke("update_label", { label: id, name, color })
+        : await invoke("create_label", { name, color });
+      root.querySelector('[data-f="result"]').textContent = `${id ? "Updated" : "Created"} ${labelAccessibleName(saved)}.`;
+      resetLabelEditor(root);
+      await renderLabelManager(root);
+      await refreshLabels(true);
+      root.querySelector('[data-f="label-name"]').focus();
+    } catch (error) { showError(root, error); }
+  });
+  root.querySelector('[data-act="cancel-edit"]').addEventListener("click", () => {
+    resetLabelEditor(root);
+    root.querySelector('[data-f="result"]').textContent = "Edit cancelled; the label is unchanged.";
+    root.querySelector('[data-f="label-name"]').focus();
+  });
+  await renderLabelManager(root);
+}
+
+$("#btn-label-manager").addEventListener("click", openLabelManager);
+
+async function openConversationLabels() {
+  const target = labelTarget();
+  if (!target) return;
+  const exactTarget = currentTargetName();
+  const root = openModal(`Labels for ${exactTarget}`, "tpl-conversation-labels");
+  root.querySelector('[data-f="target-summary"]').textContent = `Apply or remove sealed local labels for exactly ${exactTarget}.`;
+  const assigned = new Set((await invoke("labels_for_conversation", { target })).map((label) => label.id));
+  const list = root.querySelector('[data-f="labels"]');
+  list.replaceChildren();
+  if (state.labels.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "modal-note";
+    empty.textContent = "No labels exist. Use Manage labels to create one.";
+    list.append(empty);
+  }
+  for (const label of state.labels) {
+    const row = document.createElement("label");
+    row.className = "label-assignment-option";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = assigned.has(label.id);
+    input.setAttribute("aria-label", `${input.checked ? "Remove" : "Apply"} ${labelAccessibleName(label)} for ${exactTarget}`);
+    input.addEventListener("change", async () => {
+      input.disabled = true;
+      try {
+        const command = input.checked ? "assign_label" : "unassign_label";
+        await invoke(command, { label: label.id, target });
+        const finalLabels = await invoke("labels_for_conversation", { target });
+        const final = finalLabels.some((item) => item.id === label.id);
+        input.checked = final;
+        input.setAttribute("aria-label", `${final ? "Remove" : "Apply"} ${labelAccessibleName(label)} for ${exactTarget}`);
+        root.querySelector('[data-f="result"]').textContent = `${labelAccessibleName(label)} is now ${final ? "applied to" : "removed from"} ${exactTarget}. Final membership: ${finalLabels.length} label${finalLabels.length === 1 ? "" : "s"}.`;
+        await refreshLabels(false);
+      } catch (error) {
+        input.checked = !input.checked;
+        showError(root, error);
+      } finally { input.disabled = false; input.focus(); }
+    });
+    row.append(input, labelChip(label), document.createTextNode(labelCue(label)));
+    list.append(row);
+  }
+  list.addEventListener("keydown", (event) => {
+    if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+    const inputs = $$('input[type="checkbox"]', list);
+    const index = inputs.indexOf(document.activeElement);
+    if (index < 0) return;
+    event.preventDefault();
+    inputs[(index + (event.key === 'ArrowDown' ? 1 : -1) + inputs.length) % inputs.length]?.focus();
+  });
+  root.querySelector('[data-act="done"]').addEventListener("click", closeModal);
+}
+
+$("#btn-conversation-labels").addEventListener("click", openConversationLabels);
 
 // hint-row editing, shared by "add contact" and "delivery hints"
 function addHintRow(rowsEl, kind = "multiaddr", value = "") {

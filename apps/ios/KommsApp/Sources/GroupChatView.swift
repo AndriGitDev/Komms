@@ -22,6 +22,7 @@ struct GroupChatView: View {
     @State private var mentionStatus = "Use Mention to choose an exact current roster identity."
     @State private var showMentionPicker = false
     @State private var showPlainFallback = false
+    @State private var showLabels = false
 
     private var group: KommsCore.Group? { model.groups.first { $0.id == groupId } }
     private var history: [GroupMessage] {
@@ -70,12 +71,18 @@ struct GroupChatView: View {
             .navigationTitle(group?.name ?? "Group")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button("Labels") { showLabels = true }
                     Button("Members") { showMembers = true }
                         .disabled(group == nil)
                 }
             }
             .sheet(isPresented: $showMembers) { GroupMembersView(groupId: groupId) }
+            .sheet(isPresented: $showLabels) {
+                LabelAssignmentView(
+                    target: LabelTarget(kind: .group, id: groupId),
+                    targetName: group?.name ?? "Group")
+            }
             .confirmationDialog(
                 "Mention a current member",
                 isPresented: $showMentionPicker,
@@ -115,6 +122,7 @@ struct GroupChatView: View {
 
     private var conversationContent: some View {
         VStack(spacing: 0) {
+            LabelBadgeRow(labels: model.labelsForTarget(LabelTarget(kind: .group, id: groupId)))
             historyContent
 
             if let error {

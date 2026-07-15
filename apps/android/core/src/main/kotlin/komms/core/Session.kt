@@ -27,6 +27,12 @@ import uniffi.kult_ffi.GroupMentionCapability
 import uniffi.kult_ffi.GroupMessage
 import uniffi.kult_ffi.KdfChoice
 import uniffi.kult_ffi.KultNode
+import uniffi.kult_ffi.Label
+import uniffi.kult_ffi.LabelConversation
+import uniffi.kult_ffi.LabelFilterResult
+import uniffi.kult_ffi.LabelMatchMode
+import uniffi.kult_ffi.LabelTarget
+import uniffi.kult_ffi.StaleLabel
 import uniffi.kult_ffi.ImageEditRecipe
 import uniffi.kult_ffi.ImageInfo
 import uniffi.kult_ffi.Message
@@ -49,7 +55,35 @@ import uniffi.kult_ffi.probeEditedImage
 fun FfiException.reasonText(): String = when (this) {
     is FfiException.Startup -> "startup: $reason"
     is FfiException.Node -> reason
+    is FfiException.Label -> reason
     is FfiException.Stopped -> "node is stopped"
+}
+
+/** B18 resource limits and canonical presentation tokens. */
+const val MAX_LABELS = 128
+const val MAX_LABEL_ASSIGNMENTS = 8_192
+const val MAX_LABELS_PER_CONVERSATION = 32
+const val MAX_LABEL_NAME_BYTES = 256
+val LABEL_COLORS: List<String> = listOf(
+    "neutral", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink",
+)
+
+private fun validateLabelWrite(name: String, color: String) {
+    val fixedWhitespace = setOf(
+        0x0009, 0x000a, 0x000b, 0x000c, 0x000d, 0x0020,
+        0x0085, 0x200e, 0x200f, 0x2028, 0x2029,
+    )
+    var offset = 0
+    var fixedOnly = name.isNotEmpty()
+    while (offset < name.length) {
+        val scalar = name.codePointAt(offset)
+        if (scalar !in fixedWhitespace) fixedOnly = false
+        offset += Character.charCount(scalar)
+    }
+    require(name.isNotEmpty() && name.toByteArray(Charsets.UTF_8).size <= MAX_LABEL_NAME_BYTES && !fixedOnly) {
+        "invalid label name"
+    }
+    require(color in LABEL_COLORS) { "unsupported label color" }
 }
 
 /**
@@ -279,6 +313,55 @@ class Session private constructor(private val node: KultNode) {
 
     /** Append one sealed local-only note; no transport work is created. */
     fun sendNoteToSelf(body: String): String = node.sendNoteToSelf(body)
+
+    /** Create a private label with exact UTF-8 and canonical color. */
+    fun createLabel(name: String, color: String): Label {
+        validateLabelWrite(name, color)
+        return node.createLabel(name, color)
+    }
+
+    /** All labels in stable local insertion order. */
+    fun labels(): List<Label> = node.labels()
+
+    /** One label by its explicit stable id. */
+    fun label(id: String): Label = node.label(id)
+
+    /** Rename/recolor while retaining id, membership, and order. */
+    fun updateLabel(id: String, name: String, color: String): Label {
+        validateLabelWrite(name, color)
+        return node.updateLabel(id, name, color)
+    }
+
+    /** Membership count shown before destructive deletion review. */
+    fun labelDeleteAssignmentCount(id: String): ULong = node.labelDeleteAssignmentCount(id)
+
+    /** Atomic cascade; [confirm] must be true. */
+    fun deleteLabel(id: String, confirm: Boolean): ULong = node.deleteLabel(id, confirm)
+
+    /** Idempotently apply one explicit typed target. */
+    fun assignLabel(id: String, target: LabelTarget): Boolean = node.assignLabel(id, target)
+
+    /** Idempotently remove one explicit typed target. */
+    fun unassignLabel(id: String, target: LabelTarget): Boolean = node.unassignLabel(id, target)
+
+    /** Active typed targets for one label. */
+    fun labelMembership(id: String): List<LabelConversation> = node.labelMembership(id)
+
+    /** Active labels for one exact typed target. */
+    fun labelsForConversation(target: LabelTarget): List<Label> = node.labelsForConversation(target)
+
+    /** Render-safe stale local membership diagnostics. */
+    fun staleLabels(): List<StaleLabel> = node.staleLabels()
+
+    /** Remove one exact membership only while it remains stale. */
+    fun cleanupStaleLabel(id: String, target: LabelTarget): Boolean =
+        node.cleanupStaleLabel(id, target)
+
+    /** Deterministic local any/all filter; empty ids mean no label filter. */
+    fun filterLabels(ids: List<String>, mode: LabelMatchMode): LabelFilterResult {
+        require(ids.size <= MAX_LABELS) { "selected label count exceeds $MAX_LABELS" }
+        return node.filterLabels(ids, mode)
+    }
 
     /** Create a sender-key group from stored contacts; returns its id. */
     fun createGroup(name: String, members: List<String>): String =

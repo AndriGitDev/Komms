@@ -13,6 +13,7 @@ struct ChatView: View {
     @State private var error: String?
     @State private var showVerify = false
     @State private var showHints = false
+    @State private var showLabels = false
     @State private var scheduleEditor: ScheduleEditor?
 
     private var contact: Contact? {
@@ -38,6 +39,7 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            LabelBadgeRow(labels: model.labelsForTarget(LabelTarget(kind: .peer, id: peer)))
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 8) {
@@ -112,6 +114,7 @@ struct ChatView: View {
                 Menu {
                     Button("Verify safety number") { showVerify = true }
                     Button("Delivery hints") { showHints = true }
+                    Button("Labels") { showLabels = true }
                 } label: {
                     Label("More", systemImage: "ellipsis.circle")
                 }
@@ -119,6 +122,11 @@ struct ChatView: View {
         }
         .sheet(isPresented: $showVerify) { VerifyView(peer: peer) }
         .sheet(isPresented: $showHints) { HintsView(peer: peer) }
+        .sheet(isPresented: $showLabels) {
+            LabelAssignmentView(
+                target: LabelTarget(kind: .peer, id: peer),
+                targetName: contact?.name ?? "Contact")
+        }
         .sheet(item: $scheduleEditor) { editor in
             ScheduledMessageEditor(
                 editor: editor,

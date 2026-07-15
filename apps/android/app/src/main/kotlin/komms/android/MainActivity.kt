@@ -15,9 +15,11 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.CheckBox
+import android.widget.Button
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.RadioGroup
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -27,6 +29,10 @@ import komms.core.bundleQrText
 import uniffi.kult_ffi.Contact
 import uniffi.kult_ffi.Event
 import uniffi.kult_ffi.Group
+import uniffi.kult_ffi.Label
+import uniffi.kult_ffi.LabelMatchMode
+import uniffi.kult_ffi.LabelTarget
+import uniffi.kult_ffi.LabelTargetKind
 import uniffi.kult_ffi.NatVerdict
 
 /**
@@ -44,6 +50,10 @@ class MainActivity : AppCompatActivity() {
     private val groups = GroupsAdapter { group ->
         openGroup(group.id, group.name)
     }
+    private lateinit var labelPreferences: LabelFilterPreferences
+    private var selectedLabels = listOf<String>()
+    private var labelMode = "any"
+    private var renderingLabelControls = false
 
     private val tick = Handler(Looper.getMainLooper())
     private val refreshLoop = object : Runnable {
@@ -56,11 +66,12 @@ class MainActivity : AppCompatActivity() {
     private val listener: (Event) -> Unit = { event ->
         runOnUiThread {
             when (event) {
-                is Event.ContactAdded -> refreshContacts()
+                is Event.ContactAdded -> refreshLabelsAndLists(false)
                 is Event.SessionEstablished -> onSessionEstablished(event.peer)
-                is Event.MessageReceived -> refreshContacts()
-                is Event.GroupUpdated -> refreshGroups()
-                is Event.GroupMessageReceived -> refreshGroups()
+                is Event.MessageReceived -> refreshLabelsAndLists(false)
+                is Event.GroupUpdated -> refreshLabelsAndLists(false)
+                is Event.GroupMessageReceived -> refreshLabelsAndLists(false)
+                is Event.LabelsChanged -> refreshLabelsAndLists(true)
                 else -> {}
             }
         }
@@ -83,6 +94,26 @@ class MainActivity : AppCompatActivity() {
         if (NodeHolder.session == null) return backToGate()
         setContentView(R.layout.activity_main)
         setSupportActionBar(findViewById(R.id.main_toolbar))
+        labelPreferences = LabelFilterPreferences(this)
+        labelPreferences.load().also {
+            selectedLabels = it.ids
+            labelMode = it.mode
+        }
+
+        findViewById<View>(R.id.main_manage_labels).setOnClickListener {
+            startActivity(Intent(this, LabelManagerActivity::class.java))
+        }
+        findViewById<RadioGroup>(R.id.main_label_filter_mode).setOnCheckedChangeListener { _, checked ->
+            if (renderingLabelControls) return@setOnCheckedChangeListener
+            labelMode = if (checked == R.id.main_label_filter_all) "all" else "any"
+            persistLabelFilter()
+            refreshLabelsAndLists(true)
+        }
+        findViewById<View>(R.id.main_label_filter_clear).setOnClickListener {
+            selectedLabels = emptyList()
+            persistLabelFilter()
+            refreshLabelsAndLists(true)
+        }
 
         findViewById<View>(R.id.main_note_to_self).setOnClickListener {
             val conversation = NodeHolder.session?.noteToSelfId() ?: return@setOnClickListener
@@ -115,8 +146,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        refreshContacts()
-        refreshGroups()
+        refreshLabelsAndLists(false)
         tick.post(refreshLoop)
     }
 
@@ -134,6 +164,7 @@ class MainActivity : AppCompatActivity() {
         when (item.itemId) {
             R.id.menu_add -> startActivity(Intent(this, AddContactActivity::class.java))
             R.id.menu_create_group -> showCreateGroup()
+            R.id.menu_labels -> startActivity(Intent(this, LabelManagerActivity::class.java))
             R.id.menu_my_qr -> showMyQr()
             R.id.menu_backup -> createBackup.launch("komms-backup.kkr")
             R.id.menu_settings -> startActivity(Intent(this, SettingsActivity::class.java))
@@ -167,6 +198,113 @@ class MainActivity : AppCompatActivity() {
             findViewById<TextView>(R.id.main_empty).visibility =
                 if (list.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
         }
+    }
+
+    private fun persistLabelFilter() {
+        labelPreferences.save(LabelFilterPreferences.State(selectedLabels, labelMode))
+    }
+
+    private fun refreshLabelsAndLists(announce: Boolean) {
+        val session = NodeHolder.session ?: return
+        val requested = selectedLabels
+        val requestedMode = labelMode
+        runNode(work = {
+            val labels = session.labels()
+            val result = session.filterLabels(
+                requested,
+                if (requestedMode == "all") LabelMatchMode.ALL else LabelMatchMode.ANY,
+            )
+            val contacts = session.contacts()
+            val groups = session.groups()
+            MainLabelSnapshot(
+                labels = labels,
+                selected = result.selected,
+                unavailableCount = result.unavailableSelected.size,
+                matching = result.conversations.map { targetKey(it.target) }.toSet(),
+                contacts = contacts,
+                groups = groups,
+                contactLabels = contacts.associate { contact ->
+                    contact.peer to session.labelsForConversation(
+                        LabelTarget(LabelTargetKind.PEER, contact.peer),
+                    )
+                },
+                groupLabels = groups.associate { group ->
+                    group.id to session.labelsForConversation(
+                        LabelTarget(LabelTargetKind.GROUP, group.id),
+                    )
+                },
+                noteLabels = session.labelsForConversation(
+                    LabelTarget(LabelTargetKind.NOTE_TO_SELF, null),
+                ),
+            )
+        }) { snapshot ->
+            selectedLabels = snapshot.selected
+            persistLabelFilter()
+            renderLabelControls(snapshot.labels)
+            val active = selectedLabels.isNotEmpty()
+            val visibleContacts = snapshot.contacts.filter {
+                !active || "peer:${it.peer}" in snapshot.matching
+            }
+            val visibleGroups = snapshot.groups.filter {
+                !active || "group:${it.id}" in snapshot.matching
+            }
+            knownPeers = snapshot.contacts.map { it.peer }.toSet()
+            contacts.submit(visibleContacts, snapshot.contactLabels.mapValues { (_, labels) -> labelLines(labels) })
+            groups.submit(visibleGroups, snapshot.groupLabels.mapValues { (_, labels) -> labelLines(labels) })
+            findViewById<TextView>(R.id.main_empty).visibility =
+                if (visibleContacts.isEmpty()) View.VISIBLE else View.GONE
+            findViewById<TextView>(R.id.main_groups_empty).visibility =
+                if (visibleGroups.isEmpty()) View.VISIBLE else View.GONE
+            findViewById<Button>(R.id.main_note_to_self).apply {
+                visibility = if (!active || "note_to_self:" in snapshot.matching) View.VISIBLE else View.GONE
+                text = buildString {
+                    append(getString(R.string.note_to_self_title))
+                    val lines = labelLines(snapshot.noteLabels)
+                    if (lines.isNotEmpty()) append("\n").append(lines)
+                }
+            }
+            val status = findViewById<TextView>(R.id.main_label_filter_status)
+            status.text = when {
+                snapshot.unavailableCount > 0 -> getString(R.string.label_filter_unavailable, snapshot.unavailableCount)
+                announce && active -> getString(R.string.label_filter_result, snapshot.matching.size, requestedMode)
+                else -> ""
+            }
+            if (announce && status.text.isNotEmpty()) status.announceForAccessibility(status.text)
+        }
+    }
+
+    private fun renderLabelControls(labels: List<Label>) {
+        renderingLabelControls = true
+        findViewById<RadioGroup>(R.id.main_label_filter_mode).check(
+            if (labelMode == "all") R.id.main_label_filter_all else R.id.main_label_filter_any,
+        )
+        val root = findViewById<LinearLayout>(R.id.main_label_filters)
+        root.removeAllViews()
+        labels.forEach { label ->
+            root.addView(CheckBox(this).apply {
+                text = labelSummary(label)
+                isChecked = label.id in selectedLabels
+                textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+                contentDescription = getString(R.string.label_filter_heading) + ": " + labelSummary(label)
+                setOnCheckedChangeListener { _, checked ->
+                    selectedLabels = if (checked) (selectedLabels + label.id).distinct()
+                    else selectedLabels.filterNot { it == label.id }
+                    persistLabelFilter()
+                    refreshLabelsAndLists(true)
+                }
+            })
+        }
+        findViewById<View>(R.id.main_label_filter_clear).visibility =
+            if (selectedLabels.isEmpty()) View.GONE else View.VISIBLE
+        renderingLabelControls = false
+    }
+
+    private fun labelLines(labels: List<Label>): String = labels.joinToString(" · ") { labelSummary(it) }
+
+    private fun targetKey(target: LabelTarget): String = when (target.kind) {
+        LabelTargetKind.PEER -> "peer:${target.id}"
+        LabelTargetKind.GROUP -> "group:${target.id}"
+        LabelTargetKind.NOTE_TO_SELF -> "note_to_self:"
     }
 
     private fun refreshGroups() {
@@ -240,7 +378,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun onSessionEstablished(peer: String) {
         if (peer !in knownPeers) {
-            refreshContacts()
+            refreshLabelsAndLists(false)
             return
         }
         val name = contacts.nameOf(peer) ?: peer.take(12)
@@ -312,16 +450,30 @@ class MainActivity : AppCompatActivity() {
     }
 }
 
+private data class MainLabelSnapshot(
+    val labels: List<Label>,
+    val selected: List<String>,
+    val unavailableCount: Int,
+    val matching: Set<String>,
+    val contacts: List<Contact>,
+    val groups: List<Group>,
+    val contactLabels: Map<String, List<Label>>,
+    val groupLabels: Map<String, List<Label>>,
+    val noteLabels: List<Label>,
+)
+
 /** Group rows: creator-controlled name plus authoritative roster size. */
 private class GroupsAdapter(
     private val onClick: (Group) -> Unit,
 ) : RecyclerView.Adapter<GroupsAdapter.Holder>() {
     private var items = listOf<Group>()
+    private var labels = mapOf<String, String>()
 
     class Holder(view: View) : RecyclerView.ViewHolder(view)
 
-    fun submit(list: List<Group>) {
+    fun submit(list: List<Group>, labelText: Map<String, String> = labels) {
         items = list.sortedBy { it.name.lowercase() }
+        labels = labelText
         notifyDataSetChanged()
     }
 
@@ -339,6 +491,10 @@ private class GroupsAdapter(
                 group.members.size,
                 group.members.size,
             )
+        holder.itemView.findViewById<TextView>(R.id.group_labels).apply {
+            text = labels[group.id].orEmpty()
+            visibility = if (text.isEmpty()) View.GONE else View.VISIBLE
+        }
         holder.itemView.setOnClickListener { onClick(group) }
     }
 }
@@ -348,11 +504,13 @@ private class ContactsAdapter(
     private val onClick: (Contact) -> Unit,
 ) : RecyclerView.Adapter<ContactsAdapter.Holder>() {
     private var items = listOf<Contact>()
+    private var labels = mapOf<String, String>()
 
     class Holder(view: android.view.View) : RecyclerView.ViewHolder(view)
 
-    fun submit(list: List<Contact>) {
+    fun submit(list: List<Contact>, labelText: Map<String, String> = labels) {
         items = list.sortedBy { it.name.lowercase() }
+        labels = labelText
         notifyDataSetChanged()
     }
 
@@ -373,6 +531,10 @@ private class ContactsAdapter(
             contact.peer.take(16) + "…"
         holder.itemView.findViewById<TextView>(R.id.contact_verified).visibility =
             if (contact.verified) android.view.View.VISIBLE else android.view.View.GONE
+        holder.itemView.findViewById<TextView>(R.id.contact_labels).apply {
+            text = labels[contact.peer].orEmpty()
+            visibility = if (text.isEmpty()) View.GONE else View.VISIBLE
+        }
         holder.itemView.setOnClickListener { onClick(contact) }
     }
 }
