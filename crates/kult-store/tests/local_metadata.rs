@@ -99,6 +99,8 @@ fn every_record_round_trips_across_restart_and_stays_sealed() {
         &b"bring the paper map"[..],
         &b"appearance.theme"[..],
         &b"sanitized-png-bytes"[..],
+        &[2u8; 32][..],
+        &7u32.to_le_bytes()[..],
     ] {
         assert!(
             !joined.windows(secret.len()).any(|window| window == secret),

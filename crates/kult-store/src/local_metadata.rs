@@ -5,7 +5,8 @@
 //! independently sealed blob, so copied databases reveal neither record keys
 //! nor organization relationships.
 
-use std::collections::HashSet;
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 
 use rand_core::CryptoRngCore;
 use rusqlite::params;
@@ -33,6 +34,8 @@ pub const MAX_LABEL_ASSIGNMENTS: usize = 8_192;
 pub const MAX_LABELS_PER_CONVERSATION: usize = 32;
 /// Bounded attempts to mint a fresh random label id before failing closed.
 pub const LABEL_ID_RETRY_LIMIT: usize = 16;
+/// Maximum number of durable conversation pins.
+pub const MAX_PINS: usize = 8_192;
 /// Canonical presentation tokens accepted for new label writes.
 pub const LABEL_COLORS: [&str; 9] = [
     "neutral", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink",
@@ -133,6 +136,39 @@ pub struct PinRecord {
     pub conversation: ConversationId,
     /// Manual pin position; ties fall back to recent activity in the shell.
     pub order: u32,
+}
+
+/// One durable pin with its current active/stale status.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PinStatusRecord {
+    /// Exact sealed pin record.
+    pub pin: PinRecord,
+    /// Whether the exact typed conversation is currently available.
+    pub active: bool,
+}
+
+/// One available conversation after folder, label, and pin composition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PinConversationRecord {
+    /// Exact stable typed conversation identity.
+    pub conversation: ConversationId,
+    /// Persisted pin order, or `None` when unpinned.
+    pub pin_order: Option<u32>,
+    /// Latest ordinary local message activity, or zero with no history.
+    pub recent_activity: u64,
+}
+
+/// Result of folder-first, label-second, pin-order-last composition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PinConversationResult {
+    /// Exact folder selection used for eligibility.
+    pub selection: FolderSelection,
+    /// Available selected labels after canonical validation.
+    pub selected_labels: Vec<[u8; 16]>,
+    /// Requested selected labels whose definitions are unavailable.
+    pub unavailable_labels: Vec<[u8; 16]>,
+    /// Eligible conversations with one leading pinned block.
+    pub conversations: Vec<PinConversationRecord>,
 }
 
 /// A private local label definition.
@@ -899,6 +935,243 @@ impl Store {
         Ok(true)
     }
 
+    /// Idempotently pin one exact available typed conversation.
+    ///
+    /// New pins append after the complete durable pin order. If a legacy
+    /// `u32::MAX` prevents appending, every durable pin (including stale pins)
+    /// is compacted in the same transaction before insertion.
+    pub fn pin_conversation(
+        &self,
+        conversation: &ConversationId,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<bool> {
+        let rows = self.local_metadata_rows()?;
+        let mut pins = rows
+            .iter()
+            .filter_map(|(rowid, record)| match record {
+                LocalMetadataRecord::Pin(pin) => Some((*rowid, pin.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if pins
+            .iter()
+            .any(|(_, pin)| pin.conversation == *conversation)
+        {
+            return Ok(false);
+        }
+        if !self.conversation_available(conversation)? {
+            return Err(StoreError::UnavailableConversation);
+        }
+        if pins.len() >= MAX_PINS {
+            return Err(StoreError::PinLimit);
+        }
+
+        let activity = self.conversation_activity()?;
+        pins.sort_by(|left, right| compare_pins(&left.1, &right.1, &activity));
+        let compact = pins.last().is_some_and(|(_, pin)| pin.order == u32::MAX);
+        let order = if compact {
+            u32::try_from(pins.len()).map_err(|_| StoreError::PinLimit)?
+        } else {
+            pins.last().map_or(0, |(_, pin)| pin.order + 1)
+        };
+
+        let mut updates = Vec::new();
+        if compact {
+            for (position, (rowid, mut pin)) in pins.into_iter().enumerate() {
+                pin.order = u32::try_from(position).map_err(|_| StoreError::PinLimit)?;
+                let sealed = self.seal_local_metadata(&LocalMetadataRecord::Pin(pin), rng)?;
+                updates.push((rowid, sealed));
+            }
+        }
+        let record = PinRecord {
+            conversation: conversation.clone(),
+            order,
+        };
+        let sealed = self.seal_local_metadata(&LocalMetadataRecord::Pin(record), rng)?;
+        let tx = self.conn.unchecked_transaction()?;
+        for (rowid, sealed) in updates {
+            tx.execute(
+                "UPDATE local_metadata SET blob = ?2 WHERE rowid_ = ?1",
+                params![rowid, sealed],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO local_metadata (blob) VALUES (?1)",
+            params![sealed],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Idempotently remove one exact durable pin, active or stale.
+    pub fn unpin_conversation(&self, conversation: &ConversationId) -> Result<bool> {
+        self.remove_pin(conversation)
+    }
+
+    /// Return one exact durable pin with current active/stale status.
+    pub fn pin_state(&self, conversation: &ConversationId) -> Result<Option<PinStatusRecord>> {
+        let pin = self
+            .get_local_metadata(&LocalMetadataKey::Pin(conversation.clone()))?
+            .and_then(|record| match record {
+                LocalMetadataRecord::Pin(pin) => Some(pin),
+                _ => None,
+            });
+        pin.map(|pin| {
+            Ok(PinStatusRecord {
+                active: self.conversation_available(&pin.conversation)?,
+                pin,
+            })
+        })
+        .transpose()
+    }
+
+    /// List every durable pin in deterministic manual/activity/typed order.
+    pub fn pins(&self) -> Result<Vec<PinStatusRecord>> {
+        let activity = self.conversation_activity()?;
+        let available = self.available_conversations()?;
+        let mut pins = self
+            .local_metadata_rows()?
+            .into_iter()
+            .filter_map(|(_, record)| match record {
+                LocalMetadataRecord::Pin(pin) => Some(pin),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        pins.sort_by(|left, right| compare_pins(left, right, &activity));
+        Ok(pins
+            .into_iter()
+            .map(|pin| PinStatusRecord {
+                active: available.contains(&pin.conversation),
+                pin,
+            })
+            .collect())
+    }
+
+    /// Atomically reorder the explicit complete durable pin target set.
+    pub fn reorder_pins(
+        &self,
+        ordered: &[ConversationId],
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Vec<PinStatusRecord>> {
+        let rows = self.local_metadata_rows()?;
+        let current = rows
+            .iter()
+            .filter_map(|(rowid, record)| match record {
+                LocalMetadataRecord::Pin(pin) => {
+                    Some((pin.conversation.clone(), (*rowid, pin.clone())))
+                }
+                _ => None,
+            })
+            .collect::<HashMap<_, _>>();
+        let requested = ordered.iter().cloned().collect::<HashSet<_>>();
+        if requested.len() != ordered.len()
+            || requested.len() != current.len()
+            || requested.iter().any(|target| !current.contains_key(target))
+        {
+            return Err(StoreError::InvalidPinOrder);
+        }
+        let mut updates = Vec::with_capacity(ordered.len());
+        for (position, conversation) in ordered.iter().enumerate() {
+            let (rowid, mut pin) = current
+                .get(conversation)
+                .cloned()
+                .ok_or(StoreError::InvalidPinOrder)?;
+            pin.order = u32::try_from(position).map_err(|_| StoreError::PinLimit)?;
+            let sealed = self.seal_local_metadata(&LocalMetadataRecord::Pin(pin), rng)?;
+            updates.push((rowid, sealed));
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        for (rowid, sealed) in updates {
+            tx.execute(
+                "UPDATE local_metadata SET blob = ?2 WHERE rowid_ = ?1",
+                params![rowid, sealed],
+            )?;
+        }
+        tx.commit()?;
+        self.pins()
+    }
+
+    /// List only unavailable durable pins in deterministic durable order.
+    pub fn stale_pins(&self) -> Result<Vec<PinRecord>> {
+        Ok(self
+            .pins()?
+            .into_iter()
+            .filter_map(|status| (!status.active).then_some(status.pin))
+            .collect())
+    }
+
+    /// Remove one exact pin only while its target remains unavailable.
+    pub fn cleanup_stale_pin(&self, conversation: &ConversationId) -> Result<bool> {
+        let Some(status) = self.pin_state(conversation)? else {
+            return Err(StoreError::PinActive);
+        };
+        if status.active {
+            return Err(StoreError::PinActive);
+        }
+        self.remove_pin(conversation)
+    }
+
+    /// Apply folder classification, label filtering, then pin-aware ordering.
+    pub fn pin_conversations(
+        &self,
+        selection: FolderSelection,
+        selected_labels: &[[u8; 16]],
+        label_mode: LabelFilterMode,
+    ) -> Result<PinConversationResult> {
+        let folders = self.folder_conversations(selection)?;
+        let labels = self.filter_label_conversations(selected_labels, label_mode)?;
+        let label_eligible = labels.conversations.into_iter().collect::<HashSet<_>>();
+        let eligible = folders
+            .conversations
+            .into_iter()
+            .filter(|conversation| label_eligible.contains(conversation))
+            .collect::<HashSet<_>>();
+        let pin_orders = self
+            .pins()?
+            .into_iter()
+            .filter(|status| status.active)
+            .map(|status| (status.pin.conversation, status.pin.order))
+            .collect::<HashMap<_, _>>();
+        let activity = self.conversation_activity()?;
+        let mut conversations = eligible
+            .into_iter()
+            .map(|conversation| PinConversationRecord {
+                pin_order: pin_orders.get(&conversation).copied(),
+                recent_activity: activity.get(&conversation).copied().unwrap_or(0),
+                conversation,
+            })
+            .collect::<Vec<_>>();
+        conversations.sort_by(compare_pin_conversations);
+        Ok(PinConversationResult {
+            selection,
+            selected_labels: labels.selected,
+            unavailable_labels: labels.unavailable_selected,
+            conversations,
+        })
+    }
+
+    fn remove_pin(&self, conversation: &ConversationId) -> Result<bool> {
+        let rowid =
+            self.local_metadata_rows()?
+                .into_iter()
+                .find_map(|(rowid, record)| match record {
+                    LocalMetadataRecord::Pin(pin) if pin.conversation == *conversation => {
+                        Some(rowid)
+                    }
+                    _ => None,
+                });
+        let Some(rowid) = rowid else {
+            return Ok(false);
+        };
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM local_metadata WHERE rowid_ = ?1",
+            params![rowid],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     /// Create a label with a cryptographically random stable id.
     ///
     /// Id collisions are retried without overwriting, and the bounded retry
@@ -1340,6 +1613,29 @@ impl Store {
         Ok(conversations)
     }
 
+    fn conversation_activity(&self) -> Result<HashMap<ConversationId, u64>> {
+        let mut activity = HashMap::<ConversationId, u64>::new();
+        for message in self.all_messages()? {
+            activity
+                .entry(ConversationId::Peer(message.peer))
+                .and_modify(|current| *current = (*current).max(message.timestamp))
+                .or_insert(message.timestamp);
+        }
+        for message in self.all_group_messages()? {
+            activity
+                .entry(ConversationId::Group(message.group))
+                .and_modify(|current| *current = (*current).max(message.timestamp))
+                .or_insert(message.timestamp);
+        }
+        for message in self.note_messages()? {
+            activity
+                .entry(ConversationId::NoteToSelf)
+                .and_modify(|current| *current = (*current).max(message.timestamp))
+                .or_insert(message.timestamp);
+        }
+        Ok(activity)
+    }
+
     fn seal_local_metadata(
         &self,
         record: &LocalMetadataRecord,
@@ -1376,6 +1672,56 @@ impl Store {
         }
         Ok(records)
     }
+}
+
+fn compare_pins(
+    left: &PinRecord,
+    right: &PinRecord,
+    activity: &HashMap<ConversationId, u64>,
+) -> Ordering {
+    left.order
+        .cmp(&right.order)
+        .then_with(|| {
+            activity
+                .get(&right.conversation)
+                .copied()
+                .unwrap_or(0)
+                .cmp(&activity.get(&left.conversation).copied().unwrap_or(0))
+        })
+        .then_with(|| compare_conversations(&left.conversation, &right.conversation))
+}
+
+fn compare_pin_conversations(
+    left: &PinConversationRecord,
+    right: &PinConversationRecord,
+) -> Ordering {
+    match (left.pin_order, right.pin_order) {
+        (Some(left_order), Some(right_order)) => left_order
+            .cmp(&right_order)
+            .then_with(|| right.recent_activity.cmp(&left.recent_activity))
+            .then_with(|| compare_conversations(&left.conversation, &right.conversation)),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => right
+            .recent_activity
+            .cmp(&left.recent_activity)
+            .then_with(|| compare_conversations(&left.conversation, &right.conversation)),
+    }
+}
+
+fn compare_conversations(left: &ConversationId, right: &ConversationId) -> Ordering {
+    let rank = |conversation: &ConversationId| match conversation {
+        ConversationId::NoteToSelf => 0u8,
+        ConversationId::Peer(_) => 1u8,
+        ConversationId::Group(_) => 2u8,
+    };
+    rank(left)
+        .cmp(&rank(right))
+        .then_with(|| match (left, right) {
+            (ConversationId::Peer(left), ConversationId::Peer(right))
+            | (ConversationId::Group(left), ConversationId::Group(right)) => left.cmp(right),
+            _ => Ordering::Equal,
+        })
 }
 
 fn validate_new_label(name: &str, color: &str) -> Result<()> {
@@ -2283,6 +2629,307 @@ mod label_tests {
         drop(raw);
         let reopened = Store::open(&db, b"pass").unwrap();
         assert!(matches!(reopened.labels(), Err(StoreError::Crypto(_))));
+    }
+
+    #[test]
+    fn pin_append_compaction_reorder_stale_cleanup_and_restart_are_exact() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("pins.db");
+        let (store, mut rng) = store_at(&db, 0xb11);
+        let peer = ConversationId::Peer([1; 32]);
+        let group = ConversationId::Group([2; 32]);
+        insert_direct(
+            &store,
+            [
+                LocalMetadataRecord::Pin(PinRecord {
+                    conversation: group.clone(),
+                    order: u32::MAX,
+                }),
+                LocalMetadataRecord::Pin(PinRecord {
+                    conversation: peer.clone(),
+                    order: u32::MAX,
+                }),
+            ],
+            &mut rng,
+        );
+
+        assert!(store
+            .pin_conversation(&ConversationId::NoteToSelf, &mut rng)
+            .unwrap());
+        assert!(!store
+            .pin_conversation(&ConversationId::NoteToSelf, &mut rng)
+            .unwrap());
+        assert!(matches!(
+            store.pin_conversation(&ConversationId::Peer([9; 32]), &mut rng),
+            Err(StoreError::UnavailableConversation)
+        ));
+        assert_eq!(
+            store
+                .pins()
+                .unwrap()
+                .into_iter()
+                .map(|status| (status.pin.conversation, status.pin.order, status.active))
+                .collect::<Vec<_>>(),
+            vec![
+                (peer.clone(), 0, false),
+                (group.clone(), 1, false),
+                (ConversationId::NoteToSelf, 2, true),
+            ]
+        );
+
+        let reordered = store
+            .reorder_pins(
+                &[ConversationId::NoteToSelf, group.clone(), peer.clone()],
+                &mut rng,
+            )
+            .unwrap();
+        assert_eq!(
+            reordered
+                .iter()
+                .map(|status| (&status.pin.conversation, status.pin.order))
+                .collect::<Vec<_>>(),
+            vec![(&ConversationId::NoteToSelf, 0), (&group, 1), (&peer, 2),]
+        );
+        assert!(matches!(
+            store.reorder_pins(&[peer.clone(), group.clone()], &mut rng),
+            Err(StoreError::InvalidPinOrder)
+        ));
+        assert!(matches!(
+            store.cleanup_stale_pin(&ConversationId::NoteToSelf),
+            Err(StoreError::PinActive)
+        ));
+        assert!(store.cleanup_stale_pin(&group).unwrap());
+        assert!(!store.unpin_conversation(&group).unwrap());
+        drop(store);
+
+        let reopened = Store::open(&db, b"pass").unwrap();
+        assert_eq!(
+            reopened
+                .pins()
+                .unwrap()
+                .into_iter()
+                .map(|status| (status.pin.conversation, status.pin.order, status.active))
+                .collect::<Vec<_>>(),
+            vec![(ConversationId::NoteToSelf, 0, true), (peer, 2, false),]
+        );
+    }
+
+    #[test]
+    fn pin_limit_is_exact_and_legacy_over_limit_rows_remain_manageable() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, mut rng) = store_at(&dir.path().join("pin-limit.db"), 0xb110);
+        insert_direct(
+            &store,
+            (0..MAX_PINS).map(|index| {
+                let mut peer = [0u8; 32];
+                peer[..8].copy_from_slice(&(index as u64).to_be_bytes());
+                LocalMetadataRecord::Pin(PinRecord {
+                    conversation: ConversationId::Peer(peer),
+                    order: index as u32,
+                })
+            }),
+            &mut rng,
+        );
+        assert!(matches!(
+            store.pin_conversation(&ConversationId::NoteToSelf, &mut rng),
+            Err(StoreError::PinLimit)
+        ));
+        let first = store.pins().unwrap()[0].pin.conversation.clone();
+        assert!(store.unpin_conversation(&first).unwrap());
+        assert!(store
+            .pin_conversation(&ConversationId::NoteToSelf, &mut rng)
+            .unwrap());
+        assert_eq!(store.pins().unwrap().len(), MAX_PINS);
+    }
+
+    #[test]
+    fn stale_pin_reactivates_only_when_the_exact_typed_identity_returns() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, mut rng) = store_at(&dir.path().join("pin-reactivation.db"), 0xb115);
+        let group_id = [7u8; 32];
+        let group = ConversationId::Group(group_id);
+        insert_direct(
+            &store,
+            [LocalMetadataRecord::Pin(PinRecord {
+                conversation: group.clone(),
+                order: 9,
+            })],
+            &mut rng,
+        );
+        assert!(!store.pin_state(&group).unwrap().unwrap().active);
+        store
+            .put_group(
+                &crate::GroupRecord {
+                    id: group_id,
+                    name: "same exact identity".to_owned(),
+                    creator: [8; 32],
+                    members: Vec::new(),
+                    secret: [9; 32],
+                    prev_secret: None,
+                    generation: 1,
+                    sender_chain: vec![1],
+                    sent_since_rotation: 0,
+                    pending: Vec::new(),
+                },
+                &mut rng,
+            )
+            .unwrap();
+        let reactivated = store.pin_state(&group).unwrap().unwrap();
+        assert!(reactivated.active);
+        assert_eq!(reactivated.pin.order, 9);
+        assert!(!store.pin_conversation(&group, &mut rng).unwrap());
+        store.delete_group(&group_id).unwrap();
+        assert!(!store.pin_state(&group).unwrap().unwrap().active);
+    }
+
+    #[test]
+    fn pin_append_compaction_reorder_unpin_and_cleanup_failures_are_atomic() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let append_db = dir.path().join("pin-append-failure.db");
+        let (append, mut rng) = store_at(&append_db, 0xb111);
+        let raw = Connection::open(&append_db).unwrap();
+        raw.execute_batch(
+            "CREATE TRIGGER fail_pin_append BEFORE INSERT ON local_metadata BEGIN SELECT RAISE(FAIL, 'injected pin append'); END;",
+        )
+        .unwrap();
+        assert!(append
+            .pin_conversation(&ConversationId::NoteToSelf, &mut rng)
+            .is_err());
+        assert!(append.pins().unwrap().is_empty());
+
+        let compact_db = dir.path().join("pin-compact-failure.db");
+        let (compact, mut rng) = store_at(&compact_db, 0xb112);
+        let peer = ConversationId::Peer([1; 32]);
+        let group = ConversationId::Group([2; 32]);
+        insert_direct(
+            &compact,
+            [peer.clone(), group.clone()]
+                .into_iter()
+                .map(|conversation| {
+                    LocalMetadataRecord::Pin(PinRecord {
+                        conversation,
+                        order: u32::MAX,
+                    })
+                }),
+            &mut rng,
+        );
+        let raw = Connection::open(&compact_db).unwrap();
+        raw.execute_batch(
+            "CREATE TRIGGER fail_pin_compact_insert BEFORE INSERT ON local_metadata BEGIN SELECT RAISE(FAIL, 'injected pin compact insert'); END;",
+        )
+        .unwrap();
+        assert!(compact
+            .pin_conversation(&ConversationId::NoteToSelf, &mut rng)
+            .is_err());
+        assert!(compact
+            .pins()
+            .unwrap()
+            .iter()
+            .all(|status| status.pin.order == u32::MAX));
+
+        let mutation_db = dir.path().join("pin-mutation-failure.db");
+        let (mutations, mut rng) = store_at(&mutation_db, 0xb113);
+        insert_direct(
+            &mutations,
+            [
+                LocalMetadataRecord::Pin(PinRecord {
+                    conversation: peer.clone(),
+                    order: 0,
+                }),
+                LocalMetadataRecord::Pin(PinRecord {
+                    conversation: group.clone(),
+                    order: 1,
+                }),
+            ],
+            &mut rng,
+        );
+        mutations
+            .pin_conversation(&ConversationId::NoteToSelf, &mut rng)
+            .unwrap();
+        let before = mutations.pins().unwrap();
+        let raw = Connection::open(&mutation_db).unwrap();
+        raw.execute_batch(
+            "CREATE TRIGGER fail_pin_reorder BEFORE UPDATE ON local_metadata BEGIN SELECT RAISE(FAIL, 'injected pin reorder'); END;",
+        )
+        .unwrap();
+        assert!(mutations
+            .reorder_pins(
+                &[ConversationId::NoteToSelf, group.clone(), peer.clone()],
+                &mut rng,
+            )
+            .is_err());
+        assert_eq!(mutations.pins().unwrap(), before);
+        raw.execute_batch("DROP TRIGGER fail_pin_reorder").unwrap();
+        raw.execute_batch(
+            "CREATE TRIGGER fail_pin_delete BEFORE DELETE ON local_metadata BEGIN SELECT RAISE(FAIL, 'injected pin delete'); END;",
+        )
+        .unwrap();
+        assert!(mutations
+            .unpin_conversation(&ConversationId::NoteToSelf)
+            .is_err());
+        assert!(mutations.cleanup_stale_pin(&peer).is_err());
+        assert_eq!(mutations.pins().unwrap(), before);
+    }
+
+    proptest! {
+        #[test]
+        fn arbitrary_pin_sequences_match_a_small_durable_model(ops in prop::collection::vec(any::<u8>(), 0..160)) {
+            let dir = tempfile::tempdir().unwrap();
+            let (store, mut rng) = store_at(&dir.path().join("pin-model.db"), 0xb114);
+            let stale = (0..8).map(|index| ConversationId::Peer([index + 1; 32])).collect::<Vec<_>>();
+            insert_direct(
+                &store,
+                stale.iter().cloned().enumerate().map(|(order, conversation)| {
+                    LocalMetadataRecord::Pin(PinRecord { conversation, order: order as u32 })
+                }),
+                &mut rng,
+            );
+            let mut model = stale.clone();
+
+            for (step, op) in ops.into_iter().enumerate() {
+                let candidate = if step % 3 == 0 {
+                    ConversationId::NoteToSelf
+                } else {
+                    stale[step % stale.len()].clone()
+                };
+                match op % 5 {
+                    0 => {
+                        let changed = store.unpin_conversation(&candidate).unwrap();
+                        let before = model.len();
+                        model.retain(|item| item != &candidate);
+                        prop_assert_eq!(changed, model.len() != before);
+                    }
+                    1 => {
+                        let active = candidate == ConversationId::NoteToSelf;
+                        let present = model.contains(&candidate);
+                        let result = store.cleanup_stale_pin(&candidate);
+                        if present && !active {
+                            prop_assert!(result.unwrap());
+                            model.retain(|item| item != &candidate);
+                        } else {
+                            prop_assert!(matches!(result, Err(StoreError::PinActive)));
+                        }
+                    }
+                    2 | 4 => {
+                        let present = model.contains(&ConversationId::NoteToSelf);
+                        prop_assert_eq!(
+                            store.pin_conversation(&ConversationId::NoteToSelf, &mut rng).unwrap(),
+                            !present
+                        );
+                        if !present { model.push(ConversationId::NoteToSelf); }
+                    }
+                    _ => {
+                        model.reverse();
+                        store.reorder_pins(&model, &mut rng).unwrap();
+                    }
+                }
+                prop_assert_eq!(
+                    store.pins().unwrap().into_iter().map(|status| status.pin.conversation).collect::<Vec<_>>(),
+                    model.clone()
+                );
+            }
+        }
     }
 
     proptest! {
