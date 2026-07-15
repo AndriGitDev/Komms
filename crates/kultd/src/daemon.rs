@@ -27,7 +27,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use kult_crypto::KdfProfile;
-use kult_node::{Node, NodeError};
+use kult_node::{LabelMatchMode, Node, NodeError};
 use kult_transport::{
     DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, MeshtasticOptions,
     MeshtasticTransport, NatStatus, Transport, TransportOptions,
@@ -718,6 +718,121 @@ async fn handle_op(
                 "messages": messages,
             }))
         }
+        Op::LabelCreate { name, color } => {
+            wire::validate_label_write(&name, &color)?;
+            let label = node.create_label(&name, &color, &mut OsRng).map_err(fail)?;
+            Ok(wire::label_json(&label))
+        }
+        Op::Labels => Ok(json!({
+            "labels": node
+                .labels()
+                .map_err(fail)?
+                .iter()
+                .map(wire::label_json)
+                .collect::<Vec<_>>(),
+        })),
+        Op::LabelGet { label } => {
+            let label = wire::parse_label(&label)?;
+            Ok(wire::label_json(&node.label(&label).map_err(fail)?))
+        }
+        Op::LabelUpdate { label, name, color } => {
+            wire::validate_label_write(&name, &color)?;
+            let label = wire::parse_label(&label)?;
+            let updated = node
+                .update_label(&label, &name, &color, &mut OsRng)
+                .map_err(fail)?;
+            Ok(wire::label_json(&updated))
+        }
+        Op::LabelDeletePreview { label } => {
+            let label = wire::parse_label(&label)?;
+            let assignments = node.label_delete_assignment_count(&label).map_err(fail)?;
+            Ok(json!({
+                "id": wire::hex_encode(&label),
+                "assignments": assignments,
+            }))
+        }
+        Op::LabelDelete { label, confirm } => {
+            if !confirm {
+                return Err("label deletion requires explicit confirmation".to_owned());
+            }
+            let label = wire::parse_label(&label)?;
+            let assignments = node.delete_label(&label).map_err(fail)?;
+            Ok(json!({
+                "id": wire::hex_encode(&label),
+                "assignments_deleted": assignments,
+            }))
+        }
+        Op::LabelAssign { label, target } => {
+            let label = wire::parse_label(&label)?;
+            let target = wire::parse_label_target(&target)?;
+            let changed = node
+                .assign_label(&label, &target, &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({
+                "changed": changed,
+                "label": wire::hex_encode(&label),
+                "target": wire::label_target_json(&target),
+            }))
+        }
+        Op::LabelUnassign { label, target } => {
+            let label = wire::parse_label(&label)?;
+            let target = wire::parse_label_target(&target)?;
+            let changed = node.unassign_label(&label, &target).map_err(fail)?;
+            Ok(json!({
+                "changed": changed,
+                "label": wire::hex_encode(&label),
+                "target": wire::label_target_json(&target),
+            }))
+        }
+        Op::LabelMembership { label } => {
+            let label = wire::parse_label(&label)?;
+            let members = node.label_members(&label).map_err(fail)?;
+            Ok(json!({
+                "label": wire::hex_encode(&label),
+                "members": members.iter().map(wire::label_conversation_json).collect::<Vec<_>>(),
+            }))
+        }
+        Op::LabelsForConversation { target } => {
+            let target = wire::parse_label_target(&target)?;
+            let labels = node.labels_for_conversation(&target).map_err(fail)?;
+            Ok(json!({
+                "target": wire::label_target_json(&target),
+                "labels": labels.iter().map(wire::label_json).collect::<Vec<_>>(),
+            }))
+        }
+        Op::LabelStale => Ok(json!({
+            "stale": node
+                .stale_label_assignments()
+                .map_err(fail)?
+                .iter()
+                .map(wire::stale_label_json)
+                .collect::<Vec<_>>(),
+        })),
+        Op::LabelStaleCleanup { label, target } => {
+            let label = wire::parse_label(&label)?;
+            let target = wire::parse_label_target(&target)?;
+            let changed = node
+                .cleanup_stale_label_assignment(&label, &target)
+                .map_err(fail)?;
+            Ok(json!({
+                "changed": changed,
+                "label": wire::hex_encode(&label),
+                "target": wire::label_target_json(&target),
+            }))
+        }
+        Op::LabelFilter { labels, mode } => {
+            let labels = wire::parse_selected_labels(&labels)?;
+            let filtered = node
+                .filter_label_conversations(
+                    &labels,
+                    match mode {
+                        wire::LabelMatchInput::Any => LabelMatchMode::Any,
+                        wire::LabelMatchInput::All => LabelMatchMode::All,
+                    },
+                )
+                .map_err(fail)?;
+            Ok(wire::label_filter_json(&filtered))
+        }
         Op::GroupCreate { name, members } => {
             let members = members
                 .iter()
@@ -999,7 +1114,7 @@ async fn connection(
                 if line.trim().is_empty() {
                     continue;
                 }
-                match serde_json::from_str::<Request>(&line) {
+                match wire::parse_request(&line) {
                     Err(e) => wire::err(0, &format!("bad request: {e}")),
                     Ok(Request { id, op: Op::Subscribe }) => {
                         subscription = Some(events.subscribe());

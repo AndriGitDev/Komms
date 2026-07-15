@@ -20,9 +20,12 @@ use tokio::sync::{mpsc, oneshot, watch};
 use kult_crypto::{KdfProfile, SafetyNumber};
 use kult_node::{
     AttachmentInfo, AttachmentMetadata, CarrierCapabilitySnapshot, Event, GroupInfo,
-    GroupMentionCapability, MentionSpan, Node, ScheduledMessageInfo,
+    GroupMentionCapability, LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode,
+    MentionSpan, Node, ScheduledMessageInfo, StaleLabelInfo,
 };
-use kult_store::{ContactRecord, GroupMessageRecord, MessageRecord, NoteMessageRecord};
+use kult_store::{
+    ContactRecord, ConversationId, GroupMessageRecord, MessageRecord, NoteMessageRecord,
+};
 use kult_transport::{
     DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, Transport, TransportOptions,
 };
@@ -161,6 +164,63 @@ pub(crate) enum Msg {
     },
     NoteToSelfMessages {
         resp: Resp<Vec<NoteMessageRecord>>,
+    },
+    LabelCreate {
+        name: String,
+        color: String,
+        resp: Resp<LabelInfo>,
+    },
+    Labels {
+        resp: Resp<Vec<LabelInfo>>,
+    },
+    LabelGet {
+        label: [u8; 16],
+        resp: Resp<LabelInfo>,
+    },
+    LabelUpdate {
+        label: [u8; 16],
+        name: String,
+        color: String,
+        resp: Resp<LabelInfo>,
+    },
+    LabelDeletePreview {
+        label: [u8; 16],
+        resp: Resp<usize>,
+    },
+    LabelDelete {
+        label: [u8; 16],
+        resp: Resp<usize>,
+    },
+    LabelAssign {
+        label: [u8; 16],
+        target: ConversationId,
+        resp: Resp<bool>,
+    },
+    LabelUnassign {
+        label: [u8; 16],
+        target: ConversationId,
+        resp: Resp<bool>,
+    },
+    LabelMembership {
+        label: [u8; 16],
+        resp: Resp<Vec<LabelConversationInfo>>,
+    },
+    LabelsForConversation {
+        target: ConversationId,
+        resp: Resp<Vec<LabelInfo>>,
+    },
+    LabelStale {
+        resp: Resp<Vec<StaleLabelInfo>>,
+    },
+    LabelStaleCleanup {
+        label: [u8; 16],
+        target: ConversationId,
+        resp: Resp<bool>,
+    },
+    LabelFilter {
+        labels: Vec<[u8; 16]>,
+        mode: LabelMatchMode,
+        resp: Resp<LabelFilterInfo>,
     },
     GroupCreate {
         name: String,
@@ -734,6 +794,68 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         }
         Msg::NoteToSelfMessages { resp } => {
             let _ = resp.send(node.note_to_self_messages().map_err(fail));
+        }
+        Msg::LabelCreate { name, color, resp } => {
+            let _ = resp.send(node.create_label(&name, &color, &mut OsRng).map_err(fail));
+        }
+        Msg::Labels { resp } => {
+            let _ = resp.send(node.labels().map_err(fail));
+        }
+        Msg::LabelGet { label, resp } => {
+            let _ = resp.send(node.label(&label).map_err(fail));
+        }
+        Msg::LabelUpdate {
+            label,
+            name,
+            color,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.update_label(&label, &name, &color, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::LabelDeletePreview { label, resp } => {
+            let _ = resp.send(node.label_delete_assignment_count(&label).map_err(fail));
+        }
+        Msg::LabelDelete { label, resp } => {
+            let _ = resp.send(node.delete_label(&label).map_err(fail));
+        }
+        Msg::LabelAssign {
+            label,
+            target,
+            resp,
+        } => {
+            let _ = resp.send(node.assign_label(&label, &target, &mut OsRng).map_err(fail));
+        }
+        Msg::LabelUnassign {
+            label,
+            target,
+            resp,
+        } => {
+            let _ = resp.send(node.unassign_label(&label, &target).map_err(fail));
+        }
+        Msg::LabelMembership { label, resp } => {
+            let _ = resp.send(node.label_members(&label).map_err(fail));
+        }
+        Msg::LabelsForConversation { target, resp } => {
+            let _ = resp.send(node.labels_for_conversation(&target).map_err(fail));
+        }
+        Msg::LabelStale { resp } => {
+            let _ = resp.send(node.stale_label_assignments().map_err(fail));
+        }
+        Msg::LabelStaleCleanup {
+            label,
+            target,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.cleanup_stale_label_assignment(&label, &target)
+                    .map_err(fail),
+            );
+        }
+        Msg::LabelFilter { labels, mode, resp } => {
+            let _ = resp.send(node.filter_label_conversations(&labels, mode).map_err(fail));
         }
         Msg::GroupCreate {
             name,

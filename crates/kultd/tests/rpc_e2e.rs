@@ -13,6 +13,11 @@ use tokio::net::UnixStream;
 
 use kultd::{Daemon, DaemonConfig};
 
+fn label_parity_fixture() -> Value {
+    serde_json::from_str(include_str!("../../../fixtures/b18-label-parity.json"))
+        .expect("valid shared B18 label fixture")
+}
+
 /// Argon2id light enough for tests (same profile the node e2e tests use).
 const TEST_KDF: kult_crypto::KdfProfile = kult_crypto::KdfProfile {
     m_cost_kib: 8,
@@ -729,6 +734,7 @@ async fn backup_and_restore_via_rpc() {
 /// and per-member delivery state crosses only the public RPC boundary.
 #[tokio::test(flavor = "multi_thread")]
 async fn groups_via_rpc_only() {
+    let label_fixture = label_parity_fixture();
     let dir = tempfile::tempdir().unwrap();
     let alice = Daemon::start(test_config(dir.path(), "group-alice"))
         .await
@@ -922,6 +928,168 @@ async fn groups_via_rpc_only() {
         .await
         .unwrap_err();
     assert!(err.contains("peer") && err.contains("hex"), "got: {err}");
+
+    // B18 stays local and structured through RPC: exact label ids plus exact
+    // typed targets, never display-name inference. Duplicate names are
+    // disambiguated by canonical color and durable order.
+    let queued_before_labels = a.ok(json!({ "op": "status" })).await["queued"].clone();
+    let first_label = a
+        .ok(json!({
+            "op": "label_create",
+            "name": label_fixture["duplicate_name"],
+            "color": label_fixture["create_colors"][0],
+        }))
+        .await;
+    let second_label = a
+        .ok(json!({
+            "op": "label_create",
+            "name": label_fixture["duplicate_name"],
+            "color": label_fixture["create_colors"][1],
+        }))
+        .await;
+    let first_id = first_label["id"].as_str().unwrap().to_owned();
+    let second_id = second_label["id"].as_str().unwrap().to_owned();
+    assert_ne!(first_id, second_id);
+    assert_eq!(first_label["order"], label_fixture["expected_orders"][0]);
+    assert_eq!(second_label["order"], label_fixture["expected_orders"][1]);
+    assert_eq!(first_id.len(), 32);
+
+    for target in [
+        json!({ "type": "peer", "id": bob_peer }),
+        json!({ "type": "group", "id": group }),
+        json!({ "type": "note_to_self" }),
+    ] {
+        assert_eq!(
+            a.ok(json!({ "op": "label_assign", "label": first_id, "target": target }))
+                .await["changed"],
+            json!(true)
+        );
+    }
+    for target in [
+        json!({ "type": "group", "id": group }),
+        json!({ "type": "note_to_self" }),
+    ] {
+        a.ok(json!({ "op": "label_assign", "label": second_id, "target": target }))
+            .await;
+    }
+    assert_eq!(
+        a.ok(json!({
+            "op": "label_assign",
+            "label": second_id,
+            "target": { "type": "note_to_self" },
+        }))
+        .await["changed"],
+        json!(false)
+    );
+
+    let labels = a.ok(json!({ "op": "labels" })).await;
+    assert_eq!(labels["labels"][0]["name"], first_label["name"]);
+    assert_eq!(labels["labels"][0]["color"], json!("teal"));
+    assert_eq!(labels["labels"][1]["color"], json!("pink"));
+    let membership = a
+        .ok(json!({ "op": "label_membership", "label": first_id }))
+        .await;
+    assert_eq!(membership["members"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        membership["members"][0]["type"],
+        label_fixture["membership_target_kinds"][0]
+    );
+    assert_eq!(membership["members"][0]["id"], json!(bob_peer));
+    assert_eq!(
+        membership["members"][1]["type"],
+        label_fixture["membership_target_kinds"][1]
+    );
+    assert_eq!(membership["members"][1]["id"], json!(group));
+    assert_eq!(
+        membership["members"][2]["type"],
+        label_fixture["membership_target_kinds"][2]
+    );
+    let for_group = a
+        .ok(json!({
+            "op": "labels_for_conversation",
+            "target": { "type": "group", "id": group },
+        }))
+        .await;
+    assert_eq!(for_group["labels"].as_array().unwrap().len(), 2);
+
+    let any = a
+        .ok(json!({
+            "op": "label_filter",
+            "labels": [first_id, first_id],
+            "mode": "any",
+        }))
+        .await;
+    assert_eq!(any["selected"], json!([first_id]));
+    assert_eq!(
+        any["conversations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["type"].clone())
+            .collect::<Vec<_>>(),
+        label_fixture["match_any_target_kinds"]
+            .as_array()
+            .unwrap()
+            .clone()
+    );
+    let all = a
+        .ok(json!({
+            "op": "label_filter",
+            "labels": [first_id, second_id],
+            "mode": "all",
+        }))
+        .await;
+    assert_eq!(
+        all["conversations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["type"].clone())
+            .collect::<Vec<_>>(),
+        label_fixture["match_all_target_kinds"]
+            .as_array()
+            .unwrap()
+            .clone()
+    );
+
+    let updated = a
+        .ok(json!({
+            "op": "label_update",
+            "label": first_id,
+            "name": label_fixture["renamed_name"],
+            "color": label_fixture["renamed_color"],
+        }))
+        .await;
+    assert_eq!(updated["id"], json!(first_id));
+    assert_eq!(updated["order"], json!(0));
+    assert_eq!(
+        a.ok(json!({ "op": "label_delete_preview", "label": first_id }))
+            .await["assignments"],
+        label_fixture["expected_assignment_count"]
+    );
+    let err = a
+        .call(json!({ "op": "label_delete", "label": first_id, "confirm": false }))
+        .await
+        .unwrap_err();
+    assert_eq!(err, "label deletion requires explicit confirmation");
+    assert_eq!(
+        a.ok(json!({ "op": "label_delete", "label": first_id, "confirm": true }))
+            .await["assignments_deleted"],
+        label_fixture["expected_assignment_count"]
+    );
+    assert!(a
+        .call(json!({ "op": "label_get", "label": first_id }))
+        .await
+        .unwrap_err()
+        .contains("does not exist"));
+    assert!(a.ok(json!({ "op": "label_stale" })).await["stale"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        a.ok(json!({ "op": "status" })).await["queued"],
+        queued_before_labels
+    );
 
     let group_attachment_bytes = b"one ciphertext set for the group";
     let group_source = dir.path().join("rpc-group-source.bin");

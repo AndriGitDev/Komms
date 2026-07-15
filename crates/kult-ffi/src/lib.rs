@@ -52,6 +52,37 @@ use runtime::{Msg, RestoreSource, Runtime, RuntimeConfig};
 
 uniffi::setup_scaffolding!();
 
+/// Stable label failure categories shared by Kotlin and Swift wrappers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum LabelErrorCode {
+    /// Label id was not exactly 16 bytes of hexadecimal.
+    InvalidId,
+    /// Typed peer/group/note-to-self target was malformed.
+    InvalidTarget,
+    /// Name violated the exact UTF-8 length or fixed whitespace rule.
+    InvalidName,
+    /// Color was outside the canonical vocabulary.
+    InvalidColor,
+    /// Stable label id has no definition.
+    UnknownLabel,
+    /// Exact typed conversation is unavailable.
+    UnavailableTarget,
+    /// Definition limit is exhausted.
+    DefinitionLimit,
+    /// Aggregate assignment limit is exhausted.
+    AssignmentLimit,
+    /// Per-conversation assignment limit is exhausted.
+    ConversationLimit,
+    /// Cryptorandom id collision retry budget was exhausted.
+    IdCollision,
+    /// Requested stale assignment is now active or absent.
+    StaleAssignmentActive,
+    /// Explicit destructive confirmation was absent.
+    ConfirmationRequired,
+    /// Storage or another local implementation failure occurred.
+    StorageFailure,
+}
+
 /// Errors crossing the FFI boundary. Messages are the node's own, verbatim
 /// — honest and human-readable, never downgraded to a fake success.
 ///
@@ -71,6 +102,13 @@ pub enum FfiError {
         /// The node's error, verbatim.
         reason: String,
     },
+    /// A private-label operation failed with a stable programmatic category.
+    Label {
+        /// Stable category shared across Rust, Kotlin, and Swift.
+        code: LabelErrorCode,
+        /// Generic render-safe explanation with no label text or relationship.
+        reason: String,
+    },
     /// The node was stopped; the handle is spent.
     Stopped,
 }
@@ -80,6 +118,7 @@ impl std::fmt::Display for FfiError {
         match self {
             Self::Startup { reason } => write!(f, "startup: {reason}"),
             Self::Node { reason } => write!(f, "{reason}"),
+            Self::Label { reason, .. } => write!(f, "{reason}"),
             Self::Stopped => write!(f, "node is stopped"),
         }
     }
@@ -403,6 +442,90 @@ pub struct Contact {
     pub verified: bool,
 }
 
+/// Exact typed target kind for local label membership.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum LabelTargetKind {
+    /// Pairwise conversation keyed by peer identity.
+    Peer,
+    /// Sender-key group keyed by group id.
+    Group,
+    /// Reserved device-local note-to-self conversation.
+    NoteToSelf,
+}
+
+/// Exact technical target used by label mutations.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct LabelTarget {
+    /// Target type; display names are never accepted here.
+    pub kind: LabelTargetKind,
+    /// 64-hex-character peer/group id, or absent for note-to-self.
+    pub id: Option<String>,
+}
+
+/// Render-safe available conversation in label membership/filter output.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct LabelConversation {
+    /// Exact technical typed target.
+    pub target: LabelTarget,
+    /// Current local petname/group name; absent for note-to-self.
+    pub display_name: Option<String>,
+}
+
+/// Render-safe private label definition.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct Label {
+    /// Stable random 32-hex-character id for technical mutation calls.
+    pub id: String,
+    /// Exact user-authored UTF-8 label name.
+    pub name: String,
+    /// Canonical color token, with unknown stored values safely neutralized.
+    pub color: String,
+    /// Stable zero-based durable insertion order.
+    pub order: u32,
+}
+
+/// Local multi-label matching semantics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum LabelMatchMode {
+    /// Match at least one selected label.
+    Any,
+    /// Match every selected label.
+    All,
+}
+
+/// Why a durable membership is stale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum StaleLabelReason {
+    /// Label definition is unavailable.
+    MissingLabel,
+    /// Exact conversation target is unavailable.
+    UnavailableConversation,
+    /// Both definition and target are unavailable.
+    MissingLabelAndConversation,
+}
+
+/// Render-safe stale membership diagnostic.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct StaleLabel {
+    /// Stable technical label id.
+    pub label: String,
+    /// Exact typed target.
+    pub target: LabelTarget,
+    /// The unavailable side or sides.
+    pub reason: StaleLabelReason,
+}
+
+/// Deterministic local label-filter result.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct LabelFilterResult {
+    /// Deduplicated available selected ids in caller order.
+    pub selected: Vec<String>,
+    /// Selected ids whose definitions are unavailable.
+    pub unavailable_selected: Vec<String>,
+    /// Eligible conversations matching the active selection.
+    pub conversations: Vec<LabelConversation>,
+}
+
 /// Best currently known carrier class for one contact. Positive verdicts are
 /// advisory and expire at the time carried by [`CarrierCapabilitySnapshot`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
@@ -648,6 +771,8 @@ pub struct Status {
 /// (docs/09-implementation-guide.md §3.5).
 #[derive(Clone, Debug, uniffi::Enum)]
 pub enum Event {
+    /// Private local labels changed; shells re-read local label state.
+    LabelsChanged,
     /// A scheduled message was created or edited.
     ScheduledMessageUpdated {
         /// Stable message id (hex).
@@ -771,6 +896,7 @@ impl Event {
     /// update, never silently mislabeled.
     fn from_node(event: kult_node::Event) -> Option<Self> {
         Some(match event {
+            kult_node::Event::LabelsChanged => Self::LabelsChanged,
             kult_node::Event::ScheduledMessageUpdated { id } => Self::ScheduledMessageUpdated {
                 id: hex_encode(&id),
             },
@@ -1281,6 +1407,175 @@ impl KultNode {
             .collect())
     }
 
+    /// Create one private local label with a collision-safe random stable id.
+    pub fn create_label(&self, name: String, color: String) -> Result<Label, FfiError> {
+        validate_label_write_ffi(&name, &color)?;
+        self.label_call(|resp| Msg::LabelCreate { name, color, resp })
+            .map(Label::from_node)
+    }
+
+    /// List private labels in deterministic durable insertion order.
+    pub fn labels(&self) -> Result<Vec<Label>, FfiError> {
+        Ok(self
+            .label_call(|resp| Msg::Labels { resp })?
+            .into_iter()
+            .map(Label::from_node)
+            .collect())
+    }
+
+    /// Get one private label by exact 32-hex-character id.
+    pub fn label(&self, label: String) -> Result<Label, FfiError> {
+        let label = parse_label_ffi(&label)?;
+        self.label_call(|resp| Msg::LabelGet { label, resp })
+            .map(Label::from_node)
+    }
+
+    /// Rename and recolor one label while preserving id, order, and memberships.
+    pub fn update_label(
+        &self,
+        label: String,
+        name: String,
+        color: String,
+    ) -> Result<Label, FfiError> {
+        validate_label_write_ffi(&name, &color)?;
+        let label = parse_label_ffi(&label)?;
+        self.label_call(|resp| Msg::LabelUpdate {
+            label,
+            name,
+            color,
+            resp,
+        })
+        .map(Label::from_node)
+    }
+
+    /// Count every membership before an explicit destructive delete decision.
+    pub fn label_delete_assignment_count(&self, label: String) -> Result<u64, FfiError> {
+        let label = parse_label_ffi(&label)?;
+        let count = self.label_call(|resp| Msg::LabelDeletePreview { label, resp })?;
+        Ok(u64::try_from(count).unwrap_or(u64::MAX))
+    }
+
+    /// Atomically delete a label and every membership.
+    ///
+    /// `confirm` must be true so automation cannot make the destructive choice
+    /// implicitly. Returns the deleted membership count.
+    pub fn delete_label(&self, label: String, confirm: bool) -> Result<u64, FfiError> {
+        if !confirm {
+            return Err(label_error(
+                LabelErrorCode::ConfirmationRequired,
+                "label deletion requires explicit confirmation",
+            ));
+        }
+        let label = parse_label_ffi(&label)?;
+        let count = self.label_call(|resp| Msg::LabelDelete { label, resp })?;
+        Ok(u64::try_from(count).unwrap_or(u64::MAX))
+    }
+
+    /// Idempotently apply one label to one exact typed conversation.
+    pub fn assign_label(&self, label: String, target: LabelTarget) -> Result<bool, FfiError> {
+        let label = parse_label_ffi(&label)?;
+        let target = parse_label_target_ffi(&target)?;
+        self.label_call(|resp| Msg::LabelAssign {
+            label,
+            target,
+            resp,
+        })
+    }
+
+    /// Idempotently remove one exact membership, including a stale one.
+    pub fn unassign_label(&self, label: String, target: LabelTarget) -> Result<bool, FfiError> {
+        let label = parse_label_ffi(&label)?;
+        let target = parse_label_target_ffi(&target)?;
+        self.label_call(|resp| Msg::LabelUnassign {
+            label,
+            target,
+            resp,
+        })
+    }
+
+    /// Active typed conversation membership for one label.
+    pub fn label_membership(&self, label: String) -> Result<Vec<LabelConversation>, FfiError> {
+        let label = parse_label_ffi(&label)?;
+        Ok(self
+            .label_call(|resp| Msg::LabelMembership { label, resp })?
+            .into_iter()
+            .map(LabelConversation::from_node)
+            .collect())
+    }
+
+    /// Active labels for one exact available typed conversation.
+    pub fn labels_for_conversation(&self, target: LabelTarget) -> Result<Vec<Label>, FfiError> {
+        let target = parse_label_target_ffi(&target)?;
+        Ok(self
+            .label_call(|resp| Msg::LabelsForConversation { target, resp })?
+            .into_iter()
+            .map(Label::from_node)
+            .collect())
+    }
+
+    /// Render-safe diagnostics for stale local memberships.
+    pub fn stale_labels(&self) -> Result<Vec<StaleLabel>, FfiError> {
+        Ok(self
+            .label_call(|resp| Msg::LabelStale { resp })?
+            .into_iter()
+            .map(StaleLabel::from_node)
+            .collect())
+    }
+
+    /// Remove one exact membership only while it remains stale.
+    pub fn cleanup_stale_label(
+        &self,
+        label: String,
+        target: LabelTarget,
+    ) -> Result<bool, FfiError> {
+        let label = parse_label_ffi(&label)?;
+        let target = parse_label_target_ffi(&target)?;
+        self.label_call(|resp| Msg::LabelStaleCleanup {
+            label,
+            target,
+            resp,
+        })
+    }
+
+    /// Filter eligible conversations locally using match-any or match-all.
+    pub fn filter_labels(
+        &self,
+        labels: Vec<String>,
+        mode: LabelMatchMode,
+    ) -> Result<LabelFilterResult, FfiError> {
+        if labels.len() > kult_node::MAX_LABELS {
+            return Err(label_error(
+                LabelErrorCode::DefinitionLimit,
+                "selected label count exceeds 128",
+            ));
+        }
+        let labels = labels
+            .iter()
+            .map(|label| parse_label_ffi(label))
+            .collect::<Result<Vec<_>, _>>()?;
+        let result = self.label_call(|resp| Msg::LabelFilter {
+            labels,
+            mode: match mode {
+                LabelMatchMode::Any => kult_node::LabelMatchMode::Any,
+                LabelMatchMode::All => kult_node::LabelMatchMode::All,
+            },
+            resp,
+        })?;
+        Ok(LabelFilterResult {
+            selected: result.selected.iter().map(|id| hex_encode(id)).collect(),
+            unavailable_selected: result
+                .unavailable_selected
+                .iter()
+                .map(|id| hex_encode(id))
+                .collect(),
+            conversations: result
+                .conversations
+                .into_iter()
+                .map(LabelConversation::from_node)
+                .collect(),
+        })
+    }
+
     /// Create a sender-key group with stored contacts. Returns its id (hex).
     pub fn create_group(&self, name: String, members: Vec<String>) -> Result<String, FfiError> {
         let members = members
@@ -1568,6 +1863,134 @@ impl KultNode {
             .map_err(|_| FfiError::Stopped)?
             .map_err(|reason| FfiError::Node { reason })
     }
+
+    fn label_call<T>(
+        &self,
+        build: impl FnOnce(oneshot::Sender<Result<T, String>>) -> Msg,
+    ) -> Result<T, FfiError> {
+        self.call(build).map_err(label_ffi_error)
+    }
+}
+
+impl Label {
+    fn from_node(label: kult_node::LabelInfo) -> Self {
+        Self {
+            id: hex_encode(&label.id),
+            name: label.name,
+            color: label.color,
+            order: label.order,
+        }
+    }
+}
+
+impl LabelConversation {
+    fn from_node(conversation: kult_node::LabelConversationInfo) -> Self {
+        Self {
+            target: label_target_from_store(&conversation.conversation),
+            display_name: conversation.display_name,
+        }
+    }
+}
+
+impl StaleLabel {
+    fn from_node(stale: kult_node::StaleLabelInfo) -> Self {
+        Self {
+            label: hex_encode(&stale.label),
+            target: label_target_from_store(&stale.conversation),
+            reason: match stale.reason {
+                kult_node::NodeStaleLabelReason::MissingLabel => StaleLabelReason::MissingLabel,
+                kult_node::NodeStaleLabelReason::UnavailableConversation => {
+                    StaleLabelReason::UnavailableConversation
+                }
+                kult_node::NodeStaleLabelReason::MissingLabelAndConversation => {
+                    StaleLabelReason::MissingLabelAndConversation
+                }
+            },
+        }
+    }
+}
+
+fn label_target_from_store(target: &kult_store::ConversationId) -> LabelTarget {
+    match target {
+        kult_store::ConversationId::Peer(peer) => LabelTarget {
+            kind: LabelTargetKind::Peer,
+            id: Some(hex_encode(peer)),
+        },
+        kult_store::ConversationId::Group(group) => LabelTarget {
+            kind: LabelTargetKind::Group,
+            id: Some(hex_encode(group)),
+        },
+        kult_store::ConversationId::NoteToSelf => LabelTarget {
+            kind: LabelTargetKind::NoteToSelf,
+            id: None,
+        },
+    }
+}
+
+fn parse_label_ffi(value: &str) -> Result<[u8; 16], FfiError> {
+    parse_message(value).map_err(|_| label_error(LabelErrorCode::InvalidId, "invalid label id"))
+}
+
+fn parse_label_target_ffi(target: &LabelTarget) -> Result<kult_store::ConversationId, FfiError> {
+    match (&target.kind, &target.id) {
+        (LabelTargetKind::Peer, Some(id)) => parse_peer(id)
+            .map(kult_store::ConversationId::Peer)
+            .map_err(|_| label_error(LabelErrorCode::InvalidTarget, "invalid label target")),
+        (LabelTargetKind::Group, Some(id)) => parse_group(id)
+            .map(kult_store::ConversationId::Group)
+            .map_err(|_| label_error(LabelErrorCode::InvalidTarget, "invalid label target")),
+        (LabelTargetKind::NoteToSelf, None) => Ok(kult_store::ConversationId::NoteToSelf),
+        _ => Err(label_error(
+            LabelErrorCode::InvalidTarget,
+            "invalid label target",
+        )),
+    }
+}
+
+fn validate_label_write_ffi(name: &str, color: &str) -> Result<(), FfiError> {
+    if !kult_store::valid_label_name(name) {
+        return Err(label_error(
+            LabelErrorCode::InvalidName,
+            "invalid label name",
+        ));
+    }
+    if !kult_store::valid_label_color(color) {
+        return Err(label_error(
+            LabelErrorCode::InvalidColor,
+            "unsupported label color",
+        ));
+    }
+    Ok(())
+}
+
+fn label_error(code: LabelErrorCode, reason: &str) -> FfiError {
+    FfiError::Label {
+        code,
+        reason: reason.to_owned(),
+    }
+}
+
+fn label_ffi_error(error: FfiError) -> FfiError {
+    let FfiError::Node { reason } = error else {
+        return error;
+    };
+    let code = match reason.as_str() {
+        "store error: invalid label name" => LabelErrorCode::InvalidName,
+        "store error: unsupported label color" => LabelErrorCode::InvalidColor,
+        "store error: label id does not exist" => LabelErrorCode::UnknownLabel,
+        "store error: typed conversation target is unavailable" => {
+            LabelErrorCode::UnavailableTarget
+        }
+        "store error: label definition limit exhausted" => LabelErrorCode::DefinitionLimit,
+        "store error: label assignment limit exhausted" => LabelErrorCode::AssignmentLimit,
+        "store error: conversation label limit exhausted" => LabelErrorCode::ConversationLimit,
+        "store error: label id collision budget exhausted" => LabelErrorCode::IdCollision,
+        "store error: label assignment is active or absent" => {
+            LabelErrorCode::StaleAssignmentActive
+        }
+        _ => LabelErrorCode::StorageFailure,
+    };
+    FfiError::Label { code, reason }
 }
 
 /// Validate and convert the FFI-facing [`Config`], creating the data

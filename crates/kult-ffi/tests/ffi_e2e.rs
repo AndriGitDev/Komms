@@ -13,9 +13,15 @@ use std::time::{Duration, Instant};
 use kult_ffi::{
     default_config, edit_image, probe_edited_image, probe_recorded_audio, AttachmentDirection,
     AttachmentState, CarrierCapability, Config, ContentKind, DeliveryState, Event, EventListener,
-    Hint, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, KdfChoice, KultNode,
-    MentionSpan, ScheduledConversation,
+    FfiError, Hint, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, KdfChoice,
+    KultNode, LabelErrorCode, LabelMatchMode, LabelTarget, LabelTargetKind, MentionSpan,
+    ScheduledConversation,
 };
+
+fn label_parity_fixture() -> serde_json::Value {
+    serde_json::from_str(include_str!("../../../fixtures/b18-label-parity.json"))
+        .expect("valid shared B18 label fixture")
+}
 
 fn edited_image(directory: &Path, prefix: &str) -> (PathBuf, Vec<u8>) {
     use image::{ImageBuffer, ImageEncoder, Rgba};
@@ -249,6 +255,229 @@ fn note_to_self_via_ffi_only_is_local_and_durable() {
     assert_eq!(reopened.note_to_self_messages().unwrap()[0].id, id);
     assert_eq!(reopened.scheduled_messages().unwrap().len(), 1);
     reopened.stop();
+}
+
+#[test]
+fn private_labels_via_ffi_have_typed_parity_and_zero_delivery_work() {
+    let fixture = label_parity_fixture();
+    let duplicate_name = fixture["duplicate_name"].as_str().unwrap();
+    let colors = fixture["create_colors"].as_array().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let recorder = Recorder::default();
+    let node = KultNode::start(
+        test_config(directory.path(), "labels"),
+        Box::new(recorder.clone()),
+    )
+    .expect("node starts");
+    let queued_before = node.status().unwrap().queued;
+    let own_peer = node
+        .add_contact(
+            "\u{2067}duplicate\u{2069}".to_owned(),
+            node.handshake_bundle().unwrap(),
+            vec![],
+        )
+        .unwrap();
+    let group = node
+        .create_group("e\u{301} group".to_owned(), vec![])
+        .unwrap();
+
+    let first = node
+        .create_label(
+            duplicate_name.to_owned(),
+            colors[0].as_str().unwrap().to_owned(),
+        )
+        .unwrap();
+    let second = node
+        .create_label(
+            duplicate_name.to_owned(),
+            colors[1].as_str().unwrap().to_owned(),
+        )
+        .unwrap();
+    assert_ne!(first.id, second.id);
+    assert_eq!(
+        vec![first.order, second.order],
+        fixture["expected_orders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_u64().unwrap() as u32)
+            .collect::<Vec<_>>()
+    );
+    recorder.wait("label event", |event| matches!(event, Event::LabelsChanged));
+
+    let peer_target = LabelTarget {
+        kind: LabelTargetKind::Peer,
+        id: Some(own_peer.clone()),
+    };
+    let group_target = LabelTarget {
+        kind: LabelTargetKind::Group,
+        id: Some(group.clone()),
+    };
+    let note_target = LabelTarget {
+        kind: LabelTargetKind::NoteToSelf,
+        id: None,
+    };
+    for target in [
+        peer_target.clone(),
+        group_target.clone(),
+        note_target.clone(),
+    ] {
+        assert!(node.assign_label(first.id.clone(), target).unwrap());
+    }
+    for target in [group_target.clone(), note_target.clone()] {
+        assert!(node.assign_label(second.id.clone(), target).unwrap());
+    }
+    assert!(!node
+        .assign_label(second.id.clone(), note_target.clone())
+        .unwrap());
+
+    let membership = node.label_membership(first.id.clone()).unwrap();
+    assert_eq!(membership.len(), 3);
+    assert_eq!(membership[0].target, peer_target);
+    assert_eq!(
+        membership[0].display_name.as_deref(),
+        Some("\u{2067}duplicate\u{2069}")
+    );
+    assert_eq!(membership[1].target, group_target);
+    assert_eq!(membership[2].target, note_target);
+    assert_eq!(
+        membership
+            .iter()
+            .map(|item| match item.target.kind {
+                LabelTargetKind::Peer => "peer",
+                LabelTargetKind::Group => "group",
+                LabelTargetKind::NoteToSelf => "note_to_self",
+            })
+            .collect::<Vec<_>>(),
+        fixture["membership_target_kinds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>()
+    );
+    let any = node
+        .filter_labels(
+            vec![first.id.clone(), first.id.clone()],
+            LabelMatchMode::Any,
+        )
+        .unwrap();
+    assert_eq!(any.selected, vec![first.id.clone()]);
+    assert_eq!(
+        any.conversations
+            .iter()
+            .map(|item| match item.target.kind {
+                LabelTargetKind::Peer => "peer",
+                LabelTargetKind::Group => "group",
+                LabelTargetKind::NoteToSelf => "note_to_self",
+            })
+            .collect::<Vec<_>>(),
+        fixture["match_any_target_kinds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>()
+    );
+    let all = node
+        .filter_labels(
+            vec![first.id.clone(), second.id.clone()],
+            LabelMatchMode::All,
+        )
+        .unwrap();
+    assert_eq!(
+        all.conversations
+            .iter()
+            .map(|item| match item.target.kind {
+                LabelTargetKind::Peer => "peer",
+                LabelTargetKind::Group => "group",
+                LabelTargetKind::NoteToSelf => "note_to_self",
+            })
+            .collect::<Vec<_>>(),
+        fixture["match_all_target_kinds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>()
+    );
+
+    let updated = node
+        .update_label(
+            first.id.clone(),
+            fixture["renamed_name"].as_str().unwrap().to_owned(),
+            fixture["renamed_color"].as_str().unwrap().to_owned(),
+        )
+        .unwrap();
+    assert_eq!(updated.id, first.id);
+    assert_eq!(updated.order, 0);
+    assert_eq!(node.label_membership(first.id.clone()).unwrap().len(), 3);
+
+    assert!(matches!(
+        node.create_label(
+            fixture["whitespace_only_name"].as_str().unwrap().to_owned(),
+            "red".to_owned()
+        ),
+        Err(FfiError::Label {
+            code: LabelErrorCode::InvalidName,
+            ..
+        })
+    ));
+    assert!(matches!(
+        node.create_label(
+            "valid".to_owned(),
+            fixture["unsupported_color"].as_str().unwrap().to_owned()
+        ),
+        Err(FfiError::Label {
+            code: LabelErrorCode::InvalidColor,
+            ..
+        })
+    ));
+    assert!(matches!(
+        node.label(fixture["invalid_id"].as_str().unwrap().to_owned()),
+        Err(FfiError::Label {
+            code: LabelErrorCode::InvalidId,
+            ..
+        })
+    ));
+    assert!(matches!(
+        node.assign_label(
+            first.id.clone(),
+            LabelTarget {
+                kind: LabelTargetKind::NoteToSelf,
+                id: Some("00".repeat(32)),
+            },
+        ),
+        Err(FfiError::Label {
+            code: LabelErrorCode::InvalidTarget,
+            ..
+        })
+    ));
+    assert!(matches!(
+        node.delete_label(first.id.clone(), false),
+        Err(FfiError::Label {
+            code: LabelErrorCode::ConfirmationRequired,
+            ..
+        })
+    ));
+    assert_eq!(
+        node.label_delete_assignment_count(first.id.clone())
+            .unwrap(),
+        fixture["expected_assignment_count"].as_u64().unwrap()
+    );
+    assert_eq!(
+        node.delete_label(first.id.clone(), true).unwrap(),
+        fixture["expected_assignment_count"].as_u64().unwrap()
+    );
+    let remaining = node.labels_for_conversation(note_target).unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id, second.id);
+    assert_eq!(remaining[0].name, second.name);
+    assert_eq!(remaining[0].color, second.color);
+    assert_eq!(remaining[0].order, 0);
+    assert!(node.stale_labels().unwrap().is_empty());
+    assert_eq!(node.status().unwrap().queued, queued_before);
+    node.stop();
 }
 
 #[test]

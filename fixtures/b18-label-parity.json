@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "id_symbols": ["first", "second"],
+  "duplicate_name": "é 🧭 ⁧טיול⁩",
+  "create_colors": ["teal", "pink"],
+  "expected_orders": [0, 1],
+  "membership_target_kinds": ["peer", "group", "note_to_self"],
+  "match_any_target_kinds": ["note_to_self", "peer", "group"],
+  "match_all_target_kinds": ["note_to_self", "group"],
+  "renamed_name": "exact renamed 🧭",
+  "renamed_color": "blue",
+  "whitespace_only_name": " ‎ ",
+  "unsupported_color": "css:red",
+  "invalid_id": "not-a-name",
+  "expected_assignment_count": 3,
+  "error_codes": {
+    "whitespace_only_name": "invalid_name",
+    "unsupported_color": "invalid_color",
+    "invalid_id": "invalid_id",
+    "unavailable_target": "target_unavailable",
+    "unconfirmed_delete": "confirmation_required"
+  }
+}

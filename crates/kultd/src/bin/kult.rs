@@ -51,6 +51,23 @@ COMMANDS:
     schedule-cancel ID              cancel a scheduled message
     note TEXT...                    append to the local note-to-self conversation
     note-messages                   local note-to-self history
+    label-create COLOR NAME...      create a private label; prints its stable id
+    labels                          list labels in stable local order
+    label-get LABEL_ID              get one label by 32-hex-character id
+    label-update LABEL_ID COLOR NAME...
+                                    rename/recolor without changing membership
+    label-delete LABEL_ID [--yes]   preview assignment count and confirm deletion;
+                                    automation must pass --yes
+    label-assign LABEL_ID TARGET    idempotently assign to peer:HEX, group:HEX,
+                                    or note-to-self
+    label-unassign LABEL_ID TARGET  idempotently remove exact membership
+    label-membership LABEL_ID       list active typed targets for one label
+    labels-for TARGET               list active labels for one typed target
+    label-stale                     inspect render-safe stale memberships
+    label-stale-cleanup LABEL_ID TARGET
+                                    remove one exact membership only if stale
+    label-filter any|all [LABEL_ID]...
+                                    filter eligible conversations locally
     group-create NAME [MEMBER_HEX]... create a sender-key group
     group-send GROUP_HEX TEXT...     queue a group message
     group-mention-capability GROUP_HEX
@@ -118,6 +135,58 @@ fn parse_mention_span(value: &str) -> Result<Value, String> {
         .filter(|peer| peer.len() == 64 && peer.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .ok_or_else(|| "mention span target must be a 64-character hex peer id".to_owned())?;
     Ok(json!({ "start": start, "end": end, "target": target }))
+}
+
+const LABEL_COLORS: [&str; 9] = [
+    "neutral", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink",
+];
+
+fn parse_label_id(value: &str) -> Result<String, String> {
+    if value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(value.to_ascii_lowercase())
+    } else {
+        Err("label id must be 32 hexadecimal characters".to_owned())
+    }
+}
+
+fn parse_label_target(value: &str) -> Result<Value, String> {
+    if value == "note-to-self" {
+        return Ok(json!({ "type": "note_to_self" }));
+    }
+    let (kind, id) = value
+        .split_once(':')
+        .ok_or_else(|| "target must be peer:HEX, group:HEX, or note-to-self".to_owned())?;
+    if id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("target id must be 64 hexadecimal characters".to_owned());
+    }
+    match kind {
+        "peer" => Ok(json!({ "type": "peer", "id": id.to_ascii_lowercase() })),
+        "group" => Ok(json!({ "type": "group", "id": id.to_ascii_lowercase() })),
+        _ => Err("target must be peer:HEX, group:HEX, or note-to-self".to_owned()),
+    }
+}
+
+fn validate_label_write(name: &str, color: &str) -> Result<(), String> {
+    let pattern_white_space = |value: char| {
+        matches!(
+            value,
+            '\u{0009}'
+                ..='\u{000d}'
+                    | '\u{0020}'
+                    | '\u{0085}'
+                    | '\u{200e}'
+                    | '\u{200f}'
+                    | '\u{2028}'
+                    | '\u{2029}'
+        )
+    };
+    if name.is_empty() || name.len() > 256 || name.chars().all(pattern_white_space) {
+        return Err("invalid label name".to_owned());
+    }
+    if !LABEL_COLORS.contains(&color) {
+        return Err("unsupported label color".to_owned());
+    }
+    Ok(())
 }
 
 fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
@@ -284,6 +353,101 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
             json!({ "op": "note_to_self_send", "body": args.join(" ") })
         }
         "note-messages" => json!({ "op": "note_to_self_messages" }),
+        "label-create" => {
+            need(2)?;
+            let color = &args[0];
+            let name = args[1..].join(" ");
+            validate_label_write(&name, color)?;
+            json!({ "op": "label_create", "name": name, "color": color })
+        }
+        "labels" => {
+            if !args.is_empty() {
+                return Err("labels: too many arguments".to_owned());
+            }
+            json!({ "op": "labels" })
+        }
+        "label-get" => {
+            need(1)?;
+            if args.len() != 1 {
+                return Err("label-get: too many arguments".to_owned());
+            }
+            json!({ "op": "label_get", "label": parse_label_id(&args[0])? })
+        }
+        "label-update" => {
+            need(3)?;
+            let label = parse_label_id(&args[0])?;
+            let color = &args[1];
+            let name = args[2..].join(" ");
+            validate_label_write(&name, color)?;
+            json!({ "op": "label_update", "label": label, "name": name, "color": color })
+        }
+        "label-delete" => {
+            need(1)?;
+            if args.len() > 2 || (args.len() == 2 && args[1] != "--yes") {
+                return Err("label-delete: expected LABEL_ID [--yes]".to_owned());
+            }
+            json!({
+                "op": "label_delete",
+                "label": parse_label_id(&args[0])?,
+                "confirm": args.get(1).map(String::as_str) == Some("--yes"),
+            })
+        }
+        "label-assign" | "label-unassign" => {
+            need(2)?;
+            if args.len() != 2 {
+                return Err(format!("{command}: too many arguments"));
+            }
+            json!({
+                "op": if command == "label-assign" { "label_assign" } else { "label_unassign" },
+                "label": parse_label_id(&args[0])?,
+                "target": parse_label_target(&args[1])?,
+            })
+        }
+        "label-membership" => {
+            need(1)?;
+            if args.len() != 1 {
+                return Err("label-membership: too many arguments".to_owned());
+            }
+            json!({ "op": "label_membership", "label": parse_label_id(&args[0])? })
+        }
+        "labels-for" => {
+            need(1)?;
+            if args.len() != 1 {
+                return Err("labels-for: too many arguments".to_owned());
+            }
+            json!({ "op": "labels_for_conversation", "target": parse_label_target(&args[0])? })
+        }
+        "label-stale" => {
+            if !args.is_empty() {
+                return Err("label-stale: too many arguments".to_owned());
+            }
+            json!({ "op": "label_stale" })
+        }
+        "label-stale-cleanup" => {
+            need(2)?;
+            if args.len() != 2 {
+                return Err("label-stale-cleanup: too many arguments".to_owned());
+            }
+            json!({
+                "op": "label_stale_cleanup",
+                "label": parse_label_id(&args[0])?,
+                "target": parse_label_target(&args[1])?,
+            })
+        }
+        "label-filter" => {
+            need(1)?;
+            if args.len() > 129 {
+                return Err("label-filter accepts at most 128 ids".to_owned());
+            }
+            if args[0] != "any" && args[0] != "all" {
+                return Err("label-filter mode must be any or all".to_owned());
+            }
+            let labels = args[1..]
+                .iter()
+                .map(|id| parse_label_id(id))
+                .collect::<Result<Vec<_>, _>>()?;
+            json!({ "op": "label_filter", "mode": args[0], "labels": labels })
+        }
         "group-create" => {
             need(1)?;
             json!({ "op": "group_create", "name": args[0], "members": args[1..] })
@@ -390,22 +554,56 @@ fn run() -> Result<(), String> {
     let command = args.remove(0);
 
     let mut request = build_request(&command, &args)?;
-    request["id"] = json!(1);
 
     let stream = UnixStream::connect(&socket)
         .map_err(|e| format!("cannot connect to {socket}: {e} (is kultd running?)"))?;
     let mut writer = stream.try_clone().map_err(|e| format!("socket: {e}"))?;
+    let mut reader = BufReader::new(stream);
+
+    if command == "label-delete" && request["confirm"] == json!(false) {
+        let label = request["label"].clone();
+        let preview = rpc_call(
+            &mut writer,
+            &mut reader,
+            json!({ "op": "label_delete_preview", "label": label }),
+            1,
+        )?;
+        let assignments = preview["assignments"].as_u64().unwrap_or(0);
+        eprint!(
+            "Delete label {} and {assignments} assignment(s)? [y/N] ",
+            request["label"].as_str().unwrap_or("?")
+        );
+        std::io::stderr()
+            .flush()
+            .map_err(|error| format!("stderr: {error}"))?;
+        let mut answer = String::new();
+        std::io::stdin()
+            .read_line(&mut answer)
+            .map_err(|error| format!("stdin: {error}"))?;
+        if !matches!(answer.trim(), "y" | "Y" | "yes" | "YES") {
+            println!(
+                "{}",
+                safe_json(&json!({ "deleted": false, "assignments": assignments }))?
+            );
+            return Ok(());
+        }
+        request["confirm"] = json!(true);
+        let ok = rpc_call(&mut writer, &mut reader, request, 2)?;
+        println!("{}", safe_json(&ok)?);
+        return Ok(());
+    }
+
+    request["id"] = json!(1);
     writer
         .write_all(format!("{request}\n").as_bytes())
         .map_err(|e| format!("socket write: {e}"))?;
 
-    let reader = BufReader::new(stream);
     for line in reader.lines() {
         let line = line.map_err(|e| format!("socket read: {e}"))?;
         let value: Value = serde_json::from_str(&line).map_err(|e| format!("bad response: {e}"))?;
         if let Some(event) = value.get("event") {
             // watch mode: one event per line, forever.
-            println!("{event}");
+            println!("{}", safe_json(event)?);
             continue;
         }
         if let Some(message) = value.get("err") {
@@ -415,10 +613,7 @@ fn run() -> Result<(), String> {
             if command == "watch" {
                 continue; // subscription confirmed; keep streaming
             }
-            println!(
-                "{}",
-                serde_json::to_string_pretty(ok).map_err(|e| e.to_string())?
-            );
+            println!("{}", safe_json(ok)?);
             return Ok(());
         }
     }
@@ -427,6 +622,55 @@ fn run() -> Result<(), String> {
     } else {
         Err("connection closed before a response arrived".to_owned())
     }
+}
+
+fn rpc_call(
+    writer: &mut UnixStream,
+    reader: &mut BufReader<UnixStream>,
+    mut request: Value,
+    id: u64,
+) -> Result<Value, String> {
+    request["id"] = json!(id);
+    writer
+        .write_all(format!("{request}\n").as_bytes())
+        .map_err(|error| format!("socket write: {error}"))?;
+    let mut line = String::new();
+    if reader
+        .read_line(&mut line)
+        .map_err(|error| format!("socket read: {error}"))?
+        == 0
+    {
+        return Err("connection closed before a response arrived".to_owned());
+    }
+    let value: Value =
+        serde_json::from_str(&line).map_err(|error| format!("bad response: {error}"))?;
+    if let Some(message) = value.get("err") {
+        return Err(message.as_str().unwrap_or("unknown error").to_owned());
+    }
+    Ok(value["ok"].clone())
+}
+
+fn safe_json(value: &Value) -> Result<String, String> {
+    let serialized = serde_json::to_string_pretty(value).map_err(|error| error.to_string())?;
+    let mut safe = String::with_capacity(serialized.len());
+    for value in serialized.chars() {
+        match value {
+            '\u{061c}' => safe.push_str("\\u061c"),
+            '\u{200e}' => safe.push_str("\\u200e"),
+            '\u{200f}' => safe.push_str("\\u200f"),
+            '\u{202a}' => safe.push_str("\\u202a"),
+            '\u{202b}' => safe.push_str("\\u202b"),
+            '\u{202c}' => safe.push_str("\\u202c"),
+            '\u{202d}' => safe.push_str("\\u202d"),
+            '\u{202e}' => safe.push_str("\\u202e"),
+            '\u{2066}' => safe.push_str("\\u2066"),
+            '\u{2067}' => safe.push_str("\\u2067"),
+            '\u{2068}' => safe.push_str("\\u2068"),
+            '\u{2069}' => safe.push_str("\\u2069"),
+            other => safe.push(other),
+        }
+    }
+    Ok(safe)
 }
 
 fn main() -> ExitCode {
@@ -444,7 +688,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn group_commands_build_the_rpc_contract() {
+    fn commands_build_the_rpc_contract() {
         let request = build_request(
             "group-create",
             &["trail crew".to_owned(), "01".repeat(32), "02".repeat(32)],
@@ -572,5 +816,110 @@ mod tests {
                 "path": "/tmp/export.jpg",
             })
         );
+
+        let created = build_request(
+            "label-create",
+            &[
+                "teal".to_owned(),
+                "e\u{301}".to_owned(),
+                "\u{2067}טיול\u{2069}".to_owned(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(created["op"], json!("label_create"));
+        assert_eq!(created["name"], json!("e\u{301} \u{2067}טיול\u{2069}"));
+        assert_eq!(created["color"], json!("teal"));
+        let id = "ab".repeat(16);
+        let peer = "cd".repeat(32);
+        let group = "de".repeat(32);
+        assert_eq!(
+            build_request("labels", &[]).unwrap(),
+            json!({ "op": "labels" })
+        );
+        assert_eq!(
+            build_request("label-get", std::slice::from_ref(&id)).unwrap(),
+            json!({ "op": "label_get", "label": id })
+        );
+        assert_eq!(
+            build_request(
+                "label-update",
+                &[id.clone(), "purple".to_owned(), "exact name".to_owned()]
+            )
+            .unwrap(),
+            json!({ "op": "label_update", "label": id, "name": "exact name", "color": "purple" })
+        );
+        assert_eq!(
+            build_request("label-assign", &[id.clone(), format!("peer:{peer}")]).unwrap(),
+            json!({
+                "op": "label_assign",
+                "label": id,
+                "target": { "type": "peer", "id": peer },
+            })
+        );
+        assert_eq!(
+            build_request("label-unassign", &[id.clone(), format!("group:{group}")]).unwrap(),
+            json!({
+                "op": "label_unassign",
+                "label": id,
+                "target": { "type": "group", "id": group },
+            })
+        );
+        assert_eq!(
+            build_request("label-membership", std::slice::from_ref(&id)).unwrap(),
+            json!({ "op": "label_membership", "label": id })
+        );
+        assert_eq!(
+            build_request("labels-for", &["note-to-self".to_owned()]).unwrap(),
+            json!({ "op": "labels_for_conversation", "target": { "type": "note_to_self" } })
+        );
+        assert_eq!(
+            build_request("label-stale", &[]).unwrap(),
+            json!({ "op": "label_stale" })
+        );
+        assert_eq!(
+            build_request(
+                "label-stale-cleanup",
+                &[id.clone(), format!("group:{group}")]
+            )
+            .unwrap(),
+            json!({
+                "op": "label_stale_cleanup",
+                "label": id,
+                "target": { "type": "group", "id": group },
+            })
+        );
+        assert_eq!(
+            build_request("label-filter", &["all".to_owned(), id.clone(), id.clone()]).unwrap(),
+            json!({ "op": "label_filter", "mode": "all", "labels": [id, id] })
+        );
+        assert_eq!(
+            build_request("label-delete", std::slice::from_ref(&id)).unwrap()["confirm"],
+            json!(false)
+        );
+        assert_eq!(
+            build_request("label-delete", &[id.clone(), "--yes".to_owned()]).unwrap()["confirm"],
+            json!(true)
+        );
+        assert!(
+            build_request("label-create", &["css:red".to_owned(), "unsafe".to_owned()]).is_err()
+        );
+        assert!(build_request("label-assign", &[id.clone(), "bob".to_owned()]).is_err());
+        assert!(build_request("label-get", &["not-a-label-name".to_owned()]).is_err());
+        assert!(build_request("labels", &["trailing".to_owned()]).is_err());
+        assert!(build_request("label-stale", &["trailing".to_owned()]).is_err());
+        assert!(build_request("label-delete", &[id.clone(), "--force".to_owned()]).is_err());
+        assert!(build_request(
+            "label-filter",
+            &std::iter::once("any".to_owned())
+                .chain(std::iter::repeat_n(id.clone(), 129))
+                .collect::<Vec<_>>()
+        )
+        .is_err());
+
+        let exact = json!({ "name": "a\u{202e}b\u{2067}c\u{2069}" });
+        let rendered = safe_json(&exact).unwrap();
+        assert!(rendered.contains("\\u202e"));
+        assert!(rendered.contains("\\u2067"));
+        assert_eq!(serde_json::from_str::<Value>(&rendered).unwrap(), exact);
     }
 }
