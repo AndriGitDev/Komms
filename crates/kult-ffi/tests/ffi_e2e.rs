@@ -14,7 +14,7 @@ use kult_ffi::{
     default_config, edit_image, probe_edited_image, probe_recorded_audio, AttachmentDirection,
     AttachmentState, CarrierCapability, Config, ContentKind, DeliveryState, Event, EventListener,
     Hint, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, KdfChoice, KultNode,
-    ScheduledConversation,
+    MentionSpan, ScheduledConversation,
 };
 
 fn edited_image(directory: &Path, prefix: &str) -> (PathBuf, Vec<u8>) {
@@ -156,6 +156,24 @@ fn listen_addr(node: &KultNode) -> String {
             return addr;
         }
         assert!(Instant::now() < deadline, "no listen address within 5s");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn mention_capability(node: &KultNode, group: &str) -> kult_ffi::GroupMentionCapability {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let capability = node
+            .group_mention_capability(group.to_owned())
+            .expect("mention capability");
+        if capability.supported {
+            return capability;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "mention capability intersection stayed unsupported: {:?}",
+            capability.issues
+        );
         std::thread::sleep(Duration::from_millis(50));
     }
 }
@@ -825,6 +843,88 @@ fn groups_via_ffi_only() {
         .iter()
         .flat_map(|message| &message.deliveries)
         .all(|delivery| delivery.state == DeliveryState::Delivered));
+
+    let capability = mention_capability(&alice, &group);
+    let history_before_invalid = alice.group_messages(group.clone()).unwrap().len();
+    let error = alice
+        .send_group_mention(
+            group.clone(),
+            "👩".to_owned(),
+            vec![MentionSpan {
+                start: 1,
+                end: 4,
+                target: bob_peer.clone(),
+            }],
+            capability.review_token.clone(),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("invalid group mention"), "got: {error}");
+    assert_eq!(
+        alice.group_messages(group.clone()).unwrap().len(),
+        history_before_invalid,
+        "invalid native byte ranges are rejected before persistence or send"
+    );
+
+    let mention_id = alice
+        .send_group_mention(
+            group.clone(),
+            "hi @bob 👋".to_owned(),
+            vec![MentionSpan {
+                start: 3,
+                end: 7,
+                target: bob_peer.clone(),
+            }],
+            capability.review_token,
+        )
+        .unwrap();
+    let mention_event = b_rec.wait("bob's semantic mention", |event| {
+        matches!(event, Event::GroupMessageReceived {
+            id,
+            body,
+            content_kind: ContentKind::Mention,
+            mention_spans,
+            ..
+        } if *id == mention_id
+            && body == "hi @bob 👋"
+            && mention_spans == &[MentionSpan {
+                start: 3,
+                end: 7,
+                target: bob_peer.clone(),
+            }])
+    });
+    assert!(matches!(mention_event, Event::GroupMessageReceived { .. }));
+    b_rec.wait(
+        "local mention signal",
+        |event| matches!(event, Event::MentionReceived { id } if *id == mention_id),
+    );
+    let history = alice.group_messages(group.clone()).unwrap();
+    let mention = history
+        .iter()
+        .find(|message| message.id == mention_id)
+        .unwrap();
+    assert_eq!(mention.body, "hi @bob 👋");
+    assert_eq!(mention.content_kind, ContentKind::Mention);
+    assert_eq!(mention.mention_spans.len(), 1);
+    assert_eq!(mention.mention_spans[0].target, bob_peer);
+
+    let error = alice
+        .send_group_mention(
+            group.clone(),
+            "hi @bob".to_owned(),
+            vec![MentionSpan {
+                start: 3,
+                end: 7,
+                target: "bob".to_owned(),
+            }],
+            "00".repeat(16),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("peer") && error.contains("hex"),
+        "got: {error}"
+    );
 
     let group_attachment_bytes = canonical_audio(1_600);
     let group_source = dir.path().join("ffi-group-source.bin");

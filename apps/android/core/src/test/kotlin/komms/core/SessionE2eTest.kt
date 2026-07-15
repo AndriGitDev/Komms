@@ -32,6 +32,7 @@ import uniffi.kult_ffi.ImageCrop
 import uniffi.kult_ffi.ImageEditRecipe
 import uniffi.kult_ffi.ImageEditRegion
 import uniffi.kult_ffi.ImageEditRegionKind
+import uniffi.kult_ffi.MentionSpan
 
 /** Collects node events exactly as an activity's sink would. */
 private class Events {
@@ -508,6 +509,114 @@ class SessionE2eTest {
 
         alice.stop()
         bob.stop()
+    }
+
+    @Test
+    fun `group mentions preserve exact utf8 spans and notify only the target`() {
+        val dir = tempDir()
+        val aEv = Events()
+        val bEv = Events()
+        val alice = open(dir, "mention-alice", aEv)
+        val bob = open(dir, "mention-bob", bEv)
+
+        try {
+            val aliceAddr = listenAddr(alice)
+            val bobAddr = listenAddr(bob)
+            val bobPeer = alice.addContact(
+                "Same name", bob.myBundleHex(), multiaddrHint(bobAddr),
+            )
+            val aliceAtBob = bob.addContact(
+                "Same name", alice.myBundleHex(), multiaddrHint(aliceAddr),
+            )
+            val group = alice.createGroup("Unicode crew", listOf(bobPeer))
+            bEv.wait("mention group invite") {
+                (it as? Event.GroupUpdated)?.takeIf { event -> event.group == group }
+            }
+
+            val handshake = alice.send(bobPeer, "mention capability handshake")
+            bEv.wait("mention capability handshake") {
+                (it as? Event.MessageReceived)?.takeIf { event ->
+                    event.peer == aliceAtBob && event.body == "mention capability handshake"
+                }
+            }
+            aEv.wait("mention capability receipt") {
+                (it as? Event.DeliveryUpdated)?.takeIf { event ->
+                    event.id == handshake && event.state == DeliveryState.DELIVERED
+                }
+            }
+
+            val capabilityDeadline = System.nanoTime() + 5_000_000_000L
+            var capability = alice.groupMentionCapability(group)
+            while (!capability.supported) {
+                check(System.nanoTime() < capabilityDeadline) {
+                    "mention capability did not become supported: ${capability.issues}"
+                }
+                Thread.sleep(50)
+                capability = alice.groupMentionCapability(group)
+            }
+            assertTrue(capability.issues.isEmpty())
+
+            assertFailsWith<FfiException> {
+                alice.sendGroupMention(
+                    group,
+                    "👩",
+                    listOf(MentionSpan(1u, 4u, bobPeer)),
+                    capability.reviewToken,
+                )
+            }
+            assertTrue(
+                alice.groupMessages(group).isEmpty(),
+                "invalid Kotlin byte ranges must fail before persistence or send",
+            )
+
+            val text = "Meet 👩🏽‍🚀 @Same name by e\u0301ast"
+            val visible = "@Same name"
+            val startIndex = text.indexOf(visible)
+            val start = text.substring(0, startIndex).toByteArray(Charsets.UTF_8).size.toUInt()
+            val end = start + visible.toByteArray(Charsets.UTF_8).size.toUInt()
+            val expectedSpans = listOf(MentionSpan(start, end, bobPeer))
+            val mentionId = alice.sendGroupMention(
+                group,
+                text,
+                expectedSpans,
+                capability.reviewToken,
+            )
+            val received = bEv.wait("semantic mention") {
+                (it as? Event.GroupMessageReceived)?.takeIf { event ->
+                    event.id == mentionId && event.group == group &&
+                        event.body == text && event.contentKind == ContentKind.MENTION
+                }
+            }
+            assertEquals(expectedSpans, received.mentionSpans)
+            val signal = bEv.wait("local mention signal") {
+                (it as? Event.MentionReceived)?.takeIf { event -> event.id == received.id }
+            }
+            assertEquals(received.id, signal.id)
+
+            val stored = bob.groupMessages(group).single { it.id == received.id }
+            assertEquals(text, stored.body)
+            assertEquals(ContentKind.MENTION, stored.contentKind)
+            assertEquals(expectedSpans, stored.mentionSpans)
+
+            val plainId = alice.sendGroup(group, text)
+            bEv.wait("plain fallback") {
+                (it as? Event.GroupMessageReceived)?.takeIf { event ->
+                    event.id == plainId && event.body == text &&
+                        event.contentKind == ContentKind.TEXT && event.mentionSpans.isEmpty()
+                }
+            }
+            aEv.wait("plain fallback receipt") {
+                (it as? Event.GroupDeliveryUpdated)?.takeIf { event ->
+                    event.id == plainId && event.peer == bobPeer &&
+                        event.state == DeliveryState.DELIVERED
+                }
+            }
+            Thread.sleep(100)
+            assertEquals(1, bEv.count { it is Event.MentionReceived })
+        } finally {
+            alice.stop()
+            bob.stop()
+        }
     }
 
     @Test

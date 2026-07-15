@@ -1,6 +1,6 @@
 # ADR-0016: Canonical group-mention content with stable encrypted peer targets
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-07-14
 
 ## Context

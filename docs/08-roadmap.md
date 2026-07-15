@@ -362,6 +362,22 @@ receiver rendering/export, and zero manifest/chunk/range or other bulk mesh
 airtime. Video, cloud/generative editing, filters, face recognition, project
 files, and protocol changes remain out of scope.
 
+B17 group mentions are shipped end to end under
+[ADR-0016](adr/0016-group-mention-content.md). The immutable kind `0x0003`
+preserves exact fallback UTF-8 plus canonical sorted, non-overlapping UTF-8 byte
+ranges targeting stable group peers; the whole shape remains authenticated,
+encrypted, and padded inside ADR-0014 content. The node binds review to the exact
+current roster and fresh per-peer capability intersection, so one sender-key
+ciphertext is emitted only when every co-member supports Mention. Otherwise each
+shell offers an explicit ordinary-text fallback with zero semantic signal.
+RPC/CLI and UniFFI accept exact peer targets and ranges rather than display names.
+Desktop, Android, and iOS provide accessible roster pickers, preserve readable
+copy/search/history after roster or petname changes, and emit only a private
+endpoint-local notification hint when the authenticated target is the local peer.
+There is no server push or online-delivery guarantee, and no mention data was
+added to envelopes, transports, DHT records, delivery tokens, or public OS
+previews.
+
 The F5 sealed local-metadata foundation is shipped in `kult-store`: typed and
 bounded conversation, folder, pin, label, draft, preference, and custom-icon
 records use an isolated storage key and reveal no local organization keys in a

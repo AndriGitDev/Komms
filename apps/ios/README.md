@@ -47,6 +47,14 @@ are the node's own, verbatim.
   as any member while local history remains stored. Inbound rows name the
   sender; outbound rows show every recipient's actual delivery state instead
   of a misleading group-level checkmark.
+- **Mention current group members** through an explicit accessible roster picker.
+  The composer uses semantic ranges while preserving exact visible text, supports
+  keyboard navigation where available, VoiceOver, Dynamic Type, Unicode/bidi,
+  and duplicate-petname disambiguation, and stores drafts under complete Data
+  Protection with backup exclusion. Editing across a mention removes its
+  semantics rather than silently retargeting it. Send rechecks roster and
+  capabilities and offers an explicit ordinary-text fallback with no mention
+  notification.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends (all platforms), compared aloud or by scanning each other's code,
   with a visible verified badge. Key changes are surfaced, never hidden.
@@ -90,6 +98,12 @@ controls, exact export, and overwrite refusal. Audio acceptance additionally
 strips an injected native metadata chunk and pins identical canonical bytes and
 duration across pairwise and sender-key group delivery. `KommsApp` remains
 UI-only document-picker, recorder, and rendering glue.
+
+Mention acceptance pins byte-for-byte Rust/UniFFI semantics, invalid Unicode
+range rejection, exact peer targeting, restoration, and zero signal for plain
+text or similar petnames. Rendering requests no contacts or notification
+permission. Any notification remains on the existing user-controlled path, uses
+a private generic preview, and offers no server-push or online-delivery guarantee.
 
 Generated bindings are never committed; `scripts/generate-bindings.sh`
 produces them fresh from the crate. The package is deliberately outside

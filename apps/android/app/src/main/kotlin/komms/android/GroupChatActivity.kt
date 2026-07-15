@@ -1,7 +1,17 @@
 package komms.android
 
 import android.app.AlertDialog
+import android.graphics.Typeface
 import android.os.Bundle
+import android.text.Editable
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.TextPaint
+import android.text.TextWatcher
+import android.text.method.LinkMovementMethod
+import android.text.style.ClickableSpan
+import android.text.style.CharacterStyle
+import android.view.inputmethod.BaseInputConnection
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.Menu
@@ -11,6 +21,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.HorizontalScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -25,7 +36,9 @@ import uniffi.kult_ffi.DeliveryState
 import uniffi.kult_ffi.Direction
 import uniffi.kult_ffi.Event
 import uniffi.kult_ffi.Group
+import uniffi.kult_ffi.GroupMentionCapability
 import uniffi.kult_ffi.GroupMessage
+import uniffi.kult_ffi.MentionSpan
 import uniffi.kult_ffi.ScheduledConversation
 import uniffi.kult_ffi.ScheduledMessage
 
@@ -41,12 +54,18 @@ class GroupChatActivity : AppCompatActivity() {
     private val adapter = GroupMessagesAdapter { peer -> memberName(peer) }
     private lateinit var attachmentController: AttachmentController
     private lateinit var audioController: AudioMessageController
+    private var currentGroup: Group? = null
+    private var mentionCapability: GroupMentionCapability? = null
+    private val draftMentions = mutableListOf<DraftMention>()
+    private var suppressMentionWatcher = false
 
     private val listener: (Event) -> Unit = { event ->
         val relevant = when (event) {
             is Event.GroupMessageReceived -> event.group == groupId
             is Event.GroupDeliveryUpdated -> true // ids are cheap to refresh
             is Event.GroupUpdated -> event.group == groupId
+            is Event.MentionReceived -> true
+            is Event.SessionEstablished -> true
             is Event.ScheduledMessageUpdated -> true
             is Event.ScheduledMessageCancelled -> true
             is Event.ScheduledMessageActivated -> true
@@ -55,7 +74,16 @@ class GroupChatActivity : AppCompatActivity() {
                     attachmentController.isRelevant(event.attachment)
             else -> false
         }
-        if (relevant) runOnUiThread { refresh() }
+        if (relevant) runOnUiThread {
+            if (event is Event.MentionReceived) {
+                findViewById<TextView>(R.id.chat_mention_status).apply {
+                    visibility = View.VISIBLE
+                    text = getString(R.string.mention_notification_private)
+                    announceForAccessibility(text)
+                }
+            }
+            refresh()
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -104,15 +132,30 @@ class GroupChatActivity : AppCompatActivity() {
         )
 
         val input = findViewById<EditText>(R.id.chat_input)
+        findViewById<Button>(R.id.chat_mention).apply {
+            visibility = View.VISIBLE
+            setOnClickListener { showMentionPicker(input) }
+        }
+        restoreMentionDraft(input, savedInstanceState)
+        input.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(text: CharSequence?, start: Int, count: Int, after: Int) {
+                if (!suppressMentionWatcher) updateMentionsForEdit(start, start + count, after)
+            }
+
+            override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) = Unit
+
+            override fun afterTextChanged(text: Editable?) {
+                if (!suppressMentionWatcher) {
+                    applyComposerMentionSpans(input)
+                    persistMentionDraft(input)
+                }
+            }
+        })
         findViewById<Button>(R.id.chat_schedule).setOnClickListener { schedule(input, null) }
         findViewById<Button>(R.id.chat_send).setOnClickListener {
             val body = input.text.toString()
             if (body.isEmpty()) return@setOnClickListener
-            val session = NodeHolder.session ?: return@setOnClickListener
-            runNode(work = { session.sendGroup(groupId, body) }) {
-                input.text.clear()
-                refresh()
-            }
+            sendDraft(input, body)
         }
         NodeHolder.addListener(listener)
     }
@@ -132,6 +175,11 @@ class GroupChatActivity : AppCompatActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         if (::attachmentController.isInitialized) attachmentController.saveState(outState)
+        outState.putString(STATE_MENTION_TEXT, findViewById<EditText>(R.id.chat_input).text.toString())
+        outState.putStringArrayList(
+            STATE_MENTIONS,
+            ArrayList(draftMentions.map { "${it.start},${it.end},${it.target}" }),
+        )
         super.onSaveInstanceState(outState)
     }
 
@@ -184,6 +232,7 @@ class GroupChatActivity : AppCompatActivity() {
                 return@runNode
             }
             contacts = state.contacts
+            currentGroup = group
             groupName = group.name
             supportActionBar?.title = group.name
             adapter.submit(state.messages)
@@ -194,7 +243,315 @@ class GroupChatActivity : AppCompatActivity() {
                 cancel = { cancel(it) },
             )
             if (adapter.itemCount > 0) list.scrollToPosition(adapter.itemCount - 1)
+            if (draftMentions.isNotEmpty()) revalidateMentionDraft()
         }
+    }
+
+    private fun showMentionPicker(input: EditText) {
+        val session = NodeHolder.session ?: return
+        runNode(
+            work = {
+                val group = session.groups().firstOrNull { it.id == groupId }
+                    ?: error(getString(R.string.group_no_longer_active))
+                Triple(group, session.contacts(), session.groupMentionCapability(groupId))
+            },
+        ) { (group, availableContacts, capability) ->
+            currentGroup = group
+            contacts = availableContacts
+            mentionCapability = capability
+            showMentionCapability(capability, group)
+            val labels = group.members.map { memberLabel(it, group) }.toTypedArray()
+            AlertDialog.Builder(this)
+                .setTitle(R.string.mention_picker_title)
+                .setItems(labels) { _, index -> insertMention(input, group.members[index], capability) }
+                .setNegativeButton(android.R.string.cancel, null)
+                .show()
+        }
+    }
+
+    private fun memberLabel(peer: String, group: Group? = currentGroup): String {
+        val base = memberName(peer)
+        val members = group?.members ?: return base
+        val duplicates = members.count { memberName(it) == base }
+        return if (duplicates < 2) {
+            base
+        } else {
+            "\u2068$base\u2069, group member ${members.indexOf(peer) + 1}"
+        }
+    }
+
+    private fun showMentionCapability(capability: GroupMentionCapability, group: Group) {
+        val status = findViewById<TextView>(R.id.chat_mention_status)
+        status.visibility = View.VISIBLE
+        status.text = if (capability.supported) {
+            getString(R.string.mention_ready)
+        } else {
+            getString(
+                R.string.mention_unavailable,
+                capability.issues.joinToString { "${memberLabel(it.peer, group)} (${it.reason.name.lowercase()})" },
+            )
+        }
+        status.announceForAccessibility(status.text)
+    }
+
+    private fun insertMention(
+        input: EditText,
+        peer: String,
+        capability: GroupMentionCapability,
+    ) {
+        BaseInputConnection.removeComposingSpans(input.text)
+        val start = input.selectionStart.coerceAtLeast(0)
+        val end = input.selectionEnd.coerceAtLeast(start)
+        val visible = "@${memberName(peer)}"
+        updateMentionsForEdit(start, end, visible.length)
+        suppressMentionWatcher = true
+        input.text.replace(start, end, visible)
+        suppressMentionWatcher = false
+        draftMentions += DraftMention(start, start + visible.length, peer)
+        draftMentions.sortBy { it.start }
+        mentionCapability = capability
+        input.setSelection(start + visible.length)
+        applyComposerMentionSpans(input)
+        persistMentionDraft(input)
+        findViewById<TextView>(R.id.chat_mention_status).apply {
+            visibility = View.VISIBLE
+            text = getString(R.string.mention_inserted, memberLabel(peer))
+            announceForAccessibility(text)
+        }
+    }
+
+    private fun updateMentionsForEdit(start: Int, oldEnd: Int, replacementLength: Int) {
+        if (draftMentions.isEmpty()) return
+        val delta = replacementLength - (oldEnd - start)
+        val removed = mutableListOf<DraftMention>()
+        val updated = draftMentions.mapNotNull { mention ->
+            if (start == oldEnd) {
+                when {
+                    start <= mention.start -> mention.copy(
+                        start = mention.start + delta,
+                        end = mention.end + delta,
+                    )
+                    start >= mention.end -> mention
+                    else -> {
+                        removed += mention
+                        null
+                    }
+                }
+            } else {
+                when {
+                    oldEnd <= mention.start -> mention.copy(
+                        start = mention.start + delta,
+                        end = mention.end + delta,
+                    )
+                    start >= mention.end -> mention
+                    else -> {
+                        removed += mention
+                        null
+                    }
+                }
+            }
+        }
+        draftMentions.clear()
+        draftMentions += updated
+        if (removed.isNotEmpty()) {
+            findViewById<TextView>(R.id.chat_mention_status).apply {
+                visibility = View.VISIBLE
+                text = getString(R.string.mention_removed, memberLabel(removed.first().target))
+                announceForAccessibility(text)
+            }
+        }
+        renderMentionTokens()
+    }
+
+    private fun applyComposerMentionSpans(input: EditText) {
+        input.text.getSpans(0, input.length(), MentionComposerSpan::class.java)
+            .forEach(input.text::removeSpan)
+        draftMentions.removeAll { it.start < 0 || it.end > input.length() || it.start >= it.end }
+        draftMentions.forEach { mention ->
+            input.text.setSpan(
+                MentionComposerSpan(),
+                mention.start,
+                mention.end,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+        }
+        renderMentionTokens()
+    }
+
+    private fun renderMentionTokens() {
+        val scroll = findViewById<HorizontalScrollView>(R.id.chat_mention_tokens_scroll)
+        val tokens = findViewById<LinearLayout>(R.id.chat_mention_tokens)
+        tokens.removeAllViews()
+        scroll.visibility = if (draftMentions.isEmpty()) View.GONE else View.VISIBLE
+        draftMentions.toList().forEach { mention ->
+            val button = Button(this).apply {
+                text = "${memberLabel(mention.target)} ×"
+                contentDescription = getString(R.string.mention_remove_action, memberLabel(mention.target))
+                isAllCaps = false
+                setOnClickListener { removeMentionWithText(mention) }
+            }
+            tokens.addView(button)
+        }
+    }
+
+    private fun removeMentionWithText(mention: DraftMention) {
+        val input = findViewById<EditText>(R.id.chat_input)
+        if (mention !in draftMentions || mention.end > input.length()) return
+        draftMentions.remove(mention)
+        updateMentionsForEdit(mention.start, mention.end, 0)
+        suppressMentionWatcher = true
+        input.text.delete(mention.start, mention.end)
+        suppressMentionWatcher = false
+        applyComposerMentionSpans(input)
+        persistMentionDraft(input)
+        input.requestFocus()
+    }
+
+    private fun revalidateMentionDraft() {
+        val session = NodeHolder.session ?: return
+        runNode(work = { session.groupMentionCapability(groupId) }) { fresh ->
+            if (mentionCapability?.reviewToken != fresh.reviewToken) {
+                mentionCapability = fresh
+                findViewById<TextView>(R.id.chat_mention_status).apply {
+                    visibility = View.VISIBLE
+                    text = getString(R.string.mention_review_again)
+                    announceForAccessibility(text)
+                }
+            }
+        }
+    }
+
+    private fun sendDraft(input: EditText, body: String) {
+        val session = NodeHolder.session ?: return
+        if (draftMentions.isEmpty()) {
+            runNode(work = { session.sendGroup(groupId, body) }) {
+                clearMentionDraft(input)
+                refresh()
+            }
+            return
+        }
+        if (!wellFormedUnicode(body)) {
+            toast("The draft contains invalid Unicode and cannot be sent.")
+            return
+        }
+        runNode(work = { session.groupMentionCapability(groupId) }) { fresh ->
+            val reviewed = mentionCapability
+            if (reviewed == null || reviewed.reviewToken != fresh.reviewToken) {
+                mentionCapability = fresh
+                findViewById<TextView>(R.id.chat_mention_status).apply {
+                    visibility = View.VISIBLE
+                    text = getString(R.string.mention_review_again)
+                    announceForAccessibility(text)
+                }
+                return@runNode
+            }
+            if (!fresh.supported) {
+                AlertDialog.Builder(this)
+                    .setTitle(R.string.mention_plain_title)
+                    .setMessage(R.string.mention_plain_message)
+                    .setPositiveButton(R.string.mention_plain_send) { _, _ ->
+                        runNode(work = { session.sendGroup(groupId, body) }) {
+                            clearMentionDraft(input)
+                            refresh()
+                        }
+                    }
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show()
+                return@runNode
+            }
+            val spans = mutableListOf<MentionSpan>()
+            for (mention in draftMentions) {
+                val start = utf8OffsetForUtf16(body, mention.start)
+                val end = utf8OffsetForUtf16(body, mention.end)
+                if (start == null || end == null) {
+                    findViewById<TextView>(R.id.chat_mention_status).apply {
+                        visibility = View.VISIBLE
+                        text = getString(R.string.mention_invalid_range)
+                        announceForAccessibility(text)
+                    }
+                    return@runNode
+                }
+                spans += MentionSpan(start = start, end = end, target = mention.target)
+            }
+            runNode(
+                work = { session.sendGroupMention(groupId, body, spans, fresh.reviewToken) },
+            ) {
+                clearMentionDraft(input)
+                refresh()
+            }
+        }
+    }
+
+    private fun clearMentionDraft(input: EditText) {
+        suppressMentionWatcher = true
+        input.text.clear()
+        suppressMentionWatcher = false
+        draftMentions.clear()
+        mentionCapability = null
+        renderMentionTokens()
+        getSharedPreferences(PREFS_MENTION_DRAFTS, MODE_PRIVATE).edit()
+            .remove("$groupId.text")
+            .remove("$groupId.spans")
+            .apply()
+    }
+
+    private fun persistMentionDraft(input: EditText) {
+        getSharedPreferences(PREFS_MENTION_DRAFTS, MODE_PRIVATE).edit()
+            .putString("$groupId.text", input.text.toString())
+            .putString("$groupId.spans", draftMentions.joinToString(";") {
+                "${it.start},${it.end},${it.target}"
+            })
+            .apply()
+    }
+
+    private fun restoreMentionDraft(input: EditText, state: Bundle?) {
+        val preferences = getSharedPreferences(PREFS_MENTION_DRAFTS, MODE_PRIVATE)
+        val text = state?.getString(STATE_MENTION_TEXT)
+            ?: preferences.getString("$groupId.text", "").orEmpty()
+        val encoded = state?.getStringArrayList(STATE_MENTIONS)?.joinToString(";")
+            ?: preferences.getString("$groupId.spans", "").orEmpty()
+        suppressMentionWatcher = true
+        input.setText(text)
+        suppressMentionWatcher = false
+        draftMentions.clear()
+        draftMentions += encoded.split(';').mapNotNull { item ->
+            val fields = item.split(',', limit = 3)
+            val start = fields.getOrNull(0)?.toIntOrNull() ?: return@mapNotNull null
+            val end = fields.getOrNull(1)?.toIntOrNull() ?: return@mapNotNull null
+            val target = fields.getOrNull(2) ?: return@mapNotNull null
+            DraftMention(start, end, target).takeIf {
+                start >= 0 && end > start && end <= text.length && target.length == 64
+            }
+        }
+        input.setSelection(input.length())
+        applyComposerMentionSpans(input)
+    }
+
+    private fun wellFormedUnicode(text: String): Boolean {
+        var index = 0
+        while (index < text.length) {
+            val unit = text[index]
+            if (Character.isHighSurrogate(unit)) {
+                if (index + 1 >= text.length || !Character.isLowSurrogate(text[index + 1])) return false
+                index += 2
+            } else if (Character.isLowSurrogate(unit)) {
+                return false
+            } else {
+                index += 1
+            }
+        }
+        return true
+    }
+
+    private fun utf8OffsetForUtf16(text: String, offset: Int): UInt? {
+        if (offset !in 0..text.length) return null
+        if (offset > 0 && offset < text.length &&
+            Character.isHighSurrogate(text[offset - 1]) && Character.isLowSurrogate(text[offset])
+        ) {
+            return null
+        }
+        val bytes = text.substring(0, offset).toByteArray(Charsets.UTF_8).size
+        return bytes.toUInt()
     }
 
     private fun schedule(input: EditText, message: ScheduledMessage?) {
@@ -219,9 +576,13 @@ class GroupChatActivity : AppCompatActivity() {
 
     private fun memberName(peer: String): String {
         val self = NodeHolder.session?.peer
+        val contact = contacts.firstOrNull { it.peer == peer }
         return when {
             peer == self -> getString(R.string.group_you)
-            else -> contacts.firstOrNull { it.peer == peer }?.name ?: peer.take(12) + "…"
+            contact != null -> contact.name
+            currentGroup?.members?.contains(peer) == true ->
+                "Group member ${(currentGroup?.members?.indexOf(peer) ?: 0) + 1}"
+            else -> "Unavailable group member"
         }
     }
 
@@ -346,6 +707,68 @@ private data class GroupScreenState(
     val attachments: List<Attachment>,
 )
 
+private data class DraftMention(val start: Int, val end: Int, val target: String)
+
+private class MentionComposerSpan : CharacterStyle() {
+    override fun updateDrawState(paint: TextPaint) {
+        paint.bgColor = 0x334CAF50
+        paint.isUnderlineText = true
+        paint.typeface = Typeface.create(paint.typeface, Typeface.BOLD)
+    }
+}
+
+private class HistoryMentionSpan(private val label: String) : ClickableSpan() {
+    override fun onClick(widget: View) {
+        widget.announceForAccessibility(label)
+    }
+
+    override fun updateDrawState(paint: TextPaint) {
+        super.updateDrawState(paint)
+        paint.bgColor = 0x334CAF50
+        paint.isUnderlineText = true
+        paint.typeface = Typeface.create(paint.typeface, Typeface.BOLD)
+    }
+}
+
+private fun utf16OffsetForUtf8(text: String, requested: UInt): Int? {
+    val target = requested.toInt()
+    var bytes = 0
+    var index = 0
+    while (index < text.length) {
+        if (bytes == target) return index
+        val codePoint = Character.codePointAt(text, index)
+        val character = String(Character.toChars(codePoint))
+        bytes += character.toByteArray(Charsets.UTF_8).size
+        index += Character.charCount(codePoint)
+        if (bytes > target) return null
+    }
+    return index.takeIf { bytes == target }
+}
+
+private fun renderMentionText(
+    message: GroupMessage,
+    memberName: (String) -> String,
+): CharSequence {
+    if (message.contentKind != ContentKind.MENTION || message.mentionSpans.isEmpty()) {
+        return message.body
+    }
+    val styled = SpannableString(message.body)
+    var priorEnd = 0
+    for (span in message.mentionSpans) {
+        val start = utf16OffsetForUtf8(message.body, span.start) ?: return "Unsupported message — update Komms"
+        val end = utf16OffsetForUtf8(message.body, span.end) ?: return "Unsupported message — update Komms"
+        if (start < priorEnd || end <= start) return "Unsupported message — update Komms"
+        styled.setSpan(
+            HistoryMentionSpan("Mention of ${memberName(span.target)}"),
+            start,
+            end,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+        )
+        priorEnd = end
+    }
+    return styled
+}
+
 /** Group bubbles with sender names inbound and per-recipient state outbound. */
 private class GroupMessagesAdapter(
     private val memberName: (String) -> String,
@@ -378,7 +801,14 @@ private class GroupMessagesAdapter(
             visibility = if (outbound) View.GONE else View.VISIBLE
             text = memberName(message.sender)
         }
-        holder.itemView.findViewById<TextView>(R.id.group_message_body).text = message.body
+        holder.itemView.findViewById<TextView>(R.id.group_message_body).apply {
+            text = renderMentionText(message, memberName)
+            movementMethod = if (message.contentKind == ContentKind.MENTION) {
+                LinkMovementMethod.getInstance()
+            } else {
+                null
+            }
+        }
         holder.itemView.findViewById<TextView>(R.id.group_message_time).text =
             DateFormat.getTimeInstance(DateFormat.SHORT)
                 .format(Date(message.timestamp.toLong() * 1000))
@@ -402,3 +832,7 @@ private class GroupMessagesAdapter(
             DeliveryState.RECEIVED -> context.getString(R.string.state_received)
         }
 }
+
+private const val PREFS_MENTION_DRAFTS = "protected-mention-drafts"
+private const val STATE_MENTION_TEXT = "mention-text"
+private const val STATE_MENTIONS = "mention-spans"

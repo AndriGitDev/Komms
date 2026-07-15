@@ -34,6 +34,7 @@ mod envelope;
 mod error;
 mod fragmentation;
 mod group;
+mod mention;
 mod padding;
 mod receipt;
 mod token;
@@ -58,14 +59,21 @@ pub use capability::{
     CAPABILITY_MAGIC, MAX_CAPABILITY_FORMATS, MAX_CAPABILITY_KINDS,
 };
 pub use content::{
-    decode_content, encode_attachment, encode_text, DecodedContent, CONTENT_FORMAT_V1,
-    CONTENT_HEADER_LEN, CONTENT_KIND_ATTACHMENT, CONTENT_KIND_TEXT, CONTENT_MAGIC,
-    MAX_COLLECTION_ENTRIES, MAX_CONTENT_FRAME_LEN, MAX_CONTENT_PAYLOAD_LEN, MAX_NESTING_DEPTH,
+    decode_content, encode_attachment, encode_mention, encode_text, DecodedContent,
+    CONTENT_FORMAT_V1, CONTENT_HEADER_LEN, CONTENT_KIND_ATTACHMENT, CONTENT_KIND_MENTION,
+    CONTENT_KIND_TEXT, CONTENT_MAGIC, MAX_COLLECTION_ENTRIES, MAX_CONTENT_FRAME_LEN,
+    MAX_CONTENT_PAYLOAD_LEN, MAX_NESTING_DEPTH,
 };
 pub use envelope::{Envelope, EnvelopeKind, ENVELOPE_HEADER_LEN};
 pub use error::ProtocolError;
 pub use fragmentation::{fragment, Reassembler, FRAG_HEADER_LEN, REASSEMBLY_WINDOW_SECS};
 pub use group::{GroupAnnounce, GroupControlPayload, GroupMemberInfo};
+pub use mention::{
+    decode_mention_payload, encode_mention_payload, DecodedMention, Mention, MentionSpan,
+    MentionSpans, MentionTargets, MAX_MENTION_PAYLOAD_LEN, MAX_MENTION_SPANS, MAX_MENTION_TARGETS,
+    MAX_MENTION_TEXT_LEN, MENTION_HEADER_LEN, MENTION_SPAN_LEN, MENTION_TARGET_LEN,
+    MENTION_VERSION,
+};
 pub use padding::{pad, pad_to_minimum, unpad, PAD_BUCKETS};
 pub use receipt::ReceiptPayload;
 pub use token::{delivery_token, epoch_day, intro_token, MailboxKey};

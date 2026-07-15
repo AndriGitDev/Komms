@@ -185,6 +185,21 @@
     <string name="group_leave_action">Leave group</string>
     <string name="group_no_longer_active">This group is no longer active. Its history remains stored.</string>
     <string name="group_delivery_row">%1$s · %2$s</string>
+    <string name="mention_member">Mention</string>
+    <string name="mention_member_description">Choose an exact current group member to mention</string>
+    <string name="mention_picker_title">Mention a current member</string>
+    <string name="mention_ready">All current members support semantic mentions. Review the exact final text before Send.</string>
+    <string name="mention_unavailable">Semantic mentions are unavailable for: %1$s. Send can use plain text with no mention notification.</string>
+    <string name="mention_plain_title">Send as plain text?</string>
+    <string name="mention_plain_message">The exact visible text will be sent without semantic mentions and will trigger no mention notification.</string>
+    <string name="mention_plain_send">Send plain text</string>
+    <string name="mention_review_again">The roster, identity mapping, or capability support changed. Review the exact text and selected mentions, then press Send again.</string>
+    <string name="mention_inserted">Mention of %1$s inserted. Review the exact final text.</string>
+    <string name="mention_removed">Mention of %1$s was removed because its text changed.</string>
+    <string name="mention_remove_action">Remove mention of %1$s</string>
+    <string name="mention_notification_private">You were mentioned in a group.</string>
+    <string name="mention_notification_preview">Open Komms to view a private update.</string>
+    <string name="mention_invalid_range">A mention range is no longer on an exact Unicode boundary. Choose the member again.</string>
 
     <!-- Verify -->
     <string name="verify_title">Verify %1$s</string>

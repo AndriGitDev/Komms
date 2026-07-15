@@ -125,6 +125,18 @@ pub enum Command {
         /// Message body (will be padded and encrypted).
         body: Vec<u8>,
     },
+    /// Queue canonical semantic Mention content to a sender-key group after
+    /// exact roster/capability review revalidation (ADR-0016).
+    GroupMentionSend {
+        /// Group id.
+        group: [u8; 32],
+        /// Exact UTF-8 fallback message text.
+        text: String,
+        /// Sorted non-overlapping UTF-8 byte spans with explicit peer targets.
+        spans: Vec<MentionSpan>,
+        /// Token returned by the most recent capability/review snapshot.
+        review_token: [u8; 16],
+    },
     /// Add a stored contact to a group (creator only).
     GroupAdd {
         /// The group id.
@@ -256,8 +268,76 @@ pub struct GroupInfo {
     pub members: Vec<[u8; 32]>,
 }
 
-/// Conversation addressed by one scheduled outbox entry.
+/// One render-safe semantic mention span. Offsets address the exact UTF-8
+/// fallback text in bytes; target identity is never inferred from petnames.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MentionSpan {
+    /// Inclusive UTF-8 byte offset.
+    pub start: u32,
+    /// Exclusive UTF-8 byte offset.
+    pub end: u32,
+    /// Exact Ed25519 group peer identity key bytes.
+    pub target: [u8; 32],
+}
+
+impl From<MentionSpan> for kult_protocol::MentionSpan {
+    fn from(value: MentionSpan) -> Self {
+        Self {
+            start: value.start,
+            end: value.end,
+            target: value.target,
+        }
+    }
+}
+
+impl From<kult_protocol::MentionSpan> for MentionSpan {
+    fn from(value: kult_protocol::MentionSpan) -> Self {
+        Self {
+            start: value.start,
+            end: value.end,
+            target: value.target,
+        }
+    }
+}
+
+/// Why one current group co-member blocks semantic Mention content.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MentionCapabilityIssueReason {
+    /// No authenticated capability snapshot exists for the current session.
+    Unknown,
+    /// A snapshot exists but does not advertise exact kind `0x0003`.
+    Unsupported,
+}
+
+/// One current co-member that prevents a typed Mention send.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MentionCapabilityIssue {
+    /// Exact member peer id.
+    pub peer: [u8; 32],
+    /// Unknown or explicitly unsupported.
+    pub reason: MentionCapabilityIssueReason,
+}
+
+/// Current all-co-member semantic Mention verdict and immutable review binding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupMentionCapability {
+    /// Group this snapshot describes.
+    pub group: [u8; 32],
+    /// Opaque local token binding roster, display mapping, and exact support.
+    pub review_token: [u8; 16],
+    /// Empty only when typed Mention may be sent now.
+    pub issues: Vec<MentionCapabilityIssue>,
+}
+
+impl GroupMentionCapability {
+    /// Whether every current co-member supports exact Mention kind `0x0003`.
+    pub fn supported(&self) -> bool {
+        self.issues.is_empty()
+    }
+}
+
+/// Conversation addressed by one scheduled outbox entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScheduledConversation {
     /// Pairwise conversation with a contact.
     Peer([u8; 32]),
@@ -285,7 +365,7 @@ pub struct ScheduledMessageInfo {
 ///
 /// Text bytes are carried separately by the event. Unsupported and malformed
 /// content never exposes its raw authenticated bytes to application surfaces.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ContentStatus {
     /// Valid UTF-8 from the permanent pre-frame compatibility path.
@@ -301,6 +381,14 @@ pub enum ContentStatus {
         id: [u8; 16],
         /// Random local transfer id used by attachment state APIs.
         transfer: [u8; 16],
+    },
+    /// Canonical group Mention with exact stable peer spans. The event body
+    /// carries its exact authenticated fallback text.
+    Mention {
+        /// Content id scoped to the group and authenticated author.
+        id: [u8; 16],
+        /// Sorted non-overlapping semantic spans.
+        spans: Vec<MentionSpan>,
     },
     /// Authenticated content this client version cannot interpret.
     Unsupported {
@@ -419,6 +507,13 @@ pub enum Event {
         body: Vec<u8>,
         /// Explicit content interpretation.
         content: ContentStatus,
+    },
+    /// A durably stored canonical group Mention targets this exact local peer.
+    /// Applications re-read the record by id; no text or target list is copied
+    /// into this signal.
+    MentionReceived {
+        /// Stored group message record id.
+        id: [u8; 16],
     },
     /// One member's copy of an outbound group message changed delivery
     /// state — per member, honestly, like the pairwise ladder.

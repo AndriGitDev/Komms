@@ -53,6 +53,10 @@ COMMANDS:
     note-messages                   local note-to-self history
     group-create NAME [MEMBER_HEX]... create a sender-key group
     group-send GROUP_HEX TEXT...     queue a group message
+    group-mention-capability GROUP_HEX
+                                    review exact current member support
+    group-mention-send GROUP_HEX REVIEW_TOKEN TEXT START:END:PEER_HEX...
+                                    send quoted exact text with explicit UTF-8 byte spans
     group-add GROUP_HEX PEER_HEX     add a member (creator only)
     group-remove GROUP_HEX PEER_HEX  remove a member (creator only)
     group-leave GROUP_HEX            leave a group
@@ -97,6 +101,23 @@ fn parse_hints(args: &[String]) -> Result<Vec<Value>, String> {
         }
     }
     Ok(hints)
+}
+
+fn parse_mention_span(value: &str) -> Result<Value, String> {
+    let mut parts = value.splitn(3, ':');
+    let start = parts
+        .next()
+        .and_then(|part| part.parse::<u32>().ok())
+        .ok_or_else(|| "mention span start must be a u32 byte offset".to_owned())?;
+    let end = parts
+        .next()
+        .and_then(|part| part.parse::<u32>().ok())
+        .ok_or_else(|| "mention span end must be a u32 byte offset".to_owned())?;
+    let target = parts
+        .next()
+        .filter(|peer| peer.len() == 64 && peer.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| "mention span target must be a 64-character hex peer id".to_owned())?;
+    Ok(json!({ "start": start, "end": end, "target": target }))
 }
 
 fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
@@ -271,6 +292,27 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
             need(2)?;
             json!({ "op": "group_send", "group": args[0], "body": args[1..].join(" ") })
         }
+        "group-mention-capability" => {
+            need(1)?;
+            if args.len() != 1 {
+                return Err("group-mention-capability: too many arguments".to_owned());
+            }
+            json!({ "op": "group_mention_capability", "group": args[0] })
+        }
+        "group-mention-send" => {
+            need(4)?;
+            let spans = args[3..]
+                .iter()
+                .map(|span| parse_mention_span(span))
+                .collect::<Result<Vec<_>, _>>()?;
+            json!({
+                "op": "group_mention_send",
+                "group": args[0],
+                "review_token": args[1],
+                "text": args[2],
+                "spans": spans,
+            })
+        }
         "group-add" => {
             need(2)?;
             json!({ "op": "group_add", "group": args[0], "peer": args[1] })
@@ -417,6 +459,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!(request["body"], json!("meet there"));
+        let request = build_request(
+            "group-mention-send",
+            &[
+                "03".repeat(32),
+                "04".repeat(16),
+                "hi @Alex".to_owned(),
+                format!("3:8:{}", "05".repeat(32)),
+            ],
+        )
+        .unwrap();
+        assert_eq!(request["op"], json!("group_mention_send"));
+        assert_eq!(request["text"], json!("hi @Alex"));
+        assert_eq!(request["spans"][0]["start"], json!(3));
+        assert_eq!(request["spans"][0]["target"], json!("05".repeat(32)));
+        assert!(build_request(
+            "group-mention-send",
+            &[
+                "03".repeat(32),
+                "04".repeat(16),
+                "hi @Alex".to_owned(),
+                "3:8:Alex".to_owned(),
+            ],
+        )
+        .is_err());
         assert_eq!(
             build_request("groups", &[]).unwrap(),
             json!({ "op": "groups" })

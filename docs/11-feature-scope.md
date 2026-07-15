@@ -70,10 +70,13 @@ status and prerequisites are tracked in the delivery plan.
   90-degree rotation, and manual blur/pixelation are applied *before* encryption.
   The exact metadata-free PNG is reviewed and is the only asset sealed; protected
   originals and intermediates are cleaned locally. No protocol involvement.
-- **Mentions and labels.** Labels are sealed local metadata. Group mentions use
-  an explicit roster picker and, for portable highlighting and notifications, a
-  stable peer reference inside typed message content rather than ambiguous
-  free-form `@name` parsing.
+- **Mentions and labels.** Labels are sealed local metadata. Group mentions are
+  shipped through explicit current-roster pickers and canonical typed content,
+  with exact readable fallback text and stable encrypted peer references rather
+  than ambiguous free-form `@name` parsing. Semantic send fails closed unless
+  every current co-member has fresh authenticated support; an explicit plain-text
+  fallback never notifies. Mention notifications are endpoint-local and
+  opportunistic, with no server-push guarantee.
 
 ## Build with constraints (needs transport-awareness or local-first sync)
 

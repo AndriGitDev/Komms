@@ -33,6 +33,13 @@ pub enum NodeError {
     UnknownGroup,
     /// Only the group's creator may add, remove, or re-key (ADR-0012).
     NotGroupCreator,
+    /// Mention targets or UTF-8 byte ranges are invalid for the current group.
+    InvalidMention,
+    /// One or more current co-members do not support exact Mention content.
+    MentionUnsupported,
+    /// Roster, local display mapping, or authenticated capability state changed
+    /// since the user reviewed the composer.
+    MentionReviewRequired,
     /// The peer has not authenticated support for the complete attachment
     /// manifest and bulk-lane contract.
     AttachmentUnsupported,
@@ -62,6 +69,13 @@ impl std::fmt::Display for NodeError {
             Self::BundleNotFound => f.write_str("no verifiable prekey bundle found for address"),
             Self::UnknownGroup => f.write_str("group id names no stored group"),
             Self::NotGroupCreator => f.write_str("only the group creator may change it"),
+            Self::InvalidMention => f.write_str("invalid group mention text, range, or target"),
+            Self::MentionUnsupported => {
+                f.write_str("one or more group members do not support mentions")
+            }
+            Self::MentionReviewRequired => {
+                f.write_str("group mention state changed; review is required again")
+            }
             Self::AttachmentUnsupported => {
                 f.write_str("peer does not advertise attachment support")
             }

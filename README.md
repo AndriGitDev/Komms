@@ -119,6 +119,16 @@ cargo run --example sneakernet_demo
 > asset can be imported. Generic files skip the editor but now receive the same
 > authoritative F4 explanation, fresh recheck, and explicit send/discard flow.
 > Images and files with only a mesh route wait and emit zero bulk airtime frames.
+> Group mentions are shipped end to end under
+> [ADR-0016](docs/adr/0016-group-mention-content.md): every shell composes from an
+> explicit current-roster picker, preserves the exact visible fallback text, and
+> seals stable peer targets plus canonical UTF-8 byte ranges inside the existing
+> padded typed-content frame. A semantic mention is sent only when every current
+> co-member has freshly authenticated support; otherwise the user may explicitly
+> send the same visible text as ordinary text, with no mention notification.
+> Historic mentions never retarget after petname or roster changes. Notifications
+> are private, endpoint-local hints only—there is no server push or online-delivery
+> guarantee.
 > Remaining per the [roadmap](docs/08-roadmap.md): the physical two-radio bench (M4); a
 > hands-on device pass of the iOS app layer (M5); the wider M6 hardening list;
 > and the external security audit.

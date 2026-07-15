@@ -152,6 +152,19 @@ async fn wait_carrier(client: &mut Client, peer: &str, expected: &str) -> Value 
     panic!("no {expected} carrier verdict for {peer} within 5s");
 }
 
+async fn wait_mention_supported(client: &mut Client, group: &str) -> Value {
+    for _ in 0..100 {
+        let capability = client
+            .ok(json!({ "op": "group_mention_capability", "group": group }))
+            .await;
+        if capability["supported"] == json!(true) {
+            return capability;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("mention capability intersection did not become supported");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn note_to_self_via_rpc_is_local_and_uses_the_reserved_identity() {
     let directory = tempfile::tempdir().unwrap();
@@ -820,6 +833,95 @@ async fn groups_via_rpc_only() {
     assert!(deliveries
         .iter()
         .all(|delivery| delivery["state"] == json!("delivered")));
+
+    // B17 stays structured through RPC: the client supplies exact UTF-8 byte
+    // ranges and peer ids, then the daemon atomically revalidates the review
+    // token before network send. No display-name inference or raw frame bytes
+    // cross this boundary.
+    let capability = wait_mention_supported(&mut a, &group).await;
+    assert!(capability["issues"].as_array().unwrap().is_empty());
+    let review_token = capability["review_token"].as_str().unwrap().to_owned();
+    let history_before_invalid = a
+        .ok(json!({ "op": "group_messages", "group": group }))
+        .await["messages"]
+        .as_array()
+        .unwrap()
+        .len();
+    let err = a
+        .call(json!({
+            "op": "group_mention_send",
+            "group": group,
+            "text": "👩",
+            "spans": [{ "start": 1, "end": 4, "target": bob_peer }],
+            "review_token": review_token,
+        }))
+        .await
+        .unwrap_err();
+    assert!(err.contains("invalid group mention"), "got: {err}");
+    let history_after_invalid = a
+        .ok(json!({ "op": "group_messages", "group": group }))
+        .await["messages"]
+        .as_array()
+        .unwrap()
+        .len();
+    assert_eq!(
+        history_after_invalid, history_before_invalid,
+        "invalid RPC byte ranges are rejected before persistence or send"
+    );
+
+    let text = "hi @bob 👋";
+    let mention = a
+        .ok(json!({
+            "op": "group_mention_send",
+            "group": group,
+            "text": text,
+            "spans": [{ "start": 3, "end": 7, "target": bob_peer }],
+            "review_token": review_token,
+        }))
+        .await;
+    let mention_id = mention["id"].as_str().unwrap().to_owned();
+    let mention_event = b_events
+        .wait_event(|event| {
+            event["type"] == json!("group_message") && event["id"] == json!(mention_id)
+        })
+        .await;
+    assert_eq!(mention_event["body"], json!(text));
+    assert_eq!(mention_event["content_kind"], json!("mention"));
+    assert_eq!(mention_event["mention_spans"][0]["start"], json!(3));
+    assert_eq!(mention_event["mention_spans"][0]["end"], json!(7));
+    assert_eq!(mention_event["mention_spans"][0]["target"], json!(bob_peer));
+    let local_signal = b_events
+        .wait_event(|event| {
+            event["type"] == json!("mention_received") && event["id"] == json!(mention_id)
+        })
+        .await;
+    assert_eq!(local_signal.as_object().unwrap().len(), 2);
+
+    let history = a
+        .ok(json!({ "op": "group_messages", "group": group }))
+        .await;
+    let record = history["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["id"] == json!(mention_id))
+        .unwrap();
+    assert_eq!(record["body"], json!(text));
+    assert_eq!(record["content_kind"], json!("mention"));
+    assert_eq!(record["mention_spans"][0]["target"], json!(bob_peer));
+    assert!(record.get("wire_body").is_none());
+
+    let err = a
+        .call(json!({
+            "op": "group_mention_send",
+            "group": group,
+            "text": "hi @bob",
+            "spans": [{ "start": 3, "end": 7, "target": "bob" }],
+            "review_token": review_token,
+        }))
+        .await
+        .unwrap_err();
+    assert!(err.contains("peer") && err.contains("hex"), "got: {err}");
 
     let group_attachment_bytes = b"one ciphertext set for the group";
     let group_source = dir.path().join("rpc-group-source.bin");

@@ -28,6 +28,7 @@ const state = {
   recording: null,
   audioDraft: null,
   imageDraft: null,
+  mentionDraft: { group: null, spans: [], capability: null, lastText: "", suppressInput: false },
   statusTimer: null,
 };
 
@@ -620,7 +621,220 @@ function contactName(peer) {
 }
 
 function memberName(peer) {
-  return peer === state.peer ? "You" : contactName(peer);
+  if (peer === state.peer) return "You";
+  const contact = state.contacts.find((candidate) => candidate.peer === peer);
+  if (contact) return contact.name;
+  const position = (currentGroup()?.members ?? []).indexOf(peer);
+  return position >= 0 ? `Group member ${position + 1}` : "Unavailable group member";
+}
+
+function resetMentionDraft(message = "") {
+  state.mentionDraft = {
+    group: state.currentKind === "group" ? state.currentId : null,
+    spans: [],
+    capability: null,
+    lastText: $("#composer-input").value,
+    suppressInput: false,
+  };
+  closeMentionPicker(false);
+  renderMentionTokens();
+  $("#mention-status").textContent = message;
+}
+
+function memberLabel(peer, group = currentGroup()) {
+  const base = memberName(peer);
+  const sameName = (group?.members ?? []).filter((member) => memberName(member) === base);
+  if (sameName.length < 2) return base;
+  const position = (group?.members ?? []).indexOf(peer) + 1;
+  return `\u2068${base}\u2069, group member ${position}`;
+}
+
+function hasUnpairedSurrogate(text) {
+  for (let index = 0; index < text.length; index += 1) {
+    const unit = text.charCodeAt(index);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = text.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+      index += 1;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function utf8Offset(text, utf16Offset) {
+  return new TextEncoder().encode(text.slice(0, utf16Offset)).length;
+}
+
+function utf16Offset(text, byteOffset) {
+  let bytes = 0;
+  let units = 0;
+  for (const character of text) {
+    if (bytes === byteOffset) return units;
+    bytes += new TextEncoder().encode(character).length;
+    units += character.length;
+    if (bytes > byteOffset) return null;
+  }
+  return bytes === byteOffset ? units : null;
+}
+
+function reconcileMentionEdit(oldText, newText) {
+  if (state.mentionDraft.suppressInput || oldText === newText) return;
+  let prefix = 0;
+  while (prefix < oldText.length && prefix < newText.length && oldText[prefix] === newText[prefix]) {
+    prefix += 1;
+  }
+  let suffix = 0;
+  while (
+    suffix < oldText.length - prefix
+    && suffix < newText.length - prefix
+    && oldText[oldText.length - 1 - suffix] === newText[newText.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+  const oldEnd = oldText.length - suffix;
+  const newEnd = newText.length - suffix;
+  const delta = newEnd - oldEnd;
+  let removed = 0;
+  state.mentionDraft.spans = state.mentionDraft.spans.flatMap((span) => {
+    if (prefix === oldEnd) {
+      if (prefix <= span.start) return [{ ...span, start: span.start + delta, end: span.end + delta }];
+      if (prefix >= span.end) return [span];
+      removed += 1;
+      return [];
+    }
+    if (oldEnd <= span.start) return [{ ...span, start: span.start + delta, end: span.end + delta }];
+    if (prefix >= span.end) return [span];
+    removed += 1;
+    return [];
+  });
+  if (removed > 0) {
+    $("#mention-status").textContent = `${removed} semantic mention ${removed === 1 ? "link was" : "links were"} removed because its text was edited.`;
+  }
+  renderMentionTokens();
+}
+
+function replaceDraftRange(start, end, replacement) {
+  const input = $("#composer-input");
+  const oldText = input.value;
+  const newText = oldText.slice(0, start) + replacement + oldText.slice(end);
+  reconcileMentionEdit(oldText, newText);
+  state.mentionDraft.suppressInput = true;
+  input.value = newText;
+  state.mentionDraft.lastText = newText;
+  state.mentionDraft.suppressInput = false;
+  const caret = start + replacement.length;
+  input.setSelectionRange(caret, caret);
+  return caret;
+}
+
+function renderMentionTokens() {
+  const root = $("#mention-tokens");
+  root.replaceChildren();
+  root.hidden = state.mentionDraft.spans.length === 0;
+  state.mentionDraft.spans.forEach((span, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "mention-token";
+    button.textContent = `Mention ${memberLabel(span.target)} ×`;
+    button.setAttribute("aria-label", `Remove mention of ${memberLabel(span.target)}`);
+    button.addEventListener("click", () => {
+      state.mentionDraft.spans.splice(index, 1);
+      replaceDraftRange(span.start, span.end, "");
+      $("#mention-status").textContent = `Mention of ${memberLabel(span.target)} removed with its visible text.`;
+      renderMentionTokens();
+      $("#composer-input").focus();
+    });
+    root.append(button);
+  });
+}
+
+function closeMentionPicker(focusInput = true) {
+  const picker = $("#mention-picker");
+  picker.hidden = true;
+  $("#btn-mention").setAttribute("aria-expanded", "false");
+  if (focusInput && state.currentKind === "group") $("#composer-input").focus();
+}
+
+async function openMentionPicker() {
+  const group = currentGroup();
+  if (!group) return;
+  const capability = await call("group_mention_capability", { group: group.id });
+  state.mentionDraft.capability = capability;
+  state.mentionDraft.group = group.id;
+  const blockers = capability.issues.map((issue) => `${memberLabel(issue.peer, group)} (${issue.reason})`);
+  $("#mention-status").textContent = capability.supported
+    ? "All current members support semantic mentions. Review the exact final text before Send."
+    : `Semantic mentions cannot be sent now: ${blockers.join(", ")}. Send will offer plain-text fallback with no mention notification.`;
+
+  const picker = $("#mention-picker");
+  picker.replaceChildren();
+  group.members.forEach((peer) => {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", "false");
+    option.dataset.peer = peer;
+    option.textContent = memberLabel(peer, group);
+    option.addEventListener("click", () => insertMention(peer));
+    picker.append(option);
+  });
+  picker.hidden = false;
+  $("#btn-mention").setAttribute("aria-expanded", "true");
+  picker.querySelector('[role="option"]')?.focus();
+}
+
+async function refreshMentionReview(reason) {
+  if (
+    state.currentKind !== "group"
+    || state.mentionDraft.spans.length === 0
+    || state.mentionDraft.group !== state.currentId
+  ) return;
+  const fresh = await call("group_mention_capability", { group: state.currentId });
+  if (!state.mentionDraft.capability || fresh.review_token !== state.mentionDraft.capability.review_token) {
+    state.mentionDraft.capability = fresh;
+    $("#mention-status").textContent = `${reason} Review the exact text and mention tokens before sending.`;
+  }
+}
+
+function insertMention(peer) {
+  const input = $("#composer-input");
+  const start = input.selectionStart ?? input.value.length;
+  const end = input.selectionEnd ?? start;
+  const displayName = memberName(peer);
+  const visible = `@${displayName}`;
+  const caret = replaceDraftRange(start, end, visible);
+  state.mentionDraft.spans.push({ start, end: caret, target: peer });
+  state.mentionDraft.spans.sort((left, right) => left.start - right.start || left.end - right.end);
+  renderMentionTokens();
+  closeMentionPicker();
+  $("#mention-status").textContent = `Mention of ${memberLabel(peer)} inserted. Review the exact final text before Send.`;
+}
+
+function appendMentionBody(container, message) {
+  if (message.content_kind !== "mention" || !message.mention_spans?.length) {
+    container.append(document.createTextNode(message.body));
+    return;
+  }
+  let cursor = 0;
+  for (const span of message.mention_spans) {
+    const start = utf16Offset(message.body, span.start);
+    const end = utf16Offset(message.body, span.end);
+    if (start === null || end === null || start < cursor || end <= start) {
+      container.replaceChildren(document.createTextNode("Unsupported message — update Komms"));
+      return;
+    }
+    container.append(document.createTextNode(message.body.slice(cursor, start)));
+    const mark = document.createElement("mark");
+    mark.className = "mention-highlight";
+    mark.tabIndex = 0;
+    mark.textContent = message.body.slice(start, end);
+    mark.setAttribute("aria-label", `Mention of ${memberLabel(span.target)}`);
+    container.append(mark);
+    cursor = end;
+  }
+  container.append(document.createTextNode(message.body.slice(cursor)));
 }
 
 async function refreshGroups() {
@@ -668,6 +882,7 @@ function updateChatHead() {
   $("#btn-verify").hidden = isGroup || isNote;
   $("#btn-hints").hidden = isGroup || isNote;
   $("#btn-group-details").hidden = !isGroup;
+  $("#btn-mention").hidden = !isGroup;
   $("#btn-attach").hidden = isNote;
   $("#btn-record").hidden = isNote;
   $("#btn-schedule").hidden = isNote;
@@ -682,6 +897,8 @@ async function openChat(peer) {
   state.unread.delete(peer);
   $("#chat-empty").hidden = true;
   $("#chat-pane").hidden = false;
+  $("#composer-input").value = "";
+  resetMentionDraft();
   updateChatHead();
   await renderMessages();
   refreshContacts();
@@ -694,6 +911,8 @@ async function openGroup(group) {
   state.groupUnread.delete(group);
   $("#chat-empty").hidden = true;
   $("#chat-pane").hidden = false;
+  $("#composer-input").value = "";
+  resetMentionDraft("Use Mention member to choose an exact current roster identity.");
   updateChatHead();
   await renderMessages();
   refreshGroups();
@@ -706,12 +925,49 @@ async function openNoteToSelf() {
   state.currentId = state.noteToSelfId;
   $("#chat-empty").hidden = true;
   $("#chat-pane").hidden = false;
+  $("#composer-input").value = "";
+  resetMentionDraft();
   updateChatHead();
   await renderMessages();
   $("#composer-input").focus();
 }
 
 $("#note-to-self").addEventListener("click", openNoteToSelf);
+
+$("#composer-input").addEventListener("input", (event) => {
+  const oldText = state.mentionDraft.lastText;
+  const newText = event.currentTarget.value;
+  reconcileMentionEdit(oldText, newText);
+  state.mentionDraft.lastText = newText;
+});
+
+$("#btn-mention").addEventListener("click", () => {
+  if ($("#mention-picker").hidden) openMentionPicker();
+  else closeMentionPicker();
+});
+
+$("#btn-mention").addEventListener("keydown", (event) => {
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    openMentionPicker();
+  }
+});
+
+$("#mention-picker").addEventListener("keydown", (event) => {
+  const options = $$('[role="option"]', event.currentTarget);
+  const index = options.indexOf(document.activeElement);
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeMentionPicker();
+  } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    options[(index + direction + options.length) % options.length]?.focus();
+  } else if (event.key === "Enter" && document.activeElement?.matches('[role="option"]')) {
+    event.preventDefault();
+    document.activeElement.click();
+  }
+});
 
 function bubble(m) {
   const el = document.createElement("div");
@@ -752,7 +1008,7 @@ function groupBubble(m) {
     sender.textContent = memberName(m.sender);
     el.append(sender);
   }
-  el.append(m.body);
+  appendMentionBody(el, m);
   const meta = document.createElement("span");
   meta.className = "meta";
   meta.textContent = fmtTime(m.timestamp);
@@ -996,16 +1252,54 @@ async function renderMessages() {
 $("#composer").addEventListener("submit", async (e) => {
   e.preventDefault();
   const input = $("#composer-input");
-  const body = input.value.trim();
-  if (!body || !state.currentId) return;
-  input.value = "";
-  if (state.currentKind === "group") {
-    await call("send_group", { group: state.currentId, body });
+  const visibleText = input.value;
+  if (!visibleText.trim() || !state.currentId) return;
+  if (state.currentKind === "group" && state.mentionDraft.spans.length > 0) {
+    if (hasUnpairedSurrogate(visibleText)) {
+      toast("The draft contains invalid Unicode and cannot be sent.", true);
+      return;
+    }
+    const fresh = await call("group_mention_capability", { group: state.currentId });
+    if (
+      state.mentionDraft.group !== state.currentId
+      || !state.mentionDraft.capability
+      || fresh.review_token !== state.mentionDraft.capability.review_token
+    ) {
+      state.mentionDraft.capability = fresh;
+      state.mentionDraft.group = state.currentId;
+      $("#mention-status").textContent = "The roster, identity mapping, or capability support changed. Review the exact text and selected mention tokens, then press Send again.";
+      $("#composer-input").focus();
+      return;
+    }
+    if (!fresh.supported) {
+      const blockers = fresh.issues.map((issue) => `${memberLabel(issue.peer)} (${issue.reason})`).join(", ");
+      const plain = window.confirm(
+        `Semantic mentions are unavailable for ${blockers}. Send the exact visible text as ordinary plain text? It will carry no semantic mention and trigger no mention notification.`
+      );
+      if (!plain) return;
+      await call("send_group", { group: state.currentId, body: visibleText });
+    } else {
+      const spans = state.mentionDraft.spans.map((span) => ({
+        start: utf8Offset(visibleText, span.start),
+        end: utf8Offset(visibleText, span.end),
+        target: span.target,
+      }));
+      await call("send_group_mention", {
+        group: state.currentId,
+        text: visibleText,
+        spans,
+        reviewToken: fresh.review_token,
+      });
+    }
+  } else if (state.currentKind === "group") {
+    await call("send_group", { group: state.currentId, body: visibleText.trim() });
   } else if (state.currentKind === "note") {
-    await call("send_note_to_self", { body });
+    await call("send_note_to_self", { body: visibleText.trim() });
   } else {
-    await call("send", { peer: state.currentId, body });
+    await call("send", { peer: state.currentId, body: visibleText.trim() });
   }
+  input.value = "";
+  resetMentionDraft(state.currentKind === "group" ? "Use Mention member to choose an exact current roster identity." : "");
   await renderMessages();
 });
 
@@ -1416,6 +1710,7 @@ listen("node-event", async ({ payload: ev }) => {
       if (state.currentKind === "group" && ev.group === state.currentId) {
         if (currentGroup()) {
           updateChatHead();
+          await refreshMentionReview("The current group roster or identity mapping changed.");
           await renderMessages();
         } else {
           state.currentKind = null;
@@ -1424,6 +1719,10 @@ listen("node-event", async ({ payload: ev }) => {
           $("#chat-empty").hidden = false;
         }
       }
+      break;
+    }
+    case "mention_received": {
+      toast("You were mentioned in a group.");
       break;
     }
     case "group_message_received": {
@@ -1461,6 +1760,9 @@ listen("node-event", async ({ payload: ev }) => {
           ? `Encrypted session renewed with ${contactName(ev.peer)} — their key or device changed; re-verify if unexpected`
           : "Encrypted session established"
       );
+      if (currentGroup()?.members.includes(ev.peer)) {
+        await refreshMentionReview("A member session changed, so mention support was revalidated.");
+      }
       await refreshContacts();
       break;
     }

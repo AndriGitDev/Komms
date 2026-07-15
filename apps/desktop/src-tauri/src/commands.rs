@@ -12,8 +12,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::session::{
     NetworkSettings, Session, UiAttachment, UiAudioMedia, UiBundle, UiContact, UiGroup,
-    UiGroupMessage, UiHint, UiImageEditRecipe, UiImageReview, UiMessage, UiNoteMessage,
-    UiSafetyNumber, UiScheduledMessage, UiStatus,
+    UiGroupMessage, UiHint, UiImageEditRecipe, UiImageReview, UiMentionCapability, UiMentionSpan,
+    UiMessage, UiNoteMessage, UiSafetyNumber, UiScheduledMessage, UiStatus,
 };
 
 /// The one piece of managed state: the running session, if unlocked.
@@ -375,6 +375,21 @@ forward!(
 forward!(
     /// Queue a message to a group.
     send_group(group: String, body: String) -> String, |s| s.send_group(group, body)
+);
+forward!(
+    /// Current all-member semantic Mention support and review binding.
+    group_mention_capability(group: String) -> UiMentionCapability,
+    |s| s.group_mention_capability(group)
+);
+forward!(
+    /// Send exact fallback text with explicit stable peer Mention spans.
+    send_group_mention(
+        group: String,
+        text: String,
+        spans: Vec<UiMentionSpan>,
+        review_token: String
+    ) -> String,
+    |s| s.send_group_mention(group, text, spans, review_token)
 );
 forward!(
     /// Add a stored contact to a group (creator only).

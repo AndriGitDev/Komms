@@ -11,8 +11,11 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 
 use kult_crypto::KdfProfile;
-use kult_node::{Event, Node};
-use kult_protocol::{decode_content, DecodedContent, Envelope, EnvelopeKind};
+use kult_node::{ContentStatus, Event, MentionSpan, Node, NodeError};
+use kult_protocol::{
+    decode_content, encode_mention, DecodedContent, Envelope, EnvelopeKind, CONTENT_HEADER_LEN,
+    CONTENT_MAGIC,
+};
 use kult_store::DeliveryState;
 use kult_transport::{
     CostClass, DeliveryHint, LatencyClass, LinkProfile, Reachability, SendReceipt, Transport,
@@ -167,6 +170,30 @@ async fn trio(
         ids[1],
         ids[2],
     )
+}
+
+async fn settle_trio(
+    alice: &mut Node,
+    bob: &mut Node,
+    carol: &mut Node,
+    rng: &mut StdRng,
+    start: u64,
+) {
+    for round in 0..6 {
+        let now = start + round * 3;
+        for events in [
+            alice.tick(now, rng).await.unwrap(),
+            bob.tick(now + 1, rng).await.unwrap(),
+            carol.tick(now + 2, rng).await.unwrap(),
+        ] {
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, Event::MentionReceived { .. })),
+                "plain legacy fallback must not emit semantic notification"
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -422,8 +449,68 @@ async fn restore_from_backup_reannounces_and_resumes() {
     bob.tick(NOW + 3, &mut rng).await.unwrap();
     alice.tick(NOW + 4, &mut rng).await.unwrap();
 
+    let pre_backup_capability = alice.group_mention_capability(&gid).unwrap();
+    assert!(pre_backup_capability.supported());
+    let mention_text = "backup keeps @Bob 👩🏽‍🚀";
+    let mention_start = mention_text.find("@Bob").unwrap() as u32;
+    let mention_spans = [MentionSpan {
+        start: mention_start,
+        end: mention_start + "@Bob".len() as u32,
+        target: b_id,
+    }];
+    let pre_backup_mention = alice
+        .group_send_mention(
+            &gid,
+            mention_text,
+            &mention_spans,
+            pre_backup_capability.review_token,
+            NOW + 5,
+            &mut rng,
+        )
+        .unwrap();
+    alice.tick(NOW + 6, &mut rng).await.unwrap();
+    let events = bob.tick(NOW + 7, &mut rng).await.unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::MentionReceived { id } if *id == pre_backup_mention
+    )));
+    alice.tick(NOW + 9, &mut rng).await.unwrap();
+
+    // Future and malformed Mention bodies remain opaque durable bytes. Have
+    // Bob send both inbound so the backup proof covers receiver retention,
+    // not only locally-authored history.
+    let protocol_spans = mention_spans.map(Into::into);
+    let mut future_mention = encode_mention([0x71; 16], mention_text, &protocol_spans).unwrap();
+    future_mention[CONTENT_HEADER_LEN] = 2;
+    assert!(matches!(
+        decode_content(&future_mention),
+        DecodedContent::Unsupported {
+            format_version: Some(1),
+            kind: Some(3),
+        }
+    ));
+    let mut malformed_mention = encode_mention([0x72; 16], mention_text, &protocol_spans).unwrap();
+    malformed_mention.pop();
+    assert_eq!(
+        decode_content(&malformed_mention),
+        DecodedContent::Malformed
+    );
+    bob.group_send(&gid, &future_mention, NOW + 10, &mut rng)
+        .unwrap();
+    bob.group_send(&gid, &malformed_mention, NOW + 10, &mut rng)
+        .unwrap();
+    bob.tick(NOW + 11, &mut rng).await.unwrap();
+    alice.tick(NOW + 12, &mut rng).await.unwrap();
+    let pre_backup_history = alice.group_messages(&gid).unwrap();
+    assert!(pre_backup_history
+        .iter()
+        .any(|record| record.body == future_mention));
+    assert!(pre_backup_history
+        .iter()
+        .any(|record| record.body == malformed_mention));
+
     // Alice's device dies; she restores from backup on a new one.
-    let (backup, mnemonic) = alice.export_backup(NOW + 10, &mut rng).unwrap();
+    let (backup, mnemonic) = alice.export_backup(NOW + 13, &mut rng).unwrap();
     drop(alice);
     let mut alice = Node::restore(
         &dir.path().join("a2.db"),
@@ -442,9 +529,54 @@ async fn restore_from_backup_reannounces_and_resumes() {
     assert_eq!(alice.groups().unwrap().len(), 1, "groups ride the backup");
     assert_eq!(
         alice.group_messages(&gid).unwrap().len(),
-        1,
+        4,
         "group history rides the backup"
     );
+    let restored_history = alice.group_messages(&gid).unwrap();
+    assert!(restored_history
+        .iter()
+        .any(|record| record.body == future_mention));
+    assert!(restored_history
+        .iter()
+        .any(|record| record.body == malformed_mention));
+    let restored_valid_mention = restored_history
+        .iter()
+        .find(|record| {
+            matches!(
+                decode_content(&record.body),
+                DecodedContent::Mention { id, .. } if id == pre_backup_mention
+            )
+        })
+        .unwrap();
+    match decode_content(&restored_valid_mention.body) {
+        DecodedContent::Mention { id, mention } => {
+            assert_eq!(id, pre_backup_mention);
+            assert_eq!(mention.text, mention_text);
+            assert_eq!(
+                mention.spans().collect::<Vec<_>>(),
+                mention_spans.map(Into::into)
+            );
+        }
+        other => panic!("expected restored canonical mention, got {other:?}"),
+    }
+
+    // Capability snapshots are intentionally excluded from KKR4 because
+    // their authentication is session-bound. The old review token therefore
+    // fails closed until the restored device completes a fresh handshake and
+    // receives a new authenticated snapshot.
+    let reset_capability = alice.group_mention_capability(&gid).unwrap();
+    assert!(!reset_capability.supported());
+    assert!(matches!(
+        alice.group_send_mention(
+            &gid,
+            mention_text,
+            &mention_spans,
+            pre_backup_capability.review_token,
+            NOW + 11,
+            &mut rng,
+        ),
+        Err(NodeError::MentionReviewRequired)
+    ));
 
     // First tick: re-handshake + fresh-chain announce leave together. Bob
     // adopts both, and his side re-announces over the fresh session.
@@ -455,6 +587,26 @@ async fn restore_from_backup_reannounces_and_resumes() {
         .any(|e| matches!(e, Event::SessionEstablished { peer } if *peer == a_id)));
     bob.tick(NOW + 23, &mut rng).await.unwrap();
     alice.tick(NOW + 25, &mut rng).await.unwrap();
+
+    let fresh_capability = alice.group_mention_capability(&gid).unwrap();
+    assert!(fresh_capability.supported());
+    let restored_mention = alice
+        .group_send_mention(
+            &gid,
+            mention_text,
+            &mention_spans,
+            fresh_capability.review_token,
+            NOW + 26,
+            &mut rng,
+        )
+        .unwrap();
+    alice.tick(NOW + 27, &mut rng).await.unwrap();
+    let events = bob.tick(NOW + 28, &mut rng).await.unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::MentionReceived { id } if *id == restored_mention
+    )));
+    alice.tick(NOW + 29, &mut rng).await.unwrap();
 
     // Both directions flow again.
     alice
@@ -472,4 +624,315 @@ async fn restore_from_backup_reannounces_and_resumes() {
         group_bodies(&alice.tick(NOW + 42, &mut rng).await.unwrap()),
         vec![b"good to have you back".to_vec()]
     );
+}
+
+// ---------------------------------------------------------------------------
+// 4. B17 semantic mentions: exact capability intersection and roster review,
+//    canonical encrypted content, one ciphertext fan-out, stable peer targets,
+//    and endpoint-local notification only for the exact authenticated target.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mention_is_capability_gated_roster_bound_and_notifies_exact_target() {
+    let mut rng = StdRng::seed_from_u64(17);
+    let dir = tempfile::tempdir().unwrap();
+    let net: Net = Arc::new(Mutex::new(HashMap::new()));
+    let (mut alice, mut bob, mut carol, _a_id, b_id, c_id) = trio(dir.path(), &net, &mut rng).await;
+    let gid = alice
+        .create_group("duplicate petnames", &[b_id, c_id], &mut rng)
+        .unwrap();
+
+    // Before the pairwise capability controls are authenticated, both current
+    // co-members fail closed. A snapshot token is never reusable after those
+    // session-bound facts change.
+    let unknown = alice.group_mention_capability(&gid).unwrap();
+    assert!(!unknown.supported());
+    assert_eq!(unknown.issues.len(), 2);
+
+    // The explicit readable fallback remains permanent legacy UTF-8 while
+    // even one current co-member has no authenticated Text capability.
+    // It carries no target table or semantic notification relevance.
+    let legacy_fallback = "👋 @Alex and @Alex";
+    alice
+        .group_send(&gid, legacy_fallback.as_bytes(), NOW, &mut rng)
+        .unwrap();
+    assert!(matches!(
+        decode_content(&alice.group_messages(&gid).unwrap()[0].body),
+        DecodedContent::LegacyText(text) if text == legacy_fallback
+    ));
+
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 1).await;
+    assert!(bob.group_messages(&gid).unwrap().iter().any(|record| {
+        matches!(
+            decode_content(&record.body),
+            DecodedContent::LegacyText(text) if text == legacy_fallback
+        )
+    }));
+    let supported = alice.group_mention_capability(&gid).unwrap();
+    assert!(supported.supported());
+    assert_ne!(unknown.review_token, supported.review_token);
+
+    let text = "👋 @Alex and @Alex";
+    let start = text.find("@Alex").unwrap() as u32;
+    let end = start + "@Alex".len() as u32;
+    let spans = [MentionSpan {
+        start,
+        end,
+        target: b_id,
+    }];
+    assert!(matches!(
+        alice.group_send_mention(&gid, text, &spans, unknown.review_token, NOW + 30, &mut rng,),
+        Err(NodeError::MentionReviewRequired)
+    ));
+    let encoded_bypass = encode_mention(
+        [0x55; 16],
+        text,
+        &spans.iter().copied().map(Into::into).collect::<Vec<_>>(),
+    )
+    .unwrap();
+    assert!(matches!(
+        alice.group_send(&gid, &encoded_bypass, NOW + 30, &mut rng),
+        Err(NodeError::InvalidMention)
+    ));
+    assert!(matches!(
+        alice.send_message(&b_id, &encoded_bypass, NOW + 30, &mut rng),
+        Err(NodeError::InvalidMention)
+    ));
+    let id = alice
+        .group_send_mention(
+            &gid,
+            text,
+            &spans,
+            supported.review_token,
+            NOW + 31,
+            &mut rng,
+        )
+        .unwrap();
+
+    let history = alice.group_messages(&gid).unwrap();
+    match decode_content(&history.last().unwrap().body) {
+        DecodedContent::Mention {
+            id: decoded_id,
+            mention,
+        } => {
+            assert_eq!(decoded_id, id);
+            assert_eq!(mention.text, text);
+            assert_eq!(mention.spans().collect::<Vec<_>>(), spans.map(Into::into));
+        }
+        other => panic!("expected canonical mention, got {other:?}"),
+    }
+
+    alice.tick(NOW + 32, &mut rng).await.unwrap();
+    let mention_wire_body = {
+        let net = net.lock().unwrap();
+        let bodies = [2u32, 3]
+            .into_iter()
+            .flat_map(|node| net.get(&node).into_iter().flatten())
+            .filter(|env| env.kind == EnvelopeKind::GroupMessage)
+            .map(|env| env.body.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(bodies.len(), 2, "exactly one fan-out copy per co-member");
+        assert_eq!(bodies[0], bodies[1], "one sender-key ciphertext is reused");
+        assert!(
+            !bodies[0]
+                .windows(text.len())
+                .any(|window| window == text.as_bytes()),
+            "fallback text escaped sender-key encryption"
+        );
+        assert!(
+            !bodies[0]
+                .windows(b_id.len())
+                .any(|window| window == b_id.as_slice()),
+            "mention target escaped sender-key encryption"
+        );
+        assert!(
+            !bodies[0]
+                .windows(CONTENT_MAGIC.len())
+                .any(|window| window == CONTENT_MAGIC),
+            "typed content kind escaped sender-key encryption"
+        );
+        assert!(
+            !bodies[0].windows(id.len()).any(|window| window == id),
+            "content id escaped sender-key encryption"
+        );
+        for offset in [start.to_le_bytes(), end.to_le_bytes()] {
+            assert!(
+                !bodies[0]
+                    .windows(offset.len())
+                    .any(|window| window == offset),
+                "mention range escaped sender-key encryption"
+            );
+        }
+        bodies[0].clone()
+    };
+
+    let bob_events = bob.tick(NOW + 33, &mut rng).await.unwrap();
+    assert!(bob_events.iter().any(|event| matches!(
+        event,
+        Event::GroupMessageReceived {
+            group,
+            sender: _,
+            id: event_id,
+            body,
+            content: ContentStatus::Mention { id: content_id, spans: event_spans },
+            ..
+        } if *group == gid
+            && *event_id == id
+            && *content_id == id
+            && body == text.as_bytes()
+            && event_spans == &spans
+    )));
+    assert_eq!(
+        bob_events
+            .iter()
+            .filter(
+                |event| matches!(event, Event::MentionReceived { id: event_id } if *event_id == id)
+            )
+            .count(),
+        1
+    );
+
+    let carol_events = carol.tick(NOW + 33, &mut rng).await.unwrap();
+    assert!(carol_events.iter().any(|event| matches!(
+        event,
+        Event::GroupMessageReceived {
+            id: event_id,
+            body,
+            content: ContentStatus::Mention { .. },
+            ..
+        } if *event_id == id && body == text.as_bytes()
+    )));
+    assert!(
+        !carol_events
+            .iter()
+            .any(|event| matches!(event, Event::MentionReceived { .. })),
+        "visible fallback names never trigger semantic notification"
+    );
+
+    // Ordinary text with the same visible bytes has no semantic signal.
+    alice
+        .group_send(&gid, text.as_bytes(), NOW + 34, &mut rng)
+        .unwrap();
+    alice.tick(NOW + 35, &mut rng).await.unwrap();
+    {
+        let net = net.lock().unwrap();
+        let plain_wire_body = net
+            .get(&2)
+            .into_iter()
+            .flatten()
+            .find(|envelope| envelope.kind == EnvelopeKind::GroupMessage)
+            .map(|envelope| &envelope.body)
+            .expect("plain group envelope queued");
+        assert_eq!(
+            plain_wire_body.len(),
+            mention_wire_body.len(),
+            "short Mention content uses the same existing padding bucket as ordinary text"
+        );
+        assert!(
+            !plain_wire_body
+                .windows(text.len())
+                .any(|window| window == text.as_bytes()),
+            "ordinary fallback text escaped sender-key encryption"
+        );
+    }
+    assert!(!bob
+        .tick(NOW + 36, &mut rng)
+        .await
+        .unwrap()
+        .iter()
+        .any(|event| matches!(event, Event::MentionReceived { .. })));
+    assert!(!carol
+        .tick(NOW + 36, &mut rng)
+        .await
+        .unwrap()
+        .iter()
+        .any(|event| matches!(event, Event::MentionReceived { .. })));
+
+    // Authenticated malformed and future/unknown typed content remains
+    // durable as exact bytes for a later decoder, but never exposes guessed
+    // text/spans or produces a mention signal.
+    let mut malformed = encoded_bypass.clone();
+    malformed.pop();
+    let mut unknown_kind = encoded_bypass;
+    unknown_kind[5..7].copy_from_slice(&999u16.to_le_bytes());
+    alice
+        .group_send(&gid, &malformed, NOW + 37, &mut rng)
+        .unwrap();
+    alice
+        .group_send(&gid, &unknown_kind, NOW + 37, &mut rng)
+        .unwrap();
+    alice.tick(NOW + 38, &mut rng).await.unwrap();
+    let bob_retention_events = bob.tick(NOW + 39, &mut rng).await.unwrap();
+    assert!(bob_retention_events.iter().any(|event| matches!(
+        event,
+        Event::GroupMessageReceived {
+            body,
+            content: ContentStatus::Malformed,
+            ..
+        } if body.is_empty()
+    )));
+    assert!(bob_retention_events.iter().any(|event| matches!(
+        event,
+        Event::GroupMessageReceived {
+            body,
+            content: ContentStatus::Unsupported {
+                format_version: Some(1),
+                kind: Some(999),
+            },
+            ..
+        } if body.is_empty()
+    )));
+    assert!(!bob_retention_events
+        .iter()
+        .any(|event| matches!(event, Event::MentionReceived { .. })));
+    let retained = bob.group_messages(&gid).unwrap();
+    assert!(retained.iter().any(|record| record.body == malformed));
+    assert!(retained.iter().any(|record| record.body == unknown_kind));
+    let carol_retention_events = carol.tick(NOW + 39, &mut rng).await.unwrap();
+    assert!(!carol_retention_events
+        .iter()
+        .any(|event| matches!(event, Event::MentionReceived { .. })));
+
+    // Removing the selected identity invalidates the reviewed snapshot. A
+    // fresh snapshot still cannot retarget the historical span to a peer with
+    // a matching display name.
+    alice.group_remove(&gid, &b_id, NOW + 40, &mut rng).unwrap();
+    assert!(matches!(
+        alice.group_send_mention(
+            &gid,
+            text,
+            &spans,
+            supported.review_token,
+            NOW + 41,
+            &mut rng,
+        ),
+        Err(NodeError::MentionReviewRequired)
+    ));
+    let after_remove = alice.group_mention_capability(&gid).unwrap();
+    assert!(matches!(
+        alice.group_send_mention(
+            &gid,
+            text,
+            &spans,
+            after_remove.review_token,
+            NOW + 42,
+            &mut rng,
+        ),
+        Err(NodeError::InvalidMention)
+    ));
+
+    // Authenticated history remains bound to Bob's key after he leaves.
+    let historic_mention = alice
+        .group_messages(&gid)
+        .unwrap()
+        .into_iter()
+        .find(|record| matches!(decode_content(&record.body), DecodedContent::Mention { .. }))
+        .expect("semantic mention remains in history");
+    match decode_content(&historic_mention.body) {
+        DecodedContent::Mention { mention, .. } => {
+            assert_eq!(mention.spans().next().unwrap().target, b_id);
+            assert_eq!(mention.text, text);
+        }
+        other => panic!("expected retained mention, got {other:?}"),
+    }
 }

@@ -47,7 +47,8 @@ use kult_protocol::{
     decode_content, delivery_token, encode_text, epoch_day, fragment, intro_token,
     is_capability_control, pad, unpad, CapabilityControl, DecodedContent, Envelope, EnvelopeKind,
     FormatCapabilities, MailboxKey, Reassembler, ReceiptPayload, CONTENT_FORMAT_V1,
-    CONTENT_KIND_ATTACHMENT, CONTENT_KIND_TEXT, ENVELOPE_HEADER_LEN, REASSEMBLY_WINDOW_SECS,
+    CONTENT_KIND_ATTACHMENT, CONTENT_KIND_MENTION, CONTENT_KIND_TEXT, ENVELOPE_HEADER_LEN,
+    REASSEMBLY_WINDOW_SECS,
 };
 use kult_store::{
     ContactRecord, ConversationId, ConversationMetadata, DeliveryState, Direction,
@@ -66,7 +67,8 @@ mod vault;
 pub use api::{
     AttachmentConversation, AttachmentDirection, AttachmentInfo, AttachmentMetadata,
     AttachmentObjectInfo, CarrierCapability, CarrierCapabilitySnapshot, Command, ContentStatus,
-    Event, GroupInfo, ScheduledConversation, ScheduledMessageInfo,
+    Event, GroupInfo, GroupMentionCapability, MentionCapabilityIssue, MentionCapabilityIssueReason,
+    MentionSpan, ScheduledConversation, ScheduledMessageInfo,
 };
 pub use error::NodeError;
 pub use kult_store::NOTE_TO_SELF_CONVERSATION_ID;
@@ -734,6 +736,14 @@ impl Node {
             Command::GroupSend { group, body } => {
                 self.group_send(&group, &body, now, rng)?;
             }
+            Command::GroupMentionSend {
+                group,
+                text,
+                spans,
+                review_token,
+            } => {
+                self.group_send_mention(&group, &text, &spans, review_token, now, rng)?;
+            }
             Command::GroupAdd { group, peer } => self.group_add(&group, &peer, rng)?,
             Command::GroupRemove { group, peer } => self.group_remove(&group, &peer, now, rng)?,
             Command::GroupLeave { group } => self.group_leave(&group, now, rng)?,
@@ -780,6 +790,11 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 16]> {
+        // Mention is permanently group-only. Reject a canonical frame before
+        // it can enter pairwise history, padding, encryption, or the queue.
+        if matches!(decode_content(body), DecodedContent::Mention { .. }) {
+            return Err(NodeError::InvalidMention);
+        }
         let contact = self
             .store
             .get_contact(peer)?
@@ -1494,13 +1509,17 @@ impl Node {
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
         let decoded = decode_content(&body);
-        if let DecodedContent::Text { id, .. } | DecodedContent::Attachment { id, .. } = decoded {
+        if let DecodedContent::Text { id, .. }
+        | DecodedContent::Attachment { id, .. }
+        | DecodedContent::Mention { id, .. } = decoded
+        {
             let duplicate = self.store.messages_with(&peer)?.iter().any(|record| {
                 record.direction == Direction::Inbound
                     && matches!(
                         decode_content(&record.body),
                         DecodedContent::Text { id: stored_id, .. }
                             | DecodedContent::Attachment { id: stored_id, .. }
+                            | DecodedContent::Mention { id: stored_id, .. }
                             if stored_id == id
                     )
             });
@@ -1521,6 +1540,13 @@ impl Node {
                 let transfer =
                     self.record_pairwise_attachment_offer(peer, id, &manifest, now, rng)?;
                 (id, Vec::new(), ContentStatus::Attachment { id, transfer })
+            }
+            // Mention is group-only. Retain exact authenticated bytes as a
+            // malformed pairwise record and never surface spans or notify.
+            DecodedContent::Mention { .. } => {
+                let mut id = [0u8; 16];
+                rng.fill_bytes(&mut id);
+                (id, Vec::new(), ContentStatus::Malformed)
             }
             DecodedContent::Unsupported {
                 format_version,
@@ -1578,7 +1604,11 @@ impl Node {
         CapabilityControl {
             formats: vec![FormatCapabilities {
                 format_version: CONTENT_FORMAT_V1,
-                kinds: vec![CONTENT_KIND_TEXT, CONTENT_KIND_ATTACHMENT],
+                kinds: vec![
+                    CONTENT_KIND_TEXT,
+                    CONTENT_KIND_ATTACHMENT,
+                    CONTENT_KIND_MENTION,
+                ],
             }],
         }
     }

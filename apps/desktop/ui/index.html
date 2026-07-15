@@ -141,12 +141,16 @@
         <div id="messages"></div>
         <section id="attachment-transfers" aria-label="Attachment transfers" hidden></section>
         <form id="composer" autocomplete="off">
-          <input type="text" id="composer-input" placeholder="Message…" />
+          <input type="text" id="composer-input" placeholder="Message…" aria-describedby="mention-status" />
+          <button type="button" id="btn-mention" class="ghost" aria-haspopup="listbox" aria-expanded="false" hidden>Mention member</button>
+          <div id="mention-picker" role="listbox" aria-label="Current group members" hidden></div>
           <button type="button" id="btn-record" class="ghost" aria-pressed="false">Record audio</button>
           <button type="button" id="btn-attach" class="ghost">Attach</button>
           <button type="button" id="btn-schedule" class="ghost">Schedule</button>
           <button type="submit" class="primary">Send</button>
         </form>
+        <div id="mention-tokens" aria-label="Semantic mentions in this draft" hidden></div>
+        <p id="mention-status" class="composer-note" role="status" aria-live="polite"></p>
         <p id="recording-status" class="sr-status" role="status" aria-live="polite"></p>
       </div>
     </main>

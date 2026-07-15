@@ -28,8 +28,9 @@ use kult_ffi::{
     probe_recorded_audio, Attachment, AttachmentConversation, AttachmentDirection, AttachmentState,
     AudioInfo, CarrierCapability, Config, ContentKind, DeliveryState, Direction, Event,
     EventListener, Hint, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind,
-    ImageInfo, KdfChoice, KultNode, NatVerdict, ScheduledConversation, AUDIO_MAX_BYTES,
-    AUDIO_MEDIA_TYPE, IMAGE_MAX_INPUT_BYTES, IMAGE_MEDIA_TYPE,
+    ImageInfo, KdfChoice, KultNode, MentionCapabilityIssueReason, MentionSpan, NatVerdict,
+    ScheduledConversation, AUDIO_MAX_BYTES, AUDIO_MEDIA_TYPE, IMAGE_MAX_INPUT_BYTES,
+    IMAGE_MEDIA_TYPE,
 };
 
 use crate::qr;
@@ -450,6 +451,39 @@ pub struct UiGroupDelivery {
     pub state: &'static str,
 }
 
+/// One semantic Mention span rendered by the desktop shell.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct UiMentionSpan {
+    /// Inclusive UTF-8 byte offset.
+    pub start: u32,
+    /// Exclusive UTF-8 byte offset.
+    pub end: u32,
+    /// Exact target peer id (hex).
+    pub target: String,
+}
+
+/// One current member preventing semantic Mention send.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiMentionIssue {
+    /// Exact member peer id (hex).
+    pub peer: String,
+    /// `unknown` or `unsupported`.
+    pub reason: &'static str,
+}
+
+/// Current conservative Mention capability verdict and review binding.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiMentionCapability {
+    /// Group id (hex).
+    pub group: String,
+    /// Whether exact typed Mention may be sent now.
+    pub supported: bool,
+    /// Opaque roster/capability/display review token.
+    pub review_token: String,
+    /// Blocking current members.
+    pub issues: Vec<UiMentionIssue>,
+}
+
 /// A group message row for the desktop conversation view.
 #[derive(Clone, Debug, Serialize)]
 pub struct UiGroupMessage {
@@ -467,6 +501,8 @@ pub struct UiGroupMessage {
     pub body: String,
     /// `legacy_text`, `text`, `unsupported`, or `malformed`.
     pub content_kind: &'static str,
+    /// Stable semantic Mention spans; empty for other content.
+    pub mention_spans: Vec<UiMentionSpan>,
     /// Per-recipient states for outbound messages; empty for inbound.
     pub deliveries: Vec<UiGroupDelivery>,
 }
@@ -730,6 +766,13 @@ pub enum UiEvent {
         body: String,
         /// Explicit content interpretation.
         content_kind: &'static str,
+        /// Stable semantic Mention spans; empty for other content.
+        mention_spans: Vec<UiMentionSpan>,
+    },
+    /// A canonical group Mention targets the exact local peer.
+    MentionReceived {
+        /// Protected group history record id. No message text is duplicated.
+        id: String,
     },
     /// One member's copy of an outbound group message changed state.
     GroupDeliveryUpdated {
@@ -799,6 +842,7 @@ impl UiEvent {
                 timestamp,
                 body,
                 content_kind,
+                mention_spans,
             } => Self::GroupMessageReceived {
                 group,
                 sender,
@@ -806,7 +850,16 @@ impl UiEvent {
                 timestamp,
                 body,
                 content_kind: content_kind_str(content_kind),
+                mention_spans: mention_spans
+                    .into_iter()
+                    .map(|span| UiMentionSpan {
+                        start: span.start,
+                        end: span.end,
+                        target: span.target,
+                    })
+                    .collect(),
             },
+            Event::MentionReceived { id } => Self::MentionReceived { id },
             Event::GroupDeliveryUpdated { id, peer, state } => Self::GroupDeliveryUpdated {
                 id,
                 peer,
@@ -833,6 +886,7 @@ fn content_kind_str(kind: ContentKind) -> &'static str {
         ContentKind::LegacyText => "legacy_text",
         ContentKind::Text => "text",
         ContentKind::Attachment => "attachment",
+        ContentKind::Mention => "mention",
         ContentKind::Unsupported => "unsupported",
         ContentKind::Malformed => "malformed",
     }
@@ -1701,6 +1755,15 @@ impl Session {
                 timestamp: message.timestamp,
                 body: message.body,
                 content_kind: content_kind_str(message.content_kind),
+                mention_spans: message
+                    .mention_spans
+                    .into_iter()
+                    .map(|span| UiMentionSpan {
+                        start: span.start,
+                        end: span.end,
+                        target: span.target,
+                    })
+                    .collect(),
                 deliveries: message
                     .deliveries
                     .into_iter()
@@ -1717,6 +1780,55 @@ impl Session {
     /// `GroupDeliveryUpdated` events.
     pub fn send_group(&self, group: String, body: String) -> Result<String, String> {
         self.node.send_group(group, body).map_err(|e| e.to_string())
+    }
+
+    /// Current conservative semantic Mention capability verdict.
+    pub fn group_mention_capability(&self, group: String) -> Result<UiMentionCapability, String> {
+        let capability = self
+            .node
+            .group_mention_capability(group)
+            .map_err(|error| error.to_string())?;
+        Ok(UiMentionCapability {
+            group: capability.group,
+            supported: capability.supported,
+            review_token: capability.review_token,
+            issues: capability
+                .issues
+                .into_iter()
+                .map(|issue| UiMentionIssue {
+                    peer: issue.peer,
+                    reason: match issue.reason {
+                        MentionCapabilityIssueReason::Unknown => "unknown",
+                        MentionCapabilityIssueReason::Unsupported => "unsupported",
+                    },
+                })
+                .collect(),
+        })
+    }
+
+    /// Send exact fallback text with explicit stable peer Mention spans.
+    pub fn send_group_mention(
+        &self,
+        group: String,
+        text: String,
+        spans: Vec<UiMentionSpan>,
+        review_token: String,
+    ) -> Result<String, String> {
+        self.node
+            .send_group_mention(
+                group,
+                text,
+                spans
+                    .into_iter()
+                    .map(|span| MentionSpan {
+                        start: span.start,
+                        end: span.end,
+                        target: span.target,
+                    })
+                    .collect(),
+                review_token,
+            )
+            .map_err(|error| error.to_string())
     }
 
     /// Add a stored contact to a group (creator only).
@@ -1945,10 +2057,18 @@ mod tests {
             timestamp: 7,
             body: "meet at the pass".to_owned(),
             content_kind: "text",
+            mention_spans: Vec::new(),
         })
         .unwrap();
         assert_eq!(received["type"], "group_message_received");
         assert_eq!(received["body"], "meet at the pass");
+
+        let mentioned = serde_json::to_value(UiEvent::MentionReceived {
+            id: "03".repeat(16),
+        })
+        .unwrap();
+        assert_eq!(mentioned["type"], "mention_received");
+        assert!(mentioned.get("body").is_none());
 
         let delivery = serde_json::to_value(UiEvent::GroupDeliveryUpdated {
             id: "03".repeat(16),

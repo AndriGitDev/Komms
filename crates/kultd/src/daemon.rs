@@ -735,6 +735,34 @@ async fn handle_op(
                 .map_err(fail)?;
             Ok(json!({ "id": wire::hex_encode(&id) }))
         }
+        Op::GroupMentionCapability { group } => {
+            let group = wire::parse_group(&group)?;
+            let capability = node.group_mention_capability(&group).map_err(fail)?;
+            Ok(wire::group_mention_capability_json(&capability))
+        }
+        Op::GroupMentionSend {
+            group,
+            text,
+            spans,
+            review_token,
+        } => {
+            let group = wire::parse_group(&group)?;
+            let review_token = wire::parse_review_token(&review_token)?;
+            let spans = spans
+                .iter()
+                .map(|span| {
+                    Ok(kult_node::MentionSpan {
+                        start: span.start,
+                        end: span.end,
+                        target: wire::parse_peer(&span.target)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            let id = node
+                .group_send_mention(&group, &text, &spans, review_token, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
         Op::GroupAdd { group, peer } => {
             let group = wire::parse_group(&group)?;
             let peer = wire::parse_peer(&peer)?;
