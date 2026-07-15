@@ -12,11 +12,16 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * Process-restart label-filter restoration without putting label ids or mode
+ * Process-restart folder-selection and label-filter restoration without putting ids or mode
  * into ordinary saved state, logs, previews, or plaintext SharedPreferences.
  */
 internal class LabelFilterPreferences(private val context: Context) {
-    data class State(val ids: List<String>, val mode: String)
+    data class State(
+        val ids: List<String>,
+        val mode: String,
+        val folderKind: String = "all",
+        val folderId: String? = null,
+    )
 
     private val preferences by lazy {
         context.getSharedPreferences("protected_label_filter", Context.MODE_PRIVATE)
@@ -28,8 +33,20 @@ internal class LabelFilterPreferences(private val context: Context) {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, iv))
         val fields = String(cipher.doFinal(ciphertext), StandardCharsets.UTF_8).split('\n')
-        val mode = fields.firstOrNull().takeIf { it == "any" || it == "all" } ?: "any"
-        State(fields.drop(1).filter { it.matches(Regex("[0-9a-f]{32}")) }.distinct(), mode)
+        if (fields.firstOrNull() == "v2") {
+            val mode = fields.getOrNull(1).takeIf { it == "any" || it == "all" } ?: "any"
+            val folderKind = fields.getOrNull(2).takeIf { it == "all" || it == "unfiled" || it == "folder" } ?: "all"
+            val folderId = fields.getOrNull(3).takeIf { folderKind == "folder" && it?.matches(Regex("[0-9a-f]{32}")) == true }
+            State(
+                fields.drop(4).filter { it.matches(Regex("[0-9a-f]{32}")) }.distinct(),
+                mode,
+                if (folderKind == "folder" && folderId == null) "all" else folderKind,
+                folderId,
+            )
+        } else {
+            val mode = fields.firstOrNull().takeIf { it == "any" || it == "all" } ?: "any"
+            State(fields.drop(1).filter { it.matches(Regex("[0-9a-f]{32}")) }.distinct(), mode)
+        }
     }.getOrElse {
         preferences.edit().clear().apply()
         State(emptyList(), "any")
@@ -38,7 +55,14 @@ internal class LabelFilterPreferences(private val context: Context) {
     fun save(state: State) {
         val safeMode = if (state.mode == "all") "all" else "any"
         val ids = state.ids.filter { it.matches(Regex("[0-9a-f]{32}")) }.distinct().take(128)
-        val plaintext = (listOf(safeMode) + ids).joinToString("\n").toByteArray(StandardCharsets.UTF_8)
+        val safeFolderId = state.folderId?.takeIf { it.matches(Regex("[0-9a-f]{32}")) }
+        val safeFolderKind = when {
+            state.folderKind == "unfiled" -> "unfiled"
+            state.folderKind == "folder" && safeFolderId != null -> "folder"
+            else -> "all"
+        }
+        val plaintext = (listOf("v2", safeMode, safeFolderKind, safeFolderId.orEmpty()) + ids)
+            .joinToString("\n").toByteArray(StandardCharsets.UTF_8)
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val ciphertext = cipher.doFinal(plaintext)

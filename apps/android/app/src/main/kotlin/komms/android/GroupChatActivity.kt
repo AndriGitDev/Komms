@@ -35,6 +35,8 @@ import uniffi.kult_ffi.Contact
 import uniffi.kult_ffi.DeliveryState
 import uniffi.kult_ffi.Direction
 import uniffi.kult_ffi.Event
+import uniffi.kult_ffi.FolderTarget
+import uniffi.kult_ffi.FolderTargetKind
 import uniffi.kult_ffi.Group
 import uniffi.kult_ffi.GroupMentionCapability
 import uniffi.kult_ffi.GroupMessage
@@ -203,6 +205,10 @@ class GroupChatActivity : AppCompatActivity() {
             }
             R.id.menu_labels -> {
                 showLabelAssignments(LabelTarget(LabelTargetKind.GROUP, groupId), groupName)
+                true
+            }
+            R.id.menu_folder -> {
+                showFolderAssignment(FolderTarget(FolderTargetKind.GROUP, groupId), groupName)
                 true
             }
             else -> super.onOptionsItemSelected(item)

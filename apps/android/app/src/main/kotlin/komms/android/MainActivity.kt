@@ -20,6 +20,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.RadioGroup
+import android.widget.RadioButton
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -28,6 +29,11 @@ import java.io.File
 import komms.core.bundleQrText
 import uniffi.kult_ffi.Contact
 import uniffi.kult_ffi.Event
+import uniffi.kult_ffi.Folder
+import uniffi.kult_ffi.FolderSelection
+import uniffi.kult_ffi.FolderSelectionKind
+import uniffi.kult_ffi.FolderTarget
+import uniffi.kult_ffi.FolderTargetKind
 import uniffi.kult_ffi.Group
 import uniffi.kult_ffi.Label
 import uniffi.kult_ffi.LabelMatchMode
@@ -53,7 +59,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var labelPreferences: LabelFilterPreferences
     private var selectedLabels = listOf<String>()
     private var labelMode = "any"
+    private var folderKind = "all"
+    private var folderId: String? = null
     private var renderingLabelControls = false
+    private var renderingFolderControls = false
 
     private val tick = Handler(Looper.getMainLooper())
     private val refreshLoop = object : Runnable {
@@ -71,6 +80,7 @@ class MainActivity : AppCompatActivity() {
                 is Event.MessageReceived -> refreshLabelsAndLists(false)
                 is Event.GroupUpdated -> refreshLabelsAndLists(false)
                 is Event.GroupMessageReceived -> refreshLabelsAndLists(false)
+                is Event.FoldersChanged -> refreshLabelsAndLists(true)
                 is Event.LabelsChanged -> refreshLabelsAndLists(true)
                 else -> {}
             }
@@ -98,6 +108,12 @@ class MainActivity : AppCompatActivity() {
         labelPreferences.load().also {
             selectedLabels = it.ids
             labelMode = it.mode
+            folderKind = it.folderKind
+            folderId = it.folderId
+        }
+
+        findViewById<View>(R.id.main_manage_folders).setOnClickListener {
+            startActivity(Intent(this, FolderManagerActivity::class.java))
         }
 
         findViewById<View>(R.id.main_manage_labels).setOnClickListener {
@@ -164,6 +180,7 @@ class MainActivity : AppCompatActivity() {
         when (item.itemId) {
             R.id.menu_add -> startActivity(Intent(this, AddContactActivity::class.java))
             R.id.menu_create_group -> showCreateGroup()
+            R.id.menu_folders -> startActivity(Intent(this, FolderManagerActivity::class.java))
             R.id.menu_labels -> startActivity(Intent(this, LabelManagerActivity::class.java))
             R.id.menu_my_qr -> showMyQr()
             R.id.menu_backup -> createBackup.launch("komms-backup.kkr")
@@ -201,7 +218,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun persistLabelFilter() {
-        labelPreferences.save(LabelFilterPreferences.State(selectedLabels, labelMode))
+        labelPreferences.save(LabelFilterPreferences.State(selectedLabels, labelMode, folderKind, folderId))
     }
 
     private fun refreshLabelsAndLists(announce: Boolean) {
@@ -210,7 +227,17 @@ class MainActivity : AppCompatActivity() {
         val requestedMode = labelMode
         runNode(work = {
             val labels = session.labels()
-            val result = session.filterLabels(
+            val folders = session.folders()
+            val folderUnavailable = folderKind == "folder" && folders.none { it.id == folderId }
+            val requestedFolder = if (folderUnavailable) {
+                FolderSelection(FolderSelectionKind.ALL, null)
+            } else when (folderKind) {
+                "unfiled" -> FolderSelection(FolderSelectionKind.UNFILED, null)
+                "folder" -> FolderSelection(FolderSelectionKind.FOLDER, folderId)
+                else -> FolderSelection(FolderSelectionKind.ALL, null)
+            }
+            val result = session.folderConversations(
+                requestedFolder,
                 requested,
                 if (requestedMode == "all") LabelMatchMode.ALL else LabelMatchMode.ANY,
             )
@@ -218,8 +245,11 @@ class MainActivity : AppCompatActivity() {
             val groups = session.groups()
             MainLabelSnapshot(
                 labels = labels,
-                selected = result.selected,
-                unavailableCount = result.unavailableSelected.size,
+                folders = folders,
+                folderSelection = result.selection,
+                folderUnavailable = folderUnavailable,
+                selected = result.selectedLabels,
+                unavailableCount = result.unavailableLabels.size,
                 matching = result.conversations.map { targetKey(it.target) }.toSet(),
                 contacts = contacts,
                 groups = groups,
@@ -239,14 +269,24 @@ class MainActivity : AppCompatActivity() {
             )
         }) { snapshot ->
             selectedLabels = snapshot.selected
+            folderKind = when (snapshot.folderSelection.kind) {
+                FolderSelectionKind.UNFILED -> "unfiled"
+                FolderSelectionKind.FOLDER -> "folder"
+                FolderSelectionKind.ALL -> "all"
+            }
+            folderId = snapshot.folderSelection.id
             persistLabelFilter()
+            renderFolderControls(snapshot.folders)
+            findViewById<TextView>(R.id.main_folder_filter_status).apply {
+                text = if (snapshot.folderUnavailable) getString(R.string.folder_selection_unavailable) else ""
+                if (snapshot.folderUnavailable) announceForAccessibility(text)
+            }
             renderLabelControls(snapshot.labels)
-            val active = selectedLabels.isNotEmpty()
             val visibleContacts = snapshot.contacts.filter {
-                !active || "peer:${it.peer}" in snapshot.matching
+                "peer:${it.peer}" in snapshot.matching
             }
             val visibleGroups = snapshot.groups.filter {
-                !active || "group:${it.id}" in snapshot.matching
+                "group:${it.id}" in snapshot.matching
             }
             knownPeers = snapshot.contacts.map { it.peer }.toSet()
             contacts.submit(visibleContacts, snapshot.contactLabels.mapValues { (_, labels) -> labelLines(labels) })
@@ -256,7 +296,7 @@ class MainActivity : AppCompatActivity() {
             findViewById<TextView>(R.id.main_groups_empty).visibility =
                 if (visibleGroups.isEmpty()) View.VISIBLE else View.GONE
             findViewById<Button>(R.id.main_note_to_self).apply {
-                visibility = if (!active || "note_to_self:" in snapshot.matching) View.VISIBLE else View.GONE
+                visibility = if ("note_to_self:" in snapshot.matching) View.VISIBLE else View.GONE
                 text = buildString {
                     append(getString(R.string.note_to_self_title))
                     val lines = labelLines(snapshot.noteLabels)
@@ -266,11 +306,43 @@ class MainActivity : AppCompatActivity() {
             val status = findViewById<TextView>(R.id.main_label_filter_status)
             status.text = when {
                 snapshot.unavailableCount > 0 -> getString(R.string.label_filter_unavailable, snapshot.unavailableCount)
-                announce && active -> getString(R.string.label_filter_result, snapshot.matching.size, requestedMode)
+                announce && selectedLabels.isNotEmpty() -> getString(R.string.label_filter_result, snapshot.matching.size, requestedMode)
                 else -> ""
             }
             if (announce && status.text.isNotEmpty()) status.announceForAccessibility(status.text)
         }
+    }
+
+    private fun renderFolderControls(folders: List<Folder>) {
+        renderingFolderControls = true
+        val root = findViewById<RadioGroup>(R.id.main_folder_filters)
+        root.setOnCheckedChangeListener(null)
+        root.removeAllViews()
+        val choices = listOf(
+            Triple("all", null, getString(R.string.folder_all)),
+            Triple("unfiled", null, getString(R.string.folder_unfiled)),
+        ) + folders.map { Triple("folder", it.id, folderSummary(it)) }
+        choices.forEach { (kind, id, summary) ->
+            root.addView(RadioButton(this).apply {
+                this.id = View.generateViewId()
+                text = summary
+                textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+                contentDescription = getString(R.string.folder_filter_description, summary)
+                isChecked = kind == folderKind && (kind != "folder" || id == folderId)
+                tag = Pair(kind, id)
+                isFocusable = true
+                nextFocusForwardId = View.NO_ID
+            })
+        }
+        root.setOnCheckedChangeListener { group, checkedId ->
+            if (renderingFolderControls) return@setOnCheckedChangeListener
+            val selected = group.findViewById<RadioButton>(checkedId)?.tag as? Pair<*, *> ?: return@setOnCheckedChangeListener
+            folderKind = selected.first as String
+            folderId = selected.second as String?
+            persistLabelFilter()
+            refreshLabelsAndLists(true)
+        }
+        renderingFolderControls = false
     }
 
     private fun renderLabelControls(labels: List<Label>) {
@@ -305,6 +377,12 @@ class MainActivity : AppCompatActivity() {
         LabelTargetKind.PEER -> "peer:${target.id}"
         LabelTargetKind.GROUP -> "group:${target.id}"
         LabelTargetKind.NOTE_TO_SELF -> "note_to_self:"
+    }
+
+    private fun targetKey(target: FolderTarget): String = when (target.kind) {
+        FolderTargetKind.PEER -> "peer:${target.id}"
+        FolderTargetKind.GROUP -> "group:${target.id}"
+        FolderTargetKind.NOTE_TO_SELF -> "note_to_self:"
     }
 
     private fun refreshGroups() {
@@ -452,6 +530,9 @@ class MainActivity : AppCompatActivity() {
 
 private data class MainLabelSnapshot(
     val labels: List<Label>,
+    val folders: List<Folder>,
+    val folderSelection: FolderSelection,
+    val folderUnavailable: Boolean,
     val selected: List<String>,
     val unavailableCount: Int,
     val matching: Set<String>,

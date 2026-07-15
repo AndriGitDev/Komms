@@ -20,9 +20,26 @@ extension FfiError {
         switch self {
         case .Startup(let reason): return "startup: \(reason)"
         case .Node(let reason): return reason
+        case .Folder(_, let reason): return reason
         case .Label(_, let reason): return reason
         case .Stopped: return "node is stopped"
         }
+    }
+}
+
+/// B10 resource limits shared by every wrapper.
+public let maxFolders = 128
+public let maxFolderAssignments = 8_192
+public let maxFolderNameBytes = 256
+
+private func validateFolderWrite(name: String) throws {
+    let fixedWhitespace: Set<UInt32> = [
+        0x0009, 0x000a, 0x000b, 0x000c, 0x000d, 0x0020,
+        0x0085, 0x200e, 0x200f, 0x2028, 0x2029,
+    ]
+    guard !name.isEmpty, name.utf8.count <= maxFolderNameBytes,
+          !name.unicodeScalars.allSatisfy({ fixedWhitespace.contains($0.value) }) else {
+        throw InputError("invalid folder name")
     }
 }
 
@@ -316,6 +333,78 @@ public final class Session: @unchecked Sendable {
     /// Append one sealed local-only note; no transport work is created.
     public func sendNoteToSelf(body: String) throws -> String {
         try node.sendNoteToSelf(body: body)
+    }
+
+    /// Create one exact-name private local folder.
+    public func createFolder(name: String) throws -> Folder {
+        try validateFolderWrite(name: name)
+        return try node.createFolder(name: name)
+    }
+
+    /// All folders in their durable manual order.
+    public func folders() throws -> [Folder] { try node.folders() }
+
+    /// One folder by exact stable id.
+    public func folder(id: String) throws -> Folder { try node.folder(folder: id) }
+
+    /// Rename while retaining stable id, membership, and order.
+    public func renameFolder(id: String, name: String) throws -> Folder {
+        try validateFolderWrite(name: name)
+        return try node.renameFolder(folder: id, name: name)
+    }
+
+    /// Atomic complete-set reorder.
+    public func reorderFolders(ids: [String]) throws -> [Folder] {
+        guard ids.count <= maxFolders else { throw InputError("folder count exceeds \(maxFolders)") }
+        return try node.reorderFolders(folders: ids)
+    }
+
+    /// Assignment count shown before destructive deletion review.
+    public func folderDeleteAssignmentCount(id: String) throws -> UInt64 {
+        try node.folderDeleteAssignmentCount(folder: id)
+    }
+
+    /// Atomic cascade to Unfiled; `confirm` must be true.
+    public func deleteFolder(id: String, confirm: Bool) throws -> UInt64 {
+        try node.deleteFolder(folder: id, confirm: confirm)
+    }
+
+    /// Idempotently move one exact typed conversation into one folder.
+    public func moveToFolder(id: String, target: FolderTarget) throws -> Bool {
+        try node.moveToFolder(folder: id, target: target)
+    }
+
+    /// Idempotently move one exact typed conversation to Unfiled.
+    public func unfileConversation(target: FolderTarget) throws -> Bool {
+        try node.unfileConversation(target: target)
+    }
+
+    /// Active available members of one folder.
+    public func folderMembership(id: String) throws -> [FolderConversation] {
+        try node.folderMembership(folder: id)
+    }
+
+    /// Active folder for one available conversation, or nil for Unfiled.
+    public func conversationFolder(target: FolderTarget) throws -> Folder? {
+        try node.conversationFolder(target: target)
+    }
+
+    /// Folder-first navigation composed independently with label matching.
+    public func folderConversations(
+        selection: FolderSelection, labels: [String], mode: LabelMatchMode
+    ) throws -> FolderConversationResult {
+        guard labels.count <= maxLabels else {
+            throw InputError("selected label count exceeds \(maxLabels)")
+        }
+        return try node.folderConversations(selection: selection, labels: labels, mode: mode)
+    }
+
+    /// Render-safe stale local assignment diagnostics.
+    public func staleFolders() throws -> [StaleFolder] { try node.staleFolders() }
+
+    /// Remove one exact assignment only while it remains stale.
+    public func cleanupStaleFolder(id: String, target: FolderTarget) throws -> Bool {
+        try node.cleanupStaleFolder(folder: id, target: target)
     }
 
     /// Create a private label with exact UTF-8 and canonical color.

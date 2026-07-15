@@ -13,6 +13,7 @@
         android:id="@+id/menu_my_qr"
         android:title="@string/menu_my_qr"
         app:showAsAction="never" />
+    <item android:id="@+id/menu_folders" android:title="@string/folders_manage" app:showAsAction="never" />
     <item
         android:id="@+id/menu_labels"
         android:title="@string/labels_manage"

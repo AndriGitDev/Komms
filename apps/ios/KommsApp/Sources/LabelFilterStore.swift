@@ -1,12 +1,14 @@
 import Foundation
 import Security
 
-/// Device-only Keychain state for selected private label ids and any/all mode.
+/// Device-only Keychain state for private folder navigation plus label filtering.
 /// It never enters scene restoration, previews, UserDefaults, iCloud, or logs.
 enum LabelFilterStore {
     struct State: Codable {
         var ids: [String]
         var mode: String
+        var folderKind: String? = nil
+        var folderId: String? = nil
     }
 
     private static let service = "is.andri.komms.private-label-filter"
@@ -20,16 +22,27 @@ enum LabelFilterStore {
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
               let data = result as? Data,
               let decoded = try? JSONDecoder().decode(State.self, from: data)
-        else { return State(ids: [], mode: "any") }
+        else { return State(ids: [], mode: "any", folderKind: "all") }
         let ids = Array(decoded.ids.filter { $0.range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil }.prefix(128))
+        let folderId = decoded.folderId.flatMap {
+            $0.range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil ? $0 : nil
+        }
+        let folderKind = decoded.folderKind == "unfiled" ||
+            (decoded.folderKind == "folder" && folderId != nil) ? decoded.folderKind : "all"
         return State(ids: Array(NSOrderedSet(array: ids)) as? [String] ?? ids,
-                     mode: decoded.mode == "all" ? "all" : "any")
+                     mode: decoded.mode == "all" ? "all" : "any",
+                     folderKind: folderKind, folderId: folderKind == "folder" ? folderId : nil)
     }
 
     static func save(_ state: State) {
         let safe = State(
             ids: Array(state.ids.filter { $0.range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil }.prefix(128)),
-            mode: state.mode == "all" ? "all" : "any")
+            mode: state.mode == "all" ? "all" : "any",
+            folderKind: state.folderKind == "unfiled" || state.folderKind == "folder"
+                ? state.folderKind : "all",
+            folderId: state.folderKind == "folder" &&
+                state.folderId?.range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil
+                ? state.folderId : nil)
         guard let data = try? JSONEncoder().encode(safe) else { return }
         let attributes: [String: Any] = [
             kSecValueData as String: data,

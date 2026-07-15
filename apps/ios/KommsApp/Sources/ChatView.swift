@@ -13,6 +13,7 @@ struct ChatView: View {
     @State private var error: String?
     @State private var showVerify = false
     @State private var showHints = false
+    @State private var showFolder = false
     @State private var showLabels = false
     @State private var scheduleEditor: ScheduleEditor?
 
@@ -114,6 +115,7 @@ struct ChatView: View {
                 Menu {
                     Button("Verify safety number") { showVerify = true }
                     Button("Delivery hints") { showHints = true }
+                    Button("Move to folder") { showFolder = true }
                     Button("Labels") { showLabels = true }
                 } label: {
                     Label("More", systemImage: "ellipsis.circle")
@@ -122,6 +124,11 @@ struct ChatView: View {
         }
         .sheet(isPresented: $showVerify) { VerifyView(peer: peer) }
         .sheet(isPresented: $showHints) { HintsView(peer: peer) }
+        .sheet(isPresented: $showFolder) {
+            FolderAssignmentView(
+                target: FolderTarget(kind: .peer, id: peer),
+                targetName: contact?.name ?? "Contact")
+        }
         .sheet(isPresented: $showLabels) {
             LabelAssignmentView(
                 target: LabelTarget(kind: .peer, id: peer),
