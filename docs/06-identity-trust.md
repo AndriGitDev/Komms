@@ -34,6 +34,13 @@ A tampered bundle fails signature verification; a *withheld* bundle (DHT censors
 worked around via channels 2–3. What no channel can prevent is a fabricated identity
 claiming to be "Alice". That's what verification is for.
 
+Optional rendezvous is deliberately absent from this first-contact list. Under
+[ADR-0018](adr/0018-pairwise-rendezvous.md), an authenticated session derives
+provider- and direction-specific rotating slots only after pairing. Native-wake
+capabilities under [ADR-0019](adr/0019-native-wake-gateway.md) are likewise sent
+inside that session. Neither capability is a username, public identity record,
+or substitute for safety-number verification.
+
 ## 3. Verification
 
 Trust is established human-to-human, not by an authority:

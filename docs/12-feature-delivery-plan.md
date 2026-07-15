@@ -54,6 +54,7 @@ accepted designs before individual shells implement UI.
 | Group polls | Planned | Typed group content and convergent vote updates. |
 | Admin/role controls | Planned | Cryptographic group capabilities and authority transitions. |
 | Live voice/video calls | Planned | ADR-0013 spike, call signaling/media, and carrier gating. |
+| Optional hybrid reachability/wake | Planned | Accept ADR-0017 through ADR-0019, then implement mode boundaries, rotating rendezvous, and best-effort native wake. |
 
 ## 3. Shared foundations
 
@@ -179,6 +180,11 @@ drafts, UI preferences, and custom icons. Keep local organization out of network
 payloads. Define which records belong in encrypted backups and version the backup
 format when the first new record ships. Scheduled delivery is separate core queue
 state covered by B8, not a UI-metadata timer.
+
+Hybrid mode/provider preferences may use the F5 preference record, but
+rendezvous exporters, source-scoped leases, generations, wake capabilities,
+revocations, and pending collection work are sealed core service state. They
+must not be represented as folders/drafts/preferences or B8 scheduled messages.
 
 ## 4. Build features
 
@@ -705,6 +711,57 @@ NAT and LAN matrices, path loss during a call, Bluetooth/headset transitions,
 background/lock behavior, network handoff, call-key erasure, and proof that call
 attempts emit no mesh frames.
 
+### C8. Optional hybrid reachability and native wake
+
+**Depends on:** F4, existing signed DHT discovery, existing mailbox delivery,
+and accepted ADR-0017, ADR-0018, and ADR-0019. **Major M6 adoption work.**
+
+Deliver this as a feature-gated module over the unchanged core:
+
+1. derive and separately seal the post-handshake hybrid service exporter;
+2. retain manual, DHT, LAN, and rendezvous hints by source and expiry instead of
+   overwriting one source with another;
+3. add fixed-size direct HTTPS plus Tor/OHTTP rendezvous clients and a bounded,
+   persistence-disabled rendezvous service;
+4. expose explicit Sovereign, Private, and Standard mode selection and precise
+   metadata disclosure through RPC, UniFFI, desktop, Android, and iOS;
+5. issue, rotate, revoke, and distribute per-contact opaque wake capabilities;
+6. add APNs directly on iOS and FCM only to a Google Play Android flavor while
+   preserving a Google-free artifact;
+7. trigger only after direct or mailbox next-hop acceptance, coalesce per native
+   destination, and run one bounded generic collection cycle on receipt; and
+8. publish service hardening, deployment, key-rotation, no-log, incident, and
+   independent-operation runbooks before a production default is offered.
+
+Rendezvous is post-pairing only and never replaces kult-address/QR first contact.
+Native push carries no sender, recipient Komms identity, conversation, message,
+media, or unread-count data. Neither service response changes queued/sent/
+delivered state. F4 probes fresh returned hints through ordinary transports and
+never trusts the service to label a route realtime or bulk.
+
+Acceptance includes:
+
+- cross-platform mode changes that neither rotate identity nor lose queued work;
+- epoch, provider, direction, nonce, generation, clock-skew, replay, rollback,
+  malformed-record, dummy-response, and multi-provider rendezvous tests;
+- proof that two providers receive different slots for the same pair/epoch and
+  that delivery/mailbox tokens are never reused;
+- APNs low-priority/throttling, Background App Refresh off, force-quit, token
+  rotation, gateway restart, and provider-outage device tests;
+- FCM Doze, visible high-priority notification, deprioritization, notification
+  denial, WorkManager, token rotation, and Google-free-build tests;
+- replay/flood/coalescing/revocation/shared-NAT/Tor abuse tests with hard memory,
+  body, concurrency, bandwidth, and per-capability bounds;
+- inspection proving native tokens, slots, capabilities, and full addresses do
+  not enter proxy/CDN/WAF/application logs, traces, analytics, or crash output;
+- service seizure tests showing stored rendezvous bytes disclose no route and
+  wake state discloses no Komms identity or message key; and
+- a full blackhole matrix in which every optional endpoint fails while direct,
+  signed DHT, mailbox, LAN, mesh, and sneakernet delivery remains functional.
+
+An external review of the three ADRs and implementation is a release gate before
+Standard mode can be recommended to non-test users.
+
 ## 6. Delivery sequence
 
 The order below maximizes usable increments while keeping protocol dependencies
@@ -713,6 +770,7 @@ honest. Parallel work is safe only where rows do not share a foundation.
 | Wave | Outcome | Features |
 |---|---|---|
 | **0: Finish current foundations** | Existing group core is usable; product can make carrier-aware decisions. | F1, F4; design F2/F3/F5. |
+| **Parallel: mobile reachability** | Optional convenience without a new message authority. | Accept ADR-0017–0019, then C8 behind feature gates. |
 | **1: Local-first product polish** | High-value features with no new network semantics. | B5 rename UX, B7, B9–B15, B18; preserve B1/B3/B4/B6 gates. |
 | **2: Typed content and asynchronous media** | Shared content/attachment path across all shells. | F2, F3, B2, B16, C1; B17 after F2. |
 | **3: Replicated conversation features** | Offline-convergent edits, expiry, polls, and group authority. | C3, C4, C5, C6. |
@@ -732,11 +790,14 @@ Do not combine these into one oversized design decision.
 | 1 (done) | ADR-0014: versioned typed message content and compatibility | Audio, files, edits, polls, structured mentions. |
 | 2 (proposed) | ADR-0015: encrypted attachment/chunk transfer and carrier policy | Audio, files, media editing. |
 | 3 (done) | ADR-0016: canonical group-mention content | B17 stable encrypted targets, range semantics, compatibility, and local notification. |
-| 4 | Expiry/retention metadata and deletion semantics | Disappearing and view-once content. |
-| 5 | Edit event ordering and tombstones | Message editing and multi-device convergence. |
-| 6 | Group roles/capabilities and authority transfer | Admin controls and moderated polls. |
-| 7 | Multi-device identity, device certificates, sync, revocation | Linked devices. |
-| 8 | Accept ADR-0013 after measured media spike | Voice/video calls. |
+| 4 (proposed) | ADR-0017: optional hybrid modes and threat boundary | C8 mode guarantees and honest product claims. |
+| 5 (proposed) | ADR-0018: rotating pairwise rendezvous | C8 private post-pairing route refresh. |
+| 6 (proposed) | ADR-0019: capability-gated native wake | C8 APNs/FCM acceleration and bounded collection. |
+| 7 | Expiry/retention metadata and deletion semantics | Disappearing and view-once content. |
+| 8 | Edit event ordering and tombstones | Message editing and multi-device convergence. |
+| 9 | Group roles/capabilities and authority transfer | Admin controls and moderated polls. |
+| 10 | Multi-device identity, device certificates, sync, revocation | Linked devices. |
+| 11 | Accept ADR-0013 after measured media spike | Voice/video calls. |
 | As needed | Signed optional self-display name in bundle records | Non-global username suggestion. |
 | Before next PQ suite | Downgrade-safe crypto agility | Future post-quantum upgrades. |
 

@@ -6,13 +6,14 @@
 
 [![CI](https://github.com/AndriGitDev/Komms/actions/workflows/ci.yml/badge.svg)](https://github.com/AndriGitDev/Komms/actions/workflows/ci.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-![No servers](https://img.shields.io/badge/servers-none-success)
+![Server-independent core](https://img.shields.io/badge/core_server-required_no-success)
 ![Post-quantum](https://img.shields.io/badge/key_agreement-X25519_%2B_ML--KEM--768-blueviolet)
 
-**Sovereign messaging: end-to-end encrypted, serverless, and functional on & off the grid.**
+**Sovereign messaging: end-to-end encrypted, server-independent at its core, and functional on & off the grid.**
 
-*Messages nobody in the middle can read, scan, or block, because there is no middle.
-Works over the internet, commodity LoRa radios, or a USB stick in a pocket.*
+*Messages no carrier or optional convenience service can read or scan. The core
+needs no provider and works over the internet, commodity LoRa radios, or a USB
+stick in a pocket.*
 
 **New here?** Read [Start Here](docs/00-start-here.md): the whole idea in plain words,
 no cryptography knowledge required. Then try the demo:
@@ -150,16 +151,21 @@ cargo run --example sneakernet_demo
 > Historic mentions never retarget after petname or roster changes. Notifications
 > are private, endpoint-local hints only—there is no server push or online-delivery
 > guarantee.
+> The optional Hybrid Infrastructure Layer is design-only under ADR-0017 through
+> ADR-0019: rotating post-pairing rendezvous and content-free native wake may
+> improve ordinary mobile reachability without becoming a message transport or
+> a dependency of the sovereign core. No hybrid service is implemented yet.
 > Remaining per the [roadmap](docs/08-roadmap.md): the physical two-radio bench (M4); a
 > hands-on device pass of the iOS app layer (M5); the wider M6 hardening list;
 > and the external security audit.
 
 Komms is a decentralized messenger built on four principles:
 
-1. **No one in the middle.** No servers, no accounts, no company operating your
-   communications. Peers talk directly, via volunteer relays holding only sealed
-   ciphertext, or over radio. There is no checkpoint at which scanning, filtering, or
-   interception can be mandated, by architecture, not by policy.
+1. **No mandatory middle.** No account or project-operated service is required
+   to communicate. Peers talk directly, via volunteer relays holding only sealed
+   ciphertext, or over radio. Optional rendezvous and native-wake services may
+   improve convenience, but they receive no message plaintext or identity keys
+   and their loss never disables the core.
 2. **Cryptography at the state of the art.** Hybrid post-quantum key agreement
    (X25519 + ML-KEM-768), Double Ratchet sessions with encrypted headers, and
    XChaCha20-Poly1305 everywhere, assembled strictly from published, audited designs.
