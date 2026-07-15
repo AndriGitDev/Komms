@@ -117,6 +117,9 @@ struct ChatView: View {
                     Button("Delivery hints") { showHints = true }
                     Button("Move to folder") { showFolder = true }
                     Button("Labels") { showLabels = true }
+                    Button(model.isPinned(PinTarget(kind: .peer, id: peer)) ? "Unpin" : "Pin") {
+                        model.togglePin(PinTarget(kind: .peer, id: peer))
+                    }
                 } label: {
                     Label("More", systemImage: "ellipsis.circle")
                 }

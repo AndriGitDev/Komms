@@ -61,6 +61,12 @@ security indicators are the node's own, verbatim.
   filters. Limits are 128 definitions, 8,192 assignments, 32 labels per
   conversation, and 256 UTF-8 bytes per name; colors persist only as `neutral`,
   `red`, `orange`, `yellow`, `green`, `teal`, `blue`, `purple`, or `pink`.
+- **Pin private local conversations** across pairwise contacts, groups, and
+  note-to-self in one leading accessible block. Keyboard buttons provide exact
+  complete-set reorder and unpin; unavailable records remain visible for exact
+  cleanup. Folder selection and label filtering run before pin/activity order.
+  The 8,192-pin bound, stable typed identity, restart/`KKR4` restoration, and
+  zero-network behavior come from the shared core rather than display names.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends, compared out-of-band, with a visible verified badge.
 - **Transport indicators**: NAT verdict, LAN peers discovered over mDNS,
@@ -122,9 +128,9 @@ directory.
 - Mention target ids, ranges, and text stay inside the encrypted content body.
   Desktop notification handling receives only an endpoint-local render-safe
   signal; it does not promise server push or online delivery.
-- Folder and label ids, names, order, membership, filters/selections, and stale
+- Folder, pin, and label ids, names, order, membership, filters/selections, and stale
   diagnostics stay in the existing sealed local store or process-local UI
   state. They never enter envelopes, DHT records, capabilities, analytics,
   notifications, or logs; navigation/filtering changes presentation only.
-  `KKR4` preserves them exactly, while multi-device synchronization and message
-  labels are not implemented.
+  `KKR4` preserves them exactly, while multi-device synchronization, message
+  pins, and message labels are not implemented.

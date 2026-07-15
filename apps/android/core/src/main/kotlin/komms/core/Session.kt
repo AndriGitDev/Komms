@@ -37,6 +37,9 @@ import uniffi.kult_ffi.LabelConversation
 import uniffi.kult_ffi.LabelFilterResult
 import uniffi.kult_ffi.LabelMatchMode
 import uniffi.kult_ffi.LabelTarget
+import uniffi.kult_ffi.Pin
+import uniffi.kult_ffi.PinConversationResult
+import uniffi.kult_ffi.PinTarget
 import uniffi.kult_ffi.StaleLabel
 import uniffi.kult_ffi.StaleFolder
 import uniffi.kult_ffi.ImageEditRecipe
@@ -63,6 +66,7 @@ fun FfiException.reasonText(): String = when (this) {
     is FfiException.Node -> reason
     is FfiException.Folder -> reason
     is FfiException.Label -> reason
+    is FfiException.Pin -> reason
     is FfiException.Stopped -> "node is stopped"
 }
 
@@ -77,6 +81,8 @@ val LABEL_COLORS: List<String> = listOf(
 
 /** B10 private local folder limits shared by every wrapper. */
 const val MAX_FOLDERS = 128
+/** Maximum durable conversation pins accepted for new creation. */
+const val MAX_PINS = 8192
 const val MAX_FOLDER_ASSIGNMENTS = 8_192
 const val MAX_FOLDER_NAME_BYTES = 256
 
@@ -449,6 +455,40 @@ class Session private constructor(private val node: KultNode) {
     fun filterLabels(ids: List<String>, mode: LabelMatchMode): LabelFilterResult {
         require(ids.size <= MAX_LABELS) { "selected label count exceeds $MAX_LABELS" }
         return node.filterLabels(ids, mode)
+    }
+
+    /** Idempotently append one exact available conversation to pin order. */
+    fun pinConversation(target: PinTarget): Boolean = node.pinConversation(target)
+
+    /** Idempotently remove one exact active or stale pin. */
+    fun unpinConversation(target: PinTarget): Boolean = node.unpinConversation(target)
+
+    /** Inspect one exact target's durable pin state. */
+    fun pinState(target: PinTarget): Pin? = node.pinState(target)
+
+    /** List every durable active or stale pin. */
+    fun pins(): List<Pin> = node.pins()
+
+    /** Atomically reorder the complete durable pin target set. */
+    fun reorderPins(targets: List<PinTarget>): List<Pin> {
+        require(targets.size <= MAX_PINS) { "pin reorder count exceeds $MAX_PINS" }
+        return node.reorderPins(targets)
+    }
+
+    /** List unavailable durable pins. */
+    fun stalePins(): List<Pin> = node.stalePins()
+
+    /** Remove one exact pin only while unavailable. */
+    fun cleanupStalePin(target: PinTarget): Boolean = node.cleanupStalePin(target)
+
+    /** Compose folder, label, and pin-aware conversation ordering. */
+    fun pinConversations(
+        selection: FolderSelection,
+        labels: List<String>,
+        mode: LabelMatchMode,
+    ): PinConversationResult {
+        require(labels.size <= MAX_LABELS) { "selected label count exceeds $MAX_LABELS" }
+        return node.pinConversations(selection, labels, mode)
     }
 
     /** Create a sender-key group from stored contacts; returns its id. */

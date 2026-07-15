@@ -15,7 +15,8 @@ use crate::session::{
     UiFolderConversation, UiFolderConversationResult, UiFolderSelection, UiFolderTarget, UiGroup,
     UiGroupMessage, UiHint, UiImageEditRecipe, UiImageReview, UiLabel, UiLabelConversation,
     UiLabelFilterResult, UiLabelTarget, UiMentionCapability, UiMentionSpan, UiMessage,
-    UiNoteMessage, UiSafetyNumber, UiScheduledMessage, UiStaleFolder, UiStaleLabel, UiStatus,
+    UiNoteMessage, UiPin, UiPinConversationResult, UiPinTarget, UiSafetyNumber, UiScheduledMessage,
+    UiStaleFolder, UiStaleLabel, UiStatus,
 };
 
 /// The one piece of managed state: the running session, if unlocked.
@@ -470,6 +471,39 @@ forward!(
     /// Deterministically filter eligible conversations by labels.
     filter_labels(labels: Vec<String>, mode: String) -> UiLabelFilterResult,
     |s| s.filter_labels(labels, mode)
+);
+forward!(
+    /// Idempotently pin one exact typed conversation.
+    pin_conversation(target: UiPinTarget) -> bool, |s| s.pin_conversation(target)
+);
+forward!(
+    /// Idempotently unpin one exact typed conversation.
+    unpin_conversation(target: UiPinTarget) -> bool, |s| s.unpin_conversation(target)
+);
+forward!(
+    /// Inspect one exact target's durable pin state.
+    pin_state(target: UiPinTarget) -> Option<UiPin>, |s| s.pin_state(target)
+);
+forward!(
+    /// List every active or stale durable pin.
+    pins() -> Vec<UiPin>, |s| s.pins()
+);
+forward!(
+    /// Atomically reorder the complete durable pin set.
+    reorder_pins(targets: Vec<UiPinTarget>) -> Vec<UiPin>, |s| s.reorder_pins(targets)
+);
+forward!(
+    /// List unavailable durable pins.
+    stale_pins() -> Vec<UiPin>, |s| s.stale_pins()
+);
+forward!(
+    /// Remove one exact pin only while unavailable.
+    cleanup_stale_pin(target: UiPinTarget) -> bool, |s| s.cleanup_stale_pin(target)
+);
+forward!(
+    /// Compose folder, label, and pin-aware conversation ordering.
+    pin_conversations(selection: UiFolderSelection, labels: Vec<String>, mode: String) -> UiPinConversationResult,
+    |s| s.pin_conversations(selection, labels, mode)
 );
 forward!(
     /// All sealed local-only note-to-self entries.

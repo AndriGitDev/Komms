@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 use komms_desktop::session::{
     hex_decode, NetworkSettings, Session, UiEvent, UiFolderSelection, UiFolderTarget, UiHint,
-    UiImageCrop, UiImageEditRecipe, UiImageRegion, UiLabelTarget, UiMentionSpan,
+    UiImageCrop, UiImageEditRecipe, UiImageRegion, UiLabelTarget, UiMentionSpan, UiPinTarget,
 };
 use kult_ffi::{
     edit_image, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, KdfChoice,
@@ -1226,7 +1226,7 @@ fn desktop_private_folder_manager_navigation_composition_and_restart() {
             label.id.clone(),
             UiLabelTarget {
                 kind: "peer".to_owned(),
-                id: Some(bob_peer),
+                id: Some(bob_peer.clone()),
             },
         )
         .unwrap();
@@ -1235,7 +1235,7 @@ fn desktop_private_folder_manager_navigation_composition_and_restart() {
             label.id.clone(),
             UiLabelTarget {
                 kind: "group".to_owned(),
-                id: Some(group),
+                id: Some(group.clone()),
             },
         )
         .unwrap();
@@ -1245,11 +1245,47 @@ fn desktop_private_folder_manager_navigation_composition_and_restart() {
                 kind: "folder".to_owned(),
                 id: Some(first.id.clone()),
             },
-            vec![label.id],
+            vec![label.id.clone()],
             "any".to_owned(),
         )
         .unwrap();
     assert_eq!(composed.conversations.len(), 2);
+    let peer_pin = UiPinTarget {
+        kind: "peer".to_owned(),
+        id: Some(bob_peer),
+    };
+    let group_pin = UiPinTarget {
+        kind: "group".to_owned(),
+        id: Some(group),
+    };
+    assert!(alice.pin_conversation(peer_pin.clone()).unwrap());
+    assert!(alice.pin_conversation(group_pin.clone()).unwrap());
+    assert!(!alice.pin_conversation(peer_pin.clone()).unwrap());
+    alice
+        .reorder_pins(vec![group_pin.clone(), peer_pin.clone()])
+        .unwrap();
+    let pinned = alice
+        .pin_conversations(
+            UiFolderSelection {
+                kind: "folder".to_owned(),
+                id: Some(first.id.clone()),
+            },
+            vec![label.id.clone()],
+            "any".to_owned(),
+        )
+        .unwrap();
+    assert_eq!(
+        pinned
+            .conversations
+            .iter()
+            .map(|row| (row.target.kind.as_str(), row.pinned))
+            .collect::<Vec<_>>(),
+        vec![("group", true), ("peer", true)]
+    );
+    assert!(alice.cleanup_stale_pin(group_pin.clone()).is_err());
+    events.wait("local pin change", |event| {
+        matches!(event, UiEvent::PinsChanged)
+    });
     assert!(alice.unfile_conversation(peer.clone()).unwrap());
     assert!(!alice.unfile_conversation(peer).unwrap());
     assert_eq!(
@@ -1280,6 +1316,15 @@ fn desktop_private_folder_manager_navigation_composition_and_restart() {
         second.id
     );
     assert_eq!(alice.folder_membership(first.id.clone()).unwrap().len(), 1);
+    assert_eq!(
+        alice
+            .pins()
+            .unwrap()
+            .iter()
+            .map(|pin| pin.target.clone())
+            .collect::<Vec<_>>(),
+        vec![group_pin, peer_pin]
+    );
     assert_eq!(alice.delete_folder(first.id.clone(), true).unwrap(), 1);
     let replacement = alice.create_folder(first.name).unwrap();
     assert_ne!(replacement.id, first.id);

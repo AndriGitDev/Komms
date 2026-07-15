@@ -196,6 +196,7 @@ label.check input { width: auto; margin: 0; }
 .label-manager-row, .stale-label-row, .folder-manager-row, .stale-folder-row { display: flex; align-items: center; gap: 0.55em; padding: 0.65em; }
 .label-manager-row + .label-manager-row, .stale-label-row + .stale-label-row, .folder-manager-row + .folder-manager-row, .stale-folder-row + .stale-folder-row { border-top: 1px solid var(--line); }
 .label-manager-row .label-description, .stale-label-row span, .folder-manager-row .folder-description, .stale-folder-row span { flex: 1; min-width: 0; }
+.stale-pin-row > span { min-width: 0; color: var(--text-dim); }
 .label-manager-row .label-actions, .folder-manager-row .folder-actions { display: flex; gap: 0.35em; }
 .folder-navigation { display: grid; gap: 0.25rem; }
 .folder-navigation > button, #folder-navigation-items > button { width: 100%; text-align: start; }
@@ -550,6 +551,11 @@ fieldset.hints legend { color: var(--text-dim); font-size: 0.85em; padding: 0 0.
 .group-add { display: flex; align-items: flex-end; gap: 0.6em; margin-top: 0.8em; }
 .group-add label { flex: 1; margin: 0; }
 .group-add button { margin-bottom: 0.08em; white-space: nowrap; }
+
+.pinned-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 0.25rem; align-items: center; }
+.pinned-row .contact { min-width: 0; }
+.pinned-row > .ghost { padding-inline: 0.45rem; }
+.pinned-row.stale-pin-row { grid-template-columns: minmax(0, 1fr) auto; }
 
 /* ── Toasts ── */
 #toasts {

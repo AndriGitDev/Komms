@@ -64,6 +64,7 @@ mod error;
 mod folders;
 mod groups;
 mod labels;
+mod pins;
 mod vault;
 
 pub use api::{
@@ -71,15 +72,16 @@ pub use api::{
     AttachmentObjectInfo, CarrierCapability, CarrierCapabilitySnapshot, Command, ContentStatus,
     Event, FolderConversationInfo, FolderConversationList, FolderInfo, FolderSelection, GroupInfo,
     GroupMentionCapability, LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode,
-    MentionCapabilityIssue, MentionCapabilityIssueReason, MentionSpan, ScheduledConversation,
-    ScheduledMessageInfo, StaleFolderInfo, StaleFolderReason as NodeStaleFolderReason,
-    StaleLabelInfo, StaleLabelReason as NodeStaleLabelReason,
+    MentionCapabilityIssue, MentionCapabilityIssueReason, MentionSpan, PinConversationInfo,
+    PinConversationList, PinInfo, ScheduledConversation, ScheduledMessageInfo, StaleFolderInfo,
+    StaleFolderReason as NodeStaleFolderReason, StaleLabelInfo,
+    StaleLabelReason as NodeStaleLabelReason,
 };
 pub use error::NodeError;
 pub use kult_store::{
     ConversationId as LabelConversationId, FOLDER_ID_RETRY_LIMIT, LABEL_COLORS, MAX_FOLDERS,
     MAX_FOLDER_ASSIGNMENTS, MAX_LABELS, MAX_LABELS_PER_CONVERSATION, MAX_LABEL_ASSIGNMENTS,
-    MAX_LOCAL_METADATA_STRING_BYTES, NOTE_TO_SELF_CONVERSATION_ID,
+    MAX_LOCAL_METADATA_STRING_BYTES, MAX_PINS, NOTE_TO_SELF_CONVERSATION_ID,
 };
 
 use vault::PrekeyVault;

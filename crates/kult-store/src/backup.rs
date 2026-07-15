@@ -385,7 +385,7 @@ impl Store {
     }
 
     /// Every stored message, in insertion order.
-    fn all_messages(&self) -> Result<Vec<MessageRecord>> {
+    pub(crate) fn all_messages(&self) -> Result<Vec<MessageRecord>> {
         let mut stmt = self
             .conn
             .prepare("SELECT blob FROM messages ORDER BY rowid_")?;

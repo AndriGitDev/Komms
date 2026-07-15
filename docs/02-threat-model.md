@@ -15,7 +15,7 @@ back to a row in this document.
 | **Session state** | Ratchet state whose compromise could expose past or future messages. |
 | **Local message history** | Decrypted content visible to an unlocked endpoint and its independently sealed at-rest representation. |
 | **Social graph** | Contact lists and group memberships. |
-| **Private organization** | Local folder/label definitions, stable IDs, order, memberships, selected views/filters, and stale-reference diagnostics. |
+| **Private organization** | Local folder/label definitions, exact typed conversation pins, stable IDs, order, memberships, selected views/filters, and stale-reference diagnostics. |
 | **Availability** | The ability to communicate at all, including when infrastructure is down or hostile. |
 
 ## 2. Adversaries
@@ -116,17 +116,18 @@ non-colluding OHTTP relay, but it does not promise anonymity against collusion
 or a global passive observer. Service compromise can suppress convenience work
 but cannot decrypt or forge an accepted Komms message.
 
-Private folders and labels are endpoint organization, never communications
-metadata. Their definitions, single-folder assignments, and many-to-many label
-memberships remain inside the independently sealed `local_metadata` domain;
-protected folder/label view preferences remain device-local. An organization
-operation creates no envelope, mailbox, mesh, sneakernet,
+Private folders, conversation pins, and labels are endpoint organization, never
+communications metadata. Their definitions, single-folder assignments,
+exact typed peer/group/note-to-self pins, and many-to-many label memberships
+remain inside the independently sealed `local_metadata` domain; protected
+folder/label view preferences remain device-local. An organization operation
+creates no envelope, mailbox, mesh, sneakernet,
 LAN, internet, DHT, capability, sender-key, ratchet, delivery-token, analytics,
 or remote-notification work. A copied SQLite database reveals only the already
-accepted row count and approximate sealed blob sizes. `KKR4` is the only folder
-or label portability mechanism: neither has server or linked-device
-synchronization. Once rendered on an unlocked endpoint, folder and label text
-has the same bounded A7 exposure as the rest of the user's visible local data.
+accepted row count and approximate sealed blob sizes. `KKR4` is the only folder,
+pin, or label portability mechanism: none has server or linked-device
+synchronization. Once rendered on an unlocked endpoint, organization text has
+the same bounded A7 exposure as the rest of the user's visible local data.
 
 Some platform workflows require bounded plaintext transients after unlock—for
 example, an OS picker import, recorder review, image edit, playback, or explicit

@@ -23,6 +23,8 @@ const state = {
   folderMatches: null,
   labels: [],
   labelFilter: { selected: [], mode: "any", matches: null },
+  pins: [],
+  pinRows: [],
   noteToSelfId: null,
   currentKind: null, // "contact", "group", or "note"
   currentId: null,
@@ -611,6 +613,8 @@ async function leaveApp() {
   state.folderMatches = null;
   state.labels = [];
   state.labelFilter = { selected: [], mode: "any", matches: null };
+  state.pins = [];
+  state.pinRows = [];
   state.noteToSelfId = null;
   state.unread.clear();
   state.groupUnread.clear();
@@ -673,18 +677,111 @@ async function renderTargetBadges(container, target) {
 function applyLabelFilterVisibility() {
   const matches = state.folderMatches;
   const visible = (target) => matches === null || matches.has(labelTargetKey(target));
+  const pinned = new Set(state.pinRows.filter((row) => row.pinned).map((row) => labelTargetKey(row.target)));
   for (const button of $$("#contact-list .contact")) {
-    button.hidden = !visible({ kind: "peer", id: button.dataset.peer });
+    const target = { kind: "peer", id: button.dataset.peer };
+    button.hidden = !visible(target) || pinned.has(labelTargetKey(target));
   }
   for (const button of $$("#group-list .contact")) {
-    button.hidden = !visible({ kind: "group", id: button.dataset.group });
+    const target = { kind: "group", id: button.dataset.group };
+    button.hidden = !visible(target) || pinned.has(labelTargetKey(target));
   }
-  $("#note-to-self").hidden = !visible({ kind: "note_to_self", id: null });
+  const note = { kind: "note_to_self", id: null };
+  $("#note-to-self").hidden = !visible(note) || pinned.has(labelTargetKey(note));
+}
+
+function openPinTarget(target) {
+  if (target.kind === "peer") return openChat(target.id);
+  if (target.kind === "group") return openGroup(target.id);
+  return openNoteToSelf();
+}
+
+async function reorderPinTarget(target, delta) {
+  const index = state.pins.findIndex((pin) => labelTargetKey(pin.target) === labelTargetKey(target));
+  const next = index + delta;
+  if (index < 0 || next < 0 || next >= state.pins.length) return;
+  const ordered = state.pins.map((pin) => pin.target);
+  [ordered[index], ordered[next]] = [ordered[next], ordered[index]];
+  await call("reorder_pins", { targets: ordered });
+  await runLabelFilter(true);
+}
+
+async function renderPinnedList() {
+  const list = $("#pinned-list");
+  list.replaceChildren();
+  const rows = state.pinRows.filter((row) => row.pinned);
+  const stale = state.pins.filter((pin) => !pin.active);
+  $("#pinned-section").hidden = rows.length === 0 && stale.length === 0;
+  for (const row of rows) {
+    const wrap = document.createElement("div");
+    wrap.className = "pinned-row";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "contact";
+    const avatar = document.createElement("span");
+    avatar.className = "avatar";
+    avatar.textContent = row.target.kind === "note_to_self" ? "N" : row.target.kind === "group" ? "G" : (row.display_name?.[0] ?? "?").toUpperCase();
+    const name = document.createElement("span");
+    name.className = "c-name";
+    name.textContent = row.target.kind === "note_to_self" ? "Note to self" : (row.display_name ?? "Unavailable");
+    const badges = document.createElement("span");
+    badges.className = "label-badges";
+    button.append(avatar, name, badges);
+    button.addEventListener("click", () => openPinTarget(row.target));
+    renderTargetBadges(badges, row.target);
+    const up = document.createElement("button");
+    up.type = "button";
+    up.className = "ghost";
+    up.textContent = "↑";
+    up.title = "Move pin earlier";
+    up.setAttribute("aria-label", `Move ${name.textContent} pin earlier`);
+    up.addEventListener("click", () => reorderPinTarget(row.target, -1));
+    const down = document.createElement("button");
+    down.type = "button";
+    down.className = "ghost";
+    down.textContent = "↓";
+    down.title = "Move pin later";
+    down.setAttribute("aria-label", `Move ${name.textContent} pin later`);
+    down.addEventListener("click", () => reorderPinTarget(row.target, 1));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "ghost";
+    remove.textContent = "Unpin";
+    remove.addEventListener("click", async () => {
+      await call("unpin_conversation", { target: row.target });
+      await runLabelFilter(true);
+    });
+    wrap.append(button, up, down, remove);
+    list.append(wrap);
+  }
+  for (const pin of stale) {
+    const wrap = document.createElement("div");
+    wrap.className = "pinned-row stale-pin-row";
+    const description = document.createElement("span");
+    const targetName = pin.target.kind === "note_to_self" ? "note-to-self" : `${pin.target.kind} conversation`;
+    description.textContent = `Unavailable ${targetName} pin`;
+    const cleanup = document.createElement("button");
+    cleanup.type = "button";
+    cleanup.className = "danger";
+    cleanup.textContent = "Clean up";
+    cleanup.setAttribute("aria-label", `Clean up unavailable ${targetName} pin`);
+    cleanup.addEventListener("click", async () => {
+      try {
+        await call("cleanup_stale_pin", { target: pin.target });
+        $("#pin-status").textContent = `Unavailable ${targetName} pin removed.`;
+        await runLabelFilter(true);
+      } catch (error) {
+        $("#pin-status").textContent = String(error);
+      }
+    });
+    wrap.append(description, cleanup);
+    list.append(wrap);
+  }
 }
 
 async function runLabelFilter(announce = false) {
   const prior = state.labelFilter.selected.length;
-  const result = await call("folder_conversations", {
+  const result = await call("pin_conversations", {
     selection: state.folderSelection,
     labels: state.labelFilter.selected,
     mode: state.labelFilter.mode,
@@ -693,6 +790,8 @@ async function runLabelFilter(announce = false) {
   state.labelFilter.selected = result.selected_labels;
   state.labelFilter.matches = new Set(result.conversations.map((conversation) => labelTargetKey(conversation.target)));
   state.folderMatches = state.labelFilter.matches;
+  state.pinRows = result.conversations;
+  state.pins = await call("pins");
   if (result.unavailable_labels.length > 0) {
     $("#label-filter-status").textContent = `${result.unavailable_labels.length} unavailable selected label ${result.unavailable_labels.length === 1 ? "was" : "were"} removed.`;
   } else if (announce) {
@@ -704,6 +803,7 @@ async function runLabelFilter(announce = false) {
   }
   $("#btn-clear-label-filter").hidden = state.labelFilter.selected.length === 0;
   applyLabelFilterVisibility();
+  await renderPinnedList();
 }
 
 async function refreshFolders(announce = false) {
@@ -1144,9 +1244,22 @@ function updateChatHead() {
   $("#btn-schedule").hidden = isNote;
   $("#note-to-self").classList.toggle("active", isNote);
   const target = labelTarget();
+  const isPinned = target && state.pins.some((pin) => labelTargetKey(pin.target) === labelTargetKey(target));
+  $("#btn-conversation-pin").textContent = isPinned ? "Unpin" : "Pin";
+  $("#btn-conversation-pin").setAttribute("aria-pressed", isPinned ? "true" : "false");
   if (target) renderTargetBadges($("#chat-label-badges"), target);
   else $("#chat-label-badges").replaceChildren();
 }
+
+$("#btn-conversation-pin").addEventListener("click", async () => {
+  const target = labelTarget();
+  if (!target) return;
+  const isPinned = state.pins.some((pin) => labelTargetKey(pin.target) === labelTargetKey(target));
+  await call(isPinned ? "unpin_conversation" : "pin_conversation", { target });
+  await runLabelFilter(true);
+  updateChatHead();
+  $("#pin-status").textContent = isPinned ? "Conversation unpinned." : "Conversation pinned.";
+});
 
 // ── conversation ────────────────────────────────────────────────────────
 
@@ -1918,6 +2031,11 @@ listen("node-event", async ({ payload: ev }) => {
     }
     case "labels_changed": {
       await refreshLabels(true);
+      break;
+    }
+    case "pins_changed": {
+      await runLabelFilter(true);
+      updateChatHead();
       break;
     }
     case "scheduled_message_updated":

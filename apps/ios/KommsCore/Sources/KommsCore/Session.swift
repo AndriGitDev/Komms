@@ -22,6 +22,7 @@ extension FfiError {
         case .Node(let reason): return reason
         case .Folder(_, let reason): return reason
         case .Label(_, let reason): return reason
+        case .Pin(_, let reason): return reason
         case .Stopped: return "node is stopped"
         }
     }
@@ -29,6 +30,8 @@ extension FfiError {
 
 /// B10 resource limits shared by every wrapper.
 public let maxFolders = 128
+/// Maximum number of durable private conversation pins.
+public let maxPins = 8_192
 public let maxFolderAssignments = 8_192
 public let maxFolderNameBytes = 256
 
@@ -469,6 +472,46 @@ public final class Session: @unchecked Sendable {
             throw InputError("selected label count exceeds \(maxLabels)")
         }
         return try node.filterLabels(labels: ids, mode: mode)
+    }
+
+    /// Idempotently append one exact available conversation to pin order.
+    public func pinConversation(target: PinTarget) throws -> Bool {
+        try node.pinConversation(target: target)
+    }
+
+    /// Idempotently remove one exact active or stale pin.
+    public func unpinConversation(target: PinTarget) throws -> Bool {
+        try node.unpinConversation(target: target)
+    }
+
+    /// Inspect one exact target's durable pin state.
+    public func pinState(target: PinTarget) throws -> Pin? { try node.pinState(target: target) }
+
+    /// List every durable active or stale pin.
+    public func pins() throws -> [Pin] { try node.pins() }
+
+    /// Atomically reorder the exact complete durable pin target set.
+    public func reorderPins(targets: [PinTarget]) throws -> [Pin] {
+        guard targets.count <= maxPins else { throw InputError("pin count exceeds \(maxPins)") }
+        return try node.reorderPins(targets: targets)
+    }
+
+    /// List unavailable durable pins.
+    public func stalePins() throws -> [Pin] { try node.stalePins() }
+
+    /// Remove one exact pin only while unavailable.
+    public func cleanupStalePin(target: PinTarget) throws -> Bool {
+        try node.cleanupStalePin(target: target)
+    }
+
+    /// Compose folder, label, and pin-aware conversation ordering.
+    public func pinConversations(
+        selection: FolderSelection, labels: [String], mode: LabelMatchMode
+    ) throws -> PinConversationResult {
+        guard labels.count <= maxLabels else {
+            throw InputError("selected label count exceeds \(maxLabels)")
+        }
+        return try node.pinConversations(selection: selection, labels: labels, mode: mode)
     }
 
     /// Create a sender-key group from stored contacts; returns its id.

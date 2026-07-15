@@ -14,6 +14,7 @@ struct MainView: View {
     @State private var showCreateGroup = false
     @State private var showFolders = false
     @State private var showLabels = false
+    @State private var showPins = false
     @State private var navigation = NavigationPath()
 
     var body: some View {
@@ -73,8 +74,17 @@ struct MainView: View {
                     }
                 }
 
+                if model.pinRows.contains(where: \.pinned) {
+                    Section("Pinned") {
+                        ForEach(Array(model.pinRows.filter(\.pinned).enumerated()), id: \.offset) { _, row in
+                            pinnedLink(row)
+                        }
+                    }
+                }
+
                 Section("Local") {
-                    if model.targetMatchesLabelFilter(LabelTarget(kind: .noteToSelf, id: nil)) {
+                    if model.targetMatchesLabelFilter(LabelTarget(kind: .noteToSelf, id: nil)) &&
+                        !model.isPinned(PinTarget(kind: .noteToSelf, id: nil)) {
                       NavigationLink(value: NoteRoute(id: model.noteToSelfId())) {
                         VStack(alignment: .leading) {
                             Text("Note to self")
@@ -92,7 +102,7 @@ struct MainView: View {
                         Text("No contacts yet — pair with a friend's QR code.")
                             .foregroundStyle(.secondary)
                     }
-                    ForEach(model.contacts.filter { model.targetMatchesLabelFilter(LabelTarget(kind: .peer, id: $0.peer)) }, id: \.peer) { contact in
+                    ForEach(model.contacts.filter { model.targetMatchesLabelFilter(LabelTarget(kind: .peer, id: $0.peer)) && !model.isPinned(PinTarget(kind: .peer, id: $0.peer)) }, id: \.peer) { contact in
                         NavigationLink(value: contact.peer) {
                             VStack(alignment: .leading) {
                                 HStack {
@@ -114,7 +124,7 @@ struct MainView: View {
                         Text("No groups yet — create one from stored contacts.")
                             .foregroundStyle(.secondary)
                     }
-                    ForEach(model.groups.filter { model.targetMatchesLabelFilter(LabelTarget(kind: .group, id: $0.id)) }.sorted(by: { $0.name < $1.name }), id: \.id) { group in
+                    ForEach(model.groups.filter { model.targetMatchesLabelFilter(LabelTarget(kind: .group, id: $0.id)) && !model.isPinned(PinTarget(kind: .group, id: $0.id)) }, id: \.id) { group in
                         NavigationLink(value: GroupRoute(id: group.id)) {
                             VStack(alignment: .leading) {
                                 Text(group.name)
@@ -147,6 +157,7 @@ struct MainView: View {
                     }
                     Menu {
                         Button("New group") { showCreateGroup = true }
+                        Button("Manage pins") { showPins = true }
                         Button("My pairing QR") { showMyQr = true }
                         Button("Backup…") { showBackup = true }
                         Button("Network settings") { showSettings = true }
@@ -158,6 +169,7 @@ struct MainView: View {
                     }
                 }
             }
+            .sheet(isPresented: $showPins) { PinsView() }
             .sheet(isPresented: $showMyQr) { MyBundleView() }
             .sheet(isPresented: $showAdd) { AddContactView() }
             .sheet(isPresented: $showBackup) { BackupView() }
@@ -170,6 +182,21 @@ struct MainView: View {
                     navigation.append(GroupRoute(id: group))
                 }
             }
+        }
+    }
+
+    @ViewBuilder private func pinnedLink(_ row: PinConversation) -> some View {
+        switch row.target.kind {
+        case .peer:
+            if let id = row.target.id {
+                NavigationLink(value: id) { Text(verbatim: row.displayName ?? String(id.prefix(12))) }
+            }
+        case .group:
+            if let id = row.target.id {
+                NavigationLink(value: GroupRoute(id: id)) { Text(verbatim: row.displayName ?? "Group") }
+            }
+        case .noteToSelf:
+            NavigationLink(value: NoteRoute(id: model.noteToSelfId())) { Text("Note to self") }
         }
     }
 }

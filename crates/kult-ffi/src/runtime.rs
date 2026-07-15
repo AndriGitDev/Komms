@@ -22,7 +22,7 @@ use kult_node::{
     AttachmentInfo, AttachmentMetadata, CarrierCapabilitySnapshot, Event, FolderConversationInfo,
     FolderConversationList, FolderInfo, FolderSelection, GroupInfo, GroupMentionCapability,
     LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode, MentionSpan, Node,
-    ScheduledMessageInfo, StaleFolderInfo, StaleLabelInfo,
+    PinConversationList, PinInfo, ScheduledMessageInfo, StaleFolderInfo, StaleLabelInfo,
 };
 use kult_store::{
     ContactRecord, ConversationId, GroupMessageRecord, MessageRecord, NoteMessageRecord,
@@ -281,6 +281,38 @@ pub(crate) enum Msg {
         labels: Vec<[u8; 16]>,
         mode: LabelMatchMode,
         resp: Resp<LabelFilterInfo>,
+    },
+    Pin {
+        target: ConversationId,
+        resp: Resp<bool>,
+    },
+    Unpin {
+        target: ConversationId,
+        resp: Resp<bool>,
+    },
+    PinState {
+        target: ConversationId,
+        resp: Resp<Option<PinInfo>>,
+    },
+    Pins {
+        resp: Resp<Vec<PinInfo>>,
+    },
+    PinReorder {
+        targets: Vec<ConversationId>,
+        resp: Resp<Vec<PinInfo>>,
+    },
+    PinStale {
+        resp: Resp<Vec<PinInfo>>,
+    },
+    PinStaleCleanup {
+        target: ConversationId,
+        resp: Resp<bool>,
+    },
+    PinConversations {
+        selection: FolderSelection,
+        labels: Vec<[u8; 16]>,
+        mode: LabelMatchMode,
+        resp: Resp<PinConversationList>,
     },
     GroupCreate {
         name: String,
@@ -980,6 +1012,38 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         }
         Msg::LabelFilter { labels, mode, resp } => {
             let _ = resp.send(node.filter_label_conversations(&labels, mode).map_err(fail));
+        }
+        Msg::Pin { target, resp } => {
+            let _ = resp.send(node.pin_conversation(&target, &mut OsRng).map_err(fail));
+        }
+        Msg::Unpin { target, resp } => {
+            let _ = resp.send(node.unpin_conversation(&target).map_err(fail));
+        }
+        Msg::PinState { target, resp } => {
+            let _ = resp.send(node.pin_state(&target).map_err(fail));
+        }
+        Msg::Pins { resp } => {
+            let _ = resp.send(node.pins().map_err(fail));
+        }
+        Msg::PinReorder { targets, resp } => {
+            let _ = resp.send(node.reorder_pins(&targets, &mut OsRng).map_err(fail));
+        }
+        Msg::PinStale { resp } => {
+            let _ = resp.send(node.stale_pins().map_err(fail));
+        }
+        Msg::PinStaleCleanup { target, resp } => {
+            let _ = resp.send(node.cleanup_stale_pin(&target).map_err(fail));
+        }
+        Msg::PinConversations {
+            selection,
+            labels,
+            mode,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.pin_conversations(selection, &labels, mode)
+                    .map_err(fail),
+            );
         }
         Msg::GroupCreate {
             name,

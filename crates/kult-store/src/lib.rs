@@ -33,12 +33,12 @@ pub use local_metadata::{
     render_label_color, valid_folder_name, valid_label_color, valid_label_name, ConversationId,
     ConversationMetadata, CustomIconRecord, CustomIconTarget, DraftRecord, FolderAssignment,
     FolderConversationResult, FolderRecord, FolderSelection, LabelAssignment, LabelFilterMode,
-    LabelFilterResult, LabelRecord, LocalMetadataKey, LocalMetadataRecord, PinRecord,
-    StaleFolderAssignment, StaleFolderReason, StaleLabelAssignment, StaleLabelReason,
-    UiPreferenceRecord, FOLDER_ID_RETRY_LIMIT, LABEL_COLORS, LABEL_ID_RETRY_LIMIT,
-    MAX_CUSTOM_ICON_BYTES, MAX_DRAFT_BYTES, MAX_FOLDERS, MAX_FOLDER_ASSIGNMENTS, MAX_LABELS,
-    MAX_LABELS_PER_CONVERSATION, MAX_LABEL_ASSIGNMENTS, MAX_LOCAL_METADATA_STRING_BYTES,
-    MAX_UI_PREFERENCE_VALUE_BYTES,
+    LabelFilterResult, LabelRecord, LocalMetadataKey, LocalMetadataRecord, PinConversationRecord,
+    PinConversationResult, PinRecord, PinStatusRecord, StaleFolderAssignment, StaleFolderReason,
+    StaleLabelAssignment, StaleLabelReason, UiPreferenceRecord, FOLDER_ID_RETRY_LIMIT,
+    LABEL_COLORS, LABEL_ID_RETRY_LIMIT, MAX_CUSTOM_ICON_BYTES, MAX_DRAFT_BYTES, MAX_FOLDERS,
+    MAX_FOLDER_ASSIGNMENTS, MAX_LABELS, MAX_LABELS_PER_CONVERSATION, MAX_LABEL_ASSIGNMENTS,
+    MAX_LOCAL_METADATA_STRING_BYTES, MAX_PINS, MAX_UI_PREFERENCE_VALUE_BYTES,
 };
 pub use media::{
     MediaDirection, MediaLimits, MediaObjectRecord, MediaReconciliation, MediaRecord, MediaScope,
@@ -108,6 +108,12 @@ pub enum StoreError {
     LabelIdCollision,
     /// A stale-cleanup request now names an active or absent membership.
     LabelAssignmentActive,
+    /// The durable conversation-pin limit is exhausted.
+    PinLimit,
+    /// A pin reorder did not contain the exact durable target set once each.
+    InvalidPinOrder,
+    /// A stale-cleanup request now names an active or absent pin.
+    PinActive,
     /// A note-to-self text record is empty or exceeds its documented bound.
     NoteBounds,
 }
@@ -144,6 +150,9 @@ impl std::fmt::Display for StoreError {
             Self::ConversationLabelLimit => f.write_str("conversation label limit exhausted"),
             Self::LabelIdCollision => f.write_str("label id collision budget exhausted"),
             Self::LabelAssignmentActive => f.write_str("label assignment is active or absent"),
+            Self::PinLimit => f.write_str("conversation pin limit exhausted"),
+            Self::InvalidPinOrder => f.write_str("invalid complete pin order"),
+            Self::PinActive => f.write_str("conversation pin is active or absent"),
             Self::NoteBounds => f.write_str("note-to-self text bounds exceeded"),
         }
     }
@@ -638,20 +647,11 @@ impl Store {
 
     /// All messages for a peer, in insertion order.
     pub fn messages_with(&self, peer: &[u8; 32]) -> Result<Vec<MessageRecord>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT blob FROM messages ORDER BY rowid_")?;
-        let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
-        let mut out = Vec::new();
-        for row in rows {
-            let plain = self.k_messages.open(b"message", &row?)?;
-            let rec: MessageRecord =
-                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
-            if &rec.peer == peer {
-                out.push(rec);
-            }
-        }
-        Ok(out)
+        Ok(self
+            .all_messages()?
+            .into_iter()
+            .filter(|record| &record.peer == peer)
+            .collect())
     }
 
     /// Replace the stored record with the same `id` as `rec`. Returns `true`

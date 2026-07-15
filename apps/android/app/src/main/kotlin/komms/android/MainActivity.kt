@@ -19,6 +19,7 @@ import android.widget.Button
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.ScrollView
 import android.widget.RadioGroup
 import android.widget.RadioButton
 import androidx.activity.result.contract.ActivityResultContracts
@@ -40,6 +41,8 @@ import uniffi.kult_ffi.LabelMatchMode
 import uniffi.kult_ffi.LabelTarget
 import uniffi.kult_ffi.LabelTargetKind
 import uniffi.kult_ffi.NatVerdict
+import uniffi.kult_ffi.PinConversation
+import uniffi.kult_ffi.PinTargetKind
 
 /**
  * Contacts + the transport-indicator header. All state shown is the
@@ -56,6 +59,7 @@ class MainActivity : AppCompatActivity() {
     private val groups = GroupsAdapter { group ->
         openGroup(group.id, group.name)
     }
+    private val pins = PinsAdapter { conversation -> openPinned(conversation) }
     private lateinit var labelPreferences: LabelFilterPreferences
     private var selectedLabels = listOf<String>()
     private var labelMode = "any"
@@ -82,6 +86,7 @@ class MainActivity : AppCompatActivity() {
                 is Event.GroupMessageReceived -> refreshLabelsAndLists(false)
                 is Event.FoldersChanged -> refreshLabelsAndLists(true)
                 is Event.LabelsChanged -> refreshLabelsAndLists(true)
+                is Event.PinsChanged -> refreshLabelsAndLists(true)
                 else -> {}
             }
         }
@@ -146,6 +151,9 @@ class MainActivity : AppCompatActivity() {
         val groupList = findViewById<RecyclerView>(R.id.main_groups)
         groupList.layoutManager = LinearLayoutManager(this)
         groupList.adapter = groups
+        val pinList = findViewById<RecyclerView>(R.id.main_pins)
+        pinList.layoutManager = LinearLayoutManager(this)
+        pinList.adapter = pins
 
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -182,6 +190,7 @@ class MainActivity : AppCompatActivity() {
             R.id.menu_create_group -> showCreateGroup()
             R.id.menu_folders -> startActivity(Intent(this, FolderManagerActivity::class.java))
             R.id.menu_labels -> startActivity(Intent(this, LabelManagerActivity::class.java))
+            R.id.menu_pins -> showPinManager()
             R.id.menu_my_qr -> showMyQr()
             R.id.menu_backup -> createBackup.launch("komms-backup.kkr")
             R.id.menu_settings -> startActivity(Intent(this, SettingsActivity::class.java))
@@ -204,6 +213,45 @@ class MainActivity : AppCompatActivity() {
                 s.address.take(12) + "…", nat, s.lanPeers.size, s.scheduled.toLong(),
                 s.queued.toLong(), s.transit.toLong(),
             )
+        }
+    }
+
+    private fun showPinManager() {
+        val session = NodeHolder.session ?: return
+        runNode(work = { session.pins() }) { durable ->
+            val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            durable.forEachIndexed { index, pin ->
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                row.addView(TextView(this).apply {
+                    text = pin.displayName ?: if (pin.target.kind == PinTargetKind.NOTE_TO_SELF) getString(R.string.note_to_self_title) else getString(R.string.pin_unavailable)
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                })
+                fun action(textId: Int, enabled: Boolean = true, block: () -> Unit) =
+                    Button(this).apply { text = getString(textId); isEnabled = enabled; setOnClickListener { block() } }
+                row.addView(action(R.string.pins_earlier, index > 0) {
+                    val order = durable.map { it.target }.toMutableList().apply {
+                        val previous = this[index - 1]; this[index - 1] = this[index]; this[index] = previous
+                    }
+                    runNode(work = { session.reorderPins(order) }) { refreshLabelsAndLists(true) }
+                })
+                row.addView(action(R.string.pins_later, index + 1 < durable.size) {
+                    val order = durable.map { it.target }.toMutableList().apply {
+                        val next = this[index + 1]; this[index + 1] = this[index]; this[index] = next
+                    }
+                    runNode(work = { session.reorderPins(order) }) { refreshLabelsAndLists(true) }
+                })
+                row.addView(action(if (pin.active) R.string.pins_unpin else R.string.pins_cleanup) {
+                    runNode(work = {
+                        if (pin.active) session.unpinConversation(pin.target) else session.cleanupStalePin(pin.target)
+                    }) { refreshLabelsAndLists(true) }
+                })
+                root.addView(row)
+            }
+            AlertDialog.Builder(this)
+                .setTitle(R.string.pins_manage)
+                .setView(ScrollView(this).apply { addView(root) })
+                .setPositiveButton(android.R.string.ok, null)
+                .show()
         }
     }
 
@@ -236,7 +284,7 @@ class MainActivity : AppCompatActivity() {
                 "folder" -> FolderSelection(FolderSelectionKind.FOLDER, folderId)
                 else -> FolderSelection(FolderSelectionKind.ALL, null)
             }
-            val result = session.folderConversations(
+            val result = session.pinConversations(
                 requestedFolder,
                 requested,
                 if (requestedMode == "all") LabelMatchMode.ALL else LabelMatchMode.ANY,
@@ -251,6 +299,7 @@ class MainActivity : AppCompatActivity() {
                 selected = result.selectedLabels,
                 unavailableCount = result.unavailableLabels.size,
                 matching = result.conversations.map { targetKey(it.target) }.toSet(),
+                ordered = result.conversations,
                 contacts = contacts,
                 groups = groups,
                 contactLabels = contacts.associate { contact ->
@@ -282,12 +331,14 @@ class MainActivity : AppCompatActivity() {
                 if (snapshot.folderUnavailable) announceForAccessibility(text)
             }
             renderLabelControls(snapshot.labels)
-            val visibleContacts = snapshot.contacts.filter {
-                "peer:${it.peer}" in snapshot.matching
-            }
-            val visibleGroups = snapshot.groups.filter {
-                "group:${it.id}" in snapshot.matching
-            }
+            val pinnedKeys = snapshot.ordered.filter { it.pinned }.map { targetKey(it.target) }.toSet()
+            val contactById = snapshot.contacts.associateBy { it.peer }
+            val groupById = snapshot.groups.associateBy { it.id }
+            val visibleContacts = snapshot.ordered.filter { !it.pinned && it.target.kind == PinTargetKind.PEER }
+                .mapNotNull { it.target.id?.let(contactById::get) }
+            val visibleGroups = snapshot.ordered.filter { !it.pinned && it.target.kind == PinTargetKind.GROUP }
+                .mapNotNull { it.target.id?.let(groupById::get) }
+            pins.submit(snapshot.ordered.filter { it.pinned })
             knownPeers = snapshot.contacts.map { it.peer }.toSet()
             contacts.submit(visibleContacts, snapshot.contactLabels.mapValues { (_, labels) -> labelLines(labels) })
             groups.submit(visibleGroups, snapshot.groupLabels.mapValues { (_, labels) -> labelLines(labels) })
@@ -296,7 +347,7 @@ class MainActivity : AppCompatActivity() {
             findViewById<TextView>(R.id.main_groups_empty).visibility =
                 if (visibleGroups.isEmpty()) View.VISIBLE else View.GONE
             findViewById<Button>(R.id.main_note_to_self).apply {
-                visibility = if ("note_to_self:" in snapshot.matching) View.VISIBLE else View.GONE
+                visibility = if ("note_to_self:" in snapshot.matching && "note_to_self:" !in pinnedKeys) View.VISIBLE else View.GONE
                 text = buildString {
                     append(getString(R.string.note_to_self_title))
                     val lines = labelLines(snapshot.noteLabels)
@@ -383,6 +434,29 @@ class MainActivity : AppCompatActivity() {
         FolderTargetKind.PEER -> "peer:${target.id}"
         FolderTargetKind.GROUP -> "group:${target.id}"
         FolderTargetKind.NOTE_TO_SELF -> "note_to_self:"
+    }
+
+    private fun targetKey(target: uniffi.kult_ffi.PinTarget): String = when (target.kind) {
+        PinTargetKind.PEER -> "peer:${target.id}"
+        PinTargetKind.GROUP -> "group:${target.id}"
+        PinTargetKind.NOTE_TO_SELF -> "note_to_self:"
+    }
+
+    private fun openPinned(conversation: PinConversation) {
+        when (conversation.target.kind) {
+            PinTargetKind.PEER -> {
+                val id = conversation.target.id ?: return
+                startActivity(Intent(this, ChatActivity::class.java).putExtra("peer", id).putExtra("name", conversation.displayName ?: id))
+            }
+            PinTargetKind.GROUP -> {
+                val id = conversation.target.id ?: return
+                openGroup(id, conversation.displayName ?: id)
+            }
+            PinTargetKind.NOTE_TO_SELF -> {
+                val id = NodeHolder.session?.noteToSelfId() ?: return
+                startActivity(Intent(this, NoteToSelfActivity::class.java).putExtra("conversation", id))
+            }
+        }
     }
 
     private fun refreshGroups() {
@@ -536,12 +610,41 @@ private data class MainLabelSnapshot(
     val selected: List<String>,
     val unavailableCount: Int,
     val matching: Set<String>,
+    val ordered: List<PinConversation>,
     val contacts: List<Contact>,
     val groups: List<Group>,
     val contactLabels: Map<String, List<Label>>,
     val groupLabels: Map<String, List<Label>>,
     val noteLabels: List<Label>,
 )
+
+/** Leading cross-type pinned block in persisted manual order. */
+private class PinsAdapter(
+    private val onClick: (PinConversation) -> Unit,
+) : RecyclerView.Adapter<PinsAdapter.Holder>() {
+    private var items = listOf<PinConversation>()
+
+    class Holder(view: View) : RecyclerView.ViewHolder(view)
+
+    fun submit(list: List<PinConversation>) {
+        items = list
+        notifyDataSetChanged()
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder =
+        Holder(LayoutInflater.from(parent.context).inflate(android.R.layout.simple_list_item_2, parent, false))
+
+    override fun getItemCount() = items.size
+
+    override fun onBindViewHolder(holder: Holder, position: Int) {
+        val item = items[position]
+        holder.itemView.findViewById<TextView>(android.R.id.text1).text =
+            if (item.target.kind == PinTargetKind.NOTE_TO_SELF) holder.itemView.context.getString(R.string.note_to_self_title)
+            else item.displayName ?: holder.itemView.context.getString(R.string.pin_unavailable)
+        holder.itemView.findViewById<TextView>(android.R.id.text2).text = holder.itemView.context.getString(R.string.pin_order, position + 1)
+        holder.itemView.setOnClickListener { onClick(item) }
+    }
+}
 
 /** Group rows: creator-controlled name plus authoritative roster size. */
 private class GroupsAdapter(
@@ -553,7 +656,7 @@ private class GroupsAdapter(
     class Holder(view: View) : RecyclerView.ViewHolder(view)
 
     fun submit(list: List<Group>, labelText: Map<String, String> = labels) {
-        items = list.sortedBy { it.name.lowercase() }
+        items = list
         labels = labelText
         notifyDataSetChanged()
     }
@@ -590,7 +693,7 @@ private class ContactsAdapter(
     class Holder(view: android.view.View) : RecyclerView.ViewHolder(view)
 
     fun submit(list: List<Contact>, labelText: Map<String, String> = labels) {
-        items = list.sortedBy { it.name.lowercase() }
+        items = list
         labels = labelText
         notifyDataSetChanged()
     }

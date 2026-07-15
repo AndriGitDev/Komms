@@ -16,7 +16,7 @@ use kult_ffi::{
     FfiError, FolderErrorCode, FolderSelection, FolderSelectionKind, FolderTarget,
     FolderTargetKind, Hint, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind,
     KdfChoice, KultNode, LabelErrorCode, LabelMatchMode, LabelTarget, LabelTargetKind, MentionSpan,
-    ScheduledConversation,
+    PinErrorCode, PinTarget, PinTargetKind, ScheduledConversation,
 };
 
 fn label_parity_fixture() -> serde_json::Value {
@@ -27,6 +27,11 @@ fn label_parity_fixture() -> serde_json::Value {
 fn folder_parity_fixture() -> serde_json::Value {
     serde_json::from_str(include_str!("../../../fixtures/b10-folder-parity.json"))
         .expect("valid shared B10 folder fixture")
+}
+
+fn pin_parity_fixture() -> serde_json::Value {
+    serde_json::from_str(include_str!("../../../fixtures/b11-pin-parity.json"))
+        .expect("valid shared B11 pin fixture")
 }
 
 fn edited_image(directory: &Path, prefix: &str) -> (PathBuf, Vec<u8>) {
@@ -656,6 +661,177 @@ fn private_folders_via_ffi_have_typed_parity_and_zero_delivery_work() {
     assert!(node.stale_folders().unwrap().is_empty());
     assert_eq!(node.status().unwrap().queued, queued_before);
     node.stop();
+}
+
+#[test]
+fn private_pins_via_ffi_have_typed_parity_restart_and_zero_delivery_work() {
+    let fixture = pin_parity_fixture();
+    let directory = tempfile::tempdir().unwrap();
+    let recorder = Recorder::default();
+    let node = KultNode::start(
+        test_config(directory.path(), "pins"),
+        Box::new(recorder.clone()),
+    )
+    .expect("node starts");
+    let queued_before = node.status().unwrap().queued;
+    let peer = node
+        .add_contact(
+            "same-looking name".to_owned(),
+            node.handshake_bundle().unwrap(),
+            vec![],
+        )
+        .unwrap();
+    let group = node
+        .create_group("same-looking name".to_owned(), vec![])
+        .unwrap();
+    node.send_note_to_self("latest local activity".to_owned())
+        .unwrap();
+
+    let peer_target = PinTarget {
+        kind: PinTargetKind::Peer,
+        id: Some(peer),
+    };
+    let group_target = PinTarget {
+        kind: PinTargetKind::Group,
+        id: Some(group),
+    };
+    let note_target = PinTarget {
+        kind: PinTargetKind::NoteToSelf,
+        id: None,
+    };
+    let appended = [
+        peer_target.clone(),
+        group_target.clone(),
+        note_target.clone(),
+    ];
+    for target in &appended {
+        assert!(node.pin_conversation(target.clone()).unwrap());
+    }
+    assert!(!node.pin_conversation(peer_target.clone()).unwrap());
+    recorder.wait("pin event", |event| matches!(event, Event::PinsChanged));
+    let pins = node.pins().unwrap();
+    assert_eq!(
+        pins.iter()
+            .map(|pin| match pin.target.kind {
+                PinTargetKind::Peer => "peer",
+                PinTargetKind::Group => "group",
+                PinTargetKind::NoteToSelf => "note_to_self",
+            })
+            .collect::<Vec<_>>(),
+        fixture["initial_target_kinds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        pins.iter().map(|pin| pin.order).collect::<Vec<_>>(),
+        fixture["expected_append_orders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_u64().unwrap() as u32)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        node.pin_state(group_target.clone())
+            .unwrap()
+            .unwrap()
+            .active
+    );
+
+    let reordered = vec![
+        note_target.clone(),
+        group_target.clone(),
+        peer_target.clone(),
+    ];
+    assert_eq!(
+        node.reorder_pins(reordered.clone())
+            .unwrap()
+            .into_iter()
+            .map(|pin| pin.target)
+            .collect::<Vec<_>>(),
+        reordered
+    );
+    assert!(matches!(
+        node.reorder_pins(vec![peer_target.clone()]),
+        Err(FfiError::Pin {
+            code: PinErrorCode::InvalidOrder,
+            ..
+        })
+    ));
+    assert!(matches!(
+        node.cleanup_stale_pin(group_target.clone()),
+        Err(FfiError::Pin {
+            code: PinErrorCode::StalePinActive,
+            ..
+        })
+    ));
+    assert!(matches!(
+        node.pin_conversation(PinTarget {
+            kind: PinTargetKind::NoteToSelf,
+            id: Some("00".repeat(32)),
+        }),
+        Err(FfiError::Pin {
+            code: PinErrorCode::InvalidTarget,
+            ..
+        })
+    ));
+    let composed = node
+        .pin_conversations(
+            FolderSelection {
+                kind: FolderSelectionKind::All,
+                id: None,
+            },
+            vec![],
+            LabelMatchMode::Any,
+        )
+        .unwrap();
+    assert_eq!(
+        composed
+            .conversations
+            .iter()
+            .take(3)
+            .map(|item| match item.target.kind {
+                PinTargetKind::Peer => "peer",
+                PinTargetKind::Group => "group",
+                PinTargetKind::NoteToSelf => "note_to_self",
+            })
+            .collect::<Vec<_>>(),
+        fixture["composed_pinned_target_kinds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>()
+    );
+    assert!(composed
+        .conversations
+        .iter()
+        .take(3)
+        .all(|item| item.pinned));
+    assert!(node.stale_pins().unwrap().is_empty());
+    assert_eq!(node.status().unwrap().queued, queued_before);
+    node.stop();
+
+    let reopened = KultNode::start(
+        test_config(directory.path(), "pins"),
+        Box::new(Recorder::default()),
+    )
+    .expect("node reopens");
+    assert_eq!(
+        reopened
+            .pins()
+            .unwrap()
+            .into_iter()
+            .map(|pin| pin.target)
+            .collect::<Vec<_>>(),
+        reordered
+    );
+    assert!(reopened.unpin_conversation(peer_target.clone()).unwrap());
+    assert!(!reopened.unpin_conversation(peer_target).unwrap());
+    reopened.stop();
 }
 
 #[test]

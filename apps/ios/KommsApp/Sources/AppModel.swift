@@ -29,6 +29,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var matchingLabelTargets: Set<String> = []
     @Published private(set) var selectedLabelIds: [String] = []
     @Published private(set) var labelFilterMode: LabelMatchMode = .any
+    @Published private(set) var pins: [Pin] = []
+    @Published private(set) var pinRows: [PinConversation] = []
+    @Published private(set) var stalePinRecords: [Pin] = []
     /// Surfaced node happenings: key changes, held-for-faster-link verdicts.
     @Published var notices: [String] = []
 
@@ -141,6 +144,9 @@ final class AppModel: ObservableObject {
         staleLabelRecords = []
         conversationLabels = [:]
         matchingLabelTargets = []
+        pins = []
+        pinRows = []
+        stalePinRecords = []
     }
 
     private func adopt(_ session: Session) {
@@ -168,7 +174,7 @@ final class AppModel: ObservableObject {
              .noteToSelfMessageAdded,
              .carrierCapabilityChanged,
              .groupUpdated, .groupMessageReceived, .groupDeliveryUpdated,
-             .attachmentUpdated, .foldersChanged, .labelsChanged:
+             .attachmentUpdated, .foldersChanged, .labelsChanged, .pinsChanged:
             Task { await refresh() }
         case .mentionReceived:
             notices.append("You were mentioned in a group.")
@@ -217,7 +223,7 @@ final class AppModel: ObservableObject {
                     folders.contains(where: { $0.id == requestedFolder.id }) == false
                 let appliedFolder = missingFolder
                     ? FolderSelection(kind: .all, id: nil) : requestedFolder
-                let filter = try session.folderConversations(
+                let filter = try session.pinConversations(
                     selection: appliedFolder, labels: selected, mode: filterMode)
                 var memberships: [String: [KommsCore.Label]] = [:]
                 for contact in liveContacts {
@@ -240,7 +246,8 @@ final class AppModel: ObservableObject {
                     notes: try session.noteToSelfMessages(), folders: folders,
                     staleFolders: try session.staleFolders(), folderWasMissing: missingFolder,
                     labels: try session.labels(), stale: try session.staleLabels(),
-                    filter: filter, memberships: memberships)
+                    filter: filter, memberships: memberships,
+                    pins: try session.pins(), stalePins: try session.stalePins())
             }
             status = snapshot.status
             contacts = snapshot.contacts
@@ -257,6 +264,9 @@ final class AppModel: ObservableObject {
             staleLabelRecords = snapshot.stale
             conversationLabels = snapshot.memberships
             matchingLabelTargets = Set(snapshot.filter.conversations.map { Self.labelTargetKey($0.target) })
+            pins = snapshot.pins
+            pinRows = snapshot.filter.conversations
+            stalePinRecords = snapshot.stalePins
             if snapshot.folderWasMissing {
                 notices.append("The selected private folder is unavailable; showing All conversations.")
             }
@@ -300,6 +310,51 @@ final class AppModel: ObservableObject {
         case .peer: return "peer:\(target.id ?? "")"
         case .group: return "group:\(target.id ?? "")"
         case .noteToSelf: return "note_to_self:"
+        }
+    }
+
+    nonisolated static func labelTargetKey(_ target: PinTarget) -> String {
+        switch target.kind {
+        case .peer: return "peer:\(target.id ?? "")"
+        case .group: return "group:\(target.id ?? "")"
+        case .noteToSelf: return "note_to_self:"
+        }
+    }
+
+    func isPinned(_ target: PinTarget) -> Bool {
+        pins.contains { Self.labelTargetKey($0.target) == Self.labelTargetKey(target) }
+    }
+
+    func togglePin(_ target: PinTarget) {
+        guard let session else { return }
+        Task {
+            do {
+                if isPinned(target) { _ = try await run { try session.unpinConversation(target: target) } }
+                else { _ = try await run { try session.pinConversation(target: target) } }
+                await refresh()
+            } catch { notices.append(error.localizedDescription) }
+        }
+    }
+
+    func movePin(_ target: PinTarget, by offset: Int) {
+        guard let session,
+              let index = pins.firstIndex(where: { Self.labelTargetKey($0.target) == Self.labelTargetKey(target) })
+        else { return }
+        let destination = index + offset
+        guard pins.indices.contains(destination) else { return }
+        var order = pins.map(\.target)
+        order.swapAt(index, destination)
+        Task {
+            do { _ = try await run { try session.reorderPins(targets: order) }; await refresh() }
+            catch { notices.append(error.localizedDescription) }
+        }
+    }
+
+    func cleanupStalePin(_ target: PinTarget) {
+        guard let session else { return }
+        Task {
+            do { _ = try await run { try session.cleanupStalePin(target: target) }; await refresh() }
+            catch { notices.append(error.localizedDescription) }
         }
     }
 
@@ -897,8 +952,10 @@ private struct AppRefreshSnapshot: Sendable {
     let folderWasMissing: Bool
     let labels: [KommsCore.Label]
     let stale: [StaleLabel]
-    let filter: FolderConversationResult
+    let filter: PinConversationResult
     let memberships: [String: [KommsCore.Label]]
+    let pins: [Pin]
+    let stalePins: [Pin]
 }
 
 private let attachmentLimit = 512 * 1024 * 1024

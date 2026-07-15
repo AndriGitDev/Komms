@@ -71,6 +71,47 @@ pub struct FolderConversationList {
     pub conversations: Vec<FolderConversationInfo>,
 }
 
+/// Render-safe durable private conversation pin.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PinInfo {
+    /// Exact stable typed conversation identity.
+    pub conversation: ConversationId,
+    /// Current local display name while active; absent for stale/note-to-self.
+    pub display_name: Option<String>,
+    /// Exact persisted manual order.
+    pub order: u32,
+    /// Whether the exact typed conversation is currently available.
+    pub active: bool,
+}
+
+/// One eligible conversation after folder, label, and pin composition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PinConversationInfo {
+    /// Exact stable typed conversation identity.
+    pub conversation: ConversationId,
+    /// Current local display name; absent for note-to-self.
+    pub display_name: Option<String>,
+    /// Whether this row belongs to the leading pinned block.
+    pub pinned: bool,
+    /// Exact persisted order when pinned.
+    pub pin_order: Option<u32>,
+    /// Latest ordinary local message activity, or zero with no history.
+    pub recent_activity: u64,
+}
+
+/// Folder-first, label-second, pin-order-last conversation presentation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PinConversationList {
+    /// Exact folder selection applied first.
+    pub selection: FolderSelection,
+    /// Available selected label ids after canonical validation.
+    pub selected_labels: Vec<[u8; 16]>,
+    /// Requested labels whose definitions are unavailable.
+    pub unavailable_labels: Vec<[u8; 16]>,
+    /// Eligible rows with one leading pinned block and no duplicates.
+    pub conversations: Vec<PinConversationInfo>,
+}
+
 /// Canonical local label filter semantics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LabelMatchMode {
@@ -544,6 +585,9 @@ pub enum Event {
     /// Local label definitions or memberships changed; re-read label state.
     /// This event never enters an envelope, capability, group state, or transport.
     LabelsChanged,
+    /// Local conversation pin membership or order changed; re-read pin state.
+    /// This event never enters an envelope, capability, group state, or transport.
+    PinsChanged,
     /// A scheduled message was created or edited; re-read the scheduled
     /// outbox for the authoritative record.
     ScheduledMessageUpdated {

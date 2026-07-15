@@ -97,6 +97,31 @@ path but do not participate in active filters. Match-any and match-all filtering
 is deterministic, local presentation only; it never changes message receipt,
 delivery, notifications, unread truth, search indexing, queue work, or history.
 
+### Private local conversation pins (B11)
+
+Each durable pin is keyed by the exact typed `ConversationId`: pairwise peer,
+group, or note-to-self. Visible names never define identity, and one conversation
+has at most one pin. Pin and unpin are idempotent. New pins append to persisted
+manual order; when the `u32` order space is exhausted, the store transactionally
+compacts the complete durable set before appending. The fixed front-door limit is
+8,192 pins.
+
+Reorder accepts exactly the complete durable pin set, including unavailable
+targets, and replaces its order atomically. Missing conversations remain sealed
+and diagnosable rather than being discarded: the exact typed identity reactivates
+if that conversation becomes available again, while explicit stale cleanup
+removes only that unavailable pin. No display-name matching or cross-kind
+substitution is permitted.
+
+Conversation navigation composes in one deterministic order: folder selection,
+then label any/all filtering, then a leading pinned block. Eligible pins sort by
+manual order, recent activity for an otherwise tied legacy order, and stable
+typed bytes; unpinned rows sort by recent activity and the same stable typed
+tie-breaker. Pin operations never change messages, folders, labels, search,
+unread truth, notifications, queues, cryptographic state, or transport work.
+Message pins remain deferred until stable message-reference semantics are
+designed separately.
+
 ## 3. Search
 
 Full-text search runs over a **sealed local index**: tokenized terms are HMAC'd under a
@@ -121,6 +146,9 @@ trade for this project.)
 - **B10 folder backup behavior**: `KKR4` preserves exact folder IDs, names,
   manual order, single-membership assignments, and stale-reference behavior.
   Folders have no independent cloud, server, or linked-device synchronization.
+- **B11 pin backup behavior**: `KKR4` preserves exact typed targets, durable
+  order, and stale/reactivation behavior. Pins have no independent cloud,
+  server, or linked-device synchronization path.
 - **Scheduled outbox state is not a backup payload.** Like the live encrypted
   delivery queue, it is device runtime state rather than conversation history;
   it survives ordinary process/app restarts on that device but is not resurrected
