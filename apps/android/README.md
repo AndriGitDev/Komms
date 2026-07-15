@@ -69,6 +69,12 @@ own, verbatim.
   8,192 assignments, 32 labels per conversation, and 256 UTF-8 bytes per name;
   canonical colors are `neutral`, `red`, `orange`, `yellow`, `green`, `teal`,
   `blue`, `purple`, and `pink`.
+- **Pin private local conversations** across pairwise contacts, groups, and
+  note-to-self. The leading TalkBack-accessible block follows folder and label
+  eligibility; chat actions pin/unpin exact typed targets, while the manager
+  provides button reorder, unavailable-record cleanup, and durable restart
+  behavior. The shared cap is 8,192 and pin work requests no permission or
+  network/notification/transport activity.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends (desktop included), compared aloud or by scanning each other's
   code, with a visible verified badge. Key changes are surfaced, never
@@ -127,6 +133,12 @@ Kotlin, and Swift, including exact Unicode, duplicate names, stable manual order
 typed peer/group/note targets, single membership, label composition, restart,
 deletion, and structured errors. Folder state requests no additional permission,
 never leaves sealed local storage, and `KKR4` is its only portability path.
+
+Pin acceptance drives the shared B11 fixture through Rust RPC, UniFFI, Kotlin,
+and Swift, covering exact typed peer/group/note targets, append and complete-set
+reorder, folder/label composition, activity ordering, stale cleanup/reactivation,
+restart, structured limits/errors, and zero delivery work. `KKR4` is the only
+portability path; message pins and linked-device pin sync remain deferred.
 
 This is deliberately its own Gradle build, outside the cargo workspace:
 the Android dependency tree stays out of the core crates' lockfile and

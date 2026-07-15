@@ -71,6 +71,12 @@ are the node's own, verbatim.
   definitions, 8,192 assignments, 32 labels per conversation, and 256 UTF-8
   bytes per name; canonical colors are `neutral`, `red`, `orange`, `yellow`,
   `green`, `teal`, `blue`, `purple`, and `pink`.
+- **Pin private local conversations** across pairwise contacts, groups, and
+  note-to-self. The leading VoiceOver/Dynamic-Type block follows folder and
+  label eligibility; conversation actions pin/unpin exact typed targets and the
+  manager provides button reorder plus unavailable-record cleanup. The shared
+  8,192-pin limit, restart/`KKR4` behavior, and zero-network contract live in
+  `KommsCore`, with no new permission or synchronized state.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends (all platforms), compared aloud or by scanning each other's code,
   with a visible verified badge. Key changes are surfaced, never hidden.
@@ -135,6 +141,12 @@ covering exact Unicode, duplicate names, stable manual order, typed
 peer/group/note targets, single membership, label composition, restart,
 deletion, and structured errors. Folder state requests no additional permission,
 never leaves sealed local storage, and `KKR4` is its only portability path.
+
+Pin acceptance uses the same B11 fixture as Rust RPC, UniFFI, and Kotlin,
+covering exact typed peer/group/note targets, append and exact complete-set
+reorder, folder/label composition, activity order, stale cleanup/reactivation,
+restart, structured errors, and zero delivery work. `KKR4` is the only
+portability path; message pins and linked-device pin sync remain deferred.
 
 Generated bindings are never committed; `scripts/generate-bindings.sh`
 produces them fresh from the crate. The package is deliberately outside

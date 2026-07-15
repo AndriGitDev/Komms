@@ -396,8 +396,8 @@ bounded conversation, folder, pin, label, draft, preference, and custom-icon
 records use an isolated storage key and reveal no local organization keys in a
 copied database. User-authored metadata and sealed note-to-self history are
 included in `KKR4`. Note-to-self text is shipped through every shell under one
-reserved identity; the individual organization/theme/icon experiences remain
-separate work.
+reserved identity; folders, conversation pins, and labels now ship as separate
+organization experiences while theme and icon experiences remain work.
 
 B10 private local conversation folders are shipped end to end across the
 unchanged F5 record contract, `kult-node`, RPC/CLI, UniFFI, desktop, Android,
@@ -409,6 +409,18 @@ and folder-first composition with independent B18 label filters create zero
 network or transport work. Limits are 128 folders, 8,192 assignments, and 256
 UTF-8 bytes per name. `KKR4` preserves exact identity, order, membership, and
 stale behavior; there is no remote or linked-device folder synchronization.
+
+B11 private local conversation pins are shipped end to end across the unchanged
+F5 record contract, `kult-node`, RPC/CLI, UniFFI, desktop, Android, and iOS.
+Pins use exact typed pairwise, group, and note-to-self identities, with one pin
+per conversation and a fixed limit of 8,192. Idempotent append/unpin, atomic
+complete-set reorder including stale records, `u32` order compaction, exact
+stale cleanup, and same-identity reactivation preserve durable intent. Folder
+selection and B18 label filtering run before the leading pinned block; pinned
+and unpinned rows then use deterministic manual/activity/typed-ID ordering.
+Every operation creates zero network, transport, notification, or cryptographic
+work. `KKR4` is the only pin portability path; message pins and linked-device
+pin synchronization remain separate work.
 
 B18 private labels are shipped end to end across the unchanged F5 record
 contract, `kult-node`, RPC/CLI, UniFFI, desktop, Android, and iOS. Labels target

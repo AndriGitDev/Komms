@@ -62,9 +62,14 @@ status and prerequisites are tracked in the delivery plan.
   scheduled rows before the ordinary queued, sent, and delivered states.
 - **Text formatting.** Planned as a small safe source-text subset rendered by
   each shell, with no raw HTML, remote fetches, or scriptable links.
-- **Conversation pins.** Planned over the shipped F5 `PinRecord`; pin identity
-  and manual order stay sealed and local. Message pins remain a separate design
-  because they require stable message-reference semantics.
+- **Conversation pins.** Shipped for pairwise contacts, groups, and note-to-self
+  through the sealed F5 store and every wrapper and shell. Exact typed identity,
+  manual order, idempotent append/unpin, complete-set reorder including stale
+  targets, deterministic activity tie-breaking, cleanup, and reactivation stay
+  local. Folder selection and label filtering precede one leading pinned block.
+  The limit is 8,192, `KKR4` is the only portability path, and every operation
+  creates zero network, notification, crypto, or transport work. Message pins
+  remain a separate design because they require stable message references.
 - **Dark mode.** Planned as shared semantic color roles rendered natively by
   each shell; color can never be the only security or delivery signal.
 - **Custom icons.** Planned over the shipped F5 icon record with bounded local
@@ -93,7 +98,8 @@ status and prerequisites are tracked in the delivery plan.
   UTF-8 bytes per name. `KKR4` preserves exact identity, ordering, membership,
   and stale behavior. Labels do not affect messages, delivery, search, unread
   truth, notifications, or transports and do not sync remotely. Message labels,
-  pins, shared tags, and linked-device label sync remain separate work.
+  shared tags, and linked-device label sync remain separate work; B11
+  conversation pins compose independently after label filtering.
 - **Private conversation folders.** Shipped for pairwise contacts, groups, and
   note-to-self through F5 and every wrapper and shell. One stable typed
   conversation belongs to at most one folder; All and Unfiled are virtual views.

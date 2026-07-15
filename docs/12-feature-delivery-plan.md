@@ -40,7 +40,7 @@ accepted designs before individual shells implement UI.
 | Scheduled messages | Shipped | Preserve the sealed absolute-UTC gate, edit/cancel-before-activation semantics, and distinct cross-shell lifecycle. |
 | Text formatting | Planned | Safe common subset and consistent rendering. |
 | Folders | Shipped | Preserve single-folder membership, All/Unfiled views, deterministic order, stale cleanup, label composition, and zero-network behavior. |
-| Pins | Planned | Ship conversation pins over the existing F5 record; message pins need a separate stable-reference design. |
+| Pins | Shipped (conversation) | Preserve exact typed targets, complete durable reorder, stale reactivation/cleanup, folder → label → pin composition, and zero-network behavior; message pins remain separate. |
 | Dark mode | Planned | Shared theme semantics and shell implementations. |
 | Custom icons | Planned | Local-only contact/group/conversation artwork. |
 | Screen security | Planned | Platform protections and documented limitations. |
@@ -173,8 +173,9 @@ single-folder membership, pins, labels and multi-label membership, drafts, UI
 preferences, and custom icons. The table exposes only row count and approximate
 sealed sizes in a copied database; `KKR4` backs up every user-authored record
 and note-to-self history while `KKR1`, `KKR2`, and `KKR3` remain restorable.
-Feature behavior and shell UX remain separate B7/B11-B13 slices. B10 folders
-and B18 labels use the shipped record shapes and `KKR4` contract unchanged.
+Feature behavior and shell UX remain separate B7/B12-B13 slices. B10 folders,
+B11 conversation pins, and B18 labels use the shipped record shapes and `KKR4`
+contract unchanged.
 
 Add sealed local-only records for conversation type, folders, pins, labels,
 drafts, UI preferences, and custom icons. Keep local organization out of network
@@ -399,11 +400,24 @@ envelope, queue, receipt, capability, or transport work.
 
 **Depends on:** F5.
 
-Support pinned conversations first, then optionally pinned messages inside a
-conversation. Pins are local metadata keyed by stable IDs and never affect group
-state. Define deterministic ordering (manual order, then recent activity).
+**State:** conversation pins shipped end to end across `kult-store`, `kult-node`,
+RPC/CLI, UniFFI, desktop, Android, and iOS. Message pins remain deferred.
 
-Acceptance covers deletion/tombstones, restore, and missing referenced content.
+Pins use exact typed pairwise peer, group, or note-to-self `ConversationId`
+values, never visible names. One pin per conversation and a fixed 8,192-pin
+limit are enforced. Pin/unpin are idempotent; append order is durable and
+compacts transactionally at `u32::MAX`. Reorder atomically requires the exact
+complete durable set, including stale pins, so unavailable targets are never
+silently lost.
+
+The shared query composes folder selection, label any/all filtering, and then a
+leading pinned block. Pinned rows use manual order, recent activity for tied
+legacy order, and stable typed bytes; unpinned rows use recent activity and the
+same typed tie-breaker. Unavailable pins remain diagnosable, can be removed only
+by exact cleanup while stale, and reactivate only when the same typed identity
+becomes available. `KKR4` preserves exact target, order, and stale behavior.
+Every surface proves that pin work creates no envelope, queue, receipt,
+notification, capability, crypto, or transport work.
 
 ### B12. Dark mode
 
@@ -773,7 +787,7 @@ honest. Parallel work is safe only where rows do not share a foundation.
 |---|---|---|
 | **0: Shared foundations** | Complete | F1–F5 are implemented; ADR-0015 remains formally Proposed despite the shipped attachment pipeline. |
 | **Parallel: mobile reachability** | Design-only | Accept ADR-0017–0019, then implement C8 behind reversible feature gates. |
-| **1: Local-first product polish** | In progress | B7, B8, B10, and B18 are shipped; B5, B9, and B11–B15 remain. |
+| **1: Local-first product polish** | In progress | B7, B8, B10, B11, and B18 are shipped; B5, B9, and B12–B15 remain. |
 | **2: Typed content and asynchronous media** | Substantially complete | F2/F3, B2, B16, and B17 are shipped; C1 is usable across all shells with richer media polish remaining. |
 | **3: Replicated conversation features** | Planned | C3, C4, C5, and C6. |
 | **4: Multi-device** | Planned | C2, followed by cross-device hardening of Wave 3. |
@@ -844,14 +858,17 @@ reviewable PR:
 2. completed: add group list/history/create/send UI to desktop, Android, and iOS;
 3. completed: build the per-peer carrier capability API and pin mesh-only
    decisions in node, scheduler, and FFI tests;
-4. completed through B10 folders and B18 labels: add the sealed local metadata
-   foundation, note-to-self, private single-membership conversation folders, and
-   private contact/conversation labels; message labels remain deferred and
-   scheduled delivery completed separately in the core queue/storage path;
+4. completed through B10 folders, B11 conversation pins, and B18 labels: add the
+   sealed local metadata foundation, note-to-self, private single-membership
+   conversation folders, exact typed conversation pins, and private
+   contact/conversation labels; message pins and message labels remain deferred
+   and scheduled delivery completed separately in the core queue/storage path;
 5. completed: ship typed content, attachments, audio, image editing, and mentions
    through every front door and shell; ADR-0015's formal status remains Proposed.
 
-The next high-value local-first slice is B11 conversation pins over the existing
-F5 record, followed by the remaining bounded shell-local polish where useful.
+The next high-value local-first slice is B12 dark mode with shared semantic
+roles, native system switching, accessibility contrast, and no color-only
+security or delivery signals, followed by the remaining bounded shell-local
+polish where useful.
 Replicated edits/expiry/polls/roles, linked-device identity, real-time media, and
 optional hybrid services remain separate programs with their stated ADR gates.
