@@ -100,6 +100,14 @@ cargo run --example sneakernet_demo
 > permanently readable and unknown authenticated content stays durable.
 > The F5 local-metadata foundation is shipped as well: typed folders, pins,
 > labels, drafts, preferences, and custom icons remain sealed and strictly local.
+> B10 now ships private local conversation folders end to end. Pairwise contacts,
+> sender-key groups, and note-to-self have single-folder membership over stable
+> typed identities, with All and Unfiled virtual views, exact duplicate-capable
+> UTF-8 names, durable manual order, atomic move/reorder/delete, stale cleanup,
+> and independent composition with B18 label filters. The shared limits are 128
+> folders, 8,192 assignments, and 256 UTF-8 bytes per name. Desktop, Android,
+> iOS, RPC/CLI, and UniFFI create zero delivery or transport work; `KKR4`
+> preserves exact folder IDs, names, order, membership, and stale behavior.
 > B18 now ships private contact and conversation labels end to end. Pairwise
 > contacts, sender-key groups, and note-to-self use their stable typed
 > conversation identities; duplicate exact UTF-8 names are distinguished by
