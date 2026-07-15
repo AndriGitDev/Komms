@@ -56,6 +56,8 @@ pub fn parse_request(line: &str) -> Result<Request, String> {
 
 fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
     match op {
+        "theme" => Some(&["id", "op"]),
+        "theme_set" => Some(&["id", "op", "preference"]),
         "folder_create" => Some(&["id", "op", "name"]),
         "folders" | "folder_stale" => Some(&["id", "op"]),
         "folder_get" | "folder_delete_preview" | "folder_membership" => {
@@ -231,6 +233,13 @@ pub enum Op {
     },
     /// Read the reserved local note-to-self history.
     NoteToSelfMessages,
+    /// Read the private local appearance preference.
+    Theme,
+    /// Persist one exact canonical appearance preference.
+    ThemeSet {
+        /// One of `system`, `light`, or `dark`.
+        preference: String,
+    },
     /// Create one private local conversation folder.
     FolderCreate {
         /// Exact UTF-8 folder name.
@@ -621,6 +630,9 @@ pub fn err(id: u64, message: &str) -> String {
 /// An event line for subscribed connections.
 pub fn event_line(event: &Event) -> String {
     let body = match event {
+        Event::ThemeChanged => json!({
+            "type": "theme_changed",
+        }),
         Event::FoldersChanged => json!({
             "type": "folders_changed",
         }),
@@ -727,6 +739,12 @@ pub fn event_line(event: &Event) -> String {
         _ => json!({ "type": "unknown" }),
     };
     json!({ "event": body }).to_string()
+}
+
+/// Parse one exact canonical B12 theme token.
+pub fn parse_theme(value: &str) -> Result<kult_node::ThemePreference, String> {
+    kult_node::ThemePreference::parse(value)
+        .ok_or_else(|| "preference must be one of: system, light, dark".to_owned())
 }
 
 /// Render one folder without sealed bytes, nonces, or unrelated metadata.
@@ -1327,6 +1345,11 @@ mod tests {
             serde_json::from_str(r#"{"id":4,"op":"note_to_self_send","body":"remember this"}"#)
                 .unwrap();
         assert!(matches!(r.op, Op::NoteToSelfSend { .. }));
+        let r = parse_request(r#"{"id":40,"op":"theme_set","preference":"dark"}"#).unwrap();
+        assert!(matches!(r.op, Op::ThemeSet { preference } if preference == "dark"));
+        assert!(parse_request(r#"{"id":41,"op":"theme","extra":true}"#).is_err());
+        assert!(parse_theme("system").is_ok());
+        assert!(parse_theme("sepia").is_err());
 
         let r = parse_request(
             &json!({

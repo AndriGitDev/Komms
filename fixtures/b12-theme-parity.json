@@ -1,0 +1,47 @@
+{
+  "preference_key": "appearance.theme",
+  "preferences": ["system", "light", "dark"],
+  "default": "system",
+  "semantic_roles": [
+    "background",
+    "surface",
+    "surface_raised",
+    "surface_hover",
+    "border",
+    "text_primary",
+    "text_secondary",
+    "accent",
+    "on_accent",
+    "danger",
+    "warning",
+    "success",
+    "bubble_outgoing",
+    "bubble_incoming",
+    "focus"
+  ],
+  "wcag": {
+    "normal_text_min": 4.5,
+    "large_text_min": 3.0,
+    "ui_component_min": 3.0
+  },
+  "reference_palettes": {
+    "light": {
+      "background": "#f8fafb",
+      "text_primary": "#172126",
+      "text_secondary": "#4d5f68",
+      "action": "#096849",
+      "on_action": "#ffffff",
+      "danger": "#a72e23",
+      "warning": "#805900"
+    },
+    "dark": {
+      "background": "#101418",
+      "text_primary": "#e8e6e3",
+      "text_secondary": "#b7c1c9",
+      "action": "#246f56",
+      "on_action": "#ffffff",
+      "danger": "#ff9b8d",
+      "warning": "#f0c66b"
+    }
+  }
+}

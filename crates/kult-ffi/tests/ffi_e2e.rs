@@ -16,7 +16,7 @@ use kult_ffi::{
     FfiError, FolderErrorCode, FolderSelection, FolderSelectionKind, FolderTarget,
     FolderTargetKind, Hint, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind,
     KdfChoice, KultNode, LabelErrorCode, LabelMatchMode, LabelTarget, LabelTargetKind, MentionSpan,
-    PinErrorCode, PinTarget, PinTargetKind, ScheduledConversation,
+    PinErrorCode, PinTarget, PinTargetKind, ScheduledConversation, ThemePreference,
 };
 
 fn label_parity_fixture() -> serde_json::Value {
@@ -32,6 +32,47 @@ fn folder_parity_fixture() -> serde_json::Value {
 fn pin_parity_fixture() -> serde_json::Value {
     serde_json::from_str(include_str!("../../../fixtures/b11-pin-parity.json"))
         .expect("valid shared B11 pin fixture")
+}
+
+fn theme_parity_fixture() -> serde_json::Value {
+    serde_json::from_str(include_str!("../../../fixtures/b12-theme-parity.json"))
+        .expect("valid shared B12 theme fixture")
+}
+
+#[test]
+fn private_theme_via_ffi_defaults_is_idempotent_and_emits_local_event() {
+    let fixture = theme_parity_fixture();
+    assert_eq!(fixture["preference_key"], "appearance.theme");
+    assert_eq!(
+        fixture["preferences"],
+        serde_json::json!(["system", "light", "dark"])
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let recorder = Recorder::default();
+    let node = KultNode::start(
+        test_config(directory.path(), "theme"),
+        Box::new(recorder.clone()),
+    )
+    .expect("node starts");
+    let queued = node.status().unwrap().queued;
+    let initial = node.theme().unwrap();
+    assert_eq!(initial.preference, ThemePreference::System);
+    assert!(!initial.persisted);
+    assert!(node.set_theme(ThemePreference::Dark).unwrap());
+    assert!(!node.set_theme(ThemePreference::Dark).unwrap());
+    recorder.wait("theme event", |event| matches!(event, Event::ThemeChanged));
+    assert_eq!(node.theme().unwrap().preference, ThemePreference::Dark);
+    assert_eq!(node.status().unwrap().queued, queued);
+    node.stop();
+
+    let reopened = KultNode::start(
+        test_config(directory.path(), "theme"),
+        Box::new(Recorder::default()),
+    )
+    .unwrap();
+    assert_eq!(reopened.theme().unwrap().preference, ThemePreference::Dark);
+    assert!(reopened.theme().unwrap().persisted);
+    reopened.stop();
 }
 
 fn edited_image(directory: &Path, prefix: &str) -> (PathBuf, Vec<u8>) {

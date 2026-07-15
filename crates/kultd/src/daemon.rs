@@ -718,6 +718,21 @@ async fn handle_op(
                 "messages": messages,
             }))
         }
+        Op::Theme => Ok(json!({
+            "preference": node.theme_preference().map_err(fail)?.as_str(),
+            "persisted": node.theme_preference_is_persisted().map_err(fail)?,
+        })),
+        Op::ThemeSet { preference } => {
+            let preference = wire::parse_theme(&preference)?;
+            let changed = node
+                .set_theme_preference(preference, &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({
+                "preference": preference.as_str(),
+                "persisted": true,
+                "changed": changed,
+            }))
+        }
         Op::FolderCreate { name } => {
             wire::validate_folder_write(&name)?;
             let folder = node.create_folder(&name, &mut OsRng).map_err(fail)?;

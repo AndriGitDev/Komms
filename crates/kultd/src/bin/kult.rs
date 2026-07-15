@@ -51,6 +51,8 @@ COMMANDS:
     schedule-cancel ID              cancel a scheduled message
     note TEXT...                    append to the local note-to-self conversation
     note-messages                   local note-to-self history
+    theme                          show system/light/dark appearance choice
+    theme-set system|light|dark    persist the private local appearance choice
     folder-create NAME...           create a private local folder
     folders                         list folders in deterministic manual order
     folder-get FOLDER_ID            get one folder by 32-hex-character id
@@ -407,6 +409,19 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
             json!({ "op": "note_to_self_send", "body": args.join(" ") })
         }
         "note-messages" => json!({ "op": "note_to_self_messages" }),
+        "theme" => {
+            if !args.is_empty() {
+                return Err("theme: too many arguments".to_owned());
+            }
+            json!({ "op": "theme" })
+        }
+        "theme-set" => {
+            need(1)?;
+            if args.len() != 1 || !matches!(args[0].as_str(), "system" | "light" | "dark") {
+                return Err("theme-set: expected system, light, or dark".to_owned());
+            }
+            json!({ "op": "theme_set", "preference": args[0] })
+        }
         "folder-create" => {
             need(1)?;
             let name = args.join(" ");
@@ -1061,6 +1076,16 @@ mod tests {
             build_request("folders", &[]).unwrap(),
             json!({ "op": "folders" })
         );
+        assert_eq!(
+            build_request("theme", &[]).unwrap(),
+            json!({ "op": "theme" })
+        );
+        assert_eq!(
+            build_request("theme-set", &["dark".to_owned()]).unwrap(),
+            json!({ "op": "theme_set", "preference": "dark" })
+        );
+        assert!(build_request("theme", &["trailing".to_owned()]).is_err());
+        assert!(build_request("theme-set", &["sepia".to_owned()]).is_err());
         assert_eq!(
             build_request("folder-get", std::slice::from_ref(&folder)).unwrap(),
             json!({ "op": "folder_get", "folder": folder })

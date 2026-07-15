@@ -579,6 +579,9 @@ pub enum ContentStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event {
+    /// The private local appearance preference changed; shells re-read it.
+    /// This event never enters an envelope, capability, group state, or transport.
+    ThemeChanged,
     /// Local folder definitions, ordering, or assignments changed.
     /// This event never enters an envelope, capability, group state, or transport.
     FoldersChanged,
