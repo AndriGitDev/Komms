@@ -30,11 +30,13 @@ mod scheduled;
 
 pub use backup::BACKUP_MAGIC;
 pub use local_metadata::{
-    render_label_color, valid_label_color, valid_label_name, ConversationId, ConversationMetadata,
-    CustomIconRecord, CustomIconTarget, DraftRecord, FolderAssignment, FolderRecord,
-    LabelAssignment, LabelFilterMode, LabelFilterResult, LabelRecord, LocalMetadataKey,
-    LocalMetadataRecord, PinRecord, StaleLabelAssignment, StaleLabelReason, UiPreferenceRecord,
-    LABEL_COLORS, LABEL_ID_RETRY_LIMIT, MAX_CUSTOM_ICON_BYTES, MAX_DRAFT_BYTES, MAX_LABELS,
+    render_label_color, valid_folder_name, valid_label_color, valid_label_name, ConversationId,
+    ConversationMetadata, CustomIconRecord, CustomIconTarget, DraftRecord, FolderAssignment,
+    FolderConversationResult, FolderRecord, FolderSelection, LabelAssignment, LabelFilterMode,
+    LabelFilterResult, LabelRecord, LocalMetadataKey, LocalMetadataRecord, PinRecord,
+    StaleFolderAssignment, StaleFolderReason, StaleLabelAssignment, StaleLabelReason,
+    UiPreferenceRecord, FOLDER_ID_RETRY_LIMIT, LABEL_COLORS, LABEL_ID_RETRY_LIMIT,
+    MAX_CUSTOM_ICON_BYTES, MAX_DRAFT_BYTES, MAX_FOLDERS, MAX_FOLDER_ASSIGNMENTS, MAX_LABELS,
     MAX_LABELS_PER_CONVERSATION, MAX_LABEL_ASSIGNMENTS, MAX_LOCAL_METADATA_STRING_BYTES,
     MAX_UI_PREFERENCE_VALUE_BYTES,
 };
@@ -74,6 +76,20 @@ pub enum StoreError {
     MediaState,
     /// A local metadata record exceeds its documented resource bound.
     LocalMetadataBounds,
+    /// A new folder name is empty, fixed-Pattern_White_Space-only, or too long.
+    InvalidFolderName,
+    /// The stable folder id has no durable definition.
+    UnknownFolder,
+    /// The durable folder-definition limit is exhausted.
+    FolderLimit,
+    /// The durable folder-assignment limit is exhausted.
+    FolderAssignmentLimit,
+    /// Random folder-id generation exhausted its bounded collision budget.
+    FolderIdCollision,
+    /// A folder reorder did not contain the exact active id set once each.
+    InvalidFolderOrder,
+    /// A stale-cleanup request now names an active or absent folder assignment.
+    FolderAssignmentActive,
     /// A new label name is empty, fixed-Pattern_White_Space-only, or too long.
     InvalidLabelName,
     /// A new label color is outside the canonical vocabulary.
@@ -110,6 +126,13 @@ impl std::fmt::Display for StoreError {
             Self::LowStorage => f.write_str("insufficient reserved filesystem space"),
             Self::MediaState => f.write_str("invalid media transfer state"),
             Self::LocalMetadataBounds => f.write_str("local metadata bounds exceeded"),
+            Self::InvalidFolderName => f.write_str("invalid folder name"),
+            Self::UnknownFolder => f.write_str("folder id does not exist"),
+            Self::FolderLimit => f.write_str("folder definition limit exhausted"),
+            Self::FolderAssignmentLimit => f.write_str("folder assignment limit exhausted"),
+            Self::FolderIdCollision => f.write_str("folder id collision budget exhausted"),
+            Self::InvalidFolderOrder => f.write_str("invalid complete folder order"),
+            Self::FolderAssignmentActive => f.write_str("folder assignment is active or absent"),
             Self::InvalidLabelName => f.write_str("invalid label name"),
             Self::InvalidLabelColor => f.write_str("unsupported label color"),
             Self::UnknownLabel => f.write_str("label id does not exist"),

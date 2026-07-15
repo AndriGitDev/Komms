@@ -27,7 +27,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use kult_crypto::KdfProfile;
-use kult_node::{LabelMatchMode, Node, NodeError};
+use kult_node::{FolderSelection, LabelMatchMode, Node, NodeError};
 use kult_transport::{
     DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, MeshtasticOptions,
     MeshtasticTransport, NatStatus, Transport, TransportOptions,
@@ -716,6 +716,140 @@ async fn handle_op(
             Ok(json!({
                 "conversation": kult_node::NOTE_TO_SELF_CONVERSATION_ID,
                 "messages": messages,
+            }))
+        }
+        Op::FolderCreate { name } => {
+            wire::validate_folder_write(&name)?;
+            let folder = node.create_folder(&name, &mut OsRng).map_err(fail)?;
+            Ok(wire::folder_json(&folder))
+        }
+        Op::Folders => Ok(json!({
+            "folders": node
+                .folders()
+                .map_err(fail)?
+                .iter()
+                .map(wire::folder_json)
+                .collect::<Vec<_>>(),
+        })),
+        Op::FolderGet { folder } => {
+            let folder = wire::parse_folder(&folder)?;
+            Ok(wire::folder_json(&node.folder(&folder).map_err(fail)?))
+        }
+        Op::FolderRename { folder, name } => {
+            wire::validate_folder_write(&name)?;
+            let folder = wire::parse_folder(&folder)?;
+            let renamed = node
+                .rename_folder(&folder, &name, &mut OsRng)
+                .map_err(fail)?;
+            Ok(wire::folder_json(&renamed))
+        }
+        Op::FolderReorder { folders } => {
+            let folders = wire::parse_folder_order(&folders)?;
+            Ok(json!({
+                "folders": node
+                    .reorder_folders(&folders, &mut OsRng)
+                    .map_err(fail)?
+                    .iter()
+                    .map(wire::folder_json)
+                    .collect::<Vec<_>>(),
+            }))
+        }
+        Op::FolderDeletePreview { folder } => {
+            let folder = wire::parse_folder(&folder)?;
+            let assignments = node.folder_delete_assignment_count(&folder).map_err(fail)?;
+            Ok(json!({
+                "id": wire::hex_encode(&folder),
+                "assignments": assignments,
+            }))
+        }
+        Op::FolderDelete { folder, confirm } => {
+            if !confirm {
+                return Err("folder deletion requires explicit confirmation".to_owned());
+            }
+            let folder = wire::parse_folder(&folder)?;
+            let assignments = node.delete_folder(&folder).map_err(fail)?;
+            Ok(json!({
+                "id": wire::hex_encode(&folder),
+                "assignments_deleted": assignments,
+            }))
+        }
+        Op::FolderMove { folder, target } => {
+            let folder = wire::parse_folder(&folder)?;
+            let target = wire::parse_label_target(&target)?;
+            let changed = node
+                .move_conversation_to_folder(&target, &folder, &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({
+                "changed": changed,
+                "folder": wire::hex_encode(&folder),
+                "target": wire::label_target_json(&target),
+            }))
+        }
+        Op::FolderUnfile { target } => {
+            let target = wire::parse_label_target(&target)?;
+            let changed = node.unfile_conversation(&target).map_err(fail)?;
+            Ok(json!({
+                "changed": changed,
+                "target": wire::label_target_json(&target),
+            }))
+        }
+        Op::FolderMembership { folder } => {
+            let folder = wire::parse_folder(&folder)?;
+            let members = node.folder_members(&folder).map_err(fail)?;
+            Ok(json!({
+                "folder": wire::hex_encode(&folder),
+                "members": members.iter().map(wire::folder_conversation_json).collect::<Vec<_>>(),
+            }))
+        }
+        Op::ConversationFolder { target } => {
+            let target = wire::parse_label_target(&target)?;
+            let folder = node.folder_for_conversation(&target).map_err(fail)?;
+            Ok(json!({
+                "target": wire::label_target_json(&target),
+                "folder": folder.as_ref().map(wire::folder_json),
+            }))
+        }
+        Op::FolderConversations {
+            selection,
+            labels,
+            mode,
+        } => {
+            let selection = wire::parse_folder_selection(&selection)?;
+            let labels = wire::parse_selected_labels(&labels)?;
+            let listed = node
+                .folder_conversations(
+                    match selection {
+                        FolderSelection::All => FolderSelection::All,
+                        FolderSelection::Unfiled => FolderSelection::Unfiled,
+                        FolderSelection::Folder(folder) => FolderSelection::Folder(folder),
+                    },
+                    &labels,
+                    match mode {
+                        wire::LabelMatchInput::Any => LabelMatchMode::Any,
+                        wire::LabelMatchInput::All => LabelMatchMode::All,
+                    },
+                )
+                .map_err(fail)?;
+            Ok(wire::folder_conversation_list_json(&listed))
+        }
+        Op::FolderStale => Ok(json!({
+            "stale": node
+                .stale_folder_assignments()
+                .map_err(fail)?
+                .iter()
+                .map(wire::stale_folder_json)
+                .collect::<Vec<_>>(),
+        })),
+        Op::FolderStaleCleanup { folder, target } => {
+            let folder = wire::parse_folder(&folder)?;
+            let target = wire::parse_label_target(&target)?;
+            let changed = node
+                .cleanup_stale_folder_assignment(&folder, &target)
+                .map_err(fail)?;
+            Ok(json!({
+                "changed": changed,
+                "folder": wire::hex_encode(&folder),
+                "target": wire::label_target_json(&target),
             }))
         }
         Op::LabelCreate { name, color } => {

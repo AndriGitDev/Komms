@@ -13,14 +13,20 @@ use std::time::{Duration, Instant};
 use kult_ffi::{
     default_config, edit_image, probe_edited_image, probe_recorded_audio, AttachmentDirection,
     AttachmentState, CarrierCapability, Config, ContentKind, DeliveryState, Event, EventListener,
-    FfiError, Hint, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, KdfChoice,
-    KultNode, LabelErrorCode, LabelMatchMode, LabelTarget, LabelTargetKind, MentionSpan,
+    FfiError, FolderErrorCode, FolderSelection, FolderSelectionKind, FolderTarget,
+    FolderTargetKind, Hint, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind,
+    KdfChoice, KultNode, LabelErrorCode, LabelMatchMode, LabelTarget, LabelTargetKind, MentionSpan,
     ScheduledConversation,
 };
 
 fn label_parity_fixture() -> serde_json::Value {
     serde_json::from_str(include_str!("../../../fixtures/b18-label-parity.json"))
         .expect("valid shared B18 label fixture")
+}
+
+fn folder_parity_fixture() -> serde_json::Value {
+    serde_json::from_str(include_str!("../../../fixtures/b10-folder-parity.json"))
+        .expect("valid shared B10 folder fixture")
 }
 
 fn edited_image(directory: &Path, prefix: &str) -> (PathBuf, Vec<u8>) {
@@ -476,6 +482,178 @@ fn private_labels_via_ffi_have_typed_parity_and_zero_delivery_work() {
     assert_eq!(remaining[0].color, second.color);
     assert_eq!(remaining[0].order, 0);
     assert!(node.stale_labels().unwrap().is_empty());
+    assert_eq!(node.status().unwrap().queued, queued_before);
+    node.stop();
+}
+
+#[test]
+fn private_folders_via_ffi_have_typed_parity_and_zero_delivery_work() {
+    let fixture = folder_parity_fixture();
+    let duplicate_name = fixture["duplicate_name"].as_str().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let recorder = Recorder::default();
+    let node = KultNode::start(
+        test_config(directory.path(), "folders"),
+        Box::new(recorder.clone()),
+    )
+    .expect("node starts");
+    let queued_before = node.status().unwrap().queued;
+    let own_peer = node
+        .add_contact(
+            "\u{2067}duplicate\u{2069}".to_owned(),
+            node.handshake_bundle().unwrap(),
+            vec![],
+        )
+        .unwrap();
+    let group = node
+        .create_group("e\u{301} group".to_owned(), vec![])
+        .unwrap();
+    let first = node.create_folder(duplicate_name.to_owned()).unwrap();
+    let second = node.create_folder(duplicate_name.to_owned()).unwrap();
+    assert_ne!(first.id, second.id);
+    assert_eq!(
+        vec![first.order, second.order],
+        fixture["expected_initial_orders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_u64().unwrap() as u32)
+            .collect::<Vec<_>>()
+    );
+    recorder.wait("folder event", |event| {
+        matches!(event, Event::FoldersChanged)
+    });
+    let reordered = node
+        .reorder_folders(vec![second.id.clone(), first.id.clone()])
+        .unwrap();
+    assert_eq!(reordered[0].id, second.id);
+    assert_eq!(reordered[1].id, first.id);
+
+    let peer_target = FolderTarget {
+        kind: FolderTargetKind::Peer,
+        id: Some(own_peer.clone()),
+    };
+    let group_target = FolderTarget {
+        kind: FolderTargetKind::Group,
+        id: Some(group.clone()),
+    };
+    let note_target = FolderTarget {
+        kind: FolderTargetKind::NoteToSelf,
+        id: None,
+    };
+    assert!(node
+        .move_to_folder(first.id.clone(), peer_target.clone())
+        .unwrap());
+    assert!(node
+        .move_to_folder(first.id.clone(), group_target.clone())
+        .unwrap());
+    assert!(node
+        .move_to_folder(second.id.clone(), note_target.clone())
+        .unwrap());
+    assert!(!node
+        .move_to_folder(second.id.clone(), note_target.clone())
+        .unwrap());
+    let members = node.folder_membership(first.id.clone()).unwrap();
+    assert_eq!(members[0].target, peer_target);
+    assert_eq!(members[1].target, group_target);
+
+    let label = node
+        .create_label("compose".to_owned(), "teal".to_owned())
+        .unwrap();
+    for target in [
+        LabelTarget {
+            kind: LabelTargetKind::Peer,
+            id: Some(own_peer),
+        },
+        LabelTarget {
+            kind: LabelTargetKind::Group,
+            id: Some(group),
+        },
+    ] {
+        node.assign_label(label.id.clone(), target).unwrap();
+    }
+    let composed = node
+        .folder_conversations(
+            FolderSelection {
+                kind: FolderSelectionKind::Folder,
+                id: Some(first.id.clone()),
+            },
+            vec![label.id],
+            LabelMatchMode::Any,
+        )
+        .unwrap();
+    assert_eq!(
+        composed
+            .conversations
+            .iter()
+            .map(|item| match item.target.kind {
+                FolderTargetKind::Peer => "peer",
+                FolderTargetKind::Group => "group",
+                FolderTargetKind::NoteToSelf => "note_to_self",
+            })
+            .collect::<Vec<_>>(),
+        fixture["folder_then_any_label_target_kinds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>()
+    );
+    assert!(node.unfile_conversation(peer_target.clone()).unwrap());
+    assert!(!node.unfile_conversation(peer_target).unwrap());
+    assert_eq!(
+        node.conversation_folder(note_target.clone())
+            .unwrap()
+            .unwrap()
+            .id,
+        second.id
+    );
+
+    assert!(matches!(
+        node.create_folder(fixture["whitespace_only_name"].as_str().unwrap().to_owned()),
+        Err(FfiError::Folder {
+            code: FolderErrorCode::InvalidName,
+            ..
+        })
+    ));
+    assert!(matches!(
+        node.folder(fixture["invalid_id"].as_str().unwrap().to_owned()),
+        Err(FfiError::Folder {
+            code: FolderErrorCode::InvalidId,
+            ..
+        })
+    ));
+    assert!(matches!(
+        node.reorder_folders(vec![second.id.clone(), second.id.clone()]),
+        Err(FfiError::Folder {
+            code: FolderErrorCode::InvalidOrder,
+            ..
+        })
+    ));
+    assert!(matches!(
+        node.delete_folder(first.id.clone(), false),
+        Err(FfiError::Folder {
+            code: FolderErrorCode::ConfirmationRequired,
+            ..
+        })
+    ));
+    assert_eq!(
+        node.folder_delete_assignment_count(first.id.clone())
+            .unwrap(),
+        fixture["expected_delete_assignment_count"]
+            .as_u64()
+            .unwrap()
+    );
+    assert_eq!(
+        node.delete_folder(first.id.clone(), true).unwrap(),
+        fixture["expected_delete_assignment_count"]
+            .as_u64()
+            .unwrap()
+    );
+    let replacement = node.create_folder(duplicate_name.to_owned()).unwrap();
+    assert_ne!(replacement.id, first.id);
+    assert!(node.folder_membership(replacement.id).unwrap().is_empty());
+    assert!(node.stale_folders().unwrap().is_empty());
     assert_eq!(node.status().unwrap().queued, queued_before);
     node.stop();
 }

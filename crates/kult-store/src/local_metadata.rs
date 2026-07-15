@@ -19,6 +19,12 @@ const RECORD_AD: &[u8] = b"local-metadata";
 /// Maximum UTF-8 bytes in a folder name, label name, color token, media type,
 /// preference key, or similar local-metadata string.
 pub const MAX_LOCAL_METADATA_STRING_BYTES: usize = 256;
+/// Maximum number of durable folder definitions.
+pub const MAX_FOLDERS: usize = 128;
+/// Maximum number of durable conversation-to-folder assignments.
+pub const MAX_FOLDER_ASSIGNMENTS: usize = 8_192;
+/// Bounded attempts to mint a fresh random folder id before failing closed.
+pub const FOLDER_ID_RETRY_LIMIT: usize = 16;
 /// Maximum number of durable label definitions.
 pub const MAX_LABELS: usize = 128;
 /// Maximum number of durable label-to-conversation memberships.
@@ -76,6 +82,48 @@ pub struct FolderAssignment {
     pub conversation: ConversationId,
     /// Destination folder id.
     pub folder: [u8; 16],
+}
+
+/// Why a durable folder assignment is unavailable to active presentation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StaleFolderReason {
+    /// The stable folder id has no durable definition.
+    MissingFolder,
+    /// The exact pairwise/group conversation is not currently available.
+    UnavailableConversation,
+    /// Both the definition and target are unavailable.
+    MissingFolderAndConversation,
+}
+
+/// Render-safe diagnostic for one stale durable folder assignment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StaleFolderAssignment {
+    /// Exact stable folder id; never inferred from presentation.
+    pub folder: [u8; 16],
+    /// Exact typed conversation target; never inferred from a display name.
+    pub conversation: ConversationId,
+    /// The unavailable side or sides.
+    pub reason: StaleFolderReason,
+}
+
+/// One local folder-navigation selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FolderSelection {
+    /// Every available conversation.
+    All,
+    /// Available conversations with no active assignment.
+    Unfiled,
+    /// Available conversations assigned to one exact folder id.
+    Folder([u8; 16]),
+}
+
+/// Result of applying a local folder navigation selection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FolderConversationResult {
+    /// Exact selection used for classification.
+    pub selection: FolderSelection,
+    /// Available conversations in deterministic typed order.
+    pub conversations: Vec<ConversationId>,
 }
 
 /// An ordered pinned conversation.
@@ -156,6 +204,13 @@ pub struct LabelFilterResult {
 /// the all-whitespace rejection. Other Unicode whitespace remains ordinary,
 /// exact user data.
 pub fn valid_label_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_LOCAL_METADATA_STRING_BYTES
+        && !name.chars().all(is_pattern_white_space)
+}
+
+/// Validate a folder name without rewriting any byte.
+pub fn valid_folder_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= MAX_LOCAL_METADATA_STRING_BYTES
         && !name.chars().all(is_pattern_white_space)
@@ -309,7 +364,7 @@ impl LocalMetadataRecord {
             |value: &str| !value.is_empty() && value.len() <= MAX_LOCAL_METADATA_STRING_BYTES;
         let valid = match self {
             Self::Conversation(_) | Self::FolderAssignment(_) | Self::Pin(_) => true,
-            Self::Folder(record) => string_ok(&record.name),
+            Self::Folder(record) => valid_folder_name(&record.name),
             Self::Label(record) => string_ok(&record.name) && string_ok(&record.color),
             Self::LabelAssignment(_) => true,
             Self::Draft(record) => record.content.len() <= MAX_DRAFT_BYTES,
@@ -391,6 +446,457 @@ impl Store {
             "DELETE FROM local_metadata WHERE rowid_ = ?1",
             params![rowid],
         )? == 1)
+    }
+
+    /// Create a folder with a cryptographically random stable id.
+    ///
+    /// Duplicate exact names are allowed. Creation appends after the current
+    /// active presentation order; when a legacy `u32::MAX` order prevents a
+    /// direct append, existing folders are compacted atomically first.
+    pub fn create_folder(&self, name: &str, rng: &mut impl CryptoRngCore) -> Result<FolderRecord> {
+        validate_new_folder(name)?;
+        let rows = self.local_metadata_rows()?;
+        let mut existing = rows
+            .iter()
+            .filter_map(|(rowid, record)| match record {
+                LocalMetadataRecord::Folder(folder) => Some((*rowid, folder.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if existing.len() >= MAX_FOLDERS {
+            return Err(StoreError::FolderLimit);
+        }
+        let ids = existing
+            .iter()
+            .map(|(_, folder)| folder.id)
+            .collect::<HashSet<_>>();
+        let id = (0..FOLDER_ID_RETRY_LIMIT)
+            .find_map(|_| {
+                let mut id = [0u8; 16];
+                rng.fill_bytes(&mut id);
+                (!ids.contains(&id)).then_some(id)
+            })
+            .ok_or(StoreError::FolderIdCollision)?;
+
+        existing.sort_by_key(|(rowid, folder)| (folder.order, *rowid, folder.id));
+        let compact = existing
+            .last()
+            .is_some_and(|(_, folder)| folder.order == u32::MAX);
+        let order = if compact {
+            u32::try_from(existing.len()).map_err(|_| StoreError::FolderLimit)?
+        } else {
+            existing
+                .last()
+                .map_or(0, |(_, folder)| folder.order.saturating_add(1))
+        };
+        let folder = FolderRecord {
+            id,
+            name: name.to_owned(),
+            order,
+        };
+
+        let mut updates = Vec::new();
+        if compact {
+            for (position, (rowid, mut record)) in existing.into_iter().enumerate() {
+                record.order = u32::try_from(position).map_err(|_| StoreError::FolderLimit)?;
+                let sealed = self.seal_local_metadata(&LocalMetadataRecord::Folder(record), rng)?;
+                updates.push((rowid, sealed));
+            }
+        }
+        let sealed = self.seal_local_metadata(&LocalMetadataRecord::Folder(folder.clone()), rng)?;
+        let tx = self.conn.unchecked_transaction()?;
+        for (rowid, sealed) in updates {
+            tx.execute(
+                "UPDATE local_metadata SET blob = ?2 WHERE rowid_ = ?1",
+                params![rowid, sealed],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO local_metadata (blob) VALUES (?1)",
+            params![sealed],
+        )?;
+        tx.commit()?;
+        Ok(folder)
+    }
+
+    /// Read active folder definitions in deterministic presentation order.
+    ///
+    /// Persisted manual order is primary, durable insertion order is the first
+    /// technical tie-breaker, and stable id is the final technical tie-breaker.
+    pub fn folders(&self) -> Result<Vec<FolderRecord>> {
+        let mut folders = self
+            .local_metadata_rows()?
+            .into_iter()
+            .filter_map(|(rowid, record)| match record {
+                LocalMetadataRecord::Folder(folder) => Some((rowid, folder)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        folders.sort_by_key(|(rowid, folder)| (folder.order, *rowid, folder.id));
+        Ok(folders.into_iter().map(|(_, folder)| folder).collect())
+    }
+
+    /// Read one folder definition by its exact stable id.
+    pub fn folder(&self, id: &[u8; 16]) -> Result<Option<FolderRecord>> {
+        Ok(self
+            .get_local_metadata(&LocalMetadataKey::Folder(*id))?
+            .and_then(|record| match record {
+                LocalMetadataRecord::Folder(folder) => Some(folder),
+                _ => None,
+            }))
+    }
+
+    /// Atomically rename a folder while preserving id, order, and membership.
+    pub fn rename_folder(
+        &self,
+        id: &[u8; 16],
+        name: &str,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<FolderRecord> {
+        validate_new_folder(name)?;
+        let (rowid, mut folder) = self
+            .local_metadata_rows()?
+            .into_iter()
+            .find_map(|(rowid, record)| match record {
+                LocalMetadataRecord::Folder(folder) if folder.id == *id => Some((rowid, folder)),
+                _ => None,
+            })
+            .ok_or(StoreError::UnknownFolder)?;
+        folder.name = name.to_owned();
+        let sealed = self.seal_local_metadata(&LocalMetadataRecord::Folder(folder.clone()), rng)?;
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE local_metadata SET blob = ?2 WHERE rowid_ = ?1",
+            params![rowid, sealed],
+        )?;
+        tx.commit()?;
+        Ok(folder)
+    }
+
+    /// Atomically rewrite manual order from the complete active folder id set.
+    pub fn reorder_folders(
+        &self,
+        ordered: &[[u8; 16]],
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Vec<FolderRecord>> {
+        if ordered.len() > MAX_FOLDERS {
+            return Err(StoreError::InvalidFolderOrder);
+        }
+        let rows = self.local_metadata_rows()?;
+        let existing = rows
+            .iter()
+            .filter_map(|(rowid, record)| match record {
+                LocalMetadataRecord::Folder(folder) => Some((folder.id, (*rowid, folder.clone()))),
+                _ => None,
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        let unique = ordered.iter().copied().collect::<HashSet<_>>();
+        if ordered.len() != existing.len()
+            || unique.len() != ordered.len()
+            || unique.iter().any(|id| !existing.contains_key(id))
+        {
+            return Err(StoreError::InvalidFolderOrder);
+        }
+        let mut reordered = Vec::with_capacity(ordered.len());
+        let mut updates = Vec::with_capacity(ordered.len());
+        for (position, id) in ordered.iter().enumerate() {
+            let (rowid, mut folder) = existing
+                .get(id)
+                .cloned()
+                .ok_or(StoreError::InvalidFolderOrder)?;
+            folder.order = u32::try_from(position).map_err(|_| StoreError::InvalidFolderOrder)?;
+            let sealed =
+                self.seal_local_metadata(&LocalMetadataRecord::Folder(folder.clone()), rng)?;
+            updates.push((rowid, sealed));
+            reordered.push(folder);
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        for (rowid, sealed) in updates {
+            tx.execute(
+                "UPDATE local_metadata SET blob = ?2 WHERE rowid_ = ?1",
+                params![rowid, sealed],
+            )?;
+        }
+        tx.commit()?;
+        Ok(reordered)
+    }
+
+    /// Count every durable assignment for a folder, including stale targets.
+    pub fn folder_assignment_count(&self, id: &[u8; 16]) -> Result<usize> {
+        if self.folder(id)?.is_none() {
+            return Err(StoreError::UnknownFolder);
+        }
+        Ok(self
+            .local_metadata_rows()?
+            .into_iter()
+            .filter(|(_, record)| {
+                matches!(record, LocalMetadataRecord::FolderAssignment(assignment) if assignment.folder == *id)
+            })
+            .count())
+    }
+
+    /// Atomically delete a folder and every assignment that points to it.
+    pub fn delete_folder(&self, id: &[u8; 16]) -> Result<usize> {
+        let rows = self.local_metadata_rows()?;
+        let mut folder_row = None;
+        let mut assignment_rows = Vec::new();
+        for (rowid, record) in rows {
+            match record {
+                LocalMetadataRecord::Folder(folder) if folder.id == *id => folder_row = Some(rowid),
+                LocalMetadataRecord::FolderAssignment(assignment) if assignment.folder == *id => {
+                    assignment_rows.push(rowid)
+                }
+                _ => {}
+            }
+        }
+        let folder_row = folder_row.ok_or(StoreError::UnknownFolder)?;
+        let count = assignment_rows.len();
+        let tx = self.conn.unchecked_transaction()?;
+        for rowid in assignment_rows {
+            tx.execute(
+                "DELETE FROM local_metadata WHERE rowid_ = ?1",
+                params![rowid],
+            )?;
+        }
+        tx.execute(
+            "DELETE FROM local_metadata WHERE rowid_ = ?1",
+            params![folder_row],
+        )?;
+        tx.commit()?;
+        Ok(count)
+    }
+
+    /// Atomically move one available typed conversation into a folder.
+    ///
+    /// The conversation-keyed F5 record makes replacement single-membership
+    /// by construction. Repeating the same destination is an honest no-op.
+    pub fn move_conversation_to_folder(
+        &self,
+        conversation: &ConversationId,
+        folder: &[u8; 16],
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<bool> {
+        let rows = self.local_metadata_rows()?;
+        if !rows.iter().any(
+            |(_, record)| matches!(record, LocalMetadataRecord::Folder(item) if item.id == *folder),
+        ) {
+            return Err(StoreError::UnknownFolder);
+        }
+        if !self.conversation_available(conversation)? {
+            return Err(StoreError::UnavailableConversation);
+        }
+        let existing = rows.iter().find_map(|(rowid, record)| match record {
+            LocalMetadataRecord::FolderAssignment(assignment)
+                if assignment.conversation == *conversation =>
+            {
+                Some((*rowid, assignment.folder))
+            }
+            _ => None,
+        });
+        if existing.is_some_and(|(_, current)| current == *folder) {
+            return Ok(false);
+        }
+        if existing.is_none()
+            && rows
+                .iter()
+                .filter(|(_, record)| matches!(record, LocalMetadataRecord::FolderAssignment(_)))
+                .count()
+                >= MAX_FOLDER_ASSIGNMENTS
+        {
+            return Err(StoreError::FolderAssignmentLimit);
+        }
+        let record = LocalMetadataRecord::FolderAssignment(FolderAssignment {
+            conversation: conversation.clone(),
+            folder: *folder,
+        });
+        let sealed = self.seal_local_metadata(&record, rng)?;
+        let tx = self.conn.unchecked_transaction()?;
+        if let Some((rowid, _)) = existing {
+            tx.execute(
+                "UPDATE local_metadata SET blob = ?2 WHERE rowid_ = ?1",
+                params![rowid, sealed],
+            )?;
+        } else {
+            tx.execute(
+                "INSERT INTO local_metadata (blob) VALUES (?1)",
+                params![sealed],
+            )?;
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Atomically move an available typed conversation to virtual Unfiled.
+    pub fn unfile_conversation(&self, conversation: &ConversationId) -> Result<bool> {
+        if !self.conversation_available(conversation)? {
+            return Err(StoreError::UnavailableConversation);
+        }
+        self.remove_folder_assignment(conversation)
+    }
+
+    /// Return the active folder for one available conversation.
+    ///
+    /// A missing folder definition is presented as Unfiled without mutating
+    /// the durable stale assignment.
+    pub fn folder_for_conversation(
+        &self,
+        conversation: &ConversationId,
+    ) -> Result<Option<FolderRecord>> {
+        if !self.conversation_available(conversation)? {
+            return Err(StoreError::UnavailableConversation);
+        }
+        let assignment = self
+            .get_local_metadata(&LocalMetadataKey::FolderAssignment(conversation.clone()))?
+            .and_then(|record| match record {
+                LocalMetadataRecord::FolderAssignment(assignment) => Some(assignment),
+                _ => None,
+            });
+        match assignment {
+            Some(assignment) => self.folder(&assignment.folder),
+            None => Ok(None),
+        }
+    }
+
+    /// Active available typed membership for one folder.
+    pub fn folder_members(&self, folder: &[u8; 16]) -> Result<Vec<ConversationId>> {
+        if self.folder(folder)?.is_none() {
+            return Err(StoreError::UnknownFolder);
+        }
+        let assigned = self
+            .local_metadata_rows()?
+            .into_iter()
+            .filter_map(|(_, record)| match record {
+                LocalMetadataRecord::FolderAssignment(assignment)
+                    if assignment.folder == *folder =>
+                {
+                    Some(assignment.conversation)
+                }
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        Ok(self
+            .eligible_conversations()?
+            .into_iter()
+            .filter(|conversation| assigned.contains(conversation))
+            .collect())
+    }
+
+    /// Classify active conversations as All, Unfiled, or one exact folder.
+    pub fn folder_conversations(
+        &self,
+        selection: FolderSelection,
+    ) -> Result<FolderConversationResult> {
+        if let FolderSelection::Folder(folder) = selection {
+            if self.folder(&folder)?.is_none() {
+                return Err(StoreError::UnknownFolder);
+            }
+        }
+        let definitions = self
+            .folders()?
+            .into_iter()
+            .map(|folder| folder.id)
+            .collect::<HashSet<_>>();
+        let assignments = self
+            .local_metadata_rows()?
+            .into_iter()
+            .filter_map(|(_, record)| match record {
+                LocalMetadataRecord::FolderAssignment(assignment) => {
+                    Some((assignment.conversation, assignment.folder))
+                }
+                _ => None,
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        let conversations = self
+            .eligible_conversations()?
+            .into_iter()
+            .filter(|conversation| match selection {
+                FolderSelection::All => true,
+                FolderSelection::Unfiled => assignments
+                    .get(conversation)
+                    .is_none_or(|folder| !definitions.contains(folder)),
+                FolderSelection::Folder(folder) => assignments
+                    .get(conversation)
+                    .is_some_and(|id| *id == folder),
+            })
+            .collect();
+        Ok(FolderConversationResult {
+            selection,
+            conversations,
+        })
+    }
+
+    /// Report stale durable folder assignments without sealed row material.
+    pub fn stale_folder_assignments(&self) -> Result<Vec<StaleFolderAssignment>> {
+        let rows = self.local_metadata_rows()?;
+        let folders = rows
+            .iter()
+            .filter_map(|(_, record)| match record {
+                LocalMetadataRecord::Folder(folder) => Some(folder.id),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        let available = self.available_conversations()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(_, record)| match record {
+                LocalMetadataRecord::FolderAssignment(assignment) => {
+                    let folder_exists = folders.contains(&assignment.folder);
+                    let target_exists = available.contains(&assignment.conversation);
+                    let reason = match (folder_exists, target_exists) {
+                        (true, true) => return None,
+                        (false, true) => StaleFolderReason::MissingFolder,
+                        (true, false) => StaleFolderReason::UnavailableConversation,
+                        (false, false) => StaleFolderReason::MissingFolderAndConversation,
+                    };
+                    Some(StaleFolderAssignment {
+                        folder: assignment.folder,
+                        conversation: assignment.conversation,
+                        reason,
+                    })
+                }
+                _ => None,
+            })
+            .collect())
+    }
+
+    /// Remove one exact folder assignment only while it remains stale.
+    pub fn cleanup_stale_folder_assignment(
+        &self,
+        folder: &[u8; 16],
+        conversation: &ConversationId,
+    ) -> Result<bool> {
+        let stale = self
+            .stale_folder_assignments()?
+            .into_iter()
+            .any(|record| record.folder == *folder && record.conversation == *conversation);
+        if !stale {
+            return Err(StoreError::FolderAssignmentActive);
+        }
+        self.remove_folder_assignment(conversation)
+    }
+
+    fn remove_folder_assignment(&self, conversation: &ConversationId) -> Result<bool> {
+        let rowid =
+            self.local_metadata_rows()?
+                .into_iter()
+                .find_map(|(rowid, record)| match record {
+                    LocalMetadataRecord::FolderAssignment(assignment)
+                        if assignment.conversation == *conversation =>
+                    {
+                        Some(rowid)
+                    }
+                    _ => None,
+                });
+        let Some(rowid) = rowid else {
+            return Ok(false);
+        };
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM local_metadata WHERE rowid_ = ?1",
+            params![rowid],
+        )?;
+        tx.commit()?;
+        Ok(true)
     }
 
     /// Create a label with a cryptographically random stable id.
@@ -882,6 +1388,14 @@ fn validate_new_label(name: &str, color: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_new_folder(name: &str) -> Result<()> {
+    if valid_folder_name(name) {
+        Ok(())
+    } else {
+        Err(StoreError::InvalidFolderName)
+    }
+}
+
 #[cfg(test)]
 mod label_tests {
     use std::collections::{BTreeSet, VecDeque};
@@ -965,6 +1479,452 @@ mod label_tests {
             .unwrap();
         }
         tx.commit().unwrap();
+    }
+
+    #[test]
+    fn folder_exact_unicode_whitespace_duplicates_and_collision_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, mut rng) = store_at(&dir.path().join("folders.db"), 101);
+        let exact = "e\u{301} 👩🏽‍🚀 \u{2067}עברית\u{2069}";
+        let first = store.create_folder(exact, &mut rng).unwrap();
+        let second = store.create_folder(exact, &mut rng).unwrap();
+        assert_ne!(first.id, second.id);
+        assert_eq!(first.name.as_bytes(), exact.as_bytes());
+        assert_eq!(store.folders().unwrap(), vec![first.clone(), second]);
+
+        let fixed = "\u{0009}\u{000a}\u{000b}\u{000c}\u{000d}\u{0020}\u{0085}\u{200e}\u{200f}\u{2028}\u{2029}";
+        assert!(matches!(
+            store.create_folder(fixed, &mut rng),
+            Err(StoreError::InvalidFolderName)
+        ));
+        assert!(store.create_folder("\u{00a0}", &mut rng).is_ok());
+        let exact_limit = "é".repeat(MAX_LOCAL_METADATA_STRING_BYTES / 2);
+        assert!(store.create_folder(&exact_limit, &mut rng).is_ok());
+        assert!(matches!(
+            store.create_folder(&(exact_limit + "a"), &mut rng),
+            Err(StoreError::InvalidFolderName)
+        ));
+
+        insert_direct(
+            &store,
+            [LocalMetadataRecord::Folder(FolderRecord {
+                id: [7; 16],
+                name: "collision".to_owned(),
+                order: 99,
+            })],
+            &mut rng,
+        );
+        let mut retry_rng = ScriptedRng::new(
+            [vec![7; 16], vec![8; 16], vec![9; 64]]
+                .into_iter()
+                .flatten()
+                .collect(),
+        );
+        assert_eq!(
+            store.create_folder("retry", &mut retry_rng).unwrap().id,
+            [8; 16]
+        );
+        let mut exhausted = ScriptedRng::new(vec![7; 16 * FOLDER_ID_RETRY_LIMIT]);
+        assert!(matches!(
+            store.create_folder("never", &mut exhausted),
+            Err(StoreError::FolderIdCollision)
+        ));
+    }
+
+    #[test]
+    fn folder_order_rename_reorder_and_extreme_append_are_deterministic() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, mut rng) = store_at(&dir.path().join("folders.db"), 102);
+        insert_direct(
+            &store,
+            [
+                LocalMetadataRecord::Folder(FolderRecord {
+                    id: [2; 16],
+                    name: "second tie".to_owned(),
+                    order: 7,
+                }),
+                LocalMetadataRecord::Folder(FolderRecord {
+                    id: [1; 16],
+                    name: "first tie".to_owned(),
+                    order: 7,
+                }),
+                LocalMetadataRecord::Folder(FolderRecord {
+                    id: [3; 16],
+                    name: "extreme".to_owned(),
+                    order: u32::MAX,
+                }),
+            ],
+            &mut rng,
+        );
+        assert_eq!(
+            store
+                .folders()
+                .unwrap()
+                .iter()
+                .map(|folder| folder.id)
+                .collect::<Vec<_>>(),
+            vec![[2; 16], [1; 16], [3; 16]]
+        );
+        let appended = store.create_folder("appended", &mut rng).unwrap();
+        assert_eq!(appended.order, 3);
+        assert_eq!(store.folders().unwrap().last().unwrap().id, appended.id);
+
+        let renamed = store
+            .rename_folder(&[1; 16], "exact renamed 🧭", &mut rng)
+            .unwrap();
+        assert_eq!(renamed.id, [1; 16]);
+        assert_eq!(renamed.order, 1);
+        let order = vec![appended.id, [3; 16], [1; 16], [2; 16]];
+        let reordered = store.reorder_folders(&order, &mut rng).unwrap();
+        assert_eq!(
+            reordered.iter().map(|folder| folder.id).collect::<Vec<_>>(),
+            order
+        );
+        assert_eq!(
+            reordered
+                .iter()
+                .map(|folder| folder.order)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+        assert!(matches!(
+            store.reorder_folders(&[appended.id, appended.id], &mut rng),
+            Err(StoreError::InvalidFolderOrder)
+        ));
+        assert!(matches!(
+            store.reorder_folders(&[[9; 16], [3; 16], [1; 16], [2; 16]], &mut rng),
+            Err(StoreError::InvalidFolderOrder)
+        ));
+    }
+
+    #[test]
+    fn folder_move_unfile_delete_stale_and_recreate_semantics() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("folders.db");
+        let (store, mut rng) = store_at(&db, 103);
+        let first = store.create_folder("Trip", &mut rng).unwrap();
+        let second = store.create_folder("Trip", &mut rng).unwrap();
+        let note = ConversationId::NoteToSelf;
+        assert_eq!(
+            store
+                .folder_conversations(FolderSelection::All)
+                .unwrap()
+                .conversations,
+            vec![note.clone()]
+        );
+        assert_eq!(
+            store
+                .folder_conversations(FolderSelection::Unfiled)
+                .unwrap()
+                .conversations,
+            vec![note.clone()]
+        );
+        assert!(store
+            .move_conversation_to_folder(&note, &first.id, &mut rng)
+            .unwrap());
+        assert!(!store
+            .move_conversation_to_folder(&note, &first.id, &mut rng)
+            .unwrap());
+        assert_eq!(store.folder_members(&first.id).unwrap(), vec![note.clone()]);
+        assert_eq!(
+            store.folder_for_conversation(&note).unwrap(),
+            Some(first.clone())
+        );
+        assert!(store
+            .move_conversation_to_folder(&note, &second.id, &mut rng)
+            .unwrap());
+        assert!(store.folder_members(&first.id).unwrap().is_empty());
+        assert_eq!(
+            store.folder_members(&second.id).unwrap(),
+            vec![note.clone()]
+        );
+        assert!(store.unfile_conversation(&note).unwrap());
+        assert!(!store.unfile_conversation(&note).unwrap());
+
+        assert!(store
+            .move_conversation_to_folder(&note, &first.id, &mut rng)
+            .unwrap());
+        assert_eq!(store.folder_assignment_count(&first.id).unwrap(), 1);
+        assert_eq!(store.delete_folder(&first.id).unwrap(), 1);
+        assert_eq!(store.folder_for_conversation(&note).unwrap(), None);
+        let recreated = store.create_folder("Trip", &mut rng).unwrap();
+        assert_ne!(recreated.id, first.id);
+        assert!(store.folder_members(&recreated.id).unwrap().is_empty());
+
+        insert_direct(
+            &store,
+            [LocalMetadataRecord::FolderAssignment(FolderAssignment {
+                conversation: note.clone(),
+                folder: [0xee; 16],
+            })],
+            &mut rng,
+        );
+        assert_eq!(
+            store.stale_folder_assignments().unwrap(),
+            vec![StaleFolderAssignment {
+                folder: [0xee; 16],
+                conversation: note.clone(),
+                reason: StaleFolderReason::MissingFolder,
+            }]
+        );
+        assert_eq!(store.folder_for_conversation(&note).unwrap(), None);
+        assert_eq!(
+            store
+                .folder_conversations(FolderSelection::Unfiled)
+                .unwrap()
+                .conversations,
+            vec![note.clone()]
+        );
+        assert!(store
+            .cleanup_stale_folder_assignment(&[0xee; 16], &note)
+            .unwrap());
+        assert!(store
+            .move_conversation_to_folder(&note, &recreated.id, &mut rng)
+            .unwrap());
+        assert!(matches!(
+            store.cleanup_stale_folder_assignment(&recreated.id, &note),
+            Err(StoreError::FolderAssignmentActive)
+        ));
+        let missing_peer = ConversationId::Peer([0xdd; 32]);
+        let missing_group = ConversationId::Group([0xcc; 32]);
+        insert_direct(
+            &store,
+            [
+                LocalMetadataRecord::FolderAssignment(FolderAssignment {
+                    conversation: missing_peer.clone(),
+                    folder: recreated.id,
+                }),
+                LocalMetadataRecord::FolderAssignment(FolderAssignment {
+                    conversation: missing_group.clone(),
+                    folder: [0xab; 16],
+                }),
+            ],
+            &mut rng,
+        );
+        assert_eq!(
+            store.stale_folder_assignments().unwrap(),
+            vec![
+                StaleFolderAssignment {
+                    folder: recreated.id,
+                    conversation: missing_peer.clone(),
+                    reason: StaleFolderReason::UnavailableConversation,
+                },
+                StaleFolderAssignment {
+                    folder: [0xab; 16],
+                    conversation: missing_group.clone(),
+                    reason: StaleFolderReason::MissingFolderAndConversation,
+                },
+            ]
+        );
+        assert!(store
+            .cleanup_stale_folder_assignment(&recreated.id, &missing_peer)
+            .unwrap());
+        assert!(store
+            .cleanup_stale_folder_assignment(&[0xab; 16], &missing_group)
+            .unwrap());
+        drop(store);
+        let reopened = Store::open(&db, b"pass").unwrap();
+        assert!(reopened.stale_folder_assignments().unwrap().is_empty());
+    }
+
+    #[test]
+    fn folder_exact_limits_keep_restored_rows_manageable() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, mut rng) = store_at(&dir.path().join("folders.db"), 104);
+        let folders = (0..MAX_FOLDERS)
+            .map(|index| {
+                LocalMetadataRecord::Folder(FolderRecord {
+                    id: (index as u128).to_le_bytes(),
+                    name: format!("folder {index}"),
+                    order: index as u32,
+                })
+            })
+            .collect::<Vec<_>>();
+        insert_direct(&store, folders, &mut rng);
+        assert!(matches!(
+            store.create_folder("one over", &mut rng),
+            Err(StoreError::FolderLimit)
+        ));
+        assert_eq!(store.folders().unwrap().len(), MAX_FOLDERS);
+        assert_eq!(store.delete_folder(&[0; 16]).unwrap(), 0);
+        assert!(store.create_folder("replacement", &mut rng).is_ok());
+
+        let destination = store.folders().unwrap()[0].id;
+        insert_direct(
+            &store,
+            (0..MAX_FOLDER_ASSIGNMENTS).map(|index| {
+                let mut peer = [0u8; 32];
+                peer[..8].copy_from_slice(&(index as u64).to_le_bytes());
+                LocalMetadataRecord::FolderAssignment(FolderAssignment {
+                    conversation: ConversationId::Peer(peer),
+                    folder: destination,
+                })
+            }),
+            &mut rng,
+        );
+        assert!(matches!(
+            store.move_conversation_to_folder(&ConversationId::NoteToSelf, &destination, &mut rng,),
+            Err(StoreError::FolderAssignmentLimit)
+        ));
+        let stale = store.stale_folder_assignments().unwrap();
+        assert_eq!(stale.len(), MAX_FOLDER_ASSIGNMENTS);
+        assert!(store
+            .cleanup_stale_folder_assignment(&destination, &stale[0].conversation)
+            .unwrap());
+        assert!(store
+            .move_conversation_to_folder(&ConversationId::NoteToSelf, &destination, &mut rng,)
+            .unwrap());
+    }
+
+    #[test]
+    fn folder_create_rename_reorder_and_cascade_failures_are_atomic_across_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("folders.db");
+        let (store, mut rng) = store_at(&db, 105);
+
+        let raw = Connection::open(&db).unwrap();
+        raw.execute_batch(
+            "CREATE TRIGGER fail_folder_create BEFORE INSERT ON local_metadata BEGIN SELECT RAISE(FAIL, 'injected folder create'); END;",
+        )
+        .unwrap();
+        drop(raw);
+        assert!(matches!(
+            store.create_folder("create fails", &mut rng),
+            Err(StoreError::Db(_))
+        ));
+        let raw = Connection::open(&db).unwrap();
+        raw.execute_batch("DROP TRIGGER fail_folder_create")
+            .unwrap();
+        drop(raw);
+        assert!(store.folders().unwrap().is_empty());
+
+        let first = store.create_folder("first", &mut rng).unwrap();
+        let second = store.create_folder("second", &mut rng).unwrap();
+        store
+            .move_conversation_to_folder(&ConversationId::NoteToSelf, &first.id, &mut rng)
+            .unwrap();
+        let before = store.folders().unwrap();
+        let raw = Connection::open(&db).unwrap();
+        let first_row: i64 = raw
+            .query_row(
+                "SELECT rowid_ FROM local_metadata ORDER BY rowid_ LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        raw.execute_batch(
+            "CREATE TRIGGER fail_folder_rename BEFORE UPDATE ON local_metadata BEGIN SELECT RAISE(FAIL, 'injected folder rename'); END;",
+        )
+        .unwrap();
+        drop(raw);
+        assert!(matches!(
+            store.rename_folder(&first.id, "changed", &mut rng),
+            Err(StoreError::Db(_))
+        ));
+        let raw = Connection::open(&db).unwrap();
+        raw.execute_batch("DROP TRIGGER fail_folder_rename")
+            .unwrap();
+        raw.execute_batch(&format!(
+            "CREATE TRIGGER fail_folder_reorder BEFORE UPDATE ON local_metadata WHEN OLD.rowid_ = {first_row} BEGIN SELECT RAISE(FAIL, 'injected folder reorder'); END;"
+        ))
+        .unwrap();
+        drop(raw);
+        assert!(matches!(
+            store.reorder_folders(&[second.id, first.id], &mut rng),
+            Err(StoreError::Db(_))
+        ));
+        let raw = Connection::open(&db).unwrap();
+        raw.execute_batch("DROP TRIGGER fail_folder_reorder")
+            .unwrap();
+        raw.execute_batch(&format!(
+            "CREATE TRIGGER fail_folder_cascade BEFORE DELETE ON local_metadata WHEN OLD.rowid_ = {first_row} BEGIN SELECT RAISE(FAIL, 'injected folder cascade'); END;"
+        ))
+        .unwrap();
+        drop(raw);
+        assert!(matches!(
+            store.delete_folder(&first.id),
+            Err(StoreError::Db(_))
+        ));
+        drop(store);
+
+        let raw = Connection::open(&db).unwrap();
+        raw.execute_batch("DROP TRIGGER fail_folder_cascade")
+            .unwrap();
+        drop(raw);
+        let reopened = Store::open(&db, b"pass").unwrap();
+        assert_eq!(reopened.folders().unwrap(), before);
+        assert_eq!(
+            reopened
+                .folder_for_conversation(&ConversationId::NoteToSelf)
+                .unwrap()
+                .unwrap()
+                .id,
+            first.id
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn arbitrary_valid_folder_operations_match_a_single_membership_model(
+            ops in prop::collection::vec(any::<u8>(), 0..160)
+        ) {
+            let dir = tempfile::tempdir().unwrap();
+            let (store, mut rng) = store_at(&dir.path().join("folders.db"), 0x000b_1018);
+            let mut model = Vec::<FolderRecord>::new();
+            let mut assigned = None::<[u8; 16]>;
+
+            for (step, op) in ops.into_iter().enumerate() {
+                match op % 6 {
+                    0 if model.len() < 12 => {
+                        let name = if step % 2 == 0 {
+                            format!("same 🧭 {step}")
+                        } else {
+                            "duplicate".to_owned()
+                        };
+                        model.push(store.create_folder(&name, &mut rng).unwrap());
+                    }
+                    1 if !model.is_empty() => {
+                        let index = step % model.len();
+                        let updated = store
+                            .rename_folder(&model[index].id, &format!("e\u{301} {step}"), &mut rng)
+                            .unwrap();
+                        model[index] = updated;
+                    }
+                    2 if !model.is_empty() => {
+                        let id = model[step % model.len()].id;
+                        let changed = store
+                            .move_conversation_to_folder(&ConversationId::NoteToSelf, &id, &mut rng)
+                            .unwrap();
+                        prop_assert_eq!(changed, assigned != Some(id));
+                        assigned = Some(id);
+                    }
+                    3 => {
+                        let changed = store.unfile_conversation(&ConversationId::NoteToSelf).unwrap();
+                        prop_assert_eq!(changed, assigned.take().is_some());
+                    }
+                    4 if !model.is_empty() => {
+                        let index = step % model.len();
+                        let removed = model.remove(index);
+                        let expected = usize::from(assigned == Some(removed.id));
+                        prop_assert_eq!(store.delete_folder(&removed.id).unwrap(), expected);
+                        if expected == 1 { assigned = None; }
+                    }
+                    5 if model.len() > 1 => {
+                        let shift = step % model.len();
+                        model.rotate_left(shift);
+                        let ids = model.iter().map(|folder| folder.id).collect::<Vec<_>>();
+                        model = store.reorder_folders(&ids, &mut rng).unwrap();
+                    }
+                    _ => {}
+                }
+                prop_assert_eq!(store.folders().unwrap(), model.clone());
+                let actual = store
+                    .folder_for_conversation(&ConversationId::NoteToSelf)
+                    .unwrap()
+                    .map(|folder| folder.id);
+                prop_assert_eq!(actual, assigned);
+            }
+        }
     }
 
     #[test]

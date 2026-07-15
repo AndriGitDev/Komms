@@ -11,14 +11,16 @@ use serde_json::{json, Value};
 
 use kult_node::{
     AttachmentConversation, AttachmentDirection, AttachmentInfo, CarrierCapability,
-    CarrierCapabilitySnapshot, ContentStatus, Event, GroupInfo, GroupMentionCapability,
+    CarrierCapabilitySnapshot, ContentStatus, Event, FolderConversationInfo,
+    FolderConversationList, FolderInfo, FolderSelection, GroupInfo, GroupMentionCapability,
     LabelConversationInfo, LabelFilterInfo, LabelInfo, MentionCapabilityIssueReason,
-    NodeStaleLabelReason, ScheduledConversation, ScheduledMessageInfo, StaleLabelInfo,
-    NOTE_TO_SELF_CONVERSATION_ID,
+    NodeStaleFolderReason, NodeStaleLabelReason, ScheduledConversation, ScheduledMessageInfo,
+    StaleFolderInfo, StaleLabelInfo, NOTE_TO_SELF_CONVERSATION_ID,
 };
 use kult_store::{
-    valid_label_color, valid_label_name, ConversationId, DeliveryState, Direction,
-    GroupMessageRecord, MediaTransferState, MessageRecord, NoteMessageRecord, MAX_LABELS,
+    valid_folder_name, valid_label_color, valid_label_name, ConversationId, DeliveryState,
+    Direction, GroupMessageRecord, MediaTransferState, MessageRecord, NoteMessageRecord,
+    MAX_FOLDERS, MAX_LABELS,
 };
 use kult_transport::DeliveryHint;
 
@@ -42,7 +44,7 @@ pub fn parse_request(line: &str) -> Result<Request, String> {
         .as_object()
         .ok_or_else(|| "request must be a JSON object".to_owned())?;
     if let Some(op) = object.get("op").and_then(Value::as_str) {
-        if let Some(allowed) = label_request_fields(op) {
+        if let Some(allowed) = local_metadata_request_fields(op) {
             if let Some(unknown) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
                 return Err(format!("unknown request field: {unknown}"));
             }
@@ -51,8 +53,19 @@ pub fn parse_request(line: &str) -> Result<Request, String> {
     serde_json::from_value(value).map_err(|error| error.to_string())
 }
 
-fn label_request_fields(op: &str) -> Option<&'static [&'static str]> {
+fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
     match op {
+        "folder_create" => Some(&["id", "op", "name"]),
+        "folders" | "folder_stale" => Some(&["id", "op"]),
+        "folder_get" | "folder_delete_preview" | "folder_membership" => {
+            Some(&["id", "op", "folder"])
+        }
+        "folder_rename" => Some(&["id", "op", "folder", "name"]),
+        "folder_reorder" => Some(&["id", "op", "folders"]),
+        "folder_delete" => Some(&["id", "op", "folder", "confirm"]),
+        "folder_move" | "folder_stale_cleanup" => Some(&["id", "op", "folder", "target"]),
+        "folder_unfile" | "conversation_folder" => Some(&["id", "op", "target"]),
+        "folder_conversations" => Some(&["id", "op", "selection", "labels", "mode"]),
         "label_create" => Some(&["id", "op", "name", "color"]),
         "labels" | "label_stale" => Some(&["id", "op"]),
         "label_get" | "label_delete_preview" | "label_membership" => Some(&["id", "op", "label"]),
@@ -213,6 +226,82 @@ pub enum Op {
     },
     /// Read the reserved local note-to-self history.
     NoteToSelfMessages,
+    /// Create one private local conversation folder.
+    FolderCreate {
+        /// Exact UTF-8 folder name.
+        name: String,
+    },
+    /// List all private folders in deterministic manual order.
+    Folders,
+    /// Get one private folder by explicit 32-hex-character id.
+    FolderGet {
+        /// Stable folder id.
+        folder: String,
+    },
+    /// Rename one folder without changing id, order, or membership.
+    FolderRename {
+        /// Stable folder id.
+        folder: String,
+        /// Exact replacement UTF-8 name.
+        name: String,
+    },
+    /// Atomically reorder the explicit complete active folder id set.
+    FolderReorder {
+        /// Every active stable folder id exactly once, in desired order.
+        folders: Vec<String>,
+    },
+    /// Read assignment count before destructive folder deletion.
+    FolderDeletePreview {
+        /// Stable folder id.
+        folder: String,
+    },
+    /// Atomically delete one folder and move every assignment to Unfiled.
+    FolderDelete {
+        /// Stable folder id.
+        folder: String,
+        /// Must be true; automation cannot delete implicitly.
+        confirm: bool,
+    },
+    /// Idempotently move one exact typed conversation into a folder.
+    FolderMove {
+        /// Stable folder id.
+        folder: String,
+        /// Exact pairwise/group/note-to-self target.
+        target: LabelTargetInput,
+    },
+    /// Idempotently move one exact typed conversation to virtual Unfiled.
+    FolderUnfile {
+        /// Exact pairwise/group/note-to-self target.
+        target: LabelTargetInput,
+    },
+    /// List active typed membership for one folder.
+    FolderMembership {
+        /// Stable folder id.
+        folder: String,
+    },
+    /// Get the active folder for one exact typed conversation.
+    ConversationFolder {
+        /// Exact pairwise/group/note-to-self target.
+        target: LabelTargetInput,
+    },
+    /// Classify All/Unfiled/one folder and then apply an independent label filter.
+    FolderConversations {
+        /// Exact virtual or stable-folder selection.
+        selection: FolderSelectionInput,
+        /// Stable label ids for the second-stage filter.
+        labels: Vec<String>,
+        /// Match-any or match-all label semantics.
+        mode: LabelMatchInput,
+    },
+    /// Inspect render-safe stale folder assignments.
+    FolderStale,
+    /// Remove one exact assignment only if it remains stale.
+    FolderStaleCleanup {
+        /// Stable folder id referenced by the stale row.
+        folder: String,
+        /// Exact pairwise/group/note-to-self target.
+        target: LabelTargetInput,
+    },
     /// Create one private local label.
     LabelCreate {
         /// Exact UTF-8 label name.
@@ -425,6 +514,21 @@ pub enum LabelMatchInput {
     All,
 }
 
+/// Explicit virtual or stable-folder navigation selection.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FolderSelectionInput {
+    /// Every available conversation.
+    All,
+    /// Available conversations with no active assignment.
+    Unfiled,
+    /// One exact stable folder id.
+    Folder {
+        /// 32-hex-character folder id.
+        id: String,
+    },
+}
+
 /// A delivery hint on the wire.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -474,6 +578,9 @@ pub fn err(id: u64, message: &str) -> String {
 /// An event line for subscribed connections.
 pub fn event_line(event: &Event) -> String {
     let body = match event {
+        Event::FoldersChanged => json!({
+            "type": "folders_changed",
+        }),
         Event::LabelsChanged => json!({
             "type": "labels_changed",
         }),
@@ -576,6 +683,58 @@ pub fn event_line(event: &Event) -> String {
     json!({ "event": body }).to_string()
 }
 
+/// Render one folder without sealed bytes, nonces, or unrelated metadata.
+pub fn folder_json(folder: &FolderInfo) -> Value {
+    json!({
+        "id": hex_encode(&folder.id),
+        "name": folder.name,
+        "order": folder.order,
+    })
+}
+
+/// Render one exact available typed folder member and current local name.
+pub fn folder_conversation_json(conversation: &FolderConversationInfo) -> Value {
+    let mut value = conversation_id_json(&conversation.conversation);
+    if let Some(name) = &conversation.display_name {
+        value["name"] = json!(name);
+    }
+    value
+}
+
+/// Render one stale folder assignment without storage internals.
+pub fn stale_folder_json(stale: &StaleFolderInfo) -> Value {
+    json!({
+        "folder": hex_encode(&stale.folder),
+        "target": conversation_id_json(&stale.conversation),
+        "reason": match stale.reason {
+            NodeStaleFolderReason::MissingFolder => "missing_folder",
+            NodeStaleFolderReason::UnavailableConversation => "unavailable_conversation",
+            NodeStaleFolderReason::MissingFolderAndConversation => "missing_folder_and_conversation",
+        },
+    })
+}
+
+/// Render folder-first classification and independent label-filter state.
+pub fn folder_conversation_list_json(list: &FolderConversationList) -> Value {
+    json!({
+        "selection": folder_selection_json(list.selection),
+        "selected_labels": list.selected_labels.iter().map(|id| hex_encode(id)).collect::<Vec<_>>(),
+        "unavailable_labels": list.unavailable_labels.iter().map(|id| hex_encode(id)).collect::<Vec<_>>(),
+        "conversations": list.conversations.iter().map(folder_conversation_json).collect::<Vec<_>>(),
+    })
+}
+
+/// Render one exact folder selection without display-name inference.
+pub fn folder_selection_json(selection: FolderSelection) -> Value {
+    match selection {
+        FolderSelection::All => json!({ "type": "all" }),
+        FolderSelection::Unfiled => json!({ "type": "unfiled" }),
+        FolderSelection::Folder(folder) => {
+            json!({ "type": "folder", "id": hex_encode(&folder) })
+        }
+    }
+}
+
 /// Render one label without sealed bytes, nonces, or unrelated metadata.
 pub fn label_json(label: &LabelInfo) -> Value {
     json!({
@@ -634,6 +793,31 @@ pub fn parse_label(value: &str) -> Result<[u8; 16], String> {
         .map_err(|_| "label id must be 32 hexadecimal characters".to_owned())
 }
 
+/// Parse one unambiguous 16-byte folder id.
+pub fn parse_folder(value: &str) -> Result<[u8; 16], String> {
+    hex_decode(value)
+        .ok_or_else(|| "folder id must be 32 hexadecimal characters".to_owned())?
+        .try_into()
+        .map_err(|_| "folder id must be 32 hexadecimal characters".to_owned())
+}
+
+/// Parse and bound the complete folder reorder list before storage work.
+pub fn parse_folder_order(values: &[String]) -> Result<Vec<[u8; 16]>, String> {
+    if values.len() > MAX_FOLDERS {
+        return Err("folder reorder count exceeds 128".to_owned());
+    }
+    values.iter().map(|value| parse_folder(value)).collect()
+}
+
+/// Parse an explicit virtual or stable-folder navigation selection.
+pub fn parse_folder_selection(selection: &FolderSelectionInput) -> Result<FolderSelection, String> {
+    match selection {
+        FolderSelectionInput::All => Ok(FolderSelection::All),
+        FolderSelectionInput::Unfiled => Ok(FolderSelection::Unfiled),
+        FolderSelectionInput::Folder { id } => Ok(FolderSelection::Folder(parse_folder(id)?)),
+    }
+}
+
 /// Parse and bound selected ids before avoidable allocation or storage work.
 pub fn parse_selected_labels(values: &[String]) -> Result<Vec<[u8; 16]>, String> {
     if values.len() > MAX_LABELS {
@@ -653,6 +837,15 @@ pub fn validate_label_write(name: &str, color: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Enforce the shared exact-name contract at the RPC boundary.
+pub fn validate_folder_write(name: &str) -> Result<(), String> {
+    if valid_folder_name(name) {
+        Ok(())
+    } else {
+        Err("invalid folder name".to_owned())
+    }
+}
+
 fn conversation_id_json(conversation: &ConversationId) -> Value {
     match conversation {
         ConversationId::Peer(peer) => json!({ "type": "peer", "id": hex_encode(peer) }),
@@ -668,6 +861,16 @@ pub fn label_target_json(conversation: &ConversationId) -> Value {
 
 fn error_code(message: &str) -> &'static str {
     match message {
+        "invalid folder name" | "store error: invalid folder name" => "invalid_folder_name",
+        "folder id must be 32 hexadecimal characters" => "invalid_folder_id",
+        "store error: folder id does not exist" => "unknown_folder",
+        "store error: folder definition limit exhausted" => "folder_limit",
+        "store error: folder assignment limit exhausted" => "folder_assignment_limit",
+        "store error: folder id collision budget exhausted" => "folder_id_collision",
+        "store error: invalid complete folder order" => "invalid_folder_order",
+        "store error: folder assignment is active or absent" => "stale_folder_assignment_active",
+        "folder deletion requires explicit confirmation" => "confirmation_required",
+        "folder reorder count exceeds 128" => "folder_reorder_limit",
         "invalid label name" | "store error: invalid label name" => "invalid_label_name",
         "unsupported label color" | "store error: unsupported label color" => "invalid_label_color",
         "label id must be 32 hexadecimal characters" => "invalid_label_id",
@@ -1055,7 +1258,32 @@ mod tests {
             r#"{"id":7,"op":"label_create","name":"private","color":"red","extra":true}"#
         )
         .is_err());
-        assert!(parse_request(r#"{"id":8,"op":"labels"} {"id":9,"op":"labels"}"#).is_err());
+        let r = parse_request(
+            &json!({
+                "id": 8,
+                "op": "folder_move",
+                "folder": "ef".repeat(16),
+                "target": { "type": "peer", "id": "01".repeat(32) },
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(matches!(r.op, Op::FolderMove { .. }));
+        assert!(parse_request(
+            &json!({
+                "id": 9,
+                "op": "folder_move",
+                "folder": "ef".repeat(16),
+                "target": { "type": "peer", "id": "01".repeat(32), "name": "ambiguous" },
+            })
+            .to_string(),
+        )
+        .is_err());
+        assert!(
+            parse_request(r#"{"id":10,"op":"folder_create","name":"friends","extra":true}"#)
+                .is_err()
+        );
+        assert!(parse_request(r#"{"id":11,"op":"folders"} {"id":12,"op":"folders"}"#).is_err());
     }
 
     #[test]
@@ -1070,6 +1298,19 @@ mod tests {
             json!("store error: conversation label limit exhausted")
         );
         assert!(value.to_string().find("label name").is_none());
+    }
+
+    #[test]
+    fn folder_errors_are_stable_and_structured() {
+        let value: Value =
+            serde_json::from_str(&err(5, "store error: invalid complete folder order")).unwrap();
+        assert_eq!(value["id"], json!(5));
+        assert_eq!(value["error"]["code"], json!("invalid_folder_order"));
+        assert_eq!(
+            value["err"],
+            json!("store error: invalid complete folder order")
+        );
+        assert!(value.to_string().find("folder name").is_none());
     }
 
     #[test]

@@ -5,6 +5,72 @@
 use kult_store::{ConversationId, DeliveryState, MediaTransferState};
 use kult_transport::DeliveryHint;
 
+/// Render-safe private local folder definition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FolderInfo {
+    /// Random stable local id used by technical mutation APIs.
+    pub id: [u8; 16],
+    /// Exact user-authored UTF-8, without normalization or rewriting.
+    pub name: String,
+    /// Persisted manual order.
+    pub order: u32,
+}
+
+/// One explicit local folder-navigation selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FolderSelection {
+    /// Every available conversation.
+    All,
+    /// Available conversations with no active folder assignment.
+    Unfiled,
+    /// One exact stable folder id.
+    Folder([u8; 16]),
+}
+
+/// Render-safe available typed conversation in a folder view.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FolderConversationInfo {
+    /// Exact stable typed identity.
+    pub conversation: ConversationId,
+    /// Current local petname/group name; absent for note-to-self.
+    pub display_name: Option<String>,
+}
+
+/// Why one durable local folder assignment is stale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StaleFolderReason {
+    /// Its stable folder id has no definition.
+    MissingFolder,
+    /// Its exact conversation target is unavailable.
+    UnavailableConversation,
+    /// Both the folder definition and target are unavailable.
+    MissingFolderAndConversation,
+}
+
+/// Render-safe stale folder-assignment diagnostic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StaleFolderInfo {
+    /// Exact stable technical folder id.
+    pub folder: [u8; 16],
+    /// Exact typed target; never a name or list position.
+    pub conversation: ConversationId,
+    /// The unavailable side or sides.
+    pub reason: StaleFolderReason,
+}
+
+/// Deterministic folder classification composed with the active label filter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FolderConversationList {
+    /// Exact folder selection applied before label matching.
+    pub selection: FolderSelection,
+    /// Available selected label ids after canonical validation.
+    pub selected_labels: Vec<[u8; 16]>,
+    /// Requested label ids whose definitions are unavailable.
+    pub unavailable_labels: Vec<[u8; 16]>,
+    /// Available conversations matching both independent controls.
+    pub conversations: Vec<FolderConversationInfo>,
+}
+
 /// Canonical local label filter semantics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LabelMatchMode {
@@ -472,6 +538,9 @@ pub enum ContentStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event {
+    /// Local folder definitions, ordering, or assignments changed.
+    /// This event never enters an envelope, capability, group state, or transport.
+    FoldersChanged,
     /// Local label definitions or memberships changed; re-read label state.
     /// This event never enters an envelope, capability, group state, or transport.
     LabelsChanged,

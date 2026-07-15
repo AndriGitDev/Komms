@@ -51,6 +51,22 @@ COMMANDS:
     schedule-cancel ID              cancel a scheduled message
     note TEXT...                    append to the local note-to-self conversation
     note-messages                   local note-to-self history
+    folder-create NAME...           create a private local folder
+    folders                         list folders in deterministic manual order
+    folder-get FOLDER_ID            get one folder by 32-hex-character id
+    folder-rename FOLDER_ID NAME... rename without changing order or membership
+    folder-reorder FOLDER_ID...     atomically set the complete active id order
+    folder-delete FOLDER_ID [--yes] preview assignment count and confirm deletion;
+                                    automation must pass --yes
+    folder-move FOLDER_ID TARGET    move peer:HEX, group:HEX, or note-to-self
+    folder-unfile TARGET            move one typed conversation to Unfiled
+    folder-membership FOLDER_ID     list active typed members
+    conversation-folder TARGET      get one typed conversation's active folder
+    folder-conversations all|unfiled|FOLDER_ID [any|all [LABEL_ID]...]
+                                    list folder selection, then apply label filter
+    folder-stale                    inspect render-safe stale assignments
+    folder-stale-cleanup FOLDER_ID TARGET
+                                    remove one exact assignment only if stale
     label-create COLOR NAME...      create a private label; prints its stable id
     labels                          list labels in stable local order
     label-get LABEL_ID              get one label by 32-hex-character id
@@ -146,6 +162,35 @@ fn parse_label_id(value: &str) -> Result<String, String> {
         Ok(value.to_ascii_lowercase())
     } else {
         Err("label id must be 32 hexadecimal characters".to_owned())
+    }
+}
+
+fn parse_folder_id(value: &str) -> Result<String, String> {
+    if value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(value.to_ascii_lowercase())
+    } else {
+        Err("folder id must be 32 hexadecimal characters".to_owned())
+    }
+}
+
+fn validate_folder_write(name: &str) -> Result<(), String> {
+    let pattern_white_space = |value: char| {
+        matches!(
+            value,
+            '\u{0009}'
+                ..='\u{000d}'
+                    | '\u{0020}'
+                    | '\u{0085}'
+                    | '\u{200e}'
+                    | '\u{200f}'
+                    | '\u{2028}'
+                    | '\u{2029}'
+        )
+    };
+    if name.is_empty() || name.len() > 256 || name.chars().all(pattern_white_space) {
+        Err("invalid folder name".to_owned())
+    } else {
+        Ok(())
     }
 }
 
@@ -353,6 +398,126 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
             json!({ "op": "note_to_self_send", "body": args.join(" ") })
         }
         "note-messages" => json!({ "op": "note_to_self_messages" }),
+        "folder-create" => {
+            need(1)?;
+            let name = args.join(" ");
+            validate_folder_write(&name)?;
+            json!({ "op": "folder_create", "name": name })
+        }
+        "folders" => {
+            if !args.is_empty() {
+                return Err("folders: too many arguments".to_owned());
+            }
+            json!({ "op": "folders" })
+        }
+        "folder-get" => {
+            need(1)?;
+            if args.len() != 1 {
+                return Err("folder-get: too many arguments".to_owned());
+            }
+            json!({ "op": "folder_get", "folder": parse_folder_id(&args[0])? })
+        }
+        "folder-rename" => {
+            need(2)?;
+            let folder = parse_folder_id(&args[0])?;
+            let name = args[1..].join(" ");
+            validate_folder_write(&name)?;
+            json!({ "op": "folder_rename", "folder": folder, "name": name })
+        }
+        "folder-reorder" => {
+            if args.len() > 128 {
+                return Err("folder-reorder accepts at most 128 ids".to_owned());
+            }
+            let folders = args
+                .iter()
+                .map(|id| parse_folder_id(id))
+                .collect::<Result<Vec<_>, _>>()?;
+            json!({ "op": "folder_reorder", "folders": folders })
+        }
+        "folder-delete" => {
+            need(1)?;
+            if args.len() > 2 || (args.len() == 2 && args[1] != "--yes") {
+                return Err("folder-delete: expected FOLDER_ID [--yes]".to_owned());
+            }
+            json!({
+                "op": "folder_delete",
+                "folder": parse_folder_id(&args[0])?,
+                "confirm": args.get(1).map(String::as_str) == Some("--yes"),
+            })
+        }
+        "folder-move" => {
+            need(2)?;
+            if args.len() != 2 {
+                return Err("folder-move: too many arguments".to_owned());
+            }
+            json!({
+                "op": "folder_move",
+                "folder": parse_folder_id(&args[0])?,
+                "target": parse_label_target(&args[1])?,
+            })
+        }
+        "folder-unfile" => {
+            need(1)?;
+            if args.len() != 1 {
+                return Err("folder-unfile: too many arguments".to_owned());
+            }
+            json!({ "op": "folder_unfile", "target": parse_label_target(&args[0])? })
+        }
+        "folder-membership" => {
+            need(1)?;
+            if args.len() != 1 {
+                return Err("folder-membership: too many arguments".to_owned());
+            }
+            json!({ "op": "folder_membership", "folder": parse_folder_id(&args[0])? })
+        }
+        "conversation-folder" => {
+            need(1)?;
+            if args.len() != 1 {
+                return Err("conversation-folder: too many arguments".to_owned());
+            }
+            json!({ "op": "conversation_folder", "target": parse_label_target(&args[0])? })
+        }
+        "folder-conversations" => {
+            need(1)?;
+            let selection = match args[0].as_str() {
+                "all" => json!({ "type": "all" }),
+                "unfiled" => json!({ "type": "unfiled" }),
+                id => json!({ "type": "folder", "id": parse_folder_id(id)? }),
+            };
+            let (mode, label_args) = match args.get(1).map(String::as_str) {
+                None => ("any", &args[1..]),
+                Some("any") => ("any", &args[2..]),
+                Some("all") => ("all", &args[2..]),
+                Some(_) => {
+                    return Err("folder-conversations label mode must be any or all".to_owned())
+                }
+            };
+            if label_args.len() > 128 {
+                return Err("folder-conversations accepts at most 128 label ids".to_owned());
+            }
+            let labels = label_args
+                .iter()
+                .map(|id| parse_label_id(id))
+                .collect::<Result<Vec<_>, _>>()?;
+            json!({ "op": "folder_conversations", "selection": selection, "mode": mode, "labels": labels })
+        }
+        "folder-stale" => {
+            if !args.is_empty() {
+                return Err("folder-stale: too many arguments".to_owned());
+            }
+            json!({ "op": "folder_stale" })
+        }
+        "folder-stale-cleanup" => {
+            need(2)?;
+            if args.len() != 2 {
+                return Err("folder-stale-cleanup: too many arguments".to_owned());
+            }
+            json!({
+                "op": "folder_stale_cleanup",
+                "folder": parse_folder_id(&args[0])?,
+                "target": parse_label_target(&args[1])?,
+            })
+        }
         "label-create" => {
             need(2)?;
             let color = &args[0];
@@ -560,18 +725,25 @@ fn run() -> Result<(), String> {
     let mut writer = stream.try_clone().map_err(|e| format!("socket: {e}"))?;
     let mut reader = BufReader::new(stream);
 
-    if command == "label-delete" && request["confirm"] == json!(false) {
-        let label = request["label"].clone();
+    if matches!(command.as_str(), "label-delete" | "folder-delete")
+        && request["confirm"] == json!(false)
+    {
+        let (kind, id_field, preview_op) = if command == "folder-delete" {
+            ("folder", "folder", "folder_delete_preview")
+        } else {
+            ("label", "label", "label_delete_preview")
+        };
+        let id = request[id_field].clone();
         let preview = rpc_call(
             &mut writer,
             &mut reader,
-            json!({ "op": "label_delete_preview", "label": label }),
+            json!({ "op": preview_op, (id_field): id }),
             1,
         )?;
         let assignments = preview["assignments"].as_u64().unwrap_or(0);
         eprint!(
-            "Delete label {} and {assignments} assignment(s)? [y/N] ",
-            request["label"].as_str().unwrap_or("?")
+            "Delete {kind} {} and {assignments} assignment(s)? [y/N] ",
+            request[id_field].as_str().unwrap_or("?")
         );
         std::io::stderr()
             .flush()
@@ -816,6 +988,72 @@ mod tests {
                 "path": "/tmp/export.jpg",
             })
         );
+
+        let folder = "fa".repeat(16);
+        let second_folder = "fb".repeat(16);
+        let peer = "cd".repeat(32);
+        assert_eq!(
+            build_request("folder-create", &["e\u{301}".to_owned(), "🧭".to_owned()]).unwrap(),
+            json!({ "op": "folder_create", "name": "e\u{301} 🧭" })
+        );
+        assert_eq!(
+            build_request("folders", &[]).unwrap(),
+            json!({ "op": "folders" })
+        );
+        assert_eq!(
+            build_request("folder-get", std::slice::from_ref(&folder)).unwrap(),
+            json!({ "op": "folder_get", "folder": folder })
+        );
+        assert_eq!(
+            build_request(
+                "folder-rename",
+                &[folder.clone(), "exact".to_owned(), "name".to_owned()]
+            )
+            .unwrap(),
+            json!({ "op": "folder_rename", "folder": folder, "name": "exact name" })
+        );
+        assert_eq!(
+            build_request("folder-reorder", &[second_folder.clone(), folder.clone()]).unwrap(),
+            json!({ "op": "folder_reorder", "folders": [second_folder, folder] })
+        );
+        assert_eq!(
+            build_request("folder-move", &[folder.clone(), format!("peer:{peer}")]).unwrap(),
+            json!({
+                "op": "folder_move",
+                "folder": folder,
+                "target": { "type": "peer", "id": peer },
+            })
+        );
+        assert_eq!(
+            build_request("folder-unfile", &["note-to-self".to_owned()]).unwrap(),
+            json!({ "op": "folder_unfile", "target": { "type": "note_to_self" } })
+        );
+        assert_eq!(
+            build_request(
+                "folder-conversations",
+                &[folder.clone(), "all".to_owned(), "ab".repeat(16)]
+            )
+            .unwrap(),
+            json!({
+                "op": "folder_conversations",
+                "selection": { "type": "folder", "id": folder },
+                "mode": "all",
+                "labels": ["ab".repeat(16)],
+            })
+        );
+        assert_eq!(
+            build_request("folder-delete", std::slice::from_ref(&folder)).unwrap()["confirm"],
+            json!(false)
+        );
+        assert!(build_request("folder-create", &[" \u{200e}".to_owned()]).is_err());
+        assert!(build_request("folder-move", &[folder.clone(), "bob".to_owned()]).is_err());
+        assert!(build_request("folder-get", &["not-a-folder".to_owned()]).is_err());
+        assert!(build_request("folders", &["trailing".to_owned()]).is_err());
+        assert!(build_request(
+            "folder-reorder",
+            &std::iter::repeat_n(folder.clone(), 129).collect::<Vec<_>>()
+        )
+        .is_err());
 
         let created = build_request(
             "label-create",
