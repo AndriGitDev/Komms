@@ -15,6 +15,7 @@ back to a row in this document.
 | **Session state** | Ratchet state whose compromise could expose past or future messages. |
 | **Local message history** | The plaintext database on a user's own device. |
 | **Social graph** | Contact lists and group memberships. |
+| **Private organization** | Local label definitions, stable IDs, colors, memberships, selected filters, and stale-reference diagnostics. |
 | **Availability** | The ability to communicate at all, including when infrastructure is down or hostile. |
 
 ## 2. Adversaries
@@ -94,6 +95,17 @@ user sees; no messenger can prevent that (§5).
 | **No mandatory identifiers** | No phone number, email, or real name, ever. | Keypair-as-identity ([06: Identity & Trust](06-identity-trust.md)). |
 | **Availability off-grid** | Communication survives infrastructure loss. | Transport abstraction with LoRa mesh + sneakernet fallbacks. |
 | **Sovereignty** | Users hold their own keys and data; anyone can run every component. | Local-first storage, AGPLv3, no privileged nodes. |
+
+Private labels are endpoint organization, never communications metadata. Their
+definitions and many-to-many contact/conversation memberships remain inside the
+independently sealed `local_metadata` domain; protected filter preferences remain
+device-local. A label operation creates no envelope, mailbox, mesh, sneakernet,
+LAN, internet, DHT, capability, sender-key, ratchet, delivery-token, analytics,
+or remote-notification work. A copied SQLite database reveals only the already
+accepted row count and approximate sealed blob sizes. `KKR4` is the only label
+portability mechanism: there is no server or linked-device label synchronization.
+Once rendered on an unlocked endpoint, labels have the same bounded A7 exposure
+as the rest of the user's visible local data.
 
 ## 4. Non-goals and accepted limitations
 

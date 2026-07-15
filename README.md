@@ -100,6 +100,19 @@ cargo run --example sneakernet_demo
 > permanently readable and unknown authenticated content stays durable.
 > The F5 local-metadata foundation is shipped as well: typed folders, pins,
 > labels, drafts, preferences, and custom icons remain sealed and strictly local.
+> B18 now ships private contact and conversation labels end to end. Pairwise
+> contacts, sender-key groups, and note-to-self use their stable typed
+> conversation identities; duplicate exact UTF-8 names are distinguished by
+> canonical color name and deterministic local order. The nine persisted color
+> tokens are `neutral`, `red`, `orange`, `yellow`, `green`, `teal`, `blue`,
+> `purple`, and `pink`. Definitions are capped at 128, assignments at 8,192,
+> memberships per conversation at 32, and names at 256 UTF-8 bytes. Desktop,
+> Android, iOS, RPC/CLI, and UniFFI provide atomic management, assignment,
+> stale-record cleanup, and deterministic match-any/match-all filtering without
+> changing messages, delivery, search, notifications, or transport work. `KKR4`
+> preserves exact ids, text, colors, ordering, memberships, and stale behavior.
+> Labels never leave sealed local storage, are not synchronized between devices,
+> and message labels remain explicitly deferred.
 > Durable scheduled messaging is now in through the shared core and front doors:
 > pairwise/group text stays sealed in a device-local scheduled outbox until its
 > absolute UTC instant, remains editable/cancellable without advancing a ratchet,

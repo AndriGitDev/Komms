@@ -70,13 +70,24 @@ status and prerequisites are tracked in the delivery plan.
   90-degree rotation, and manual blur/pixelation are applied *before* encryption.
   The exact metadata-free PNG is reviewed and is the only asset sealed; protected
   originals and intermediates are cleaned locally. No protocol involvement.
-- **Mentions and labels.** Labels are sealed local metadata. Group mentions are
-  shipped through explicit current-roster pickers and canonical typed content,
+- **Mentions.** Group mentions are shipped through explicit current-roster
+  pickers and canonical typed content,
   with exact readable fallback text and stable encrypted peer references rather
   than ambiguous free-form `@name` parsing. Semantic send fails closed unless
   every current co-member has fresh authenticated support; an explicit plain-text
   fallback never notifies. Mention notifications are endpoint-local and
   opportunistic, with no server-push guarantee.
+- **Private labels.** Shipped for pairwise contacts, groups, and note-to-self
+  through the sealed F5 metadata store and every wrapper and shell. Stable random
+  IDs remain separate from exact names and canonical colors; duplicates use color
+  plus deterministic order rather than raw IDs in human-facing UI. Accessible
+  managers, non-color badges, assignment actions, stale-record cleanup, and
+  deterministic match-any/match-all filters are local presentation only. Limits
+  are 128 live labels, 8,192 assignments, 32 labels per conversation, and 256
+  UTF-8 bytes per name. `KKR4` preserves exact identity, ordering, membership,
+  and stale behavior. Labels do not affect messages, delivery, search, unread
+  truth, notifications, or transports and do not sync remotely. Message labels,
+  folders, pins, shared tags, and linked-device label sync remain separate work.
 
 ## Build with constraints (needs transport-awareness or local-first sync)
 

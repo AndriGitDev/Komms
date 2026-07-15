@@ -40,6 +40,31 @@ Every blob is individually AEAD-sealed (XChaCha20-Poly1305, random 24-byte nonce
 name + row purpose as associated data), a copied database file leaks only row counts and
 approximate sizes; rows can't be transplanted across tables or databases.
 
+### Private contact and conversation labels (B18)
+
+`LabelRecord` stores a locally minted random 16-byte ID, an exact UTF-8 name,
+and a canonical color token. `LabelAssignment` maps that ID to the stable
+`ConversationId` for a pairwise peer, group, or note-to-self. Identity never
+comes from visible text, color, petname, group name, timestamp, or ordering.
+Renaming and recoloring preserve the ID, membership, and insertion order;
+deletion atomically removes every assignment in the same storage transaction.
+
+Names are retained byte-for-byte without normalization, trimming, case folding,
+or rewriting. The front-door limit is 256 UTF-8 bytes. Empty names and names
+made only from U+0009–U+000D, U+0020, U+0085, U+200E, U+200F, U+2028, and
+U+2029 are rejected. New writes use only `neutral`, `red`, `orange`, `yellow`,
+`green`, `teal`, `blue`, `purple`, or `pink`; a legacy unknown token renders as
+`neutral` and is never evaluated as platform code or a resource name.
+
+The shared limits are 128 live definitions, 8,192 live assignments, and 32
+labels per conversation. Existing rows above a newer aggregate limit stay
+readable and removable, while operations that would increase that dimension
+fail. Assignment and unassignment are idempotent. Unavailable definitions or
+conversation targets remain available to a render-safe diagnostic and cleanup
+path but do not participate in active filters. Match-any and match-all filtering
+is deterministic, local presentation only; it never changes message receipt,
+delivery, notifications, unread truth, search indexing, queue work, or history.
+
 ## 3. Search
 
 Full-text search runs over a **sealed local index**: tokenized terms are HMAC'd under a
@@ -58,6 +83,9 @@ trade for this project.)
   device resumes identity; sessions re-handshake (ratchet states are deliberately *not*
   portable, importing stale ratchet state is a correctness and security hazard). Format
   and mechanism: ADR-0011.
+- **B18 label backup behavior**: `KKR4` preserves exact label IDs, names, color
+  tokens, insertion order, assignments, and stale-reference behavior. Labels
+  have no independent cloud, server, or linked-device synchronization path.
 - **Scheduled outbox state is not a backup payload.** Like the live encrypted
   delivery queue, it is device runtime state rather than conversation history;
   it survives ordinary process/app restarts on that device but is not resurrected

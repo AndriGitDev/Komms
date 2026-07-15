@@ -53,6 +53,16 @@ own, verbatim.
   highlighted selectable history use the exact visible fallback text. Send
   rechecks roster and capabilities and offers an explicit ordinary-text fallback
   with no mention notification.
+- **Manage private contact and conversation labels** for pairwise contacts,
+  groups, and note-to-self using app-local data only. TalkBack/switch/keyboard
+  actions expose exact targets, translated color names, non-color membership
+  badges, duplicate-name order cues, deletion review, stale cleanup, and
+  match-any/match-all filters. Filter ids and mode survive activity/process
+  recreation only as Android Keystore AES-GCM ciphertext in private preferences;
+  they never enter saved-instance state. Shared limits are 128 definitions,
+  8,192 assignments, 32 labels per conversation, and 256 UTF-8 bytes per name;
+  canonical colors are `neutral`, `red`, `orange`, `yellow`, `green`, `teal`,
+  `blue`, `purple`, and `pink`.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends (desktop included), compared aloud or by scanning each other's
   code, with a visible verified badge. Key changes are surfaced, never
@@ -96,6 +106,15 @@ range rejection, exact peer targeting, and zero signal for plain text or similar
 petnames. Android notifications use only a generic private preview and remain
 subject to the existing user-controlled notification permission and platform
 policy; they do not provide server push or an online-delivery guarantee.
+
+Label acceptance drives the same deterministic fixture through Rust RPC,
+UniFFI, Kotlin, and Swift, including exact Unicode, duplicate names, typed
+peer/group/note targets, stable order, any/all results, restart, and errors.
+Labels request no Contacts, clipboard, broad-storage, notification, nearby, or
+network permission. Label data never appears in notification channels, lock
+screen metadata, recent-task titles, logs, crash/analytics payloads, or
+unprotected state. `KKR4` preserves exact definitions and memberships; message
+labels and linked-device synchronization remain deferred.
 
 This is deliberately its own Gradle build, outside the cargo workspace:
 the Android dependency tree stays out of the core crates' lockfile and

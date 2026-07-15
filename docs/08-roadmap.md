@@ -386,6 +386,19 @@ included in `KKR4`. Note-to-self text is shipped through every shell under one
 reserved identity; the individual organization/theme/icon experiences remain
 separate work.
 
+B18 private labels are shipped end to end across the unchanged F5 record
+contract, `kult-node`, RPC/CLI, UniFFI, desktop, Android, and iOS. Labels target
+stable pairwise, group, and note-to-self conversation IDs; message labels remain
+deferred. Definitions use cryptorandom 16-byte IDs, exact bounded UTF-8 names,
+and the canonical `neutral`, `red`, `orange`, `yellow`, `green`, `teal`, `blue`,
+`purple`, and `pink` tokens. The shared limits are 128 live definitions, 8,192
+live assignments, 32 labels per conversation, and 256 UTF-8 bytes per name.
+Duplicate names are disambiguated by color and deterministic local order.
+Atomic deletion, stale-record diagnostics, and deterministic match-any/match-all
+filters remain local presentation behavior and create zero network or transport
+work. `KKR4` preserves exact identity, ordering, and membership; there is no
+shared taxonomy, remote synchronization, or multi-device label sync.
+
 Durable scheduled pairwise and group text is shipped end to end. The sealed
 scheduled outbox does not advance a ratchet or create transport work early;
 RPC/CLI, UniFFI, desktop, Android, and iOS expose create/list/edit/cancel and
