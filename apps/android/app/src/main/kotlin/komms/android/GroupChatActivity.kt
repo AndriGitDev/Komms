@@ -269,13 +269,14 @@ class GroupChatActivity : AppCompatActivity() {
         }
     }
 
-    private fun memberLabel(peer: String, group: Group = currentGroup ?: return memberName(peer)): String {
+    private fun memberLabel(peer: String, group: Group? = currentGroup): String {
         val base = memberName(peer)
-        val duplicates = group.members.count { memberName(it) == base }
+        val members = group?.members ?: return base
+        val duplicates = members.count { memberName(it) == base }
         return if (duplicates < 2) {
             base
         } else {
-            "\u2068$base\u2069, group member ${group.members.indexOf(peer) + 1}"
+            "\u2068$base\u2069, group member ${members.indexOf(peer) + 1}"
         }
     }
 
