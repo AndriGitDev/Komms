@@ -8,8 +8,11 @@ deletable for real.
 
 1. **The device is the source of truth.** No cloud copy exists unless the user creates an
    encrypted export. Sync between own devices (M6) is device-to-device, E2E-encrypted.
-2. **Everything at rest is sealed.** No plaintext ever touches disk, including drafts,
-   media thumbnails, and search indexes.
+2. **Durable state at rest is sealed.** The core database never persists plaintext:
+   messages, drafts, media chunks/previews, metadata, and search terms are independently
+   sealed. Bounded protected transients required by OS picker, recording, editing,
+   playback, or explicit export workflows are temporary exceptions with lifecycle cleanup,
+   never durable sources of truth.
 3. **Export is a right.** Full history exports to a documented, versioned format at any
    time. Lock-in is a bug.
 4. **Deletion is real.** Deleting a message deletes the ciphertext row and its keys;
@@ -39,6 +42,17 @@ HKDF per-domain keys.
 Every blob is individually AEAD-sealed (XChaCha20-Poly1305, random 24-byte nonce, table
 name + row purpose as associated data), a copied database file leaks only row counts and
 approximate sizes; rows can't be transplanted across tables or databases.
+
+### Protected application transients
+
+Desktop and mobile shells sometimes must materialize plaintext because native
+recorders, decoders, document providers, media players, or user-selected exports
+operate on files. Those copies are bounded, app-private, backup-excluded where the
+platform supports it, and named independently of protocol IDs. They are removed on
+the feature-specific success, discard, denial, failure, lock/background, shutdown,
+and startup-orphan paths documented in each app README. They never enter SQLite,
+logs, analytics, notification metadata, or a remote service. This is a bounded
+endpoint exposure, not a weakening of the sealed durable-store contract.
 
 ### Private local conversation folders (B10)
 
@@ -117,10 +131,11 @@ trade for this project.)
   destroying the real KEK wrap, recorded here so the key hierarchy keeps the KEK-wrap
   layer that makes O(1) destruction possible.
 
-## 5. What never gets stored
+## 5. What never becomes durable or remote state
 
-- Plaintext of anything, anywhere, ever (including logs: log lines are structured and
-  content-free by policy, enforced by a lint in CI).
+- Plaintext in the core database, backups, logs, analytics, crash metadata, or
+  notification metadata. Protected application transients are the narrow lifecycle-bound
+  exception described above; logs remain structured and content-free by policy.
 - Message keys after use; chain keys after advancing (zeroize-on-drop).
 - Contact graphs on any remote system. Relay queues hold only sealed envelopes under
   rotating tokens with TTLs.

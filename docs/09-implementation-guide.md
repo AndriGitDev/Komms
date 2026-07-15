@@ -1,8 +1,10 @@
 # 09: Implementation Guide
 
-The handoff document. Audience: whoever (human or coding agent) implements M1–M5. The
-design documents say *what*; this says *how to build it without drifting*. When this
-guide and a design doc conflict, the design doc wins and the conflict is a bug, file it.
+The implementation handoff and maintenance contract. M1–M5 now have substantial
+shipped implementations, so this guide applies both to new features and to changes
+that must preserve existing boundaries. The design documents say *what*; this says
+*how to build it without drifting*. When this guide and a design doc conflict, the
+design doc wins and the conflict is a bug—file it.
 
 ## 1. Ground rules
 
@@ -27,11 +29,18 @@ guide and a design doc conflict, the design doc wins and the conflict is a bug, 
 
 ## 2. Build order
 
-Strictly: `kult-crypto` → `kult-protocol` + `kult-store` (parallel-safe) → `kult-node`
-(with sneakernet transport) → libp2p transport → Meshtastic transport → `kult-ffi` → apps.
-Each step compiles, tests, and demos without the steps after it.
+The original dependency order remains the rule for new lower-layer capability:
+`kult-crypto` → `kult-protocol` + `kult-store` (parallel-safe) → `kult-node`
+→ transports → `kult-ffi`/RPC → apps. Existing features may touch several layers
+in one reviewable slice, but behavior still flows through those contracts;
+shells never become an alternate core. Each lower layer compiles and tests without
+depending on the layers above it.
 
-## 3. API sketches (normative shape, not final signatures)
+## 3. Architectural API sketches
+
+These sketches preserve dependency direction and ownership. The checked-in Rust
+APIs are authoritative for exact signatures; do not copy an old sketch over a
+newer bounded or typed interface.
 
 ### 3.1 `kult-crypto`
 
@@ -86,7 +95,7 @@ The trait from [05: Transports §1](05-transports.md), plus:
 pub struct SneakernetTransport;   // .kkb bundles, implement FIRST (M2): no networking,
                                   // exercises the full envelope path end-to-end
 pub struct Libp2pTransport;       // M3: QUIC/TCP, Kademlia records, relay-v2 mailboxes
-pub struct MeshtasticTransport;   // M4: BLE/serial protobuf client, private PortNum,
+pub struct MeshtasticTransport;   // M4: serial/TCP protobuf client, private PortNum,
                                   // runtime MTU from radio config, duty-cycle accounting
 ```
 
@@ -98,7 +107,8 @@ hand-roll the serial framing. Airtime budget module is its own reviewed unit.
 ```rust
 pub struct Store { /* SQLite; every blob AEAD-sealed per 07 §2 */ }
 // open(path, kek) → unwraps SK; domain key per table via HKDF
-// messages / sessions / contacts / queue / media DAOs; no protocol logic
+// messages / sessions / contacts / queue / media / schedules / local metadata;
+// no network I/O or transport scheduling
 ```
 
 ### 3.5 `kult-node`
@@ -118,8 +128,9 @@ pub struct Node { /* composes store + transports + sessions */ }
 - **KATs**: primitive test vectors vendored under `crates/kult-crypto/tests/vectors/`.
 - **Property tests** (`proptest`): ratchet loss/reorder/dup within bounds ⇒ decrypts;
   outside bounds ⇒ typed failure. Padding round-trips. Fragment/reassemble = identity.
-- **Fuzz targets** (`cargo-fuzz`): envelope decode, bundle decode, handshake message
-  decode, sealed-state unseal.
+- **Fuzz targets** (`cargo-fuzz`): crypto envelope, handshake, bundle, mnemonic,
+  and attachment-chunk decoding; protocol envelope, bundle import, reassembly,
+  content, capability, attachment manifest/bulk/ranges, and mention decoding.
 - **Simulation harness** (M3+): in-process multi-node network with scripted link
   conditions (latency, loss, partitions, MTU), deterministic seed, replayable failures.
   This harness is how store-and-forward, NACK, and bridging logic get tested without
@@ -137,6 +148,8 @@ Every PR: CI green + one review. Additionally:
 | Wire formats (envelope, bundle, tokens) | Version-bump check + fuzz corpus updated |
 | Dependencies | `cargo-deny` diff reviewed; new crypto deps need an ADR |
 | Storage schema | Migration + "copied-file leakage" checklist from 07 §2 |
+| Sealed local metadata | Limit, stale-reference, transaction/failure, KKR compatibility, and zero-network-work matrices |
+| Desktop/mobile shell | Relevant accessibility, lifecycle, protected-transient cleanup, and real build evidence |
 
 ## 6. Definition of done (any milestone)
 

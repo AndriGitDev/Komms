@@ -53,16 +53,22 @@ status and prerequisites are tracked in the delivery plan.
   the reserved `note_to_self` identity across every shell and no peer, envelopes,
   receipts, queue entries, or transport activity. Text is supported; attachments
   follow the attachment shell work.
-- **Scheduled / queued messages.** Already implicit in the delivery engine: an
-  outbound message sits in the local queue until a carrier is available.
-  Scheduling now has a durable absolute-UTC gate in core storage and the node
+- **Scheduled / queued messages.** Shipped. Ordinary queued delivery waits
+  honestly for a carrier; scheduled delivery adds a durable absolute-UTC gate
+  in core storage and the node
   scheduler, plus shared RPC/CLI/UniFFI operations for create/list/edit/cancel,
   so app exit or suspension cannot send early. Desktop, Android, and iOS now
   provide local-time composer controls plus distinct editable/cancellable
   scheduled rows before the ordinary queued, sent, and delivered states.
-- **Text formatting, pins, dark mode, custom icons.** These stay off the
-  wire. Persistent organization and artwork use sealed local storage; formatting
-  and themes are rendered by each shell.
+- **Text formatting.** Planned as a small safe source-text subset rendered by
+  each shell, with no raw HTML, remote fetches, or scriptable links.
+- **Conversation pins.** Planned over the shipped F5 `PinRecord`; pin identity
+  and manual order stay sealed and local. Message pins remain a separate design
+  because they require stable message-reference semantics.
+- **Dark mode.** Planned as shared semantic color roles rendered natively by
+  each shell; color can never be the only security or delivery signal.
+- **Custom icons.** Planned over the shipped F5 icon record with bounded local
+  crop/re-encode and no remote avatar lookup or synchronization.
 - **Screen-security / incognito keyboard.** Platform APIs in the mobile UI layer
   (Android/iOS). No protocol involvement.
 - **Local still-image editing.** Shipped across desktop, Android, and iOS through
@@ -106,10 +112,12 @@ Realistic, but only if they respect carrier bandwidth or tolerate offline/delaye
 peers. The recurring rule: the app must know which carrier a peer is reachable on
 and degrade honestly, exactly as the delivery ladder already does.
 
-- **File sharing.** Fine over mDNS or internet libp2p; on a radio mesh it must be
-  blocked or hard-capped, since a large transfer would monopolize airtime. It
-  needs encrypted resumable chunks and sealed manifests rather than treating the
-  existing envelope fragmentation path as unbounded file transport.
+- **File sharing.** The bounded F3 pipeline is shipped across desktop, Android,
+  and iOS: independently sealed resumable chunks, explicit consent and lifecycle
+  controls, protected export, exact progress, and pairwise/encrypt-once group
+  transfer. A hard no-airtime class holds every bulk object for a faster link;
+  richer non-image media presentation remains product polish rather than a new
+  transport design.
 - **Linked devices.** One account identity uses separately authenticated device
   keys, per-device sessions, revocation, and deterministic sync. Linking happens
   proximately through a confirmed QR or LAN ceremony, never by copying live
@@ -180,6 +188,6 @@ move.
 Adding a "Build" feature must also update the delivery plan with its status and
 prerequisites. Moving anything out of "Deferred or declined," or adding a feature
 that touches the protocol, transports, crypto, or replicated state requires an
-ADR in [docs/adr/](adr/) that shows the feature surviving the threat model and
-the mesh bandwidth floor. This keeps the feature surface honest about the same
-constraints the rest of the design is held to.
+ADR listed in the [ADR index](adr/README.md) that shows the feature surviving
+the threat model and the mesh bandwidth floor. This keeps the feature surface
+honest about the same constraints the rest of the design is held to.

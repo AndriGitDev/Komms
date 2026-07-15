@@ -34,7 +34,7 @@ You'll see five terms around the project. This is all you need:
 | **Post-quantum** | The locks are designed to survive even the codebreaking computers expected in the future. Messages recorded today stay private tomorrow. |
 | **kult address** (`kk1…`) | Your ID, like a phone number you invented yourself and nobody can take away. Share it as a QR code, sticker, or text. |
 | **Safety number** | A 60-digit number you and a friend compare (in person or over a call) to be *certain* no one is impersonating either of you. |
-| **Courier file / bundle** | Your encrypted messages packed into a file that can travel on a USB stick or as QR codes: messaging with no network at all. |
+| **Courier file / bundle** | Your encrypted messages packed into a `.kkb` file that can travel on a USB stick or another file channel: messaging with no network at all. Animated message-bundle QR is planned; current QR flows are for pairing and verification. |
 
 ## What does it protect me from, honestly?
 
@@ -50,9 +50,14 @@ Our full, frank list is in the [threat model](02-threat-model.md).
 
 ## Can I use it today?
 
-Almost. There are no installers to download yet, but the first desktop app
-exists and runs from source (phone apps are next; see the
-[roadmap](08-roadmap.md)). If you're comfortable with a terminal:
+As an alpha built from source. There are no supported installers or app-store
+releases yet, but desktop, Android, and iOS shells all exist over the same Rust
+core. The repository's automated matrix exercises the core, desktop behavior,
+Android behavior and APK assembly, iOS behavior, and the gated iOS simulator
+build. Hands-on device qualification, distribution, the physical radio bench,
+and the external audit remain before a stable release.
+
+If you're comfortable with a terminal, the desktop shell is the quickest start:
 
 ```sh
 git clone https://github.com/AndriGitDev/Komms && cd Komms
@@ -65,11 +70,29 @@ Or watch two devices exchange encrypted messages through a file, no GUI at all:
 cargo run --example sneakernet_demo
 ```
 
+Platform build instructions:
+
+- [Desktop](../apps/desktop/README.md)
+- [Android](../apps/android/README.md)
+- [iOS](../apps/ios/README.md)
+
+## Where should I read next?
+
+| If you want to know… | Read… |
+|---|---|
+| what Komms promises and why | [Why Komms](01-why.md) |
+| what it protects—and what it cannot | [Threat Model](02-threat-model.md) |
+| how the system is layered | [Architecture](03-architecture.md) |
+| what is implemented versus remaining | [Roadmap](08-roadmap.md) |
+| which product features fit the model | [Feature Scope](11-feature-scope.md) |
+| the exact delivery status of each feature | [Feature Delivery Plan](12-feature-delivery-plan.md) |
+| why a technical decision was made | [ADR Index](adr/README.md) |
+
 ## How can I help?
 
 - **Not technical?** Read this document and tell us what confused you: that's a
-  real contribution, file it as an issue. When apps arrive, testing them will matter
-  more than code.
+  real contribution—file it as an issue. Hands-on testing of the source-built
+  apps and their setup instructions matters too.
 - **Organizer / activist?** Read the [threat model](02-threat-model.md) and tell us
   where it doesn't match your reality on the ground.
 - **Developer?** Start with [CONTRIBUTING](../CONTRIBUTING.md) and the

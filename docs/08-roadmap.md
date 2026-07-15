@@ -1,7 +1,16 @@
 # 08: Roadmap
 
-Milestones are strictly ordered by dependency; each has acceptance criteria that gate the
-next. Build order details per crate: [09: Implementation Guide](09-implementation-guide.md).
+Milestones express dependency order, not a rule that all work in an earlier
+milestone must stop before a later foundation can land. M0–M3 are complete;
+M4, M5, and M6 each have shipped slices plus explicit remaining acceptance
+work. Build order details per crate: [09: Implementation Guide](09-implementation-guide.md).
+
+| Milestone | Status | Principal remaining gate |
+|---|---|---|
+| M0–M3 | Complete | Permanent regression and assurance work only |
+| M4 | In progress | Stand up the physical two-radio nightly bench |
+| M5 | In progress | Hands-on mobile qualification and installable distribution |
+| M6 | In progress | Broader hardening, reproducibility, store delivery, and external audit |
 
 ## M0: Design framework *(done)*
 
@@ -90,7 +99,7 @@ DHT, mailbox relays, transport scheduler, headless daemon with local RPC.
 
 ## M4: Off-grid Meshtastic bridge *(in progress)*
 
-BLE + USB-serial Meshtastic client integration, private app port, runtime MTU
+USB-serial + TCP Meshtastic radio integration, private app port, runtime MTU
 computation, priority classes, selective retransmission, internet↔mesh bridging.
 
 The carrier core is in: `MeshtasticTransport` (behind the `meshtastic` feature
@@ -155,7 +164,7 @@ criteria below.
 
 UniFFI bindings; Tauri desktop app; Android/iOS alpha shells. UX for verification
 (QR safety numbers), contact requests, delivery states, transport indicators,
-QR sneakernet.
+QR pairing and verification; animated message-bundle QR remains planned.
 
 The bindings layer is in: `kult-ffi` exposes exactly the node's command/event
 API (implementation guide §3.5) through UniFFI proc-macros: typed records and
@@ -173,9 +182,10 @@ fake success. The crate's e2e test drives two nodes through the public FFI
 surface alone: pairing by bundle exchange, verified `delivered` states via
 listener events, history, safety numbers, restart persistence, honest
 errors, and `cargo run -p kult-ffi --features bindgen --bin uniffi-bindgen`
-generates the Kotlin/Swift sources. Backup/restore is in (ADR-0011): one
-encrypted `KKR1` file carries identity + contacts + history + session-reset
-markers, sealed via Argon2id under a 24-word BIP-39 mnemonic (wordlist and
+generates the Kotlin/Swift sources. Backup/restore is in (ADR-0011/ADR-0012):
+the current encrypted `KKR4` file carries identity, contacts, history, group
+state, user-authored sealed local metadata, note-to-self history, and
+session-reset markers, sealed via Argon2id under a 24-word BIP-39 mnemonic (wordlist and
 codec in-tree in `kult-crypto`, KAT-tested against the reference vectors);
 ratchet sessions and prekey secrets are deliberately excluded, and a restored
 node (fresh store, fresh vault, resumed identity) turns each reset marker
@@ -186,7 +196,7 @@ exactly once), `kultd --restore` on first run, and `kult-ffi`'s
 `export_backup` + `restore` constructor, each pinned by its own layer's
 round-trip test (store, node, RPC, FFI). The desktop app is in
 (application A1, `apps/desktop`): a Tauri shell over `kult-ffi`'s embedded
-runtime (the exact surface the mobile shells will consume, dogfooded on
+runtime (the exact surface the mobile shells consume, dogfooded on
 the desktop) with a dependency-free HTML/CSS/JS frontend (no bundler, no
 npm) behind a strict CSP with zero plugins or webview capabilities. It
 covers the M5 UX list end to end: create/unlock/restore at the gate,
@@ -251,20 +261,14 @@ member-management surfaces, truthful per-recipient outbound delivery rows,
 and a host acceptance scenario with a real offline member. QR rendering is
 CoreImage and scanning is AVFoundation. The app has zero third-party dependencies;
 the only library it links is the workspace's own Rust core, built into
-`KultFFI.xcframework` by a script for device/simulator targets. CI runs
-the `KommsCore` e2e on Linux (official Swift container) on every push;
-a gated macOS job (`IOS_APP_CI` repository variable, mirroring the HIL
-bench's arming pattern) assembles the xcframework and builds the app
-for the simulator. That gated build was run locally on macOS for the
-first time (Xcode 26.6, iOS 26.5): it surfaced two latent breaks in the
-never-CI'd app target, a SwiftUI `Section` title-plus-footer form with no
-matching initializer and a missing `SystemConfiguration.framework` link
-the Rust libp2p FFI needs, both fixed, after which the simulator build
-succeeds and `KommsApp` boots to its first-run gate in the simulator.
-Remaining: arming that macOS job in CI, and a full hands-on pass of the
-SwiftUI shell (the messaging flow end to end, and an on-device run)
-beyond that first-launch smoke test; background delivery and store
-distribution stay M6.
+`KultFFI.xcframework` by a script for device/simulator targets. CI runs the
+`KommsCore` e2e on every push. A macOS job gated by the `IOS_APP_CI`
+repository variable assembles the xcframework and builds the app for a generic
+iOS Simulator destination; full recent release-feature matrices have run that
+job successfully. The app target's earlier SwiftUI initializer and
+`SystemConfiguration.framework` linkage failures are fixed and guarded by that
+build. Remaining: a full hands-on SwiftUI messaging pass and an on-device run;
+background delivery and store distribution stay M6.
 
 **Acceptance**: a non-technical user can install desktop + mobile builds, exchange QR
 verification with a friend, and message over internet, LAN, and mesh with truthful
@@ -444,8 +448,10 @@ and constraints: [11: Feature Scope](11-feature-scope.md).
 
 ## Explicitly not scheduled
 
-Cryptocurrency anything, federation with other networks, and any feature requiring
-project-operated infrastructure. Each would need a compelling ADR.
+Cryptocurrency anything, federation with other networks, and any feature that
+requires mandatory project-operated infrastructure. Optional, replaceable,
+content-blind convenience services remain subject to ADR-0017 through ADR-0019.
+Each broader exception would need a compelling ADR.
 
 For the wider product-feature triage (which messenger-app features fit the model
 and under what constraints, and where each maps onto these milestones), see

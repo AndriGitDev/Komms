@@ -13,7 +13,7 @@ back to a row in this document.
 | **Message metadata** | Who talks to whom, when, how often, from where, and message sizes. |
 | **Identity keys** | Long-term Ed25519/X25519 key material that *is* a user's identity. |
 | **Session state** | Ratchet state whose compromise could expose past or future messages. |
-| **Local message history** | The plaintext database on a user's own device. |
+| **Local message history** | Decrypted content visible to an unlocked endpoint and its independently sealed at-rest representation. |
 | **Social graph** | Contact lists and group memberships. |
 | **Private organization** | Local folder/label definitions, stable IDs, order, memberships, selected views/filters, and stale-reference diagnostics. |
 | **Availability** | The ability to communicate at all, including when infrastructure is down or hostile. |
@@ -127,6 +127,13 @@ accepted row count and approximate sealed blob sizes. `KKR4` is the only folder
 or label portability mechanism: neither has server or linked-device
 synchronization. Once rendered on an unlocked endpoint, folder and label text
 has the same bounded A7 exposure as the rest of the user's visible local data.
+
+Some platform workflows require bounded plaintext transients after unlock—for
+example, an OS picker import, recorder review, image edit, playback, or explicit
+export. These live only in protected app-private locations, are excluded from
+backup, are never the core database source of truth, and are cleaned on the
+documented success, discard, failure, lock/background, shutdown, and restart
+paths. Their exposure on a persistently compromised unlocked endpoint remains A7.
 
 ## 4. Non-goals and accepted limitations
 

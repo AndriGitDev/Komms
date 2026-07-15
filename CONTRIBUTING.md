@@ -1,9 +1,10 @@
 # Contributing to Komms
 
-The project is in **M0 (design phase)**: the most valuable contributions are adversarial
-reads of the design documents, not code (yet).
+Komms is an alpha built from source. Its core, transports, local RPC/CLI and
+UniFFI surfaces, and desktop/Android/iOS shells are implemented, while hardware
+qualification, distribution, hardening, and several product slices remain.
 
-## Right now: design review
+## Where contributions help
 
 Open an issue for anything in `docs/` that is wrong, unclear, or missing:
 
@@ -12,21 +13,27 @@ Open an issue for anything in `docs/` that is wrong, unclear, or missing:
   [transport design](docs/05-transports.md) (LoRa airtime math especially; field
   experience with Meshtastic very welcome).
 - Disagreement with a recorded decision? Respond to the specific
-  [ADR](docs/adr/) and address the alternatives it already weighed.
+  [ADR](docs/adr/README.md) and address the alternatives it already weighed.
+- Implementation work should start from the current gaps in the
+  [roadmap](docs/08-roadmap.md) and
+  [feature delivery plan](docs/12-feature-delivery-plan.md), then preserve the
+  relevant security, storage, compatibility, and carrier constraints.
 
-## When code lands (M1+)
+## Implementation changes
 
 - Read [09: Implementation Guide](docs/09-implementation-guide.md) first; it defines
-  build order, crate boundaries, crypto coding standards, and review gates. PRs that
-  change *design* without an ADR will be redirected to the ADR process, kindly.
+  crate boundaries, crypto coding standards, and review gates. Checked-in APIs
+  are authoritative. PRs that change design without an ADR will be redirected
+  to the ADR process, kindly.
 - CI must be green: `fmt`, `clippy` (deny warnings), tests, fuzz smoke, `cargo-deny`.
 - Keep PRs scoped to one concern; cite the spec section your change implements.
 
 ## Process
 
 - **Issues** for design discussion; **PRs** for concrete text/code changes.
-- ADRs follow [docs/adr/template.md](docs/adr/template.md); new ADRs are numbered
-  sequentially and never edited after acceptance (write a superseding one).
+- ADRs follow [docs/adr/template.md](docs/adr/template.md) and appear in the
+  [ADR index](docs/adr/README.md); new ADRs are numbered sequentially and never
+  edited after acceptance (write a superseding one).
 - Be direct about problems and generous with people. Security arguments win on merit,
   not volume.
 

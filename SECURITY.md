@@ -2,9 +2,8 @@
 
 ## Reporting a vulnerability
 
-Email **andri@andri.is**. If you need encryption for the report itself, say so in a
-first plaintext mail and a key will be provided (a published PGP key will be added here
-before any code ships).
+Email **andri@andri.is**. If you need encryption for the report itself, request
+a key in a first message without vulnerability details.
 
 Please include: affected component/doc section, impact as you understand it, and
 reproduction steps or a proof-of-concept where applicable.
@@ -19,10 +18,13 @@ reproduction steps or a proof-of-concept where applicable.
 ## Ground rules
 
 - Coordinated disclosure: please give us the 14-day assessment window before publishing.
-- During the current **design phase (M0)**, flaws in the *specifications* (threat-model
-  gaps, broken constructions, unstated assumptions in
-  [docs/04-cryptography.md](docs/04-cryptography.md)) are in scope and especially
-  valuable. Finding them now is cheap; finding them after M1 is not.
+- The shipped alpha implementation and its specifications are both in scope.
+  Threat-model gaps, broken constructions, unstated assumptions, local data
+  leakage, transport-policy bypasses, and platform lifecycle failures are
+  especially valuable reports. Start with the
+  [threat model](docs/02-threat-model.md) and
+  [cryptography specification](docs/04-cryptography.md) for the intended
+  guarantees and accepted limits.
 
 ## Scope notes
 

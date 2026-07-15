@@ -122,8 +122,9 @@ directory.
 - Mention target ids, ranges, and text stay inside the encrypted content body.
   Desktop notification handling receives only an endpoint-local render-safe
   signal; it does not promise server push or online delivery.
-- Label ids, names, colors, membership, filters, and stale diagnostics stay in
-  the existing sealed local store or process-local UI state. They never enter
-  envelopes, DHT records, capabilities, analytics, notifications, or logs;
-  filtering changes presentation only. `KKR4` preserves them exactly, while
-  multi-device synchronization and message labels are not implemented.
+- Folder and label ids, names, order, membership, filters/selections, and stale
+  diagnostics stay in the existing sealed local store or process-local UI
+  state. They never enter envelopes, DHT records, capabilities, analytics,
+  notifications, or logs; navigation/filtering changes presentation only.
+  `KKR4` preserves them exactly, while multi-device synchronization and message
+  labels are not implemented.

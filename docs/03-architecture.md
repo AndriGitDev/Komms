@@ -17,7 +17,7 @@ flowchart TB
         A3["Headless node / relay"]
     end
     subgraph FFI["kult-ffi: UniFFI bindings"]
-        F1["Stable, async, language-neutral API"]
+        F1["Stable typed calls<br/>+ listener events"]
     end
     subgraph Node["kult-node: runtime"]
         N1["Session manager"]
@@ -35,13 +35,13 @@ flowchart TB
         C3["Primitives (X25519, Ed25519,<br/>ML-KEM-768, XChaCha20-Poly1305)"]
     end
     subgraph Store["kult-store"]
-        S1["Encrypted SQLite (messages, sessions, contacts)"]
+        S1["Encrypted SQLite<br/>(messages, sessions, media,<br/>scheduled + local metadata)"]
     end
     subgraph Transport["kult-transport"]
         T1["Internet (libp2p: QUIC/TCP,<br/>Kademlia, relay v2)"]
         T2["Proximity (mDNS, BLE)"]
-        T3["Meshtastic bridge (BLE/serial → LoRa)"]
-        T4["Sneakernet (file / QR bundles)"]
+        T3["Meshtastic bridge (serial/TCP → LoRa)"]
+        T4["Sneakernet (.kkb files;<br/>animated QR planned)"]
     end
     Apps --> FFI --> Node
     Node --> Proto --> Crypto
@@ -61,9 +61,9 @@ base small.
 | `kult-crypto` | Key generation, PQXDH, Double Ratchet, AEAD, fingerprints. Pure functions + opaque state objects; `#![forbid(unsafe_code)]`; all secrets `zeroize`-on-drop. | Perform I/O of any kind. |
 | `kult-protocol` | Envelope wire format, fragmentation for small-MTU links, sender-key group fan-out, padding. | Touch key material directly (only via `kult-crypto` handles). |
 | `kult-transport` | The `Transport` trait and its implementations; peer discovery; link encryption. | See plaintext or long-term identity secrets. |
-| `kult-store` | Encrypted persistence of messages, sessions, contacts, queues. | Interpret protocol semantics. |
+| `kult-store` | Encrypted persistence of messages, sessions, contacts, queues, media, scheduled work, backups, and sealed local metadata. | Perform network I/O or transport scheduling. |
 | `kult-node` | Composition: session lifecycle, delivery engine, multipath scheduling, event bus. | Reimplement lower-layer logic. |
-| `kult-ffi` | UniFFI-exposed API for Kotlin/Swift/TS consumers. | Add behavior beyond `kult-node`. |
+| `kult-ffi` | UniFFI-exposed API and embedded runtime for Kotlin, Swift, and shell consumers. | Add behavior beyond `kult-node`. |
 
 ## 3. Message lifecycle
 
@@ -109,7 +109,8 @@ mechanisms, in preference order:
    additive, never required.
 3. **Mesh flooding / sneakernet**: on Meshtastic, envelopes propagate hop-by-hop with the
    mesh's own store-and-forward; any node that later gains internet can bridge queued
-   envelopes onward. Fully offline, envelopes export as files/QR bundles.
+   envelopes onward. Fully offline, envelopes export as `.kkb` files; animated
+   message-bundle QR remains planned.
 
 A message may traverse all three; deduplication makes redundancy safe and encouraged.
 
@@ -161,7 +162,7 @@ ciphertext, not N) and adequate for small-to-medium groups. Large-group semantic
 RFC 9420) are a documented later milestone; see decision record
 [ADR-0003](adr/0003-double-ratchet-pqxdh.md) and [08: Roadmap](08-roadmap.md).
 
-## 7. Repository layout (target)
+## 7. Repository layout
 
 ```
 komms/
@@ -172,7 +173,8 @@ komms/
 │   ├── kult-transport/
 │   ├── kult-store/
 │   ├── kult-node/
-│   └── kult-ffi/
+│   ├── kult-ffi/
+│   └── kultd/             # daemon + CLI
 ├── apps/
 │   ├── desktop/          # Tauri (M5)
 │   ├── android/          # Kotlin shell over kult-ffi (M5)
