@@ -179,6 +179,16 @@ inside the B15 incognito-field inventories. The complete contract and manual
 qualification matrix are in
 [15: Private Contact Names](15-contact-petnames.md).
 
+B9 safe formatting is a pure local read model. Rust uses
+`kult_node::format_text(source, highlights)`; strict RPC uses `format_text`, the
+CLI uses `kult format-text`, and UniFFI exposes the same bounded records. Never
+add formatting bytes to stored content, negotiate it as a capability, or let a
+shell parse HTML/URLs independently. Shell renderers may map only the returned
+block and style enums to native inert text APIs, must preserve the returned
+plain-text projection for copy, and must include pairwise, group, note-to-self,
+and scheduled paths. The full contract is
+[16: Safe Text Formatting](16-safe-text-formatting.md).
+
 ## 4. Testing strategy (beyond per-milestone acceptance)
 
 - **KATs**: primitive test vectors vendored under `crates/kult-crypto/tests/vectors/`.
@@ -206,6 +216,7 @@ Every PR: CI green + one review. Additionally:
 | Storage schema | Migration + "copied-file leakage" checklist from 07 §2 |
 | Sealed local metadata | Limit, stale-reference, transaction/failure, KKR compatibility, and zero-network-work matrices |
 | Contact petname mutation | Exact peer targeting, normalization, warning review, duplicate-name disambiguation, restart/KKR compatibility, and zero-network-work evidence |
+| Safe text formatting | Shared malicious/bidi/limits corpus, exact source compatibility, inert renderer inventory, mention composition, plain-text copy, and zero-network-work evidence |
 | Desktop/mobile shell | Relevant accessibility, lifecycle, protected-transient cleanup, and real build evidence |
 
 ## 6. Definition of done (any milestone)

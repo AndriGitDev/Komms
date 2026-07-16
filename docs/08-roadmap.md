@@ -410,6 +410,17 @@ There is no server push or online-delivery guarantee, and no mention data was
 added to envelopes, transports, DHT records, delivery tokens, or public OS
 previews.
 
+B9 safe text formatting is shipped without changing ADR-0014 content, storage,
+backups, capabilities, envelopes, or transports. One bounded `kult-node`
+formatter derives emphasis, strong, inline/fenced code, quote, and list blocks
+from exact authenticated source and composes B17 mention ranges as inert
+highlights. Strict RPC/CLI and UniFFI expose only render-safe text roles; desktop,
+Android, and iOS use native inert text primitives for pairwise, group,
+note-to-self, and scheduled history. Raw HTML, links, image syntax, URLs, and
+remote fetches stay literal. The shared corpus pins malicious input, bidi,
+complexity fallback, readable old-client source, and plain-text copy. See
+[16: Safe Text Formatting](16-safe-text-formatting.md).
+
 The F5 sealed local-metadata foundation is shipped in `kult-store`: typed and
 bounded conversation, folder, pin, label, draft, preference, and custom-icon
 records use an isolated storage key and reveal no local organization keys in a

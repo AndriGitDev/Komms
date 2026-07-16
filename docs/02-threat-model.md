@@ -133,6 +133,7 @@ and qualification are in [14: Incognito Keyboard](14-incognito-keyboard.md).
 | **Local display minimization** | Reduce accidental disclosure from capture and task/app-switcher previews where native APIs permit. | Always-on B14 shell protections and explicit unsupported states; not an endpoint-compromise defense. |
 | **Local input minimization** | Reduce keyboard learning, correction, spellcheck, autofill, and secret-field exposure where native APIs permit. | Always-on B15 field controls and explicit best-effort/unavailable states; not an endpoint-compromise defense. |
 | **Identity-text safety** | Keep mutable human labels from becoming identity or silently hiding spoofing risk. | Exact peer-key targeting, NFC normalization, duplicate/confusable/bidi/invisible warnings, and explicit review for warned B5 renames. |
+| **Active-content isolation** | Authenticated message text must not become executable or network-active content. | B9 keeps exact source, applies a bounded local parser, exports only inert block/run tokens, literal-falls back on complexity, and never interprets HTML, links, images, or URL schemes. |
 | **Sovereignty** | Users hold their own keys and data; anyone can run every component. | Local-first storage, AGPLv3, no privileged nodes. |
 
 Optional Hybrid Infrastructure Layer modes do not change the confidentiality,
