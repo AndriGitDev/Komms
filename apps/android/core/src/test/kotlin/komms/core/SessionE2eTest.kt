@@ -28,6 +28,9 @@ import uniffi.kult_ffi.AttachmentConversation
 import uniffi.kult_ffi.AttachmentDirection
 import uniffi.kult_ffi.AttachmentState
 import uniffi.kult_ffi.ContentKind
+import uniffi.kult_ffi.CustomIconCrop
+import uniffi.kult_ffi.CustomIconTarget
+import uniffi.kult_ffi.CustomIconTargetKind
 import uniffi.kult_ffi.DeliveryState
 import uniffi.kult_ffi.Direction
 import uniffi.kult_ffi.Event
@@ -113,6 +116,10 @@ class SessionE2eTest {
         val root = File(checkNotNull(System.getProperty("komms.repo.root")))
         Json.parseToJsonElement(File(root, "fixtures/b12-theme-parity.json").readText()).jsonObject
     }
+    private val customIconFixture by lazy {
+        val root = File(checkNotNull(System.getProperty("komms.repo.root")))
+        Json.parseToJsonElement(File(root, "fixtures/b13-custom-icon-parity.json").readText()).jsonObject
+    }
 
     @Test
     fun `private theme defaults persists restarts and emits one local event`() {
@@ -139,6 +146,48 @@ class SessionE2eTest {
         session = open(dir, "theme", Events())
         assertEquals(ThemePreference.DARK, session.theme().preference)
         assertTrue(session.theme().persisted)
+        session.stop()
+    }
+
+    @Test
+    fun `private custom icons are canonical local and durable through android session`() {
+        assertEquals(
+            listOf("contact", "group", "folder", "note_to_self"),
+            customIconFixture.getValue("target_types").jsonArray.map { it.jsonPrimitive.content },
+        )
+        val dir = tempDir()
+        val events = Events()
+        var session = open(dir, "icons", events)
+        val queued = session.status().queued
+        val note = CustomIconTarget(CustomIconTargetKind.NOTE_TO_SELF, null)
+        assertEquals(null, session.customIcon(note))
+        val noteIcon = session.setBundledCustomIcon(note, "compass")
+        assertEquals("image/png", noteIcon.mediaType)
+        assertEquals(256u, noteIcon.width)
+        assertEquals(256u, noteIcon.height)
+        assertContentEquals(byteArrayOf(-119, 80, 78, 71, 13, 10, 26, 10), noteIcon.bytes.take(8).toByteArray())
+        events.wait("custom icons changed") { it as? Event.CustomIconsChanged }
+
+        val folder = session.createFolder("Icon target")
+        val folderTarget = CustomIconTarget(CustomIconTargetKind.FOLDER, folder.id)
+        val source = File(dir, "android-icon.png").apply { writeBytes(imageSource()) }
+        val folderIcon = session.setCustomIconFromPath(
+            folderTarget,
+            source,
+            CustomIconCrop(0u, 0u, 3u, 3u),
+        )
+        assertNotEquals(noteIcon.bytes.toList(), folderIcon.bytes.toList())
+        val usage = session.customIconUsage()
+        assertEquals(2uL, usage.records)
+        assertEquals((noteIcon.bytes.size + folderIcon.bytes.size).toULong(), usage.bytes)
+        assertEquals(queued, session.status().queued)
+        assertTrue(session.clearCustomIcon(folderTarget))
+        assertFalse(session.clearCustomIcon(folderTarget))
+        assertEquals(null, session.customIcon(folderTarget))
+        session.stop()
+
+        session = open(dir, "icons", Events())
+        assertContentEquals(noteIcon.bytes, assertNotNull(session.customIcon(note)).bytes)
         session.stop()
     }
     private fun imageSource(): ByteArray = Base64.getDecoder().decode(

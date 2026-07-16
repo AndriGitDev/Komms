@@ -26,7 +26,9 @@ use serde::{Deserialize, Serialize};
 use kult_ffi::{
     canonicalize_recorded_audio, default_config, edit_image, probe_edited_image,
     probe_recorded_audio, Attachment, AttachmentConversation, AttachmentDirection, AttachmentState,
-    AudioInfo, CarrierCapability, Config, ContentKind, DeliveryState, Direction, Event,
+    AudioInfo, CarrierCapability, Config, ContentKind, CustomIcon as FfiCustomIcon,
+    CustomIconCrop as FfiCustomIconCrop, CustomIconTarget as FfiCustomIconTarget,
+    CustomIconTargetKind as FfiCustomIconTargetKind, DeliveryState, Direction, Event,
     EventListener, Folder as FfiFolder, FolderConversation as FfiFolderConversation,
     FolderConversationResult as FfiFolderConversationResult, FolderSelection as FfiFolderSelection,
     FolderSelectionKind as FfiFolderSelectionKind, FolderTarget as FfiFolderTarget,
@@ -382,6 +384,107 @@ pub struct UiContact {
     pub name: String,
     /// Whether safety numbers were verified out-of-band.
     pub verified: bool,
+}
+
+/// Exact typed target for one private local custom icon.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiCustomIconTarget {
+    /// `contact`, `group`, `folder`, or `note_to_self`.
+    pub kind: String,
+    /// Stable target id, absent only for note-to-self.
+    pub id: Option<String>,
+}
+
+impl UiCustomIconTarget {
+    fn to_ffi(&self) -> Result<FfiCustomIconTarget, String> {
+        let kind = match self.kind.as_str() {
+            "contact" => FfiCustomIconTargetKind::Contact,
+            "group" => FfiCustomIconTargetKind::Group,
+            "folder" => FfiCustomIconTargetKind::Folder,
+            "note_to_self" => FfiCustomIconTargetKind::NoteToSelf,
+            _ => {
+                return Err(
+                    "custom icon target kind must be contact, group, folder, or note_to_self"
+                        .to_owned(),
+                )
+            }
+        };
+        Ok(FfiCustomIconTarget {
+            kind,
+            id: self.id.clone(),
+        })
+    }
+
+    fn from_ffi(target: FfiCustomIconTarget) -> Self {
+        Self {
+            kind: match target.kind {
+                FfiCustomIconTargetKind::Contact => "contact",
+                FfiCustomIconTargetKind::Group => "group",
+                FfiCustomIconTargetKind::Folder => "folder",
+                FfiCustomIconTargetKind::NoteToSelf => "note_to_self",
+            }
+            .to_owned(),
+            id: target.id,
+        }
+    }
+}
+
+/// Optional exact square crop in oriented source pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub struct UiCustomIconCrop {
+    /// Left edge.
+    pub x: u32,
+    /// Top edge.
+    pub y: u32,
+    /// Non-zero width.
+    pub width: u32,
+    /// Equal non-zero height.
+    pub height: u32,
+}
+
+/// Render-ready canonical local icon.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UiCustomIcon {
+    /// Exact typed target.
+    pub target: UiCustomIconTarget,
+    /// Canonical `image/png` media type.
+    pub media_type: String,
+    /// Bounded local data URL for the dependency-free webview.
+    pub data_url: String,
+    /// Exact encoded PNG byte count.
+    pub encoded_bytes: u64,
+    /// Canonical width.
+    pub width: u32,
+    /// Canonical height.
+    pub height: u32,
+}
+
+impl UiCustomIcon {
+    fn from_ffi(icon: FfiCustomIcon) -> Self {
+        let encoded_bytes = icon.bytes.len() as u64;
+        let data_url = format!(
+            "data:{};base64,{}",
+            icon.media_type,
+            base64::engine::general_purpose::STANDARD.encode(&icon.bytes)
+        );
+        Self {
+            target: UiCustomIconTarget::from_ffi(icon.target),
+            media_type: icon.media_type,
+            data_url,
+            encoded_bytes,
+            width: icon.width,
+            height: icon.height,
+        }
+    }
+}
+
+/// Current sealed custom-icon quota usage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct UiCustomIconUsage {
+    /// Durable icon records.
+    pub records: u64,
+    /// Aggregate canonical PNG bytes.
+    pub bytes: u64,
 }
 
 /// Exact typed conversation target for local folder operations.
@@ -1211,6 +1314,8 @@ pub enum UiEvent {
     },
     /// Private local appearance preference changed.
     ThemeChanged,
+    /// Private local custom icons changed.
+    CustomIconsChanged,
     /// Private local folder definitions, order, or assignments changed.
     FoldersChanged,
     /// Private local label definitions or memberships changed.
@@ -1297,6 +1402,7 @@ impl UiEvent {
                 attachment: UiAttachment::from_ffi(attachment),
             },
             Event::ThemeChanged => Self::ThemeChanged,
+            Event::CustomIconsChanged => Self::CustomIconsChanged,
             Event::FoldersChanged => Self::FoldersChanged,
             Event::LabelsChanged => Self::LabelsChanged,
             Event::PinsChanged => Self::PinsChanged,
@@ -2182,6 +2288,68 @@ impl Session {
         self.node
             .set_theme(preference.into_ffi())
             .map_err(|error| error.to_string())
+    }
+
+    /// Read one custom icon, or `None` for generated initials fallback.
+    pub fn custom_icon(&self, target: UiCustomIconTarget) -> Result<Option<UiCustomIcon>, String> {
+        Ok(self
+            .node
+            .custom_icon(target.to_ffi()?)
+            .map_err(|error| error.to_string())?
+            .map(UiCustomIcon::from_ffi))
+    }
+
+    /// Crop, sanitize, and seal a selected local JPEG/PNG.
+    pub fn set_custom_icon_from_path(
+        &self,
+        target: UiCustomIconTarget,
+        path: String,
+        crop: Option<UiCustomIconCrop>,
+    ) -> Result<UiCustomIcon, String> {
+        self.node
+            .set_custom_icon_from_path(
+                target.to_ffi()?,
+                path,
+                crop.map(|crop| FfiCustomIconCrop {
+                    x: crop.x,
+                    y: crop.y,
+                    width: crop.width,
+                    height: crop.height,
+                }),
+            )
+            .map(UiCustomIcon::from_ffi)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Render and seal one bundled glyph token.
+    pub fn set_bundled_custom_icon(
+        &self,
+        target: UiCustomIconTarget,
+        glyph: String,
+    ) -> Result<UiCustomIcon, String> {
+        self.node
+            .set_bundled_custom_icon(target.to_ffi()?, glyph)
+            .map(UiCustomIcon::from_ffi)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Remove one icon and return to generated initials.
+    pub fn clear_custom_icon(&self, target: UiCustomIconTarget) -> Result<bool, String> {
+        self.node
+            .clear_custom_icon(target.to_ffi()?)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Read current sealed custom-icon quota usage.
+    pub fn custom_icon_usage(&self) -> Result<UiCustomIconUsage, String> {
+        let usage = self
+            .node
+            .custom_icon_quota_usage()
+            .map_err(|error| error.to_string())?;
+        Ok(UiCustomIconUsage {
+            records: usage.records,
+            bytes: usage.bytes,
+        })
     }
 
     /// Create one private local folder.

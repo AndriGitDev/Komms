@@ -11,12 +11,13 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::session::{
-    NetworkSettings, Session, UiAttachment, UiAudioMedia, UiBundle, UiContact, UiFolder,
-    UiFolderConversation, UiFolderConversationResult, UiFolderSelection, UiFolderTarget, UiGroup,
-    UiGroupMessage, UiHint, UiImageEditRecipe, UiImageReview, UiLabel, UiLabelConversation,
-    UiLabelFilterResult, UiLabelTarget, UiMentionCapability, UiMentionSpan, UiMessage,
-    UiNoteMessage, UiPin, UiPinConversationResult, UiPinTarget, UiSafetyNumber, UiScheduledMessage,
-    UiStaleFolder, UiStaleLabel, UiStatus, UiThemeInfo, UiThemePreference,
+    NetworkSettings, Session, UiAttachment, UiAudioMedia, UiBundle, UiContact, UiCustomIcon,
+    UiCustomIconCrop, UiCustomIconTarget, UiCustomIconUsage, UiFolder, UiFolderConversation,
+    UiFolderConversationResult, UiFolderSelection, UiFolderTarget, UiGroup, UiGroupMessage, UiHint,
+    UiImageEditRecipe, UiImageReview, UiLabel, UiLabelConversation, UiLabelFilterResult,
+    UiLabelTarget, UiMentionCapability, UiMentionSpan, UiMessage, UiNoteMessage, UiPin,
+    UiPinConversationResult, UiPinTarget, UiSafetyNumber, UiScheduledMessage, UiStaleFolder,
+    UiStaleLabel, UiStatus, UiThemeInfo, UiThemePreference,
 };
 
 /// The one piece of managed state: the running session, if unlocked.
@@ -361,6 +362,28 @@ forward!(
 forward!(
     /// Idempotently persist one canonical appearance choice.
     set_theme(preference: UiThemePreference) -> bool, |s| s.set_theme(preference)
+);
+forward!(
+    /// Read one private local icon or generated-initials fallback.
+    custom_icon(target: UiCustomIconTarget) -> Option<UiCustomIcon>, |s| s.custom_icon(target)
+);
+forward!(
+    /// Crop, sanitize, and seal a selected local JPEG/PNG.
+    set_custom_icon_from_path(target: UiCustomIconTarget, path: String, crop: Option<UiCustomIconCrop>) -> UiCustomIcon,
+    |s| s.set_custom_icon_from_path(target, path, crop)
+);
+forward!(
+    /// Render and seal one bundled glyph token.
+    set_bundled_custom_icon(target: UiCustomIconTarget, glyph: String) -> UiCustomIcon,
+    |s| s.set_bundled_custom_icon(target, glyph)
+);
+forward!(
+    /// Remove one icon and return to generated initials.
+    clear_custom_icon(target: UiCustomIconTarget) -> bool, |s| s.clear_custom_icon(target)
+);
+forward!(
+    /// Read sealed custom-icon quota usage.
+    custom_icon_usage() -> UiCustomIconUsage, |s| s.custom_icon_usage()
 );
 forward!(
     /// Create one private local folder.

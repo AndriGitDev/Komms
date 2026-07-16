@@ -89,6 +89,20 @@ private struct ThemeParityFixture: Decodable {
     }
 }
 
+private struct CustomIconParityFixture: Decodable {
+    let targetTypes: [String]
+    let bundledGlyphs: [String]
+
+    static func load() throws -> Self {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let data = try Data(contentsOf: root.appendingPathComponent("fixtures/b13-custom-icon-parity.json"))
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(Self.self, from: data)
+    }
+}
+
 private func labelTargetKindName(_ kind: LabelTargetKind) -> String {
     switch kind {
     case .peer: "peer"
@@ -257,6 +271,49 @@ final class SessionE2eTests: XCTestCase {
         session = try open(dir, "theme", Events())
         XCTAssertEqual(.dark, try session.theme().preference)
         XCTAssertTrue(try session.theme().persisted)
+        session.stop()
+    }
+
+    func testPrivateCustomIconsAreCanonicalLocalAndDurableThroughIOSSession() throws {
+        let fixture = try CustomIconParityFixture.load()
+        XCTAssertEqual(["contact", "group", "folder", "note_to_self"], fixture.targetTypes)
+        XCTAssertEqual("compass", fixture.bundledGlyphs.last)
+        let dir = try tempDir()
+        let events = Events()
+        var session = try open(dir, "icons", events)
+        let queued = try session.status().queued
+        let note = CustomIconTarget(kind: .noteToSelf, id: nil)
+        XCTAssertNil(try session.customIcon(target: note))
+        let noteIcon = try session.setCustomIcon(target: note, glyph: "compass")
+        XCTAssertEqual("image/png", noteIcon.mediaType)
+        XCTAssertEqual(256, noteIcon.width)
+        XCTAssertEqual(256, noteIcon.height)
+        XCTAssertEqual(Data([137, 80, 78, 71, 13, 10, 26, 10]), Data(noteIcon.bytes.prefix(8)))
+        _ = try events.wait("custom icons changed") { event -> Void? in
+            if case .customIconsChanged = event { return () }
+            return nil
+        }
+
+        let folder = try session.createFolder(name: "Icon target")
+        let folderTarget = CustomIconTarget(kind: .folder, id: folder.id)
+        let source = dir.appendingPathComponent("ios-icon.png")
+        try imageSource().write(to: source)
+        let folderIcon = try session.setCustomIcon(
+            target: folderTarget,
+            source: source,
+            crop: CustomIconCrop(x: 0, y: 0, width: 3, height: 3))
+        XCTAssertNotEqual(noteIcon.bytes, folderIcon.bytes)
+        let usage = try session.customIconUsage()
+        XCTAssertEqual(2, usage.records)
+        XCTAssertEqual(UInt64(noteIcon.bytes.count + folderIcon.bytes.count), usage.bytes)
+        XCTAssertEqual(queued, try session.status().queued)
+        XCTAssertTrue(try session.clearCustomIcon(target: folderTarget))
+        XCTAssertFalse(try session.clearCustomIcon(target: folderTarget))
+        XCTAssertNil(try session.customIcon(target: folderTarget))
+        session.stop()
+
+        session = try open(dir, "icons", Events())
+        XCTAssertEqual(noteIcon.bytes, try XCTUnwrap(session.customIcon(target: note)).bytes)
         session.stop()
     }
 

@@ -29,6 +29,9 @@ import androidx.recyclerview.widget.RecyclerView
 import java.io.File
 import komms.core.bundleQrText
 import uniffi.kult_ffi.Contact
+import uniffi.kult_ffi.CustomIcon
+import uniffi.kult_ffi.CustomIconTarget
+import uniffi.kult_ffi.CustomIconTargetKind
 import uniffi.kult_ffi.Event
 import uniffi.kult_ffi.Folder
 import uniffi.kult_ffi.FolderSelection
@@ -88,6 +91,7 @@ class MainActivity : AppCompatActivity() {
                 is Event.LabelsChanged -> refreshLabelsAndLists(true)
                 is Event.PinsChanged -> refreshLabelsAndLists(true)
                 is Event.ThemeChanged -> Unit // ThemeController applies process-wide DayNight.
+                is Event.CustomIconsChanged -> refreshLabelsAndLists(false)
                 else -> {}
             }
         }
@@ -192,6 +196,7 @@ class MainActivity : AppCompatActivity() {
             R.id.menu_folders -> startActivity(Intent(this, FolderManagerActivity::class.java))
             R.id.menu_labels -> startActivity(Intent(this, LabelManagerActivity::class.java))
             R.id.menu_pins -> showPinManager()
+            R.id.menu_icons -> startActivity(Intent(this, CustomIconActivity::class.java))
             R.id.menu_my_qr -> showMyQr()
             R.id.menu_backup -> createBackup.launch("komms-backup.kkr")
             R.id.menu_settings -> startActivity(Intent(this, SettingsActivity::class.java))
@@ -316,6 +321,24 @@ class MainActivity : AppCompatActivity() {
                 noteLabels = session.labelsForConversation(
                     LabelTarget(LabelTargetKind.NOTE_TO_SELF, null),
                 ),
+                contactIcons = contacts.associate { contact ->
+                    contact.peer to session.customIcon(
+                        CustomIconTarget(CustomIconTargetKind.CONTACT, contact.peer),
+                    )
+                },
+                groupIcons = groups.associate { group ->
+                    group.id to session.customIcon(
+                        CustomIconTarget(CustomIconTargetKind.GROUP, group.id),
+                    )
+                },
+                folderIcons = folders.associate { folder ->
+                    folder.id to session.customIcon(
+                        CustomIconTarget(CustomIconTargetKind.FOLDER, folder.id),
+                    )
+                },
+                noteIcon = session.customIcon(
+                    CustomIconTarget(CustomIconTargetKind.NOTE_TO_SELF, null),
+                ),
             )
         }) { snapshot ->
             selectedLabels = snapshot.selected
@@ -326,7 +349,7 @@ class MainActivity : AppCompatActivity() {
             }
             folderId = snapshot.folderSelection.id
             persistLabelFilter()
-            renderFolderControls(snapshot.folders)
+            renderFolderControls(snapshot.folders, snapshot.folderIcons)
             findViewById<TextView>(R.id.main_folder_filter_status).apply {
                 text = if (snapshot.folderUnavailable) getString(R.string.folder_selection_unavailable) else ""
                 if (snapshot.folderUnavailable) announceForAccessibility(text)
@@ -339,10 +362,23 @@ class MainActivity : AppCompatActivity() {
                 .mapNotNull { it.target.id?.let(contactById::get) }
             val visibleGroups = snapshot.ordered.filter { !it.pinned && it.target.kind == PinTargetKind.GROUP }
                 .mapNotNull { it.target.id?.let(groupById::get) }
-            pins.submit(snapshot.ordered.filter { it.pinned })
+            val iconMap = buildMap {
+                snapshot.contactIcons.forEach { (id, icon) -> put("peer:$id", icon) }
+                snapshot.groupIcons.forEach { (id, icon) -> put("group:$id", icon) }
+                put("note_to_self:", snapshot.noteIcon)
+            }
+            pins.submit(snapshot.ordered.filter { it.pinned }, iconMap)
             knownPeers = snapshot.contacts.map { it.peer }.toSet()
-            contacts.submit(visibleContacts, snapshot.contactLabels.mapValues { (_, labels) -> labelLines(labels) })
-            groups.submit(visibleGroups, snapshot.groupLabels.mapValues { (_, labels) -> labelLines(labels) })
+            contacts.submit(
+                visibleContacts,
+                snapshot.contactLabels.mapValues { (_, labels) -> labelLines(labels) },
+                snapshot.contactIcons,
+            )
+            groups.submit(
+                visibleGroups,
+                snapshot.groupLabels.mapValues { (_, labels) -> labelLines(labels) },
+                snapshot.groupIcons,
+            )
             findViewById<TextView>(R.id.main_empty).visibility =
                 if (visibleContacts.isEmpty()) View.VISIBLE else View.GONE
             findViewById<TextView>(R.id.main_groups_empty).visibility =
@@ -354,6 +390,13 @@ class MainActivity : AppCompatActivity() {
                     val lines = labelLines(snapshot.noteLabels)
                     if (lines.isNotEmpty()) append("\n").append(lines)
                 }
+                setCompoundDrawablesRelativeWithIntrinsicBounds(
+                    customIconDrawable(this@MainActivity, snapshot.noteIcon, getString(R.string.note_to_self_title)),
+                    null,
+                    null,
+                    null,
+                )
+                compoundDrawablePadding = (12 * resources.displayMetrics.density).toInt()
             }
             val status = findViewById<TextView>(R.id.main_label_filter_status)
             status.text = when {
@@ -365,7 +408,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun renderFolderControls(folders: List<Folder>) {
+    private fun renderFolderControls(folders: List<Folder>, icons: Map<String, CustomIcon?>) {
         renderingFolderControls = true
         val root = findViewById<RadioGroup>(R.id.main_folder_filters)
         root.setOnCheckedChangeListener(null)
@@ -384,6 +427,15 @@ class MainActivity : AppCompatActivity() {
                 tag = Pair(kind, id)
                 isFocusable = true
                 nextFocusForwardId = View.NO_ID
+                if (kind == "folder" && id != null) {
+                    setCompoundDrawablesRelativeWithIntrinsicBounds(
+                        customIconDrawable(this@MainActivity, icons[id], summary, 32),
+                        null,
+                        null,
+                        null,
+                    )
+                    compoundDrawablePadding = (8 * resources.displayMetrics.density).toInt()
+                }
             })
         }
         root.setOnCheckedChangeListener { group, checkedId ->
@@ -617,6 +669,10 @@ private data class MainLabelSnapshot(
     val contactLabels: Map<String, List<Label>>,
     val groupLabels: Map<String, List<Label>>,
     val noteLabels: List<Label>,
+    val contactIcons: Map<String, CustomIcon?>,
+    val groupIcons: Map<String, CustomIcon?>,
+    val folderIcons: Map<String, CustomIcon?>,
+    val noteIcon: CustomIcon?,
 )
 
 /** Leading cross-type pinned block in persisted manual order. */
@@ -624,11 +680,13 @@ private class PinsAdapter(
     private val onClick: (PinConversation) -> Unit,
 ) : RecyclerView.Adapter<PinsAdapter.Holder>() {
     private var items = listOf<PinConversation>()
+    private var icons = mapOf<String, CustomIcon?>()
 
     class Holder(view: View) : RecyclerView.ViewHolder(view)
 
-    fun submit(list: List<PinConversation>) {
+    fun submit(list: List<PinConversation>, iconMap: Map<String, CustomIcon?> = icons) {
         items = list
+        icons = iconMap
         notifyDataSetChanged()
     }
 
@@ -642,6 +700,20 @@ private class PinsAdapter(
         holder.itemView.findViewById<TextView>(android.R.id.text1).text =
             if (item.target.kind == PinTargetKind.NOTE_TO_SELF) holder.itemView.context.getString(R.string.note_to_self_title)
             else item.displayName ?: holder.itemView.context.getString(R.string.pin_unavailable)
+        val iconKey = when (item.target.kind) {
+            PinTargetKind.PEER -> "peer:${item.target.id}"
+            PinTargetKind.GROUP -> "group:${item.target.id}"
+            PinTargetKind.NOTE_TO_SELF -> "note_to_self:"
+        }
+        holder.itemView.findViewById<TextView>(android.R.id.text1).apply {
+            setCompoundDrawablesRelativeWithIntrinsicBounds(
+                customIconDrawable(context, icons[iconKey], text.toString(), 36),
+                null,
+                null,
+                null,
+            )
+            compoundDrawablePadding = (8 * resources.displayMetrics.density).toInt()
+        }
         holder.itemView.findViewById<TextView>(android.R.id.text2).text = holder.itemView.context.getString(R.string.pin_order, position + 1)
         holder.itemView.setOnClickListener { onClick(item) }
     }
@@ -653,12 +725,18 @@ private class GroupsAdapter(
 ) : RecyclerView.Adapter<GroupsAdapter.Holder>() {
     private var items = listOf<Group>()
     private var labels = mapOf<String, String>()
+    private var icons = mapOf<String, CustomIcon?>()
 
     class Holder(view: View) : RecyclerView.ViewHolder(view)
 
-    fun submit(list: List<Group>, labelText: Map<String, String> = labels) {
+    fun submit(
+        list: List<Group>,
+        labelText: Map<String, String> = labels,
+        iconMap: Map<String, CustomIcon?> = icons,
+    ) {
         items = list
         labels = labelText
+        icons = iconMap
         notifyDataSetChanged()
     }
 
@@ -670,6 +748,9 @@ private class GroupsAdapter(
     override fun onBindViewHolder(holder: Holder, position: Int) {
         val group = items[position]
         holder.itemView.findViewById<TextView>(R.id.group_name).text = group.name
+        holder.itemView.findViewById<ImageView>(R.id.group_icon).setImageDrawable(
+            customIconDrawable(holder.itemView.context, icons[group.id], group.name),
+        )
         holder.itemView.findViewById<TextView>(R.id.group_members).text =
             holder.itemView.context.resources.getQuantityString(
                 R.plurals.group_member_count,
@@ -690,12 +771,18 @@ private class ContactsAdapter(
 ) : RecyclerView.Adapter<ContactsAdapter.Holder>() {
     private var items = listOf<Contact>()
     private var labels = mapOf<String, String>()
+    private var icons = mapOf<String, CustomIcon?>()
 
     class Holder(view: android.view.View) : RecyclerView.ViewHolder(view)
 
-    fun submit(list: List<Contact>, labelText: Map<String, String> = labels) {
+    fun submit(
+        list: List<Contact>,
+        labelText: Map<String, String> = labels,
+        iconMap: Map<String, CustomIcon?> = icons,
+    ) {
         items = list
         labels = labelText
+        icons = iconMap
         notifyDataSetChanged()
     }
 
@@ -712,6 +799,9 @@ private class ContactsAdapter(
     override fun onBindViewHolder(holder: Holder, position: Int) {
         val contact = items[position]
         holder.itemView.findViewById<TextView>(R.id.contact_name).text = contact.name
+        holder.itemView.findViewById<ImageView>(R.id.contact_icon).setImageDrawable(
+            customIconDrawable(holder.itemView.context, icons[contact.peer], contact.name),
+        )
         holder.itemView.findViewById<TextView>(R.id.contact_peer).text =
             contact.peer.take(16) + "…"
         holder.itemView.findViewById<TextView>(R.id.contact_verified).visibility =

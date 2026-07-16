@@ -48,6 +48,7 @@ const state = {
   labelFilter: { selected: [], mode: "any", matches: null },
   pins: [],
   pinRows: [],
+  icons: new Map(),
   noteToSelfId: null,
   currentKind: null, // "contact", "group", or "note"
   currentId: null,
@@ -145,6 +146,75 @@ function folderTarget(kind = state.currentKind, id = state.currentId) {
   if (kind === "group") return { kind: "group", id };
   if (kind === "note") return { kind: "note_to_self", id: null };
   return null;
+}
+
+const ICON_GLYPHS = ["person", "group", "folder", "note", "star", "heart", "shield", "compass"];
+
+function customIconTarget(kind = state.currentKind, id = state.currentId) {
+  if (kind === "contact") return { kind: "contact", id };
+  if (kind === "group") return { kind: "group", id };
+  if (kind === "folder") return { kind: "folder", id };
+  if (kind === "note") return { kind: "note_to_self", id: null };
+  return null;
+}
+
+function customIconKey(target) {
+  return `${target.kind}:${target.id ?? ""}`;
+}
+
+function generatedInitials(name) {
+  const words = String(name ?? "").trim().split(/\s+/u).filter(Boolean);
+  if (words.length === 0) return "?";
+  const first = [...words[0]][0] ?? "?";
+  const last = words.length > 1 ? ([...words.at(-1)][0] ?? "") : "";
+  return `${first}${last}`.toLocaleUpperCase();
+}
+
+async function loadCustomIcon(target) {
+  const key = customIconKey(target);
+  if (state.icons.has(key)) return state.icons.get(key);
+  const icon = await invoke("custom_icon", { target });
+  state.icons.set(key, icon);
+  return icon;
+}
+
+async function applyCustomIcon(avatar, target, fallback, accessibleName) {
+  avatar.dataset.iconKind = target.kind;
+  avatar.dataset.iconId = target.id ?? "";
+  avatar.dataset.iconFallback = fallback;
+  avatar.dataset.iconName = accessibleName;
+  avatar.replaceChildren();
+  avatar.textContent = fallback;
+  try {
+    const icon = await loadCustomIcon(target);
+    if (!icon || !avatar.isConnected) return;
+    const image = document.createElement("img");
+    image.src = icon.data_url;
+    image.alt = "";
+    image.width = icon.width;
+    image.height = icon.height;
+    avatar.replaceChildren(image);
+    avatar.title = `Private local icon for ${accessibleName}`;
+  } catch {
+    // Missing, corrupt, or concurrently removed icons always retain initials.
+  }
+}
+
+async function refreshVisibleCustomIcons(clearCache = false) {
+  if (clearCache) state.icons.clear();
+  const work = $$('[data-icon-kind]').map((avatar) => {
+    const target = {
+      kind: avatar.dataset.iconKind,
+      id: avatar.dataset.iconKind === "note_to_self" ? null : avatar.dataset.iconId,
+    };
+    return applyCustomIcon(
+      avatar,
+      target,
+      avatar.dataset.iconFallback || "?",
+      avatar.dataset.iconName || "conversation",
+    );
+  });
+  await Promise.all(work);
 }
 
 function folderAccessibleName(folder) {
@@ -621,6 +691,12 @@ function enterApp(address) {
   refreshFolders();
   refreshLabels();
   call("note_to_self_id").then((id) => { state.noteToSelfId = id; });
+  applyCustomIcon(
+    $("#note-to-self .avatar"),
+    { kind: "note_to_self", id: null },
+    "N",
+    "Note to self",
+  );
   syncThemeAfterUnlock();
   refreshStatus();
   state.statusTimer = setInterval(refreshStatus, 5000);
@@ -657,6 +733,7 @@ async function leaveApp() {
   state.labelFilter = { selected: [], mode: "any", matches: null };
   state.pins = [];
   state.pinRows = [];
+  state.icons.clear();
   state.noteToSelfId = null;
   state.unread.clear();
   state.groupUnread.clear();
@@ -766,6 +843,10 @@ async function renderPinnedList() {
     const name = document.createElement("span");
     name.className = "c-name";
     name.textContent = row.target.kind === "note_to_self" ? "Note to self" : (row.display_name ?? "Unavailable");
+    const iconTarget = row.target.kind === "peer"
+      ? { kind: "contact", id: row.target.id }
+      : { kind: row.target.kind, id: row.target.id };
+    applyCustomIcon(avatar, iconTarget, generatedInitials(name.textContent), name.textContent);
     const badges = document.createElement("span");
     badges.className = "label-badges";
     button.append(avatar, name, badges);
@@ -863,10 +944,20 @@ async function refreshFolders(announce = false) {
     button.dataset.folderKind = "folder";
     button.dataset.folderId = folder.id;
     button.setAttribute("aria-label", `Show ${folderAccessibleName(folder)}`);
+    const avatar = document.createElement("span");
+    avatar.className = "avatar";
+    const fallback = generatedInitials(folder.name);
+    avatar.textContent = fallback;
     const name = document.createElement("bdi");
     name.dir = "auto";
     name.textContent = folder.name;
-    button.append(name);
+    button.append(avatar, name);
+    applyCustomIcon(
+      avatar,
+      { kind: "folder", id: folder.id },
+      fallback,
+      `folder ${folder.name}`,
+    );
     button.addEventListener("click", async () => {
       state.folderSelection = { kind: "folder", id: folder.id };
       await runLabelFilter(true);
@@ -981,10 +1072,12 @@ async function refreshContacts() {
     btn.dataset.peer = c.peer;
     const avatar = document.createElement("span");
     avatar.className = "avatar";
-    avatar.textContent = (c.name || "?").slice(0, 1).toUpperCase();
+    const fallback = generatedInitials(c.name);
+    avatar.textContent = fallback;
     const name = document.createElement("span");
     name.className = "c-name";
     name.textContent = c.name || c.peer.slice(0, 12) + "…";
+    applyCustomIcon(avatar, { kind: "contact", id: c.peer }, fallback, name.textContent);
     const labels = document.createElement("span");
     labels.className = "label-badges";
     btn.append(avatar, name, labels);
@@ -1241,10 +1334,12 @@ async function refreshGroups() {
     btn.dataset.group = group.id;
     const avatar = document.createElement("span");
     avatar.className = "avatar";
-    avatar.textContent = (group.name || "G").slice(0, 1).toUpperCase();
+    const fallback = generatedInitials(group.name || "Group");
+    avatar.textContent = fallback;
     const name = document.createElement("span");
     name.className = "c-name";
     name.textContent = group.name || "Unnamed group";
+    applyCustomIcon(avatar, { kind: "group", id: group.id }, fallback, name.textContent);
     const detail = document.createElement("span");
     detail.className = "c-detail";
     detail.textContent = `${group.members.length} members`;
@@ -2072,6 +2167,10 @@ listen("node-event", async ({ payload: ev }) => {
       applyTheme(theme.preference);
       break;
     }
+    case "custom_icons_changed": {
+      await refreshVisibleCustomIcons(true);
+      break;
+    }
     case "folders_changed": {
       await refreshFolders(true);
       break;
@@ -2273,6 +2372,110 @@ function showError(root, err) {
   }
 }
 
+function customIconChoices() {
+  return [
+    { target: { kind: "note_to_self", id: null }, label: "Note to self" },
+    ...state.contacts.map((contact) => ({
+      target: { kind: "contact", id: contact.peer },
+      label: `Contact · ${contact.name || contact.peer.slice(0, 12) + "…"}`,
+    })),
+    ...state.groups.map((group) => ({
+      target: { kind: "group", id: group.id },
+      label: `Group · ${group.name || "Unnamed group"}`,
+    })),
+    ...state.folders.map((folder) => ({
+      target: { kind: "folder", id: folder.id },
+      label: `Folder ${folder.order + 1} · ${folder.name}`,
+    })),
+  ];
+}
+
+function selectedCustomIconChoice(root) {
+  const select = root.querySelector('[data-f="icon-target"]');
+  return JSON.parse(select.value);
+}
+
+async function refreshIconManager(root, clearCache = false) {
+  if (clearCache) state.icons.clear();
+  const select = root.querySelector('[data-f="icon-target"]');
+  const target = selectedCustomIconChoice(root);
+  const label = select.selectedOptions[0]?.textContent ?? "selected target";
+  const fallback = generatedInitials(label.replace(/^[^·]+·\s*/u, ""));
+  const preview = root.querySelector('[data-f="preview"]');
+  await applyCustomIcon(preview, target, fallback, label);
+  const icon = await loadCustomIcon(target);
+  root.querySelector('[data-f="preview-description"]').textContent = icon
+    ? `Private local icon · ${Number(icon.encoded_bytes).toLocaleString()} bytes`
+    : `Generated initials fallback · ${fallback}`;
+  root.querySelector('[data-act="clear-icon"]').disabled = !icon;
+  const usage = await invoke("custom_icon_usage");
+  root.querySelector('[data-f="usage"]').textContent = `${usage.records.toLocaleString()} / 1,024 sealed icons · ${usage.bytes.toLocaleString()} / 67,108,864 encoded bytes`;
+}
+
+async function openIconManager() {
+  const root = openModal("Private custom icons", "tpl-icon-manager");
+  const select = root.querySelector('[data-f="icon-target"]');
+  for (const choice of customIconChoices()) {
+    const option = document.createElement("option");
+    option.value = JSON.stringify(choice.target);
+    option.textContent = choice.label;
+    select.append(option);
+  }
+  const glyphs = root.querySelector('[data-f="glyphs"]');
+  for (const glyph of ICON_GLYPHS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost";
+    button.textContent = glyph;
+    button.setAttribute("aria-label", `Use bundled ${glyph} glyph`);
+    button.addEventListener("click", async () => {
+      try {
+        const target = selectedCustomIconChoice(root);
+        const icon = await invoke("set_bundled_custom_icon", { target, glyph });
+        state.icons.set(customIconKey(target), icon);
+        root.querySelector('[data-f="result"]').textContent = `Bundled ${glyph} icon saved locally.`;
+        root.querySelector('[data-f="error"]').hidden = true;
+        await Promise.all([refreshIconManager(root), refreshVisibleCustomIcons()]);
+      } catch (error) { showError(root, error); }
+    });
+    glyphs.append(button);
+  }
+  select.addEventListener("change", () => {
+    root.querySelector('[data-f="result"]').textContent = "";
+    refreshIconManager(root).catch((error) => showError(root, error));
+  });
+  root.querySelector('[data-act="choose-icon-image"]').addEventListener("click", async () => {
+    const path = await openPath({
+      title: "Choose a private local icon",
+      multiple: false,
+      directory: false,
+      filters: [{ name: "JPEG or PNG", extensions: ["jpg", "jpeg", "png"] }],
+    });
+    if (!path || typeof path !== "string") return;
+    try {
+      const target = selectedCustomIconChoice(root);
+      const icon = await invoke("set_custom_icon_from_path", { target, path, crop: null });
+      state.icons.set(customIconKey(target), icon);
+      root.querySelector('[data-f="result"]').textContent = "Selected image cropped, sanitized, and sealed locally.";
+      root.querySelector('[data-f="error"]').hidden = true;
+      await Promise.all([refreshIconManager(root), refreshVisibleCustomIcons()]);
+    } catch (error) { showError(root, error); }
+  });
+  root.querySelector('[data-act="clear-icon"]').addEventListener("click", async () => {
+    try {
+      const target = selectedCustomIconChoice(root);
+      await invoke("clear_custom_icon", { target });
+      state.icons.set(customIconKey(target), null);
+      root.querySelector('[data-f="result"]').textContent = "Generated initials restored.";
+      root.querySelector('[data-f="error"]').hidden = true;
+      await Promise.all([refreshIconManager(root), refreshVisibleCustomIcons()]);
+    } catch (error) { showError(root, error); }
+  });
+  await refreshIconManager(root);
+}
+
+$("#btn-icon-manager").addEventListener("click", openIconManager);
+
 function resetFolderEditor(root) {
   root.querySelector('[data-f="folder-id"]').value = "";
   root.querySelector('[data-f="folder-name"]').value = "";
@@ -2294,6 +2497,11 @@ async function renderFolderManager(root) {
   for (const [index, folder] of state.folders.entries()) {
     const row = document.createElement("div");
     row.className = "folder-manager-row";
+    const avatar = document.createElement("span");
+    avatar.className = "avatar icon-manager-row-avatar";
+    const fallback = generatedInitials(folder.name);
+    avatar.textContent = fallback;
+    applyCustomIcon(avatar, { kind: "folder", id: folder.id }, fallback, `folder ${folder.name}`);
     const description = document.createElement("span");
     description.className = "folder-description";
     const name = document.createElement("bdi");
@@ -2359,7 +2567,7 @@ async function renderFolderManager(root) {
       } catch (error) { showError(root, error); }
     });
     actions.append(edit, remove);
-    row.append(description, actions);
+    row.append(avatar, description, actions);
     list.append(row);
   }
 

@@ -2607,6 +2607,7 @@ name = "kult-node"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "image",
  "kult-crypto",
  "kult-protocol",
  "kult-store",

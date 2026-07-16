@@ -348,6 +348,33 @@ public final class Session: @unchecked Sendable {
         try node.setTheme(preference: preference)
     }
 
+    /// One canonical private local icon, or nil for generated initials.
+    public func customIcon(target: CustomIconTarget) throws -> CustomIcon? {
+        try node.customIcon(target: target)
+    }
+
+    /// Crop, sanitize, and seal a selected local JPEG/PNG.
+    public func setCustomIcon(
+        target: CustomIconTarget, source: URL, crop: CustomIconCrop? = nil
+    ) throws -> CustomIcon {
+        try node.setCustomIconFromPath(target: target, path: source.path, crop: crop)
+    }
+
+    /// Render and seal one bundled glyph token.
+    public func setCustomIcon(target: CustomIconTarget, glyph: String) throws -> CustomIcon {
+        try node.setBundledCustomIcon(target: target, glyph: glyph)
+    }
+
+    /// Remove one icon and return to generated initials.
+    public func clearCustomIcon(target: CustomIconTarget) throws -> Bool {
+        try node.clearCustomIcon(target: target)
+    }
+
+    /// Current sealed icon record and encoded-byte usage.
+    public func customIconUsage() throws -> CustomIconQuotaUsage {
+        try node.customIconQuotaUsage()
+    }
+
     /// Append one sealed local-only note; no transport work is created.
     public func sendNoteToSelf(body: String) throws -> String {
         try node.sendNoteToSelf(body: body)
