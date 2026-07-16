@@ -270,6 +270,16 @@ job successfully. The app target's earlier SwiftUI initializer and
 build. Remaining: a full hands-on SwiftUI messaging pass and an on-device run;
 background delivery and store distribution stay M6.
 
+B14 screen security is shipped across the shared capability contract and all
+three shells. Protection starts before unlock and is not user-disableable:
+Android applies `FLAG_SECURE` to every activity, iOS obscures inactive snapshots
+and live-captured scenes while documenting the still-screenshot limit, and
+desktop requests best-effort native content protection, covers on focus loss,
+and provides `Ctrl/Cmd+Shift+L` rapid lock. Automated parity and native build
+gates are in; the remaining M5 hands-on qualification records real device,
+OS, window-server, and compositor results per
+[13: Screen Security](13-screen-security.md).
+
 **Acceptance**: a non-technical user can install desktop + mobile builds, exchange QR
 verification with a friend, and message over internet, LAN, and mesh with truthful
 delivery/security indicators. Backup/restore round-trips.

@@ -8,6 +8,12 @@ security indicators are the node's own, verbatim.
 
 ## What it does
 
+- **Reduce screen-capture and recent-preview exposure before unlock.** The
+  window requests Tauri native content protection, an opaque shield covers the
+  webview on focus loss, and `Ctrl/Cmd+Shift+L` immediately runs the complete
+  lock path. Capture protection remains honestly best effort because desktop OS,
+  window-server, compositor, privileged-software, and external-camera behavior
+  cannot be controlled universally.
 - **Create / unlock / restore** an encrypted store at the gate; restoring
   takes a `.kkr` backup file plus its 24-word mnemonic.
 - **Pair out-of-band**: share your prekey bundle as a QR code or pasteable

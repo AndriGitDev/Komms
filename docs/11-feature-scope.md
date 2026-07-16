@@ -88,8 +88,17 @@ status and prerequisites are tracked in the delivery plan.
   or legacy non-canonical bytes. `KKR4` is the only portability path. Icons never
   enter avatar URLs, peer sync, envelopes, capabilities, queues, notifications,
   DHT state, or transport work.
-- **Screen-security / incognito keyboard.** Platform APIs in the mobile UI layer
-  (Android/iOS). No protocol involvement.
+- **Screen security.** Shipped as an always-on pre-unlock policy. The shared
+  node/RPC/CLI/UniFFI contract names exact native capability levels and limits;
+  shells enforce them locally. Android applies `FLAG_SECURE` to every activity.
+  iOS obscures inactive/app-switcher and live-captured scenes but cannot
+  universally block still screenshots. Desktop requests best-effort native
+  content protection, obscures on focus loss, and provides `Ctrl/Cmd+Shift+L`
+  rapid lock. It is not stored, backed up, synchronized, notified, or sent and
+  creates zero transport work. See [13: Screen Security](13-screen-security.md).
+- **Incognito keyboard.** Planned platform input behavior: Android can request
+  no personalized learning; iOS/desktop hints and third-party keyboards have
+  honest best-effort limits. No protocol involvement.
 - **Local still-image editing.** Shipped across desktop, Android, and iOS through
   one bounded Rust helper: JPEG/PNG orientation normalization, free/preset crop,
   90-degree rotation, and manual blur/pixelation are applied *before* encryption.

@@ -8,6 +8,11 @@ are the node's own, verbatim.
 
 ## What it does
 
+- **Obscure sensitive scenes before app-switcher snapshots and during live
+  capture.** The always-on root privacy shield starts before unlock, covers on
+  inactive/background transitions, and responds to UIKit capture notifications.
+  Settings explicitly state that iOS cannot universally block still screenshots
+  and that capture notification is not retroactive.
 - **Create / unlock / restore** an encrypted store at the gate; restoring
   takes a `.kkr` backup file plus its 24-word mnemonic.
 - **Pair out-of-band**: show your prekey bundle as a QR, scan a friend's

@@ -90,6 +90,19 @@ messages deleted before capture; post-compromise security means a *transient* co
 healed by the next DH ratchet step. A persistently compromised endpoint sees everything its
 user sees; no messenger can prevent that (§5).
 
+### A8: Local display capture (opportunistic)
+
+Shoulder surfing, an accidental screenshot or recording, an app-switcher/recent
+preview, or ordinary capture software observing a sensitive Komms view.
+
+**Defense (bounded):** B14 enables the strongest honest native shell control
+before unlock: Android `FLAG_SECURE`, iOS inactive/live-capture privacy shields,
+and best-effort desktop content protection plus rapid lock. These reduce
+accidental disclosure but do not defeat A7, privileged capture software, a
+compromised OS/compositor, accessibility or overlay abuse, or an external camera.
+iOS still screenshots cannot be universally blocked. Exact guarantees and the
+qualification matrix are in [13: Screen Security](13-screen-security.md).
+
 ## 3. Security goals
 
 | Goal | Meaning | Mechanism |
@@ -103,6 +116,7 @@ user sees; no messenger can prevent that (§5).
 | **Deniability** | Transcripts are not cryptographic proof of authorship to third parties. | No signatures over message content; authentication via shared MAC keys (Signal-style). |
 | **No mandatory identifiers** | No phone number, email, or real name, ever. | Keypair-as-identity ([06: Identity & Trust](06-identity-trust.md)). |
 | **Availability off-grid** | Communication survives infrastructure loss. | Transport abstraction with LoRa mesh + sneakernet fallbacks. |
+| **Local display minimization** | Reduce accidental disclosure from capture and task/app-switcher previews where native APIs permit. | Always-on B14 shell protections and explicit unsupported states; not an endpoint-compromise defense. |
 | **Sovereignty** | Users hold their own keys and data; anyone can run every component. | Local-first storage, AGPLv3, no privileged nodes. |
 
 Optional Hybrid Infrastructure Layer modes do not change the confidentiality,

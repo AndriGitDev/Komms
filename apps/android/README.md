@@ -8,6 +8,10 @@ own, verbatim.
 
 ## What it does
 
+- **Protect every screen before unlock** with always-on `FLAG_SECURE` installed
+  before each activity draws. Compliant screenshots, screen recordings, and
+  recent-task previews are blocked. Settings show the shared B14 policy and its
+  compromised-device, overlay/accessibility-abuse, and external-camera limits.
 - **Create / unlock / restore** an encrypted store at the gate; restoring
   takes a `.kkr` backup file plus its 24-word mnemonic.
 - **Pair out-of-band**: show your prekey bundle as a QR, scan a friend's
