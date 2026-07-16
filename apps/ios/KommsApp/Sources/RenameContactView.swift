@@ -22,7 +22,7 @@ struct RenameContactView: View {
             Form {
                 Section("Private local petname") {
                     TextField("Petname", text: $name)
-                        .incognitoKeyboard(.words)
+                        .incognitoKeyboard(capitalization: .words)
                     Text("Stored sealed on this device. It is never sent to the contact and never identifies a recipient.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
