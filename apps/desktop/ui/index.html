@@ -57,6 +57,12 @@
           </select>
         </label>
 
+        <aside id="screen-security-summary" class="security-summary" aria-live="polite">
+          <strong>Screen security · always on</strong>
+          <span id="screen-security-mechanism">Native content protection is starting…</span>
+          <ul id="screen-security-limitations"></ul>
+        </aside>
+
         <details id="gate-advanced">
           <summary>Network settings</summary>
           <label class="check"><input type="checkbox" id="set-mdns" checked /> Discover peers on the local network (mDNS)</label>
@@ -172,7 +178,7 @@
         <span class="stat" id="stat-scheduled">Scheduled: 0</span>
         <span class="stat" id="stat-queued">Queued: 0</span>
         <span class="stat" id="stat-transit" hidden>Bridging: 0</span>
-        <button id="btn-lock" class="ghost" title="Stop the node and lock">Lock</button>
+        <button id="btn-lock" class="ghost" title="Stop the node and lock (Ctrl/Cmd+Shift+L)">Lock</button>
       </footer>
     </aside>
 
@@ -213,6 +219,11 @@
       </div>
     </main>
   </section>
+
+  <div id="screen-privacy-shield" role="status" aria-label="Komms protected. Sensitive content hidden while the window is inactive." hidden>
+    <strong>Komms is protected</strong>
+    <span>Sensitive content is hidden while this window is inactive.</span>
+  </div>
 
   <!-- ══ Modals ══ -->
   <div id="modal-backdrop" hidden>

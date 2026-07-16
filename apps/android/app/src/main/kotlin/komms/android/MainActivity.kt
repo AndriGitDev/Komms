@@ -23,7 +23,6 @@ import android.widget.ScrollView
 import android.widget.RadioGroup
 import android.widget.RadioButton
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import java.io.File
@@ -51,7 +50,7 @@ import uniffi.kult_ffi.PinTargetKind
  * Contacts + the transport-indicator header. All state shown is the
  * node's own: the status snapshot and the stored contact list, verbatim.
  */
-class MainActivity : AppCompatActivity() {
+class MainActivity : SecureActivity() {
     private val contacts = ContactsAdapter { contact ->
         startActivity(
             Intent(this, ChatActivity::class.java)

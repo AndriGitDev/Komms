@@ -10,14 +10,13 @@ import android.widget.LinearLayout
 import android.widget.Spinner
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AppCompatActivity
 import java.io.File
 import uniffi.kult_ffi.CustomIcon
 import uniffi.kult_ffi.CustomIconTarget
 import uniffi.kult_ffi.CustomIconTargetKind
 
 /** Local-only custom-icon display and management for every B13 target type. */
-class CustomIconActivity : AppCompatActivity() {
+class CustomIconActivity : SecureActivity() {
     private data class Choice(val target: CustomIconTarget, val label: String) {
         override fun toString(): String = label
     }

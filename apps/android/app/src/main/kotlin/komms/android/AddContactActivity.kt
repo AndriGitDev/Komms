@@ -4,7 +4,6 @@ import android.os.Bundle
 import android.widget.Button
 import android.widget.EditText
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AppCompatActivity
 import komms.core.HintSpec
 
 /**
@@ -12,7 +11,7 @@ import komms.core.HintSpec
  * optional delivery hints), or from their kult address alone via DHT
  * lookup. The same inputs `kult add` takes.
  */
-class AddContactActivity : AppCompatActivity() {
+class AddContactActivity : SecureActivity() {
     private val scan =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             result.data?.getStringExtra(ScanActivity.EXTRA_TEXT)?.let {

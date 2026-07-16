@@ -22,15 +22,25 @@ pub mod commands;
 pub mod qr;
 pub mod session;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 /// Build and run the Tauri application (called from `main`).
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(commands::AppState::default())
+        .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                // Best effort by Tauri contract: support depends on the OS,
+                // window server, and compositor, so failure must not prevent
+                // the user from reaching the always-available rapid lock.
+                let _ = window.set_content_protected(true);
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::probe,
+            commands::screen_security_policy,
             commands::unlock,
             commands::restore,
             commands::lock,
@@ -127,6 +137,9 @@ pub fn run() {
             commands::export_backup,
         ])
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Focused(focused) = event {
+                let _ = window.emit("screen-security-focus", *focused);
+            }
             // Stop the node cleanly when the last window goes: flushes the
             // store and unbinds transports instead of relying on exit.
             if let tauri::WindowEvent::CloseRequested { .. } = event {

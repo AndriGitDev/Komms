@@ -4,9 +4,10 @@ import android.os.Bundle
 import android.widget.EditText
 import android.widget.RadioGroup
 import android.widget.Switch
-import androidx.appcompat.app.AppCompatActivity
+import android.widget.TextView
 import komms.core.NetworkSettings
 import komms.core.SettingsException
+import komms.core.androidScreenSecurityPolicy
 import uniffi.kult_ffi.ThemePreference
 
 /**
@@ -15,7 +16,7 @@ import uniffi.kult_ffi.ThemePreference
  * data directory. Applied when the node next starts (the unlock after a
  * lock), exactly like desktop.
  */
-class SettingsActivity : AppCompatActivity() {
+class SettingsActivity : SecureActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_settings)
@@ -40,6 +41,10 @@ class SettingsActivity : AppCompatActivity() {
                 },
             )
         }
+        val screenSecurity = androidScreenSecurityPolicy()
+        findViewById<TextView>(R.id.screen_security_mechanism).text = screenSecurity.mechanism
+        findViewById<TextView>(R.id.screen_security_limits).text =
+            screenSecurity.limitations.joinToString(separator = "\n") { "• $it" }
         val loaded = try {
             NetworkSettings.load(dataDir)
         } catch (e: SettingsException) {

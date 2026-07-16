@@ -27,7 +27,7 @@ private fun validFolderName(name: String): Boolean {
 }
 
 /** TalkBack/switch/keyboard accessible manager with non-drag atomic reorder. */
-class FolderManagerActivity : AppCompatActivity() {
+class FolderManagerActivity : SecureActivity() {
     private lateinit var content: LinearLayout
     private lateinit var status: TextView
 

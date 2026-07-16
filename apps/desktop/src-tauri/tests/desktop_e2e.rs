@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
+use komms_desktop::commands;
 use komms_desktop::session::{
     hex_decode, NetworkSettings, Session, UiCustomIconCrop, UiCustomIconTarget, UiEvent,
     UiFolderSelection, UiFolderTarget, UiHint, UiImageCrop, UiImageEditRecipe, UiImageRegion,
@@ -164,6 +165,34 @@ fn open(dir: &Path, name: &str, events: &Events) -> Session {
         events.sink(),
     )
     .expect("session opens")
+}
+
+#[test]
+fn desktop_screen_security_is_always_on_best_effort_with_rapid_lock() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/b14-screen-security-parity.json"
+    ))
+    .unwrap();
+    let policy = commands::screen_security_policy();
+    assert!(policy.always_on);
+    assert_eq!(
+        policy.capture_prevention,
+        fixture["platforms"]["desktop"]["capture_prevention"]
+    );
+    assert_eq!(
+        policy.background_obscuring,
+        fixture["platforms"]["desktop"]["background_obscuring"]
+    );
+    assert_eq!(policy.rapid_lock, "platform_enforced");
+    assert!(!policy.limitations.is_empty());
+
+    let config = include_str!("../tauri.conf.json");
+    let frontend = include_str!("../../ui/main.js");
+    assert!(config.contains(r#""contentProtected": true"#));
+    assert!(frontend.contains("event.ctrlKey || event.metaKey"));
+    assert!(frontend.contains("event.shiftKey"));
+    assert!(frontend.contains("rapidLock()"));
+    assert_eq!(fixture["desktop_shortcut"], "Ctrl/Cmd+Shift+L");
 }
 
 #[test]

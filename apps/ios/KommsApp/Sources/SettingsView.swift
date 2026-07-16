@@ -37,6 +37,20 @@ struct SettingsView: View {
                     Text("System follows iOS live. The choice is private, sealed locally, and restored from encrypted backups. Color is never the only security or delivery cue.")
                 }
 
+                let screenSecurity = screenSecurityPolicy(platform: .ios)
+                Section {
+                    Text(screenSecurity.mechanism)
+                    ForEach(screenSecurity.limitations, id: \.self) { limitation in
+                        Text("• \(limitation)")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("Screen security · always on")
+                } footer: {
+                    Text("Komms hides inactive app-switcher snapshots and responds to live-capture notifications. iOS still screenshots cannot be universally blocked.")
+                }
+
                 Section {
                     Toggle("LAN discovery (mDNS)", isOn: $mdns)
                     Toggle("Serve a mailbox for others", isOn: $serveMailbox)

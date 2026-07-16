@@ -120,6 +120,27 @@ class SessionE2eTest {
         val root = File(checkNotNull(System.getProperty("komms.repo.root")))
         Json.parseToJsonElement(File(root, "fixtures/b13-custom-icon-parity.json").readText()).jsonObject
     }
+    private val screenSecurityFixture by lazy {
+        val root = File(checkNotNull(System.getProperty("komms.repo.root")))
+        Json.parseToJsonElement(File(root, "fixtures/b14-screen-security-parity.json").readText()).jsonObject
+    }
+
+    @Test
+    fun `screen security policy is always on before a node opens`() {
+        val policy = androidScreenSecurityPolicy()
+        val expected = screenSecurityFixture["platforms"]!!.jsonObject["android"]!!.jsonObject
+        assertTrue(policy.alwaysOn)
+        assertEquals(
+            expected["capture_prevention"]!!.jsonPrimitive.content,
+            policy.capturePrevention.name.lowercase(),
+        )
+        assertEquals(
+            expected["background_obscuring"]!!.jsonPrimitive.content,
+            policy.backgroundObscuring.name.lowercase(),
+        )
+        assertTrue(policy.mechanism.contains("FLAG_SECURE"))
+        assertTrue(policy.limitations.isNotEmpty())
+    }
 
     @Test
     fun `private theme defaults persists restarts and emits one local event`() {

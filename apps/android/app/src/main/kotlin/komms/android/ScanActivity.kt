@@ -6,7 +6,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -28,7 +27,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Full-screen QR scanner: CameraX frames decoded by ZXing (pure Java — no
  * Play Services). Returns the decoded text as [EXTRA_TEXT].
  */
-class ScanActivity : AppCompatActivity() {
+class ScanActivity : SecureActivity() {
     private val analysisExecutor = Executors.newSingleThreadExecutor()
     private val delivered = AtomicBoolean(false)
 
