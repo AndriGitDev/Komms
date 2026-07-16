@@ -38,6 +38,7 @@ all three application shells:
 | **Private local organization** | B10 folders, B11 conversation pins, and B18 contact/conversation labels are shipped across storage, node, RPC/CLI, UniFFI, desktop, Android, and iOS. They remain sealed local metadata, compose as folder → labels → pins/activity, create zero transport work, and are preserved by `KKR4`. Message pins and message labels remain separate work. |
 | **Appearance and accessibility** | B12 system/light/dark appearance is shipped across the sealed F5 preference, node, RPC/CLI, UniFFI, desktop, Android, and iOS. Native system changes apply live, semantic palettes meet the shared WCAG targets, high-contrast/reduced-motion preferences remain native, and security/delivery meaning always retains text or icon cues. |
 | **Private custom icons** | B13 contact, group, folder, and note-to-self icons are shipped across the sealed F5 record, node, RPC/CLI, UniFFI, desktop, Android, and iOS. Generated initials are the safe fallback; eight bundled glyphs or selected local JPEG/PNG inputs become strict metadata-free 256×256 PNGs under per-icon/count/aggregate quotas. `KKR4` is the only portability path and icons create zero remote lookup, peer sync, notification, or transport work. |
+| **Screen security** | B14 is shipped as an always-on pre-unlock policy across the shared capability contract, RPC/CLI, UniFFI, and every shell. Android applies `FLAG_SECURE` to every activity; iOS obscures inactive/app-switcher and live-captured scenes without claiming universal screenshot blocking; desktop requests best-effort native content protection, shields on focus loss, and locks immediately with `Ctrl/Cmd+Shift+L`. OS, compositor, privileged-software, and external-camera limits remain explicit. |
 | **Optional mobile convenience** | ADR-0017 through ADR-0019 propose reversible post-pairing rendezvous and content-free native wake. The layer is design-only: no optional service is implemented or required by the sovereign core. |
 
 Older `KKR1`, `KKR2`, and `KKR3` backups remain restorable; current backups are
@@ -84,6 +85,7 @@ out plainly in [Why Komms](docs/01-why.md).
 | [10: HIL Bench](docs/10-hil-bench.md) | Hardware-in-loop nightly: two-radio bench runbook |
 | [11: Feature Scope](docs/11-feature-scope.md) | Which product features fit the model, and under what constraints |
 | [12: Feature Delivery Plan](docs/12-feature-delivery-plan.md) | Sequenced implementation plan for every approved product feature |
+| [13: Screen Security](docs/13-screen-security.md) | B14 platform guarantees, limitations, behavior, and qualification matrix |
 | [ADRs](docs/adr/README.md) | Decision index, status, and the alternatives each decision beat |
 
 ## Stack

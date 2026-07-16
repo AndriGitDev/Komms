@@ -11,7 +11,6 @@ import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import java.text.DateFormat
@@ -36,7 +35,7 @@ import uniffi.kult_ffi.ScheduledMessage
  * "held — will send when a faster link exists" verdict while the only
  * route is an airtime-budgeted mesh link.
  */
-class ChatActivity : AppCompatActivity() {
+class ChatActivity : SecureActivity() {
     private lateinit var peer: String
     private lateinit var contactName: String
     private val adapter = MessagesAdapter()

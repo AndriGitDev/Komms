@@ -9,7 +9,6 @@ import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import java.text.DateFormat
@@ -22,7 +21,7 @@ import uniffi.kult_ffi.LabelTarget
 import uniffi.kult_ffi.LabelTargetKind
 
 /** The reserved sealed local conversation. Notes have no transport or delivery state. */
-class NoteToSelfActivity : AppCompatActivity() {
+class NoteToSelfActivity : SecureActivity() {
     private lateinit var conversation: String
     private val adapter = NoteMessagesAdapter()
 

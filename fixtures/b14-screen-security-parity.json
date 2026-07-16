@@ -1,0 +1,35 @@
+{
+  "policy": "always_on",
+  "stored_preference": false,
+  "network_behavior": {
+    "envelope": false,
+    "capability": false,
+    "notification": false,
+    "transport_work": false
+  },
+  "platforms": {
+    "android": {
+      "capture_prevention": "platform_enforced",
+      "background_obscuring": "platform_enforced",
+      "capture_detection": "unavailable",
+      "rapid_lock": "unavailable",
+      "native_mechanism": "FLAG_SECURE"
+    },
+    "ios": {
+      "capture_prevention": "unavailable",
+      "background_obscuring": "platform_enforced",
+      "capture_detection": "platform_enforced",
+      "rapid_lock": "unavailable",
+      "native_mechanism": "privacy_shield"
+    },
+    "desktop": {
+      "capture_prevention": "best_effort",
+      "background_obscuring": "best_effort",
+      "capture_detection": "unavailable",
+      "rapid_lock": "platform_enforced",
+      "native_mechanism": "content_protected"
+    }
+  },
+  "desktop_shortcut": "Ctrl/Cmd+Shift+L",
+  "ios_universal_screenshot_blocking": false
+}

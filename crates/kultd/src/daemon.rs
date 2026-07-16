@@ -722,6 +722,12 @@ async fn handle_op(
             "preference": node.theme_preference().map_err(fail)?.as_str(),
             "persisted": node.theme_preference_is_persisted().map_err(fail)?,
         })),
+        Op::ScreenSecurityPolicy { platform } => {
+            let platform = wire::parse_screen_security_platform(&platform)?;
+            Ok(wire::screen_security_policy_json(
+                &kult_node::screen_security_policy(platform),
+            ))
+        }
         Op::ThemeSet { preference } => {
             let preference = wire::parse_theme(&preference)?;
             let changed = node

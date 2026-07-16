@@ -15,8 +15,9 @@ use kult_node::{
     Event, FolderConversationInfo, FolderConversationList, FolderInfo, FolderSelection, GroupInfo,
     GroupMentionCapability, LabelConversationInfo, LabelFilterInfo, LabelInfo,
     MentionCapabilityIssueReason, NodeStaleFolderReason, NodeStaleLabelReason, PinConversationInfo,
-    PinConversationList, PinInfo, ScheduledConversation, ScheduledMessageInfo, StaleFolderInfo,
-    StaleLabelInfo, NOTE_TO_SELF_CONVERSATION_ID,
+    PinConversationList, PinInfo, ScheduledConversation, ScheduledMessageInfo,
+    ScreenSecurityPlatform, ScreenSecurityPolicy, StaleFolderInfo, StaleLabelInfo,
+    NOTE_TO_SELF_CONVERSATION_ID,
 };
 use kult_store::{
     valid_folder_name, valid_label_color, valid_label_name, ConversationId, DeliveryState,
@@ -56,6 +57,7 @@ pub fn parse_request(line: &str) -> Result<Request, String> {
 
 fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
     match op {
+        "screen_security_policy" => Some(&["id", "op", "platform"]),
         "theme" => Some(&["id", "op"]),
         "theme_set" => Some(&["id", "op", "preference"]),
         "custom_icon" | "custom_icon_clear" => Some(&["id", "op", "target"]),
@@ -239,6 +241,11 @@ pub enum Op {
     NoteToSelfMessages,
     /// Read the private local appearance preference.
     Theme,
+    /// Read the immutable always-on screen-security policy for one shell.
+    ScreenSecurityPolicy {
+        /// One of `android`, `ios`, or `desktop`.
+        platform: String,
+    },
     /// Persist one exact canonical appearance preference.
     ThemeSet {
         /// One of `system`, `light`, or `dark`.
@@ -861,6 +868,30 @@ pub fn custom_icon_target_json(target: &CustomIconTarget) -> Value {
     }
 }
 
+/// Parse one canonical shipped-platform token.
+pub fn parse_screen_security_platform(value: &str) -> Result<ScreenSecurityPlatform, String> {
+    match value {
+        "android" => Ok(ScreenSecurityPlatform::Android),
+        "ios" => Ok(ScreenSecurityPlatform::Ios),
+        "desktop" => Ok(ScreenSecurityPlatform::Desktop),
+        _ => Err("screen-security platform must be android, ios, or desktop".to_owned()),
+    }
+}
+
+/// Render the shared B14 policy using stable snake-case capability levels.
+pub fn screen_security_policy_json(policy: &ScreenSecurityPolicy) -> Value {
+    json!({
+        "platform": policy.platform.as_str(),
+        "always_on": policy.always_on,
+        "capture_prevention": policy.capture_prevention.as_str(),
+        "background_obscuring": policy.background_obscuring.as_str(),
+        "capture_detection": policy.capture_detection.as_str(),
+        "rapid_lock": policy.rapid_lock.as_str(),
+        "mechanism": policy.mechanism,
+        "limitations": policy.limitations,
+    })
+}
+
 /// Render one folder without sealed bytes, nonces, or unrelated metadata.
 pub fn folder_json(folder: &FolderInfo) -> Value {
     json!({
@@ -1461,6 +1492,15 @@ mod tests {
         assert!(matches!(r.op, Op::NoteToSelfSend { .. }));
         let r = parse_request(r#"{"id":40,"op":"theme_set","preference":"dark"}"#).unwrap();
         assert!(matches!(r.op, Op::ThemeSet { preference } if preference == "dark"));
+        let r =
+            parse_request(r#"{"id":39,"op":"screen_security_policy","platform":"ios"}"#).unwrap();
+        assert!(matches!(r.op, Op::ScreenSecurityPolicy { platform } if platform == "ios"));
+        assert!(parse_request(
+            r#"{"id":38,"op":"screen_security_policy","platform":"desktop","extra":true}"#,
+        )
+        .is_err());
+        assert!(parse_screen_security_platform("android").is_ok());
+        assert!(parse_screen_security_platform("web").is_err());
         assert!(parse_request(r#"{"id":41,"op":"theme","extra":true}"#).is_err());
         assert!(parse_theme("system").is_ok());
         assert!(parse_theme("sepia").is_err());

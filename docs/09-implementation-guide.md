@@ -124,6 +124,8 @@ pub struct Node { /* composes store + transports + sessions */ }
 // local icons: custom_icon / set_custom_icon_from_path / set_bundled_custom_icon
 //              / clear_custom_icon / custom_icon_usage
 //             → CustomIconsChanged (local only; no delivery-engine work)
+// screen security: screen_security_policy(platform)
+//             → immutable pre-unlock capability/limitation contract; no store
 ```
 
 `kult-ffi` exposes exactly `Node`'s command/event API via UniFFI, nothing more.
@@ -137,6 +139,17 @@ The CLI spells these `icon`, `icon-set-image`, `icon-set-glyph`, `icon-clear`, a
 `note-to-self` targets. Binary PNG bytes use the RPC's existing lowercase-hex
 rule; shells receive bounded bytes through UniFFI and never infer targets from
 display names.
+
+B14 is an immutable free policy function rather than a `Node` mutation because
+screen protection must apply before the store opens. UniFFI exports
+`screen_security_policy(platform)` directly. Strict RPC names the operation
+`screen_security_policy`; the CLI spells it
+`kult screen-security android|ios|desktop`. Capability levels are
+`platform_enforced`, `best_effort`, and `unavailable`. Shells must enforce native
+behavior and render the returned mechanism and limitations; they must not add a
+disable toggle, persist the policy, or upgrade best-effort/unsupported claims.
+The native implementation and qualification contract is
+[13: Screen Security](13-screen-security.md).
 
 ## 4. Testing strategy (beyond per-milestone acceptance)
 

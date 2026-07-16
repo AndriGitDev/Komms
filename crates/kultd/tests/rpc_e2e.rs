@@ -40,6 +40,47 @@ fn custom_icon_parity_fixture() -> Value {
     .expect("valid shared B13 custom-icon fixture")
 }
 
+fn screen_security_parity_fixture() -> Value {
+    serde_json::from_str(include_str!(
+        "../../../fixtures/b14-screen-security-parity.json"
+    ))
+    .expect("valid shared B14 screen-security fixture")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn screen_security_policy_via_strict_rpc_matches_all_platforms_without_delivery_work() {
+    let fixture = screen_security_parity_fixture();
+    let directory = tempfile::tempdir().unwrap();
+    let daemon = Daemon::start(test_config(directory.path(), "screen-security-rpc"))
+        .await
+        .unwrap();
+    let mut client = Client::connect(&daemon.socket_path).await;
+    let queued = client.ok(json!({ "op": "status" })).await["queued"].clone();
+
+    for platform in ["android", "ios", "desktop"] {
+        let policy = client
+            .ok(json!({ "op": "screen_security_policy", "platform": platform }))
+            .await;
+        assert_eq!(policy["platform"], platform);
+        assert_eq!(policy["always_on"], true);
+        assert_eq!(
+            policy["capture_prevention"],
+            fixture["platforms"][platform]["capture_prevention"]
+        );
+        assert_eq!(
+            policy["background_obscuring"],
+            fixture["platforms"][platform]["background_obscuring"]
+        );
+        assert!(!policy["limitations"].as_array().unwrap().is_empty());
+    }
+    assert!(client
+        .call(json!({ "op": "screen_security_policy", "platform": "web" }))
+        .await
+        .is_err());
+    assert_eq!(client.ok(json!({ "op": "status" })).await["queued"], queued);
+    daemon.shutdown().await;
+}
+
 fn relative_luminance(hex: &str) -> f64 {
     let channel = |start| {
         let value = u8::from_str_radix(&hex[start..start + 2], 16).unwrap() as f64 / 255.0;

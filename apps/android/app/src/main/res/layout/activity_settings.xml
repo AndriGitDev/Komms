@@ -60,6 +60,27 @@
                 android:layout_height="wrap_content" />
 
             <TextView
+                android:text="@string/screen_security_title"
+                android:textStyle="bold"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+
+            <TextView
+                android:id="@+id/screen_security_mechanism"
+                android:textSize="14sp"
+                android:layout_marginTop="4dp"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <TextView
+                android:id="@+id/screen_security_limits"
+                android:textSize="12sp"
+                android:layout_marginTop="4dp"
+                android:layout_marginBottom="20dp"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <TextView
                 android:text="@string/settings_note"
                 android:textSize="12sp"
                 android:layout_width="match_parent"

@@ -103,6 +103,39 @@ private struct CustomIconParityFixture: Decodable {
     }
 }
 
+private struct ScreenSecurityParityFixture: Decodable {
+    struct Platform: Decodable {
+        let capturePrevention: String
+        let backgroundObscuring: String
+        let captureDetection: String
+        let rapidLock: String
+    }
+    struct Platforms: Decodable {
+        let android: Platform
+        let ios: Platform
+        let desktop: Platform
+    }
+    let platforms: Platforms
+    let iosUniversalScreenshotBlocking: Bool
+
+    static func load() throws -> Self {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let data = try Data(contentsOf: root.appendingPathComponent("fixtures/b14-screen-security-parity.json"))
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(Self.self, from: data)
+    }
+}
+
+private func screenSecurityLevelName(_ level: ScreenSecurityLevel) -> String {
+    switch level {
+    case .platformEnforced: "platform_enforced"
+    case .bestEffort: "best_effort"
+    case .unavailable: "unavailable"
+    }
+}
+
 private func labelTargetKindName(_ kind: LabelTargetKind) -> String {
     switch kind {
     case .peer: "peer"
@@ -240,6 +273,23 @@ private func imageRecipe() -> ImageEditRecipe {
 }
 
 final class SessionE2eTests: XCTestCase {
+    func testScreenSecurityPolicyIsAvailableBeforeUnlockAndDoesNotOverclaimIOS() throws {
+        let fixture = try ScreenSecurityParityFixture.load()
+        let policy = screenSecurityPolicy(platform: .ios)
+        XCTAssertTrue(policy.alwaysOn)
+        XCTAssertEqual(
+            fixture.platforms.ios.capturePrevention,
+            screenSecurityLevelName(policy.capturePrevention))
+        XCTAssertEqual(
+            fixture.platforms.ios.backgroundObscuring,
+            screenSecurityLevelName(policy.backgroundObscuring))
+        XCTAssertEqual(
+            fixture.platforms.ios.captureDetection,
+            screenSecurityLevelName(policy.captureDetection))
+        XCTAssertFalse(fixture.iosUniversalScreenshotBlocking)
+        XCTAssertTrue(policy.limitations.contains(where: { $0.contains("screenshots") }))
+    }
+
     private func tempDir() throws -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("komms-e2e-\(UUID().uuidString)")

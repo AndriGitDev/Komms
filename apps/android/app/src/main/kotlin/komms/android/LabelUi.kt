@@ -47,7 +47,7 @@ private fun validLabelName(name: String): Boolean {
 }
 
 /** Native manager: TalkBack traverses create, stable rows, edit/delete, then stale cleanup. */
-class LabelManagerActivity : AppCompatActivity() {
+class LabelManagerActivity : SecureActivity() {
     private lateinit var content: LinearLayout
     private lateinit var status: TextView
 

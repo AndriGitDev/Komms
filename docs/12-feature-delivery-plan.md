@@ -43,7 +43,7 @@ accepted designs before individual shells implement UI.
 | Pins | Shipped (conversation) | Preserve exact typed targets, complete durable reorder, stale reactivation/cleanup, folder → label → pin composition, and zero-network behavior; message pins remain separate. |
 | Dark mode | Shipped | Sealed system/light/dark preference, shared semantic roles, and native live switching in every shell. |
 | Custom icons | Shipped | Preserve exact typed targets, strict local image canonicalization, sealed quotas, initials fallback, `KKR4` portability, and zero-network behavior. |
-| Screen security | Planned | Platform protections and documented limitations. |
+| Screen security | Shipped | Always-on shared policy, native shell protections, rapid desktop lock, and explicit platform limitations. |
 | Incognito keyboard | Planned | Android control; best available behavior and honest limits elsewhere. |
 | Local still-image editing | Shipped | Keep shared deterministic semantics, cleanup, exact-review, and metadata-removal gates stable; video remains out of scope. |
 | Mentions | Shipped | ADR-0016 canonical peer targets, current-roster composers, conservative group capability gating, and local navigation/notification. |
@@ -477,17 +477,29 @@ missing fallback, and zero delivery work.
 
 ### B14. Screen security
 
-Implement platform controls with honest guarantees:
+**Shipped.** Platform controls have honest, always-on guarantees:
 
-- Android: secure-window protection for screenshots/screen recording and task
-  previews, with a user-visible policy if toggling is allowed;
+- Android: always-on secure-window protection for screenshots/screen recording
+  and task previews, with the exact policy visible in settings;
 - iOS: obscure sensitive content in the app switcher and respond to capture
   notifications; do not claim iOS can universally block screenshots;
 - desktop: obscure recent/task previews where supported and provide a rapid lock
   shortcut; document compositor/OS limits.
 
-Acceptance includes lock/background transitions and verifies that sensitive
-views do not remain in app-switcher snapshots on supported platforms.
+The policy exists before unlock and is not a preference or F5 record. A shared
+typed contract crosses `kult-node`, strict RPC/CLI, and UniFFI so every shell
+renders the same `platform_enforced` / `best_effort` / `unavailable` claims and
+limitations. Android installs `FLAG_SECURE` before every declared activity draws.
+iOS starts covered, covers before inactive/background snapshots, and covers while
+UIKit reports live capture while explicitly stating that still screenshots cannot
+be universally blocked. Desktop requests Tauri native content protection, covers
+on focus loss, and maps `Ctrl/Cmd+Shift+L` to the existing complete lock path.
+
+The shared B14 fixture and layer tests prove capability parity, strict wire/CLI
+parsing, pre-unlock availability, and zero stored/network behavior. Platform CI
+builds the native implementations. Device/compositor qualification for actual
+capture and app-switcher behavior follows [13: Screen Security](13-screen-security.md)
+and remains a release-evidence task rather than an inflated cross-platform claim.
 
 ### B15. Incognito keyboard
 
@@ -822,7 +834,7 @@ honest. Parallel work is safe only where rows do not share a foundation.
 |---|---|---|
 | **0: Shared foundations** | Complete | F1–F5 are implemented; ADR-0015 remains formally Proposed despite the shipped attachment pipeline. |
 | **Parallel: mobile reachability** | Design-only | Accept ADR-0017–0019, then implement C8 behind reversible feature gates. |
-| **1: Local-first product polish** | In progress | B7, B8, B10–B13, and B18 are shipped; B5, B9, B14, and B15 remain. |
+| **1: Local-first product polish** | In progress | B7, B8, B10–B14, and B18 are shipped; B5, B9, and B15 remain. |
 | **2: Typed content and asynchronous media** | Substantially complete | F2/F3, B2, B16, and B17 are shipped; C1 is usable across all shells with richer media polish remaining. |
 | **3: Replicated conversation features** | Planned | C3, C4, C5, and C6. |
 | **4: Multi-device** | Planned | C2, followed by cross-device hardening of Wave 3. |
@@ -894,17 +906,18 @@ reviewable PR:
 3. completed: build the per-peer carrier capability API and pin mesh-only
    decisions in node, scheduler, and FFI tests;
 4. completed through B10 folders, B11 conversation pins, B12 appearance,
-   B13 custom icons, and B18 labels: add the
+   B13 custom icons, B14 screen security, and B18 labels: add the
    sealed local metadata foundation, note-to-self, private single-membership
    conversation folders, exact typed conversation pins, and private
    contact/conversation labels plus a sealed local theme choice; message pins and
-   message labels remain deferred and scheduled delivery completed separately in
-   the core queue/storage path;
+   message labels remain deferred; B14 adds the separate always-on pre-unlock
+   screen-security contract, and scheduled delivery completed separately in the
+   core queue/storage path;
 5. completed: ship typed content, attachments, audio, image editing, and mentions
    through every front door and shell; ADR-0015's formal status remains Proposed.
 
-The next high-value local-first slice is B14 screen security, with explicit
-platform guarantees and honest unsupported states where an OS cannot prevent
-capture.
+The next high-value local-first slice is B15 incognito keyboard behavior, with
+Android's native no-personalized-learning flag and honest best-effort limits on
+iOS, desktop, and third-party keyboards.
 Replicated edits/expiry/polls/roles, linked-device identity, real-time media, and
 optional hybrid services remain separate programs with their stated ADR gates.

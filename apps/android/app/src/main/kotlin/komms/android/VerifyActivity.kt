@@ -5,7 +5,6 @@ import android.widget.Button
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AppCompatActivity
 import komms.core.safetyQrText
 
 /**
@@ -14,7 +13,7 @@ import komms.core.safetyQrText
  * out-of-band — read the digits aloud, or scan each other's code — then
  * mark verified. A mismatch is shown in red and nothing is stored.
  */
-class VerifyActivity : AppCompatActivity() {
+class VerifyActivity : SecureActivity() {
     private lateinit var peer: String
     private var expectedQr: String? = null
 

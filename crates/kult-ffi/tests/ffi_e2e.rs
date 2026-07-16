@@ -11,13 +11,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use kult_ffi::{
-    default_config, edit_image, probe_edited_image, probe_recorded_audio, AttachmentDirection,
-    AttachmentState, CarrierCapability, Config, ContentKind, CustomIconCrop, CustomIconTarget,
-    CustomIconTargetKind, DeliveryState, Event, EventListener, FfiError, FolderErrorCode,
-    FolderSelection, FolderSelectionKind, FolderTarget, FolderTargetKind, Hint, ImageCrop,
-    ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, KdfChoice, KultNode, LabelErrorCode,
-    LabelMatchMode, LabelTarget, LabelTargetKind, MentionSpan, PinErrorCode, PinTarget,
-    PinTargetKind, ScheduledConversation, ThemePreference,
+    default_config, edit_image, probe_edited_image, probe_recorded_audio, screen_security_policy,
+    AttachmentDirection, AttachmentState, CarrierCapability, Config, ContentKind, CustomIconCrop,
+    CustomIconTarget, CustomIconTargetKind, DeliveryState, Event, EventListener, FfiError,
+    FolderErrorCode, FolderSelection, FolderSelectionKind, FolderTarget, FolderTargetKind, Hint,
+    ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, KdfChoice, KultNode,
+    LabelErrorCode, LabelMatchMode, LabelTarget, LabelTargetKind, MentionSpan, PinErrorCode,
+    PinTarget, PinTargetKind, ScheduledConversation, ScreenSecurityLevel, ScreenSecurityPlatform,
+    ThemePreference,
 };
 
 fn label_parity_fixture() -> serde_json::Value {
@@ -45,6 +46,48 @@ fn custom_icon_parity_fixture() -> serde_json::Value {
         "../../../fixtures/b13-custom-icon-parity.json"
     ))
     .expect("valid shared B13 custom-icon fixture")
+}
+
+fn screen_security_parity_fixture() -> serde_json::Value {
+    serde_json::from_str(include_str!(
+        "../../../fixtures/b14-screen-security-parity.json"
+    ))
+    .expect("valid shared B14 screen-security fixture")
+}
+
+#[test]
+fn screen_security_policy_is_available_before_unlock_with_exact_platform_parity() {
+    let fixture = screen_security_parity_fixture();
+    let cases = [
+        (ScreenSecurityPlatform::Android, "android"),
+        (ScreenSecurityPlatform::Ios, "ios"),
+        (ScreenSecurityPlatform::Desktop, "desktop"),
+    ];
+    for (platform, token) in cases {
+        let policy = screen_security_policy(platform);
+        let expected = &fixture["platforms"][token];
+        let level = |value| match value {
+            ScreenSecurityLevel::PlatformEnforced => "platform_enforced",
+            ScreenSecurityLevel::BestEffort => "best_effort",
+            ScreenSecurityLevel::Unavailable => "unavailable",
+        };
+        assert!(policy.always_on);
+        assert_eq!(
+            level(policy.capture_prevention),
+            expected["capture_prevention"]
+        );
+        assert_eq!(
+            level(policy.background_obscuring),
+            expected["background_obscuring"]
+        );
+        assert_eq!(
+            level(policy.capture_detection),
+            expected["capture_detection"]
+        );
+        assert_eq!(level(policy.rapid_lock), expected["rapid_lock"]);
+        assert!(!policy.mechanism.is_empty());
+        assert!(!policy.limitations.is_empty());
+    }
 }
 
 #[test]

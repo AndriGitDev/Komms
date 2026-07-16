@@ -5,7 +5,6 @@ import android.net.Uri
 import android.os.Bundle
 import android.view.View
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AppCompatActivity
 import java.io.File
 import komms.core.NetworkSettings
 import komms.core.Session
@@ -17,7 +16,7 @@ import uniffi.kult_ffi.KdfChoice
  * from an encrypted `.kkr` backup + its 24-word mnemonic. Nothing else is
  * reachable until the node is running.
  */
-class GateActivity : AppCompatActivity() {
+class GateActivity : SecureActivity() {
     private lateinit var dataDir: File
     private var backupUri: Uri? = null
 

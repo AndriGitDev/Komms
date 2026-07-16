@@ -747,9 +747,42 @@ async function leaveApp() {
   await probeGate(state.dataDir).catch(() => {});
 }
 
-$("#btn-lock").addEventListener("click", async () => {
-  await call("lock");
-  leaveApp();
+let rapidLockInFlight = false;
+async function rapidLock() {
+  if (rapidLockInFlight || $("#app").hidden) return;
+  rapidLockInFlight = true;
+  try {
+    await call("lock");
+    await leaveApp();
+  } finally {
+    rapidLockInFlight = false;
+  }
+}
+
+$("#btn-lock").addEventListener("click", rapidLock);
+
+document.addEventListener("keydown", (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLocaleLowerCase() === "l") {
+    event.preventDefault();
+    rapidLock();
+  }
+});
+
+const privacyShield = $("#screen-privacy-shield");
+listen("screen-security-focus", ({ payload: focused }) => {
+  privacyShield.hidden = Boolean(focused);
+});
+
+invoke("screen_security_policy").then((policy) => {
+  $("#screen-security-mechanism").textContent = policy.mechanism;
+  const limits = $("#screen-security-limitations");
+  limits.replaceChildren(...policy.limitations.map((text) => {
+    const item = document.createElement("li");
+    item.textContent = text;
+    return item;
+  }));
+}).catch((error) => {
+  $("#screen-security-mechanism").textContent = `Protection status unavailable: ${String(error)}`;
 });
 
 $("#btn-copy-address").addEventListener("click", () => copyText(state.address));

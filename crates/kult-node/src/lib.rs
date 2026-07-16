@@ -66,6 +66,7 @@ mod groups;
 mod icons;
 mod labels;
 mod pins;
+mod screen_security;
 mod theme;
 mod vault;
 
@@ -88,6 +89,9 @@ pub use kult_store::{
     MAX_CUSTOM_ICON_TOTAL_BYTES, MAX_FOLDERS, MAX_FOLDER_ASSIGNMENTS, MAX_LABELS,
     MAX_LABELS_PER_CONVERSATION, MAX_LABEL_ASSIGNMENTS, MAX_LOCAL_METADATA_STRING_BYTES, MAX_PINS,
     NOTE_TO_SELF_CONVERSATION_ID, THEME_PREFERENCES, THEME_PREFERENCE_KEY, THEME_SEMANTIC_ROLES,
+};
+pub use screen_security::{
+    screen_security_policy, ScreenSecurityLevel, ScreenSecurityPlatform, ScreenSecurityPolicy,
 };
 
 use vault::PrekeyVault;

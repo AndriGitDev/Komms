@@ -20,6 +20,42 @@ use crate::session::{
     UiStaleLabel, UiStatus, UiThemeInfo, UiThemePreference,
 };
 
+/// Render-safe shared B14 policy shown before unlock.
+#[derive(Serialize)]
+pub struct UiScreenSecurityPolicy {
+    /// Protection is mandatory and starts before the store opens.
+    pub always_on: bool,
+    /// Short native-mechanism description.
+    pub mechanism: String,
+    /// Exact environment limitations.
+    pub limitations: Vec<String>,
+    /// Stable capability token for screenshots and recording.
+    pub capture_prevention: String,
+    /// Stable capability token for recent/task previews.
+    pub background_obscuring: String,
+    /// Stable capability token for the rapid lock shortcut.
+    pub rapid_lock: String,
+}
+
+/// Shared desktop screen-security promise; available while locked.
+#[tauri::command]
+pub fn screen_security_policy() -> UiScreenSecurityPolicy {
+    let policy = kult_ffi::screen_security_policy(kult_ffi::ScreenSecurityPlatform::Desktop);
+    let level = |value| match value {
+        kult_ffi::ScreenSecurityLevel::PlatformEnforced => "platform_enforced",
+        kult_ffi::ScreenSecurityLevel::BestEffort => "best_effort",
+        kult_ffi::ScreenSecurityLevel::Unavailable => "unavailable",
+    };
+    UiScreenSecurityPolicy {
+        always_on: policy.always_on,
+        mechanism: policy.mechanism,
+        limitations: policy.limitations,
+        capture_prevention: level(policy.capture_prevention).to_owned(),
+        background_obscuring: level(policy.background_obscuring).to_owned(),
+        rapid_lock: level(policy.rapid_lock).to_owned(),
+    }
+}
+
 /// The one piece of managed state: the running session, if unlocked.
 #[derive(Default)]
 pub struct AppState(pub Mutex<Option<Arc<Session>>>);

@@ -23,7 +23,6 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.HorizontalScrollView
 import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import java.text.DateFormat
@@ -51,7 +50,7 @@ import uniffi.kult_ffi.ScheduledMessage
  * are refresh nudges, membership controls call the thin Session surface, and
  * outbound rows render a separate real delivery state for every recipient.
  */
-class GroupChatActivity : AppCompatActivity() {
+class GroupChatActivity : SecureActivity() {
     private lateinit var groupId: String
     private lateinit var groupName: String
     private var contacts = listOf<Contact>()
