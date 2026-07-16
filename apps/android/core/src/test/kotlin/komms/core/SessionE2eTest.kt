@@ -28,6 +28,7 @@ import uniffi.kult_ffi.AttachmentConversation
 import uniffi.kult_ffi.AttachmentDirection
 import uniffi.kult_ffi.AttachmentState
 import uniffi.kult_ffi.ContentKind
+import uniffi.kult_ffi.ContactNameWarning
 import uniffi.kult_ffi.CustomIconCrop
 import uniffi.kult_ffi.CustomIconTarget
 import uniffi.kult_ffi.CustomIconTargetKind
@@ -100,6 +101,10 @@ private fun listenAddr(session: Session): String {
 private fun multiaddrHint(addr: String) = listOf(HintSpec("multiaddr", addr))
 
 class SessionE2eTest {
+    private val contactRenameFixture by lazy {
+        val root = File(checkNotNull(System.getProperty("komms.repo.root")))
+        Json.parseToJsonElement(File(root, "fixtures/b5-contact-rename-parity.json").readText()).jsonObject
+    }
     private val folderFixture by lazy {
         val root = File(checkNotNull(System.getProperty("komms.repo.root")))
         Json.parseToJsonElement(File(root, "fixtures/b10-folder-parity.json").readText()).jsonObject
@@ -145,6 +150,71 @@ class SessionE2eTest {
         )
         assertTrue(policy.mechanism.contains("no-personalized-learning"))
         assertTrue(policy.limitations.any { it.contains("request") })
+    }
+
+    @Test
+    fun `private contact rename is normalized warned duplicate capable and restart safe`() {
+        val fixture = contactRenameFixture
+        val dir = tempDir()
+        val events = Events()
+        var alice = open(dir, "contact-rename-alice", events)
+        val bob = open(dir, "contact-rename-bob", Events())
+        alice.addContact(
+            fixture.getValue("duplicate_name").jsonPrimitive.content,
+            alice.myBundleHex(),
+            emptyList(),
+        )
+        val bobPeer = alice.addContact("Bob", bob.myBundleHex(), emptyList())
+        val queuedBefore = alice.status().queued
+
+        val normalized = alice.renameContact(
+            bobPeer,
+            fixture.getValue("decomposed_name").jsonPrimitive.content,
+            false,
+        )
+        assertEquals(
+            fixture.getValue("normalized_name").jsonPrimitive.content,
+            normalized.normalizedName,
+        )
+        assertTrue(normalized.changedByNormalization)
+
+        val duplicate = alice.assessContactName(
+            bobPeer,
+            fixture.getValue("duplicate_name").jsonPrimitive.content,
+        )
+        assertEquals(1u, duplicate.duplicateCount)
+        assertEquals(listOf(ContactNameWarning.DUPLICATE_NAME), duplicate.warnings)
+        assertFailsWith<FfiException.Node> {
+            alice.renameContact(
+                bobPeer,
+                fixture.getValue("duplicate_name").jsonPrimitive.content,
+                false,
+            )
+        }
+        alice.renameContact(
+            bobPeer,
+            fixture.getValue("duplicate_name").jsonPrimitive.content,
+            true,
+        )
+        assertEquals(
+            2,
+            alice.contacts().count {
+                it.name == fixture.getValue("duplicate_name").jsonPrimitive.content
+            },
+        )
+        events.wait("contact renamed") { event ->
+            (event as? Event.ContactRenamed)?.takeIf { it.peer == bobPeer }
+        }
+        assertEquals(queuedBefore, alice.status().queued)
+        alice.stop()
+
+        alice = open(dir, "contact-rename-alice", Events())
+        assertEquals(
+            fixture.getValue("duplicate_name").jsonPrimitive.content,
+            alice.contacts().single { it.peer == bobPeer }.name,
+        )
+        alice.stop()
+        bob.stop()
     }
 
     @Test

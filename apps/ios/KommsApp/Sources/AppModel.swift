@@ -229,7 +229,7 @@ final class AppModel: ObservableObject {
         case .mentionReceived:
             notices.append("You were mentioned in a group.")
             Task { await refresh() }
-        case .contactAdded:
+        case .contactAdded, .contactRenamed:
             Task { await refresh() }
         case .sessionEstablished(let peer):
             // A re-establishment for a known contact means their key or
@@ -919,6 +919,23 @@ final class AppModel: ObservableObject {
         guard let session else { return }
         _ = try await run { try session.addContact(name: name, address: address) }
         await refresh()
+    }
+
+    func assessContactName(peer: String, name: String) async throws -> ContactNameAssessment {
+        guard let session else { throw InputError("node is locked") }
+        return try await run { try session.assessContactName(peer: peer, name: name) }
+    }
+
+    func renameContact(
+        peer: String, name: String, acceptWarnings: Bool
+    ) async throws -> ContactNameAssessment {
+        guard let session else { throw InputError("node is locked") }
+        let assessment = try await run {
+            try session.renameContact(
+                peer: peer, name: name, acceptWarnings: acceptWarnings)
+        }
+        await refresh()
+        return assessment
     }
 
     func safetyNumber(peer: String) async throws -> SafetyNumber {

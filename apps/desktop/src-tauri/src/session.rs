@@ -26,7 +26,8 @@ use serde::{Deserialize, Serialize};
 use kult_ffi::{
     canonicalize_recorded_audio, default_config, edit_image, probe_edited_image,
     probe_recorded_audio, Attachment, AttachmentConversation, AttachmentDirection, AttachmentState,
-    AudioInfo, CarrierCapability, Config, ContentKind, CustomIcon as FfiCustomIcon,
+    AudioInfo, CarrierCapability, Config, ContactNameAssessment as FfiContactNameAssessment,
+    ContactNameWarning as FfiContactNameWarning, ContentKind, CustomIcon as FfiCustomIcon,
     CustomIconCrop as FfiCustomIconCrop, CustomIconTarget as FfiCustomIconTarget,
     CustomIconTargetKind as FfiCustomIconTargetKind, DeliveryState, Direction, Event,
     EventListener, Folder as FfiFolder, FolderConversation as FfiFolderConversation,
@@ -384,6 +385,40 @@ pub struct UiContact {
     pub name: String,
     /// Whether safety numbers were verified out-of-band.
     pub verified: bool,
+}
+
+/// Render-safe canonical petname and local warning review.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UiContactNameAssessment {
+    /// NFC value that will be stored after confirmation.
+    pub normalized_name: String,
+    /// Whether normalization changed the proposed scalar sequence.
+    pub changed_by_normalization: bool,
+    /// Stable warning codes for accessible shell copy.
+    pub warnings: Vec<String>,
+    /// Other contacts with the exact same canonical petname.
+    pub duplicate_count: u32,
+}
+
+impl From<FfiContactNameAssessment> for UiContactNameAssessment {
+    fn from(value: FfiContactNameAssessment) -> Self {
+        Self {
+            normalized_name: value.normalized_name,
+            changed_by_normalization: value.changed_by_normalization,
+            warnings: value
+                .warnings
+                .into_iter()
+                .map(|warning| match warning {
+                    FfiContactNameWarning::DuplicateName => "duplicate_name",
+                    FfiContactNameWarning::ConfusableName => "confusable_name",
+                    FfiContactNameWarning::BidirectionalControl => "bidirectional_control",
+                    FfiContactNameWarning::InvisibleCharacter => "invisible_character",
+                })
+                .map(str::to_owned)
+                .collect(),
+            duplicate_count: value.duplicate_count,
+        }
+    }
 }
 
 /// Exact typed target for one private local custom icon.
@@ -1247,6 +1282,13 @@ pub enum UiEvent {
         /// The new peer (hex).
         peer: String,
     },
+    /// A stored contact's sealed private local petname changed.
+    ContactRenamed {
+        /// Exact stable peer id (hex).
+        peer: String,
+        /// Canonical NFC petname now stored locally.
+        name: String,
+    },
     /// A ratchet session was (re-)established from an inbound handshake —
     /// for a known contact this means their key or device changed.
     SessionEstablished {
@@ -1359,6 +1401,7 @@ impl UiEvent {
                 body,
             },
             Event::ContactAdded { peer } => Self::ContactAdded { peer },
+            Event::ContactRenamed { peer, name } => Self::ContactRenamed { peer, name },
             Event::SessionEstablished { peer } => Self::SessionEstablished { peer },
             Event::AwaitingFasterLink { id } => Self::AwaitingFasterLink { id },
             Event::CarrierCapabilityChanged { snapshot } => Self::CarrierCapabilityChanged {
@@ -1631,6 +1674,31 @@ impl Session {
     pub fn add_contact_by_address(&self, name: String, address: String) -> Result<String, String> {
         self.node
             .add_contact_by_address(name, address)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Assess a proposed private local petname without mutation.
+    pub fn assess_contact_name(
+        &self,
+        peer: String,
+        name: String,
+    ) -> Result<UiContactNameAssessment, String> {
+        self.node
+            .assess_contact_name(peer, name)
+            .map(Into::into)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Rename one private local petname by exact peer id.
+    pub fn rename_contact(
+        &self,
+        peer: String,
+        name: String,
+        accept_warnings: bool,
+    ) -> Result<UiContactNameAssessment, String> {
+        self.node
+            .rename_contact(peer, name, accept_warnings)
+            .map(Into::into)
             .map_err(|e| e.to_string())
     }
 

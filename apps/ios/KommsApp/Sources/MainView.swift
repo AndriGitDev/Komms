@@ -16,6 +16,7 @@ struct MainView: View {
     @State private var showLabels = false
     @State private var showPins = false
     @State private var showIcons = false
+    @State private var renameContact: Contact?
     @State private var navigation = NavigationPath()
 
     var body: some View {
@@ -129,6 +130,12 @@ struct MainView: View {
                                 }
                             }
                         }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button("Rename") { renameContact = contact }
+                        }
+                        .contextMenu {
+                            Button("Rename private petname") { renameContact = contact }
+                        }
                     }
                 }
 
@@ -190,6 +197,13 @@ struct MainView: View {
             .sheet(isPresented: $showIcons) { CustomIconsView() }
             .sheet(isPresented: $showMyQr) { MyBundleView() }
             .sheet(isPresented: $showAdd) { AddContactView() }
+            .sheet(isPresented: Binding(
+                get: { renameContact != nil },
+                set: { if !$0 { renameContact = nil } })) {
+                if let contact = renameContact {
+                    RenameContactView(contact: contact)
+                }
+            }
             .sheet(isPresented: $showBackup) { BackupView() }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .sheet(isPresented: $showFolders) { FolderManagerView() }

@@ -35,6 +35,22 @@
     <string name="nat_unknown">unknown</string>
     <string name="main_empty">No contacts yet. Pair by QR, pasted bundle hex, or kult address.</string>
     <string name="main_contacts_heading">Contacts</string>
+    <string name="contact_rename_action">Rename</string>
+    <string name="contact_rename_title">Rename contact</string>
+    <string name="contact_private_petname">Private local petname</string>
+    <string name="contact_rename_private_note">This petname stays sealed on this device. It is never sent to the contact and never identifies a recipient.</string>
+    <string name="contact_rename_review">Review and rename</string>
+    <string name="contact_rename_warning_title">Review name warning</string>
+    <string name="contact_rename_anyway">Use this name</string>
+    <string name="contact_rename_done">Private petname changed to %1$s</string>
+    <plurals name="contact_warning_duplicate">
+        <item quantity="one">%1$d other contact already has this exact private petname.</item>
+        <item quantity="other">%1$d other contacts already have this exact private petname.</item>
+    </plurals>
+    <string name="contact_warning_confusable">This name mixes lookalike scripts or resembles another local petname.</string>
+    <string name="contact_warning_bidi">This name contains directional controls that can change display order.</string>
+    <string name="contact_warning_invisible">This name contains invisible formatting characters.</string>
+    <string name="contact_warning_identity">Store “%1$s” anyway? Duplicate names remain separate by peer identity.</string>
     <string name="main_groups_heading">Groups</string>
     <string name="main_groups_empty">No groups yet. Create one from stored contacts.</string>
     <string name="note_to_self_title">Note to self</string>

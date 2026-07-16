@@ -11,13 +11,13 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::session::{
-    NetworkSettings, Session, UiAttachment, UiAudioMedia, UiBundle, UiContact, UiCustomIcon,
-    UiCustomIconCrop, UiCustomIconTarget, UiCustomIconUsage, UiFolder, UiFolderConversation,
-    UiFolderConversationResult, UiFolderSelection, UiFolderTarget, UiGroup, UiGroupMessage, UiHint,
-    UiImageEditRecipe, UiImageReview, UiLabel, UiLabelConversation, UiLabelFilterResult,
-    UiLabelTarget, UiMentionCapability, UiMentionSpan, UiMessage, UiNoteMessage, UiPin,
-    UiPinConversationResult, UiPinTarget, UiSafetyNumber, UiScheduledMessage, UiStaleFolder,
-    UiStaleLabel, UiStatus, UiThemeInfo, UiThemePreference,
+    NetworkSettings, Session, UiAttachment, UiAudioMedia, UiBundle, UiContact,
+    UiContactNameAssessment, UiCustomIcon, UiCustomIconCrop, UiCustomIconTarget, UiCustomIconUsage,
+    UiFolder, UiFolderConversation, UiFolderConversationResult, UiFolderSelection, UiFolderTarget,
+    UiGroup, UiGroupMessage, UiHint, UiImageEditRecipe, UiImageReview, UiLabel,
+    UiLabelConversation, UiLabelFilterResult, UiLabelTarget, UiMentionCapability, UiMentionSpan,
+    UiMessage, UiNoteMessage, UiPin, UiPinConversationResult, UiPinTarget, UiSafetyNumber,
+    UiScheduledMessage, UiStaleFolder, UiStaleLabel, UiStatus, UiThemeInfo, UiThemePreference,
 };
 
 /// Render-safe shared B14 policy shown before unlock.
@@ -384,6 +384,16 @@ forward!(
 forward!(
     /// All stored contacts.
     contacts() -> Vec<UiContact>, |s| s.contacts()
+);
+forward!(
+    /// Assess a proposed private local petname without mutation.
+    assess_contact_name(peer: String, name: String) -> UiContactNameAssessment,
+    |s| s.assess_contact_name(peer, name)
+);
+forward!(
+    /// Rename a contact locally by peer id after explicit warning review.
+    rename_contact(peer: String, name: String, accept_warnings: bool) -> UiContactNameAssessment,
+    |s| s.rename_contact(peer, name, accept_warnings)
 );
 forward!(
     /// Message history with a peer.

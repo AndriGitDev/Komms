@@ -14,6 +14,8 @@ import android.view.MenuItem
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.text.InputFilter
+import android.text.InputType
 import android.widget.CheckBox
 import android.widget.Button
 import android.widget.ImageView
@@ -28,6 +30,8 @@ import androidx.recyclerview.widget.RecyclerView
 import java.io.File
 import komms.core.bundleQrText
 import uniffi.kult_ffi.Contact
+import uniffi.kult_ffi.ContactNameAssessment
+import uniffi.kult_ffi.ContactNameWarning
 import uniffi.kult_ffi.CustomIcon
 import uniffi.kult_ffi.CustomIconTarget
 import uniffi.kult_ffi.CustomIconTargetKind
@@ -51,13 +55,16 @@ import uniffi.kult_ffi.PinTargetKind
  * node's own: the status snapshot and the stored contact list, verbatim.
  */
 class MainActivity : SecureActivity() {
-    private val contacts = ContactsAdapter { contact ->
-        startActivity(
-            Intent(this, ChatActivity::class.java)
-                .putExtra("peer", contact.peer)
-                .putExtra("name", contact.name),
-        )
-    }
+    private val contacts = ContactsAdapter(
+        onClick = { contact ->
+            startActivity(
+                Intent(this, ChatActivity::class.java)
+                    .putExtra("peer", contact.peer)
+                    .putExtra("name", contact.name),
+            )
+        },
+        onRename = ::showRenameContact,
+    )
     private val groups = GroupsAdapter { group ->
         openGroup(group.id, group.name)
     }
@@ -81,7 +88,7 @@ class MainActivity : SecureActivity() {
     private val listener: (Event) -> Unit = { event ->
         runOnUiThread {
             when (event) {
-                is Event.ContactAdded -> refreshLabelsAndLists(false)
+                is Event.ContactAdded, is Event.ContactRenamed -> refreshLabelsAndLists(false)
                 is Event.SessionEstablished -> onSessionEstablished(event.peer)
                 is Event.MessageReceived -> refreshLabelsAndLists(false)
                 is Event.GroupUpdated -> refreshLabelsAndLists(false)
@@ -268,6 +275,78 @@ class MainActivity : SecureActivity() {
             findViewById<TextView>(R.id.main_empty).visibility =
                 if (list.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
         }
+    }
+
+    private fun showRenameContact(contact: Contact) {
+        val name = IncognitoEditText(this).apply {
+            setText(contact.name)
+            hint = getString(R.string.contact_private_petname)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
+            filters = arrayOf(InputFilter.LengthFilter(256))
+            setSelectAllOnFocus(true)
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.contact_rename_title)
+            .setMessage(R.string.contact_rename_private_note)
+            .setView(name)
+            .setPositiveButton(R.string.contact_rename_review, null)
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val proposed = name.text.toString()
+                val session = NodeHolder.session ?: return@setOnClickListener
+                runNode(
+                    work = { session.assessContactName(contact.peer, proposed) },
+                    onError = { error -> name.error = error },
+                ) { assessment ->
+                    if (assessment.warnings.isEmpty()) {
+                        commitContactRename(dialog, contact, proposed, false)
+                    } else {
+                        AlertDialog.Builder(this)
+                            .setTitle(R.string.contact_rename_warning_title)
+                            .setMessage(contactNameWarningText(assessment))
+                            .setPositiveButton(R.string.contact_rename_anyway) { _, _ ->
+                                commitContactRename(dialog, contact, proposed, true)
+                            }
+                            .setNegativeButton(android.R.string.cancel, null)
+                            .show()
+                    }
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    private fun commitContactRename(
+        editor: AlertDialog,
+        contact: Contact,
+        proposed: String,
+        acceptWarnings: Boolean,
+    ) {
+        val session = NodeHolder.session ?: return
+        runNode(work = { session.renameContact(contact.peer, proposed, acceptWarnings) }) { saved ->
+            editor.dismiss()
+            toast(getString(R.string.contact_rename_done, saved.normalizedName))
+            refreshLabelsAndLists(true)
+        }
+    }
+
+    private fun contactNameWarningText(assessment: ContactNameAssessment): String {
+        val warnings = assessment.warnings.map { warning ->
+            when (warning) {
+                ContactNameWarning.DUPLICATE_NAME -> resources.getQuantityString(
+                    R.plurals.contact_warning_duplicate,
+                    assessment.duplicateCount.toInt(),
+                    assessment.duplicateCount.toInt(),
+                )
+                ContactNameWarning.CONFUSABLE_NAME -> getString(R.string.contact_warning_confusable)
+                ContactNameWarning.BIDIRECTIONAL_CONTROL -> getString(R.string.contact_warning_bidi)
+                ContactNameWarning.INVISIBLE_CHARACTER -> getString(R.string.contact_warning_invisible)
+            }
+        }
+        return warnings.joinToString("\n\n") + "\n\n" +
+            getString(R.string.contact_warning_identity, assessment.normalizedName)
     }
 
     private fun persistLabelFilter() {
@@ -767,6 +846,7 @@ private class GroupsAdapter(
 /** Contact rows: name, short peer id, verified badge. */
 private class ContactsAdapter(
     private val onClick: (Contact) -> Unit,
+    private val onRename: (Contact) -> Unit,
 ) : RecyclerView.Adapter<ContactsAdapter.Holder>() {
     private var items = listOf<Contact>()
     private var labels = mapOf<String, String>()
@@ -808,6 +888,9 @@ private class ContactsAdapter(
         holder.itemView.findViewById<TextView>(R.id.contact_labels).apply {
             text = labels[contact.peer].orEmpty()
             visibility = if (text.isEmpty()) View.GONE else View.VISIBLE
+        }
+        holder.itemView.findViewById<Button>(R.id.contact_rename).setOnClickListener {
+            onRename(contact)
         }
         holder.itemView.setOnClickListener { onClick(contact) }
     }

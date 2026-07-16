@@ -203,6 +203,7 @@
             <button id="btn-conversation-folder" class="ghost">Move</button>
             <button id="btn-conversation-labels" class="ghost">Labels</button>
             <button id="btn-conversation-pin" class="ghost" aria-pressed="false">Pin</button>
+            <button id="btn-rename-contact" class="ghost">Rename</button>
             <button id="btn-verify" class="ghost">Verify</button>
             <button id="btn-hints" class="ghost">Delivery</button>
             <button id="btn-group-details" class="ghost" hidden>Members</button>
@@ -388,6 +389,17 @@
     <div class="qr-card safety-qr"></div>
     <div class="row end">
       <button class="primary" data-act="verified">We compared, mark verified</button>
+    </div>
+  </template>
+
+  <template id="tpl-rename-contact">
+    <p class="modal-note">This petname stays sealed on this device. It is never sent to the contact and never identifies a recipient.</p>
+    <label>Private local petname
+      <input type="text" data-f="name" data-incognito-input="name" autocomplete="off" />
+    </label>
+    <p class="error" data-f="error" hidden></p>
+    <div class="row end">
+      <button class="primary" data-act="save">Review and rename</button>
     </div>
   </template>
 
