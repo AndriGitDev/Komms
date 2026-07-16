@@ -509,6 +509,11 @@ async fn handle_op(
             let bundle = node.handshake_bundle(now(), &mut OsRng).map_err(fail)?;
             Ok(json!({ "bundle": wire::hex_encode(&bundle) }))
         }
+        Op::FormatText { source, highlights } => {
+            let highlights = highlights.into_iter().map(Into::into).collect::<Vec<_>>();
+            let formatted = kult_node::format_text(&source, &highlights).map_err(fail)?;
+            Ok(wire::formatted_text_json(&formatted))
+        }
         Op::AddContact {
             name,
             bundle,

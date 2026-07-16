@@ -21,6 +21,7 @@ The socket defaults to the KULTD_SOCKET environment variable.
 COMMANDS:
     status                          daemon and node status
     bundle                          export a fresh prekey bundle (hex)
+    format-text TEXT...             render the safe local text model as JSON
     add-contact NAME BUNDLE_HEX [--hint MULTIADDR]... [--relay MULTIADDR]...
                                 [--mesh NODE|broadcast]...
                                     add a contact from an out-of-band bundle
@@ -293,6 +294,10 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
     let request = match command {
         "status" => json!({ "op": "status" }),
         "bundle" => json!({ "op": "bundle" }),
+        "format-text" => {
+            need(1)?;
+            json!({ "op": "format_text", "source": args.join(" "), "highlights": [] })
+        }
         "add-contact" => {
             need(2)?;
             json!({
@@ -1070,6 +1075,16 @@ mod tests {
 
     #[test]
     fn commands_build_the_rpc_contract() {
+        let formatted = build_request(
+            "format-text",
+            &["**safe**".to_owned(), "<b>literal</b>".to_owned()],
+        )
+        .unwrap();
+        assert_eq!(formatted["op"], json!("format_text"));
+        assert_eq!(formatted["source"], json!("**safe** <b>literal</b>"));
+        assert_eq!(formatted["highlights"], json!([]));
+        assert!(build_request("format-text", &[]).is_err());
+
         let request = build_request(
             "group-create",
             &["trail crew".to_owned(), "01".repeat(32), "02".repeat(32)],

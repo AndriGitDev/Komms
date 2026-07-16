@@ -19,7 +19,8 @@ use kult_ffi::{
     ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, IncognitoKeyboardLevel,
     IncognitoKeyboardPlatform, KdfChoice, KultNode, LabelErrorCode, LabelMatchMode, LabelTarget,
     LabelTargetKind, MentionSpan, PinErrorCode, PinTarget, PinTargetKind, ScheduledConversation,
-    ScreenSecurityLevel, ScreenSecurityPlatform, ThemePreference,
+    ScreenSecurityLevel, ScreenSecurityPlatform, TextFormatBlockKind, TextFormatHighlight,
+    ThemePreference,
 };
 
 fn label_parity_fixture() -> serde_json::Value {
@@ -68,6 +69,66 @@ fn contact_rename_parity_fixture() -> serde_json::Value {
         "../../../fixtures/b5-contact-rename-parity.json"
     ))
     .expect("valid shared B5 contact-rename fixture")
+}
+
+fn text_formatting_parity_fixture() -> serde_json::Value {
+    serde_json::from_str(include_str!(
+        "../../../fixtures/b9-text-formatting-parity.json"
+    ))
+    .expect("valid shared B9 text-formatting fixture")
+}
+
+#[test]
+fn safe_text_formatting_via_ffi_matches_shared_corpus_without_delivery_work() {
+    let fixture = text_formatting_parity_fixture();
+    let directory = tempfile::tempdir().unwrap();
+    let node = KultNode::start(
+        test_config(directory.path(), "text-formatting"),
+        Box::new(Recorder::default()),
+    )
+    .unwrap();
+    let queued = node.status().unwrap().queued;
+    for case in fixture["cases"].as_array().unwrap() {
+        let highlights = case["highlights"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|highlight| TextFormatHighlight {
+                start: highlight["start"].as_u64().unwrap() as u32,
+                end: highlight["end"].as_u64().unwrap() as u32,
+            })
+            .collect();
+        let formatted = node
+            .format_text(case["source"].as_str().unwrap().to_owned(), highlights)
+            .unwrap();
+        assert_eq!(formatted.source, case["source"].as_str().unwrap());
+        assert_eq!(formatted.plain_text, case["plain_text"].as_str().unwrap());
+        assert_eq!(
+            formatted.used_fallback,
+            case["used_fallback"].as_bool().unwrap()
+        );
+        assert_eq!(
+            formatted
+                .blocks
+                .iter()
+                .map(|block| match block.kind {
+                    TextFormatBlockKind::Paragraph => "paragraph",
+                    TextFormatBlockKind::Quote => "quote",
+                    TextFormatBlockKind::UnorderedListItem => "unordered_list_item",
+                    TextFormatBlockKind::OrderedListItem => "ordered_list_item",
+                    TextFormatBlockKind::CodeBlock => "code_block",
+                })
+                .collect::<Vec<_>>(),
+            case["block_kinds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|kind| kind.as_str().unwrap())
+                .collect::<Vec<_>>()
+        );
+    }
+    assert_eq!(node.status().unwrap().queued, queued);
+    node.stop();
 }
 
 #[test]
