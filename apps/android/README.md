@@ -81,6 +81,14 @@ own, verbatim.
   restored by `KKR4`. Light/night resources use semantic roles and WCAG-tested
   reference contrast, Android high-contrast text and disabled-animation settings
   remain native, and delivery/security rows retain non-color cues.
+- **Manage private custom icons** for contacts, groups, folders, and note-to-self.
+  Native rows and pins render the sealed icon or generated initials; the manager
+  offers all eight bundled glyphs, Android SAF JPEG/PNG selection, clear-to-
+  fallback, and quota usage. Selected content is copied only into a short-lived
+  app-private file before the shared core emits a metadata-free 256×256 RGBA PNG.
+  The 512 KiB/1,024-record/64 MiB limits and corrupt fallback are shared with
+  every shell; `KKR4` is the only portability path and no icon creates network,
+  permission beyond the picker, notification, capability, or transport work.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends (desktop included), compared aloud or by scanning each other's
   code, with a visible verified badge. Key changes are surfaced, never
@@ -150,6 +158,12 @@ Theme acceptance drives the shared B12 fixture through Rust RPC, UniFFI, Kotlin,
 and Swift: exact vocabulary/roles, first-run System, idempotency, restart,
 `KKR4`, one local event, and zero queued or transport work. The ordinary private
 preference cache carries no identity, message, contact, or network data.
+
+Custom-icon acceptance drives the shared B13 fixture through Rust RPC, UniFFI,
+Kotlin, and Swift: all four exact target types, canonical metadata-free output,
+quota accounting, restart/`KKR4`, generated-initials fallback, local events, and
+zero delivery work. The Android manager uses SAF access only for the explicit
+selection and deletes its app-private transient after the blocking core call.
 
 This is deliberately its own Gradle build, outside the cargo workspace:
 the Android dependency tree stays out of the core crates' lockfile and

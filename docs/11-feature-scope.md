@@ -79,8 +79,15 @@ status and prerequisites are tracked in the delivery plan.
   is never the only security or delivery signal. `KKR4` is the authoritative
   portability path; a small non-sensitive device cache exists only to style the
   pre-unlock gate without a flash.
-- **Custom icons.** Planned over the shipped F5 icon record with bounded local
-  crop/re-encode and no remote avatar lookup or synchronization.
+- **Custom icons.** Shipped for contacts, groups, folders, and note-to-self over
+  the sealed F5 record and every wrapper/shell. Missing records render generated
+  initials; eight bundled glyphs and selected local JPEG/PNG inputs become exact
+  metadata-free 256×256 RGBA PNGs after orientation normalization and square
+  crop. Animated/decompression-heavy inputs fail closed. Limits are 512 KiB per
+  icon, 1,024 records, and 64 MiB aggregate; reads safely fall back after corrupt
+  or legacy non-canonical bytes. `KKR4` is the only portability path. Icons never
+  enter avatar URLs, peer sync, envelopes, capabilities, queues, notifications,
+  DHT state, or transport work.
 - **Screen-security / incognito keyboard.** Platform APIs in the mobile UI layer
   (Android/iOS). No protocol involvement.
 - **Local still-image editing.** Shipped across desktop, Android, and iOS through

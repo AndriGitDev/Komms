@@ -73,6 +73,13 @@ security indicators are the node's own, verbatim.
   System follows live OS changes, semantic CSS roles meet the shared contrast
   targets, `prefers-contrast` and `prefers-reduced-motion` remain native, and
   delivery/security meaning always retains text, glyph, or accessible labels.
+- **Manage private custom icons** for contacts, groups, folders, and note-to-self.
+  Every row renders the sealed icon or generated initials; the accessible manager
+  offers eight bundled glyphs, local JPEG/PNG selection with centered-square crop,
+  clear-to-fallback, and quota usage. The shared core emits only metadata-free
+  256×256 RGBA PNGs, enforces 512 KiB/1,024-record/64 MiB limits, and safely falls
+  back after corrupt bytes. Icons travel only in `KKR4`, never URLs, peer sync,
+  envelopes, capabilities, queues, notifications, or transports.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends, compared out-of-band, with a visible verified badge.
 - **Transport indicators**: NAT verdict, LAN peers discovered over mDNS,
@@ -100,6 +107,13 @@ This is deliberately its own cargo workspace: the Tauri/GTK dependency tree
 stays out of the core crates' lockfile and cargo-deny surface (the app has
 its own `deny.toml`, same posture). The core is reached only through the
 path dependency on `kult-ffi`.
+
+Custom-icon acceptance consumes the shared B13 fixture through the same session
+surface the Tauri commands wrap: canonical metadata-free local data URLs, exact
+folder/note targets, bundled and selected-image paths, quota accounting,
+restart/`KKR4`, safe fallback, local events, and zero delivery work. Rust node
+acceptance independently covers contact and group identities plus corrupt sealed
+legacy bytes.
 
 ## Build & run
 
@@ -141,5 +155,6 @@ directory.
   diagnostics stay in the existing sealed local store or process-local UI
   state. They never enter envelopes, DHT records, capabilities, analytics,
   notifications, or logs; navigation/filtering changes presentation only.
-  `KKR4` preserves them exactly, while multi-device synchronization, message
-  pins, and message labels are not implemented.
+  Custom icons are likewise exact typed sealed local records, rendered only from
+  verified bounded data URLs. `KKR4` preserves them exactly, while multi-device
+  synchronization, message pins, and message labels are not implemented.
