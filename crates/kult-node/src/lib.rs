@@ -64,6 +64,7 @@ mod error;
 mod folders;
 mod groups;
 mod icons;
+mod incognito_keyboard;
 mod labels;
 mod pins;
 mod screen_security;
@@ -82,6 +83,10 @@ pub use api::{
     StaleLabelReason as NodeStaleLabelReason,
 };
 pub use error::NodeError;
+pub use incognito_keyboard::{
+    incognito_keyboard_policy, IncognitoKeyboardLevel, IncognitoKeyboardPlatform,
+    IncognitoKeyboardPolicy, INCOGNITO_KEYBOARD_PROTECTED_FIELDS,
+};
 pub use kult_store::{
     ConversationId as LabelConversationId, CustomIconTarget, ThemePreference,
     CUSTOM_ICON_BUNDLED_GLYPHS, CUSTOM_ICON_DIMENSION, CUSTOM_ICON_MEDIA_TYPE,

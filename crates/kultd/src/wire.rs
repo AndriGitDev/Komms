@@ -13,11 +13,11 @@ use kult_node::{
     AttachmentConversation, AttachmentDirection, AttachmentInfo, CarrierCapability,
     CarrierCapabilitySnapshot, ContentStatus, CustomIconInfo, CustomIconTarget, CustomIconUsage,
     Event, FolderConversationInfo, FolderConversationList, FolderInfo, FolderSelection, GroupInfo,
-    GroupMentionCapability, LabelConversationInfo, LabelFilterInfo, LabelInfo,
-    MentionCapabilityIssueReason, NodeStaleFolderReason, NodeStaleLabelReason, PinConversationInfo,
-    PinConversationList, PinInfo, ScheduledConversation, ScheduledMessageInfo,
-    ScreenSecurityPlatform, ScreenSecurityPolicy, StaleFolderInfo, StaleLabelInfo,
-    NOTE_TO_SELF_CONVERSATION_ID,
+    GroupMentionCapability, IncognitoKeyboardPlatform, IncognitoKeyboardPolicy,
+    LabelConversationInfo, LabelFilterInfo, LabelInfo, MentionCapabilityIssueReason,
+    NodeStaleFolderReason, NodeStaleLabelReason, PinConversationInfo, PinConversationList, PinInfo,
+    ScheduledConversation, ScheduledMessageInfo, ScreenSecurityPlatform, ScreenSecurityPolicy,
+    StaleFolderInfo, StaleLabelInfo, NOTE_TO_SELF_CONVERSATION_ID,
 };
 use kult_store::{
     valid_folder_name, valid_label_color, valid_label_name, ConversationId, DeliveryState,
@@ -57,7 +57,7 @@ pub fn parse_request(line: &str) -> Result<Request, String> {
 
 fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
     match op {
-        "screen_security_policy" => Some(&["id", "op", "platform"]),
+        "screen_security_policy" | "incognito_keyboard_policy" => Some(&["id", "op", "platform"]),
         "theme" => Some(&["id", "op"]),
         "theme_set" => Some(&["id", "op", "preference"]),
         "custom_icon" | "custom_icon_clear" => Some(&["id", "op", "target"]),
@@ -243,6 +243,11 @@ pub enum Op {
     Theme,
     /// Read the immutable always-on screen-security policy for one shell.
     ScreenSecurityPolicy {
+        /// One of `android`, `ios`, or `desktop`.
+        platform: String,
+    },
+    /// Read the immutable always-on incognito-keyboard policy for one shell.
+    IncognitoKeyboardPolicy {
         /// One of `android`, `ios`, or `desktop`.
         platform: String,
     },
@@ -892,6 +897,32 @@ pub fn screen_security_policy_json(policy: &ScreenSecurityPolicy) -> Value {
     })
 }
 
+/// Parse one canonical shipped-platform token for input privacy.
+pub fn parse_incognito_keyboard_platform(value: &str) -> Result<IncognitoKeyboardPlatform, String> {
+    match value {
+        "android" => Ok(IncognitoKeyboardPlatform::Android),
+        "ios" => Ok(IncognitoKeyboardPlatform::Ios),
+        "desktop" => Ok(IncognitoKeyboardPlatform::Desktop),
+        _ => Err("incognito-keyboard platform must be android, ios, or desktop".to_owned()),
+    }
+}
+
+/// Render the shared B15 policy using stable snake-case capability levels.
+pub fn incognito_keyboard_policy_json(policy: &IncognitoKeyboardPolicy) -> Value {
+    json!({
+        "platform": policy.platform.as_str(),
+        "always_on": policy.always_on,
+        "applies_before_unlock": policy.applies_before_unlock,
+        "personalized_learning": policy.personalized_learning.as_str(),
+        "suggestions": policy.suggestions.as_str(),
+        "spellcheck": policy.spellcheck.as_str(),
+        "secret_text_masking": policy.secret_text_masking.as_str(),
+        "protected_fields": policy.protected_fields,
+        "mechanism": policy.mechanism,
+        "limitations": policy.limitations,
+    })
+}
+
 /// Render one folder without sealed bytes, nonces, or unrelated metadata.
 pub fn folder_json(folder: &FolderInfo) -> Value {
     json!({
@@ -1501,6 +1532,15 @@ mod tests {
         .is_err());
         assert!(parse_screen_security_platform("android").is_ok());
         assert!(parse_screen_security_platform("web").is_err());
+        let r = parse_request(r#"{"id":37,"op":"incognito_keyboard_policy","platform":"android"}"#)
+            .unwrap();
+        assert!(matches!(r.op, Op::IncognitoKeyboardPolicy { platform } if platform == "android"));
+        assert!(parse_request(
+            r#"{"id":36,"op":"incognito_keyboard_policy","platform":"ios","extra":true}"#,
+        )
+        .is_err());
+        assert!(parse_incognito_keyboard_platform("desktop").is_ok());
+        assert!(parse_incognito_keyboard_platform("web").is_err());
         assert!(parse_request(r#"{"id":41,"op":"theme","extra":true}"#).is_err());
         assert!(parse_theme("system").is_ok());
         assert!(parse_theme("sepia").is_err());

@@ -11,14 +11,15 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use kult_ffi::{
-    default_config, edit_image, probe_edited_image, probe_recorded_audio, screen_security_policy,
-    AttachmentDirection, AttachmentState, CarrierCapability, Config, ContentKind, CustomIconCrop,
-    CustomIconTarget, CustomIconTargetKind, DeliveryState, Event, EventListener, FfiError,
-    FolderErrorCode, FolderSelection, FolderSelectionKind, FolderTarget, FolderTargetKind, Hint,
-    ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, KdfChoice, KultNode,
-    LabelErrorCode, LabelMatchMode, LabelTarget, LabelTargetKind, MentionSpan, PinErrorCode,
-    PinTarget, PinTargetKind, ScheduledConversation, ScreenSecurityLevel, ScreenSecurityPlatform,
-    ThemePreference,
+    default_config, edit_image, incognito_keyboard_policy, probe_edited_image,
+    probe_recorded_audio, screen_security_policy, AttachmentDirection, AttachmentState,
+    CarrierCapability, Config, ContentKind, CustomIconCrop, CustomIconTarget, CustomIconTargetKind,
+    DeliveryState, Event, EventListener, FfiError, FolderErrorCode, FolderSelection,
+    FolderSelectionKind, FolderTarget, FolderTargetKind, Hint, ImageCrop, ImageEditRecipe,
+    ImageEditRegion, ImageEditRegionKind, IncognitoKeyboardLevel, IncognitoKeyboardPlatform,
+    KdfChoice, KultNode, LabelErrorCode, LabelMatchMode, LabelTarget, LabelTargetKind, MentionSpan,
+    PinErrorCode, PinTarget, PinTargetKind, ScheduledConversation, ScreenSecurityLevel,
+    ScreenSecurityPlatform, ThemePreference,
 };
 
 fn label_parity_fixture() -> serde_json::Value {
@@ -53,6 +54,51 @@ fn screen_security_parity_fixture() -> serde_json::Value {
         "../../../fixtures/b14-screen-security-parity.json"
     ))
     .expect("valid shared B14 screen-security fixture")
+}
+
+fn incognito_keyboard_parity_fixture() -> serde_json::Value {
+    serde_json::from_str(include_str!(
+        "../../../fixtures/b15-incognito-keyboard-parity.json"
+    ))
+    .expect("valid shared B15 incognito-keyboard fixture")
+}
+
+#[test]
+fn incognito_keyboard_policy_is_available_before_unlock_with_exact_platform_parity() {
+    let fixture = incognito_keyboard_parity_fixture();
+    let cases = [
+        (IncognitoKeyboardPlatform::Android, "android"),
+        (IncognitoKeyboardPlatform::Ios, "ios"),
+        (IncognitoKeyboardPlatform::Desktop, "desktop"),
+    ];
+    for (platform, token) in cases {
+        let policy = incognito_keyboard_policy(platform);
+        let expected = &fixture["platforms"][token];
+        let level = |value| match value {
+            IncognitoKeyboardLevel::PlatformEnforced => "platform_enforced",
+            IncognitoKeyboardLevel::PlatformRequested => "platform_requested",
+            IncognitoKeyboardLevel::BestEffort => "best_effort",
+            IncognitoKeyboardLevel::Unavailable => "unavailable",
+        };
+        assert!(policy.always_on);
+        assert!(policy.applies_before_unlock);
+        assert_eq!(
+            level(policy.personalized_learning),
+            expected["personalized_learning"]
+        );
+        assert_eq!(level(policy.suggestions), expected["suggestions"]);
+        assert_eq!(level(policy.spellcheck), expected["spellcheck"]);
+        assert_eq!(
+            level(policy.secret_text_masking),
+            expected["secret_text_masking"]
+        );
+        assert_eq!(
+            policy.protected_fields,
+            ["message", "search", "passphrase", "mnemonic", "name"]
+        );
+        assert!(!policy.mechanism.is_empty());
+        assert!(!policy.limitations.is_empty());
+    }
 }
 
 #[test]

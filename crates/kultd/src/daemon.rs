@@ -728,6 +728,12 @@ async fn handle_op(
                 &kult_node::screen_security_policy(platform),
             ))
         }
+        Op::IncognitoKeyboardPolicy { platform } => {
+            let platform = wire::parse_incognito_keyboard_platform(&platform)?;
+            Ok(wire::incognito_keyboard_policy_json(
+                &kult_node::incognito_keyboard_policy(platform),
+            ))
+        }
         Op::ThemeSet { preference } => {
             let preference = wire::parse_theme(&preference)?;
             let changed = node

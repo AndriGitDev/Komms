@@ -1,0 +1,35 @@
+{
+  "policy": "always_on",
+  "applies_before_unlock": true,
+  "protected_fields": ["message", "search", "passphrase", "mnemonic", "name"],
+  "stored_preference": false,
+  "network_behavior": {
+    "envelope": false,
+    "capability": false,
+    "notification": false,
+    "transport_work": false
+  },
+  "platforms": {
+    "android": {
+      "personalized_learning": "platform_requested",
+      "suggestions": "platform_requested",
+      "spellcheck": "platform_requested",
+      "secret_text_masking": "platform_enforced",
+      "native_mechanism": "IME_FLAG_NO_PERSONALIZED_LEARNING"
+    },
+    "ios": {
+      "personalized_learning": "unavailable",
+      "suggestions": "best_effort",
+      "spellcheck": "best_effort",
+      "secret_text_masking": "platform_enforced",
+      "native_mechanism": "autocorrectionDisabled+SecureField"
+    },
+    "desktop": {
+      "personalized_learning": "unavailable",
+      "suggestions": "best_effort",
+      "spellcheck": "best_effort",
+      "secret_text_masking": "best_effort",
+      "native_mechanism": "HTML_input_hints"
+    }
+  }
+}
