@@ -644,6 +644,33 @@ public final class Session: @unchecked Sendable {
         try node.sendGroupDisappearing(group: group, body: body, lifetimeSecs: lifetimeSeconds)
     }
 
+    /// Create a visible-vote, single-choice poll for the exact current roster.
+    public func createGroupPoll(
+        group: String, question: String, options: [String]
+    ) throws -> String {
+        try node.createGroupPoll(group: group, question: question, options: options)
+    }
+
+    /// Render-safe poll cards with authenticated visible vote heads.
+    public func groupPolls(group: String) throws -> [GroupPoll] {
+        try node.groupPolls(group: group)
+    }
+
+    /// Cast or change this identity's vote using stable ids only.
+    public func voteGroupPoll(
+        group: String, pollAuthor: String, pollId: String, optionId: String
+    ) throws -> String {
+        try node.voteGroupPoll(
+            group: group, pollAuthor: pollAuthor, pollId: pollId, optionId: optionId)
+    }
+
+    /// Creator-only irreversible final snapshot of the visible vote heads.
+    public func closeGroupPoll(
+        group: String, pollAuthor: String, pollId: String
+    ) throws -> String {
+        try node.closeGroupPoll(group: group, pollAuthor: pollAuthor, pollId: pollId)
+    }
+
     /// Queue an immutable edit for this identity's exact group Text event.
     public func editGroupMessage(
         group: String,

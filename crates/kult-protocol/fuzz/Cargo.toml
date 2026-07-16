@@ -89,5 +89,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "poll_decode"
+path = "fuzz_targets/poll_decode.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

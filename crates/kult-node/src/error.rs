@@ -52,6 +52,16 @@ pub enum NodeError {
     InvalidEdit,
     /// The target already has the maximum number of locally authored edits.
     EditLimit,
+    /// One or more current co-members lack authenticated Poll v1 support.
+    PollUnsupported,
+    /// Poll shape, target, option, electorate, author, or transition is invalid.
+    InvalidPoll,
+    /// This identity has exhausted the bounded local vote-revision budget.
+    PollVoteLimit,
+    /// A creator-authored final snapshot has already closed this poll.
+    PollClosed,
+    /// Only the authenticated creator of this exact poll may close it.
+    NotPollCreator,
     /// The peer/group lacks ephemeral v1 plus envelope-v2 support.
     EphemeralUnsupported,
     /// Lifetime, deadline, content, hint binding, or lifecycle is invalid.
@@ -110,6 +120,11 @@ impl std::fmt::Display for NodeError {
             }
             Self::InvalidEdit => f.write_str("invalid message edit target, author, or text"),
             Self::EditLimit => f.write_str("message edit limit reached"),
+            Self::PollUnsupported => f.write_str("one or more group members do not support polls"),
+            Self::InvalidPoll => f.write_str("invalid group poll, option, voter, or target"),
+            Self::PollVoteLimit => f.write_str("poll vote revision limit reached"),
+            Self::PollClosed => f.write_str("poll is already closed"),
+            Self::NotPollCreator => f.write_str("only the poll creator may close it"),
             Self::EphemeralUnsupported => {
                 f.write_str("peer or group member does not support ephemeral content")
             }

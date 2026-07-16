@@ -182,9 +182,13 @@ and degrade honestly, exactly as the delivery ladder already does.
   and recipients may retain copies, and Komms does not promise remote erasure or
   screenshot prevention. See
   [19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
-- **Group polls.** Feasible as structured payload broadcast over the shipped
-  sender-key groups (ADR-0012), with authenticated idempotent vote events and a
-  deterministic tally that converges after delayed or reordered delivery.
+- **Group polls.** Shipped through every front door and shell as content-v1
+  kind 6 over sender-key groups. Stable poll/option IDs, fixed creation-time
+  electorates, authenticated visible vote heads, creator-attested closure, and
+  local deterministic tallies converge after duplicate, delayed, reordered,
+  removed-member, restart, and restore paths. Votes are explicitly not
+  anonymous. See [20: Group Polls](20-group-polls.md) and
+  [ADR-0022](adr/0022-convergent-group-polls.md).
 - **Admin / role controls.** Plausible via cryptographic role tokens embedded in
   the group's signed state (creator-managed membership already exists, ADR-0012),
   rather than a server dictating who is an admin.

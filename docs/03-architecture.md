@@ -91,6 +91,15 @@ envelopes from the authenticated hour bucket. RPC/UniFFI and apps expose typed
 choices and honest local-only language. See
 [19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
 
+C5 polls follow the immutable replicated-state shape: `kult-protocol` owns
+content-v1 kind 6 create/vote/close frames; `kult-node` authenticates the group
+sender and derives fixed-electorate vote heads and final tallies; existing
+sealed group rows and `KKR5` carry the source events; RPC/UniFFI expose typed
+snapshots; shells render and refresh cards without resolving votes. The
+sender-key path hides poll content from transports, while authenticated
+capability intersection keeps old clients off the typed send path. See
+[20: Group Polls](20-group-polls.md).
+
 ## 3. Message lifecycle
 
 ### Send path

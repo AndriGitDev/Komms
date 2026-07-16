@@ -645,6 +645,45 @@ fieldset.hints legend { color: var(--text-dim); font-size: 0.85em; padding: 0 0.
 .group-add label { flex: 1; margin: 0; }
 .group-add button { margin-bottom: 0.08em; white-space: nowrap; }
 
+#group-polls {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem 0;
+}
+#group-polls[hidden] { display: none; }
+.poll-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-raised);
+  padding: 0.85rem;
+}
+.poll-card h3 { margin: 0; overflow-wrap: anywhere; }
+.poll-policy, .poll-voters {
+  color: var(--text-dim);
+  font-size: 0.82rem;
+  margin: 0.4rem 0;
+  overflow-wrap: anywhere;
+}
+.poll-options { display: grid; gap: 0.4rem; margin-block: 0.65rem; }
+.poll-option {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  width: 100%;
+  text-align: start;
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.poll-option[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 3px 0 var(--accent); }
+.poll-option:disabled { cursor: default; opacity: 0.75; }
+.poll-option span { overflow-wrap: anywhere; }
+.poll-option-edit-row { display: flex; align-items: end; gap: 0.5rem; }
+.poll-option-edit-row label { flex: 1; }
+.poll-option-edit-row button { margin-bottom: 0.05rem; }
+.poll-option-editor { border: 1px solid var(--line); border-radius: 8px; }
+.poll-option-editor legend { color: var(--text-dim); padding-inline: 0.4rem; }
+.poll-option-editor [data-f="poll-options"] { display: grid; gap: 0.45rem; }
+
 .pinned-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 0.25rem; align-items: center; }
 .pinned-row .contact { min-width: 0; }
 .pinned-row > .ghost { padding-inline: 0.45rem; }

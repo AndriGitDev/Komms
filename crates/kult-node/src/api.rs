@@ -556,6 +556,61 @@ pub struct GroupInfo {
     pub members: Vec<[u8; 32]>,
 }
 
+/// One stable choice and its locally derived tally in a group poll.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PollOptionInfo {
+    /// Author-minted option id, scoped to the poll.
+    pub id: [u8; 16],
+    /// Exact authenticated UTF-8 label.
+    pub text: String,
+    /// Number of accepted vote heads selecting this option.
+    pub votes: u32,
+    /// Whether this installation's identity selected the option.
+    pub selected_by_me: bool,
+}
+
+/// One visible authenticated vote head used by a poll tally.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PollVoteInfo {
+    /// Authenticated voting member.
+    pub voter: [u8; 32],
+    /// Exact vote event id, or the creator-attested reference after closure.
+    pub event_id: [u8; 16],
+    /// Stable selected option id.
+    pub option_id: [u8; 16],
+    /// Positive voter-local monotonic revision.
+    pub revision: u64,
+}
+
+/// Render-safe, locally derived single-choice group poll.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PollInfo {
+    /// Exact group conversation.
+    pub group: [u8; 32],
+    /// Authenticated poll creator.
+    pub author: [u8; 32],
+    /// Stable creator-minted poll id.
+    pub id: [u8; 16],
+    /// Creation-time group roster generation.
+    pub generation: u64,
+    /// Exact authenticated UTF-8 question.
+    pub question: String,
+    /// Sorted fixed creation-time electorate.
+    pub eligible_voters: Vec<[u8; 32]>,
+    /// Stable choices in creator presentation order with derived tallies.
+    pub options: Vec<PollOptionInfo>,
+    /// Visible accepted vote heads, sorted by voter.
+    pub votes: Vec<PollVoteInfo>,
+    /// Whether a creator-authored final snapshot irreversibly closed the poll.
+    pub closed: bool,
+    /// Winning close event under the deterministic conflict rule.
+    pub close_event_id: Option<[u8; 16]>,
+    /// Whether the local identity belongs to the fixed electorate.
+    pub eligible: bool,
+    /// Whether the local identity may close this still-open poll.
+    pub can_close: bool,
+}
+
 /// One render-safe semantic mention span. Offsets address the exact UTF-8
 /// fallback text in bytes; target identity is never inferred from petnames.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -705,6 +760,16 @@ pub enum ContentStatus {
         transfer: [u8; 16],
         /// Exact authenticated fallback deadline.
         expires_at: u64,
+    },
+    /// Canonical group-only poll event. It refreshes a derived poll card and
+    /// is never rendered as an ordinary chat row.
+    Poll {
+        /// Exact event content id.
+        id: [u8; 16],
+        /// Authenticated creator of the target poll.
+        poll_author: [u8; 32],
+        /// Stable creator-minted poll id.
+        poll_id: [u8; 16],
     },
     /// Authenticated content this client version cannot interpret.
     Unsupported {
@@ -862,6 +927,16 @@ pub enum Event {
         sender: [u8; 32],
         /// Original canonical Text content id.
         target_content_id: [u8; 16],
+    },
+    /// A poll creation, vote, or closure event changed one derived group poll.
+    /// Applications re-read [`crate::Node::group_polls`] for the tally.
+    PollUpdated {
+        /// Exact group conversation.
+        group: [u8; 32],
+        /// Authenticated poll creator.
+        poll_author: [u8; 32],
+        /// Stable poll id.
+        poll_id: [u8; 16],
     },
     /// Ephemeral plaintext or decryptable media was durably removed locally.
     EphemeralRemoved {

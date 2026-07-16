@@ -84,6 +84,11 @@ or guarantee screenshot prevention. Relays see one coarse deletion bucket but
 not the exact deadline or content. See
 [Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
 
+Groups can also create encrypted single-choice polls. Votes and voter identities
+are visible to members—Komms does not call them anonymous—and the creator closes
+the exact vote snapshot they have received. Offline, duplicate, and reordered
+events still converge locally. See [Group Polls](20-group-polls.md).
+
 If you're comfortable with a terminal, the desktop shell is the quickest start:
 
 ```sh
@@ -115,6 +120,7 @@ Platform build instructions:
 | the exact delivery status of each feature | [Feature Delivery Plan](12-feature-delivery-plan.md) |
 | how authored message edits work and what they cannot erase | [Authenticated Message Editing](18-message-editing.md) |
 | what disappearing/view-once means—and what it cannot erase | [Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md) |
+| how encrypted group polls converge and why votes are visible | [Group Polls](20-group-polls.md) |
 | why a technical decision was made | [ADR Index](adr/README.md) |
 
 ## How can I help?

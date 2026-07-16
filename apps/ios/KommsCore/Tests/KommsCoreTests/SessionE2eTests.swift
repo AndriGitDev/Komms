@@ -552,7 +552,7 @@ final class SessionE2eTests: XCTestCase {
         let text = try files.map { try String(contentsOf: $0, encoding: .utf8) }.joined(separator: "\n")
         let occurrences = { (needle: String) in text.components(separatedBy: needle).count - 1 }
         let editors = occurrences("TextField(") + occurrences("SecureField(") + occurrences("TextEditor(")
-        XCTAssertEqual(21, editors)
+        XCTAssertEqual(24, editors)
         XCTAssertEqual(editors, occurrences(".incognitoKeyboard("))
         let gate = try String(contentsOf: source.appendingPathComponent("GateView.swift"), encoding: .utf8)
         XCTAssertTrue(gate.contains("SecureField(\"24-word mnemonic\""))
@@ -1083,6 +1083,60 @@ final class SessionE2eTests: XCTestCase {
         try bob.exportAttachment(transfer: groupOffer.transferId, to: groupExport)
         XCTAssertEqual(try Data(contentsOf: groupSource), try Data(contentsOf: groupExport))
         XCTAssertEqual(groupImageInfo, try bob.probeImage(groupExport))
+
+        // The Swift Session exposes the exact native poll contract. Polls
+        // refresh dedicated cards and never become chat-message rows.
+        let messageRowsBeforePoll = try alice.groupMessages(group: group).count
+        let pollId = try alice.createGroupPoll(
+            group: group,
+            question: "Which route? 🗻",
+            options: ["North ridge", "River path"])
+        _ = try bEv.wait("Bob's iOS poll") { event -> Void? in
+            if case let .pollUpdated(updatedGroup, _, updatedPoll) = event,
+               updatedGroup == group, updatedPoll == pollId { return () }
+            return nil
+        }
+        let bobPoll = try XCTUnwrap(bob.groupPolls(group: group).first)
+        XCTAssertEqual("Which route? 🗻", bobPoll.question)
+        XCTAssertTrue(bobPoll.votesVisible)
+        XCTAssertFalse(bobPoll.anonymous)
+        XCTAssertEqual("manual_creator_snapshot", bobPoll.closePolicy)
+        XCTAssertFalse(bobPoll.canClose)
+        _ = try bob.voteGroupPoll(
+            group: group, pollAuthor: bobPoll.author, pollId: pollId,
+            optionId: bobPoll.options[0].id)
+        _ = try aEv.wait("Bob's first iOS poll vote") { event -> Void? in
+            if case let .pollUpdated(_, _, updatedPoll) = event,
+               updatedPoll == pollId { return () }
+            return nil
+        }
+        let changedOption = bobPoll.options[1].id
+        _ = try bob.voteGroupPoll(
+            group: group, pollAuthor: bobPoll.author, pollId: pollId,
+            optionId: changedOption)
+        let pollChangeDeadline = Date().addingTimeInterval(30)
+        while try alice.groupPolls(group: group).first?.votes.first?.optionId != changedOption {
+            guard Date() < pollChangeDeadline else {
+                throw Timeout(what: "changed iOS poll vote")
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        let changedPoll = try XCTUnwrap(alice.groupPolls(group: group).first)
+        XCTAssertEqual(1, changedPoll.votes.count)
+        XCTAssertEqual(changedOption, changedPoll.votes[0].optionId)
+        XCTAssertTrue(changedPoll.canClose)
+        _ = try alice.closeGroupPoll(
+            group: group, pollAuthor: changedPoll.author, pollId: pollId)
+        let pollCloseDeadline = Date().addingTimeInterval(30)
+        while try bob.groupPolls(group: group).first?.closed != true {
+            guard Date() < pollCloseDeadline else {
+                throw Timeout(what: "closed iOS poll")
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        XCTAssertTrue(try XCTUnwrap(bob.groupPolls(group: group).first).closed)
+        XCTAssertEqual(messageRowsBeforePoll, try alice.groupMessages(group: group).count)
+        XCTAssertEqual(messageRowsBeforePoll, try bob.groupMessages(group: group).count)
 
         try alice.addGroupMember(group: group, peer: carolPeer)
         listed = try alice.groups()

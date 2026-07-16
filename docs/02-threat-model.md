@@ -149,6 +149,7 @@ viewer, or defeat A7. Exact behavior is in
 | **Identity-text safety** | Keep mutable human labels from becoming identity or silently hiding spoofing risk. | Exact peer-key targeting, NFC normalization, duplicate/confusable/bidi/invisible warnings, and explicit review for warned B5 renames. |
 | **Active-content isolation** | Authenticated message text must not become executable or network-active content. | B9 keeps exact source, applies a bounded local parser, exports only inert block/run tokens, literal-falls back on complexity, and never interprets HTML, links, images, or URL schemes. |
 | **Edit provenance** | A peer must not rewrite another author's message or make offline endpoints disagree about the visible version. | C3 immutable edit events bind exact author/content ids inside authenticated content; wrong-author/wrong-scope events never apply, and maximum `(revision, edit id)` converges without clocks. |
+| **Poll convergence and honesty** | A peer must not cast another member's vote or make replicas tally the same received events differently. | C5 binds each vote to the authenticated group sender, fixes the creator-attested electorate, selects maximum `(revision, event id)`, and freezes a creator-authenticated close snapshot; the UI says votes are visible and never claims anonymity or election fairness. |
 | **Sovereignty** | Users hold their own keys and data; anyone can run every component. | Local-first storage, AGPLv3, no privileged nodes. |
 
 Optional Hybrid Infrastructure Layer modes do not change the confidentiality,
@@ -182,6 +183,18 @@ recipients and compromised endpoints may capture plaintext. View once blocks
 Komms's ordinary preview/export/playback paths but is not DRM or universal
 screenshot prevention. See
 [19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
+
+C5 group polls protect content from intermediaries and authenticate which group
+identity authored each event; they do not provide secret ballots. Every holder
+of the poll can inspect current voter identities and choices. The creator
+attests the fixed electorate and final observed vote-head snapshot, so a
+malicious creator can close before an offline vote arrives or omit an observed
+head in a forged close event; deterministic convergence is not proof of fair or
+complete counting. A voter cannot impersonate another member, and outsider,
+unknown-option, duplicate, delayed, and reordered events do not change the
+defined result. Removed members retain what they already received. See
+[20: Group Polls](20-group-polls.md) and
+[ADR-0022](adr/0022-convergent-group-polls.md).
 
 Private folders, conversation pins, and labels are endpoint organization, never
 communications metadata. Their definitions, single-folder assignments,

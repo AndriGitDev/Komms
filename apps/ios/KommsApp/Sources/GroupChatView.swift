@@ -24,6 +24,7 @@ struct GroupChatView: View {
     @State private var showPlainFallback = false
     @State private var showFolder = false
     @State private var showLabels = false
+    @State private var showCreatePoll = false
     @State private var messageEditor: MessageEditDraft?
     @State private var ephemeralLifetime: EphemeralLifetime?
 
@@ -46,6 +47,7 @@ struct GroupChatView: View {
             }
             .sorted { $0.notBefore < $1.notBefore }
     }
+    private var polls: [GroupPoll] { model.groupPolls[groupId] ?? [] }
 
     var body: some View {
         presentedContent
@@ -84,6 +86,8 @@ struct GroupChatView: View {
                     }
                     Button("Members") { showMembers = true }
                         .disabled(group == nil)
+                    Button("Poll") { showCreatePoll = true }
+                        .disabled(group == nil)
                 }
             }
             .sheet(isPresented: $showMembers) { GroupMembersView(groupId: groupId) }
@@ -96,6 +100,9 @@ struct GroupChatView: View {
                 LabelAssignmentView(
                     target: LabelTarget(kind: .group, id: groupId),
                     targetName: group?.name ?? "Group")
+            }
+            .sheet(isPresented: $showCreatePoll) {
+                CreateGroupPollView(groupId: groupId, groupName: group?.name ?? "Group")
             }
             .confirmationDialog(
                 "Mention a current member",
@@ -161,6 +168,32 @@ struct GroupChatView: View {
     private var historyContent: some View {
         ScrollView {
             LazyVStack(spacing: 8) {
+                ForEach(polls, id: \.id) { poll in
+                    GroupPollCard(
+                        poll: poll,
+                        memberName: memberLabel,
+                        vote: { option in
+                            do {
+                                try await model.voteGroupPoll(
+                                    group: groupId,
+                                    pollAuthor: poll.author,
+                                    pollId: poll.id,
+                                    optionId: option.id)
+                            } catch {
+                                self.error = errorText(error)
+                            }
+                        },
+                        close: {
+                            do {
+                                try await model.closeGroupPoll(
+                                    group: groupId,
+                                    pollAuthor: poll.author,
+                                    pollId: poll.id)
+                            } catch {
+                                self.error = errorText(error)
+                            }
+                        })
+                }
                 ForEach(history, id: \.id) { message in
                     GroupMessageBubble(
                         message: message,
@@ -449,6 +482,172 @@ struct GroupChatView: View {
                 try await model.cancelScheduled(message: message.id)
             } catch {
                 self.error = errorText(error)
+            }
+        }
+    }
+}
+
+private struct GroupPollCard: View {
+    let poll: GroupPoll
+    let memberName: (String) -> String
+    let vote: (PollOption) async -> Void
+    let close: () async -> Void
+
+    @State private var pendingOption: PollOption?
+    @State private var showCloseConfirmation = false
+
+    private var visibleVotes: String {
+        let rows = poll.votes.map { vote in
+            let choice = poll.options.first(where: { $0.id == vote.optionId })?.text
+                ?? "unavailable choice"
+            return "\(memberName(vote.voter)) → \(choice)"
+        }
+        return rows.isEmpty ? "No votes yet." : "Visible votes: \(rows.joined(separator: ", "))."
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(poll.question).font(.headline)
+            Text(poll.closed
+                 ? "Closed · final creator snapshot · votes visible to all members"
+                 : "Open · single choice · votes visible to all members · not anonymous")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ForEach(poll.options, id: \.id) { option in
+                Button {
+                    pendingOption = option
+                } label: {
+                    HStack {
+                        Text(option.text)
+                        Spacer()
+                        Text("\(option.votes)").bold()
+                    }
+                }
+                .buttonStyle(.bordered)
+                .tint(option.selectedByMe ? .accentColor : .secondary)
+                .disabled(poll.closed || !poll.eligible)
+                .accessibilityLabel(
+                    "\(option.text), \(option.votes) votes"
+                    + (option.selectedByMe ? ", your choice" : ""))
+            }
+            Text(visibleVotes)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if poll.canClose {
+                Button("Close poll…") { showCloseConfirmation = true }
+                    .buttonStyle(.bordered)
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Poll: \(poll.question)")
+        .alert("Cast visible vote?", isPresented: Binding(
+            get: { pendingOption != nil },
+            set: { if !$0 { pendingOption = nil } }
+        )) {
+            Button("Vote") {
+                guard let option = pendingOption else { return }
+                Task { await vote(option) }
+                pendingOption = nil
+            }
+            Button("Cancel", role: .cancel) { pendingOption = nil }
+        } message: {
+            Text("Choose “\(pendingOption?.text ?? "")”? Your identity and choice are visible to group members. You can change it until the poll closes.")
+        }
+        .alert("Close poll?", isPresented: $showCloseConfirmation) {
+            Button("Close poll", role: .destructive) { Task { await close() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Close “\(poll.question)” with the visible vote heads shown now? This cannot be undone.")
+        }
+    }
+}
+
+private struct CreateGroupPollView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    let groupId: String
+    let groupName: String
+
+    @State private var question = ""
+    @State private var options = ["", ""]
+    @State private var error: String?
+    @State private var saving = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("Votes are visible to every member. This is not anonymous. The current roster is fixed as the electorate, and only the poll creator can close it with a final vote snapshot.")
+                        .font(.footnote)
+                }
+                Section("Question") {
+                    TextField("Exact poll question", text: $question, axis: .vertical)
+                        .incognitoKeyboard(capitalization: .sentences)
+                }
+                Section("Choices") {
+                    ForEach(options.indices, id: \.self) { index in
+                        HStack {
+                            TextField("Choice \(index + 1)", text: $options[index], axis: .vertical)
+                                .incognitoKeyboard(capitalization: .sentences)
+                            if options.count > 2 {
+                                Button(role: .destructive) {
+                                    options.remove(at: index)
+                                } label: {
+                                    Image(systemName: "minus.circle")
+                                }
+                                .accessibilityLabel("Remove choice \(index + 1)")
+                            }
+                        }
+                    }
+                    Button("Add choice") { options.append("") }
+                        .disabled(options.count >= 12)
+                }
+                if let error {
+                    Text(error).foregroundStyle(.red).accessibilityLabel("Poll error: \(error)")
+                }
+            }
+            .navigationTitle("Create poll in \(groupName)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Create visible-vote poll") { create() }
+                        .disabled(saving)
+                }
+            }
+        }
+    }
+
+    private func create() {
+        let blank = CharacterSet.whitespacesAndNewlines
+        if question.trimmingCharacters(in: blank).isEmpty {
+            error = "Enter a poll question."
+        } else if question.utf8.count > 1_024 {
+            error = "The poll question is longer than 1,024 UTF-8 bytes."
+        } else if options.count < 2 || options.contains(where: {
+            $0.trimmingCharacters(in: blank).isEmpty
+        }) {
+            error = "Enter at least two non-empty choices."
+        } else if options.contains(where: { $0.utf8.count > 256 }) {
+            error = "Each poll choice must be at most 256 UTF-8 bytes."
+        } else {
+            saving = true
+            error = nil
+            Task {
+                do {
+                    try await model.createGroupPoll(
+                        group: groupId, question: question, options: options)
+                    dismiss()
+                } catch {
+                    self.error = errorText(error)
+                    saving = false
+                }
             }
         }
     }

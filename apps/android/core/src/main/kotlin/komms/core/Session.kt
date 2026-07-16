@@ -35,6 +35,7 @@ import uniffi.kult_ffi.FormattedText
 import uniffi.kult_ffi.Group
 import uniffi.kult_ffi.GroupMentionCapability
 import uniffi.kult_ffi.GroupMessage
+import uniffi.kult_ffi.GroupPoll
 import uniffi.kult_ffi.KdfChoice
 import uniffi.kult_ffi.KultNode
 import uniffi.kult_ffi.Label
@@ -602,6 +603,21 @@ class Session private constructor(private val node: KultNode) {
     /** Queue group text with an authenticated exact local deadline. */
     fun sendGroupDisappearing(group: String, body: String, lifetimeSeconds: ULong): String =
         node.sendGroupDisappearing(group, body, lifetimeSeconds)
+
+    /** Create a visible-vote, single-choice poll for the exact current roster. */
+    fun createGroupPoll(group: String, question: String, options: List<String>): String =
+        node.createGroupPoll(group, question, options)
+
+    /** Render-safe poll cards with authenticated visible vote heads. */
+    fun groupPolls(group: String): List<GroupPoll> = node.groupPolls(group)
+
+    /** Cast or change this identity's vote using stable poll and option ids. */
+    fun voteGroupPoll(group: String, pollAuthor: String, pollId: String, optionId: String): String =
+        node.voteGroupPoll(group, pollAuthor, pollId, optionId)
+
+    /** Creator-only irreversible final snapshot of the currently visible vote heads. */
+    fun closeGroupPoll(group: String, pollAuthor: String, pollId: String): String =
+        node.closeGroupPoll(group, pollAuthor, pollId)
 
     /** Queue an immutable edit for this identity's exact group Text event. */
     fun editGroupMessage(

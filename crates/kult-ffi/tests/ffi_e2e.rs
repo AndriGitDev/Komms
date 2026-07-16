@@ -641,6 +641,45 @@ fn mention_capability(node: &KultNode, group: &str) -> kult_ffi::GroupMentionCap
     }
 }
 
+fn poll_revision(
+    node: &KultNode,
+    group: &str,
+    poll_id: &str,
+    revision: u64,
+) -> kult_ffi::GroupPoll {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(poll) = node
+            .group_polls(group.to_owned())
+            .expect("group polls")
+            .into_iter()
+            .find(|poll| {
+                poll.id == poll_id && poll.votes.iter().any(|vote| vote.revision == revision)
+            })
+        {
+            return poll;
+        }
+        assert!(Instant::now() < deadline, "poll revision did not converge");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn closed_poll(node: &KultNode, group: &str, poll_id: &str) -> kult_ffi::GroupPoll {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(poll) = node
+            .group_polls(group.to_owned())
+            .expect("group polls")
+            .into_iter()
+            .find(|poll| poll.id == poll_id && poll.closed)
+        {
+            return poll;
+        }
+        assert!(Instant::now() < deadline, "poll closure did not converge");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 #[test]
 fn note_to_self_via_ffi_only_is_local_and_durable() {
     let directory = tempfile::tempdir().unwrap();
@@ -2255,6 +2294,94 @@ fn groups_via_ffi_only() {
     assert!(
         error.contains("peer") && error.contains("hex"),
         "got: {error}"
+    );
+
+    // C5 poll creation, visible authenticated vote revisions, and creator
+    // closure use the same stable-id model through generated bindings.
+    let chat_rows_before_poll = alice.group_messages(group.clone()).unwrap().len();
+    let poll_id = alice
+        .create_group_poll(
+            group.clone(),
+            "Lunch? 👩🏽‍🚀".to_owned(),
+            vec!["Soup".to_owned(), "Salad".to_owned()],
+        )
+        .unwrap();
+    b_rec.wait("group poll creation", |event| {
+        matches!(
+            event,
+            Event::PollUpdated {
+                group: event_group,
+                poll_author,
+                poll_id: event_poll,
+            } if event_group == &group && poll_author == &alice_peer && event_poll == &poll_id
+        )
+    });
+    let poll = bob.group_polls(group.clone()).unwrap().remove(0);
+    assert_eq!(poll.question, "Lunch? 👩🏽‍🚀");
+    assert!(poll.votes_visible);
+    assert!(!poll.anonymous);
+    assert_eq!(poll.close_policy, "manual_creator_snapshot");
+    let soup = poll.options[0].id.clone();
+    let salad = poll.options[1].id.clone();
+    assert!(bob
+        .vote_group_poll(
+            group.clone(),
+            alice_peer.clone(),
+            "bad-id".to_owned(),
+            soup.clone(),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("hex"));
+
+    bob.vote_group_poll(group.clone(), alice_peer.clone(), poll_id.clone(), soup)
+        .unwrap();
+    a_rec.wait_count(
+        "first poll vote",
+        |event| matches!(event, Event::PollUpdated { poll_id: id, .. } if id == &poll_id),
+        1,
+    );
+    bob.vote_group_poll(
+        group.clone(),
+        alice_peer.clone(),
+        poll_id.clone(),
+        salad.clone(),
+    )
+    .unwrap();
+    a_rec.wait_count(
+        "changed poll vote",
+        |event| matches!(event, Event::PollUpdated { poll_id: id, .. } if id == &poll_id),
+        2,
+    );
+    for poll in [
+        poll_revision(&alice, &group, &poll_id, 2),
+        poll_revision(&bob, &group, &poll_id, 2),
+    ] {
+        assert_eq!(poll.votes.len(), 1);
+        assert_eq!(poll.votes[0].voter, bob_peer);
+        assert_eq!(poll.votes[0].option_id, salad);
+        assert_eq!(poll.options[1].votes, 1);
+    }
+    let close_id = alice
+        .close_group_poll(group.clone(), alice_peer.clone(), poll_id.clone())
+        .unwrap();
+    let final_poll = closed_poll(&bob, &group, &poll_id);
+    assert_eq!(final_poll.close_event_id, Some(close_id));
+    assert_eq!(final_poll.votes[0].option_id, salad);
+    assert!(bob
+        .vote_group_poll(
+            group.clone(),
+            alice_peer.clone(),
+            poll_id.clone(),
+            final_poll.options[0].id.clone(),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("closed"));
+    assert_eq!(
+        alice.group_messages(group.clone()).unwrap().len(),
+        chat_rows_before_poll,
+        "poll events never become empty group-message rows"
     );
 
     let group_attachment_bytes = canonical_audio(1_600);

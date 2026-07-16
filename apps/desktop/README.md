@@ -74,6 +74,11 @@ security indicators are the node's own, verbatim.
 - **Use sender-key groups**: create and list groups, read history, send,
   add/remove members, and leave. Outbound bubbles show a separate honest
   delivery state for every recipient, so partial delivery stays visible.
+- **Create and vote in encrypted group polls** using dedicated accessible
+  cards rather than chat bubbles. The current roster is fixed at creation,
+  votes and voter identities are visible to members (not anonymous), choices
+  can change before closure, and only the creator can freeze the final visible
+  snapshot. Exact Unicode and protocol byte limits are preserved.
 - **Mention current group members** through an explicit roster picker with
   Arrow/Enter/Escape keyboard operation, screen-reader announcements, duplicate-
   petname disambiguation, and non-color-only highlighted history. Mention tokens

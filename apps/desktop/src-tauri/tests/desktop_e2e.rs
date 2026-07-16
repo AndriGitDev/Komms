@@ -188,6 +188,45 @@ fn desktop_ephemeral_controls_match_shared_honesty_and_block_render_bypasses() {
 }
 
 #[test]
+fn desktop_poll_ui_keeps_visibility_policy_and_uses_inert_exact_text() {
+    let html = include_str!("../../ui/index.html");
+    let frontend = include_str!("../../ui/main.js");
+    assert!(html.contains("Votes are visible to every member. This is not anonymous."));
+    assert!(html.contains("only the poll creator can close it"));
+    assert!(frontend.contains("create_group_poll"));
+    assert!(frontend.contains("vote_group_poll"));
+    assert!(frontend.contains("close_group_poll"));
+    assert!(frontend.contains("new TextEncoder().encode(value).length"));
+    let renderer = frontend
+        .split("function renderPolls")
+        .nth(1)
+        .unwrap()
+        .split("async function renderMessages")
+        .next()
+        .unwrap();
+    assert!(renderer.contains("textContent = poll.question"));
+    assert!(renderer.contains("textContent = option.text"));
+    assert!(!renderer.contains("innerHTML"));
+
+    let android = include_str!(
+        "../../../android/app/src/main/kotlin/komms/android/GroupChatActivity.kt"
+    );
+    let android_strings = include_str!("../../../android/app/src/main/res/values/strings.xml");
+    assert!(android.contains("is Event.PollUpdated -> event.group == groupId"));
+    assert!(android.contains("session.createGroupPoll(groupId, exactQuestion, exactChoices)"));
+    assert!(android.contains("session.voteGroupPoll(groupId, poll.author, poll.id, option.id)"));
+    assert!(android_strings.contains("This is not anonymous"));
+
+    let ios = include_str!("../../../ios/KommsApp/Sources/GroupChatView.swift");
+    let ios_model = include_str!("../../../ios/KommsApp/Sources/AppModel.swift");
+    assert!(ios.contains("private struct GroupPollCard"));
+    assert!(ios.contains("Create visible-vote poll"));
+    assert!(ios.contains("This is not anonymous"));
+    assert!(ios_model.contains(".pollUpdated"));
+    assert!(ios_model.contains("try session.createGroupPoll"));
+}
+
+#[test]
 fn desktop_text_formatting_matches_shared_corpus_and_uses_inert_dom_only() {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../fixtures/b9-text-formatting-parity.json"
@@ -1376,14 +1415,83 @@ fn desktop_group_ux_create_roster_message_and_partial_delivery() {
     assert!(!bob_history[0].outbound);
     assert!(bob_history[0].deliveries.is_empty());
 
-    // Creator removal rotates the roster immediately. A member can leave;
-    // their live group disappears locally and the creator converges too.
+    // Remove the intentionally offline legacy member before exercising a
+    // capability-gated content type. The exact current roster must support
+    // polls; an unreachable member cannot honestly advertise that support.
     alice
         .remove_group_member(group.clone(), carol_peer)
         .unwrap();
     assert_eq!(alice.groups().unwrap()[0].members.len(), 2);
-
     std::thread::sleep(Duration::from_millis(300));
+
+    // Polls use the same authenticated encrypted group path, but render as
+    // dedicated visible-vote cards rather than misleading chat bubbles.
+    let poll_id = alice
+        .create_group_poll(
+            group.clone(),
+            "Which route? 🗻".to_owned(),
+            vec!["North ridge".to_owned(), "River path".to_owned()],
+        )
+        .unwrap();
+    b_ev.wait("Bob's desktop poll", |event| {
+        matches!(event, UiEvent::PollUpdated { group: event_group, poll_id: event_poll, .. }
+            if event_group == &group && event_poll == &poll_id)
+    });
+    let bob_poll = bob.group_polls(group.clone()).unwrap().remove(0);
+    assert_eq!(bob_poll.question, "Which route? 🗻");
+    assert!(bob_poll.votes_visible);
+    assert!(!bob_poll.anonymous);
+    assert_eq!(bob_poll.close_policy, "manual_creator_snapshot");
+    assert!(!bob_poll.can_close);
+    let poll_author = bob_poll.author.clone();
+    let north = bob_poll.options[0].id.clone();
+    let river = bob_poll.options[1].id.clone();
+    bob.vote_group_poll(group.clone(), poll_author.clone(), poll_id.clone(), north)
+        .unwrap();
+    a_ev.wait("Bob's first desktop poll vote", |event| {
+        matches!(event, UiEvent::PollUpdated { poll_id: event_poll, .. } if event_poll == &poll_id)
+    });
+    bob.vote_group_poll(
+        group.clone(),
+        poll_author.clone(),
+        poll_id.clone(),
+        river.clone(),
+    )
+    .unwrap();
+    let poll_change_deadline = Instant::now() + Duration::from_secs(30);
+    while alice.group_polls(group.clone()).unwrap()[0]
+        .votes
+        .first()
+        .map(|vote| vote.option_id.as_str())
+        != Some(river.as_str())
+    {
+        assert!(
+            Instant::now() < poll_change_deadline,
+            "timed out waiting for changed desktop poll vote"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let changed = alice.group_polls(group.clone()).unwrap().remove(0);
+    assert_eq!(changed.votes.len(), 1);
+    assert_eq!(changed.votes[0].option_id, river);
+    assert!(changed.can_close);
+    alice
+        .close_group_poll(group.clone(), poll_author, poll_id.clone())
+        .unwrap();
+    let poll_close_deadline = Instant::now() + Duration::from_secs(30);
+    while !bob.group_polls(group.clone()).unwrap()[0].closed {
+        assert!(
+            Instant::now() < poll_close_deadline,
+            "timed out waiting for closed desktop poll"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(bob.group_polls(group.clone()).unwrap()[0].closed);
+    assert_eq!(alice.group_messages(group.clone()).unwrap().len(), 1);
+    assert_eq!(bob.group_messages(group.clone()).unwrap().len(), 1);
+
+    // A member can leave; their live group disappears locally and the
+    // creator converges too.
     let editable = alice
         .send_group(group.clone(), "desktop group edit original".to_owned())
         .unwrap();

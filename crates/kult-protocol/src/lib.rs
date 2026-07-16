@@ -38,6 +38,7 @@ mod fragmentation;
 mod group;
 mod mention;
 mod padding;
+mod poll;
 mod receipt;
 mod token;
 
@@ -61,11 +62,11 @@ pub use capability::{
     CAPABILITY_MAGIC, MAX_CAPABILITY_FORMATS, MAX_CAPABILITY_KINDS,
 };
 pub use content::{
-    decode_content, encode_attachment, encode_edit, encode_ephemeral, encode_mention, encode_text,
-    DecodedContent, CONTENT_FORMAT_V1, CONTENT_HEADER_LEN, CONTENT_KIND_ATTACHMENT,
-    CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL, CONTENT_KIND_MENTION, CONTENT_KIND_TEXT,
-    CONTENT_MAGIC, MAX_COLLECTION_ENTRIES, MAX_CONTENT_FRAME_LEN, MAX_CONTENT_PAYLOAD_LEN,
-    MAX_NESTING_DEPTH,
+    decode_content, encode_attachment, encode_edit, encode_ephemeral, encode_mention, encode_poll,
+    encode_text, DecodedContent, CONTENT_FORMAT_V1, CONTENT_HEADER_LEN, CONTENT_KIND_ATTACHMENT,
+    CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL, CONTENT_KIND_MENTION, CONTENT_KIND_POLL,
+    CONTENT_KIND_TEXT, CONTENT_MAGIC, MAX_COLLECTION_ENTRIES, MAX_CONTENT_FRAME_LEN,
+    MAX_CONTENT_PAYLOAD_LEN, MAX_NESTING_DEPTH,
 };
 pub use edit::{
     decode_edit_payload, encode_edit_payload, DecodedEdit, Edit, EDIT_HEADER_LEN,
@@ -91,6 +92,12 @@ pub use mention::{
     MENTION_VERSION,
 };
 pub use padding::{pad, pad_to_minimum, unpad, PAD_BUCKETS};
+pub use poll::{
+    decode_poll_payload, encode_poll_close_payload, encode_poll_create_payload,
+    encode_poll_vote_payload, DecodedPoll, Poll, PollClose, PollCreate, PollOption, PollOptions,
+    PollVote, PollVoteHead, PollVoteHeads, PollVoters, MAX_POLL_OPTIONS, MAX_POLL_OPTION_TEXT_LEN,
+    MAX_POLL_QUESTION_LEN, MAX_POLL_VOTERS, MIN_POLL_OPTIONS, POLL_CLOSE_MANUAL, POLL_VERSION,
+};
 pub use receipt::ReceiptPayload;
 pub use token::{delivery_token, epoch_day, intro_token, MailboxKey};
 

@@ -901,6 +901,50 @@ class SessionE2eTest {
         assertContentEquals(groupSource.readBytes(), groupExport.readBytes())
         assertEquals(groupImageInfo, bob.probeImage(groupExport))
 
+        // The Android Session exposes the exact native poll contract. Poll
+        // events refresh dedicated cards and never become chat-message rows.
+        val messageRowsBeforePoll = alice.groupMessages(group).size
+        val pollId = alice.createGroupPoll(
+            group,
+            "Which route? 🗻",
+            listOf("North ridge", "River path"),
+        )
+        bEv.wait("Bob's Android poll") {
+            (it as? Event.PollUpdated)?.takeIf { event ->
+                event.group == group && event.pollId == pollId
+            }
+        }
+        val bobPoll = bob.groupPolls(group).single()
+        assertEquals("Which route? 🗻", bobPoll.question)
+        assertTrue(bobPoll.votesVisible)
+        assertFalse(bobPoll.anonymous)
+        assertEquals("manual_creator_snapshot", bobPoll.closePolicy)
+        assertFalse(bobPoll.canClose)
+        bob.voteGroupPoll(group, bobPoll.author, pollId, bobPoll.options[0].id)
+        aEv.wait("Bob's first Android poll vote") {
+            (it as? Event.PollUpdated)?.takeIf { event -> event.pollId == pollId }
+        }
+        val changedOption = bobPoll.options[1].id
+        bob.voteGroupPoll(group, bobPoll.author, pollId, changedOption)
+        val pollChangeDeadline = System.nanoTime() + 30_000_000_000L
+        while (alice.groupPolls(group).single().votes.singleOrNull()?.optionId != changedOption) {
+            check(System.nanoTime() < pollChangeDeadline) { "timed out waiting for changed poll vote" }
+            Thread.sleep(50)
+        }
+        val changedPoll = alice.groupPolls(group).single()
+        assertEquals(1, changedPoll.votes.size)
+        assertEquals(changedOption, changedPoll.votes.single().optionId)
+        assertTrue(changedPoll.canClose)
+        alice.closeGroupPoll(group, changedPoll.author, pollId)
+        val pollCloseDeadline = System.nanoTime() + 30_000_000_000L
+        while (!bob.groupPolls(group).single().closed) {
+            check(System.nanoTime() < pollCloseDeadline) { "timed out waiting for closed poll" }
+            Thread.sleep(50)
+        }
+        assertTrue(bob.groupPolls(group).single().closed)
+        assertEquals(messageRowsBeforePoll, alice.groupMessages(group).size)
+        assertEquals(messageRowsBeforePoll, bob.groupMessages(group).size)
+
         alice.addGroupMember(group, carolPeer)
         listed = alice.groups()
         assertEquals(3, listed[0].members.size)

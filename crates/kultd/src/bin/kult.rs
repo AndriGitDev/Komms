@@ -132,6 +132,13 @@ COMMANDS:
                                     review exact current member support
     group-mention-send GROUP_HEX REVIEW_TOKEN TEXT START:END:PEER_HEX...
                                     send quoted exact text with explicit UTF-8 byte spans
+    group-poll-create GROUP_HEX QUESTION OPTION OPTION...
+                                    create a visible-vote single-choice poll
+    group-polls GROUP_HEX           list polls, voter heads, and local tallies
+    group-poll-vote GROUP_HEX POLL_AUTHOR_HEX POLL_ID_HEX OPTION_ID_HEX
+                                    cast or change a vote using stable ids
+    group-poll-close GROUP_HEX POLL_AUTHOR_HEX POLL_ID_HEX
+                                    creator-only irreversible final snapshot
     group-add GROUP_HEX PEER_HEX     add a member (creator only)
     group-remove GROUP_HEX PEER_HEX  remove a member (creator only)
     group-leave GROUP_HEX            leave a group
@@ -212,6 +219,22 @@ fn parse_folder_id(value: &str) -> Result<String, String> {
         Ok(value.to_ascii_lowercase())
     } else {
         Err("folder id must be 32 hexadecimal characters".to_owned())
+    }
+}
+
+fn parse_poll_id(value: &str) -> Result<String, String> {
+    if value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(value.to_ascii_lowercase())
+    } else {
+        Err("poll or option id must be 32 hexadecimal characters".to_owned())
+    }
+}
+
+fn parse_poll_peer(value: &str) -> Result<String, String> {
+    if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(value.to_ascii_lowercase())
+    } else {
+        Err("group or poll-author id must be 64 hexadecimal characters".to_owned())
     }
 }
 
@@ -971,6 +994,47 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
                 "spans": spans,
             })
         }
+        "group-poll-create" => {
+            need(4)?;
+            json!({
+                "op": "group_poll_create",
+                "group": parse_poll_peer(&args[0])?,
+                "question": args[1],
+                "options": args[2..],
+            })
+        }
+        "group-polls" => {
+            need(1)?;
+            if args.len() != 1 {
+                return Err("group-polls: too many arguments".to_owned());
+            }
+            json!({ "op": "group_polls", "group": parse_poll_peer(&args[0])? })
+        }
+        "group-poll-vote" => {
+            need(4)?;
+            if args.len() != 4 {
+                return Err("group-poll-vote: expected four ids".to_owned());
+            }
+            json!({
+                "op": "group_poll_vote",
+                "group": parse_poll_peer(&args[0])?,
+                "poll_author": parse_poll_peer(&args[1])?,
+                "poll_id": parse_poll_id(&args[2])?,
+                "option_id": parse_poll_id(&args[3])?,
+            })
+        }
+        "group-poll-close" => {
+            need(3)?;
+            if args.len() != 3 {
+                return Err("group-poll-close: expected three ids".to_owned());
+            }
+            json!({
+                "op": "group_poll_close",
+                "group": parse_poll_peer(&args[0])?,
+                "poll_author": parse_poll_peer(&args[1])?,
+                "poll_id": parse_poll_id(&args[2])?,
+            })
+        }
         "group-add" => {
             need(2)?;
             json!({ "op": "group_add", "group": args[0], "peer": args[1] })
@@ -1304,6 +1368,45 @@ mod tests {
             ],
         )
         .is_err());
+        let poll = build_request(
+            "group-poll-create",
+            &[
+                "06".repeat(32),
+                "Lunch?".to_owned(),
+                "Soup".to_owned(),
+                "Salad".to_owned(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(poll["op"], json!("group_poll_create"));
+        assert_eq!(poll["options"], json!(["Soup", "Salad"]));
+        assert_eq!(
+            build_request("group-polls", &["06".repeat(32)]).unwrap()["op"],
+            json!("group_polls")
+        );
+        let vote = build_request(
+            "group-poll-vote",
+            &[
+                "06".repeat(32),
+                "07".repeat(32),
+                "08".repeat(16),
+                "09".repeat(16),
+            ],
+        )
+        .unwrap();
+        assert_eq!(vote["poll_id"], json!("08".repeat(16)));
+        assert_eq!(vote["option_id"], json!("09".repeat(16)));
+        assert!(build_request(
+            "group-poll-vote",
+            &[
+                "06".repeat(32),
+                "07".repeat(32),
+                "not-an-id".to_owned(),
+                "09".repeat(16),
+            ]
+        )
+        .is_err());
+        assert!(build_request("group-poll-close", &["06".repeat(32), "07".repeat(32)]).is_err());
         assert_eq!(
             build_request("groups", &[]).unwrap(),
             json!({ "op": "groups" })

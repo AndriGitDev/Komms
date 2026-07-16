@@ -616,6 +616,48 @@ async fn wait_mention_supported(client: &mut Client, group: &str) -> Value {
     panic!("mention capability intersection did not become supported");
 }
 
+async fn wait_poll_revision(
+    client: &mut Client,
+    group: &str,
+    poll_id: &str,
+    revision: u64,
+) -> Value {
+    for _ in 0..100 {
+        let listed = client
+            .ok(json!({ "op": "group_polls", "group": group }))
+            .await;
+        if let Some(poll) = listed["polls"].as_array().and_then(|polls| {
+            polls.iter().find(|poll| {
+                poll["id"] == json!(poll_id)
+                    && poll["votes"].as_array().is_some_and(|votes| {
+                        votes.iter().any(|vote| vote["revision"] == json!(revision))
+                    })
+            })
+        }) {
+            return poll.clone();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("poll {poll_id} did not reach vote revision {revision}");
+}
+
+async fn wait_poll_closed(client: &mut Client, group: &str, poll_id: &str) -> Value {
+    for _ in 0..100 {
+        let listed = client
+            .ok(json!({ "op": "group_polls", "group": group }))
+            .await;
+        if let Some(poll) = listed["polls"].as_array().and_then(|polls| {
+            polls
+                .iter()
+                .find(|poll| poll["id"] == json!(poll_id) && poll["closed"] == json!(true))
+        }) {
+            return poll.clone();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("poll {poll_id} did not close");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn note_to_self_via_rpc_is_local_and_uses_the_reserved_identity() {
     let directory = tempfile::tempdir().unwrap();
@@ -1601,6 +1643,107 @@ async fn groups_via_rpc_only() {
         .await
         .unwrap_err();
     assert!(err.contains("peer") && err.contains("hex"), "got: {err}");
+
+    // C5 uses only stable ids across RPC. Votes are explicitly visible, a
+    // member's last deterministic revision wins, and the creator's close
+    // snapshot makes the final tally independent of delivery order.
+    let chat_rows_before_poll = a
+        .ok(json!({ "op": "group_messages", "group": group }))
+        .await["messages"]
+        .as_array()
+        .unwrap()
+        .len();
+    let poll_id = a
+        .ok(json!({
+            "op": "group_poll_create",
+            "group": group,
+            "question": "Lunch? 👩🏽‍🚀",
+            "options": ["Soup", "Salad"],
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let poll_event = b_events
+        .wait_event(|event| {
+            event["type"] == json!("poll_updated") && event["poll_id"] == json!(poll_id)
+        })
+        .await;
+    assert_eq!(poll_event["poll_author"], json!(alice_peer));
+    let poll = b.ok(json!({ "op": "group_polls", "group": group })).await["polls"][0].clone();
+    assert_eq!(poll["question"], json!("Lunch? 👩🏽‍🚀"));
+    assert_eq!(poll["votes_visible"], json!(true));
+    assert_eq!(poll["anonymous"], json!(false));
+    assert_eq!(poll["close_policy"], json!("manual_creator_snapshot"));
+    let soup = poll["options"][0]["id"].as_str().unwrap().to_owned();
+    let salad = poll["options"][1]["id"].as_str().unwrap().to_owned();
+
+    for option_id in [&soup, &salad] {
+        b.ok(json!({
+            "op": "group_poll_vote",
+            "group": group,
+            "poll_author": alice_peer,
+            "poll_id": poll_id,
+            "option_id": option_id,
+        }))
+        .await;
+        a_events
+            .wait_event(|event| {
+                event["type"] == json!("poll_updated") && event["poll_id"] == json!(poll_id)
+            })
+            .await;
+    }
+    for poll in [
+        wait_poll_revision(&mut a, &group, &poll_id, 2).await,
+        wait_poll_revision(&mut b, &group, &poll_id, 2).await,
+    ] {
+        assert_eq!(poll["votes"].as_array().unwrap().len(), 1);
+        assert_eq!(poll["votes"][0]["voter"], json!(bob_peer));
+        assert_eq!(poll["votes"][0]["revision"], json!(2));
+        assert_eq!(poll["votes"][0]["option_id"], json!(salad));
+        assert_eq!(poll["options"][1]["votes"], json!(1));
+    }
+
+    let close_id = a
+        .ok(json!({
+            "op": "group_poll_close",
+            "group": group,
+            "poll_author": alice_peer,
+            "poll_id": poll_id,
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    b_events
+        .wait_event(|event| {
+            event["type"] == json!("poll_updated") && event["poll_id"] == json!(poll_id)
+        })
+        .await;
+    let final_poll = wait_poll_closed(&mut b, &group, &poll_id).await;
+    assert_eq!(final_poll["closed"], json!(true));
+    assert_eq!(final_poll["close_event_id"], json!(close_id));
+    assert_eq!(final_poll["votes"][0]["option_id"], json!(salad));
+    let err = b
+        .call(json!({
+            "op": "group_poll_vote",
+            "group": group,
+            "poll_author": alice_peer,
+            "poll_id": poll_id,
+            "option_id": soup,
+        }))
+        .await
+        .unwrap_err();
+    assert!(err.contains("closed"), "got: {err}");
+    assert_eq!(
+        a.ok(json!({ "op": "group_messages", "group": group }))
+            .await["messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        chat_rows_before_poll,
+        "poll events never become empty chat rows"
+    );
 
     // B10 stays local and structured through RPC: explicit random folder ids,
     // complete-set reorder, and exact typed targets without name inference.

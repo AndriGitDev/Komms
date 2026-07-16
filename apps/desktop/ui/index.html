@@ -209,6 +209,7 @@
             <button id="btn-group-details" class="ghost" hidden>Members</button>
           </div>
         </header>
+        <section id="group-polls" aria-label="Group polls" hidden></section>
         <div id="messages"></div>
         <section id="attachment-transfers" aria-label="Attachment transfers" hidden></section>
         <form id="composer" autocomplete="off">
@@ -224,6 +225,7 @@
             </select>
           </label>
           <button type="button" id="btn-mention" class="ghost" aria-haspopup="listbox" aria-expanded="false" hidden>Mention member</button>
+          <button type="button" id="btn-poll" class="ghost" hidden>Create poll</button>
           <div id="mention-picker" role="listbox" aria-label="Current group members" hidden></div>
           <button type="button" id="btn-record" class="ghost" aria-pressed="false">Record audio</button>
           <button type="button" id="btn-attach" class="ghost">Attach</button>
@@ -462,6 +464,22 @@
     <div class="row split">
       <button class="danger" data-act="leave">Leave group</button>
       <button class="ghost" data-act="close">Done</button>
+    </div>
+  </template>
+
+  <template id="tpl-create-poll">
+    <p class="modal-note">Votes are visible to every member. This is not anonymous. The current roster is fixed as the electorate, and only the poll creator can close it with a final vote snapshot.</p>
+    <label>Question
+      <input type="text" data-f="poll-question" data-incognito-input="message" maxlength="1024" autocomplete="off" />
+    </label>
+    <fieldset class="poll-option-editor">
+      <legend>Choices</legend>
+      <div data-f="poll-options"></div>
+      <button type="button" class="ghost" data-act="add-option">Add choice</button>
+    </fieldset>
+    <p class="error" data-f="error" role="alert" hidden></p>
+    <div class="row end">
+      <button class="primary" data-act="create-poll">Create visible-vote poll</button>
     </div>
   </template>
 

@@ -48,6 +48,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var histories: [String: [Message]] = [:] // peer → history
     @Published private(set) var groups: [KommsCore.Group] = []
     @Published private(set) var groupHistories: [String: [GroupMessage]] = [:]
+    @Published private(set) var groupPolls: [String: [GroupPoll]] = [:]
     @Published private(set) var scheduledMessages: [ScheduledMessage] = []
     @Published private(set) var attachments: [Attachment] = []
     @Published private(set) var noteHistory: [NoteMessage] = []
@@ -245,6 +246,7 @@ final class AppModel: ObservableObject {
              .noteToSelfMessageAdded,
              .carrierCapabilityChanged,
              .groupUpdated, .groupMessageReceived, .groupMessageEdited, .groupDeliveryUpdated,
+             .pollUpdated,
              .attachmentUpdated, .ephemeralRemoved,
              .foldersChanged, .labelsChanged, .pinsChanged:
             Task { await refresh() }
@@ -299,8 +301,10 @@ final class AppModel: ObservableObject {
                 let liveGroups = try session.groups()
                 let liveIds = Set(liveGroups.map(\.id))
                 var freshGroups: [String: [GroupMessage]] = [:]
+                var freshPolls: [String: [GroupPoll]] = [:]
                 for group in followedGroups where liveIds.contains(group) {
                     freshGroups[group] = try session.groupMessages(group: group)
+                    freshPolls[group] = try session.groupPolls(group: group)
                 }
                 let liveContacts = try session.contacts()
                 let folders = try session.folders()
@@ -344,6 +348,7 @@ final class AppModel: ObservableObject {
                 return AppRefreshSnapshot(
                     status: try session.status(), contacts: liveContacts, histories: fresh,
                     groups: liveGroups, groupHistories: freshGroups,
+                    groupPolls: freshPolls,
                     scheduled: try session.scheduledMessages(), attachments: try session.attachments(),
                     notes: try session.noteToSelfMessages(), folders: folders,
                     staleFolders: try session.staleFolders(), folderWasMissing: missingFolder,
@@ -357,6 +362,7 @@ final class AppModel: ObservableObject {
             histories.merge(snapshot.histories) { _, new in new }
             groups = snapshot.groups
             groupHistories.merge(snapshot.groupHistories) { _, new in new }
+            groupPolls.merge(snapshot.groupPolls) { _, new in new }
             scheduledMessages = snapshot.scheduled
             attachments = snapshot.attachments
             noteHistory = snapshot.notes
@@ -396,7 +402,9 @@ final class AppModel: ObservableObject {
     func followGroup(group: String) async throws {
         guard let session else { return }
         let history = try await run { try session.groupMessages(group: group) }
+        let polls = try await run { try session.groupPolls(group: group) }
         groupHistories[group] = history
+        groupPolls[group] = polls
     }
 
     /// Stable identity used by the local note-to-self route in every shell.
@@ -964,6 +972,33 @@ final class AppModel: ObservableObject {
         await refresh()
     }
 
+    func createGroupPoll(group: String, question: String, options: [String]) async throws {
+        guard let session else { throw InputError("node is locked") }
+        _ = try await run {
+            try session.createGroupPoll(group: group, question: question, options: options)
+        }
+        await refresh()
+    }
+
+    func voteGroupPoll(
+        group: String, pollAuthor: String, pollId: String, optionId: String
+    ) async throws {
+        guard let session else { throw InputError("node is locked") }
+        _ = try await run {
+            try session.voteGroupPoll(
+                group: group, pollAuthor: pollAuthor, pollId: pollId, optionId: optionId)
+        }
+        await refresh()
+    }
+
+    func closeGroupPoll(group: String, pollAuthor: String, pollId: String) async throws {
+        guard let session else { throw InputError("node is locked") }
+        _ = try await run {
+            try session.closeGroupPoll(group: group, pollAuthor: pollAuthor, pollId: pollId)
+        }
+        await refresh()
+    }
+
     func editGroupMessage(group: String, targetContentId: String, text: String) async throws {
         guard let session, let targetAuthor = status?.peer else {
             throw InputError("node is locked")
@@ -1175,6 +1210,7 @@ private struct AppRefreshSnapshot: Sendable {
     let histories: [String: [Message]]
     let groups: [KommsCore.Group]
     let groupHistories: [String: [GroupMessage]]
+    let groupPolls: [String: [GroupPoll]]
     let scheduled: [ScheduledMessage]
     let attachments: [Attachment]
     let notes: [NoteMessage]

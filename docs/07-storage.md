@@ -70,6 +70,14 @@ rehydrate it. Ordinary export/preview refuses any transfer referenced by a
 view-once row; terminal consume commits the tombstone before the first output
 byte. See [19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
 
+C5 polls add no mutable tally or plaintext projection. Creation, vote, and
+closure remain separate individually sealed group-history rows. The node
+rebuilds the fixed electorate, maximum `(revision, event id)` vote per member,
+winning creator closure, and tally on read, so restart and reordered admission
+cannot change the result. Local authors are capped at 64 vote revisions per
+poll; authenticated inbound history is retained for convergence. See
+[20: Group Polls](20-group-polls.md).
+
 B12 stores only the canonical `system`, `light`, or `dark` bytes under the sealed
 UI-preference key `appearance.theme`. Missing or unknown legacy values render as
 System without a read-time rewrite. The small shell cache used before unlock is
@@ -201,6 +209,10 @@ trade for this project.)
   manifest, or associated media enters KKR5. Terminal tombstones do, so restore
   cannot resurrect a removed content id. Active ephemeral content is
   intentionally non-portable and there is no remote-erasure claim.
+- **C5 poll backup behavior**: immutable create, vote, and creator-close rows
+  ride with ordinary sealed group history. Restore derives the same stable IDs,
+  fixed electorate, visible vote heads, closed state, and tally; no mutable
+  counter, new KKR version, or schema migration is involved.
 - **Plaintext export**: JSON-lines + media directory, clearly warned as plaintext.
   The user's data is the user's.
 - **Panic wipe** (roadmap M6): duress passphrase unlocking a decoy profile while

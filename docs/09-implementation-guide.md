@@ -235,6 +235,18 @@ authenticated deadline, commit a tombstone before reveal output, refuse normal
 export/preview, and keep active ephemeral content out of KKR5. The complete
 contract is [19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
 
+C5 polls are replicated immutable group content, never a shell-owned counter.
+Only the dedicated create/vote/close APIs may emit content-v1 kind `0x0006`;
+generic pairwise and group send reject it. Resolve each open voter head by
+maximum `(revision, event id)`, then replace the open view with the winning
+creator-attested close snapshot. The electorate is the fixed sorted creation
+list and votes are visible, not anonymous. RPC uses `group_poll_create`,
+`group_polls`, `group_poll_vote`, and `group_poll_close`; the CLI uses matching
+hyphenated commands; UniFFI exposes `GroupPoll` and `PollUpdated`. Shells render
+the node snapshot and never resolve raw events. The complete contract is
+[20: Group Polls](20-group-polls.md) and
+[ADR-0022](adr/0022-convergent-group-polls.md).
+
 ## 4. Testing strategy (beyond per-milestone acceptance)
 
 - **KATs**: primitive test vectors vendored under `crates/kult-crypto/tests/vectors/`.
@@ -242,7 +254,8 @@ contract is [19: Disappearing Messages and View-Once Attachments](19-ephemeral-m
   outside bounds ⇒ typed failure. Padding round-trips. Fragment/reassemble = identity.
 - **Fuzz targets** (`cargo-fuzz`): crypto envelope, handshake, bundle, mnemonic,
   and attachment-chunk decoding; protocol envelope, bundle import, reassembly,
-  content, capability, attachment manifest/bulk/ranges, mention, edit, and ephemeral
+  content, capability, attachment manifest/bulk/ranges, mention, edit, ephemeral,
+  and poll
   decoding.
 - **Simulation harness** (M3+): in-process multi-node network with scripted link
   conditions (latency, loss, partitions, MTU), deterministic seed, replayable failures.

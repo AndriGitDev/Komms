@@ -17,10 +17,10 @@ use kult_node::{
     FolderConversationList, FolderInfo, FolderSelection, GroupInfo, GroupMentionCapability,
     IncognitoKeyboardPlatform, IncognitoKeyboardPolicy, LabelConversationInfo, LabelFilterInfo,
     LabelInfo, MentionCapabilityIssueReason, NodeStaleFolderReason, NodeStaleLabelReason,
-    PinConversationInfo, PinConversationList, PinInfo, ResolvedGroupMessage, ResolvedMessage,
-    ScheduledConversation, ScheduledMessageInfo, ScreenSecurityPlatform, ScreenSecurityPolicy,
-    StaleFolderInfo, StaleLabelInfo, TextFormatBlockKind, TextFormatHighlight, TextFormatStyle,
-    NOTE_TO_SELF_CONVERSATION_ID,
+    PinConversationInfo, PinConversationList, PinInfo, PollInfo, ResolvedGroupMessage,
+    ResolvedMessage, ScheduledConversation, ScheduledMessageInfo, ScreenSecurityPlatform,
+    ScreenSecurityPolicy, StaleFolderInfo, StaleLabelInfo, TextFormatBlockKind,
+    TextFormatHighlight, TextFormatStyle, NOTE_TO_SELF_CONVERSATION_ID,
 };
 use kult_store::{
     valid_folder_name, valid_label_color, valid_label_name, ConversationId, DeliveryState,
@@ -155,6 +155,10 @@ fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
             "text",
         ]),
         "group_send_disappearing" => Some(&["id", "op", "group", "body", "lifetime_secs"]),
+        "group_poll_create" => Some(&["id", "op", "group", "question", "options"]),
+        "group_polls" => Some(&["id", "op", "group"]),
+        "group_poll_vote" => Some(&["id", "op", "group", "poll_author", "poll_id", "option_id"]),
+        "group_poll_close" => Some(&["id", "op", "group", "poll_author", "poll_id"]),
         _ => None,
     }
 }
@@ -687,6 +691,40 @@ pub enum Op {
         /// Review token from `group_mention_capability` (hex).
         review_token: String,
     },
+    /// Create a single-choice poll with explicit ordered UTF-8 options.
+    GroupPollCreate {
+        /// Group id (hex).
+        group: String,
+        /// Exact UTF-8 question.
+        question: String,
+        /// Ordered exact UTF-8 option labels.
+        options: Vec<String>,
+    },
+    /// List locally derived polls and visible vote heads for a group.
+    GroupPolls {
+        /// Group id (hex).
+        group: String,
+    },
+    /// Cast or change this identity's vote using stable ids only.
+    GroupPollVote {
+        /// Group id (hex).
+        group: String,
+        /// Poll creator peer id (hex).
+        poll_author: String,
+        /// Stable poll id (hex).
+        poll_id: String,
+        /// Stable selected option id (hex).
+        option_id: String,
+    },
+    /// Irreversibly close this identity's poll using stable ids only.
+    GroupPollClose {
+        /// Group id (hex).
+        group: String,
+        /// Poll creator peer id (hex).
+        poll_author: String,
+        /// Stable poll id (hex).
+        poll_id: String,
+    },
     /// Add a stored contact to a group (creator only).
     GroupAdd {
         /// Group id (hex).
@@ -1014,6 +1052,16 @@ pub fn event_line(event: &Event) -> String {
             "group": hex_encode(group),
             "sender": hex_encode(sender),
             "target_content_id": hex_encode(target_content_id),
+        }),
+        Event::PollUpdated {
+            group,
+            poll_author,
+            poll_id,
+        } => json!({
+            "type": "poll_updated",
+            "group": hex_encode(group),
+            "poll_author": hex_encode(poll_author),
+            "poll_id": hex_encode(poll_id),
         }),
         Event::EphemeralRemoved {
             conversation,
@@ -1558,6 +1606,37 @@ pub fn group_mention_capability_json(capability: &GroupMentionCapability) -> Val
     })
 }
 
+/// One render-safe derived poll, including visible voter identities and heads.
+pub fn poll_json(poll: &PollInfo) -> Value {
+    json!({
+        "group": hex_encode(&poll.group),
+        "author": hex_encode(&poll.author),
+        "id": hex_encode(&poll.id),
+        "generation": poll.generation,
+        "question": poll.question,
+        "eligible_voters": poll.eligible_voters.iter().map(|peer| hex_encode(peer)).collect::<Vec<_>>(),
+        "options": poll.options.iter().map(|option| json!({
+            "id": hex_encode(&option.id),
+            "text": option.text,
+            "votes": option.votes,
+            "selected_by_me": option.selected_by_me,
+        })).collect::<Vec<_>>(),
+        "votes": poll.votes.iter().map(|vote| json!({
+            "voter": hex_encode(&vote.voter),
+            "event_id": hex_encode(&vote.event_id),
+            "option_id": hex_encode(&vote.option_id),
+            "revision": vote.revision,
+        })).collect::<Vec<_>>(),
+        "closed": poll.closed,
+        "close_event_id": poll.close_event_id.map(|id| hex_encode(&id)),
+        "eligible": poll.eligible,
+        "can_close": poll.can_close,
+        "votes_visible": true,
+        "anonymous": false,
+        "close_policy": "manual_creator_snapshot",
+    })
+}
+
 /// One render-safe, time-bounded carrier snapshot as JSON.
 pub fn carrier_json(snapshot: &CarrierCapabilitySnapshot) -> Value {
     json!({
@@ -1780,6 +1859,12 @@ fn render_stored_content(
                 json!([]),
             ),
         },
+        kult_protocol::DecodedContent::Poll { .. } if allow_group_mention => {
+            (String::new(), "poll", None, json!([]))
+        }
+        kult_protocol::DecodedContent::Poll { .. } => {
+            (UNSUPPORTED_MESSAGE.to_owned(), "malformed", None, json!([]))
+        }
         kult_protocol::DecodedContent::Unsupported { .. } => (
             UNSUPPORTED_MESSAGE.to_owned(),
             "unsupported",
@@ -1921,6 +2006,34 @@ mod tests {
             .to_string(),
         )
         .is_err());
+    }
+
+    #[test]
+    fn poll_ops_reject_ambiguous_or_trailing_fields() {
+        let request = parse_request(
+            &json!({
+                "id": 4,
+                "op": "group_poll_vote",
+                "group": "01".repeat(32),
+                "poll_author": "02".repeat(32),
+                "poll_id": "03".repeat(16),
+                "option_id": "04".repeat(16),
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(matches!(request.op, Op::GroupPollVote { .. }));
+        assert!(parse_request(
+            &json!({
+                "id": 5,
+                "op": "group_polls",
+                "group": "01".repeat(32),
+                "unexpected": true,
+            })
+            .to_string(),
+        )
+        .is_err());
+        assert!(parse_request(r#"{"id":6,"op":"group_polls","group":"00"} trailing"#).is_err());
     }
 
     #[test]

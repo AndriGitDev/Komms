@@ -19,6 +19,21 @@
         android:layout_height="0dp"
         android:layout_weight="1" />
 
+    <ScrollView
+        android:id="@+id/chat_poll_section"
+        android:visibility="gone"
+        android:fillViewport="true"
+        android:paddingHorizontal="8dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <LinearLayout
+            android:id="@+id/chat_polls"
+            android:orientation="vertical"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+    </ScrollView>
+
     <LinearLayout
         android:id="@+id/chat_attachment_section"
         android:orientation="vertical"
@@ -88,6 +103,14 @@
             android:id="@+id/chat_mention"
             android:text="@string/mention_member"
             android:contentDescription="@string/mention_member_description"
+            android:visibility="gone"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+
+        <Button
+            android:id="@+id/chat_poll"
+            android:text="@string/poll_create_action"
+            android:contentDescription="@string/poll_create_description"
             android:visibility="gone"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content" />

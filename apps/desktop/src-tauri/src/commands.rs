@@ -14,11 +14,11 @@ use crate::session::{
     NetworkSettings, Session, UiAttachment, UiAudioMedia, UiBundle, UiContact,
     UiContactNameAssessment, UiCustomIcon, UiCustomIconCrop, UiCustomIconTarget, UiCustomIconUsage,
     UiFolder, UiFolderConversation, UiFolderConversationResult, UiFolderSelection, UiFolderTarget,
-    UiFormattedText, UiGroup, UiGroupMessage, UiHint, UiImageEditRecipe, UiImageReview, UiLabel,
-    UiLabelConversation, UiLabelFilterResult, UiLabelTarget, UiMentionCapability, UiMentionSpan,
-    UiMessage, UiNoteMessage, UiPin, UiPinConversationResult, UiPinTarget, UiSafetyNumber,
-    UiScheduledMessage, UiStaleFolder, UiStaleLabel, UiStatus, UiTextFormatHighlight, UiThemeInfo,
-    UiThemePreference,
+    UiFormattedText, UiGroup, UiGroupMessage, UiGroupPoll, UiHint, UiImageEditRecipe,
+    UiImageReview, UiLabel, UiLabelConversation, UiLabelFilterResult, UiLabelTarget,
+    UiMentionCapability, UiMentionSpan, UiMessage, UiNoteMessage, UiPin, UiPinConversationResult,
+    UiPinTarget, UiSafetyNumber, UiScheduledMessage, UiStaleFolder, UiStaleLabel, UiStatus,
+    UiTextFormatHighlight, UiThemeInfo, UiThemePreference,
 };
 
 /// Render-safe shared B14 policy shown before unlock.
@@ -715,6 +715,25 @@ forward!(
         review_token: String
     ) -> String,
     |s| s.send_group_mention(group, text, spans, review_token)
+);
+forward!(
+    /// Create a visible-vote single-choice group poll.
+    create_group_poll(group: String, question: String, options: Vec<String>) -> String,
+    |s| s.create_group_poll(group, question, options)
+);
+forward!(
+    /// List render-safe group poll cards and visible tallies.
+    group_polls(group: String) -> Vec<UiGroupPoll>, |s| s.group_polls(group)
+);
+forward!(
+    /// Cast or change a vote using stable ids.
+    vote_group_poll(group: String, poll_author: String, poll_id: String, option_id: String) -> String,
+    |s| s.vote_group_poll(group, poll_author, poll_id, option_id)
+);
+forward!(
+    /// Creator-only irreversible poll closure.
+    close_group_poll(group: String, poll_author: String, poll_id: String) -> String,
+    |s| s.close_group_poll(group, poll_author, poll_id)
 );
 forward!(
     /// Add a stored contact to a group (creator only).

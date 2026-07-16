@@ -8,9 +8,10 @@ use alloc::vec::Vec;
 
 use crate::{
     decode_attachment_manifest, decode_edit_payload, decode_ephemeral_payload,
-    decode_mention_payload, encode_attachment_manifest, encode_edit_payload,
+    decode_mention_payload, decode_poll_payload, encode_attachment_manifest, encode_edit_payload,
     encode_mention_payload, AttachmentManifest, DecodedAttachmentManifest, DecodedEdit,
-    DecodedEphemeral, DecodedMention, Edit, Ephemeral, Mention, MentionSpan, ProtocolError, Result,
+    DecodedEphemeral, DecodedMention, DecodedPoll, Edit, Ephemeral, Mention, MentionSpan, Poll,
+    ProtocolError, Result,
 };
 
 /// Prefix that unambiguously distinguishes typed content from valid UTF-8.
@@ -27,6 +28,8 @@ pub const CONTENT_KIND_MENTION: u16 = 3;
 pub const CONTENT_KIND_EDIT: u16 = 4;
 /// The v1 kind assigned to disappearing text and view-once attachments.
 pub const CONTENT_KIND_EPHEMERAL: u16 = 5;
+/// The v1 kind assigned to authenticated group poll events.
+pub const CONTENT_KIND_POLL: u16 = 6;
 /// Size of the fixed v1 content header.
 pub const CONTENT_HEADER_LEN: usize = 28;
 /// Maximum unpadded content frame size.
@@ -82,6 +85,13 @@ pub enum DecodedContent<'a> {
         id: [u8; 16],
         /// Exact supported ephemeral mode and payload.
         ephemeral: Ephemeral<'a>,
+    },
+    /// Canonical group-only poll creation, vote, or closure event.
+    Poll {
+        /// Random author-minted id for this exact poll event.
+        id: [u8; 16],
+        /// Exact supported poll event.
+        poll: Poll<'a>,
     },
     /// Authenticated bytes the current client cannot interpret.
     Unsupported {
@@ -163,6 +173,22 @@ pub fn encode_ephemeral(id: [u8; 16], payload: &[u8]) -> Result<Vec<u8>> {
     frame.extend_from_slice(&CONTENT_MAGIC);
     frame.push(CONTENT_FORMAT_V1);
     frame.extend_from_slice(&CONTENT_KIND_EPHEMERAL.to_le_bytes());
+    frame.push(0);
+    frame.extend_from_slice(&id);
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    frame.extend_from_slice(payload);
+    Ok(frame)
+}
+
+/// Wrap one canonical poll payload in the common v1 content frame.
+pub fn encode_poll(id: [u8; 16], payload: &[u8]) -> Result<Vec<u8>> {
+    if payload.len() > MAX_CONTENT_PAYLOAD_LEN {
+        return Err(ProtocolError::TooLarge);
+    }
+    let mut frame = Vec::with_capacity(CONTENT_HEADER_LEN + payload.len());
+    frame.extend_from_slice(&CONTENT_MAGIC);
+    frame.push(CONTENT_FORMAT_V1);
+    frame.extend_from_slice(&CONTENT_KIND_POLL.to_le_bytes());
     frame.push(0);
     frame.extend_from_slice(&id);
     frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
@@ -258,6 +284,14 @@ pub fn decode_content(bytes: &[u8]) -> DecodedContent<'_> {
             },
             DecodedEphemeral::Malformed => DecodedContent::Malformed,
         },
+        CONTENT_KIND_POLL => match decode_poll_payload(payload) {
+            DecodedPoll::Poll(poll) => DecodedContent::Poll { id, poll },
+            DecodedPoll::Unsupported => DecodedContent::Unsupported {
+                format_version: Some(format_version),
+                kind: Some(kind),
+            },
+            DecodedPoll::Malformed => DecodedContent::Malformed,
+        },
         _ => DecodedContent::Unsupported {
             format_version: Some(format_version),
             kind: Some(kind),
@@ -268,6 +302,7 @@ pub fn decode_content(bytes: &[u8]) -> DecodedContent<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{encode_poll_vote_payload, PollVote};
     use proptest::prelude::*;
 
     #[test]
@@ -338,6 +373,34 @@ mod tests {
         expected.extend_from_slice(b"new");
         assert_eq!(frame, expected);
         assert_eq!(decode_content(&frame), DecodedContent::Edit { id, edit });
+    }
+
+    #[test]
+    fn poll_content_round_trips_through_common_frame() {
+        let id = [0x66; 16];
+        let vote = PollVote {
+            poll_author: [0x11; 32],
+            poll_id: [0x22; 16],
+            option_id: [0x33; 16],
+            revision: 4,
+        };
+        let frame = encode_poll(id, &encode_poll_vote_payload(&vote).unwrap()).unwrap();
+        assert!(matches!(
+            decode_content(&frame),
+            DecodedContent::Poll {
+                id: decoded_id,
+                poll: Poll::Vote(decoded_vote),
+            } if decoded_id == id && decoded_vote == vote
+        ));
+        let mut future = frame;
+        future[CONTENT_HEADER_LEN] = 2;
+        assert_eq!(
+            decode_content(&future),
+            DecodedContent::Unsupported {
+                format_version: Some(CONTENT_FORMAT_V1),
+                kind: Some(CONTENT_KIND_POLL),
+            }
+        );
     }
 
     #[test]

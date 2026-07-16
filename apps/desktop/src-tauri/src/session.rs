@@ -37,18 +37,18 @@ use kult_ffi::{
     EventListener, Folder as FfiFolder, FolderConversation as FfiFolderConversation,
     FolderConversationResult as FfiFolderConversationResult, FolderSelection as FfiFolderSelection,
     FolderSelectionKind as FfiFolderSelectionKind, FolderTarget as FfiFolderTarget,
-    FolderTargetKind as FfiFolderTargetKind, Hint, ImageCrop, ImageEditRecipe, ImageEditRegion,
-    ImageEditRegionKind, ImageInfo, KdfChoice, KultNode, Label as FfiLabel,
-    LabelConversation as FfiLabelConversation, LabelFilterResult as FfiLabelFilterResult,
-    LabelMatchMode as FfiLabelMatchMode, LabelTarget as FfiLabelTarget,
-    LabelTargetKind as FfiLabelTargetKind, MentionCapabilityIssueReason, MentionSpan, NatVerdict,
-    Pin as FfiPin, PinConversation as FfiPinConversation,
-    PinConversationResult as FfiPinConversationResult, PinTarget as FfiPinTarget,
-    PinTargetKind as FfiPinTargetKind, ScheduledConversation, StaleFolder as FfiStaleFolder,
-    StaleLabel as FfiStaleLabel, TextFormatBlockKind as FfiTextFormatBlockKind,
-    TextFormatHighlight as FfiTextFormatHighlight, TextFormatStyle as FfiTextFormatStyle,
-    ThemePreference as FfiThemePreference, AUDIO_MAX_BYTES, AUDIO_MEDIA_TYPE,
-    IMAGE_MAX_INPUT_BYTES, IMAGE_MEDIA_TYPE,
+    FolderTargetKind as FfiFolderTargetKind, GroupPoll as FfiGroupPoll, Hint, ImageCrop,
+    ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, ImageInfo, KdfChoice, KultNode,
+    Label as FfiLabel, LabelConversation as FfiLabelConversation,
+    LabelFilterResult as FfiLabelFilterResult, LabelMatchMode as FfiLabelMatchMode,
+    LabelTarget as FfiLabelTarget, LabelTargetKind as FfiLabelTargetKind,
+    MentionCapabilityIssueReason, MentionSpan, NatVerdict, Pin as FfiPin,
+    PinConversation as FfiPinConversation, PinConversationResult as FfiPinConversationResult,
+    PinTarget as FfiPinTarget, PinTargetKind as FfiPinTargetKind, ScheduledConversation,
+    StaleFolder as FfiStaleFolder, StaleLabel as FfiStaleLabel,
+    TextFormatBlockKind as FfiTextFormatBlockKind, TextFormatHighlight as FfiTextFormatHighlight,
+    TextFormatStyle as FfiTextFormatStyle, ThemePreference as FfiThemePreference, AUDIO_MAX_BYTES,
+    AUDIO_MEDIA_TYPE, IMAGE_MAX_INPUT_BYTES, IMAGE_MEDIA_TYPE,
 };
 
 use crate::qr;
@@ -1179,6 +1179,98 @@ pub struct UiMentionCapability {
     pub issues: Vec<UiMentionIssue>,
 }
 
+/// One stable poll choice with a visible local tally.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiPollOption {
+    /// Stable option id (hex).
+    pub id: String,
+    /// Exact authenticated UTF-8 label.
+    pub text: String,
+    /// Accepted visible vote heads.
+    pub votes: u32,
+    /// Whether the local identity selected this option.
+    pub selected_by_me: bool,
+}
+
+/// One visible authenticated vote head.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiPollVote {
+    /// Authenticated voter peer id (hex).
+    pub voter: String,
+    /// Stable selected option id (hex).
+    pub option_id: String,
+    /// Positive voter-local revision.
+    pub revision: u64,
+}
+
+/// One render-safe group poll card.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiGroupPoll {
+    /// Exact group id (hex).
+    pub group: String,
+    /// Authenticated creator peer id (hex).
+    pub author: String,
+    /// Stable poll id (hex).
+    pub id: String,
+    /// Exact authenticated question.
+    pub question: String,
+    /// Fixed creation-time electorate.
+    pub eligible_voters: Vec<String>,
+    /// Stable ordered choices and tallies.
+    pub options: Vec<UiPollOption>,
+    /// Visible accepted vote heads.
+    pub votes: Vec<UiPollVote>,
+    /// Whether the creator finalized the poll.
+    pub closed: bool,
+    /// Whether this identity belongs to the electorate.
+    pub eligible: bool,
+    /// Whether this identity can close the poll.
+    pub can_close: bool,
+    /// Honest product policy; always true for C5.
+    pub votes_visible: bool,
+    /// Honest product policy; always false for C5.
+    pub anonymous: bool,
+    /// `manual_creator_snapshot`.
+    pub close_policy: String,
+}
+
+impl UiGroupPoll {
+    fn from_ffi(poll: FfiGroupPoll) -> Self {
+        Self {
+            group: poll.group,
+            author: poll.author,
+            id: poll.id,
+            question: poll.question,
+            eligible_voters: poll.eligible_voters,
+            options: poll
+                .options
+                .into_iter()
+                .map(|option| UiPollOption {
+                    id: option.id,
+                    text: option.text,
+                    votes: option.votes,
+                    selected_by_me: option.selected_by_me,
+                })
+                .collect(),
+            votes: poll
+                .votes
+                .into_iter()
+                .map(|vote| UiPollVote {
+                    voter: vote.voter,
+                    option_id: vote.option_id,
+                    revision: vote.revision,
+                })
+                .collect(),
+            closed: poll.closed,
+            eligible: poll.eligible,
+            can_close: poll.can_close,
+            votes_visible: poll.votes_visible,
+            anonymous: poll.anonymous,
+            close_policy: poll.close_policy,
+        }
+    }
+}
+
 /// A group message row for the desktop conversation view.
 #[derive(Clone, Debug, Serialize)]
 pub struct UiGroupMessage {
@@ -1553,6 +1645,15 @@ pub enum UiEvent {
         /// Original canonical Text content id (hex).
         target_content_id: String,
     },
+    /// A poll creation, vote, or closure changed a group poll card.
+    PollUpdated {
+        /// Group id (hex).
+        group: String,
+        /// Authenticated poll creator (hex).
+        poll_author: String,
+        /// Stable poll id (hex).
+        poll_id: String,
+    },
     /// Ephemeral content became terminal on this installation.
     EphemeralRemoved {
         /// `pairwise` or `group`.
@@ -1687,6 +1788,15 @@ impl UiEvent {
                 sender,
                 target_content_id,
             },
+            Event::PollUpdated {
+                group,
+                poll_author,
+                poll_id,
+            } => Self::PollUpdated {
+                group,
+                poll_author,
+                poll_id,
+            },
             Event::EphemeralRemoved {
                 conversation_kind,
                 conversation_id,
@@ -1775,6 +1885,7 @@ fn content_kind_str(kind: ContentKind) -> &'static str {
         ContentKind::Mention => "mention",
         ContentKind::DisappearingText => "disappearing_text",
         ContentKind::ViewOnceAttachment => "view_once_attachment",
+        ContentKind::Poll => "poll",
         ContentKind::Unsupported => "unsupported",
         ContentKind::Malformed => "malformed",
     }
@@ -3411,6 +3522,54 @@ impl Session {
                     .collect(),
                 review_token,
             )
+            .map_err(|error| error.to_string())
+    }
+
+    /// Create a visible-vote single-choice poll with exact ordered labels.
+    pub fn create_group_poll(
+        &self,
+        group: String,
+        question: String,
+        options: Vec<String>,
+    ) -> Result<String, String> {
+        self.node
+            .create_group_poll(group, question, options)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Group poll cards with visible voter heads and locally derived tallies.
+    pub fn group_polls(&self, group: String) -> Result<Vec<UiGroupPoll>, String> {
+        Ok(self
+            .node
+            .group_polls(group)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(UiGroupPoll::from_ffi)
+            .collect())
+    }
+
+    /// Cast or change this identity's choice using stable ids only.
+    pub fn vote_group_poll(
+        &self,
+        group: String,
+        poll_author: String,
+        poll_id: String,
+        option_id: String,
+    ) -> Result<String, String> {
+        self.node
+            .vote_group_poll(group, poll_author, poll_id, option_id)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Creator-only irreversible final vote-head snapshot.
+    pub fn close_group_poll(
+        &self,
+        group: String,
+        poll_author: String,
+        poll_id: String,
+    ) -> Result<String, String> {
+        self.node
+            .close_group_poll(group, poll_author, poll_id)
             .map_err(|error| error.to_string())
     }
 

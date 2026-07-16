@@ -78,6 +78,10 @@ are the node's own, verbatim.
   as any member while local history remains stored. Inbound rows name the
   sender; outbound rows show every recipient's actual delivery state instead
   of a misleading group-level checkmark.
+- **Create and vote in encrypted group polls** through dedicated VoiceOver and
+  Dynamic Type-friendly cards. The bounded composer preserves exact Unicode;
+  the creation roster is fixed, votes and identities are visible rather than
+  anonymous, choices can change, and only the creator closes the final snapshot.
 - **Mention current group members** through an explicit accessible roster picker.
   The composer uses semantic ranges while preserving exact visible text, supports
   keyboard navigation where available, VoiceOver, Dynamic Type, Unicode/bidi,

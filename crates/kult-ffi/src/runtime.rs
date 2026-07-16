@@ -420,6 +420,29 @@ pub(crate) enum Msg {
         review_token: [u8; 16],
         resp: Resp<[u8; 16]>,
     },
+    GroupPollCreate {
+        group: [u8; 32],
+        question: String,
+        options: Vec<String>,
+        resp: Resp<[u8; 16]>,
+    },
+    GroupPolls {
+        group: [u8; 32],
+        resp: Resp<Vec<kult_node::PollInfo>>,
+    },
+    GroupPollVote {
+        group: [u8; 32],
+        poll_author: [u8; 32],
+        poll_id: [u8; 16],
+        option_id: [u8; 16],
+        resp: Resp<[u8; 16]>,
+    },
+    GroupPollClose {
+        group: [u8; 32],
+        poll_author: [u8; 32],
+        poll_id: [u8; 16],
+        resp: Resp<[u8; 16]>,
+    },
     GroupAdd {
         group: [u8; 32],
         peer: [u8; 32],
@@ -1362,6 +1385,43 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         } => {
             let _ = resp.send(
                 node.group_send_mention(&group, &text, &spans, review_token, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::GroupPollCreate {
+            group,
+            question,
+            options,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.group_create_poll(&group, &question, &options, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::GroupPolls { group, resp } => {
+            let _ = resp.send(node.group_polls(&group).map_err(fail));
+        }
+        Msg::GroupPollVote {
+            group,
+            poll_author,
+            poll_id,
+            option_id,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.group_vote_poll(&group, poll_author, poll_id, option_id, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::GroupPollClose {
+            group,
+            poll_author,
+            poll_id,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.group_close_poll(&group, poll_author, poll_id, now, &mut OsRng)
                     .map_err(fail),
             );
         }

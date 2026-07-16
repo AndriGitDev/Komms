@@ -18,8 +18,8 @@ use kult_protocol::{
     decode_content, delivery_token, encode_disappearing_text_payload, encode_edit,
     encode_ephemeral, encode_mention, encode_text, epoch_day, pad, retention_bucket, unpad,
     DecodedContent, Edit, Envelope, EnvelopeKind, Ephemeral, GroupAnnounce, GroupControlPayload,
-    GroupMemberInfo, MailboxKey, CONTENT_FORMAT_V1, CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL,
-    CONTENT_KIND_MENTION, MAX_EDIT_TEXT_LEN, MAX_EPHEMERAL_LIFETIME_SECS,
+    GroupMemberInfo, MailboxKey, Poll, CONTENT_FORMAT_V1, CONTENT_KIND_EDIT,
+    CONTENT_KIND_EPHEMERAL, CONTENT_KIND_MENTION, MAX_EDIT_TEXT_LEN, MAX_EPHEMERAL_LIFETIME_SECS,
     MIN_EPHEMERAL_LIFETIME_SECS,
 };
 use kult_store::{
@@ -149,6 +149,7 @@ impl Node {
             DecodedContent::Mention { .. } => return Err(NodeError::InvalidMention),
             DecodedContent::Edit { .. } => return Err(NodeError::InvalidEdit),
             DecodedContent::Ephemeral { .. } => return Err(NodeError::InvalidEphemeral),
+            DecodedContent::Poll { .. } => return Err(NodeError::InvalidPoll),
             _ => {}
         }
         let mut id = [0u8; 16];
@@ -422,7 +423,7 @@ impl Node {
         )
     }
 
-    fn group_send_content_with_id(
+    pub(crate) fn group_send_content_with_id(
         &mut self,
         group: &[u8; 32],
         wire_content: Vec<u8>,
@@ -871,7 +872,8 @@ impl Node {
             | DecodedContent::Attachment { id, .. }
             | DecodedContent::Mention { id, .. }
             | DecodedContent::Edit { id, .. }
-            | DecodedContent::Ephemeral { id, .. } = decoded
+            | DecodedContent::Ephemeral { id, .. }
+            | DecodedContent::Poll { id, .. } = decoded
             {
                 let conversation = EphemeralConversation::Group(rec.id);
                 if self
@@ -892,6 +894,7 @@ impl Node {
                                 | DecodedContent::Mention { id: stored_id, .. }
                                 | DecodedContent::Edit { id: stored_id, .. }
                                 | DecodedContent::Ephemeral { id: stored_id, .. }
+                                | DecodedContent::Poll { id: stored_id, .. }
                                 if stored_id == id
                         )
                 });
@@ -986,6 +989,43 @@ impl Node {
                         ContentStatus::DisappearingText { id, expires_at },
                     )
                 }
+                DecodedContent::Poll {
+                    id,
+                    poll: Poll::Create(create),
+                } if create.voters().any(|voter| voter == peer) => (
+                    id,
+                    Vec::new(),
+                    ContentStatus::Poll {
+                        id,
+                        poll_author: peer,
+                        poll_id: id,
+                    },
+                ),
+                DecodedContent::Poll {
+                    id,
+                    poll: Poll::Vote(vote),
+                } => (
+                    id,
+                    Vec::new(),
+                    ContentStatus::Poll {
+                        id,
+                        poll_author: vote.poll_author,
+                        poll_id: vote.poll_id,
+                    },
+                ),
+                DecodedContent::Poll {
+                    id,
+                    poll: Poll::Close(close),
+                } if close.poll_author == peer => (
+                    id,
+                    Vec::new(),
+                    ContentStatus::Poll {
+                        id,
+                        poll_author: close.poll_author,
+                        poll_id: close.poll_id,
+                    },
+                ),
+                DecodedContent::Poll { id, .. } => (id, Vec::new(), ContentStatus::Malformed),
                 DecodedContent::Ephemeral {
                     id,
                     ephemeral:
@@ -1093,6 +1133,15 @@ impl Node {
                     group: rec.id,
                     sender: peer,
                     target_content_id,
+                }),
+                ContentStatus::Poll {
+                    poll_author,
+                    poll_id,
+                    ..
+                } => self.events.push_back(Event::PollUpdated {
+                    group: rec.id,
+                    poll_author,
+                    poll_id,
                 }),
                 ContentStatus::Malformed if decoded_is_edit => {}
                 _ => self.events.push_back(Event::GroupMessageReceived {

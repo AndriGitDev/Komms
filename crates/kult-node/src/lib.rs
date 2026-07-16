@@ -49,8 +49,8 @@ use kult_protocol::{
     retention_bucket, unpad, CapabilityControl, DecodedContent, Edit, Envelope, EnvelopeKind,
     Ephemeral, FormatCapabilities, MailboxKey, Reassembler, ReceiptPayload, CONTENT_FORMAT_V1,
     CONTENT_KIND_ATTACHMENT, CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL, CONTENT_KIND_MENTION,
-    CONTENT_KIND_TEXT, ENVELOPE_HEADER_LEN, MAX_EDIT_TEXT_LEN, MAX_EPHEMERAL_LIFETIME_SECS,
-    MIN_EPHEMERAL_LIFETIME_SECS, REASSEMBLY_WINDOW_SECS,
+    CONTENT_KIND_POLL, CONTENT_KIND_TEXT, ENVELOPE_HEADER_LEN, MAX_EDIT_TEXT_LEN,
+    MAX_EPHEMERAL_LIFETIME_SECS, MIN_EPHEMERAL_LIFETIME_SECS, REASSEMBLY_WINDOW_SECS,
 };
 use kult_store::{
     ContactRecord, ConversationId, ConversationMetadata, DeliveryState, Direction,
@@ -73,6 +73,7 @@ mod icons;
 mod incognito_keyboard;
 mod labels;
 mod pins;
+mod polls;
 mod screen_security;
 mod text_formatting;
 mod theme;
@@ -85,9 +86,10 @@ pub use api::{
     FolderConversationInfo, FolderConversationList, FolderInfo, FolderSelection, GroupInfo,
     GroupMentionCapability, LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode,
     MentionCapabilityIssue, MentionCapabilityIssueReason, MentionSpan, PinConversationInfo,
-    PinConversationList, PinInfo, ResolvedGroupMessage, ResolvedMessage, ScheduledConversation,
-    ScheduledMessageInfo, StaleFolderInfo, StaleFolderReason as NodeStaleFolderReason,
-    StaleLabelInfo, StaleLabelReason as NodeStaleLabelReason,
+    PinConversationList, PinInfo, PollInfo, PollOptionInfo, PollVoteInfo, ResolvedGroupMessage,
+    ResolvedMessage, ScheduledConversation, ScheduledMessageInfo, StaleFolderInfo,
+    StaleFolderReason as NodeStaleFolderReason, StaleLabelInfo,
+    StaleLabelReason as NodeStaleLabelReason,
 };
 pub use contact_names::{ContactNameAssessment, ContactNameWarning, MAX_CONTACT_NAME_BYTES};
 pub use edits::MAX_MESSAGE_EDITS;
@@ -108,6 +110,7 @@ pub use kult_store::{
     MAX_LABELS_PER_CONVERSATION, MAX_LABEL_ASSIGNMENTS, MAX_LOCAL_METADATA_STRING_BYTES, MAX_PINS,
     NOTE_TO_SELF_CONVERSATION_ID, THEME_PREFERENCES, THEME_PREFERENCE_KEY, THEME_SEMANTIC_ROLES,
 };
+pub use polls::MAX_POLL_VOTE_REVISIONS;
 pub use screen_security::{
     screen_security_policy, ScreenSecurityLevel, ScreenSecurityPlatform, ScreenSecurityPolicy,
 };
@@ -906,6 +909,7 @@ impl Node {
             DecodedContent::Mention { .. } => return Err(NodeError::InvalidMention),
             DecodedContent::Edit { .. } => return Err(NodeError::InvalidEdit),
             DecodedContent::Ephemeral { .. } => return Err(NodeError::InvalidEphemeral),
+            DecodedContent::Poll { .. } => return Err(NodeError::InvalidPoll),
             _ => {}
         }
         let mut id = [0u8; 16];
@@ -1048,8 +1052,10 @@ impl Node {
     ) -> Result<[u8; 16]> {
         // Mention is permanently group-only. Reject a canonical frame before
         // it can enter pairwise history, padding, encryption, or the queue.
-        if matches!(decode_content(body), DecodedContent::Mention { .. }) {
-            return Err(NodeError::InvalidMention);
+        match decode_content(body) {
+            DecodedContent::Mention { .. } => return Err(NodeError::InvalidMention),
+            DecodedContent::Poll { .. } => return Err(NodeError::InvalidPoll),
+            _ => {}
         }
         let contact = self
             .store
@@ -1856,7 +1862,8 @@ impl Node {
         | DecodedContent::Attachment { id, .. }
         | DecodedContent::Mention { id, .. }
         | DecodedContent::Edit { id, .. }
-        | DecodedContent::Ephemeral { id, .. } = decoded
+        | DecodedContent::Ephemeral { id, .. }
+        | DecodedContent::Poll { id, .. } = decoded
         {
             let conversation = EphemeralConversation::Pairwise(peer);
             if self
@@ -1875,6 +1882,7 @@ impl Node {
                             | DecodedContent::Mention { id: stored_id, .. }
                             | DecodedContent::Edit { id: stored_id, .. }
                             | DecodedContent::Ephemeral { id: stored_id, .. }
+                            | DecodedContent::Poll { id: stored_id, .. }
                             if stored_id == id
                     )
             });
@@ -2012,6 +2020,12 @@ impl Node {
                 rng.fill_bytes(&mut id);
                 (id, Vec::new(), ContentStatus::Malformed)
             }
+            // Polls are group-only and never become pairwise application state.
+            DecodedContent::Poll { .. } => {
+                let mut id = [0u8; 16];
+                rng.fill_bytes(&mut id);
+                (id, Vec::new(), ContentStatus::Malformed)
+            }
             DecodedContent::Unsupported {
                 format_version,
                 kind,
@@ -2085,6 +2099,7 @@ impl Node {
                     CONTENT_KIND_MENTION,
                     CONTENT_KIND_EDIT,
                     CONTENT_KIND_EPHEMERAL,
+                    CONTENT_KIND_POLL,
                 ],
             }],
         }

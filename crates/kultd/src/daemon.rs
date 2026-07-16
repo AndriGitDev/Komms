@@ -1328,6 +1328,56 @@ async fn handle_op(
                 .map_err(fail)?;
             Ok(json!({ "id": wire::hex_encode(&id) }))
         }
+        Op::GroupPollCreate {
+            group,
+            question,
+            options,
+        } => {
+            let group = wire::parse_group(&group)?;
+            let id = node
+                .group_create_poll(&group, &question, &options, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::GroupPolls { group } => {
+            let group = wire::parse_group(&group)?;
+            Ok(json!({
+                "polls": node
+                    .group_polls(&group)
+                    .map_err(fail)?
+                    .iter()
+                    .map(wire::poll_json)
+                    .collect::<Vec<_>>(),
+            }))
+        }
+        Op::GroupPollVote {
+            group,
+            poll_author,
+            poll_id,
+            option_id,
+        } => {
+            let group = wire::parse_group(&group)?;
+            let poll_author = wire::parse_peer(&poll_author)?;
+            let poll_id = wire::parse_message(&poll_id)?;
+            let option_id = wire::parse_message(&option_id)?;
+            let id = node
+                .group_vote_poll(&group, poll_author, poll_id, option_id, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::GroupPollClose {
+            group,
+            poll_author,
+            poll_id,
+        } => {
+            let group = wire::parse_group(&group)?;
+            let poll_author = wire::parse_peer(&poll_author)?;
+            let poll_id = wire::parse_message(&poll_id)?;
+            let id = node
+                .group_close_poll(&group, poll_author, poll_id, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
         Op::GroupAdd { group, peer } => {
             let group = wire::parse_group(&group)?;
             let peer = wire::parse_peer(&peer)?;

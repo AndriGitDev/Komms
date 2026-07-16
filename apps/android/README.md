@@ -75,6 +75,10 @@ own, verbatim.
   as any member while local history remains stored. Inbound rows name the
   sender; outbound rows show every recipient's actual delivery state instead
   of a misleading group-level checkmark.
+- **Create and vote in encrypted group polls** through dedicated TalkBack-
+  labelled cards and a bounded exact-Unicode composer. The current roster is
+  fixed at creation; votes and identities are visible to members, explicitly
+  not anonymous; voters may change choices before creator-only closure.
 - **Mention current group members** through an explicit accessible roster picker.
   The composer preserves semantic spans across IME input and recreation, removes
   a mention rather than silently retargeting it when edited across, restores

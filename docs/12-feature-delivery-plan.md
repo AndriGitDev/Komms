@@ -52,7 +52,7 @@ still require their own accepted designs before individual shells implement UI.
 | Linked devices | Planned | Proximate linking, device keys, sync, revocation, and recovery. |
 | Message editing | Shipped | ADR-0020 immutable authenticated revisions, deterministic offline reconciliation, retained versions, and every front door/shell. |
 | Disappearing/view-once messages | Shipped | ADR-0021 exact local deadlines, envelope-v2 coarse relay deletion, tombstones, KKR5 exclusion, terminal reveal, and honest local-only promises. |
-| Group polls | Planned | Typed group content and convergent vote updates. |
+| Group polls | Shipped | ADR-0022 fixed-electorate visible votes, deterministic heads/tallies, creator snapshot closure, and every front door/shell. |
 | Admin/role controls | Planned | Cryptographic group capabilities and authority transitions. |
 | Live voice/video calls | Design-only | ADR-0013 remains Proposed; measured media transport and carrier gating precede implementation. |
 | Optional hybrid reachability/wake | Design-only | ADR-0017 through ADR-0019 remain Proposed; acceptance precedes mode boundaries, rotating rendezvous, and best-effort native wake. |
@@ -774,17 +774,21 @@ See [19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.
 
 ### C5. Group polls
 
-**Depends on:** F1, F2. **ADR required if poll events become a new replicated
-wire type.**
+**Shipped. Depends on:** F1, F2. **Decision:**
+[ADR-0022](adr/0022-convergent-group-polls.md).
 
-Define a poll creation event with stable poll/option IDs and close policy, plus
-idempotent vote events authenticated as the voting member. Use last valid vote
-per member with a deterministic event-order rule; tally locally. Decide whether
-votes are visible to all members or only the creator before implementation;
-do not claim anonymous voting without a separate cryptographic design.
+Content-v1 kind 6 carries immutable creation, vote, and creator-close events
+with stable IDs. The creation-time roster is fixed; votes and identities are
+visible to members and explicitly not anonymous. Maximum
+`(revision, event id)` selects each open vote head, while closure freezes the
+creator-attested sorted snapshot; tallies are derived locally. Complete current-
+roster capability gating and raw-send refusal protect old clients.
 
-Acceptance covers partitions, changed votes, duplicate/reordered votes, roster
-changes, removed members, poll closure, old clients, and convergent tallies.
+Acceptance covers canonical/arbitrary decoding, partitions, changed,
+duplicate, and reordered votes, outsiders, additions/removals, conflicting
+closure, convergence, KKR5 restore, RPC/CLI, UniFFI, desktop, Android host core,
+and iOS host/app contracts. Android APK/device evidence remains in the common
+M5 platform release gate rather than weakening the shipped protocol contract.
 
 ### C6. Admin and role controls
 
@@ -895,7 +899,7 @@ honest. Parallel work is safe only where rows do not share a foundation.
 | **Parallel: mobile reachability** | Design-only | Accept ADR-0017–0019, then implement C8 behind reversible feature gates. |
 | **1: Local-first product polish** | Complete | B5, B7–B15, and B18 are shipped; optional signed self-display suggestions remain a separate format-gated extension to B5. |
 | **2: Typed content and asynchronous media** | Complete | F2/F3, B2, B16, B17, and C1 are shipped across the shared core and all three shells; hands-on device evidence remains an M5 release gate. |
-| **3: Replicated conversation features** | In progress | C3 and C4 are shipped; C5 and C6 remain. |
+| **3: Replicated conversation features** | In progress | C3, C4, and C5 are shipped; C6 remains. |
 | **4: Multi-device** | Planned | C2, followed by cross-device hardening of Wave 3. |
 | **5: Real-time media** | Design-only | ADR-0013 spike and C7, restricted to qualified internet/LAN paths. |
 
@@ -917,9 +921,10 @@ Do not combine these into one oversized design decision.
 | 6 (proposed) | ADR-0019: capability-gated native wake | C8 APNs/FCM acceleration and bounded collection. |
 | 7 (done) | ADR-0021: expiry/retention metadata and deletion semantics | C4 disappearing and view-once content. |
 | 8 (done) | ADR-0020: immutable edit events, authorization, ordering, and retained versions | Message editing and multi-device convergence. |
-| 9 | Group roles/capabilities and authority transfer | Admin controls and moderated polls. |
-| 10 | Multi-device identity, device certificates, sync, revocation | Linked devices. |
-| 11 | Accept ADR-0013 after measured media spike | Voice/video calls. |
+| 9 (done) | ADR-0022: fixed-electorate visible-vote polls and creator snapshot closure | Convergent encrypted group polls. |
+| 10 | Group roles/capabilities and authority transfer | Admin controls and moderated polls. |
+| 11 | Multi-device identity, device certificates, sync, revocation | Linked devices. |
+| 12 | Accept ADR-0013 after measured media spike | Voice/video calls. |
 | As needed | Signed optional self-display name in bundle records | Non-global username suggestion. |
 | Before next PQ suite | Downgrade-safe crypto agility | Future post-quantum upgrades. |
 
@@ -986,10 +991,12 @@ shipped across protocol, node, storage, RPC/CLI, UniFFI, desktop, Android, and
 iOS with retained versions and deterministic offline convergence. C4
 disappearing text and view-once attachments are likewise shipped end to end
 with exact local deadlines, coarse authenticated relay deletion, sealed
-tombstones, and KKR5 exclusion. The next product programs are C5 polls, C6 roles, C2 linked devices, and C7
+tombstones, and KKR5 exclusion. C5 encrypted group polls are now shipped with
+visible authenticated votes, fixed electorates, deterministic convergence, and
+creator snapshot closure. The next product programs are C6 roles, C2 linked devices, and C7
 calls; each remains behind its stated ADR gate until that decision is written
 and accepted.
 Optional signed self-display suggestions remain deferred behind their separate
 bundle-format ADR and compatibility work.
-Replicated polls/roles, linked-device identity, real-time media, and
+Replicated roles, linked-device identity, real-time media, and
 optional hybrid services remain separate programs with their stated ADR gates.

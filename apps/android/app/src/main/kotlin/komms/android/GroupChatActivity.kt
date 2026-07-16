@@ -36,6 +36,7 @@ import uniffi.kult_ffi.FolderTargetKind
 import uniffi.kult_ffi.Group
 import uniffi.kult_ffi.GroupMentionCapability
 import uniffi.kult_ffi.GroupMessage
+import uniffi.kult_ffi.GroupPoll
 import uniffi.kult_ffi.LabelTarget
 import uniffi.kult_ffi.LabelTargetKind
 import uniffi.kult_ffi.MentionSpan
@@ -70,6 +71,7 @@ class GroupChatActivity : SecureActivity() {
             is Event.GroupMessageEdited -> event.group == groupId
             is Event.GroupDeliveryUpdated -> true // ids are cheap to refresh
             is Event.GroupUpdated -> event.group == groupId
+            is Event.PollUpdated -> event.group == groupId
             is Event.MentionReceived -> true
             is Event.SessionEstablished -> true
             is Event.ScheduledMessageUpdated -> true
@@ -158,6 +160,10 @@ class GroupChatActivity : SecureActivity() {
         findViewById<Button>(R.id.chat_mention).apply {
             visibility = View.VISIBLE
             setOnClickListener { showMentionPicker(input) }
+        }
+        findViewById<Button>(R.id.chat_poll).apply {
+            visibility = View.VISIBLE
+            setOnClickListener { showCreatePoll() }
         }
         restoreMentionDraft(input, savedInstanceState)
         input.addTextChangedListener(object : TextWatcher {
@@ -276,6 +282,7 @@ class GroupChatActivity : SecureActivity() {
                         it.conversation == ScheduledConversation.GROUP && it.destination == groupId
                     }.map { message -> RenderedMessage(message, session.formatText(message.body)) },
                     attachments = session.attachments(),
+                    polls = if (group == null) emptyList() else session.groupPolls(groupId),
                 )
             },
         ) { state ->
@@ -291,6 +298,7 @@ class GroupChatActivity : SecureActivity() {
             supportActionBar?.title = group.name
             adapter.submit(state.messages)
             attachmentController.submit(state.attachments)
+            renderPolls(state.polls)
             renderScheduledOutbox(
                 state.scheduled,
                 edit = { schedule(findViewById(R.id.chat_input), it) },
@@ -299,6 +307,181 @@ class GroupChatActivity : SecureActivity() {
             if (adapter.itemCount > 0) list.scrollToPosition(adapter.itemCount - 1)
             if (draftMentions.isNotEmpty()) revalidateMentionDraft()
         }
+    }
+
+    private fun renderPolls(polls: List<GroupPoll>) {
+        val section = findViewById<View>(R.id.chat_poll_section)
+        val container = findViewById<LinearLayout>(R.id.chat_polls)
+        container.removeAllViews()
+        section.visibility = if (polls.isEmpty()) View.GONE else View.VISIBLE
+        polls.forEach { poll ->
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(16, 12, 16, 20)
+                contentDescription = "Poll: ${poll.question}"
+            }
+            card.addView(TextView(this).apply {
+                text = poll.question
+                textSize = 18f
+                setTypeface(typeface, Typeface.BOLD)
+            })
+            card.addView(TextView(this).apply {
+                text = getString(if (poll.closed) R.string.poll_closed_policy else R.string.poll_open_policy)
+            })
+            poll.options.forEach { option ->
+                card.addView(Button(this).apply {
+                    text = "${option.text} · ${option.votes}"
+                    isEnabled = !poll.closed && poll.eligible
+                    isSelected = option.selectedByMe
+                    contentDescription = buildString {
+                        append(option.text)
+                        append(", ${option.votes} votes")
+                        if (option.selectedByMe) append(", your choice")
+                    }
+                    setOnClickListener {
+                        AlertDialog.Builder(this@GroupChatActivity)
+                            .setTitle(R.string.poll_vote_confirm_title)
+                            .setMessage(getString(R.string.poll_vote_confirm, option.text))
+                            .setPositiveButton(R.string.poll_vote_action) { _, _ ->
+                                val session = NodeHolder.session ?: return@setPositiveButton
+                                runNode(work = {
+                                    session.voteGroupPoll(groupId, poll.author, poll.id, option.id)
+                                }) {
+                                    toast(getString(R.string.poll_voted))
+                                    refresh()
+                                }
+                            }
+                            .setNegativeButton(android.R.string.cancel, null)
+                            .show()
+                    }
+                })
+            }
+            card.addView(TextView(this).apply {
+                text = if (poll.votes.isEmpty()) {
+                    getString(R.string.poll_no_votes)
+                } else {
+                    getString(
+                        R.string.poll_visible_votes,
+                        poll.votes.joinToString { vote ->
+                            val choice = poll.options.firstOrNull { it.id == vote.optionId }?.text
+                                ?: "unavailable choice"
+                            "${memberLabel(vote.voter)} → $choice"
+                        },
+                    )
+                }
+            })
+            if (poll.canClose) {
+                card.addView(Button(this).apply {
+                    text = getString(R.string.poll_close_action)
+                    setOnClickListener {
+                        AlertDialog.Builder(this@GroupChatActivity)
+                            .setTitle(R.string.poll_close_confirm_title)
+                            .setMessage(getString(R.string.poll_close_confirm, poll.question))
+                            .setPositiveButton(R.string.poll_close_action) { _, _ ->
+                                val session = NodeHolder.session ?: return@setPositiveButton
+                                runNode(work = {
+                                    session.closeGroupPoll(groupId, poll.author, poll.id)
+                                }) {
+                                    toast(getString(R.string.poll_closed))
+                                    refresh()
+                                }
+                            }
+                            .setNegativeButton(android.R.string.cancel, null)
+                            .show()
+                    }
+                })
+            }
+            container.addView(card)
+        }
+    }
+
+    private fun showCreatePoll() {
+        val group = currentGroup ?: return
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(32, 8, 32, 0)
+        }
+        content.addView(TextView(this).apply { text = getString(R.string.poll_visibility_policy) })
+        val question = IncognitoEditText(this).apply {
+            hint = getString(R.string.poll_question_hint)
+            contentDescription = hint
+        }
+        content.addView(question)
+        val choices = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        content.addView(choices)
+        val addChoice = Button(this).apply { text = getString(R.string.poll_add_choice) }
+
+        fun refreshChoiceRows() {
+            for (index in 0 until choices.childCount) {
+                val row = choices.getChildAt(index) as LinearLayout
+                val input = row.getChildAt(0) as EditText
+                val remove = row.getChildAt(1) as Button
+                input.hint = getString(R.string.poll_choice_hint, index + 1)
+                input.contentDescription = input.hint
+                remove.isEnabled = choices.childCount > 2
+            }
+            addChoice.isEnabled = choices.childCount < 12
+        }
+
+        fun addChoiceRow() {
+            if (choices.childCount >= 12) return
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            val input = IncognitoEditText(this)
+            val remove = Button(this).apply {
+                text = getString(android.R.string.cut)
+                contentDescription = "Remove poll choice"
+                setOnClickListener {
+                    if (choices.childCount > 2) {
+                        choices.removeView(row)
+                        refreshChoiceRows()
+                    }
+                }
+            }
+            row.addView(input, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            row.addView(remove)
+            choices.addView(row)
+            refreshChoiceRows()
+        }
+        addChoiceRow()
+        addChoiceRow()
+        addChoice.setOnClickListener { addChoiceRow() }
+        content.addView(addChoice)
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(getString(R.string.poll_create_title, group.name))
+            .setView(content)
+            .setPositiveButton(R.string.poll_create_visible, null)
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val exactQuestion = question.text.toString()
+                val exactChoices = (0 until choices.childCount).map { index ->
+                    ((choices.getChildAt(index) as LinearLayout).getChildAt(0) as EditText).text.toString()
+                }
+                val problem = when {
+                    exactQuestion.isBlank() -> getString(R.string.poll_need_question)
+                    exactQuestion.toByteArray(Charsets.UTF_8).size > 1024 -> getString(R.string.poll_question_too_long)
+                    exactChoices.size < 2 || exactChoices.any { it.isBlank() } -> getString(R.string.poll_need_choices)
+                    exactChoices.any { it.toByteArray(Charsets.UTF_8).size > 256 } -> getString(R.string.poll_choice_too_long)
+                    else -> null
+                }
+                if (problem != null) {
+                    question.error = problem
+                    question.announceForAccessibility(problem)
+                    return@setOnClickListener
+                }
+                val session = NodeHolder.session ?: return@setOnClickListener
+                runNode(work = {
+                    session.createGroupPoll(groupId, exactQuestion, exactChoices)
+                }) {
+                    dialog.dismiss()
+                    toast(getString(R.string.poll_created))
+                    refresh()
+                }
+            }
+        }
+        dialog.show()
     }
 
     private fun showMentionPicker(input: EditText) {
@@ -779,6 +962,7 @@ private data class GroupScreenState(
     val messages: List<RenderedMessage<GroupMessage>>,
     val scheduled: List<RenderedMessage<ScheduledMessage>>,
     val attachments: List<Attachment>,
+    val polls: List<GroupPoll>,
 )
 
 private data class DraftMention(val start: Int, val end: Int, val target: String)

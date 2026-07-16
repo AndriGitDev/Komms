@@ -479,6 +479,8 @@ pub enum ContentKind {
     DisappearingText,
     /// Canonical view-once attachment offer.
     ViewOnceAttachment,
+    /// Canonical group-only poll event (rendered through the poll model).
+    Poll,
     /// Authenticated content this version cannot interpret.
     Unsupported,
     /// A typed frame that violated the canonical contract.
@@ -1474,6 +1476,111 @@ pub struct GroupMentionCapability {
     pub issues: Vec<MentionCapabilityIssue>,
 }
 
+/// One stable poll choice and its locally derived tally.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct PollOption {
+    /// Stable option id (hex).
+    pub id: String,
+    /// Exact authenticated UTF-8 label.
+    pub text: String,
+    /// Number of accepted visible vote heads.
+    pub votes: u32,
+    /// Whether this installation's identity selected the option.
+    pub selected_by_me: bool,
+}
+
+/// One visible authenticated vote head used by a poll tally.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct PollVote {
+    /// Authenticated voter peer id (hex).
+    pub voter: String,
+    /// Exact vote event id (hex).
+    pub event_id: String,
+    /// Stable selected option id (hex).
+    pub option_id: String,
+    /// Positive voter-local revision.
+    pub revision: u64,
+}
+
+/// Render-safe, locally derived single-choice group poll.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct GroupPoll {
+    /// Group id (hex).
+    pub group: String,
+    /// Authenticated creator peer id (hex).
+    pub author: String,
+    /// Stable poll id (hex).
+    pub id: String,
+    /// Creation-time group roster generation.
+    pub generation: u64,
+    /// Exact authenticated UTF-8 question.
+    pub question: String,
+    /// Sorted fixed creation-time electorate (hex peer ids).
+    pub eligible_voters: Vec<String>,
+    /// Stable choices in creator presentation order.
+    pub options: Vec<PollOption>,
+    /// Visible accepted vote heads sorted by voter.
+    pub votes: Vec<PollVote>,
+    /// Whether a creator snapshot irreversibly closed the poll.
+    pub closed: bool,
+    /// Winning close event id (hex), when closed.
+    pub close_event_id: Option<String>,
+    /// Whether the local identity belongs to the electorate.
+    pub eligible: bool,
+    /// Whether the local identity may close this still-open poll.
+    pub can_close: bool,
+    /// Always true in C5; votes are never anonymous.
+    pub votes_visible: bool,
+    /// Always false; no anonymous-voting claim is made.
+    pub anonymous: bool,
+    /// Exact close policy token: `manual_creator_snapshot`.
+    pub close_policy: String,
+}
+
+impl GroupPoll {
+    fn from_node(poll: kult_node::PollInfo) -> Self {
+        Self {
+            group: hex_encode(&poll.group),
+            author: hex_encode(&poll.author),
+            id: hex_encode(&poll.id),
+            generation: poll.generation,
+            question: poll.question,
+            eligible_voters: poll
+                .eligible_voters
+                .iter()
+                .map(|peer| hex_encode(peer))
+                .collect(),
+            options: poll
+                .options
+                .into_iter()
+                .map(|option| PollOption {
+                    id: hex_encode(&option.id),
+                    text: option.text,
+                    votes: option.votes,
+                    selected_by_me: option.selected_by_me,
+                })
+                .collect(),
+            votes: poll
+                .votes
+                .into_iter()
+                .map(|vote| PollVote {
+                    voter: hex_encode(&vote.voter),
+                    event_id: hex_encode(&vote.event_id),
+                    option_id: hex_encode(&vote.option_id),
+                    revision: vote.revision,
+                })
+                .collect(),
+            closed: poll.closed,
+            close_event_id: poll.close_event_id.map(|id| hex_encode(&id)),
+            eligible: poll.eligible,
+            can_close: poll.can_close,
+            votes_visible: true,
+            anonymous: false,
+            close_policy: "manual_creator_snapshot".to_owned(),
+        }
+    }
+}
+
 /// One message in a group's history.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct GroupMessage {
@@ -1686,6 +1793,15 @@ pub enum Event {
         /// Original canonical Text content id (hex).
         target_content_id: String,
     },
+    /// A poll creation, vote, or closure changed one derived group poll.
+    PollUpdated {
+        /// Group id (hex).
+        group: String,
+        /// Authenticated poll creator (hex).
+        poll_author: String,
+        /// Stable poll id (hex).
+        poll_id: String,
+    },
     /// Ephemeral plaintext/media became terminal on this installation.
     EphemeralRemoved {
         /// `pairwise` or `group`.
@@ -1823,6 +1939,15 @@ impl Event {
                 group: hex_encode(&group),
                 sender: hex_encode(&sender),
                 target_content_id: hex_encode(&target_content_id),
+            },
+            kult_node::Event::PollUpdated {
+                group,
+                poll_author,
+                poll_id,
+            } => Self::PollUpdated {
+                group: hex_encode(&group),
+                poll_author: hex_encode(&poll_author),
+                poll_id: hex_encode(&poll_id),
             },
             kult_node::Event::EphemeralRemoved {
                 conversation,
@@ -3103,6 +3228,74 @@ impl KultNode {
         .map(|id| hex_encode(&id))
     }
 
+    /// Create a visible-vote single-choice poll over the exact current roster.
+    pub fn create_group_poll(
+        &self,
+        group: String,
+        question: String,
+        options: Vec<String>,
+    ) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        self.call(|resp| Msg::GroupPollCreate {
+            group,
+            question,
+            options,
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
+    /// List locally derived polls, visible vote heads, and convergent tallies.
+    pub fn group_polls(&self, group: String) -> Result<Vec<GroupPoll>, FfiError> {
+        let group = parse_group(&group)?;
+        Ok(self
+            .call(|resp| Msg::GroupPolls { group, resp })?
+            .into_iter()
+            .map(GroupPoll::from_node)
+            .collect())
+    }
+
+    /// Cast or change this identity's vote using stable ids only.
+    pub fn vote_group_poll(
+        &self,
+        group: String,
+        poll_author: String,
+        poll_id: String,
+        option_id: String,
+    ) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        let poll_author = parse_peer(&poll_author)?;
+        let poll_id = parse_message(&poll_id)?;
+        let option_id = parse_message(&option_id)?;
+        self.call(|resp| Msg::GroupPollVote {
+            group,
+            poll_author,
+            poll_id,
+            option_id,
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
+    /// Irreversibly close this identity's poll with the current vote heads.
+    pub fn close_group_poll(
+        &self,
+        group: String,
+        poll_author: String,
+        poll_id: String,
+    ) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        let poll_author = parse_peer(&poll_author)?;
+        let poll_id = parse_message(&poll_id)?;
+        self.call(|resp| Msg::GroupPollClose {
+            group,
+            poll_author,
+            poll_id,
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
     /// Add a stored contact to a group (creator only).
     pub fn add_group_member(&self, group: String, peer: String) -> Result<(), FfiError> {
         let group = parse_group(&group)?;
@@ -3851,6 +4044,7 @@ fn content_kind(status: &kult_node::ContentStatus) -> ContentKind {
         kult_node::ContentStatus::Mention { .. } => ContentKind::Mention,
         kult_node::ContentStatus::DisappearingText { .. } => ContentKind::DisappearingText,
         kult_node::ContentStatus::ViewOnceAttachment { .. } => ContentKind::ViewOnceAttachment,
+        kult_node::ContentStatus::Poll { .. } => ContentKind::Poll,
         kult_node::ContentStatus::Unsupported { .. } => ContentKind::Unsupported,
         kult_node::ContentStatus::Malformed => ContentKind::Malformed,
         _ => ContentKind::Unsupported,
@@ -3886,7 +4080,8 @@ fn render_event_body(body: &[u8], status: &kult_node::ContentStatus) -> String {
             String::from_utf8(body.to_vec()).expect("node exposes only validated UTF-8 text")
         }
         kult_node::ContentStatus::Attachment { .. }
-        | kult_node::ContentStatus::ViewOnceAttachment { .. } => String::new(),
+        | kult_node::ContentStatus::ViewOnceAttachment { .. }
+        | kult_node::ContentStatus::Poll { .. } => String::new(),
         kult_node::ContentStatus::Unsupported { .. } | kult_node::ContentStatus::Malformed => {
             UNSUPPORTED_MESSAGE.to_owned()
         }
@@ -3951,6 +4146,14 @@ fn render_stored_content(
                 (String::new(), ContentKind::ViewOnceAttachment, Vec::new())
             }
         },
+        kult_protocol::DecodedContent::Poll { .. } if allow_group_mention => {
+            (String::new(), ContentKind::Poll, Vec::new())
+        }
+        kult_protocol::DecodedContent::Poll { .. } => (
+            UNSUPPORTED_MESSAGE.to_owned(),
+            ContentKind::Malformed,
+            Vec::new(),
+        ),
         kult_protocol::DecodedContent::Unsupported { .. } => (
             UNSUPPORTED_MESSAGE.to_owned(),
             ContentKind::Unsupported,

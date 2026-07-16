@@ -13,8 +13,8 @@ use rand::SeedableRng;
 use kult_crypto::KdfProfile;
 use kult_node::{ContentStatus, Event, MentionSpan, Node, NodeError};
 use kult_protocol::{
-    decode_content, encode_mention, DecodedContent, Envelope, EnvelopeKind, CONTENT_HEADER_LEN,
-    CONTENT_MAGIC,
+    decode_content, encode_mention, encode_poll, encode_poll_vote_payload, DecodedContent,
+    Envelope, EnvelopeKind, PollVote, CONTENT_HEADER_LEN, CONTENT_MAGIC,
 };
 use kult_store::DeliveryState;
 use kult_transport::{
@@ -501,6 +501,34 @@ async fn restore_from_backup_reannounces_and_resumes() {
         .unwrap();
     bob.tick(NOW + 11, &mut rng).await.unwrap();
     alice.tick(NOW + 12, &mut rng).await.unwrap();
+
+    // Poll events are ordinary sealed group records, so KKR5 needs no new
+    // backup field. Prove the complete derived card survives restore.
+    let poll_id = alice
+        .group_create_poll(
+            &gid,
+            "Backup lunch? 🥪",
+            &["Soup".to_owned(), "Sandwich".to_owned()],
+            NOW + 13,
+            &mut rng,
+        )
+        .unwrap();
+    alice.tick(NOW + 14, &mut rng).await.unwrap();
+    bob.tick(NOW + 15, &mut rng).await.unwrap();
+    let received_poll = bob.group_polls(&gid).unwrap().remove(0);
+    let chosen = received_poll.options[1].id;
+    bob.group_vote_poll(&gid, a_id, poll_id, chosen, NOW + 16, &mut rng)
+        .unwrap();
+    bob.tick(NOW + 17, &mut rng).await.unwrap();
+    alice.tick(NOW + 18, &mut rng).await.unwrap();
+    alice
+        .group_close_poll(&gid, a_id, poll_id, NOW + 19, &mut rng)
+        .unwrap();
+    let before_backup_poll = alice.group_polls(&gid).unwrap().remove(0);
+    assert!(before_backup_poll.closed);
+    assert_eq!(before_backup_poll.question, "Backup lunch? 🥪");
+    assert_eq!(before_backup_poll.votes.len(), 1);
+    assert_eq!(before_backup_poll.votes[0].option_id, chosen);
     let pre_backup_history = alice.group_messages(&gid).unwrap();
     assert!(pre_backup_history
         .iter()
@@ -510,7 +538,8 @@ async fn restore_from_backup_reannounces_and_resumes() {
         .any(|record| record.body == malformed_mention));
 
     // Alice's device dies; she restores from backup on a new one.
-    let (backup, mnemonic) = alice.export_backup(NOW + 13, &mut rng).unwrap();
+    let pre_backup_record_count = pre_backup_history.len();
+    let (backup, mnemonic) = alice.export_backup(NOW + 20, &mut rng).unwrap();
     drop(alice);
     let mut alice = Node::restore(
         &dir.path().join("a2.db"),
@@ -529,9 +558,15 @@ async fn restore_from_backup_reannounces_and_resumes() {
     assert_eq!(alice.groups().unwrap().len(), 1, "groups ride the backup");
     assert_eq!(
         alice.group_messages(&gid).unwrap().len(),
-        4,
+        pre_backup_record_count,
         "group history rides the backup"
     );
+    let restored_poll = alice.group_polls(&gid).unwrap().remove(0);
+    assert!(restored_poll.closed);
+    assert_eq!(restored_poll.id, poll_id);
+    assert_eq!(restored_poll.question, "Backup lunch? 🥪");
+    assert_eq!(restored_poll.votes.len(), 1);
+    assert_eq!(restored_poll.votes[0].option_id, chosen);
     let restored_history = alice.group_messages(&gid).unwrap();
     assert!(restored_history
         .iter()
@@ -935,4 +970,150 @@ async fn mention_is_capability_gated_roster_bound_and_notifies_exact_target() {
         }
         other => panic!("expected retained mention, got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// 5. C5 polls: fixed electorate, visible authenticated revisions, roster
+//    changes, creator closure snapshot, and convergent derived tallies.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn polls_converge_across_changed_votes_roster_changes_and_closure() {
+    let mut rng = StdRng::seed_from_u64(22);
+    let dir = tempfile::tempdir().unwrap();
+    let net: Net = Arc::new(Mutex::new(HashMap::new()));
+    let (mut alice, mut bob, mut carol, a_id, b_id, c_id) = trio(dir.path(), &net, &mut rng).await;
+    let gid = alice.create_group("polls", &[b_id], &mut rng).unwrap();
+
+    // No semantic first flight: capability state is authenticated before a
+    // poll can enter sender-key history or any transport queue.
+    assert!(matches!(
+        alice.group_create_poll(
+            &gid,
+            "Lunch?",
+            &["Soup".to_owned(), "Salad".to_owned()],
+            NOW,
+            &mut rng,
+        ),
+        Err(NodeError::PollUnsupported)
+    ));
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 1).await;
+
+    let poll_id = alice
+        .group_create_poll(
+            &gid,
+            "Lunch? 👩🏽‍🚀",
+            &["Soup".to_owned(), "Salad".to_owned()],
+            NOW + 30,
+            &mut rng,
+        )
+        .unwrap();
+    let authored = alice.group_polls(&gid).unwrap().remove(0);
+    assert_eq!(authored.id, poll_id);
+    let mut electorate = vec![a_id, b_id];
+    electorate.sort_unstable();
+    assert_eq!(authored.eligible_voters, electorate);
+    assert!(authored.can_close);
+    let soup = authored.options[0].id;
+    let salad = authored.options[1].id;
+
+    // Canonical raw-send bypasses are rejected for both group and pairwise
+    // generic APIs; only the exact typed poll commands may author them.
+    let bypass_event = [0x91; 16];
+    let bypass = encode_poll(
+        bypass_event,
+        &encode_poll_vote_payload(&PollVote {
+            poll_author: a_id,
+            poll_id,
+            option_id: soup,
+            revision: 1,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        alice.group_send(&gid, &bypass, NOW + 30, &mut rng),
+        Err(NodeError::InvalidPoll)
+    ));
+    assert!(matches!(
+        alice.send_message(&b_id, &bypass, NOW + 30, &mut rng),
+        Err(NodeError::InvalidPoll)
+    ));
+
+    alice.tick(NOW + 31, &mut rng).await.unwrap();
+    let bob_events = bob.tick(NOW + 32, &mut rng).await.unwrap();
+    assert!(bob_events.iter().any(|event| matches!(
+        event,
+        Event::PollUpdated { group, poll_author, poll_id: event_poll }
+            if *group == gid && *poll_author == a_id && *event_poll == poll_id
+    )));
+    assert_eq!(bob.group_polls(&gid).unwrap()[0].question, "Lunch? 👩🏽‍🚀");
+
+    // Additions do not silently join an existing electorate.
+    alice.group_add(&gid, &c_id, &mut rng).unwrap();
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 34).await;
+    assert!(
+        carol.group_polls(&gid).unwrap().is_empty(),
+        "a new member is not backfilled old group history or electorate state"
+    );
+    assert!(matches!(
+        carol.group_vote_poll(&gid, a_id, poll_id, soup, NOW + 55, &mut rng),
+        Err(NodeError::InvalidPoll)
+    ));
+
+    // Bob changes his vote. Revisions, not delivery timestamps, decide his
+    // live head; all current replicas derive the same visible tally.
+    bob.group_vote_poll(&gid, a_id, poll_id, soup, NOW + 56, &mut rng)
+        .unwrap();
+    bob.group_vote_poll(&gid, a_id, poll_id, salad, NOW + 57, &mut rng)
+        .unwrap();
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 58).await;
+    for poll in [
+        alice.group_polls(&gid).unwrap().remove(0),
+        bob.group_polls(&gid).unwrap().remove(0),
+    ] {
+        assert_eq!(poll.votes.len(), 1);
+        assert_eq!(poll.votes[0].voter, b_id);
+        assert_eq!(poll.votes[0].revision, 2);
+        assert_eq!(poll.votes[0].option_id, salad);
+        assert_eq!(poll.options[1].votes, 1);
+    }
+
+    // Removing the later non-electorate member does not change the poll. The
+    // creator's closure snapshot carries the exact final head to the original
+    // remaining voter, independent of later delivery order.
+    alice.group_remove(&gid, &c_id, NOW + 80, &mut rng).unwrap();
+    let close_id = alice
+        .group_close_poll(&gid, a_id, poll_id, NOW + 81, &mut rng)
+        .unwrap();
+    assert!(matches!(
+        alice.group_vote_poll(&gid, a_id, poll_id, soup, NOW + 82, &mut rng),
+        Err(NodeError::PollClosed)
+    ));
+    alice.tick(NOW + 83, &mut rng).await.unwrap();
+    let bob_events = bob.tick(NOW + 84, &mut rng).await.unwrap();
+    assert!(bob_events.iter().any(|event| matches!(
+        event,
+        Event::PollUpdated { poll_id: event_poll, .. } if *event_poll == poll_id
+    )));
+    let final_alice = alice.group_polls(&gid).unwrap().remove(0);
+    let final_bob = bob.group_polls(&gid).unwrap().remove(0);
+    for poll in [&final_alice, &final_bob] {
+        assert!(poll.closed);
+        assert_eq!(poll.close_event_id, Some(close_id));
+        assert_eq!(poll.eligible_voters, electorate);
+        assert_eq!(poll.votes[0].option_id, salad);
+        assert_eq!(poll.options[1].votes, 1);
+    }
+    alice.group_remove(&gid, &b_id, NOW + 85, &mut rng).unwrap();
+    assert_eq!(
+        alice.group_polls(&gid).unwrap()[0].votes,
+        final_alice.votes,
+        "removing a voter never rewrites the closed historic snapshot"
+    );
+    assert_eq!(
+        alice.resolved_group_messages(&gid).unwrap().len(),
+        0,
+        "poll events render as poll cards, never empty chat bubbles"
+    );
 }

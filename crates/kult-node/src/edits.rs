@@ -131,7 +131,7 @@ pub(crate) fn resolve_group(records: Vec<GroupMessageRecord>) -> Vec<ResolvedGro
         .into_iter()
         .filter_map(|mut record| {
             let (content_id, original) = match decode_content(&record.body) {
-                DecodedContent::Edit { .. } => return None,
+                DecodedContent::Edit { .. } | DecodedContent::Poll { .. } => return None,
                 DecodedContent::Text { id, text } => (Some(id), Some(text.to_owned())),
                 _ => (None, None),
             };

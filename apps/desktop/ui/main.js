@@ -1475,6 +1475,7 @@ function updateChatHead() {
   $("#btn-hints").hidden = isGroup || isNote;
   $("#btn-group-details").hidden = !isGroup;
   $("#btn-mention").hidden = !isGroup;
+  $("#btn-poll").hidden = !isGroup;
   $("#btn-attach").hidden = isNote;
   $("#btn-record").hidden = isNote;
   $("#btn-schedule").hidden = isNote;
@@ -2016,10 +2017,87 @@ function renderAttachments(attachments) {
   for (const attachment of matching) panel.append(attachmentRow(attachment));
 }
 
+function renderPolls(polls) {
+  const panel = $("#group-polls");
+  panel.replaceChildren();
+  panel.hidden = state.currentKind !== "group" || polls.length === 0;
+  for (const poll of polls) {
+    const card = document.createElement("article");
+    card.className = "poll-card";
+    card.setAttribute("aria-label", `Poll: ${poll.question}`);
+    const question = document.createElement("h3");
+    question.textContent = poll.question;
+    const policy = document.createElement("p");
+    policy.className = "poll-policy";
+    policy.textContent = poll.closed
+      ? "Closed · final creator snapshot · votes visible to all members"
+      : "Open · single choice · votes visible to all members · not anonymous";
+    const choices = document.createElement("div");
+    choices.className = "poll-options";
+    choices.setAttribute("role", "group");
+    choices.setAttribute("aria-label", poll.question);
+    for (const option of poll.options) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "poll-option";
+      button.disabled = poll.closed || !poll.eligible;
+      button.setAttribute("aria-pressed", option.selected_by_me ? "true" : "false");
+      button.setAttribute("aria-label", `${option.text}, ${option.votes} vote${option.votes === 1 ? "" : "s"}${option.selected_by_me ? ", your choice" : ""}`);
+      const label = document.createElement("span");
+      label.textContent = option.text;
+      const count = document.createElement("strong");
+      count.textContent = String(option.votes);
+      button.append(label, count);
+      button.addEventListener("click", async () => {
+        try {
+          await call("vote_group_poll", {
+            group: poll.group,
+            pollAuthor: poll.author,
+            pollId: poll.id,
+            optionId: option.id,
+          });
+          await renderMessages();
+          toast(`Vote recorded for “${option.text}”. Votes are visible to group members.`);
+        } catch (error) { toast(String(error), true); }
+      });
+      choices.append(button);
+    }
+    const voters = document.createElement("p");
+    voters.className = "poll-voters";
+    voters.textContent = poll.votes.length === 0
+      ? "No votes yet."
+      : `Visible votes: ${poll.votes.map((vote) => {
+        const choice = poll.options.find((option) => option.id === vote.option_id)?.text ?? "unavailable choice";
+        return `${memberLabel(vote.voter)} → ${choice}`;
+      }).join(", ")}.`;
+    card.append(question, policy, choices, voters);
+    if (poll.can_close) {
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "ghost";
+      close.textContent = "Close poll…";
+      close.addEventListener("click", async () => {
+        if (!confirm(`Close “${poll.question}” with the visible vote heads shown now? This cannot be undone.`)) return;
+        try {
+          await call("close_group_poll", {
+            group: poll.group,
+            pollAuthor: poll.author,
+            pollId: poll.id,
+          });
+          await renderMessages();
+          toast("Poll closed with a final visible-vote snapshot.");
+        } catch (error) { toast(String(error), true); }
+      });
+      card.append(close);
+    }
+    panel.append(card);
+  }
+}
+
 async function renderMessages() {
   const isNote = state.currentKind === "note";
   const isGroup = state.currentKind === "group";
-  const [msgs, scheduled, attachments] = await Promise.all([
+  const [msgs, scheduled, attachments, polls] = await Promise.all([
     isNote
       ? call("note_to_self_messages")
       : isGroup
@@ -2027,6 +2105,7 @@ async function renderMessages() {
       : call("messages", { peer: state.currentId }),
     isNote ? Promise.resolve([]) : call("scheduled_messages"),
     isNote ? Promise.resolve([]) : call("attachments"),
+    isGroup ? call("group_polls", { group: state.currentId }) : Promise.resolve([]),
   ]);
   const box = $("#messages");
   box.textContent = "";
@@ -2053,6 +2132,7 @@ async function renderMessages() {
     box.append(scheduledBubble(visibleScheduled[index], formattedScheduled[index]));
   }
   renderAttachments(attachments);
+  renderPolls(polls);
   box.scrollTop = box.scrollHeight;
 }
 
@@ -2624,6 +2704,15 @@ listen("node-event", async ({ payload: ev }) => {
     }
     case "group_message_edited": {
       if (state.currentKind === "group" && ev.group === state.currentId) await renderMessages();
+      break;
+    }
+    case "poll_updated": {
+      if (state.currentKind === "group" && ev.group === state.currentId) {
+        await renderMessages();
+      } else {
+        const group = state.groups.find((item) => item.id === ev.group);
+        toast(`${group?.name ?? "Group"} poll updated. Votes are visible to members.`);
+      }
       break;
     }
     case "ephemeral_removed": {
@@ -3432,6 +3521,85 @@ async function openGroupDetails() {
 }
 
 $("#btn-group-details").addEventListener("click", openGroupDetails);
+
+function openCreatePoll() {
+  const group = currentGroup();
+  if (!group) return;
+  const root = openModal(`Create poll in ${group.name}`, "tpl-create-poll");
+  const options = root.querySelector('[data-f="poll-options"]');
+  const add = root.querySelector('[data-act="add-option"]');
+
+  const refreshOptionControls = () => {
+    const rows = $$(".poll-option-edit-row", options);
+    for (const remove of $$('[data-act="remove-option"]', options)) {
+      remove.disabled = rows.length <= 2;
+    }
+    add.disabled = rows.length >= 12;
+  };
+
+  const addOption = (value = "") => {
+    if ($$(".poll-option-edit-row", options).length >= 12) return;
+    const row = document.createElement("div");
+    row.className = "poll-option-edit-row";
+    const label = document.createElement("label");
+    const number = $$(".poll-option-edit-row", options).length + 1;
+    label.textContent = `Choice ${number}`;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = value;
+    input.autocomplete = "off";
+    input.dataset.incognitoInput = "message";
+    input.setAttribute("aria-label", `Poll choice ${number}`);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "ghost";
+    remove.dataset.act = "remove-option";
+    remove.textContent = "Remove";
+    remove.setAttribute("aria-label", `Remove choice ${number}`);
+    remove.addEventListener("click", () => {
+      row.remove();
+      $$(".poll-option-edit-row", options).forEach((item, index) => {
+        item.querySelector("label").firstChild.textContent = `Choice ${index + 1}`;
+        item.querySelector("input").setAttribute("aria-label", `Poll choice ${index + 1}`);
+        item.querySelector("button").setAttribute("aria-label", `Remove choice ${index + 1}`);
+      });
+      refreshOptionControls();
+    });
+    label.append(input);
+    row.append(label, remove);
+    options.append(row);
+    refreshOptionControls();
+    return input;
+  };
+
+  addOption();
+  addOption();
+  add.addEventListener("click", () => addOption()?.focus());
+  root.querySelector('[data-act="create-poll"]').addEventListener("click", async () => {
+    const error = root.querySelector('[data-f="error"]');
+    error.hidden = true;
+    const question = root.querySelector('[data-f="poll-question"]').value;
+    const choices = $$("input", options).map((input) => input.value);
+    const bytes = (value) => new TextEncoder().encode(value).length;
+    try {
+      if (!question.trim()) throw "enter a poll question";
+      if (bytes(question) > 1024) throw "the poll question is longer than 1,024 UTF-8 bytes";
+      if (choices.length < 2) throw "add at least two choices";
+      if (choices.some((choice) => !choice.trim())) throw "every poll choice needs text";
+      if (choices.some((choice) => bytes(choice) > 256)) throw "each poll choice must be at most 256 UTF-8 bytes";
+      await call("create_group_poll", { group: group.id, question, options: choices });
+      closeModal();
+      await renderMessages();
+      toast("Visible-vote poll created for the current roster.");
+    } catch (err) {
+      error.textContent = String(err);
+      error.hidden = false;
+    }
+  });
+  root.querySelector('[data-f="poll-question"]').focus();
+}
+
+$("#btn-poll").addEventListener("click", openCreatePoll);
 
 // verify (safety number) modal
 $("#btn-verify").addEventListener("click", async () => {

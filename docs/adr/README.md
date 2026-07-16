@@ -28,6 +28,7 @@ product promise merely because the file exists.
 | [0019](0019-native-wake-gateway.md) | Proposed | Capability-gated native wake |
 | [0020](0020-authenticated-message-edits.md) | Accepted | Immutable authenticated message-edit events and deterministic convergence |
 | [0021](0021-ephemeral-retention.md) | Accepted | Authenticated local expiry, view-once consumption, and coarse relay retention |
+| [0022](0022-convergent-group-polls.md) | Accepted | Visible-vote group polls, fixed electorates, deterministic vote heads, and creator closure |
 
 The attachment implementation follows ADR-0015 and its hard no-airtime rule,
 but the ADR file still carries Proposed status. This index reports that
