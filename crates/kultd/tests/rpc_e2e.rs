@@ -54,6 +54,91 @@ fn incognito_keyboard_parity_fixture() -> Value {
     .expect("valid shared B15 incognito-keyboard fixture")
 }
 
+fn contact_rename_parity_fixture() -> Value {
+    serde_json::from_str(include_str!(
+        "../../../fixtures/b5-contact-rename-parity.json"
+    ))
+    .expect("valid shared B5 contact-rename fixture")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn private_contact_rename_via_strict_rpc_is_normalized_warned_and_delivery_free() {
+    let fixture = contact_rename_parity_fixture();
+    let directory = tempfile::tempdir().unwrap();
+    let alice = Daemon::start(test_config(directory.path(), "contact-rename-rpc-alice"))
+        .await
+        .unwrap();
+    let bob = Daemon::start(test_config(directory.path(), "contact-rename-rpc-bob"))
+        .await
+        .unwrap();
+    let mut a = Client::connect(&alice.socket_path).await;
+    let mut b = Client::connect(&bob.socket_path).await;
+    let queued = a.ok(json!({ "op": "status" })).await["queued"].clone();
+    let self_bundle = a.ok(json!({ "op": "bundle" })).await["bundle"].clone();
+    let bob_bundle = b.ok(json!({ "op": "bundle" })).await["bundle"].clone();
+    a.ok(json!({
+        "op": "add_contact",
+        "name": fixture["duplicate_name"],
+        "bundle": self_bundle,
+    }))
+    .await;
+    let bob_peer = a
+        .ok(json!({
+            "op": "add_contact",
+            "name": "Bob",
+            "bundle": bob_bundle,
+        }))
+        .await["peer"]
+        .clone();
+
+    let normalized = a
+        .ok(json!({
+            "op": "rename_contact",
+            "peer": bob_peer,
+            "name": fixture["decomposed_name"],
+        }))
+        .await;
+    assert_eq!(normalized["normalized_name"], fixture["normalized_name"]);
+    assert_eq!(normalized["changed_by_normalization"], true);
+
+    let duplicate = a
+        .ok(json!({
+            "op": "contact_name_assessment",
+            "peer": bob_peer,
+            "name": fixture["duplicate_name"],
+        }))
+        .await;
+    assert_eq!(duplicate["duplicate_count"], 1);
+    assert_eq!(duplicate["warnings"], json!(["duplicate_name"]));
+    assert!(a
+        .call(json!({
+            "op": "rename_contact",
+            "peer": bob_peer,
+            "name": fixture["duplicate_name"],
+        }))
+        .await
+        .is_err());
+    a.ok(json!({
+        "op": "rename_contact",
+        "peer": bob_peer,
+        "name": fixture["duplicate_name"],
+        "accept_warnings": true,
+    }))
+    .await;
+    assert_eq!(
+        a.ok(json!({ "op": "contacts" })).await["contacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|contact| contact["name"] == fixture["duplicate_name"])
+            .count(),
+        2
+    );
+    assert_eq!(a.ok(json!({ "op": "status" })).await["queued"], queued);
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn incognito_keyboard_policy_via_strict_rpc_matches_platforms_without_delivery_work() {
     let fixture = incognito_keyboard_parity_fixture();

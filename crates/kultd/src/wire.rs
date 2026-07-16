@@ -11,13 +11,14 @@ use serde_json::{json, Value};
 
 use kult_node::{
     AttachmentConversation, AttachmentDirection, AttachmentInfo, CarrierCapability,
-    CarrierCapabilitySnapshot, ContentStatus, CustomIconInfo, CustomIconTarget, CustomIconUsage,
-    Event, FolderConversationInfo, FolderConversationList, FolderInfo, FolderSelection, GroupInfo,
-    GroupMentionCapability, IncognitoKeyboardPlatform, IncognitoKeyboardPolicy,
-    LabelConversationInfo, LabelFilterInfo, LabelInfo, MentionCapabilityIssueReason,
-    NodeStaleFolderReason, NodeStaleLabelReason, PinConversationInfo, PinConversationList, PinInfo,
-    ScheduledConversation, ScheduledMessageInfo, ScreenSecurityPlatform, ScreenSecurityPolicy,
-    StaleFolderInfo, StaleLabelInfo, NOTE_TO_SELF_CONVERSATION_ID,
+    CarrierCapabilitySnapshot, ContactNameAssessment, ContactNameWarning, ContentStatus,
+    CustomIconInfo, CustomIconTarget, CustomIconUsage, Event, FolderConversationInfo,
+    FolderConversationList, FolderInfo, FolderSelection, GroupInfo, GroupMentionCapability,
+    IncognitoKeyboardPlatform, IncognitoKeyboardPolicy, LabelConversationInfo, LabelFilterInfo,
+    LabelInfo, MentionCapabilityIssueReason, NodeStaleFolderReason, NodeStaleLabelReason,
+    PinConversationInfo, PinConversationList, PinInfo, ScheduledConversation, ScheduledMessageInfo,
+    ScreenSecurityPlatform, ScreenSecurityPolicy, StaleFolderInfo, StaleLabelInfo,
+    NOTE_TO_SELF_CONVERSATION_ID,
 };
 use kult_store::{
     valid_folder_name, valid_label_color, valid_label_name, ConversationId, DeliveryState,
@@ -57,6 +58,8 @@ pub fn parse_request(line: &str) -> Result<Request, String> {
 
 fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
     match op {
+        "contact_name_assessment" => Some(&["id", "op", "peer", "name"]),
+        "rename_contact" => Some(&["id", "op", "peer", "name", "accept_warnings"]),
         "screen_security_policy" | "incognito_keyboard_policy" => Some(&["id", "op", "platform"]),
         "theme" => Some(&["id", "op"]),
         "theme_set" => Some(&["id", "op", "preference"]),
@@ -119,6 +122,23 @@ pub enum Op {
         name: String,
         /// The peer's kult address string.
         address: String,
+    },
+    /// Validate and assess a proposed private local petname without mutation.
+    ContactNameAssessment {
+        /// Exact contact peer id (hex).
+        peer: String,
+        /// Proposed UTF-8 petname.
+        name: String,
+    },
+    /// Rename one stored contact locally by exact peer id.
+    RenameContact {
+        /// Exact contact peer id (hex).
+        peer: String,
+        /// Proposed UTF-8 petname; the node stores its NFC form.
+        name: String,
+        /// Explicit acknowledgement of every returned warning.
+        #[serde(default)]
+        accept_warnings: bool,
     },
     /// Queue a message.
     Send {
@@ -774,6 +794,11 @@ pub fn event_line(event: &Event) -> String {
             "type": "contact_added",
             "peer": hex_encode(peer),
         }),
+        Event::ContactRenamed { peer, name } => json!({
+            "type": "contact_renamed",
+            "peer": hex_encode(peer),
+            "name": name,
+        }),
         Event::SessionEstablished { peer } => json!({
             "type": "session_established",
             "peer": hex_encode(peer),
@@ -824,6 +849,21 @@ pub fn event_line(event: &Event) -> String {
         _ => json!({ "type": "unknown" }),
     };
     json!({ "event": body }).to_string()
+}
+
+/// Render one contact-name review result without exposing sealed contact data.
+pub fn contact_name_assessment_json(assessment: &ContactNameAssessment) -> Value {
+    json!({
+        "normalized_name": assessment.normalized_name,
+        "changed_by_normalization": assessment.changed_by_normalization,
+        "warnings": assessment.warnings.iter().map(|warning| match warning {
+            ContactNameWarning::DuplicateName => "duplicate_name",
+            ContactNameWarning::ConfusableName => "confusable_name",
+            ContactNameWarning::BidirectionalControl => "bidirectional_control",
+            ContactNameWarning::InvisibleCharacter => "invisible_character",
+        }).collect::<Vec<_>>(),
+        "duplicate_count": assessment.duplicate_count,
+    })
 }
 
 /// Parse one exact canonical B12 theme token.
@@ -1504,6 +1544,51 @@ mod tests {
         assert_eq!(hex_decode("0F").unwrap(), vec![0x0f]);
         assert!(hex_decode("abc").is_none());
         assert!(hex_decode("zz").is_none());
+    }
+
+    #[test]
+    fn contact_name_ops_are_strict_and_peer_targeted() {
+        let peer = "ab".repeat(32);
+        let assessment = parse_request(
+            &json!({
+                "id": 1,
+                "op": "contact_name_assessment",
+                "peer": peer,
+                "name": "Cafe\u{301}",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(matches!(assessment.op, Op::ContactNameAssessment { .. }));
+        let rename = parse_request(
+            &json!({
+                "id": 2,
+                "op": "rename_contact",
+                "peer": "cd".repeat(32),
+                "name": "same name",
+                "accept_warnings": true,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(matches!(
+            rename.op,
+            Op::RenameContact {
+                accept_warnings: true,
+                ..
+            }
+        ));
+        assert!(parse_request(
+            &json!({
+                "id": 3,
+                "op": "rename_contact",
+                "peer": "cd".repeat(32),
+                "name": "x",
+                "remote_suggestion": "Mallory",
+            })
+            .to_string(),
+        )
+        .is_err());
     }
 
     #[test]
