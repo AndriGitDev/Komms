@@ -7,6 +7,7 @@ import android.widget.Switch
 import android.widget.TextView
 import komms.core.NetworkSettings
 import komms.core.SettingsException
+import komms.core.androidIncognitoKeyboardPolicy
 import komms.core.androidScreenSecurityPolicy
 import uniffi.kult_ffi.ThemePreference
 
@@ -45,6 +46,10 @@ class SettingsActivity : SecureActivity() {
         findViewById<TextView>(R.id.screen_security_mechanism).text = screenSecurity.mechanism
         findViewById<TextView>(R.id.screen_security_limits).text =
             screenSecurity.limitations.joinToString(separator = "\n") { "• $it" }
+        val inputPrivacy = androidIncognitoKeyboardPolicy()
+        findViewById<TextView>(R.id.incognito_keyboard_mechanism).text = inputPrivacy.mechanism
+        findViewById<TextView>(R.id.incognito_keyboard_limits).text =
+            inputPrivacy.limitations.joinToString(separator = "\n") { "• $it" }
         val loaded = try {
             NetworkSettings.load(dataDir)
         } catch (e: SettingsException) {

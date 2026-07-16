@@ -36,6 +36,7 @@ struct GateView: View {
                         model.storeExists || mode == .restore
                             ? "Passphrase" : "New passphrase",
                         text: $passphrase)
+                        .incognitoKeyboard()
                 } footer: {
                     Text(
                         mode == .restore
@@ -50,10 +51,8 @@ struct GateView: View {
                         Button(backupURL?.lastPathComponent ?? "Choose backup file (.kkr)…") {
                             pickingBackup = true
                         }
-                        TextField("24-word mnemonic", text: $mnemonic, axis: .vertical)
-                            .lineLimit(3...5)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
+                        SecureField("24-word mnemonic", text: $mnemonic)
+                            .incognitoKeyboard()
                     }
                 }
 

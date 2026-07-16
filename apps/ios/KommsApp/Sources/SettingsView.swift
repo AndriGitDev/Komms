@@ -51,6 +51,20 @@ struct SettingsView: View {
                     Text("Komms hides inactive app-switcher snapshots and responds to live-capture notifications. iOS still screenshots cannot be universally blocked.")
                 }
 
+                let inputPrivacy = incognitoKeyboardPolicy(platform: .ios)
+                Section {
+                    Text(inputPrivacy.mechanism)
+                    ForEach(inputPrivacy.limitations, id: \.self) { limitation in
+                        Text("• \(limitation)")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("Input privacy · always on")
+                } footer: {
+                    Text("Passphrases and recovery mnemonics use secure fields. Other fields disable autocorrection, but iOS has no per-field personalized-learning guarantee.")
+                }
+
                 Section {
                     Toggle("LAN discovery (mDNS)", isOn: $mdns)
                     Toggle("Serve a mailbox for others", isOn: $serveMailbox)
@@ -60,28 +74,24 @@ struct SettingsView: View {
                     TextEditor(text: $listen)
                         .font(.caption.monospaced())
                         .frame(minHeight: 60)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
+                        .incognitoKeyboard()
                 }
                 Section("Bootstrap peers (one per line)") {
                     TextEditor(text: $bootstrap)
                         .font(.caption.monospaced())
                         .frame(minHeight: 60)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
+                        .incognitoKeyboard()
                 }
                 Section("Relay (blank = first bootstrap peer)") {
                     TextField("/dns4/…/p2p/…", text: $relay)
                         .font(.caption.monospaced())
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
+                        .incognitoKeyboard()
                 }
                 Section("Mailbox relays (one per line)") {
                     TextEditor(text: $mailboxes)
                         .font(.caption.monospaced())
                         .frame(minHeight: 60)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
+                        .incognitoKeyboard()
                 }
 
                 if let error {

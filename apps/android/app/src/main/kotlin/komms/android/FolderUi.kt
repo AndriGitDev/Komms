@@ -138,7 +138,7 @@ class FolderManagerActivity : SecureActivity() {
     }
 
     private fun editFolder(existing: Folder?) {
-        val name = EditText(this).apply {
+        val name = IncognitoEditText(this).apply {
             setText(existing?.name.orEmpty())
             hint = getString(R.string.folder_name)
             textDirection = View.TEXT_DIRECTION_FIRST_STRONG

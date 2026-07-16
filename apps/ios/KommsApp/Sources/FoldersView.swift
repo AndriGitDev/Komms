@@ -21,8 +21,7 @@ struct FolderManagerView: View {
                 Section(editingId == nil ? "Create folder" : "Rename folder") {
                     TextField("Exact folder name", text: $name)
                         .focused($nameFocused)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                        .incognitoKeyboard()
                         .accessibilityHint("Maximum 256 UTF-8 bytes; exact text is preserved")
                     if let error { Text(error).foregroundStyle(.red).accessibilityLabel("Error: \(error)") }
                     HStack {

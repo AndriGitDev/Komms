@@ -33,20 +33,20 @@
 
       <form id="gate-form" autocomplete="off">
         <label>Data directory
-          <input type="text" id="gate-dir" spellcheck="false" />
+          <input type="text" id="gate-dir" data-incognito-input="technical" spellcheck="false" />
         </label>
 
         <div id="restore-fields" hidden>
           <label>Backup file (.kkr)
-            <input type="text" id="gate-backup" spellcheck="false" placeholder="/path/to/backup.kkr" />
+            <input type="text" id="gate-backup" data-incognito-input="technical" spellcheck="false" placeholder="/path/to/backup.kkr" />
           </label>
           <label>Recovery mnemonic (24 words)
-            <textarea id="gate-mnemonic" rows="3" spellcheck="false"></textarea>
+            <input type="password" id="gate-mnemonic" data-incognito-input="mnemonic" spellcheck="false" />
           </label>
         </div>
 
         <label><span id="gate-pass-label">Passphrase</span>
-          <input type="password" id="gate-pass" />
+          <input type="password" id="gate-pass" data-incognito-input="passphrase" />
         </label>
 
         <label>Appearance
@@ -63,30 +63,36 @@
           <ul id="screen-security-limitations"></ul>
         </aside>
 
+        <aside id="incognito-keyboard-summary" class="security-summary" aria-live="polite">
+          <strong>Input privacy · always on</strong>
+          <span id="incognito-keyboard-mechanism">Private input controls are starting…</span>
+          <ul id="incognito-keyboard-limitations"></ul>
+        </aside>
+
         <details id="gate-advanced">
           <summary>Network settings</summary>
           <label class="check"><input type="checkbox" id="set-mdns" checked /> Discover peers on the local network (mDNS)</label>
           <label>Listen addresses (one multiaddr per line; port 0 = OS-assigned)
-            <textarea id="set-listen" rows="2" spellcheck="false"></textarea>
+            <textarea id="set-listen" rows="2" data-incognito-input="technical" spellcheck="false"></textarea>
           </label>
           <label>Bootstrap peers (one multiaddr per line)
-            <textarea id="set-bootstrap" rows="2" spellcheck="false" placeholder="/dns4/host/udp/4001/quic-v1/p2p/12D3…"></textarea>
+            <textarea id="set-bootstrap" rows="2" data-incognito-input="technical" spellcheck="false" placeholder="/dns4/host/udp/4001/quic-v1/p2p/12D3…"></textarea>
           </label>
           <label>Relay (for NAT traversal; defaults to first bootstrap peer)
-            <input type="text" id="set-relay" spellcheck="false" />
+            <input type="text" id="set-relay" data-incognito-input="technical" spellcheck="false" />
           </label>
           <label>Mailbox relays (one multiaddr per line)
-            <textarea id="set-mailboxes" rows="2" spellcheck="false"></textarea>
+            <textarea id="set-mailboxes" rows="2" data-incognito-input="technical" spellcheck="false"></textarea>
           </label>
           <label class="check"><input type="checkbox" id="set-serve-mailbox" /> Volunteer mailbox service for others</label>
           <label>Sneakernet spool directory
-            <input type="text" id="set-spool" spellcheck="false" />
+            <input type="text" id="set-spool" data-incognito-input="technical" spellcheck="false" />
           </label>
           <label>Meshtastic radio, USB serial port
-            <input type="text" id="set-mesh-serial" spellcheck="false" placeholder="/dev/ttyUSB0" />
+            <input type="text" id="set-mesh-serial" data-incognito-input="technical" spellcheck="false" placeholder="/dev/ttyUSB0" />
           </label>
           <label>Meshtastic radio, network API (host:4403)
-            <input type="text" id="set-mesh-tcp" spellcheck="false" />
+            <input type="text" id="set-mesh-tcp" data-incognito-input="technical" spellcheck="false" />
           </label>
           <label class="check"><input type="checkbox" id="set-bridge" checked /> Bridge mesh ↔ internet traffic when a radio is attached</label>
         </details>
@@ -205,7 +211,7 @@
         <div id="messages"></div>
         <section id="attachment-transfers" aria-label="Attachment transfers" hidden></section>
         <form id="composer" autocomplete="off">
-          <input type="text" id="composer-input" placeholder="Message…" aria-describedby="mention-status" />
+          <input type="text" id="composer-input" data-incognito-input="message" placeholder="Message…" aria-describedby="mention-status" />
           <button type="button" id="btn-mention" class="ghost" aria-haspopup="listbox" aria-expanded="false" hidden>Mention member</button>
           <div id="mention-picker" role="listbox" aria-label="Current group members" hidden></div>
           <button type="button" id="btn-record" class="ghost" aria-pressed="false">Record audio</button>
@@ -260,10 +266,10 @@
     <p class="modal-note">Review the file and current carrier policy before explicitly sending it. The private staged copy is deleted after send or discard.</p>
     <p class="attachment-selection"><strong>Selected:</strong> <span data-f="selected-name"></span></p>
     <label>Display filename
-      <input type="text" data-f="filename" spellcheck="false" />
+      <input type="text" data-f="filename" data-incognito-input="name" spellcheck="false" />
     </label>
     <label>MIME type
-      <input type="text" data-f="media-type" spellcheck="false" placeholder="application/octet-stream" />
+      <input type="text" data-f="media-type" data-incognito-input="technical" spellcheck="false" placeholder="application/octet-stream" />
     </label>
     <p class="modal-note warn" data-f="carrier" role="status"></p>
     <p class="error" data-f="error" hidden></p>
@@ -326,7 +332,7 @@
       </div>
     </div>
     <label>Display filename
-      <input type="text" data-f="filename" spellcheck="false" />
+      <input type="text" data-f="filename" data-incognito-input="name" spellcheck="false" />
     </label>
     <p class="modal-note warn" data-f="carrier" role="status"></p>
     <p class="error" data-f="error" hidden></p>
@@ -349,7 +355,7 @@
 
   <template id="tpl-add">
     <label>Name
-      <input type="text" data-f="name" />
+      <input type="text" data-f="name" data-incognito-input="name" />
     </label>
     <div class="tabs">
       <button class="tab active" data-add="bundle">From bundle</button>
@@ -357,12 +363,12 @@
     </div>
     <div data-pane="bundle">
       <label>Their bundle (hex, pasted or scanned)
-        <textarea data-f="bundle" rows="4" spellcheck="false"></textarea>
+        <textarea data-f="bundle" rows="4" data-incognito-input="technical" spellcheck="false"></textarea>
       </label>
     </div>
     <div data-pane="address" hidden>
       <label>Their kult address (looked up on the DHT)
-        <input type="text" data-f="address" spellcheck="false" placeholder="kk1…" />
+        <input type="text" data-f="address" data-incognito-input="technical" spellcheck="false" placeholder="kk1…" />
       </label>
     </div>
     <fieldset class="hints" data-f="hints">
@@ -388,7 +394,7 @@
   <template id="tpl-create-group">
     <p class="modal-note">Choose stored contacts for this sender-key group. Membership changes are announced over each member's existing encrypted session.</p>
     <label>Group name
-      <input type="text" data-f="name" maxlength="80" autocomplete="off" />
+      <input type="text" data-f="name" data-incognito-input="name" maxlength="80" autocomplete="off" />
     </label>
     <fieldset class="member-picker">
       <legend>Members</legend>
@@ -431,7 +437,7 @@
   <template id="tpl-backup">
     <p class="modal-note">Writes one encrypted file carrying your identity, contacts, and history, sealed under a 24-word recovery mnemonic shown <strong>exactly once</strong>. Ratchet sessions are excluded by design; peers re-handshake automatically after a restore.</p>
     <label>Write backup to
-      <input type="text" data-f="path" spellcheck="false" />
+      <input type="text" data-f="path" data-incognito-input="technical" spellcheck="false" />
     </label>
     <p class="error" data-f="error" hidden></p>
     <div class="row end">
@@ -455,7 +461,7 @@
   <template id="tpl-schedule">
     <p class="modal-note">The text stays sealed on this device and does not enter the encrypted delivery queue until this absolute instant.</p>
     <label>Message
-      <textarea data-f="body" rows="4" maxlength="65536"></textarea>
+      <textarea data-f="body" data-incognito-input="message" rows="4" maxlength="65536"></textarea>
     </label>
     <label>Send at
       <input type="datetime-local" data-f="not-before" />
@@ -483,7 +489,7 @@
         <option value="mesh">mesh</option>
         <option value="spool">spool dir</option>
       </select>
-      <input type="text" data-f="value" spellcheck="false" placeholder="/ip4/…/quic-v1/p2p/… or broadcast" />
+      <input type="text" data-f="value" data-incognito-input="technical" spellcheck="false" placeholder="/ip4/…/quic-v1/p2p/… or broadcast" />
       <button type="button" class="ghost" data-act="del-hint">✕</button>
     </div>
   </template>
@@ -493,7 +499,7 @@
     <form data-f="label-form" autocomplete="off">
       <input type="hidden" data-f="label-id" />
       <label>Exact label name
-        <input type="text" data-f="label-name" maxlength="256" dir="auto" aria-describedby="label-name-help" />
+        <input type="text" data-f="label-name" data-incognito-input="name" maxlength="256" dir="auto" aria-describedby="label-name-help" />
       </label>
       <p id="label-name-help" class="hint">Maximum 256 UTF-8 bytes. Whitespace-only names are rejected.</p>
       <label>Color
@@ -525,7 +531,7 @@
     <form data-f="folder-form" autocomplete="off">
       <input type="hidden" data-f="folder-id" />
       <label>Exact folder name
-        <input type="text" data-f="folder-name" maxlength="256" dir="auto" aria-describedby="folder-name-help" />
+        <input type="text" data-f="folder-name" data-incognito-input="name" maxlength="256" dir="auto" aria-describedby="folder-name-help" />
       </label>
       <p id="folder-name-help" class="hint">Maximum 256 UTF-8 bytes. Fixed Pattern White Space-only names are rejected.</p>
       <p class="error" data-f="error" role="alert" hidden></p>

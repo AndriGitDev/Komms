@@ -227,7 +227,7 @@ class AttachmentController(
         setPadding(12, 8, 12, 8)
     }
 
-    private fun numberField(label: String, value: UInt): EditText = EditText(activity).apply {
+    private fun numberField(label: String, value: UInt): EditText = IncognitoEditText(activity).apply {
         hint = label
         contentDescription = label
         inputType = InputType.TYPE_CLASS_NUMBER
@@ -391,7 +391,7 @@ class AttachmentController(
         historyControls.addView(undo)
         historyControls.addView(reset)
         column.addView(historyControls)
-        val filename = EditText(activity).apply {
+        val filename = IncognitoEditText(activity).apply {
             hint = "Display filename"
             setText(draft.filename)
         }

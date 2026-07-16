@@ -549,6 +549,7 @@ private struct AttachmentReviewSheet: View {
     private func genericReview(_ file: PreparedFile) -> some View {
         Section("Exact file") {
             TextField("Display filename", text: $filename)
+                .incognitoKeyboard()
             LabeledContent("Type", value: file.mediaType)
             Text("The security-scoped source was copied into protected app-private storage. It is deleted after send or discard.")
                 .font(.footnote).foregroundStyle(.secondary)
@@ -569,6 +570,7 @@ private struct AttachmentReviewSheet: View {
             Text("\(image.width) × \(image.height) pixels · \(image.encodedBytes) bytes · exact metadata-free PNG")
                 .font(.footnote).foregroundStyle(.secondary)
             TextField("Display filename", text: $filename)
+                .incognitoKeyboard()
         }
         Section("Crop in oriented pixels") {
             Picker("Crop preset", selection: $cropPreset) {
@@ -632,6 +634,7 @@ private struct AttachmentReviewSheet: View {
 
     private func integerField(_ title: String, text: Binding<String>) -> some View {
         TextField(title, text: text).keyboardType(.numberPad)
+            .incognitoKeyboard()
             .accessibilityLabel(title)
     }
 

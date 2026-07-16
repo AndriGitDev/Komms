@@ -23,7 +23,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content" />
 
-        <EditText
+        <komms.android.IncognitoEditText
             android:id="@+id/gate_passphrase"
             android:hint="@string/gate_passphrase"
             android:inputType="textPassword"
@@ -31,7 +31,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content" />
 
-        <EditText
+        <komms.android.IncognitoEditText
             android:id="@+id/gate_confirm"
             android:hint="@string/gate_confirm"
             android:inputType="textPassword"
@@ -78,11 +78,11 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content" />
 
-            <EditText
+            <komms.android.IncognitoEditText
                 android:id="@+id/gate_mnemonic"
                 android:hint="@string/gate_mnemonic"
-                android:inputType="textMultiLine|textNoSuggestions"
-                android:minLines="2"
+                android:inputType="textPassword|textNoSuggestions"
+                android:importantForAutofill="no"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content" />
 

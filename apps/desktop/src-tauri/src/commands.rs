@@ -56,6 +56,52 @@ pub fn screen_security_policy() -> UiScreenSecurityPolicy {
     }
 }
 
+/// Render-safe shared B15 input-privacy policy shown before unlock.
+#[derive(Serialize)]
+pub struct UiIncognitoKeyboardPolicy {
+    /// Input privacy is mandatory for every textual field.
+    pub always_on: bool,
+    /// Unlock and restore inputs are covered before the store opens.
+    pub applies_before_unlock: bool,
+    /// Short native-mechanism description.
+    pub mechanism: String,
+    /// Exact environment limitations.
+    pub limitations: Vec<String>,
+    /// Stable capability token for personalized learning.
+    pub personalized_learning: String,
+    /// Stable capability token for correction and prediction.
+    pub suggestions: String,
+    /// Stable capability token for spelling services.
+    pub spellcheck: String,
+    /// Stable capability token for secret-field masking.
+    pub secret_text_masking: String,
+    /// Semantic field classes every shell must protect.
+    pub protected_fields: Vec<String>,
+}
+
+/// Shared desktop B15 promise; available while locked.
+#[tauri::command]
+pub fn incognito_keyboard_policy() -> UiIncognitoKeyboardPolicy {
+    let policy = kult_ffi::incognito_keyboard_policy(kult_ffi::IncognitoKeyboardPlatform::Desktop);
+    let level = |value| match value {
+        kult_ffi::IncognitoKeyboardLevel::PlatformEnforced => "platform_enforced",
+        kult_ffi::IncognitoKeyboardLevel::PlatformRequested => "platform_requested",
+        kult_ffi::IncognitoKeyboardLevel::BestEffort => "best_effort",
+        kult_ffi::IncognitoKeyboardLevel::Unavailable => "unavailable",
+    };
+    UiIncognitoKeyboardPolicy {
+        always_on: policy.always_on,
+        applies_before_unlock: policy.applies_before_unlock,
+        mechanism: policy.mechanism,
+        limitations: policy.limitations,
+        personalized_learning: level(policy.personalized_learning).to_owned(),
+        suggestions: level(policy.suggestions).to_owned(),
+        spellcheck: level(policy.spellcheck).to_owned(),
+        secret_text_masking: level(policy.secret_text_masking).to_owned(),
+        protected_fields: policy.protected_fields,
+    }
+}
+
 /// The one piece of managed state: the running session, if unlocked.
 #[derive(Default)]
 pub struct AppState(pub Mutex<Option<Arc<Session>>>);

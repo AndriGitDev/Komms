@@ -28,6 +28,7 @@ struct AddContactView: View {
             Form {
                 Section("Name") {
                     TextField("Their name", text: $name)
+                        .incognitoKeyboard(capitalization: .words)
                 }
 
                 Picker("Source", selection: $source) {
@@ -49,14 +50,12 @@ struct AddContactView: View {
                         TextField("Bundle hex", text: $bundleHex, axis: .vertical)
                             .lineLimit(4...8)
                             .font(.caption.monospaced())
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
+                            .incognitoKeyboard()
                     }
                     Section {
                         TextField("Optional multiaddr hint", text: $multiaddr)
                             .font(.caption.monospaced())
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
+                            .incognitoKeyboard()
                     } footer: {
                         Text("Where to reach them directly, if you know it — e.g. a LAN or public address. Otherwise discovery finds a path.")
                     }
@@ -64,8 +63,7 @@ struct AddContactView: View {
                     Section {
                         TextField("kk1…", text: $address)
                             .font(.caption.monospaced())
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
+                            .incognitoKeyboard()
                     } header: {
                         Text("kult address")
                     } footer: {

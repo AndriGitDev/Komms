@@ -53,6 +53,7 @@ struct NoteToSelfView: View {
                 TextField("Note", text: $draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...4)
+                    .incognitoKeyboard(capitalization: .sentences)
                 Button { send() } label: {
                     Image(systemName: "arrow.up.circle.fill").font(.title2)
                 }

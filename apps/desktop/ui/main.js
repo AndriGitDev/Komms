@@ -12,6 +12,20 @@ const { open: openPath, save: savePath } = window.__TAURI__.dialog;
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
+// B15: apply every webview input-privacy hint to each explicitly classified
+// textual editor. The webview/OS may ignore these hints, which is surfaced in
+// the shared policy instead of being presented as a guarantee.
+function applyIncognitoInputPrivacy(root = document) {
+  $$('[data-incognito-input]', root).forEach((editor) => {
+    editor.setAttribute("autocomplete", "off");
+    editor.setAttribute("autocorrect", "off");
+    editor.setAttribute("autocapitalize", "off");
+    editor.setAttribute("spellcheck", "false");
+  });
+}
+
+applyIncognitoInputPrivacy();
+
 const THEME_KEY = "komms.appearance.theme";
 const THEME_VALUES = new Set(["system", "light", "dark"]);
 const systemTheme = matchMedia("(prefers-color-scheme: dark)");
@@ -783,6 +797,18 @@ invoke("screen_security_policy").then((policy) => {
   }));
 }).catch((error) => {
   $("#screen-security-mechanism").textContent = `Protection status unavailable: ${String(error)}`;
+});
+
+invoke("incognito_keyboard_policy").then((policy) => {
+  $("#incognito-keyboard-mechanism").textContent = policy.mechanism;
+  const limits = $("#incognito-keyboard-limitations");
+  limits.replaceChildren(...policy.limitations.map((text) => {
+    const item = document.createElement("li");
+    item.textContent = text;
+    return item;
+  }));
+}).catch((error) => {
+  $("#incognito-keyboard-mechanism").textContent = `Input privacy status unavailable: ${String(error)}`;
 });
 
 $("#btn-copy-address").addEventListener("click", () => copyText(state.address));
@@ -2358,6 +2384,7 @@ function openModal(title, tplId) {
   body.textContent = "";
   $("#modal-title").textContent = title;
   body.append($("#" + tplId).content.cloneNode(true));
+  applyIncognitoInputPrivacy(body);
   $("#modal-backdrop").hidden = false;
   requestAnimationFrame(() => (modalFocusable()[0] ?? $("#modal-close")).focus());
   return body;

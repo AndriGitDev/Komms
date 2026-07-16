@@ -90,8 +90,7 @@ struct LabelManagerView: View {
                 Section(editingId == nil ? "Create label" : "Edit label") {
                     TextField("Exact label name", text: $name)
                         .focused($nameFocused)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                        .incognitoKeyboard()
                         .accessibilityHint("Maximum 256 UTF-8 bytes; exact text is preserved")
                     Picker("Color", selection: $color) {
                         ForEach(canonicalLabelColors, id: \.self) { token in

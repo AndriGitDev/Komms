@@ -136,6 +136,41 @@ private func screenSecurityLevelName(_ level: ScreenSecurityLevel) -> String {
     }
 }
 
+private struct IncognitoKeyboardParityFixture: Decodable {
+    struct Platform: Decodable {
+        let personalizedLearning: String
+        let suggestions: String
+        let spellcheck: String
+        let secretTextMasking: String
+    }
+    struct Platforms: Decodable {
+        let android: Platform
+        let ios: Platform
+        let desktop: Platform
+    }
+    let appliesBeforeUnlock: Bool
+    let protectedFields: [String]
+    let platforms: Platforms
+
+    static func load() throws -> Self {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let data = try Data(contentsOf: root.appendingPathComponent("fixtures/b15-incognito-keyboard-parity.json"))
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(Self.self, from: data)
+    }
+}
+
+private func incognitoKeyboardLevelName(_ level: IncognitoKeyboardLevel) -> String {
+    switch level {
+    case .platformEnforced: "platform_enforced"
+    case .platformRequested: "platform_requested"
+    case .bestEffort: "best_effort"
+    case .unavailable: "unavailable"
+    }
+}
+
 private func labelTargetKindName(_ kind: LabelTargetKind) -> String {
     switch kind {
     case .peer: "peer"
@@ -273,6 +308,34 @@ private func imageRecipe() -> ImageEditRecipe {
 }
 
 final class SessionE2eTests: XCTestCase {
+    func testIncognitoKeyboardPolicyAndEveryIOSFieldAreCoveredBeforeUnlock() throws {
+        let fixture = try IncognitoKeyboardParityFixture.load()
+        let policy = incognitoKeyboardPolicy(platform: .ios)
+        XCTAssertTrue(policy.alwaysOn)
+        XCTAssertTrue(policy.appliesBeforeUnlock)
+        XCTAssertEqual(fixture.protectedFields, policy.protectedFields)
+        XCTAssertEqual(
+            fixture.platforms.ios.personalizedLearning,
+            incognitoKeyboardLevelName(policy.personalizedLearning))
+        XCTAssertEqual(
+            fixture.platforms.ios.secretTextMasking,
+            incognitoKeyboardLevelName(policy.secretTextMasking))
+        XCTAssertTrue(policy.limitations.contains(where: { $0.contains("third-party") }))
+
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let source = root.appendingPathComponent("apps/ios/KommsApp/Sources")
+        let files = try FileManager.default.contentsOfDirectory(at: source, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "swift" }
+        let text = try files.map { try String(contentsOf: $0, encoding: .utf8) }.joined(separator: "\n")
+        let occurrences = { (needle: String) in text.components(separatedBy: needle).count - 1 }
+        let editors = occurrences("TextField(") + occurrences("SecureField(") + occurrences("TextEditor(")
+        XCTAssertEqual(20, editors)
+        XCTAssertEqual(editors, occurrences(".incognitoKeyboard("))
+        let gate = try String(contentsOf: source.appendingPathComponent("GateView.swift"), encoding: .utf8)
+        XCTAssertTrue(gate.contains("SecureField(\"24-word mnemonic\""))
+    }
+
     func testScreenSecurityPolicyIsAvailableBeforeUnlockAndDoesNotOverclaimIOS() throws {
         let fixture = try ScreenSecurityParityFixture.load()
         let policy = screenSecurityPolicy(platform: .ios)

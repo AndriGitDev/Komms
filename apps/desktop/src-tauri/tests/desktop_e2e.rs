@@ -196,6 +196,61 @@ fn desktop_screen_security_is_always_on_best_effort_with_rapid_lock() {
 }
 
 #[test]
+fn desktop_incognito_keyboard_covers_every_editable_text_field_before_unlock() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/b15-incognito-keyboard-parity.json"
+    ))
+    .unwrap();
+    let policy = commands::incognito_keyboard_policy();
+    assert!(policy.always_on);
+    assert!(policy.applies_before_unlock);
+    assert_eq!(
+        policy.personalized_learning,
+        fixture["platforms"]["desktop"]["personalized_learning"]
+    );
+    assert_eq!(
+        policy.protected_fields,
+        fixture["protected_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    );
+    assert!(policy
+        .limitations
+        .iter()
+        .any(|text| text.contains("webview")));
+
+    let html = include_str!("../../ui/index.html");
+    let javascript = include_str!("../../ui/main.js");
+    let editable_text_fields = html.matches("type=\"text\"").count()
+        + html.matches("type=\"password\"").count()
+        + html.matches("<textarea").count()
+        - html
+            .matches("<textarea class=\"share-hex\" rows=\"4\" readonly")
+            .count();
+    assert_eq!(24, editable_text_fields);
+    assert_eq!(
+        editable_text_fields,
+        html.matches("data-incognito-input=").count()
+    );
+    assert!(html.contains("type=\"password\" id=\"gate-mnemonic\""));
+    for attribute in [
+        "autocomplete",
+        "autocorrect",
+        "autocapitalize",
+        "spellcheck",
+    ] {
+        assert!(
+            javascript.contains(&format!("setAttribute(\"{attribute}\", \"off\")"))
+                || javascript.contains(&format!("setAttribute(\"{attribute}\", \"false\")"))
+        );
+    }
+    assert!(javascript.contains("applyIncognitoInputPrivacy(body)"));
+}
+
+#[test]
 fn private_theme_defaults_persists_restarts_and_emits_one_local_event() {
     let fixture: serde_json::Value =
         serde_json::from_str(include_str!("../../../../fixtures/b12-theme-parity.json")).unwrap();
