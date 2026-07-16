@@ -9,6 +9,7 @@ import java.io.File
 class KommsApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        ThemeController.initialize(this)
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
             NotificationChannel(

@@ -599,6 +599,27 @@ pub struct FolderConversationResult {
     pub conversations: Vec<FolderConversation>,
 }
 
+/// Shared appearance choice. System resolves from native platform signals.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, uniffi::Enum)]
+pub enum ThemePreference {
+    /// Follow the operating-system appearance live.
+    #[default]
+    System,
+    /// Force the light semantic palette.
+    Light,
+    /// Force the dark semantic palette.
+    Dark,
+}
+
+/// Current private local appearance preference and persistence state.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ThemeInfo {
+    /// Canonical system/light/dark choice.
+    pub preference: ThemePreference,
+    /// Whether a canonical choice already exists in the sealed F5 store.
+    pub persisted: bool,
+}
+
 /// Exact typed target kind for local label membership.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum LabelTargetKind {
@@ -989,6 +1010,8 @@ pub struct Status {
 /// (docs/09-implementation-guide.md §3.5).
 #[derive(Clone, Debug, uniffi::Enum)]
 pub enum Event {
+    /// Private local appearance preference changed; shells re-read it.
+    ThemeChanged,
     /// Private local folders changed; shells re-read local folder state.
     FoldersChanged,
     /// Private local labels changed; shells re-read local label state.
@@ -1118,6 +1141,7 @@ impl Event {
     /// update, never silently mislabeled.
     fn from_node(event: kult_node::Event) -> Option<Self> {
         Some(match event {
+            kult_node::Event::ThemeChanged => Self::ThemeChanged,
             kult_node::Event::FoldersChanged => Self::FoldersChanged,
             kult_node::Event::LabelsChanged => Self::LabelsChanged,
             kult_node::Event::PinsChanged => Self::PinsChanged,
@@ -1629,6 +1653,23 @@ impl KultNode {
                 body: message.body,
             })
             .collect())
+    }
+
+    /// Read the safe current choice and whether it exists in sealed storage.
+    pub fn theme(&self) -> Result<ThemeInfo, FfiError> {
+        let (preference, persisted) = self.call(|resp| Msg::Theme { resp })?;
+        Ok(ThemeInfo {
+            preference: ThemePreference::from_node(preference),
+            persisted,
+        })
+    }
+
+    /// Idempotently persist one canonical private local appearance choice.
+    pub fn set_theme(&self, preference: ThemePreference) -> Result<bool, FfiError> {
+        self.call(|resp| Msg::ThemeSet {
+            preference: preference.into_node(),
+            resp,
+        })
     }
 
     /// Create one private local folder with a collision-safe random stable id.
@@ -2368,6 +2409,24 @@ impl Folder {
             id: hex_encode(&folder.id),
             name: folder.name,
             order: folder.order,
+        }
+    }
+}
+
+impl ThemePreference {
+    fn from_node(preference: kult_node::ThemePreference) -> Self {
+        match preference {
+            kult_node::ThemePreference::System => Self::System,
+            kult_node::ThemePreference::Light => Self::Light,
+            kult_node::ThemePreference::Dark => Self::Dark,
+        }
+    }
+
+    fn into_node(self) -> kult_node::ThemePreference {
+        match self {
+            Self::System => kult_node::ThemePreference::System,
+            Self::Light => kult_node::ThemePreference::Light,
+            Self::Dark => kult_node::ThemePreference::Dark,
         }
     }
 }

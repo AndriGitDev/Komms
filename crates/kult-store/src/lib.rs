@@ -35,10 +35,11 @@ pub use local_metadata::{
     FolderConversationResult, FolderRecord, FolderSelection, LabelAssignment, LabelFilterMode,
     LabelFilterResult, LabelRecord, LocalMetadataKey, LocalMetadataRecord, PinConversationRecord,
     PinConversationResult, PinRecord, PinStatusRecord, StaleFolderAssignment, StaleFolderReason,
-    StaleLabelAssignment, StaleLabelReason, UiPreferenceRecord, FOLDER_ID_RETRY_LIMIT,
-    LABEL_COLORS, LABEL_ID_RETRY_LIMIT, MAX_CUSTOM_ICON_BYTES, MAX_DRAFT_BYTES, MAX_FOLDERS,
-    MAX_FOLDER_ASSIGNMENTS, MAX_LABELS, MAX_LABELS_PER_CONVERSATION, MAX_LABEL_ASSIGNMENTS,
-    MAX_LOCAL_METADATA_STRING_BYTES, MAX_PINS, MAX_UI_PREFERENCE_VALUE_BYTES,
+    StaleLabelAssignment, StaleLabelReason, ThemePreference, UiPreferenceRecord,
+    FOLDER_ID_RETRY_LIMIT, LABEL_COLORS, LABEL_ID_RETRY_LIMIT, MAX_CUSTOM_ICON_BYTES,
+    MAX_DRAFT_BYTES, MAX_FOLDERS, MAX_FOLDER_ASSIGNMENTS, MAX_LABELS, MAX_LABELS_PER_CONVERSATION,
+    MAX_LABEL_ASSIGNMENTS, MAX_LOCAL_METADATA_STRING_BYTES, MAX_PINS,
+    MAX_UI_PREFERENCE_VALUE_BYTES, THEME_PREFERENCES, THEME_PREFERENCE_KEY, THEME_SEMANTIC_ROLES,
 };
 pub use media::{
     MediaDirection, MediaLimits, MediaObjectRecord, MediaReconciliation, MediaRecord, MediaScope,

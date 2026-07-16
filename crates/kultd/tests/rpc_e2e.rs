@@ -28,6 +28,88 @@ fn pin_parity_fixture() -> Value {
         .expect("valid shared B11 pin fixture")
 }
 
+fn theme_parity_fixture() -> Value {
+    serde_json::from_str(include_str!("../../../fixtures/b12-theme-parity.json"))
+        .expect("valid shared B12 theme fixture")
+}
+
+fn relative_luminance(hex: &str) -> f64 {
+    let channel = |start| {
+        let value = u8::from_str_radix(&hex[start..start + 2], 16).unwrap() as f64 / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5)
+}
+
+fn contrast(first: &str, second: &str) -> f64 {
+    let first = relative_luminance(first);
+    let second = relative_luminance(second);
+    (first.max(second) + 0.05) / (first.min(second) + 0.05)
+}
+
+#[test]
+fn b12_reference_palettes_meet_wcag_normal_text_contrast() {
+    let fixture = theme_parity_fixture();
+    let minimum = fixture["wcag"]["normal_text_min"].as_f64().unwrap();
+    for mode in ["light", "dark"] {
+        let palette = &fixture["reference_palettes"][mode];
+        let background = palette["background"].as_str().unwrap();
+        for role in ["text_primary", "text_secondary", "danger", "warning"] {
+            let ratio = contrast(palette[role].as_str().unwrap(), background);
+            assert!(ratio >= minimum, "{mode} {role} contrast {ratio:.2}");
+        }
+        let ratio = contrast(
+            palette["on_action"].as_str().unwrap(),
+            palette["action"].as_str().unwrap(),
+        );
+        assert!(ratio >= minimum, "{mode} action contrast {ratio:.2}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn private_theme_via_strict_rpc_defaults_changes_and_stays_local() {
+    let fixture = theme_parity_fixture();
+    assert_eq!(fixture["preferences"], json!(["system", "light", "dark"]));
+    let directory = tempfile::tempdir().unwrap();
+    let daemon = Daemon::start(test_config(directory.path(), "theme-rpc"))
+        .await
+        .unwrap();
+    let mut client = Client::connect(&daemon.socket_path).await;
+    let initial = client.ok(json!({ "op": "theme" })).await;
+    assert_eq!(
+        initial,
+        json!({ "preference": "system", "persisted": false })
+    );
+    let queued = client.ok(json!({ "op": "status" })).await["queued"].clone();
+    let mut events = Client::connect(&daemon.socket_path).await;
+    events.ok(json!({ "op": "subscribe" })).await;
+    let changed = client
+        .ok(json!({ "op": "theme_set", "preference": "dark" }))
+        .await;
+    assert_eq!(changed["changed"], true);
+    assert_eq!(changed["preference"], "dark");
+    assert!(!client
+        .ok(json!({ "op": "theme_set", "preference": "dark" }))
+        .await["changed"]
+        .as_bool()
+        .unwrap());
+    let event = events
+        .wait_event(|event| event["type"] == "theme_changed")
+        .await;
+    assert_eq!(event.as_object().unwrap().len(), 1);
+    assert_eq!(client.ok(json!({ "op": "status" })).await["queued"], queued);
+    let error = client
+        .call(json!({ "op": "theme_set", "preference": "sepia" }))
+        .await
+        .unwrap_err();
+    assert!(error.contains("system, light, dark"));
+    daemon.shutdown().await;
+}
+
 /// Argon2id light enough for tests (same profile the node e2e tests use).
 const TEST_KDF: kult_crypto::KdfProfile = kult_crypto::KdfProfile {
     m_cost_kib: 8,

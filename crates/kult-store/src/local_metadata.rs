@@ -44,6 +44,28 @@ pub const LABEL_COLORS: [&str; 9] = [
 pub const MAX_DRAFT_BYTES: usize = 1024 * 1024;
 /// Maximum bytes in one opaque UI preference value (64 KiB).
 pub const MAX_UI_PREFERENCE_VALUE_BYTES: usize = 64 * 1024;
+/// Stable sealed preference key shared by every shipped shell for B12.
+pub const THEME_PREFERENCE_KEY: &str = "appearance.theme";
+/// Canonical theme preference tokens accepted at every public boundary.
+pub const THEME_PREFERENCES: [&str; 3] = ["system", "light", "dark"];
+/// Cross-shell semantic roles; shells map these to native adaptive colors.
+pub const THEME_SEMANTIC_ROLES: [&str; 15] = [
+    "background",
+    "surface",
+    "surface_raised",
+    "surface_hover",
+    "border",
+    "text_primary",
+    "text_secondary",
+    "accent",
+    "on_accent",
+    "danger",
+    "warning",
+    "success",
+    "bubble_outgoing",
+    "bubble_incoming",
+    "focus",
+];
 /// Maximum bytes in one already-sanitized custom icon (512 KiB).
 pub const MAX_CUSTOM_ICON_BYTES: usize = 512 * 1024;
 
@@ -303,6 +325,40 @@ pub struct UiPreferenceRecord {
     pub value: Vec<u8>,
 }
 
+/// The shared B12 appearance choice. Resolution of `System` remains native
+/// to each shell so live platform changes do not require a node mutation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ThemePreference {
+    /// Follow the current operating-system appearance.
+    #[default]
+    System,
+    /// Always use the light semantic palette.
+    Light,
+    /// Always use the dark semantic palette.
+    Dark,
+}
+
+impl ThemePreference {
+    /// Return the canonical lowercase token persisted and exposed by RPC/FFI.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+
+    /// Parse one exact canonical token.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "system" => Some(Self::System),
+            "light" => Some(Self::Light),
+            "dark" => Some(Self::Dark),
+            _ => None,
+        }
+    }
+}
+
 /// A local entity that can carry a custom icon.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CustomIconTarget {
@@ -422,6 +478,41 @@ impl LocalMetadataRecord {
 }
 
 impl Store {
+    /// Read the canonical sealed theme preference.
+    ///
+    /// Missing and unknown legacy values both return `None`; callers render
+    /// the safe System default without rewriting user data during a read.
+    pub fn theme_preference(&self) -> Result<Option<ThemePreference>> {
+        let Some(LocalMetadataRecord::UiPreference(record)) = self.get_local_metadata(
+            &LocalMetadataKey::UiPreference(THEME_PREFERENCE_KEY.to_owned()),
+        )?
+        else {
+            return Ok(None);
+        };
+        Ok(std::str::from_utf8(&record.value)
+            .ok()
+            .and_then(ThemePreference::parse))
+    }
+
+    /// Persist one canonical theme preference, returning whether it changed.
+    pub fn set_theme_preference(
+        &self,
+        preference: ThemePreference,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<bool> {
+        if self.theme_preference()? == Some(preference) {
+            return Ok(false);
+        }
+        self.put_local_metadata(
+            &LocalMetadataRecord::UiPreference(UiPreferenceRecord {
+                key: THEME_PREFERENCE_KEY.to_owned(),
+                value: preference.as_str().as_bytes().to_vec(),
+            }),
+            rng,
+        )?;
+        Ok(true)
+    }
+
     /// Insert or replace one independently sealed local metadata record.
     pub fn put_local_metadata(
         &self,

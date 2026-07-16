@@ -65,6 +65,7 @@ mod folders;
 mod groups;
 mod labels;
 mod pins;
+mod theme;
 mod vault;
 
 pub use api::{
@@ -79,9 +80,10 @@ pub use api::{
 };
 pub use error::NodeError;
 pub use kult_store::{
-    ConversationId as LabelConversationId, FOLDER_ID_RETRY_LIMIT, LABEL_COLORS, MAX_FOLDERS,
-    MAX_FOLDER_ASSIGNMENTS, MAX_LABELS, MAX_LABELS_PER_CONVERSATION, MAX_LABEL_ASSIGNMENTS,
-    MAX_LOCAL_METADATA_STRING_BYTES, MAX_PINS, NOTE_TO_SELF_CONVERSATION_ID,
+    ConversationId as LabelConversationId, ThemePreference, FOLDER_ID_RETRY_LIMIT, LABEL_COLORS,
+    MAX_FOLDERS, MAX_FOLDER_ASSIGNMENTS, MAX_LABELS, MAX_LABELS_PER_CONVERSATION,
+    MAX_LABEL_ASSIGNMENTS, MAX_LOCAL_METADATA_STRING_BYTES, MAX_PINS, NOTE_TO_SELF_CONVERSATION_ID,
+    THEME_PREFERENCES, THEME_PREFERENCE_KEY, THEME_SEMANTIC_ROLES,
 };
 
 use vault::PrekeyVault;

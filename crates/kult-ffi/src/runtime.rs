@@ -166,6 +166,13 @@ pub(crate) enum Msg {
     NoteToSelfMessages {
         resp: Resp<Vec<NoteMessageRecord>>,
     },
+    Theme {
+        resp: Resp<(kult_node::ThemePreference, bool)>,
+    },
+    ThemeSet {
+        preference: kult_node::ThemePreference,
+        resp: Resp<bool>,
+    },
     FolderCreate {
         name: String,
         resp: Resp<FolderInfo>,
@@ -886,6 +893,19 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         }
         Msg::NoteToSelfMessages { resp } => {
             let _ = resp.send(node.note_to_self_messages().map_err(fail));
+        }
+        Msg::Theme { resp } => {
+            let result = node.theme_preference().and_then(|preference| {
+                node.theme_preference_is_persisted()
+                    .map(|persisted| (preference, persisted))
+            });
+            let _ = resp.send(result.map_err(fail));
+        }
+        Msg::ThemeSet { preference, resp } => {
+            let _ = resp.send(
+                node.set_theme_preference(preference, &mut OsRng)
+                    .map_err(fail),
+            );
         }
         Msg::FolderCreate { name, resp } => {
             let _ = resp.send(node.create_folder(&name, &mut OsRng).map_err(fail));

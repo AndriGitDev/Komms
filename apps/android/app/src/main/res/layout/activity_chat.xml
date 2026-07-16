@@ -44,7 +44,7 @@
         android:id="@+id/chat_scheduled_section"
         android:orientation="vertical"
         android:visibility="gone"
-        android:background="#14D9A441"
+        android:background="@color/warning_surface"
         android:paddingHorizontal="12dp"
         android:paddingVertical="8dp"
         android:layout_width="match_parent"
@@ -53,7 +53,7 @@
         <TextView
             android:text="@string/scheduled_outbox_title"
             android:textStyle="bold"
-            android:textColor="#9A6A00"
+            android:textColor="@color/warning"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content" />
 

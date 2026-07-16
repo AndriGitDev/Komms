@@ -15,6 +15,7 @@ use base64::Engine;
 use komms_desktop::session::{
     hex_decode, NetworkSettings, Session, UiEvent, UiFolderSelection, UiFolderTarget, UiHint,
     UiImageCrop, UiImageEditRecipe, UiImageRegion, UiLabelTarget, UiMentionSpan, UiPinTarget,
+    UiThemePreference,
 };
 use kult_ffi::{
     edit_image, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, KdfChoice,
@@ -163,6 +164,40 @@ fn open(dir: &Path, name: &str, events: &Events) -> Session {
         events.sink(),
     )
     .expect("session opens")
+}
+
+#[test]
+fn private_theme_defaults_persists_restarts_and_emits_one_local_event() {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../fixtures/b12-theme-parity.json")).unwrap();
+    assert_eq!(
+        fixture["preferences"],
+        serde_json::json!(["system", "light", "dark"])
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let events = Events::default();
+    let session = open(directory.path(), "theme", &events);
+    let queued = session.status().unwrap().queued;
+    assert_eq!(
+        session.theme().unwrap().preference,
+        UiThemePreference::System
+    );
+    assert!(!session.theme().unwrap().persisted);
+    assert!(session.set_theme(UiThemePreference::Dark).unwrap());
+    assert!(!session.set_theme(UiThemePreference::Dark).unwrap());
+    events.wait("theme changed", |event| {
+        matches!(event, UiEvent::ThemeChanged)
+    });
+    assert_eq!(session.status().unwrap().queued, queued);
+    session.stop();
+
+    let reopened = open(directory.path(), "theme", &Events::default());
+    assert_eq!(
+        reopened.theme().unwrap().preference,
+        UiThemePreference::Dark
+    );
+    assert!(reopened.theme().unwrap().persisted);
+    reopened.stop();
 }
 
 /// Poll status until a listen address is bound.

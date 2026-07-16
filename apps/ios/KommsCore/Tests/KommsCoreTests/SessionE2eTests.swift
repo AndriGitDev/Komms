@@ -73,6 +73,22 @@ private struct PinParityFixture: Decodable {
     }
 }
 
+private struct ThemeParityFixture: Decodable {
+    let preferenceKey: String
+    let preferences: [String]
+    let `default`: String
+    let semanticRoles: [String]
+
+    static func load() throws -> Self {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let data = try Data(contentsOf: root.appendingPathComponent("fixtures/b12-theme-parity.json"))
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(Self.self, from: data)
+    }
+}
+
 private func labelTargetKindName(_ kind: LabelTargetKind) -> String {
     switch kind {
     case .peer: "peer"
@@ -215,6 +231,33 @@ final class SessionE2eTests: XCTestCase {
             .appendingPathComponent("komms-e2e-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
+    }
+
+    func testPrivateThemeDefaultsPersistsRestartsAndEmitsOneLocalEvent() throws {
+        let fixture = try ThemeParityFixture.load()
+        XCTAssertEqual("appearance.theme", fixture.preferenceKey)
+        XCTAssertEqual(["system", "light", "dark"], fixture.preferences)
+        XCTAssertEqual("system", fixture.default)
+        XCTAssertEqual(themeSemanticRoles, fixture.semanticRoles)
+        let dir = try tempDir()
+        let events = Events()
+        var session = try open(dir, "theme", events)
+        let queued = try session.status().queued
+        XCTAssertEqual(.system, try session.theme().preference)
+        XCTAssertFalse(try session.theme().persisted)
+        XCTAssertTrue(try session.setTheme(.dark))
+        XCTAssertFalse(try session.setTheme(.dark))
+        _ = try events.wait("theme changed") { event -> Void? in
+            if case .themeChanged = event { return () }
+            return nil
+        }
+        XCTAssertEqual(queued, try session.status().queued)
+        session.stop()
+
+        session = try open(dir, "theme", Events())
+        XCTAssertEqual(.dark, try session.theme().preference)
+        XCTAssertTrue(try session.theme().persisted)
+        session.stop()
     }
 
     func testTwoPhonesPairByScannedBundleHexAndMessage() throws {

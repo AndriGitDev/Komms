@@ -67,6 +67,12 @@ security indicators are the node's own, verbatim.
   cleanup. Folder selection and label filtering run before pin/activity order.
   The 8,192-pin bound, stable typed identity, restart/`KKR4` restoration, and
   zero-network behavior come from the shared core rather than display names.
+- **Choose System, Light, or Dark appearance** at the gate or in the unlocked
+  app. A non-sensitive local cache applies before first paint; after unlock the
+  sealed F5 `appearance.theme` value is authoritative and travels in `KKR4`.
+  System follows live OS changes, semantic CSS roles meet the shared contrast
+  targets, `prefers-contrast` and `prefers-reduced-motion` remain native, and
+  delivery/security meaning always retains text, glyph, or accessible labels.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends, compared out-of-band, with a visible verified badge.
 - **Transport indicators**: NAT verdict, LAN peers discovered over mDNS,
@@ -125,6 +131,9 @@ directory.
   and crosses IPC once per unlock; it is never persisted by the shell.
 - QR codes render black-on-white on their own card regardless of theme;
   phone cameras need the contrast.
+- The pre-unlock theme cache contains only `system`, `light`, or `dark`; it is
+  not the backup/source of truth and is reconciled with the sealed record after
+  unlock or restore.
 - Mention target ids, ranges, and text stay inside the encrypted content body.
   Desktop notification handling receives only an endpoint-local render-safe
   signal; it does not promise server push or online delivery.

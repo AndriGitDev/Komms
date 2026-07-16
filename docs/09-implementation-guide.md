@@ -119,9 +119,14 @@ pub struct Node { /* composes store + transports + sessions */ }
 //             → Event (message, receipt, key_changed, transport_status…)
 // delivery engine: per-message state machine queued→sent→delivered, multipath,
 // dedup by message id, retry with per-transport backoff
+// local appearance: theme_preference / set_theme_preference
+//             → ThemeChanged (local only; no delivery-engine work)
 ```
 
 `kult-ffi` exposes exactly `Node`'s command/event API via UniFFI, nothing more.
+The daemon mirrors B12 as strict `theme` and `theme_set` RPC operations; the CLI
+spells them `kult theme` and `kult theme-set system|light|dark`. Shells resolve
+System from native platform signals rather than introducing a core display mode.
 
 ## 4. Testing strategy (beyond per-milestone acceptance)
 

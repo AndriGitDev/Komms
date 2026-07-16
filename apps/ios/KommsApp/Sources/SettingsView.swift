@@ -22,6 +22,22 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section {
+                    Picker("Theme", selection: Binding(
+                        get: { model.themePreference },
+                        set: { preference in Task { await model.setTheme(preference) } }
+                    )) {
+                        Text("System").tag(ThemePreference.system)
+                        Text("Light").tag(ThemePreference.light)
+                        Text("Dark").tag(ThemePreference.dark)
+                    }
+                    .pickerStyle(.segmented)
+                } header: {
+                    Text("Appearance")
+                } footer: {
+                    Text("System follows iOS live. The choice is private, sealed locally, and restored from encrypted backups. Color is never the only security or delivery cue.")
+                }
+
+                Section {
                     Toggle("LAN discovery (mDNS)", isOn: $mdns)
                     Toggle("Serve a mailbox for others", isOn: $serveMailbox)
                 }
@@ -66,7 +82,7 @@ struct SettingsView: View {
                         : "Saved to settings.json — applies on the next unlock.")
                 }
             }
-            .navigationTitle("Network settings")
+            .navigationTitle("Settings")
             .toolbar {
                 Button("Cancel") { dismiss() }
             }

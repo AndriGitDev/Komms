@@ -34,6 +34,12 @@ public let maxFolders = 128
 public let maxPins = 8_192
 public let maxFolderAssignments = 8_192
 public let maxFolderNameBytes = 256
+/// B12 semantic roles mapped to native adaptive colors by each shell.
+public let themeSemanticRoles = [
+    "background", "surface", "surface_raised", "surface_hover", "border",
+    "text_primary", "text_secondary", "accent", "on_accent", "danger",
+    "warning", "success", "bubble_outgoing", "bubble_incoming", "focus",
+]
 
 private func validateFolderWrite(name: String) throws {
     let fixedWhitespace: Set<UInt32> = [
@@ -332,6 +338,15 @@ public final class Session: @unchecked Sendable {
 
     /// All sealed local-only note-to-self entries.
     public func noteToSelfMessages() throws -> [NoteMessage] { try node.noteToSelfMessages() }
+
+    /// Current safe system/light/dark choice and sealed persistence state.
+    public func theme() throws -> ThemeInfo { try node.theme() }
+
+    /// Idempotently persist one canonical private local appearance choice.
+    @discardableResult
+    public func setTheme(_ preference: ThemePreference) throws -> Bool {
+        try node.setTheme(preference: preference)
+    }
 
     /// Append one sealed local-only note; no transport work is created.
     public func sendNoteToSelf(body: String) throws -> String {

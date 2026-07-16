@@ -9,7 +9,8 @@ use kult_crypto::KdfProfile;
 use kult_store::{
     ConversationId, ConversationMetadata, CustomIconRecord, CustomIconTarget, DraftRecord,
     FolderAssignment, FolderRecord, LabelAssignment, LabelRecord, LocalMetadataKey,
-    LocalMetadataRecord, PinRecord, Store, StoreError, UiPreferenceRecord, MAX_DRAFT_BYTES,
+    LocalMetadataRecord, PinRecord, Store, StoreError, ThemePreference, UiPreferenceRecord,
+    MAX_DRAFT_BYTES,
 };
 
 const TEST_KDF: KdfProfile = KdfProfile {
@@ -67,6 +68,49 @@ fn sample_records() -> Vec<LocalMetadataRecord> {
             bytes: b"sanitized-png-bytes".to_vec(),
         }),
     ]
+}
+
+#[test]
+fn theme_preference_is_canonical_idempotent_and_unknown_legacy_is_safe() {
+    let mut rng = StdRng::seed_from_u64(0xb12);
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::create(
+        &directory.path().join("theme.db"),
+        b"passphrase",
+        TEST_KDF,
+        &mut rng,
+    )
+    .unwrap();
+
+    assert_eq!(store.theme_preference().unwrap(), None);
+    assert!(store
+        .set_theme_preference(ThemePreference::System, &mut rng)
+        .unwrap());
+    assert!(!store
+        .set_theme_preference(ThemePreference::System, &mut rng)
+        .unwrap());
+    assert_eq!(
+        store.theme_preference().unwrap(),
+        Some(ThemePreference::System)
+    );
+
+    store
+        .put_local_metadata(
+            &LocalMetadataRecord::UiPreference(UiPreferenceRecord {
+                key: "appearance.theme".to_owned(),
+                value: b"sepia".to_vec(),
+            }),
+            &mut rng,
+        )
+        .unwrap();
+    assert_eq!(store.theme_preference().unwrap(), None);
+    assert!(store
+        .set_theme_preference(ThemePreference::Dark, &mut rng)
+        .unwrap());
+    assert_eq!(
+        store.theme_preference().unwrap(),
+        Some(ThemePreference::Dark)
+    );
 }
 
 #[test]
