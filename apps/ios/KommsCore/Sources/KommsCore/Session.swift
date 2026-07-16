@@ -164,6 +164,18 @@ public final class Session: @unchecked Sendable {
         try node.send(peer: peer, body: body)
     }
 
+    /// Queue an immutable edit for this identity's exact pairwise Text event.
+    public func editMessage(
+        peer: String,
+        targetAuthor: String,
+        targetContentId: String,
+        text: String
+    ) throws -> String {
+        try node.editMessage(
+            peer: peer, targetAuthor: targetAuthor,
+            targetContentId: targetContentId, text: text)
+    }
+
     /// Import one app-private, caller-selected path as a pairwise attachment.
     /// The SwiftUI shell stages a security-scoped document at this path and
     /// deletes it after this blocking call returns.
@@ -591,6 +603,18 @@ public final class Session: @unchecked Sendable {
     /// Queue a group message; progress is reported independently per member.
     public func sendGroup(group: String, body: String) throws -> String {
         try node.sendGroup(group: group, body: body)
+    }
+
+    /// Queue an immutable edit for this identity's exact group Text event.
+    public func editGroupMessage(
+        group: String,
+        targetAuthor: String,
+        targetContentId: String,
+        text: String
+    ) throws -> String {
+        try node.editGroupMessage(
+            group: group, targetAuthor: targetAuthor,
+            targetContentId: targetContentId, text: text)
     }
 
     /// Current exact-roster semantic Mention capability and review binding.

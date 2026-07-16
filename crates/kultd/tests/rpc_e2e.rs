@@ -815,6 +815,63 @@ async fn two_daemons_message_via_rpc_only() {
     assert_eq!(record["direction"], json!("out"));
     assert_eq!(record["body"], json!("hello over the daemon"));
 
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let editable = a
+        .ok(json!({
+            "op": "send",
+            "peer": bob_peer,
+            "body": "editable RPC original",
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    b_events
+        .wait_event(|event| {
+            event["type"] == json!("message")
+                && event["id"] == json!(editable)
+                && event["content_kind"] == json!("text")
+        })
+        .await;
+    a_events
+        .wait_event(|event| event["id"] == json!(editable) && event["state"] == json!("delivered"))
+        .await;
+    let edit = a
+        .ok(json!({
+            "op": "edit_message",
+            "peer": bob_peer,
+            "target_author": alice_peer,
+            "target_content_id": editable,
+            "text": "editable RPC revised",
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let refresh = b_events
+        .wait_event(|event| event["type"] == json!("message_edited"))
+        .await;
+    assert_eq!(refresh["peer"], json!(alice_peer));
+    assert_eq!(refresh["target_content_id"], json!(editable));
+    a_events
+        .wait_event(|event| event["id"] == json!(edit) && event["state"] == json!("delivered"))
+        .await;
+    for history in [
+        a.ok(json!({ "op": "messages", "peer": bob_peer })).await,
+        b.ok(json!({ "op": "messages", "peer": alice_peer })).await,
+    ] {
+        let messages = history["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2, "Edit events remain hidden");
+        let message = messages
+            .iter()
+            .find(|message| message["id"] == json!(editable))
+            .unwrap();
+        assert_eq!(message["body"], json!("editable RPC revised"));
+        assert_eq!(message["edited"], json!(true));
+        assert_eq!(message["edit_revision"], json!(1));
+        assert_eq!(message["versions"].as_array().unwrap().len(), 2);
+    }
+
     // Attachment input/output stays path-bounded at the RPC edge while all
     // cryptography, consent, progress, and carrier policy remain in the node.
     wait_carrier(&mut b, &alice_peer, "realtime").await;
@@ -1282,6 +1339,74 @@ async fn groups_via_rpc_only() {
     assert!(deliveries
         .iter()
         .all(|delivery| delivery["state"] == json!("delivered")));
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let editable = a
+        .ok(json!({
+            "op": "group_send",
+            "group": group,
+            "body": "editable group RPC original",
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    b_events
+        .wait_event(|event| {
+            event["type"] == json!("group_message")
+                && event["id"] == json!(editable)
+                && event["content_kind"] == json!("text")
+        })
+        .await;
+    a_events
+        .wait_event(|event| {
+            event["type"] == json!("group_delivery")
+                && event["id"] == json!(editable)
+                && event["state"] == json!("delivered")
+        })
+        .await;
+    let edit = a
+        .ok(json!({
+            "op": "group_edit_message",
+            "group": group,
+            "target_author": alice_peer,
+            "target_content_id": editable,
+            "text": "editable group RPC revised",
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let refresh = b_events
+        .wait_event(|event| event["type"] == json!("group_message_edited"))
+        .await;
+    assert_eq!(refresh["group"], json!(group));
+    assert_eq!(refresh["sender"], json!(alice_peer));
+    assert_eq!(refresh["target_content_id"], json!(editable));
+    a_events
+        .wait_event(|event| {
+            event["type"] == json!("group_delivery")
+                && event["id"] == json!(edit)
+                && event["state"] == json!("delivered")
+        })
+        .await;
+    for history in [
+        a.ok(json!({ "op": "group_messages", "group": group }))
+            .await,
+        b.ok(json!({ "op": "group_messages", "group": group }))
+            .await,
+    ] {
+        let message = history["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["id"] == json!(editable))
+            .unwrap();
+        assert_eq!(message["body"], json!("editable group RPC revised"));
+        assert_eq!(message["edited"], json!(true));
+        assert_eq!(message["edit_revision"], json!(1));
+        assert_eq!(message["versions"].as_array().unwrap().len(), 2);
+    }
 
     // B17 stays structured through RPC: the client supplies exact UTF-8 byte
     // ranges and peer ids, then the daemon atomically revalidates the review

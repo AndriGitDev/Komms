@@ -1,0 +1,59 @@
+{
+  "schema": "komms-message-edit-parity-v1",
+  "content_format": 1,
+  "content_kind": 4,
+  "maximum_text_bytes": 16384,
+  "maximum_local_edits": 64,
+  "case": {
+    "name": "edit_before_original_stale_tie_and_wrong_author",
+    "target_author": "1111111111111111111111111111111111111111111111111111111111111111",
+    "target_content_id": "44444444444444444444444444444444",
+    "original": "original text",
+    "events": [
+      {
+        "name": "stale",
+        "id": "02020202020202020202020202020202",
+        "author": "1111111111111111111111111111111111111111111111111111111111111111",
+        "revision": 1,
+        "text": "stale revision",
+        "valid": true
+      },
+      {
+        "name": "tie_low",
+        "id": "01010101010101010101010101010101",
+        "author": "1111111111111111111111111111111111111111111111111111111111111111",
+        "revision": 2,
+        "text": "lower tie id",
+        "valid": true
+      },
+      {
+        "name": "tie_winner",
+        "id": "fefefefefefefefefefefefefefefefe",
+        "author": "1111111111111111111111111111111111111111111111111111111111111111",
+        "revision": 2,
+        "text": "deterministic winner",
+        "valid": true
+      },
+      {
+        "name": "wrong_author",
+        "id": "ffffffffffffffffffffffffffffffff",
+        "author": "9999999999999999999999999999999999999999999999999999999999999999",
+        "revision": 99,
+        "text": "must never win",
+        "valid": false
+      }
+    ],
+    "arrival_orders": [
+      ["tie_winner", "wrong_author", "original", "stale", "tie_low"],
+      ["original", "tie_low", "stale", "wrong_author", "tie_winner"]
+    ],
+    "expected_versions": [
+      { "id": "44444444444444444444444444444444", "revision": 0, "text": "original text" },
+      { "id": "02020202020202020202020202020202", "revision": 1, "text": "stale revision" },
+      { "id": "01010101010101010101010101010101", "revision": 2, "text": "lower tie id" },
+      { "id": "fefefefefefefefefefefefefefefefe", "revision": 2, "text": "deterministic winner" }
+    ],
+    "winning_revision": 2,
+    "winning_text": "deterministic winner"
+  }
+}

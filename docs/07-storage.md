@@ -49,6 +49,16 @@ bytes under their existing seals; formatting markers are not rewritten and no
 rendered HTML/attributed text or cache is persisted. `KKR4` therefore carries
 the same source it already carried and needs no format or migration change.
 
+C3 edits also add no mutable plaintext projection. Canonical originals and edit
+events remain separate individually sealed pairwise/group history rows; derived
+history hides edit rows and returns the winning text, marker, revision, and
+ordered versions. The winner is rebuilt from authenticated rows after restart or
+restore, including edit-before-original order. `KKR4` already carries those
+history rows, so no backup version or migration changes. The node caps locally
+authored edits at 64 per target; it retains every authenticated inbound edit so
+admission order cannot change convergence. See
+[18: Authenticated Message Editing](18-message-editing.md).
+
 B12 stores only the canonical `system`, `light`, or `dark` bytes under the sealed
 UI-preference key `appearance.theme`. Missing or unknown legacy values render as
 System without a read-time rewrite. The small shell cache used before unlock is
@@ -170,6 +180,10 @@ trade for this project.)
   delivery queue, it is device runtime state rather than conversation history;
   it survives ordinary process/app restarts on that device but is not resurrected
   by a later identity restore.
+- **C3 edit backup behavior**: originals and authenticated edit records ride
+  with ordinary sealed history. Restore recomputes the authorized deterministic
+  winner and prior-version list; it never imports a mutable current-body cache
+  or discards stale losing revisions.
 - **Plaintext export**: JSON-lines + media directory, clearly warned as plaintext.
   The user's data is the user's.
 - **Panic wipe** (roadmap M6): duress passphrase unlocking a decoy profile while

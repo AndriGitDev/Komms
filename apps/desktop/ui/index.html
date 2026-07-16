@@ -485,6 +485,17 @@
     </div>
   </template>
 
+  <template id="tpl-message-edit">
+    <p class="modal-note">This creates a new authenticated edit event. The original and prior versions remain available in this conversation.</p>
+    <label>Replacement message
+      <textarea data-f="body" data-incognito-input="message" rows="5" maxlength="16384"></textarea>
+    </label>
+    <p class="error" data-f="error" hidden></p>
+    <div class="row end">
+      <button class="primary" data-act="save">Save edit</button>
+    </div>
+  </template>
+
   <template id="tpl-mnemonic">
     <p class="modal-note warn">Write these 24 words down and keep them offline. This is the only time they are shown; without them the backup file is irrecoverable noise.</p>
     <ol class="mnemonic"></ol>

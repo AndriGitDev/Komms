@@ -33,6 +33,8 @@ COMMANDS:
     contact-rename PEER_HEX [--accept-warnings] NAME...
                                     rename one private local petname; warning review is explicit
     send PEER_HEX TEXT...           queue a message
+    edit PEER_HEX AUTHOR_HEX CONTENT_ID TEXT...
+                                    immutably edit this identity's exact pairwise Text event
     attachment-send PEER_HEX PATH MEDIA_TYPE [FILENAME]
                                     import and queue a pairwise attachment
     attachment-send-preview PEER_HEX PATH MEDIA_TYPE PREVIEW_PATH PREVIEW_MEDIA_TYPE [FILENAME]
@@ -114,6 +116,8 @@ COMMANDS:
                                     compose folder, label, then pin ordering
     group-create NAME [MEMBER_HEX]... create a sender-key group
     group-send GROUP_HEX TEXT...     queue a group message
+    group-edit GROUP_HEX AUTHOR_HEX CONTENT_ID TEXT...
+                                    immutably edit this identity's exact group Text event
     group-mention-capability GROUP_HEX
                                     review exact current member support
     group-mention-send GROUP_HEX REVIEW_TOKEN TEXT START:END:PEER_HEX...
@@ -350,6 +354,16 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
         "send" => {
             need(2)?;
             json!({ "op": "send", "peer": args[0], "body": args[1..].join(" ") })
+        }
+        "edit" => {
+            need(4)?;
+            json!({
+                "op": "edit_message",
+                "peer": args[0],
+                "target_author": args[1],
+                "target_content_id": args[2],
+                "text": args[3..].join(" "),
+            })
         }
         "attachment-send" => {
             need(3)?;
@@ -846,6 +860,16 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
         "group-send" => {
             need(2)?;
             json!({ "op": "group_send", "group": args[0], "body": args[1..].join(" ") })
+        }
+        "group-edit" => {
+            need(4)?;
+            json!({
+                "op": "group_edit_message",
+                "group": args[0],
+                "target_author": args[1],
+                "target_content_id": args[2],
+                "text": args[3..].join(" "),
+            })
         }
         "group-mention-capability" => {
             need(1)?;

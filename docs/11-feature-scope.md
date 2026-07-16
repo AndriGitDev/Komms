@@ -167,9 +167,13 @@ and degrade honestly, exactly as the delivery ladder already does.
   keys, per-device sessions, revocation, and deterministic sync. Linking happens
   proximately through a confirmed QR or LAN ceremony, never by copying live
   ratchet databases or depending on cloud sync.
-- **Message editing.** Requires authenticated revision events and deterministic
-  reconciliation across carriers where peers may be offline or delayed. The ADR
-  chooses ordering, tombstones, and old-client behavior before implementation.
+- **Message editing.** Shipped for canonical pairwise and group Text through
+  every front door and shell. Immutable authenticated events target exact
+  author/content ids, retain inspectable versions, and converge under offline
+  reorder by maximum `(revision, edit id)` without clocks. Pairwise capability
+  and complete current-group capability are required before send; legacy text,
+  attachments, mentions, and other edits remain non-editable. Editing is not
+  erasure. See [18: Authenticated Message Editing](18-message-editing.md).
 - **Disappearing messages / view-once media.** Client-side expiry is easy; the
   hard part is enforcing deletion across mailbox stores and mesh relays that hold
   sealed copies. Network retention needs a bounded relay-visible deletion hint,

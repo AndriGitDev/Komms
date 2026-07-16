@@ -32,6 +32,11 @@ own, verbatim.
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted
   mesh links.
+- **Edit authored canonical Text** in pairwise and group history through a
+  native `IncognitoEditText` dialog. The action is available only on exact
+  outbound text, uses shared capability/authorship checks, refreshes on typed
+  target events, shows an edited revision marker, and presents the original plus
+  every valid version for TalkBack inspection. Editing is not erasure.
 - **Render safe source formatting** in pairwise, group, note-to-self, and
   scheduled rows through the shared bounded formatter. Android builds only
   selectable native text spans, composes semantic mention highlights, and

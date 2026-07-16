@@ -410,6 +410,11 @@ forward!(
     send(peer: String, body: String) -> String, |s| s.send(peer, body)
 );
 forward!(
+    /// Queue an immutable edit for an exact pairwise Text event.
+    edit_message(peer: String, target_author: String, target_content_id: String, text: String) -> String,
+    |s| s.edit_message(peer, target_author, target_content_id, text)
+);
+forward!(
     /// Every attachment transfer as render-safe state.
     attachments() -> Vec<UiAttachment>, |s| s.attachments()
 );
@@ -662,6 +667,11 @@ forward!(
 forward!(
     /// Queue a message to a group.
     send_group(group: String, body: String) -> String, |s| s.send_group(group, body)
+);
+forward!(
+    /// Queue an immutable edit for an exact group Text event.
+    edit_group_message(group: String, target_author: String, target_content_id: String, text: String) -> String,
+    |s| s.edit_group_message(group, target_author, target_content_id, text)
 );
 forward!(
     /// Current all-member semantic Mention support and review binding.

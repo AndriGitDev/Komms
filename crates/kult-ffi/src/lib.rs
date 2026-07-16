@@ -1317,6 +1317,19 @@ impl CarrierCapabilitySnapshot {
     }
 }
 
+/// One immutable original or edit version in deterministic resolution order.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct EditVersion {
+    /// Original content id for revision zero, otherwise edit-event id (hex).
+    pub id: String,
+    /// Zero for original, positive for an immutable edit.
+    pub revision: u64,
+    /// Local presentation timestamp.
+    pub timestamp: u64,
+    /// Exact authenticated text for this version.
+    pub body: String,
+}
+
 /// One message in a conversation's history.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct Message {
@@ -1334,6 +1347,12 @@ pub struct Message {
     pub body: String,
     /// Explicit content interpretation.
     pub content_kind: ContentKind,
+    /// Whether a valid immutable edit wins over the original.
+    pub edited: bool,
+    /// Winning edit revision, or zero for the original.
+    pub edit_revision: u64,
+    /// Original plus valid immutable edits in deterministic order.
+    pub versions: Vec<EditVersion>,
 }
 
 /// One message in the reserved device-local note-to-self conversation.
@@ -1459,6 +1478,12 @@ pub struct GroupMessage {
     pub content_kind: ContentKind,
     /// Stable semantic Mention spans; empty for every other content kind.
     pub mention_spans: Vec<MentionSpan>,
+    /// Whether a valid immutable edit wins over the original.
+    pub edited: bool,
+    /// Winning edit revision, or zero for the original.
+    pub edit_revision: u64,
+    /// Original plus valid immutable edits in deterministic order.
+    pub versions: Vec<EditVersion>,
     /// Per-member delivery states (outbound only).
     pub deliveries: Vec<GroupDelivery>,
 }
@@ -1559,6 +1584,13 @@ pub enum Event {
         /// Explicit content interpretation.
         content_kind: ContentKind,
     },
+    /// A canonical inbound edit was stored; refresh the exact pairwise target.
+    MessageEdited {
+        /// Pairwise peer that authored both the edit and original (hex).
+        peer: String,
+        /// Original canonical Text content id (hex).
+        target_content_id: String,
+    },
     /// Text was appended to the reserved local note-to-self conversation.
     NoteToSelfMessageAdded {
         /// Stable reserved identity: `note_to_self`.
@@ -1624,6 +1656,15 @@ pub enum Event {
         /// Stable semantic spans; empty for every other content kind.
         mention_spans: Vec<MentionSpan>,
     },
+    /// A canonical inbound group edit was stored; refresh the exact target.
+    GroupMessageEdited {
+        /// Group id (hex).
+        group: String,
+        /// Authenticated edit and original author (hex).
+        sender: String,
+        /// Original canonical Text content id (hex).
+        target_content_id: String,
+    },
     /// A stored canonical group Mention targets this exact local peer.
     MentionReceived {
         /// Stored group message id (hex). Text and target lists stay out of
@@ -1684,6 +1725,13 @@ impl Event {
                 body: render_event_body(&body, &content),
                 content_kind: content_kind(&content),
             },
+            kult_node::Event::MessageEdited {
+                peer,
+                target_content_id,
+            } => Self::MessageEdited {
+                peer: hex_encode(&peer),
+                target_content_id: hex_encode(&target_content_id),
+            },
             kult_node::Event::NoteToSelfMessageAdded {
                 id,
                 timestamp,
@@ -1730,6 +1778,15 @@ impl Event {
                 body: render_event_body(&body, &content),
                 content_kind: content_kind(&content),
                 mention_spans: mention_status(&content),
+            },
+            kult_node::Event::GroupMessageEdited {
+                group,
+                sender,
+                target_content_id,
+            } => Self::GroupMessageEdited {
+                group: hex_encode(&group),
+                sender: hex_encode(&sender),
+                target_content_id: hex_encode(&target_content_id),
             },
             kult_node::Event::MentionReceived { id } => Self::MentionReceived {
                 id: hex_encode(&id),
@@ -1930,6 +1987,27 @@ impl KultNode {
         self.call(|resp| Msg::Send {
             peer,
             body: body.into_bytes(),
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
+    /// Send one immutable edit targeting this identity's exact canonical Text.
+    pub fn edit_message(
+        &self,
+        peer: String,
+        target_author: String,
+        target_content_id: String,
+        text: String,
+    ) -> Result<String, FfiError> {
+        let peer = parse_peer(&peer)?;
+        let target_author = parse_peer(&target_author)?;
+        let target_content_id = parse_message(&target_content_id)?;
+        self.call(|resp| Msg::EditMessage {
+            peer,
+            target_author,
+            target_content_id,
+            text,
             resp,
         })
         .map(|id| hex_encode(&id))
@@ -2748,6 +2826,27 @@ impl KultNode {
         .map(|id| hex_encode(&id))
     }
 
+    /// Send one immutable edit targeting this identity's exact group Text.
+    pub fn edit_group_message(
+        &self,
+        group: String,
+        target_author: String,
+        target_content_id: String,
+        text: String,
+    ) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        let target_author = parse_peer(&target_author)?;
+        let target_content_id = parse_message(&target_content_id)?;
+        self.call(|resp| Msg::GroupEditMessage {
+            group,
+            target_author,
+            target_content_id,
+            text,
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
     /// Conservative current-roster Mention support and review binding.
     pub fn group_mention_capability(
         &self,
@@ -2850,21 +2949,28 @@ impl KultNode {
             .call(|resp| Msg::GroupMessages { group, resp })?
             .iter()
             .map(|message| {
-                let (body, content_kind, mention_spans) =
-                    render_stored_content(&message.body, true);
+                let record = &message.record;
+                let (body, content_kind, mention_spans) = render_stored_content(&record.body, true);
                 GroupMessage {
-                    id: hex_encode(&message.id),
-                    group: hex_encode(&message.group),
-                    sender: hex_encode(&message.sender),
-                    direction: match message.direction {
+                    id: hex_encode(&record.id),
+                    group: hex_encode(&record.group),
+                    sender: hex_encode(&record.sender),
+                    direction: match record.direction {
                         kult_store::Direction::Outbound => Direction::Outbound,
                         kult_store::Direction::Inbound => Direction::Inbound,
                     },
-                    timestamp: message.timestamp,
+                    timestamp: record.timestamp,
                     body,
                     content_kind,
                     mention_spans,
-                    deliveries: message
+                    edited: message.edited,
+                    edit_revision: message.winning_revision,
+                    versions: message
+                        .versions
+                        .iter()
+                        .map(edit_version_from_node)
+                        .collect(),
+                    deliveries: record
                         .deliveries
                         .iter()
                         .map(|delivery| GroupDelivery {
@@ -2906,19 +3012,27 @@ impl KultNode {
         let messages = self.call(|resp| Msg::Messages { peer, resp })?;
         Ok(messages
             .iter()
-            .map(|m| {
-                let (body, content_kind, _) = render_stored_content(&m.body, false);
+            .map(|message| {
+                let record = &message.record;
+                let (body, content_kind, _) = render_stored_content(&record.body, false);
                 Message {
-                    id: hex_encode(&m.id),
-                    peer: hex_encode(&m.peer),
-                    direction: match m.direction {
+                    id: hex_encode(&record.id),
+                    peer: hex_encode(&record.peer),
+                    direction: match record.direction {
                         kult_store::Direction::Outbound => Direction::Outbound,
                         kult_store::Direction::Inbound => Direction::Inbound,
                     },
-                    state: DeliveryState::from_store(m.state),
-                    timestamp: m.timestamp,
+                    state: DeliveryState::from_store(record.state),
+                    timestamp: record.timestamp,
                     body,
                     content_kind,
+                    edited: message.edited,
+                    edit_revision: message.winning_revision,
+                    versions: message
+                        .versions
+                        .iter()
+                        .map(edit_version_from_node)
+                        .collect(),
                 }
             })
             .collect())
@@ -3599,6 +3713,11 @@ fn render_stored_content(
             ContentKind::Malformed,
             Vec::new(),
         ),
+        kult_protocol::DecodedContent::Edit { .. } => (
+            UNSUPPORTED_MESSAGE.to_owned(),
+            ContentKind::Malformed,
+            Vec::new(),
+        ),
         kult_protocol::DecodedContent::Unsupported { .. } => (
             UNSUPPORTED_MESSAGE.to_owned(),
             ContentKind::Unsupported,
@@ -3609,6 +3728,15 @@ fn render_stored_content(
             ContentKind::Malformed,
             Vec::new(),
         ),
+    }
+}
+
+fn edit_version_from_node(version: &kult_node::EditVersionInfo) -> EditVersion {
+    EditVersion {
+        id: hex_encode(&version.id),
+        revision: version.revision,
+        timestamp: version.timestamp,
+        body: version.body.clone(),
     }
 }
 

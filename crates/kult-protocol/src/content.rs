@@ -7,9 +7,10 @@
 use alloc::vec::Vec;
 
 use crate::{
-    decode_attachment_manifest, decode_mention_payload, encode_attachment_manifest,
-    encode_mention_payload, AttachmentManifest, DecodedAttachmentManifest, DecodedMention, Mention,
-    MentionSpan, ProtocolError, Result,
+    decode_attachment_manifest, decode_edit_payload, decode_mention_payload,
+    encode_attachment_manifest, encode_edit_payload, encode_mention_payload, AttachmentManifest,
+    DecodedAttachmentManifest, DecodedEdit, DecodedMention, Edit, Mention, MentionSpan,
+    ProtocolError, Result,
 };
 
 /// Prefix that unambiguously distinguishes typed content from valid UTF-8.
@@ -22,6 +23,8 @@ pub const CONTENT_KIND_TEXT: u16 = 1;
 pub const CONTENT_KIND_ATTACHMENT: u16 = 2;
 /// The v1 kind assigned to canonical group mentions.
 pub const CONTENT_KIND_MENTION: u16 = 3;
+/// The v1 kind assigned to immutable authenticated message edits.
+pub const CONTENT_KIND_EDIT: u16 = 4;
 /// Size of the fixed v1 content header.
 pub const CONTENT_HEADER_LEN: usize = 28;
 /// Maximum unpadded content frame size.
@@ -63,6 +66,13 @@ pub enum DecodedContent<'a> {
         id: [u8; 16],
         /// Exact fallback text plus stable semantic peer spans.
         mention: Mention<'a>,
+    },
+    /// A canonical v1 immutable message edit.
+    Edit {
+        /// Random author-minted id for this edit event.
+        id: [u8; 16],
+        /// Exact target, revision, and replacement text.
+        edit: Edit<'a>,
     },
     /// Authenticated bytes the current client cannot interpret.
     Unsupported {
@@ -114,6 +124,20 @@ pub fn encode_mention(id: [u8; 16], text: &str, spans: &[MentionSpan]) -> Result
     frame.extend_from_slice(&CONTENT_MAGIC);
     frame.push(CONTENT_FORMAT_V1);
     frame.extend_from_slice(&CONTENT_KIND_MENTION.to_le_bytes());
+    frame.push(0);
+    frame.extend_from_slice(&id);
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    frame.extend_from_slice(&payload);
+    Ok(frame)
+}
+
+/// Encode a canonical immutable Edit as a v1 content frame.
+pub fn encode_edit(id: [u8; 16], edit: &Edit<'_>) -> Result<Vec<u8>> {
+    let payload = encode_edit_payload(edit)?;
+    let mut frame = Vec::with_capacity(CONTENT_HEADER_LEN + payload.len());
+    frame.extend_from_slice(&CONTENT_MAGIC);
+    frame.push(CONTENT_FORMAT_V1);
+    frame.extend_from_slice(&CONTENT_KIND_EDIT.to_le_bytes());
     frame.push(0);
     frame.extend_from_slice(&id);
     frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
@@ -197,6 +221,10 @@ pub fn decode_content(bytes: &[u8]) -> DecodedContent<'_> {
             },
             DecodedMention::Malformed => DecodedContent::Malformed,
         },
+        CONTENT_KIND_EDIT => match decode_edit_payload(payload) {
+            DecodedEdit::Edit(edit) => DecodedContent::Edit { id, edit },
+            DecodedEdit::Malformed => DecodedContent::Malformed,
+        },
         _ => DecodedContent::Unsupported {
             format_version: Some(format_version),
             kind: Some(kind),
@@ -258,6 +286,28 @@ mod tests {
     }
 
     #[test]
+    fn edit_content_golden_vector() {
+        let id = [0x11; 16];
+        let edit = Edit {
+            target_author: [0x22; 32],
+            target_content_id: [0x33; 16],
+            revision: 7,
+            text: "new",
+        };
+        let frame = encode_edit(id, &edit).unwrap();
+        let mut expected = vec![0xff, b'K', b'M', b'C', 1, 4, 0, 0];
+        expected.extend_from_slice(&id);
+        expected.extend_from_slice(&63u32.to_le_bytes());
+        expected.extend_from_slice(&edit.target_author);
+        expected.extend_from_slice(&edit.target_content_id);
+        expected.extend_from_slice(&edit.revision.to_le_bytes());
+        expected.extend_from_slice(&3u32.to_le_bytes());
+        expected.extend_from_slice(b"new");
+        assert_eq!(frame, expected);
+        assert_eq!(decode_content(&frame), DecodedContent::Edit { id, edit });
+    }
+
+    #[test]
     fn legacy_and_typed_paths_never_confuse_each_other() {
         assert_eq!(
             decode_content(b"hello"),
@@ -287,12 +337,12 @@ mod tests {
         );
 
         frame = encode_text([7; 16], "x").unwrap();
-        frame[5..7].copy_from_slice(&4u16.to_le_bytes());
+        frame[5..7].copy_from_slice(&0x7fffu16.to_le_bytes());
         assert_eq!(
             decode_content(&frame),
             DecodedContent::Unsupported {
                 format_version: Some(1),
-                kind: Some(4)
+                kind: Some(0x7fff)
             }
         );
 

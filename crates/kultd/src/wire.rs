@@ -17,14 +17,14 @@ use kult_node::{
     FolderConversationList, FolderInfo, FolderSelection, GroupInfo, GroupMentionCapability,
     IncognitoKeyboardPlatform, IncognitoKeyboardPolicy, LabelConversationInfo, LabelFilterInfo,
     LabelInfo, MentionCapabilityIssueReason, NodeStaleFolderReason, NodeStaleLabelReason,
-    PinConversationInfo, PinConversationList, PinInfo, ScheduledConversation, ScheduledMessageInfo,
-    ScreenSecurityPlatform, ScreenSecurityPolicy, StaleFolderInfo, StaleLabelInfo,
-    TextFormatBlockKind, TextFormatHighlight, TextFormatStyle, NOTE_TO_SELF_CONVERSATION_ID,
+    PinConversationInfo, PinConversationList, PinInfo, ResolvedGroupMessage, ResolvedMessage,
+    ScheduledConversation, ScheduledMessageInfo, ScreenSecurityPlatform, ScreenSecurityPolicy,
+    StaleFolderInfo, StaleLabelInfo, TextFormatBlockKind, TextFormatHighlight, TextFormatStyle,
+    NOTE_TO_SELF_CONVERSATION_ID,
 };
 use kult_store::{
     valid_folder_name, valid_label_color, valid_label_name, ConversationId, DeliveryState,
-    Direction, GroupMessageRecord, MediaTransferState, MessageRecord, NoteMessageRecord,
-    MAX_FOLDERS, MAX_LABELS, MAX_PINS,
+    Direction, MediaTransferState, NoteMessageRecord, MAX_FOLDERS, MAX_LABELS, MAX_PINS,
 };
 use kult_transport::DeliveryHint;
 
@@ -114,6 +114,22 @@ fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
         "pin_conversations" => Some(&["id", "op", "selection", "labels", "mode"]),
         "format_text" => Some(&["id", "op", "source", "highlights"]),
         "attachment_file_presentation" => Some(&["id", "op", "media_type", "filename"]),
+        "edit_message" => Some(&[
+            "id",
+            "op",
+            "peer",
+            "target_author",
+            "target_content_id",
+            "text",
+        ]),
+        "group_edit_message" => Some(&[
+            "id",
+            "op",
+            "group",
+            "target_author",
+            "target_content_id",
+            "text",
+        ]),
         _ => None,
     }
 }
@@ -183,6 +199,17 @@ pub enum Op {
         peer: String,
         /// Message body (UTF-8 text).
         body: String,
+    },
+    /// Queue an immutable edit for an exact authored pairwise Text event.
+    EditMessage {
+        /// Pairwise conversation peer id (hex).
+        peer: String,
+        /// Original author peer id (hex); must be this node for local send.
+        target_author: String,
+        /// Original canonical Text content id (hex).
+        target_content_id: String,
+        /// Exact non-empty replacement UTF-8.
+        text: String,
     },
     /// Import and queue a pairwise attachment from a caller-selected path.
     AttachmentSend {
@@ -545,6 +572,17 @@ pub enum Op {
         /// Message body (UTF-8 text).
         body: String,
     },
+    /// Queue an immutable edit for an exact authored group Text event.
+    GroupEditMessage {
+        /// Group id (hex).
+        group: String,
+        /// Original author peer id (hex); must be this node for local send.
+        target_author: String,
+        /// Original canonical Text content id (hex).
+        target_content_id: String,
+        /// Exact non-empty replacement UTF-8.
+        text: String,
+    },
     /// Read the current all-member Mention support verdict and review token.
     GroupMentionCapability {
         /// Group id (hex).
@@ -816,6 +854,14 @@ pub fn event_line(event: &Event) -> String {
             "content_kind": content_kind(content),
             "mention_spans": mention_status_json(content),
         }),
+        Event::MessageEdited {
+            peer,
+            target_content_id,
+        } => json!({
+            "type": "message_edited",
+            "peer": hex_encode(peer),
+            "target_content_id": hex_encode(target_content_id),
+        }),
         Event::NoteToSelfMessageAdded {
             id,
             timestamp,
@@ -868,6 +914,16 @@ pub fn event_line(event: &Event) -> String {
             "body": render_event_body(body, content),
             "content_kind": content_kind(content),
             "mention_spans": mention_status_json(content),
+        }),
+        Event::GroupMessageEdited {
+            group,
+            sender,
+            target_content_id,
+        } => json!({
+            "type": "group_message_edited",
+            "group": hex_encode(group),
+            "sender": hex_encode(sender),
+            "target_content_id": hex_encode(target_content_id),
         }),
         Event::MentionReceived { id } => json!({
             "type": "mention_received",
@@ -1406,7 +1462,8 @@ fn carrier_str(capability: CarrierCapability) -> &'static str {
 }
 
 /// A group message record as JSON, including honest per-member delivery.
-pub fn group_message_json(rec: &GroupMessageRecord) -> Value {
+pub fn group_message_json(message: &ResolvedGroupMessage) -> Value {
+    let rec = &message.record;
     let (body, content_kind, mention_spans) = render_stored_content(&rec.body, true);
     json!({
         "id": hex_encode(&rec.id),
@@ -1420,6 +1477,9 @@ pub fn group_message_json(rec: &GroupMessageRecord) -> Value {
         "body": body,
         "content_kind": content_kind,
         "mention_spans": mention_spans,
+        "edited": message.edited,
+        "edit_revision": message.winning_revision,
+        "versions": edit_versions_json(&message.versions),
         "deliveries": rec.deliveries.iter().map(|delivery| json!({
             "peer": hex_encode(&delivery.peer),
             "state": state_str(delivery.state),
@@ -1428,7 +1488,8 @@ pub fn group_message_json(rec: &GroupMessageRecord) -> Value {
 }
 
 /// A message record as JSON.
-pub fn message_json(rec: &MessageRecord) -> Value {
+pub fn message_json(message: &ResolvedMessage) -> Value {
+    let rec = &message.record;
     let (body, content_kind, mention_spans) = render_stored_content(&rec.body, false);
     json!({
         "id": hex_encode(&rec.id),
@@ -1442,7 +1503,26 @@ pub fn message_json(rec: &MessageRecord) -> Value {
         "body": body,
         "content_kind": content_kind,
         "mention_spans": mention_spans,
+        "edited": message.edited,
+        "edit_revision": message.winning_revision,
+        "versions": edit_versions_json(&message.versions),
     })
+}
+
+fn edit_versions_json(versions: &[kult_node::EditVersionInfo]) -> Value {
+    Value::Array(
+        versions
+            .iter()
+            .map(|version| {
+                json!({
+                    "id": hex_encode(&version.id),
+                    "revision": version.revision,
+                    "timestamp": version.timestamp,
+                    "body": version.body,
+                })
+            })
+            .collect(),
+    )
 }
 
 /// One note-to-self record as render-safe JSON.
@@ -1544,6 +1624,7 @@ fn render_stored_content(bytes: &[u8], allow_group_mention: bool) -> (String, &'
         kult_protocol::DecodedContent::Mention { .. } => {
             (UNSUPPORTED_MESSAGE.to_owned(), "malformed", json!([]))
         }
+        kult_protocol::DecodedContent::Edit { .. } => (String::new(), "malformed", json!([])),
         kult_protocol::DecodedContent::Unsupported { .. } => {
             (UNSUPPORTED_MESSAGE.to_owned(), "unsupported", json!([]))
         }
@@ -1742,6 +1823,51 @@ mod tests {
                 "warnings": ["media_type_mismatch", "dangerous_type"],
             })
         );
+    }
+
+    #[test]
+    fn edit_rpcs_require_exact_author_target_and_fields() {
+        let peer = "11".repeat(32);
+        let content = "22".repeat(16);
+        let pairwise = parse_request(
+            &json!({
+                "id": 20,
+                "op": "edit_message",
+                "peer": peer,
+                "target_author": peer,
+                "target_content_id": content,
+                "text": "replacement",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(matches!(pairwise.op, Op::EditMessage { .. }));
+        let group = parse_request(
+            &json!({
+                "id": 21,
+                "op": "group_edit_message",
+                "group": "33".repeat(32),
+                "target_author": peer,
+                "target_content_id": content,
+                "text": "replacement",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(matches!(group.op, Op::GroupEditMessage { .. }));
+        assert!(parse_request(
+            &json!({
+                "id": 22,
+                "op": "edit_message",
+                "peer": peer,
+                "target_author": peer,
+                "target_content_id": content,
+                "text": "replacement",
+                "display_name": "not authority",
+            })
+            .to_string(),
+        )
+        .is_err());
     }
 
     #[test]

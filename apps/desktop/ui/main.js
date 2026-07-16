@@ -1637,6 +1637,7 @@ function bubble(m, formatted) {
     meta.append(st);
   }
   el.append(meta);
+  appendEditMetadata(el, meta, m, false);
   state.msgEls.set(m.id, el);
   return el;
 }
@@ -1667,6 +1668,7 @@ function groupBubble(m, formatted) {
   meta.className = "meta";
   meta.textContent = fmtTime(m.timestamp);
   el.append(meta);
+  appendEditMetadata(el, meta, m, true);
   if (m.outbound) {
     const deliveries = document.createElement("span");
     deliveries.className = "deliveries";
@@ -1681,6 +1683,77 @@ function groupBubble(m, formatted) {
   }
   state.msgEls.set(m.id, el);
   return el;
+}
+
+function appendEditMetadata(container, meta, message, group) {
+  if (message.edited) {
+    const marker = document.createElement("span");
+    marker.className = "edited-marker";
+    marker.textContent = ` · edited r${message.edit_revision}`;
+    meta.append(marker);
+  }
+  if (message.outbound && message.content_kind === "text") {
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "message-edit ghost";
+    edit.textContent = "Edit";
+    edit.setAttribute("aria-label", "Edit this message");
+    edit.addEventListener("click", () => openMessageEdit(message, group));
+    meta.append(" · ", edit);
+  }
+  if (!message.edited || !message.versions?.length) return;
+  const history = document.createElement("details");
+  history.className = "edit-history";
+  const summary = document.createElement("summary");
+  summary.textContent = `Version history (${message.versions.length})`;
+  history.append(summary);
+  const list = document.createElement("ol");
+  for (const version of [...message.versions].reverse()) {
+    const item = document.createElement("li");
+    const label = document.createElement("strong");
+    label.textContent = version.revision === 0 ? "Original" : `Revision ${version.revision}`;
+    const time = document.createElement("span");
+    time.className = "version-time";
+    time.textContent = ` · ${fmtTime(version.timestamp)}`;
+    const body = document.createElement("div");
+    body.className = "version-body";
+    body.textContent = version.body;
+    item.append(label, time, body);
+    list.append(item);
+  }
+  history.append(list);
+  container.append(history);
+}
+
+function openMessageEdit(message, group) {
+  if (!message.outbound || message.content_kind !== "text") return;
+  const conversation = state.currentId;
+  const root = openModal("Edit message", "tpl-message-edit");
+  const body = root.querySelector('[data-f="body"]');
+  body.value = message.body;
+  root.addEventListener("click", async (event) => {
+    if (!event.target.matches('[data-act="save"]')) return;
+    event.preventDefault();
+    try {
+      if (body.value.length === 0) throw "write replacement text first";
+      const exact = {
+        targetAuthor: state.peer,
+        targetContentId: message.id,
+        text: body.value,
+      };
+      if (group) {
+        await invoke("edit_group_message", { group: conversation, ...exact });
+      } else {
+        await invoke("edit_message", { peer: conversation, ...exact });
+      }
+      closeModal();
+      await renderMessages();
+    } catch (error) {
+      showError(root, error);
+    }
+  });
+  body.focus();
+  body.select();
 }
 
 function scheduledBubble(message, formatted) {
@@ -2413,6 +2486,10 @@ listen("node-event", async ({ payload: ev }) => {
       }
       break;
     }
+    case "message_edited": {
+      if (state.currentKind === "contact" && ev.peer === state.currentId) await renderMessages();
+      break;
+    }
     case "attachment_updated": {
       const attachment = ev.attachment;
       if (attachmentBelongsHere(attachment)) await renderMessages();
@@ -2460,6 +2537,10 @@ listen("node-event", async ({ payload: ev }) => {
         toast(`${group?.name ?? "Group"} · ${memberName(ev.sender)}: ${ev.body.slice(0, 80)}`);
         await refreshGroups();
       }
+      break;
+    }
+    case "group_message_edited": {
+      if (state.currentKind === "group" && ev.group === state.currentId) await renderMessages();
       break;
     }
     case "group_delivery_updated": {

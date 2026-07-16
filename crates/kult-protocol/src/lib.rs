@@ -30,6 +30,7 @@ mod attachment_bulk;
 mod bundle;
 mod capability;
 mod content;
+mod edit;
 mod envelope;
 mod error;
 mod fragmentation;
@@ -59,10 +60,14 @@ pub use capability::{
     CAPABILITY_MAGIC, MAX_CAPABILITY_FORMATS, MAX_CAPABILITY_KINDS,
 };
 pub use content::{
-    decode_content, encode_attachment, encode_mention, encode_text, DecodedContent,
-    CONTENT_FORMAT_V1, CONTENT_HEADER_LEN, CONTENT_KIND_ATTACHMENT, CONTENT_KIND_MENTION,
-    CONTENT_KIND_TEXT, CONTENT_MAGIC, MAX_COLLECTION_ENTRIES, MAX_CONTENT_FRAME_LEN,
-    MAX_CONTENT_PAYLOAD_LEN, MAX_NESTING_DEPTH,
+    decode_content, encode_attachment, encode_edit, encode_mention, encode_text, DecodedContent,
+    CONTENT_FORMAT_V1, CONTENT_HEADER_LEN, CONTENT_KIND_ATTACHMENT, CONTENT_KIND_EDIT,
+    CONTENT_KIND_MENTION, CONTENT_KIND_TEXT, CONTENT_MAGIC, MAX_COLLECTION_ENTRIES,
+    MAX_CONTENT_FRAME_LEN, MAX_CONTENT_PAYLOAD_LEN, MAX_NESTING_DEPTH,
+};
+pub use edit::{
+    decode_edit_payload, encode_edit_payload, DecodedEdit, Edit, EDIT_HEADER_LEN,
+    MAX_EDIT_PAYLOAD_LEN, MAX_EDIT_TEXT_LEN,
 };
 pub use envelope::{Envelope, EnvelopeKind, ENVELOPE_HEADER_LEN};
 pub use error::ProtocolError;

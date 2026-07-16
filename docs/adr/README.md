@@ -26,6 +26,7 @@ product promise merely because the file exists.
 | [0017](0017-optional-hybrid-modes.md) | Proposed | Optional service modes and trust boundary |
 | [0018](0018-pairwise-rendezvous.md) | Proposed | Rotating pairwise rendezvous |
 | [0019](0019-native-wake-gateway.md) | Proposed | Capability-gated native wake |
+| [0020](0020-authenticated-message-edits.md) | Accepted | Immutable authenticated message-edit events and deterministic convergence |
 
 The attachment implementation follows ADR-0015 and its hard no-airtime rule,
 but the ADR file still carries Proposed status. This index reports that

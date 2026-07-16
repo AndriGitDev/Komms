@@ -288,6 +288,25 @@ label.check input { width: auto; margin: 0; }
 }
 .msg .state-delivered { color: var(--accent); }
 .msg .state-held { color: var(--warn); }
+.msg .edited-marker { font-style: italic; }
+.msg .message-edit {
+  padding: 0;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+}
+.msg .edit-history {
+  margin-top: 0.4em;
+  border-top: 1px solid var(--line);
+  padding-top: 0.35em;
+  font-size: 0.78em;
+}
+.msg .edit-history summary { cursor: pointer; color: var(--text-dim); }
+.msg .edit-history ol { margin: 0.4em 0 0; padding-inline-start: 1.4em; }
+.msg .edit-history li + li { margin-top: 0.45em; }
+.msg .version-time { color: var(--text-dim); }
+.msg .version-body { margin-top: 0.15em; white-space: pre-wrap; }
 .msg .sender {
   display: block;
   color: var(--accent);

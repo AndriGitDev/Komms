@@ -24,9 +24,7 @@ use kult_node::{
     LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode, MentionSpan, Node,
     PinConversationList, PinInfo, ScheduledMessageInfo, StaleFolderInfo, StaleLabelInfo,
 };
-use kult_store::{
-    ContactRecord, ConversationId, GroupMessageRecord, MessageRecord, NoteMessageRecord,
-};
+use kult_store::{ContactRecord, ConversationId, NoteMessageRecord};
 use kult_transport::{
     DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, Transport, TransportOptions,
 };
@@ -100,6 +98,13 @@ pub(crate) enum Msg {
     Send {
         peer: [u8; 32],
         body: Vec<u8>,
+        resp: Resp<[u8; 16]>,
+    },
+    EditMessage {
+        peer: [u8; 32],
+        target_author: [u8; 32],
+        target_content_id: [u8; 16],
+        text: String,
         resp: Resp<[u8; 16]>,
     },
     AttachmentSend {
@@ -364,6 +369,13 @@ pub(crate) enum Msg {
         body: Vec<u8>,
         resp: Resp<[u8; 16]>,
     },
+    GroupEditMessage {
+        group: [u8; 32],
+        target_author: [u8; 32],
+        target_content_id: [u8; 16],
+        text: String,
+        resp: Resp<[u8; 16]>,
+    },
     GroupMentionCapability {
         group: [u8; 32],
         resp: Resp<GroupMentionCapability>,
@@ -394,7 +406,7 @@ pub(crate) enum Msg {
     },
     GroupMessages {
         group: [u8; 32],
-        resp: Resp<Vec<GroupMessageRecord>>,
+        resp: Resp<Vec<kult_node::ResolvedGroupMessage>>,
     },
     Contacts {
         resp: Resp<Vec<ContactRecord>>,
@@ -404,7 +416,7 @@ pub(crate) enum Msg {
     },
     Messages {
         peer: [u8; 32],
-        resp: Resp<Vec<MessageRecord>>,
+        resp: Resp<Vec<kult_node::ResolvedMessage>>,
     },
     SafetyNumber {
         peer: [u8; 32],
@@ -774,6 +786,25 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
             let _ = resp.send(
                 node.send_message(&peer, &body, now, &mut OsRng)
                     .map_err(fail),
+            );
+        }
+        Msg::EditMessage {
+            peer,
+            target_author,
+            target_content_id,
+            text,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.edit_message(
+                    &peer,
+                    target_author,
+                    target_content_id,
+                    &text,
+                    now,
+                    &mut OsRng,
+                )
+                .map_err(fail),
             );
         }
         Msg::AttachmentSend {
@@ -1155,6 +1186,25 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
                     .map_err(fail),
             );
         }
+        Msg::GroupEditMessage {
+            group,
+            target_author,
+            target_content_id,
+            text,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.group_edit_message(
+                    &group,
+                    target_author,
+                    target_content_id,
+                    &text,
+                    now,
+                    &mut OsRng,
+                )
+                .map_err(fail),
+            );
+        }
         Msg::GroupMentionCapability { group, resp } => {
             let _ = resp.send(node.group_mention_capability(&group).map_err(fail));
         }
@@ -1186,7 +1236,7 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
             let _ = resp.send(node.groups().map_err(fail));
         }
         Msg::GroupMessages { group, resp } => {
-            let _ = resp.send(node.group_messages(&group).map_err(fail));
+            let _ = resp.send(node.resolved_group_messages(&group).map_err(fail));
         }
         Msg::Contacts { resp } => {
             let _ = resp.send(node.contacts().map_err(fail));
@@ -1195,7 +1245,7 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
             let _ = resp.send(node.carrier_capabilities(now).map_err(fail));
         }
         Msg::Messages { peer, resp } => {
-            let _ = resp.send(node.messages_with(&peer).map_err(fail));
+            let _ = resp.send(node.resolved_messages_with(&peer).map_err(fail));
         }
         Msg::SafetyNumber { peer, resp } => {
             let _ = resp.send(node.safety_number_with(&peer).map_err(fail));

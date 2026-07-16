@@ -7,7 +7,9 @@ import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.Menu
 import android.view.MenuItem
+import android.view.View
 import android.view.ViewGroup
+import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -38,7 +40,10 @@ import uniffi.kult_ffi.ScheduledMessage
 class ChatActivity : SecureActivity() {
     private lateinit var peer: String
     private lateinit var contactName: String
-    private val adapter = MessagesAdapter()
+    private val adapter = MessagesAdapter(
+        onEdit = ::editMessage,
+        onHistory = { showEditHistory(it.versions) },
+    )
     private lateinit var attachmentController: AttachmentController
     private lateinit var audioController: AudioMessageController
 
@@ -46,6 +51,7 @@ class ChatActivity : SecureActivity() {
         val relevant = when (event) {
             is Event.DeliveryUpdated -> true // ids are ours or cheap to refresh
             is Event.MessageReceived -> event.peer == peer
+            is Event.MessageEdited -> event.peer == peer
             is Event.AwaitingFasterLink -> true
             is Event.ScheduledMessageUpdated -> true
             is Event.ScheduledMessageCancelled -> true
@@ -225,6 +231,16 @@ class ChatActivity : SecureActivity() {
         runNode(work = { session.cancelScheduled(message.id) }) { refresh() }
     }
 
+    private fun editMessage(message: Message) {
+        val session = NodeHolder.session ?: return
+        if (message.direction != Direction.OUTBOUND || message.contentKind != ContentKind.TEXT) return
+        showMessageEdit(message.body) { replacement ->
+            runNode(
+                work = { session.editMessage(peer, session.peer, message.id, replacement) },
+            ) { refresh() }
+        }
+    }
+
     /** Replace this contact's delivery hints (one per line, `kind value`). */
     private fun editHints() {
         val view = LayoutInflater.from(this).inflate(R.layout.dialog_hints, null)
@@ -250,7 +266,10 @@ private data class ChatScreenState(
 )
 
 /** Message bubbles with the honest state caption. */
-private class MessagesAdapter : RecyclerView.Adapter<MessagesAdapter.Holder>() {
+private class MessagesAdapter(
+    private val onEdit: (Message) -> Unit,
+    private val onHistory: (Message) -> Unit,
+) : RecyclerView.Adapter<MessagesAdapter.Holder>() {
     private var items = listOf<RenderedMessage<Message>>()
 
     class Holder(view: android.view.View) : RecyclerView.ViewHolder(view)
@@ -290,7 +309,28 @@ private class MessagesAdapter : RecyclerView.Adapter<MessagesAdapter.Holder>() {
         }
         val time = DateFormat.getTimeInstance(DateFormat.SHORT)
             .format(Date(message.timestamp.toLong() * 1000))
-        holder.itemView.findViewById<TextView>(R.id.message_meta).text =
-            if (state.isEmpty()) time else "$time · $state"
+        holder.itemView.findViewById<TextView>(R.id.message_meta).text = buildString {
+            append(if (state.isEmpty()) time else "$time · $state")
+            if (message.edited) {
+                append(" · ")
+                append(context.getString(R.string.message_edited_revision, message.editRevision.toString()))
+            }
+        }
+        holder.itemView.findViewById<Button>(R.id.message_edit).apply {
+            visibility = if (outbound && message.contentKind == ContentKind.TEXT) {
+                View.VISIBLE
+            } else {
+                View.GONE
+            }
+            setOnClickListener { onEdit(message) }
+        }
+        holder.itemView.findViewById<Button>(R.id.message_history).apply {
+            visibility = if (message.edited && message.versions.isNotEmpty()) {
+                View.VISIBLE
+            } else {
+                View.GONE
+            }
+            setOnClickListener { onHistory(message) }
+        }
     }
 }

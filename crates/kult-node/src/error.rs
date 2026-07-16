@@ -46,6 +46,12 @@ pub enum NodeError {
     /// Roster, local display mapping, or authenticated capability state changed
     /// since the user reviewed the composer.
     MentionReviewRequired,
+    /// The peer or one current group member has not authenticated Edit v1 support.
+    EditUnsupported,
+    /// The edit target, author, content kind, revision, or text is invalid.
+    InvalidEdit,
+    /// The target already has the maximum number of locally authored edits.
+    EditLimit,
     /// The peer has not authenticated support for the complete attachment
     /// manifest and bulk-lane contract.
     AttachmentUnsupported,
@@ -93,6 +99,11 @@ impl std::fmt::Display for NodeError {
             Self::MentionReviewRequired => {
                 f.write_str("group mention state changed; review is required again")
             }
+            Self::EditUnsupported => {
+                f.write_str("peer or group member does not support message edits")
+            }
+            Self::InvalidEdit => f.write_str("invalid message edit target, author, or text"),
+            Self::EditLimit => f.write_str("message edit limit reached"),
             Self::AttachmentUnsupported => {
                 f.write_str("peer does not advertise attachment support")
             }

@@ -129,6 +129,18 @@ re-verifies the id hash over the assembled bytes. Fragmentation policy and MTU t
 are chunked at 64 KiB. The 192 B bucket exists so a short text message plus overhead still
 fits typical LoRa payloads after fragmentation into ≤2 frames.
 
+### 5.1 Authenticated edit content
+
+C3 `Edit` is content-v1 kind `0x0004` inside the plaintext described above. Its
+exact author/content reference, revision, and replacement UTF-8 are protected by
+the same Double Ratchet or group sender-key AEAD as the original. Nothing in the
+outer envelope identifies an edit. Authorization uses the authenticated content
+sender and exact target bytes; visible names and local timestamps are excluded.
+Resolution by maximum `(revision, edit_content_id)` is application convergence,
+not a new cryptographic primitive or signature. The normative encoding and
+compatibility contract are [ADR-0020](adr/0020-authenticated-message-edits.md)
+and [18: Authenticated Message Editing](18-message-editing.md).
+
 ## 6. Group messaging (v1: sender keys)
 
 Per group, each member generates a **sender key**: a chain key + Ed25519-free MAC scheme

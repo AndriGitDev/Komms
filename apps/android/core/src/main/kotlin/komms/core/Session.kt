@@ -217,6 +217,14 @@ class Session private constructor(private val node: KultNode) {
     /** Queue a message; returns its id (progress arrives as events). */
     fun send(peer: String, body: String): String = node.send(peer, body)
 
+    /** Queue an immutable edit for this identity's exact pairwise Text event. */
+    fun editMessage(
+        peer: String,
+        targetAuthor: String,
+        targetContentId: String,
+        text: String,
+    ): String = node.editMessage(peer, targetAuthor, targetContentId, text)
+
     /**
      * Import one app-private, caller-selected path as a pairwise attachment.
      * The Android shell stages a SAF stream at this path and deletes it when
@@ -556,6 +564,14 @@ class Session private constructor(private val node: KultNode) {
 
     /** Queue a group message; progress is reported independently per member. */
     fun sendGroup(group: String, body: String): String = node.sendGroup(group, body)
+
+    /** Queue an immutable edit for this identity's exact group Text event. */
+    fun editGroupMessage(
+        group: String,
+        targetAuthor: String,
+        targetContentId: String,
+        text: String,
+    ): String = node.editGroupMessage(group, targetAuthor, targetContentId, text)
 
     /** Current exact-roster semantic Mention capability and review binding. */
     fun groupMentionCapability(group: String): GroupMentionCapability =

@@ -69,6 +69,13 @@ types remain export-only; a reviewed matching type still requires an explicit
 warning and user action before operating-system handoff. See
 [Safe File Presentation](17-safe-file-presentation.md).
 
+You can edit canonical text you authored in a pairwise or group conversation.
+Komms sends that change as a new encrypted event, keeps an **edited** marker and
+inspectable version history, and derives the same winner even when offline
+carriers deliver edits out of order. Editing does not erase what another device
+already received or copied. See
+[Authenticated Message Editing](18-message-editing.md).
+
 If you're comfortable with a terminal, the desktop shell is the quickest start:
 
 ```sh
@@ -98,6 +105,7 @@ Platform build instructions:
 | what is implemented versus remaining | [Roadmap](08-roadmap.md) |
 | which product features fit the model | [Feature Scope](11-feature-scope.md) |
 | the exact delivery status of each feature | [Feature Delivery Plan](12-feature-delivery-plan.md) |
+| how authored message edits work and what they cannot erase | [Authenticated Message Editing](18-message-editing.md) |
 | why a technical decision was made | [ADR Index](adr/README.md) |
 
 ## How can I help?

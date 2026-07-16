@@ -562,6 +562,27 @@ async fn handle_op(
                 .map_err(fail)?;
             Ok(json!({ "id": wire::hex_encode(&id) }))
         }
+        Op::EditMessage {
+            peer,
+            target_author,
+            target_content_id,
+            text,
+        } => {
+            let peer = wire::parse_peer(&peer)?;
+            let target_author = wire::parse_peer(&target_author)?;
+            let target_content_id = wire::parse_message(&target_content_id)?;
+            let id = node
+                .edit_message(
+                    &peer,
+                    target_author,
+                    target_content_id,
+                    &text,
+                    now(),
+                    &mut OsRng,
+                )
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
         Op::AttachmentSend {
             peer,
             path,
@@ -1156,6 +1177,27 @@ async fn handle_op(
                 .map_err(fail)?;
             Ok(json!({ "id": wire::hex_encode(&id) }))
         }
+        Op::GroupEditMessage {
+            group,
+            target_author,
+            target_content_id,
+            text,
+        } => {
+            let group = wire::parse_group(&group)?;
+            let target_author = wire::parse_peer(&target_author)?;
+            let target_content_id = wire::parse_message(&target_content_id)?;
+            let id = node
+                .group_edit_message(
+                    &group,
+                    target_author,
+                    target_content_id,
+                    &text,
+                    now(),
+                    &mut OsRng,
+                )
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
         Op::GroupMentionCapability { group } => {
             let group = wire::parse_group(&group)?;
             let capability = node.group_mention_capability(&group).map_err(fail)?;
@@ -1214,7 +1256,7 @@ async fn handle_op(
         Op::GroupMessages { group } => {
             let group = wire::parse_group(&group)?;
             let messages = node
-                .group_messages(&group)
+                .resolved_group_messages(&group)
                 .map_err(fail)?
                 .iter()
                 .map(wire::group_message_json)
@@ -1248,7 +1290,7 @@ async fn handle_op(
         Op::Messages { peer } => {
             let peer = wire::parse_peer(&peer)?;
             let messages: Vec<Value> = node
-                .messages_with(&peer)
+                .resolved_messages_with(&peer)
                 .map_err(fail)?
                 .iter()
                 .map(wire::message_json)

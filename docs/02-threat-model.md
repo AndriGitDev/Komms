@@ -148,6 +148,7 @@ viewer, or defeat A7. Exact behavior is in
 | **Local input minimization** | Reduce keyboard learning, correction, spellcheck, autofill, and secret-field exposure where native APIs permit. | Always-on B15 field controls and explicit best-effort/unavailable states; not an endpoint-compromise defense. |
 | **Identity-text safety** | Keep mutable human labels from becoming identity or silently hiding spoofing risk. | Exact peer-key targeting, NFC normalization, duplicate/confusable/bidi/invisible warnings, and explicit review for warned B5 renames. |
 | **Active-content isolation** | Authenticated message text must not become executable or network-active content. | B9 keeps exact source, applies a bounded local parser, exports only inert block/run tokens, literal-falls back on complexity, and never interprets HTML, links, images, or URL schemes. |
+| **Edit provenance** | A peer must not rewrite another author's message or make offline endpoints disagree about the visible version. | C3 immutable edit events bind exact author/content ids inside authenticated content; wrong-author/wrong-scope events never apply, and maximum `(revision, edit id)` converges without clocks. |
 | **Sovereignty** | Users hold their own keys and data; anyone can run every component. | Local-first storage, AGPLv3, no privileged nodes. |
 
 Optional Hybrid Infrastructure Layer modes do not change the confidentiality,
@@ -155,11 +156,21 @@ authenticity, deniability, identity, or off-grid goals above. They add a bounded
 metadata surface documented in
 [ADR-0017](adr/0017-optional-hybrid-modes.md): direct Standard-mode requests may
 expose a client address, opaque target, timing, and volume; a native wake gateway
-must learn the provider token it wakes; APNs/FCM observe app-instance delivery.
 Private mode separates client address from target request through Tor or a
 non-colluding OHTTP relay, but it does not promise anonymity against collusion
 or a global passive observer. Service compromise can suppress convenience work
 but cannot decrypt or forge an accepted Komms message.
+
+Message editing does not erase evidence or extend sender authority. The original
+and accepted versions remain sealed locally and in backups; only the exact
+authenticated author can target canonical text in the same conversation.
+Display names, local timestamps, and arrival order cannot authorize or select a
+winner. A malicious peer can send many authenticated attempts and consume its
+own conversation storage, so local authors are capped at 64 edits per target;
+authenticated inbound events remain durable to preserve convergence. Recipients
+may retain, copy, capture, or export any prior version, and the UI never describes
+editing as remote deletion. Exact limits are in
+[18: Authenticated Message Editing](18-message-editing.md).
 
 Private folders, conversation pins, and labels are endpoint organization, never
 communications metadata. Their definitions, single-folder assignments,

@@ -24,6 +24,7 @@ struct GroupChatView: View {
     @State private var showPlainFallback = false
     @State private var showFolder = false
     @State private var showLabels = false
+    @State private var messageEditor: MessageEditDraft?
 
     private var group: KommsCore.Group? { model.groups.first { $0.id == groupId } }
     private var history: [GroupMessage] {
@@ -128,6 +129,14 @@ struct GroupChatView: View {
                         }
                     })
             }
+            .sheet(item: $messageEditor) { editor in
+                MessageEditEditor(editor: editor) { replacement in
+                    try await model.editGroupMessage(
+                        group: groupId,
+                        targetContentId: editor.contentId,
+                        text: replacement)
+                }
+            }
     }
 
     private var conversationContent: some View {
@@ -152,7 +161,11 @@ struct GroupChatView: View {
                 ForEach(history, id: \.id) { message in
                     GroupMessageBubble(
                         message: message,
-                        memberName: { peer in memberName(peer) })
+                        memberName: { peer in memberName(peer) },
+                        edit: {
+                            messageEditor = MessageEditDraft(
+                                contentId: message.id, body: message.body)
+                        })
                 }
                 ForEach(scheduled, id: \.id) { message in
                     ScheduledMessageBubble(
@@ -664,6 +677,7 @@ private struct GroupMessageBubble: View {
     @EnvironmentObject private var model: AppModel
     let message: GroupMessage
     let memberName: (String) -> String
+    let edit: () -> Void
 
     private var outbound: Bool { message.direction == .outbound }
     private var renderedBody: FormattedText {
@@ -701,6 +715,20 @@ private struct GroupMessageBubble: View {
                 Text(Date(timeIntervalSince1970: TimeInterval(message.timestamp)), style: .time)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    if message.edited {
+                        Text("edited r\(message.editRevision)")
+                            .foregroundStyle(.secondary)
+                    }
+                    if outbound && message.contentKind == .text {
+                        Button("Edit", action: edit)
+                            .accessibilityLabel("Edit this group message")
+                    }
+                }
+                .font(.caption2)
+                if message.edited {
+                    EditVersionHistoryView(versions: message.versions)
+                }
                 if outbound {
                     ForEach(message.deliveries, id: \.peer) { delivery in
                         Text("\(memberName(delivery.peer)) · \(stateText(delivery.state))")

@@ -44,11 +44,11 @@ use kult_crypto::{
     InitialMessage, KdfProfile, PrekeyBundle, RatchetMessage, SafetyNumber,
 };
 use kult_protocol::{
-    decode_content, delivery_token, encode_text, epoch_day, fragment, intro_token,
-    is_capability_control, pad, unpad, CapabilityControl, DecodedContent, Envelope, EnvelopeKind,
-    FormatCapabilities, MailboxKey, Reassembler, ReceiptPayload, CONTENT_FORMAT_V1,
-    CONTENT_KIND_ATTACHMENT, CONTENT_KIND_MENTION, CONTENT_KIND_TEXT, ENVELOPE_HEADER_LEN,
-    REASSEMBLY_WINDOW_SECS,
+    decode_content, delivery_token, encode_edit, encode_text, epoch_day, fragment, intro_token,
+    is_capability_control, pad, unpad, CapabilityControl, DecodedContent, Edit, Envelope,
+    EnvelopeKind, FormatCapabilities, MailboxKey, Reassembler, ReceiptPayload, CONTENT_FORMAT_V1,
+    CONTENT_KIND_ATTACHMENT, CONTENT_KIND_EDIT, CONTENT_KIND_MENTION, CONTENT_KIND_TEXT,
+    ENVELOPE_HEADER_LEN, MAX_EDIT_TEXT_LEN, REASSEMBLY_WINDOW_SECS,
 };
 use kult_store::{
     ContactRecord, ConversationId, ConversationMetadata, DeliveryState, Direction,
@@ -61,6 +61,7 @@ mod api;
 mod attachment;
 mod carrier;
 mod contact_names;
+mod edits;
 mod error;
 mod file_presentation;
 mod folders;
@@ -77,15 +78,16 @@ mod vault;
 pub use api::{
     AttachmentConversation, AttachmentDirection, AttachmentInfo, AttachmentMetadata,
     AttachmentObjectInfo, CarrierCapability, CarrierCapabilitySnapshot, Command, ContentStatus,
-    CustomIconCrop, CustomIconInfo, CustomIconUsage, Event, FolderConversationInfo,
-    FolderConversationList, FolderInfo, FolderSelection, GroupInfo, GroupMentionCapability,
-    LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode, MentionCapabilityIssue,
-    MentionCapabilityIssueReason, MentionSpan, PinConversationInfo, PinConversationList, PinInfo,
-    ScheduledConversation, ScheduledMessageInfo, StaleFolderInfo,
-    StaleFolderReason as NodeStaleFolderReason, StaleLabelInfo,
-    StaleLabelReason as NodeStaleLabelReason,
+    CustomIconCrop, CustomIconInfo, CustomIconUsage, EditVersionInfo, Event,
+    FolderConversationInfo, FolderConversationList, FolderInfo, FolderSelection, GroupInfo,
+    GroupMentionCapability, LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode,
+    MentionCapabilityIssue, MentionCapabilityIssueReason, MentionSpan, PinConversationInfo,
+    PinConversationList, PinInfo, ResolvedGroupMessage, ResolvedMessage, ScheduledConversation,
+    ScheduledMessageInfo, StaleFolderInfo, StaleFolderReason as NodeStaleFolderReason,
+    StaleLabelInfo, StaleLabelReason as NodeStaleLabelReason,
 };
 pub use contact_names::{ContactNameAssessment, ContactNameWarning, MAX_CONTACT_NAME_BYTES};
+pub use edits::MAX_MESSAGE_EDITS;
 pub use error::NodeError;
 pub use file_presentation::{
     classify_attachment_file, AttachmentFileKind, AttachmentFilePresentation,
@@ -752,6 +754,15 @@ impl Node {
         Ok(self.store.messages_with(peer)?)
     }
 
+    /// Pairwise message read model with immutable edits resolved and edit
+    /// events removed from the ordinary row sequence.
+    pub fn resolved_messages_with(&self, peer: &[u8; 32]) -> Result<Vec<ResolvedMessage>> {
+        Ok(edits::resolve_pairwise(
+            self.store.messages_with(peer)?,
+            self.identity.public().ed,
+        ))
+    }
+
     /// Text history in the one reserved device-local note-to-self
     /// conversation, in insertion order.
     pub fn note_to_self_messages(&self) -> Result<Vec<NoteMessageRecord>> {
@@ -867,9 +878,79 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 16]> {
+        match decode_content(body) {
+            DecodedContent::Mention { .. } => return Err(NodeError::InvalidMention),
+            DecodedContent::Edit { .. } => return Err(NodeError::InvalidEdit),
+            _ => {}
+        }
         let mut id = [0u8; 16];
         rng.fill_bytes(&mut id);
         self.send_message_with_id(peer, body, id, now, now, rng)
+    }
+
+    /// Queue one immutable edit of this identity's exact canonical pairwise
+    /// Text event. The original and every edit remain sealed in history.
+    pub fn edit_message(
+        &mut self,
+        peer: &[u8; 32],
+        target_author: [u8; 32],
+        target_content_id: [u8; 16],
+        text: &str,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        let me = self.identity.public().ed;
+        if target_author != me || text.is_empty() || text.len() > MAX_EDIT_TEXT_LEN {
+            return Err(NodeError::InvalidEdit);
+        }
+        if !self.sessions.contains_key(peer) || !self.peer_supports_kind(peer, CONTENT_KIND_EDIT)? {
+            return Err(NodeError::EditUnsupported);
+        }
+        let records = self.store.messages_with(peer)?;
+        if !records.iter().any(|record| {
+            record.direction == Direction::Outbound
+                && matches!(
+                    decode_content(&record.body),
+                    DecodedContent::Text { id, .. } if id == target_content_id
+                )
+        }) {
+            return Err(NodeError::InvalidEdit);
+        }
+        let mut revisions = records.iter().filter_map(|record| {
+            if record.direction != Direction::Outbound {
+                return None;
+            }
+            match decode_content(&record.body) {
+                DecodedContent::Edit { edit, .. }
+                    if edit.target_author == me && edit.target_content_id == target_content_id =>
+                {
+                    Some(edit.revision)
+                }
+                _ => None,
+            }
+        });
+        let mut count = 0usize;
+        let mut revision = 0u64;
+        for value in revisions.by_ref() {
+            count += 1;
+            revision = revision.max(value);
+        }
+        if count >= MAX_MESSAGE_EDITS {
+            return Err(NodeError::EditLimit);
+        }
+        revision = revision.checked_add(1).ok_or(NodeError::EditLimit)?;
+        let mut id = [0u8; 16];
+        rng.fill_bytes(&mut id);
+        let wire = encode_edit(
+            id,
+            &Edit {
+                target_author: me,
+                target_content_id,
+                revision,
+                text,
+            },
+        )?;
+        self.send_message_with_id(peer, &wire, id, now, now, rng)
     }
 
     fn send_message_with_id(
@@ -1600,9 +1681,11 @@ impl Node {
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
         let decoded = decode_content(&body);
+        let decoded_is_edit = matches!(decoded, DecodedContent::Edit { .. });
         if let DecodedContent::Text { id, .. }
         | DecodedContent::Attachment { id, .. }
-        | DecodedContent::Mention { id, .. } = decoded
+        | DecodedContent::Mention { id, .. }
+        | DecodedContent::Edit { id, .. } = decoded
         {
             let duplicate = self.store.messages_with(&peer)?.iter().any(|record| {
                 record.direction == Direction::Inbound
@@ -1611,6 +1694,7 @@ impl Node {
                         DecodedContent::Text { id: stored_id, .. }
                             | DecodedContent::Attachment { id: stored_id, .. }
                             | DecodedContent::Mention { id: stored_id, .. }
+                            | DecodedContent::Edit { id: stored_id, .. }
                             if stored_id == id
                     )
             });
@@ -1632,6 +1716,17 @@ impl Node {
                     self.record_pairwise_attachment_offer(peer, id, &manifest, now, rng)?;
                 (id, Vec::new(), ContentStatus::Attachment { id, transfer })
             }
+            DecodedContent::Edit { id, edit } if edit.target_author == peer => (
+                id,
+                Vec::new(),
+                ContentStatus::Edit {
+                    id,
+                    target_author: edit.target_author,
+                    target_content_id: edit.target_content_id,
+                    revision: edit.revision,
+                },
+            ),
+            DecodedContent::Edit { id, .. } => (id, Vec::new(), ContentStatus::Malformed),
             // Mention is group-only. Retain exact authenticated bytes as a
             // malformed pairwise record and never surface spans or notify.
             DecodedContent::Mention { .. } => {
@@ -1672,23 +1767,34 @@ impl Node {
             },
             rng,
         )?;
-        self.events.push_back(Event::MessageReceived {
-            peer,
-            id,
-            timestamp: now,
-            body: event_body,
-            content,
-        });
+        match content {
+            ContentStatus::Edit {
+                target_content_id, ..
+            } => self.events.push_back(Event::MessageEdited {
+                peer,
+                target_content_id,
+            }),
+            ContentStatus::Malformed if decoded_is_edit => {}
+            _ => self.events.push_back(Event::MessageReceived {
+                peer,
+                id,
+                timestamp: now,
+                body: event_body,
+                content,
+            }),
+        }
         Ok(())
     }
 
-    fn peer_supports_text(&self, peer: &[u8; 32]) -> Result<bool> {
+    fn peer_supports_kind(&self, peer: &[u8; 32], kind: u16) -> Result<bool> {
         Ok(self
             .store
             .get_capabilities(peer)?
-            .is_some_and(|capabilities| {
-                capabilities.supports(CONTENT_FORMAT_V1, CONTENT_KIND_TEXT)
-            }))
+            .is_some_and(|capabilities| capabilities.supports(CONTENT_FORMAT_V1, kind)))
+    }
+
+    fn peer_supports_text(&self, peer: &[u8; 32]) -> Result<bool> {
+        self.peer_supports_kind(peer, CONTENT_KIND_TEXT)
     }
 
     fn local_capabilities() -> CapabilityControl {
@@ -1699,6 +1805,7 @@ impl Node {
                     CONTENT_KIND_TEXT,
                     CONTENT_KIND_ATTACHMENT,
                     CONTENT_KIND_MENTION,
+                    CONTENT_KIND_EDIT,
                 ],
             }],
         }
@@ -2300,4 +2407,48 @@ fn decode_hints(blobs: &[Vec<u8>]) -> Vec<DeliveryHint> {
         .iter()
         .filter_map(|bytes| postcard::from_bytes(bytes).ok())
         .collect()
+}
+
+#[cfg(test)]
+mod edit_tests {
+    use rand::{rngs::StdRng, SeedableRng};
+
+    use kult_crypto::KdfProfile;
+
+    use super::*;
+
+    #[test]
+    fn pairwise_edit_refuses_missing_old_client_capability() {
+        let mut rng = StdRng::seed_from_u64(0x00c3_0003);
+        let directory = tempfile::tempdir().unwrap();
+        let profile = KdfProfile {
+            m_cost_kib: 8,
+            t_cost: 1,
+            p_cost: 1,
+        };
+        let mut alice =
+            Node::create(&directory.path().join("alice.db"), b"a", profile, &mut rng).unwrap();
+        let mut bob =
+            Node::create(&directory.path().join("bob.db"), b"b", profile, &mut rng).unwrap();
+        let bob_bundle = bob.handshake_bundle(1_800_000_000, &mut rng).unwrap();
+        let bob_peer = alice
+            .add_contact("bob", &bob_bundle, &[], 1_800_000_000, &mut rng)
+            .unwrap();
+        let original = alice
+            .send_message(&bob_peer, b"legacy first flight", 1_800_000_001, &mut rng)
+            .unwrap();
+        let alice_peer = alice.identity.public().ed;
+
+        assert!(matches!(
+            alice.edit_message(
+                &bob_peer,
+                alice_peer,
+                original,
+                "must not send",
+                1_800_000_002,
+                &mut rng,
+            ),
+            Err(NodeError::EditUnsupported)
+        ));
+    }
 }

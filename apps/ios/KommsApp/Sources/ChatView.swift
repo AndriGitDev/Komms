@@ -16,6 +16,7 @@ struct ChatView: View {
     @State private var showFolder = false
     @State private var showLabels = false
     @State private var scheduleEditor: ScheduleEditor?
+    @State private var messageEditor: MessageEditDraft?
 
     private var contact: Contact? {
         model.contacts.first { $0.peer == peer }
@@ -45,7 +46,12 @@ struct ChatView: View {
                 ScrollView {
                     LazyVStack(spacing: 8) {
                         ForEach(history, id: \.id) { message in
-                            MessageBubble(message: message)
+                            MessageBubble(
+                                message: message,
+                                edit: {
+                                    messageEditor = MessageEditDraft(
+                                        contentId: message.id, body: message.body)
+                                })
                                 .id(message.id)
                         }
                         ForEach(scheduled, id: \.id) { message in
@@ -151,6 +157,12 @@ struct ChatView: View {
                     }
                 })
         }
+        .sheet(item: $messageEditor) { editor in
+            MessageEditEditor(editor: editor) { replacement in
+                try await model.editMessage(
+                    peer: peer, targetContentId: editor.contentId, text: replacement)
+            }
+        }
         .task {
             do {
                 try await model.follow(peer: peer)
@@ -187,6 +199,7 @@ struct ChatView: View {
 private struct MessageBubble: View {
     @EnvironmentObject private var model: AppModel
     let message: Message
+    let edit: () -> Void
 
     private var outbound: Bool { message.direction == .outbound }
 
@@ -211,13 +224,115 @@ private struct MessageBubble: View {
                         outbound ? Color.accentColor.opacity(0.2) : Color.gray.opacity(0.15),
                         in: RoundedRectangle(cornerRadius: 12))
                 if outbound {
-                    Text(stateText)
+                    HStack(spacing: 4) {
+                        Text(stateText)
+                            .foregroundStyle(
+                                message.state == .delivered ? .green : .secondary)
+                        if message.edited {
+                            Text("· edited r\(message.editRevision)")
+                                .foregroundStyle(.secondary)
+                        }
+                        if message.contentKind == .text {
+                            Button("Edit", action: edit)
+                                .accessibilityLabel("Edit this message")
+                        }
+                    }
+                    .font(.caption2)
+                } else if message.edited {
+                    Text("edited r\(message.editRevision)")
                         .font(.caption2)
-                        .foregroundStyle(
-                            message.state == .delivered ? .green : .secondary)
+                        .foregroundStyle(.secondary)
+                }
+                if message.edited {
+                    EditVersionHistoryView(versions: message.versions)
                 }
             }
             if !outbound { Spacer(minLength: 40) }
         }
+    }
+}
+
+struct MessageEditDraft: Identifiable {
+    let id = UUID()
+    let contentId: String
+    let body: String
+}
+
+struct MessageEditEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    let editor: MessageEditDraft
+    let save: (String) async throws -> Void
+
+    @State private var text: String
+    @State private var error: String?
+    @State private var working = false
+
+    init(editor: MessageEditDraft, save: @escaping (String) async throws -> Void) {
+        self.editor = editor
+        self.save = save
+        _text = State(initialValue: editor.body)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextEditor(text: $text)
+                        .frame(minHeight: 140)
+                        .incognitoKeyboard(capitalization: .sentences)
+                } footer: {
+                    Text("Saving creates a new authenticated edit event. The original and prior versions remain in this conversation.")
+                }
+                if let error {
+                    Text(error).foregroundStyle(.red)
+                }
+            }
+            .navigationTitle("Edit message")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        working = true
+                        error = nil
+                        Task {
+                            do {
+                                try await save(text)
+                                dismiss()
+                            } catch {
+                                self.error = errorText(error)
+                                working = false
+                            }
+                        }
+                    }
+                    .disabled(text.isEmpty || working)
+                }
+            }
+        }
+    }
+}
+
+struct EditVersionHistoryView: View {
+    let versions: [EditVersion]
+
+    var body: some View {
+        DisclosureGroup("Version history (\(versions.count))") {
+            ForEach(Array(versions.reversed().enumerated()), id: \.offset) { _, version in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(version.revision == 0 ? "Original" : "Revision \(version.revision)")
+                        .font(.caption.bold())
+                    Text(Date(timeIntervalSince1970: TimeInterval(version.timestamp)), style: .time)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(version.body)
+                        .font(.caption)
+                        .textSelection(.enabled)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 2)
+            }
+        }
+        .font(.caption)
     }
 }

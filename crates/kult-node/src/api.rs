@@ -2,7 +2,10 @@
 //! Render-safe attachment state lands here before the planned RPC/UniFFI and
 //! shell adapters; protocol secrets and storage internals never cross it.
 
-use kult_store::{ConversationId, CustomIconTarget, DeliveryState, MediaTransferState};
+use kult_store::{
+    ConversationId, CustomIconTarget, DeliveryState, GroupMessageRecord, MediaTransferState,
+    MessageRecord,
+};
 use kult_transport::DeliveryHint;
 
 /// Optional exact crop in oriented source pixels for a custom icon.
@@ -41,6 +44,47 @@ pub struct CustomIconUsage {
     pub records: usize,
     /// Aggregate encoded PNG bytes.
     pub bytes: usize,
+}
+
+/// One immutable original/edit version retained for local inspection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditVersionInfo {
+    /// Original content id for revision zero, otherwise the edit-event id.
+    pub id: [u8; 16],
+    /// Zero for the original; positive for an Edit event.
+    pub revision: u64,
+    /// Local send/receive time for presentation only.
+    pub timestamp: u64,
+    /// Exact authenticated UTF-8 for this version.
+    pub body: String,
+}
+
+/// Pairwise history row with ADR-0020 edits deterministically resolved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedMessage {
+    /// Original immutable record with only its returned read-model body
+    /// replaced by the winning canonical Text frame when edited.
+    pub record: MessageRecord,
+    /// Whether a valid edit wins over the original.
+    pub edited: bool,
+    /// Winning positive revision, or zero for the original.
+    pub winning_revision: u64,
+    /// Original plus every valid edit, ordered by convergence tuple.
+    pub versions: Vec<EditVersionInfo>,
+}
+
+/// Group history row with ADR-0020 edits deterministically resolved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedGroupMessage {
+    /// Original immutable group record with only its returned read-model body
+    /// replaced by the winning canonical Text frame when edited.
+    pub record: GroupMessageRecord,
+    /// Whether a valid edit wins over the original.
+    pub edited: bool,
+    /// Winning positive revision, or zero for the original.
+    pub winning_revision: u64,
+    /// Original plus every valid edit, ordered by convergence tuple.
+    pub versions: Vec<EditVersionInfo>,
 }
 
 /// Render-safe private local folder definition.
@@ -610,6 +654,18 @@ pub enum ContentStatus {
         /// Sorted non-overlapping semantic spans.
         spans: Vec<MentionSpan>,
     },
+    /// Canonical immutable message edit. It refreshes the exact target and is
+    /// never rendered as a standalone chat row.
+    Edit {
+        /// Edit-event content id.
+        id: [u8; 16],
+        /// Exact authenticated original author.
+        target_author: [u8; 32],
+        /// Exact canonical Text content id being edited.
+        target_content_id: [u8; 16],
+        /// Positive author-local revision.
+        revision: u64,
+    },
     /// Authenticated content this client version cannot interpret.
     Unsupported {
         /// Typed framing version, when known.
@@ -682,6 +738,14 @@ pub enum Event {
         /// Explicit content interpretation.
         content: ContentStatus,
     },
+    /// A canonical inbound edit was stored; shells refresh the exact pairwise
+    /// target rather than append a row.
+    MessageEdited {
+        /// Pairwise peer that authored the edit and original.
+        peer: [u8; 32],
+        /// Original canonical Text content id.
+        target_content_id: [u8; 16],
+    },
     /// Text was appended to the reserved local note-to-self conversation.
     NoteToSelfMessageAdded {
         /// Local note record id.
@@ -749,6 +813,15 @@ pub enum Event {
         body: Vec<u8>,
         /// Explicit content interpretation.
         content: ContentStatus,
+    },
+    /// A canonical inbound group edit was stored; shells refresh the target.
+    GroupMessageEdited {
+        /// Exact group conversation.
+        group: [u8; 32],
+        /// Authenticated edit/original author.
+        sender: [u8; 32],
+        /// Original canonical Text content id.
+        target_content_id: [u8; 16],
     },
     /// A durably stored canonical group Mention targets this exact local peer.
     /// Applications re-read the record by id; no text or target list is copied

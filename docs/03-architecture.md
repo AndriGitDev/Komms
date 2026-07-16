@@ -72,6 +72,16 @@ runs. RPC and UniFFI mirror that model; shells create only inert native text
 primitives. Exact source continues through the ordinary lifecycle below, so old
 clients, backups, receipts, padding, and carrier selection are unchanged.
 
+C3 editing uses the opposite storage shape while keeping the same layer
+boundaries: `kult-protocol` owns canonical content-v1 `Edit`; `kult-node`
+authorizes exact author/content references and derives the deterministic winner;
+the existing sealed message tables retain immutable originals and edits; RPC and
+UniFFI expose only strict identifiers and render-safe history; shells refresh an
+exact target on typed edit events. Edits still traverse the ordinary ratchet or
+sender-key lane, so no transport can observe the kind and no shell implements
+ordering or authorization independently. See
+[18: Authenticated Message Editing](18-message-editing.md).
+
 ## 3. Message lifecycle
 
 ### Send path

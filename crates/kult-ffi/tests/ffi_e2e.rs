@@ -1354,6 +1354,83 @@ fn two_nodes_message_via_ffi_only() {
     assert_eq!(history[0].state, DeliveryState::Delivered);
     assert_eq!(history[0].body, "hello through the bindings");
 
+    // Authenticated capabilities have now crossed the same encrypted
+    // session, so a second Text event is editable through exact UniFFI ids.
+    std::thread::sleep(Duration::from_millis(300));
+    let editable = alice
+        .send(bob_peer.clone(), "original through bindings".to_owned())
+        .unwrap();
+    b_rec.wait("bob's canonical editable message", |event| {
+        matches!(
+            event,
+            Event::MessageReceived {
+                id,
+                content_kind: ContentKind::Text,
+                ..
+            } if *id == editable
+        )
+    });
+    a_rec.wait("editable message delivered", |event| {
+        matches!(
+            event,
+            Event::DeliveryUpdated {
+                id,
+                state: DeliveryState::Delivered,
+            } if *id == editable
+        )
+    });
+    let wrong_author = alice
+        .edit_message(
+            bob_peer.clone(),
+            bob_peer.clone(),
+            editable.clone(),
+            "forged".to_owned(),
+        )
+        .unwrap_err();
+    assert!(wrong_author.to_string().contains("edit"));
+    let edit = alice
+        .edit_message(
+            bob_peer.clone(),
+            alice_peer.clone(),
+            editable.clone(),
+            "revised through bindings".to_owned(),
+        )
+        .unwrap();
+    b_rec.wait("typed pairwise edit refresh", |event| {
+        matches!(
+            event,
+            Event::MessageEdited {
+                peer,
+                target_content_id,
+            } if peer == &alice_peer && target_content_id == &editable
+        )
+    });
+    a_rec.wait("edit delivered", |event| {
+        matches!(
+            event,
+            Event::DeliveryUpdated {
+                id,
+                state: DeliveryState::Delivered,
+            } if id == &edit
+        )
+    });
+    for history in [
+        alice.messages_with(bob_peer.clone()).unwrap(),
+        bob.messages_with(alice_peer.clone()).unwrap(),
+    ] {
+        assert_eq!(history.len(), 2, "edit events do not become chat rows");
+        let message = history
+            .iter()
+            .find(|message| message.id == editable)
+            .unwrap();
+        assert!(message.edited);
+        assert_eq!(message.edit_revision, 1);
+        assert_eq!(message.body, "revised through bindings");
+        assert_eq!(message.versions.len(), 2);
+        assert_eq!(message.versions[0].body, "original through bindings");
+        assert_eq!(message.versions[1].body, "revised through bindings");
+    }
+
     // Attachment calls are path-bounded, typed, and event-compatible across
     // Kotlin/Swift generation without exposing protocol or store internals.
     let attachment_bytes = b"attachment bytes through UniFFI\0exactly";
@@ -1878,6 +1955,72 @@ fn groups_via_ffi_only() {
         .iter()
         .flat_map(|message| &message.deliveries)
         .all(|delivery| delivery.state == DeliveryState::Delivered));
+
+    std::thread::sleep(Duration::from_millis(300));
+    let editable = alice
+        .send_group(group.clone(), "editable group original".to_owned())
+        .unwrap();
+    b_rec.wait("bob's editable group Text", |event| {
+        matches!(
+            event,
+            Event::GroupMessageReceived {
+                id,
+                content_kind: ContentKind::Text,
+                ..
+            } if id == &editable
+        )
+    });
+    a_rec.wait("editable group copy delivered", |event| {
+        matches!(
+            event,
+            Event::GroupDeliveryUpdated {
+                id,
+                peer,
+                state: DeliveryState::Delivered,
+            } if id == &editable && peer == &bob_peer
+        )
+    });
+    let group_edit = alice
+        .edit_group_message(
+            group.clone(),
+            alice_peer.clone(),
+            editable.clone(),
+            "editable group revised".to_owned(),
+        )
+        .unwrap();
+    b_rec.wait("typed group edit refresh", |event| {
+        matches!(
+            event,
+            Event::GroupMessageEdited {
+                group: event_group,
+                sender,
+                target_content_id,
+            } if event_group == &group && sender == &alice_peer && target_content_id == &editable
+        )
+    });
+    a_rec.wait("group edit delivered", |event| {
+        matches!(
+            event,
+            Event::GroupDeliveryUpdated {
+                id,
+                peer,
+                state: DeliveryState::Delivered,
+            } if id == &group_edit && peer == &bob_peer
+        )
+    });
+    for history in [
+        alice.group_messages(group.clone()).unwrap(),
+        bob.group_messages(group.clone()).unwrap(),
+    ] {
+        let message = history
+            .iter()
+            .find(|message| message.id == editable)
+            .unwrap();
+        assert_eq!(message.body, "editable group revised");
+        assert!(message.edited);
+        assert_eq!(message.edit_revision, 1);
+        assert_eq!(message.versions.len(), 2);
+    }
 
     let capability = mention_capability(&alice, &group);
     let history_before_invalid = alice.group_messages(group.clone()).unwrap().len();

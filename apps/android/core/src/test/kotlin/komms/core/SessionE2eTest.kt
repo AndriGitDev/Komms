@@ -109,6 +109,12 @@ class SessionE2eTest {
             File(root, "fixtures/c1-file-presentation-parity.json").readText(),
         ).jsonObject
     }
+    private val messageEditFixture by lazy {
+        val root = File(checkNotNull(System.getProperty("komms.repo.root")))
+        Json.parseToJsonElement(
+            File(root, "fixtures/c3-message-edit-parity.json").readText(),
+        ).jsonObject
+    }
     private val textFormattingFixture by lazy {
         val root = File(checkNotNull(System.getProperty("komms.repo.root")))
         Json.parseToJsonElement(File(root, "fixtures/b9-text-formatting-parity.json").readText()).jsonObject
@@ -144,6 +150,31 @@ class SessionE2eTest {
     private val incognitoKeyboardFixture by lazy {
         val root = File(checkNotNull(System.getProperty("komms.repo.root")))
         Json.parseToJsonElement(File(root, "fixtures/b15-incognito-keyboard-parity.json").readText()).jsonObject
+    }
+
+    @Test
+    fun `message edit fixture has canonical wire and deterministic winner`() {
+        val fixture = messageEditFixture
+        val case = fixture.getValue("case").jsonObject
+        val versions = case.getValue("expected_versions").jsonArray.map { it.jsonObject }
+        assertEquals("komms-message-edit-parity-v1", fixture.getValue("schema").jsonPrimitive.content)
+        assertEquals("1", fixture.getValue("content_format").jsonPrimitive.content)
+        assertEquals("4", fixture.getValue("content_kind").jsonPrimitive.content)
+        assertEquals("16384", fixture.getValue("maximum_text_bytes").jsonPrimitive.content)
+        assertEquals("64", fixture.getValue("maximum_local_edits").jsonPrimitive.content)
+        assertEquals(64, case.getValue("target_author").jsonPrimitive.content.length)
+        assertEquals(32, case.getValue("target_content_id").jsonPrimitive.content.length)
+        assertEquals(
+            listOf("0", "1", "2", "2"),
+            versions.map { it.getValue("revision").jsonPrimitive.content },
+        )
+        assertEquals("2", case.getValue("winning_revision").jsonPrimitive.content)
+        assertEquals("deterministic winner", case.getValue("winning_text").jsonPrimitive.content)
+        assertEquals(
+            case.getValue("winning_text").jsonPrimitive.content,
+            versions.last().getValue("text").jsonPrimitive.content,
+        )
+        assertTrue(versions.all { it.getValue("id").jsonPrimitive.content.length == 32 })
     }
 
     @Test
@@ -478,6 +509,43 @@ class SessionE2eTest {
         assertEquals(Direction.INBOUND, inbox[0].direction)
         assertEquals(DeliveryState.RECEIVED, inbox[0].state)
         assertEquals(formattedSource, inbox[0].body)
+
+        Thread.sleep(300)
+        val editable = alice.send(bobPeer, "Android edit original")
+        bEv.wait("Bob's canonical Android Text") {
+            (it as? Event.MessageReceived)?.takeIf { event ->
+                event.id == editable && event.contentKind == ContentKind.TEXT
+            }
+        }
+        aEv.wait("Android editable delivery") {
+            (it as? Event.DeliveryUpdated)?.takeIf { event ->
+                event.id == editable && event.state == DeliveryState.DELIVERED
+            }
+        }
+        val edit = alice.editMessage(
+            bobPeer, alicePeer, editable, "Android edit revised",
+        )
+        bEv.wait("Android pairwise edit refresh") {
+            (it as? Event.MessageEdited)?.takeIf { event ->
+                event.peer == alicePeer && event.targetContentId == editable
+            }
+        }
+        aEv.wait("Android edit delivery") {
+            (it as? Event.DeliveryUpdated)?.takeIf { event ->
+                event.id == edit && event.state == DeliveryState.DELIVERED
+            }
+        }
+        listOf(alice.messages(bobPeer), bob.messages(alicePeer)).forEach { messages ->
+            assertEquals(2, messages.size, "Edit events are not standalone rows")
+            val message = messages.single { it.id == editable }
+            assertEquals("Android edit revised", message.body)
+            assertTrue(message.edited)
+            assertEquals(1uL, message.editRevision)
+            assertEquals(
+                listOf("Android edit original", "Android edit revised"),
+                message.versions.map { it.body },
+            )
+        }
 
         // The SAF layer stages a content:// stream in app-private storage;
         // Session sees only that bounded path and the provider's untrusted
@@ -818,6 +886,41 @@ class SessionE2eTest {
         // their live group disappears locally and the creator converges too.
         alice.removeGroupMember(group, carolPeer)
         assertEquals(2, alice.groups()[0].members.size)
+        Thread.sleep(300)
+        val editable = alice.sendGroup(group, "Android group edit original")
+        bEv.wait("Bob's editable Android group Text") {
+            (it as? Event.GroupMessageReceived)?.takeIf { event ->
+                event.id == editable && event.contentKind == ContentKind.TEXT
+            }
+        }
+        aEv.wait("Android editable group delivery") {
+            (it as? Event.GroupDeliveryUpdated)?.takeIf { event ->
+                event.id == editable && event.peer == bobPeer &&
+                    event.state == DeliveryState.DELIVERED
+            }
+        }
+        val edit = alice.editGroupMessage(
+            group, aliceAtBob, editable, "Android group edit revised",
+        )
+        bEv.wait("Android group edit refresh") {
+            (it as? Event.GroupMessageEdited)?.takeIf { event ->
+                event.group == group && event.sender == aliceAtBob &&
+                    event.targetContentId == editable
+            }
+        }
+        aEv.wait("Android group edit delivery") {
+            (it as? Event.GroupDeliveryUpdated)?.takeIf { event ->
+                event.id == edit && event.peer == bobPeer &&
+                    event.state == DeliveryState.DELIVERED
+            }
+        }
+        listOf(alice.groupMessages(group), bob.groupMessages(group)).forEach { messages ->
+            val message = messages.single { it.id == editable }
+            assertEquals("Android group edit revised", message.body)
+            assertTrue(message.edited)
+            assertEquals(1uL, message.editRevision)
+            assertEquals(2, message.versions.size)
+        }
         bob.leaveGroup(group)
         assertTrue(bob.groups().isEmpty())
         val deadline = System.nanoTime() + 30_000_000_000L

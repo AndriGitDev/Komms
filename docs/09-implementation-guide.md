@@ -199,6 +199,19 @@ materialization. Do not add sniffing, preview, scanner, or transport behavior to
 this API. The complete contract is
 [17: Safe File Presentation](17-safe-file-presentation.md).
 
+C3 editing is a replicated immutable content feature. Encode only canonical
+content-v1 kind `0x0004`; never expose a generic raw-content route that can
+smuggle an Edit around `kult-node` authorization. Pairwise and group send APIs
+must accept exact target-author and target-content-id bytes, require authenticated
+Edit capability (and complete current-roster support for groups), and reject
+non-Text targets. History consumers use the node resolver, not raw rows; the
+resolver hides edit events, retains ordered versions, and selects maximum
+`(revision, edit_id)` independent of arrival time. RPC operations are
+`edit_message` and `group_edit_message`; CLI commands are `edit` and
+`group-edit`; UniFFI mirrors them and the typed refresh events. The complete
+wire, storage, shell, and qualification contract is
+[18: Authenticated Message Editing](18-message-editing.md).
+
 ## 4. Testing strategy (beyond per-milestone acceptance)
 
 - **KATs**: primitive test vectors vendored under `crates/kult-crypto/tests/vectors/`.
@@ -206,7 +219,8 @@ this API. The complete contract is
   outside bounds ⇒ typed failure. Padding round-trips. Fragment/reassemble = identity.
 - **Fuzz targets** (`cargo-fuzz`): crypto envelope, handshake, bundle, mnemonic,
   and attachment-chunk decoding; protocol envelope, bundle import, reassembly,
-  content, capability, attachment manifest/bulk/ranges, and mention decoding.
+  content, capability, attachment manifest/bulk/ranges, mention, and edit
+  decoding.
 - **Simulation harness** (M3+): in-process multi-node network with scripted link
   conditions (latency, loss, partitions, MTU), deterministic seed, replayable failures.
   This harness is how store-and-forward, NACK, and bridging logic get tested without

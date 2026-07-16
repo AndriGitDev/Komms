@@ -52,7 +52,11 @@ class GroupChatActivity : SecureActivity() {
     private lateinit var groupId: String
     private lateinit var groupName: String
     private var contacts = listOf<Contact>()
-    private val adapter = GroupMessagesAdapter { peer -> memberName(peer) }
+    private val adapter = GroupMessagesAdapter(
+        memberName = { peer -> memberName(peer) },
+        onEdit = ::editMessage,
+        onHistory = { showEditHistory(it.versions) },
+    )
     private lateinit var attachmentController: AttachmentController
     private lateinit var audioController: AudioMessageController
     private var currentGroup: Group? = null
@@ -63,6 +67,7 @@ class GroupChatActivity : SecureActivity() {
     private val listener: (Event) -> Unit = { event ->
         val relevant = when (event) {
             is Event.GroupMessageReceived -> event.group == groupId
+            is Event.GroupMessageEdited -> event.group == groupId
             is Event.GroupDeliveryUpdated -> true // ids are cheap to refresh
             is Event.GroupUpdated -> event.group == groupId
             is Event.MentionReceived -> true
@@ -606,6 +611,18 @@ class GroupChatActivity : SecureActivity() {
         runNode(work = { session.cancelScheduled(message.id) }) { refresh() }
     }
 
+    private fun editMessage(message: GroupMessage) {
+        val session = NodeHolder.session ?: return
+        if (message.direction != Direction.OUTBOUND || message.contentKind != ContentKind.TEXT) return
+        showMessageEdit(message.body) { replacement ->
+            runNode(
+                work = {
+                    session.editGroupMessage(groupId, session.peer, message.id, replacement)
+                },
+            ) { refresh() }
+        }
+    }
+
     private fun memberName(peer: String): String {
         val self = NodeHolder.session?.peer
         val contact = contacts.firstOrNull { it.peer == peer }
@@ -752,6 +769,8 @@ private class MentionComposerSpan : CharacterStyle() {
 /** Group bubbles with sender names inbound and per-recipient state outbound. */
 private class GroupMessagesAdapter(
     private val memberName: (String) -> String,
+    private val onEdit: (GroupMessage) -> Unit,
+    private val onHistory: (GroupMessage) -> Unit,
 ) : RecyclerView.Adapter<GroupMessagesAdapter.Holder>() {
     private var items = listOf<RenderedMessage<GroupMessage>>()
 
@@ -786,9 +805,16 @@ private class GroupMessagesAdapter(
             val labels = message.mentionSpans.map { span -> "Mention of ${memberName(span.target)}" }
             showFormattedText(rendered.formatted, labels)
         }
-        holder.itemView.findViewById<TextView>(R.id.group_message_time).text =
-            DateFormat.getTimeInstance(DateFormat.SHORT)
-                .format(Date(message.timestamp.toLong() * 1000))
+        holder.itemView.findViewById<TextView>(R.id.group_message_time).text = buildString {
+            append(
+                DateFormat.getTimeInstance(DateFormat.SHORT)
+                    .format(Date(message.timestamp.toLong() * 1000)),
+            )
+            if (message.edited) {
+                append(" · ")
+                append(context.getString(R.string.message_edited_revision, message.editRevision.toString()))
+            }
+        }
         holder.itemView.findViewById<TextView>(R.id.group_message_deliveries).apply {
             visibility = if (outbound) View.VISIBLE else View.GONE
             text = message.deliveries.joinToString("\n") { delivery ->
@@ -798,6 +824,22 @@ private class GroupMessagesAdapter(
                     deliveryState(context = context, state = delivery.state),
                 )
             }
+        }
+        holder.itemView.findViewById<Button>(R.id.group_message_edit).apply {
+            visibility = if (outbound && message.contentKind == ContentKind.TEXT) {
+                View.VISIBLE
+            } else {
+                View.GONE
+            }
+            setOnClickListener { onEdit(message) }
+        }
+        holder.itemView.findViewById<Button>(R.id.group_message_history).apply {
+            visibility = if (message.edited && message.versions.isNotEmpty()) {
+                View.VISIBLE
+            } else {
+                View.GONE
+            }
+            setOnClickListener { onHistory(message) }
         }
     }
 

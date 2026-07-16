@@ -399,7 +399,7 @@ fn desktop_incognito_keyboard_covers_every_editable_text_field_before_unlock() {
         - html
             .matches("<textarea class=\"share-hex\" rows=\"4\" readonly")
             .count();
-    assert_eq!(25, editable_text_fields);
+    assert_eq!(26, editable_text_fields);
     assert_eq!(
         editable_text_fields,
         html.matches("data-incognito-input=").count()
@@ -637,6 +637,64 @@ fn two_desktops_pair_by_bundle_hex_and_message() {
     assert!(!inbox[0].outbound);
     assert_eq!(inbox[0].state, "received");
     assert_eq!(inbox[0].body, formatted_source);
+
+    std::thread::sleep(Duration::from_millis(300));
+    let editable = alice
+        .send(bob_peer.clone(), "desktop edit original".to_owned())
+        .unwrap();
+    b_ev.wait("bob's canonical desktop Text", |event| {
+        matches!(
+            event,
+            UiEvent::MessageReceived {
+                id,
+                content_kind: "text",
+                ..
+            } if id == &editable
+        )
+    });
+    a_ev.wait("editable desktop delivery", |event| {
+        matches!(
+            event,
+            UiEvent::DeliveryUpdated { id, state: "delivered" } if id == &editable
+        )
+    });
+    let edit = alice
+        .edit_message(
+            bob_peer.clone(),
+            alice_peer.clone(),
+            editable.clone(),
+            "desktop edit revised".to_owned(),
+        )
+        .unwrap();
+    b_ev.wait("desktop pairwise edit refresh", |event| {
+        matches!(
+            event,
+            UiEvent::MessageEdited {
+                peer,
+                target_content_id,
+            } if peer == &alice_peer && target_content_id == &editable
+        )
+    });
+    a_ev.wait("desktop edit delivery", |event| {
+        matches!(
+            event,
+            UiEvent::DeliveryUpdated { id, state: "delivered" } if id == &edit
+        )
+    });
+    for history in [
+        alice.messages(bob_peer.clone()).unwrap(),
+        bob.messages(alice_peer.clone()).unwrap(),
+    ] {
+        assert_eq!(history.len(), 2, "edit events are not standalone bubbles");
+        let message = history
+            .iter()
+            .find(|message| message.id == editable)
+            .unwrap();
+        assert_eq!(message.body, "desktop edit revised");
+        assert!(message.edited);
+        assert_eq!(message.edit_revision, 1);
+        assert_eq!(message.versions.len(), 2);
+    }
 
     // The verify screen: identical digits and QR on both ends, and the
     // "mark verified" button reflects into the contact list badge.
@@ -1223,6 +1281,67 @@ fn desktop_group_ux_create_roster_message_and_partial_delivery() {
         .remove_group_member(group.clone(), carol_peer)
         .unwrap();
     assert_eq!(alice.groups().unwrap()[0].members.len(), 2);
+
+    std::thread::sleep(Duration::from_millis(300));
+    let editable = alice
+        .send_group(group.clone(), "desktop group edit original".to_owned())
+        .unwrap();
+    b_ev.wait("Bob's editable group Text", |event| {
+        matches!(
+            event,
+            UiEvent::GroupMessageReceived {
+                id,
+                content_kind: "text",
+                ..
+            } if id == &editable
+        )
+    });
+    a_ev.wait("editable group copy delivered", |event| {
+        matches!(
+            event,
+            UiEvent::GroupDeliveryUpdated { id, peer, state: "delivered" }
+                if id == &editable && peer == &bob_peer
+        )
+    });
+    let edit = alice
+        .edit_group_message(
+            group.clone(),
+            alice_at_bob.clone(),
+            editable.clone(),
+            "desktop group edit revised".to_owned(),
+        )
+        .unwrap();
+    b_ev.wait("desktop group edit refresh", |event| {
+        matches!(
+            event,
+            UiEvent::GroupMessageEdited {
+                group: event_group,
+                sender,
+                target_content_id,
+            } if event_group == &group && sender == &alice_at_bob
+                && target_content_id == &editable
+        )
+    });
+    a_ev.wait("desktop group edit delivery", |event| {
+        matches!(
+            event,
+            UiEvent::GroupDeliveryUpdated { id, peer, state: "delivered" }
+                if id == &edit && peer == &bob_peer
+        )
+    });
+    for history in [
+        alice.group_messages(group.clone()).unwrap(),
+        bob.group_messages(group.clone()).unwrap(),
+    ] {
+        let message = history
+            .iter()
+            .find(|message| message.id == editable)
+            .unwrap();
+        assert_eq!(message.body, "desktop group edit revised");
+        assert!(message.edited);
+        assert_eq!(message.edit_revision, 1);
+        assert_eq!(message.versions.len(), 2);
+    }
     bob.leave_group(group.clone()).unwrap();
     assert!(bob.groups().unwrap().is_empty());
     let deadline = Instant::now() + Duration::from_secs(30);

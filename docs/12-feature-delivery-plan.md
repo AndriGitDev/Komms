@@ -23,9 +23,9 @@ not.
 ## 2. Current baseline
 
 Komms has a strong transport and security foundation plus shared versioned
-content, attachment, and carrier-capability front doors. New replicated content
-types such as edits, polls, expiry, and call signaling still require their own
-accepted designs before individual shells implement UI.
+content, attachment, carrier-capability, and authenticated-edit front doors.
+Remaining replicated content types such as polls, expiry, and call signaling
+still require their own accepted designs before individual shells implement UI.
 
 | Feature from scope | Current status | Main gap |
 |---|---|---|
@@ -50,7 +50,7 @@ accepted designs before individual shells implement UI.
 | Labels | Shipped (contact/conversation) | Private pairwise, group, and note-to-self labels with fixed limits, stale cleanup, and accessible any/all filtering; message labels remain deferred. |
 | File sharing | Shipped | Bounded F3/F4 delivery plus shared fail-closed file rows, explicit warned open/export, mismatch handling, lifecycle cleanup, and cross-language parity. |
 | Linked devices | Planned | Proximate linking, device keys, sync, revocation, and recovery. |
-| Message editing | Planned | Authenticated revisions and deterministic offline reconciliation. |
+| Message editing | Shipped | ADR-0020 immutable authenticated revisions, deterministic offline reconciliation, retained versions, and every front door/shell. |
 | Disappearing/view-once messages | Planned | Expiry semantics, relay metadata design, deletion limits. |
 | Group polls | Planned | Typed group content and convergent vote updates. |
 | Admin/role controls | Planned | Cryptographic group capabilities and authority transitions. |
@@ -84,10 +84,10 @@ unknown-content behavior, sealed capability state, and render-safe RPC/UniFFI
 outcomes are shared across pairwise and sender-key group messages.
 
 The shipped codec keeps legacy raw text readable and carries bounded typed
-`Text`, `Attachment`, and `Mention` content under their accepted feature
-contracts. Future candidates include `Edit`, `Poll`, and `PollVote`; each exact
-shape still requires its own accepted design. Call signaling remains
-the separate `CallSignal` envelope proposed by ADR-0013. Formatting remains text
+`Text`, `Attachment`, `Mention`, and `Edit` content under their accepted feature
+contracts. Future candidates include `Poll` and `PollVote`; each exact shape
+still requires its own accepted design. Call signaling remains the separate
+`CallSignal` envelope proposed by ADR-0013. Formatting remains text
 plus local rendering metadata and does not need a distinct wire type.
 
 The ADR must define:
@@ -713,7 +713,8 @@ and a full QR/LAN linking ceremony on each platform.
 
 ### C3. Message editing
 
-**Depends on:** F2. **ADR required.**
+**State:** shipped. **Depends on:** F2. **Decision:**
+[ADR-0020](adr/0020-authenticated-message-edits.md).
 
 Model an edit as a new authenticated event referencing the original message ID;
 never mutate history invisibly. Use a monotonic per-author revision plus a
@@ -727,6 +728,10 @@ checks. Linked-device convergence must be designed together with C2.
 
 Acceptance covers reorder, duplication, partitions, malicious cross-author
 edits, edits after group removal, old-client fallback, and eventual convergence.
+The shipped implementation additionally covers strict raw-send bypass refusal,
+restart/`KKR4` restore, shared parity fixtures, dedicated fuzzing, exact RPC/CLI
+and UniFFI events/models, and accessible retained-version UI on all three shells.
+See [18: Authenticated Message Editing](18-message-editing.md).
 
 ### C4. Disappearing messages and view-once media
 
@@ -876,7 +881,7 @@ honest. Parallel work is safe only where rows do not share a foundation.
 | **Parallel: mobile reachability** | Design-only | Accept ADR-0017–0019, then implement C8 behind reversible feature gates. |
 | **1: Local-first product polish** | Complete | B5, B7–B15, and B18 are shipped; optional signed self-display suggestions remain a separate format-gated extension to B5. |
 | **2: Typed content and asynchronous media** | Complete | F2/F3, B2, B16, B17, and C1 are shipped across the shared core and all three shells; hands-on device evidence remains an M5 release gate. |
-| **3: Replicated conversation features** | Planned | C3, C4, C5, and C6. |
+| **3: Replicated conversation features** | In progress | C3 is shipped; C4, C5, and C6 remain. |
 | **4: Multi-device** | Planned | C2, followed by cross-device hardening of Wave 3. |
 | **5: Real-time media** | Design-only | ADR-0013 spike and C7, restricted to qualified internet/LAN paths. |
 
@@ -897,7 +902,7 @@ Do not combine these into one oversized design decision.
 | 5 (proposed) | ADR-0018: rotating pairwise rendezvous | C8 private post-pairing route refresh. |
 | 6 (proposed) | ADR-0019: capability-gated native wake | C8 APNs/FCM acceleration and bounded collection. |
 | 7 | Expiry/retention metadata and deletion semantics | Disappearing and view-once content. |
-| 8 | Edit event ordering and tombstones | Message editing and multi-device convergence. |
+| 8 (done) | ADR-0020: immutable edit events, authorization, ordering, and retained versions | Message editing and multi-device convergence. |
 | 9 | Group roles/capabilities and authority transfer | Admin controls and moderated polls. |
 | 10 | Multi-device identity, device certificates, sync, revocation | Linked devices. |
 | 11 | Accept ADR-0013 after measured media spike | Voice/video calls. |
@@ -962,10 +967,13 @@ The C1 non-image file presentation slice is shipped over the unchanged F3/F4
 pipeline: safe generic rows, explicit open/export affordances, stronger
 filename/media-type mismatch handling, accessibility/lifecycle behavior, and
 malicious-file/large-file/resume qualification add no auto-open, remote scanning,
-preview, or mesh behavior. The next product programs are C3 edits, C4 expiry,
-C5 polls, C6 roles, C2 linked devices, and C7 calls; each remains behind its
-stated ADR gate until that decision is written and accepted.
+preview, or mesh behavior. C3 authenticated immutable message editing is now
+shipped across protocol, node, storage, RPC/CLI, UniFFI, desktop, Android, and
+iOS with retained versions and deterministic offline convergence. The next
+product programs are C4 expiry, C5 polls, C6 roles, C2 linked devices, and C7
+calls; each remains behind its stated ADR gate until that decision is written
+and accepted.
 Optional signed self-display suggestions remain deferred behind their separate
 bundle-format ADR and compatibility work.
-Replicated edits/expiry/polls/roles, linked-device identity, real-time media, and
+Replicated expiry/polls/roles, linked-device identity, real-time media, and
 optional hybrid services remain separate programs with their stated ADR gates.

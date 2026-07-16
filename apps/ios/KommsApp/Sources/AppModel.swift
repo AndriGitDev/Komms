@@ -241,9 +241,10 @@ final class AppModel: ObservableObject {
             Task { await refresh() }
         case .scheduledMessageUpdated, .scheduledMessageCancelled,
              .scheduledMessageActivated, .deliveryUpdated, .messageReceived,
+             .messageEdited,
              .noteToSelfMessageAdded,
              .carrierCapabilityChanged,
-             .groupUpdated, .groupMessageReceived, .groupDeliveryUpdated,
+             .groupUpdated, .groupMessageReceived, .groupMessageEdited, .groupDeliveryUpdated,
              .attachmentUpdated, .foldersChanged, .labelsChanged, .pinsChanged:
             Task { await refresh() }
         case .mentionReceived:
@@ -533,6 +534,18 @@ final class AppModel: ObservableObject {
     func send(peer: String, body: String) async throws {
         guard let session else { return }
         _ = try await run { try session.send(peer: peer, body: body) }
+        await refresh()
+    }
+
+    func editMessage(peer: String, targetContentId: String, text: String) async throws {
+        guard let session, let targetAuthor = status?.peer else {
+            throw InputError("node is locked")
+        }
+        _ = try await run {
+            try session.editMessage(
+                peer: peer, targetAuthor: targetAuthor,
+                targetContentId: targetContentId, text: text)
+        }
         await refresh()
     }
 
@@ -882,6 +895,18 @@ final class AppModel: ObservableObject {
     func sendGroup(group: String, body: String) async throws {
         guard let session else { return }
         _ = try await run { try session.sendGroup(group: group, body: body) }
+        await refresh()
+    }
+
+    func editGroupMessage(group: String, targetContentId: String, text: String) async throws {
+        guard let session, let targetAuthor = status?.peer else {
+            throw InputError("node is locked")
+        }
+        _ = try await run {
+            try session.editGroupMessage(
+                group: group, targetAuthor: targetAuthor,
+                targetContentId: targetContentId, text: text)
+        }
         await refresh()
     }
 

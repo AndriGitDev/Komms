@@ -29,8 +29,8 @@ use kult_ffi::{
     AttachmentFileKind as FfiAttachmentFileKind,
     AttachmentFilePresentation as FfiAttachmentFilePresentation,
     AttachmentFileWarning as FfiAttachmentFileWarning,
-    AttachmentOpenPolicy as FfiAttachmentOpenPolicy, AttachmentState, AudioInfo,
-    CarrierCapability, Config, ContactNameAssessment as FfiContactNameAssessment,
+    AttachmentOpenPolicy as FfiAttachmentOpenPolicy, AttachmentState, AudioInfo, CarrierCapability,
+    Config, ContactNameAssessment as FfiContactNameAssessment,
     ContactNameWarning as FfiContactNameWarning, ContentKind, CustomIcon as FfiCustomIcon,
     CustomIconCrop as FfiCustomIconCrop, CustomIconTarget as FfiCustomIconTarget,
     CustomIconTargetKind as FfiCustomIconTargetKind, DeliveryState, Direction, Event,
@@ -1051,6 +1051,20 @@ impl UiPinConversationResult {
 /// A message row for the UI. `state` is one of `queued`, `sent`,
 /// `delivered`, `received` — never anything the node didn't report.
 #[derive(Clone, Debug, Serialize)]
+pub struct UiEditVersion {
+    /// Original content id for revision zero, otherwise edit-event id (hex).
+    pub id: String,
+    /// Zero for the original, positive for an immutable edit.
+    pub revision: u64,
+    /// Local presentation timestamp.
+    pub timestamp: u64,
+    /// Exact authenticated text for this version.
+    pub body: String,
+}
+
+/// A message row for the UI. `state` is one of `queued`, `sent`,
+/// `delivered`, `received` — never anything the node didn't report.
+#[derive(Clone, Debug, Serialize)]
 pub struct UiMessage {
     /// Message record id (hex).
     pub id: String,
@@ -1066,6 +1080,12 @@ pub struct UiMessage {
     pub body: String,
     /// `legacy_text`, `text`, `unsupported`, or `malformed`.
     pub content_kind: &'static str,
+    /// Whether an immutable edit wins over the original.
+    pub edited: bool,
+    /// Winning positive revision, or zero for the original.
+    pub edit_revision: u64,
+    /// Original plus valid immutable edits in convergence order.
+    pub versions: Vec<UiEditVersion>,
 }
 
 /// One sealed, local-only note-to-self entry. It intentionally has no
@@ -1176,6 +1196,12 @@ pub struct UiGroupMessage {
     pub content_kind: &'static str,
     /// Stable semantic Mention spans; empty for other content.
     pub mention_spans: Vec<UiMentionSpan>,
+    /// Whether an immutable edit wins over the original.
+    pub edited: bool,
+    /// Winning positive revision, or zero for the original.
+    pub edit_revision: u64,
+    /// Original plus valid immutable edits in convergence order.
+    pub versions: Vec<UiEditVersion>,
     /// Per-recipient states for outbound messages; empty for inbound.
     pub deliveries: Vec<UiGroupDelivery>,
 }
@@ -1426,6 +1452,13 @@ pub enum UiEvent {
         /// Explicit content interpretation.
         content_kind: &'static str,
     },
+    /// An inbound pairwise Edit was stored; refresh the exact target.
+    MessageEdited {
+        /// Pairwise peer that authored the edit and original.
+        peer: String,
+        /// Original canonical Text content id (hex).
+        target_content_id: String,
+    },
     /// A sealed local-only note was appended.
     NoteToSelfMessageAdded {
         /// Stable reserved conversation identity.
@@ -1494,6 +1527,15 @@ pub enum UiEvent {
         /// Stable semantic Mention spans; empty for other content.
         mention_spans: Vec<UiMentionSpan>,
     },
+    /// An inbound group Edit was stored; refresh the exact target.
+    GroupMessageEdited {
+        /// Group id (hex).
+        group: String,
+        /// Authenticated edit/original author (hex).
+        sender: String,
+        /// Original canonical Text content id (hex).
+        target_content_id: String,
+    },
     /// A canonical group Mention targets the exact local peer.
     MentionReceived {
         /// Protected group history record id. No message text is duplicated.
@@ -1549,6 +1591,13 @@ impl UiEvent {
                 body,
                 content_kind: content_kind_str(content_kind),
             },
+            Event::MessageEdited {
+                peer,
+                target_content_id,
+            } => Self::MessageEdited {
+                peer,
+                target_content_id,
+            },
             Event::NoteToSelfMessageAdded {
                 conversation,
                 id,
@@ -1594,6 +1643,15 @@ impl UiEvent {
                         target: span.target,
                     })
                     .collect(),
+            },
+            Event::GroupMessageEdited {
+                group,
+                sender,
+                target_content_id,
+            } => Self::GroupMessageEdited {
+                group,
+                sender,
+                target_content_id,
             },
             Event::MentionReceived { id } => Self::MentionReceived { id },
             Event::GroupDeliveryUpdated { id, peer, state } => Self::GroupDeliveryUpdated {
@@ -1914,6 +1972,18 @@ impl Session {
                 timestamp: m.timestamp,
                 body: m.body,
                 content_kind: content_kind_str(m.content_kind),
+                edited: m.edited,
+                edit_revision: m.edit_revision,
+                versions: m
+                    .versions
+                    .into_iter()
+                    .map(|version| UiEditVersion {
+                        id: version.id,
+                        revision: version.revision,
+                        timestamp: version.timestamp,
+                        body: version.body,
+                    })
+                    .collect(),
             })
             .collect())
     }
@@ -1921,6 +1991,19 @@ impl Session {
     /// Queue a message; returns its id (progress arrives as events).
     pub fn send(&self, peer: String, body: String) -> Result<String, String> {
         self.node.send(peer, body).map_err(|e| e.to_string())
+    }
+
+    /// Queue an immutable edit for this identity's exact pairwise Text.
+    pub fn edit_message(
+        &self,
+        peer: String,
+        target_author: String,
+        target_content_id: String,
+        text: String,
+    ) -> Result<String, String> {
+        self.node
+            .edit_message(peer, target_author, target_content_id, text)
+            .map_err(|e| e.to_string())
     }
 
     /// Import a caller-selected path as a pairwise attachment. The complete
@@ -3066,6 +3149,18 @@ impl Session {
                         target: span.target,
                     })
                     .collect(),
+                edited: message.edited,
+                edit_revision: message.edit_revision,
+                versions: message
+                    .versions
+                    .into_iter()
+                    .map(|version| UiEditVersion {
+                        id: version.id,
+                        revision: version.revision,
+                        timestamp: version.timestamp,
+                        body: version.body,
+                    })
+                    .collect(),
                 deliveries: message
                     .deliveries
                     .into_iter()
@@ -3082,6 +3177,19 @@ impl Session {
     /// `GroupDeliveryUpdated` events.
     pub fn send_group(&self, group: String, body: String) -> Result<String, String> {
         self.node.send_group(group, body).map_err(|e| e.to_string())
+    }
+
+    /// Queue an immutable edit for this identity's exact group Text.
+    pub fn edit_group_message(
+        &self,
+        group: String,
+        target_author: String,
+        target_content_id: String,
+        text: String,
+    ) -> Result<String, String> {
+        self.node
+            .edit_group_message(group, target_author, target_content_id, text)
+            .map_err(|e| e.to_string())
     }
 
     /// Current conservative semantic Mention capability verdict.

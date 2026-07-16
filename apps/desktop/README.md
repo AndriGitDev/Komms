@@ -14,7 +14,7 @@ security indicators are the node's own, verbatim.
   lock path. Capture protection remains honestly best effort because desktop OS,
   window-server, compositor, privileged-software, and external-camera behavior
   cannot be controlled universally.
-- **Reduce input retention on every editable text control.** All 25 controls are
+- **Reduce input retention on every editable text control.** All 26 controls are
   semantically classified and receive disabled autocomplete, autocorrect,
   autocapitalization, and spellcheck at startup and after modal cloning.
   Passphrases and recovery mnemonics are password inputs. The unlock screen
@@ -34,6 +34,11 @@ security indicators are the node's own, verbatim.
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted
   mesh links.
+- **Edit authored canonical Text** in pairwise and group history through an
+  incognito modal. Edit is offered only on exact outbound text, uses the shared
+  capability/authorship checks, refreshes on typed target events, shows an
+  edited revision marker, and exposes the original plus every valid version in
+  an accessible disclosure. Editing never erases a prior version.
 - **Render safe source formatting** in pairwise, group, note-to-self, and
   scheduled bubbles through the shared bounded formatter. The webview creates
   only fixed inert DOM/text nodes, composes mention highlighting, and copies the

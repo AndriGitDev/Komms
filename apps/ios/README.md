@@ -13,7 +13,7 @@ are the node's own, verbatim.
   inactive/background transitions, and responds to UIKit capture notifications.
   Settings explicitly state that iOS cannot universally block still screenshots
   and that capture notification is not retroactive.
-- **Reduce keyboard retention on every SwiftUI editor.** All 21 text editors
+- **Reduce keyboard retention on every SwiftUI editor.** All 22 text editors
   disable autocorrection through one audited modifier; message/name fields keep
   only explicit capitalization semantics. Passphrases and recovery mnemonics use
   `SecureField`. Settings state that iOS has no per-field personalized-learning
@@ -33,6 +33,11 @@ are the node's own, verbatim.
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted
   mesh links.
+- **Edit authored canonical Text** in pairwise and group history through an
+  incognito SwiftUI editor. The action is available only on exact outbound text,
+  uses shared capability/authorship checks, refreshes on typed target events,
+  shows an edited revision marker, and presents the original plus every valid
+  version for VoiceOver/Dynamic Type inspection. Editing is not erasure.
 - **Render safe source formatting** in pairwise, group, note-to-self, and
   scheduled rows through the shared bounded formatter. SwiftUI builds only a
   selectable native `AttributedString`, composes semantic mention highlights,

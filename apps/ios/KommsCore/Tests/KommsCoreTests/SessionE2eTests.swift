@@ -72,6 +72,36 @@ private struct FilePresentationParityFixture: Decodable {
     }
 }
 
+private struct MessageEditParityFixture: Decodable {
+    struct Version: Decodable {
+        let id: String
+        let revision: UInt64
+        let text: String
+    }
+    struct Case: Decodable {
+        let targetAuthor: String
+        let targetContentId: String
+        let expectedVersions: [Version]
+        let winningRevision: UInt64
+        let winningText: String
+    }
+    let schema: String
+    let contentFormat: UInt8
+    let contentKind: UInt8
+    let maximumTextBytes: UInt64
+    let maximumLocalEdits: UInt64
+    let `case`: Case
+
+    static func load() throws -> Self {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let data = try Data(contentsOf: root.appendingPathComponent("fixtures/c3-message-edit-parity.json"))
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(Self.self, from: data)
+    }
+}
+
 private func fileKindName(_ kind: AttachmentFileKind) -> String {
     switch kind {
     case .image: "image"
@@ -394,6 +424,22 @@ private func imageRecipe() -> ImageEditRecipe {
 }
 
 final class SessionE2eTests: XCTestCase {
+    func testMessageEditSharedFixtureHasCanonicalWireAndWinner() throws {
+        let fixture = try MessageEditParityFixture.load()
+        XCTAssertEqual("komms-message-edit-parity-v1", fixture.schema)
+        XCTAssertEqual(1, fixture.contentFormat)
+        XCTAssertEqual(4, fixture.contentKind)
+        XCTAssertEqual(16_384, fixture.maximumTextBytes)
+        XCTAssertEqual(64, fixture.maximumLocalEdits)
+        XCTAssertEqual(64, fixture.case.targetAuthor.count)
+        XCTAssertEqual(32, fixture.case.targetContentId.count)
+        XCTAssertEqual([0, 1, 2, 2], fixture.case.expectedVersions.map(\.revision))
+        XCTAssertEqual(2, fixture.case.winningRevision)
+        XCTAssertEqual("deterministic winner", fixture.case.winningText)
+        XCTAssertEqual(fixture.case.winningText, fixture.case.expectedVersions.last?.text)
+        XCTAssertTrue(fixture.case.expectedVersions.allSatisfy { $0.id.count == 32 })
+    }
+
     func testFilePresentationMatchesSharedFailClosedFixture() throws {
         let fixture = try FilePresentationParityFixture.load()
         for record in fixture.cases {
@@ -648,6 +694,42 @@ final class SessionE2eTests: XCTestCase {
         XCTAssertEqual(.inbound, inbox[0].direction)
         XCTAssertEqual(.received, inbox[0].state)
         XCTAssertEqual(formattedSource, inbox[0].body)
+
+        Thread.sleep(forTimeInterval: 0.3)
+        let editable = try alice.send(peer: bobPeer, body: "iOS edit original")
+        _ = try bEv.wait("Bob's canonical iOS Text") { event -> Void? in
+            if case let .messageReceived(_, id, _, _, kind) = event,
+               id == editable, kind == .text { return () }
+            return nil
+        }
+        _ = try aEv.wait("iOS editable delivery") { event -> Void? in
+            if case let .deliveryUpdated(id, state) = event,
+               id == editable, state == .delivered { return () }
+            return nil
+        }
+        let edit = try alice.editMessage(
+            peer: bobPeer,
+            targetAuthor: alicePeer,
+            targetContentId: editable,
+            text: "iOS edit revised")
+        _ = try bEv.wait("iOS pairwise edit refresh") { event -> Void? in
+            if case let .messageEdited(peer, targetContentId) = event,
+               peer == alicePeer, targetContentId == editable { return () }
+            return nil
+        }
+        _ = try aEv.wait("iOS edit delivery") { event -> Void? in
+            if case let .deliveryUpdated(id, state) = event,
+               id == edit, state == .delivered { return () }
+            return nil
+        }
+        for messages in [try alice.messages(peer: bobPeer), try bob.messages(peer: alicePeer)] {
+            XCTAssertEqual(2, messages.count, "Edit events are not standalone rows")
+            let message = try XCTUnwrap(messages.first(where: { $0.id == editable }))
+            XCTAssertEqual("iOS edit revised", message.body)
+            XCTAssertTrue(message.edited)
+            XCTAssertEqual(1, message.editRevision)
+            XCTAssertEqual(["iOS edit original", "iOS edit revised"], message.versions.map(\.body))
+        }
 
         // The document picker grants a security-scoped URL; the app stages a
         // bounded app-private copy before Session imports it. The render-safe
@@ -1021,6 +1103,41 @@ final class SessionE2eTests: XCTestCase {
         // their live group disappears locally and the creator converges too.
         try alice.removeGroupMember(group: group, peer: carolPeer)
         XCTAssertEqual(2, try alice.groups()[0].members.count)
+        Thread.sleep(forTimeInterval: 0.3)
+        let editable = try alice.sendGroup(group: group, body: "iOS group edit original")
+        _ = try bEv.wait("Bob's editable iOS group Text") { event -> Void? in
+            if case let .groupMessageReceived(_, _, id, _, _, kind, _) = event,
+               id == editable, kind == .text { return () }
+            return nil
+        }
+        _ = try aEv.wait("iOS editable group delivery") { event -> Void? in
+            if case let .groupDeliveryUpdated(id, peer, state) = event,
+               id == editable, peer == bobPeer, state == .delivered { return () }
+            return nil
+        }
+        let edit = try alice.editGroupMessage(
+            group: group,
+            targetAuthor: aliceAtBob,
+            targetContentId: editable,
+            text: "iOS group edit revised")
+        _ = try bEv.wait("iOS group edit refresh") { event -> Void? in
+            if case let .groupMessageEdited(editedGroup, sender, targetContentId) = event,
+               editedGroup == group, sender == aliceAtBob,
+               targetContentId == editable { return () }
+            return nil
+        }
+        _ = try aEv.wait("iOS group edit delivery") { event -> Void? in
+            if case let .groupDeliveryUpdated(id, peer, state) = event,
+               id == edit, peer == bobPeer, state == .delivered { return () }
+            return nil
+        }
+        for messages in [try alice.groupMessages(group: group), try bob.groupMessages(group: group)] {
+            let message = try XCTUnwrap(messages.first(where: { $0.id == editable }))
+            XCTAssertEqual("iOS group edit revised", message.body)
+            XCTAssertTrue(message.edited)
+            XCTAssertEqual(1, message.editRevision)
+            XCTAssertEqual(2, message.versions.count)
+        }
         try bob.leaveGroup(group: group)
         XCTAssertTrue(try bob.groups().isEmpty)
         let deadline = Date().addingTimeInterval(30)

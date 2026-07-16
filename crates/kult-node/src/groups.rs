@@ -15,9 +15,10 @@ use kult_crypto::{
     GroupHeaderKey, GroupMessage, GroupReceiverChain, GroupSenderChain, IdentityPublic,
 };
 use kult_protocol::{
-    decode_content, delivery_token, encode_mention, encode_text, epoch_day, pad, unpad,
-    DecodedContent, Envelope, EnvelopeKind, GroupAnnounce, GroupControlPayload, GroupMemberInfo,
-    MailboxKey, CONTENT_FORMAT_V1, CONTENT_KIND_MENTION,
+    decode_content, delivery_token, encode_edit, encode_mention, encode_text, epoch_day, pad,
+    unpad, DecodedContent, Edit, Envelope, EnvelopeKind, GroupAnnounce, GroupControlPayload,
+    GroupMemberInfo, MailboxKey, CONTENT_FORMAT_V1, CONTENT_KIND_EDIT, CONTENT_KIND_MENTION,
+    MAX_EDIT_TEXT_LEN,
 };
 use kult_store::{
     ContactRecord, DeliveryState, Direction, GroupDelivery, GroupMember, GroupMessageRecord,
@@ -26,9 +27,9 @@ use kult_store::{
 
 use crate::api::{
     GroupInfo, GroupMentionCapability, MentionCapabilityIssue, MentionCapabilityIssueReason,
-    MentionSpan,
+    MentionSpan, ResolvedGroupMessage,
 };
-use crate::{Consumed, ContentStatus, Event, Node, NodeError, Result};
+use crate::{Consumed, ContentStatus, Event, Node, NodeError, Result, MAX_MESSAGE_EDITS};
 
 /// Rotate the sending chain after this many messages (PCS via periodic
 /// rotation, spec §6).
@@ -118,6 +119,14 @@ impl Node {
         Ok(self.store.group_messages(group)?)
     }
 
+    /// Group read model with immutable Edit events resolved and hidden from
+    /// the ordinary row sequence.
+    pub fn resolved_group_messages(&self, group: &[u8; 32]) -> Result<Vec<ResolvedGroupMessage>> {
+        Ok(crate::edits::resolve_group(
+            self.store.group_messages(group)?,
+        ))
+    }
+
     /// Queue a message to a group: persisted `Queued` per member before any
     /// crypto runs, encrypted **once** on this node's sending chain, fanned
     /// out to every member with a live session; members whose session is
@@ -133,8 +142,10 @@ impl Node {
         // The generic group API is the permanent text/legacy path. A caller
         // must not smuggle an already-encoded Mention around the exact-roster
         // capability and review-token gate below.
-        if matches!(decode_content(body), DecodedContent::Mention { .. }) {
-            return Err(NodeError::InvalidMention);
+        match decode_content(body) {
+            DecodedContent::Mention { .. } => return Err(NodeError::InvalidMention),
+            DecodedContent::Edit { .. } => return Err(NodeError::InvalidEdit),
+            _ => {}
         }
         let mut id = [0u8; 16];
         rng.fill_bytes(&mut id);
@@ -268,6 +279,81 @@ impl Node {
         rng.fill_bytes(&mut id);
         let wire_content =
             encode_mention(id, text, &protocol_spans).map_err(|_| NodeError::InvalidMention)?;
+        self.group_send_content_with_id(group, wire_content, id, now, now, rng)
+    }
+
+    /// Queue an immutable edit for this identity's exact canonical group Text.
+    pub fn group_edit_message(
+        &mut self,
+        group: &[u8; 32],
+        target_author: [u8; 32],
+        target_content_id: [u8; 16],
+        text: &str,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        let rec = self
+            .store
+            .get_group(group)?
+            .ok_or(NodeError::UnknownGroup)?;
+        let me = self.identity.public().ed;
+        if target_author != me
+            || text.is_empty()
+            || text.len() > MAX_EDIT_TEXT_LEN
+            || !rec.members.iter().any(|member| member.peer == me)
+        {
+            return Err(NodeError::InvalidEdit);
+        }
+        for member in rec.members.iter().filter(|member| member.peer != me) {
+            if !self.peer_supports_kind(&member.peer, CONTENT_KIND_EDIT)? {
+                return Err(NodeError::EditUnsupported);
+            }
+        }
+        let records = self.store.group_messages(group)?;
+        if !records.iter().any(|record| {
+            record.sender == me
+                && record.direction == Direction::Outbound
+                && matches!(
+                    decode_content(&record.body),
+                    DecodedContent::Text { id, .. } if id == target_content_id
+                )
+        }) {
+            return Err(NodeError::InvalidEdit);
+        }
+        let revisions = records.iter().filter_map(|record| {
+            if record.sender != me || record.direction != Direction::Outbound {
+                return None;
+            }
+            match decode_content(&record.body) {
+                DecodedContent::Edit { edit, .. }
+                    if edit.target_author == me && edit.target_content_id == target_content_id =>
+                {
+                    Some(edit.revision)
+                }
+                _ => None,
+            }
+        });
+        let mut count = 0usize;
+        let mut revision = 0u64;
+        for value in revisions {
+            count += 1;
+            revision = revision.max(value);
+        }
+        if count >= MAX_MESSAGE_EDITS {
+            return Err(NodeError::EditLimit);
+        }
+        revision = revision.checked_add(1).ok_or(NodeError::EditLimit)?;
+        let mut id = [0u8; 16];
+        rng.fill_bytes(&mut id);
+        let wire_content = encode_edit(
+            id,
+            &Edit {
+                target_author: me,
+                target_content_id,
+                revision,
+                text,
+            },
+        )?;
         self.group_send_content_with_id(group, wire_content, id, now, now, rng)
     }
 
@@ -670,9 +756,11 @@ impl Node {
             };
 
             let decoded = decode_content(&body);
+            let decoded_is_edit = matches!(decoded, DecodedContent::Edit { .. });
             if let DecodedContent::Text { id, .. }
             | DecodedContent::Attachment { id, .. }
-            | DecodedContent::Mention { id, .. } = decoded
+            | DecodedContent::Mention { id, .. }
+            | DecodedContent::Edit { id, .. } = decoded
             {
                 let duplicate = self.store.group_messages(&rec.id)?.iter().any(|record| {
                     record.direction == Direction::Inbound
@@ -682,6 +770,7 @@ impl Node {
                             DecodedContent::Text { id: stored_id, .. }
                                 | DecodedContent::Attachment { id: stored_id, .. }
                                 | DecodedContent::Mention { id: stored_id, .. }
+                                | DecodedContent::Edit { id: stored_id, .. }
                                 if stored_id == id
                         )
                 });
@@ -724,6 +813,17 @@ impl Node {
                         ContentStatus::Mention { id, spans },
                     )
                 }
+                DecodedContent::Edit { id, edit } if edit.target_author == peer => (
+                    id,
+                    Vec::new(),
+                    ContentStatus::Edit {
+                        id,
+                        target_author: edit.target_author,
+                        target_content_id: edit.target_content_id,
+                        revision: edit.revision,
+                    },
+                ),
+                DecodedContent::Edit { id, .. } => (id, Vec::new(), ContentStatus::Malformed),
                 DecodedContent::Unsupported {
                     format_version,
                     kind,
@@ -758,14 +858,24 @@ impl Node {
                 },
                 rng,
             )?;
-            self.events.push_back(Event::GroupMessageReceived {
-                group: rec.id,
-                sender: peer,
-                id,
-                timestamp: now,
-                body: event_body,
-                content,
-            });
+            match content {
+                ContentStatus::Edit {
+                    target_content_id, ..
+                } => self.events.push_back(Event::GroupMessageEdited {
+                    group: rec.id,
+                    sender: peer,
+                    target_content_id,
+                }),
+                ContentStatus::Malformed if decoded_is_edit => {}
+                _ => self.events.push_back(Event::GroupMessageReceived {
+                    group: rec.id,
+                    sender: peer,
+                    id,
+                    timestamp: now,
+                    body: event_body,
+                    content,
+                }),
+            }
             if mentions_local_peer {
                 self.events.push_back(Event::MentionReceived { id });
             }
@@ -1325,7 +1435,9 @@ mod tests {
     use rand::{rngs::StdRng, SeedableRng};
 
     use kult_crypto::KdfProfile;
-    use kult_protocol::{CapabilityControl, FormatCapabilities, CONTENT_KIND_TEXT};
+    use kult_protocol::{
+        CapabilityControl, FormatCapabilities, CONTENT_KIND_EDIT, CONTENT_KIND_TEXT,
+    };
 
     use super::*;
 
@@ -1334,6 +1446,80 @@ mod tests {
         t_cost: 1,
         p_cost: 1,
     };
+
+    #[test]
+    fn group_edit_requires_every_current_member_capability() {
+        let mut rng = StdRng::seed_from_u64(0x00c3_0004);
+        let directory = tempfile::tempdir().unwrap();
+        let mut alice =
+            Node::create(&directory.path().join("alice.db"), b"a", TEST_KDF, &mut rng).unwrap();
+        let mut bob =
+            Node::create(&directory.path().join("bob.db"), b"b", TEST_KDF, &mut rng).unwrap();
+        let bob_bundle = bob.handshake_bundle(1_800_000_000, &mut rng).unwrap();
+        let bob_peer = alice
+            .add_contact("bob", &bob_bundle, &[], 1_800_000_000, &mut rng)
+            .unwrap();
+        let group = alice
+            .create_group("old client", &[bob_peer], &mut rng)
+            .unwrap();
+        let alice_peer = alice.identity.public().ed;
+
+        assert!(matches!(
+            alice.group_edit_message(
+                &group,
+                alice_peer,
+                [9; 16],
+                "unsupported",
+                1_800_000_001,
+                &mut rng,
+            ),
+            Err(NodeError::EditUnsupported)
+        ));
+
+        let text_only = CapabilityControl {
+            formats: vec![FormatCapabilities {
+                format_version: CONTENT_FORMAT_V1,
+                kinds: vec![CONTENT_KIND_TEXT],
+            }],
+        };
+        alice
+            .store
+            .put_capabilities(&bob_peer, &text_only, &mut rng)
+            .unwrap();
+        assert!(matches!(
+            alice.group_edit_message(
+                &group,
+                alice_peer,
+                [9; 16],
+                "old client",
+                1_800_000_001,
+                &mut rng,
+            ),
+            Err(NodeError::EditUnsupported)
+        ));
+
+        let edit_capable = CapabilityControl {
+            formats: vec![FormatCapabilities {
+                format_version: CONTENT_FORMAT_V1,
+                kinds: vec![CONTENT_KIND_TEXT, CONTENT_KIND_EDIT],
+            }],
+        };
+        alice
+            .store
+            .put_capabilities(&bob_peer, &edit_capable, &mut rng)
+            .unwrap();
+        assert!(matches!(
+            alice.group_edit_message(
+                &group,
+                alice_peer,
+                [9; 16],
+                "missing target",
+                1_800_000_001,
+                &mut rng,
+            ),
+            Err(NodeError::InvalidEdit)
+        ));
+    }
 
     #[test]
     fn mention_intersection_fails_closed_on_downgrade_and_missing_snapshot() {
