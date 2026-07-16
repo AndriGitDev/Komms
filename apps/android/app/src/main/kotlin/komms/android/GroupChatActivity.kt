@@ -78,6 +78,8 @@ class GroupChatActivity : SecureActivity() {
             is Event.AttachmentUpdated ->
                 ::attachmentController.isInitialized &&
                     attachmentController.isRelevant(event.attachment)
+            is Event.EphemeralRemoved ->
+                event.conversationKind == "group" && event.conversationId == groupId
             else -> false
         }
         if (relevant) runOnUiThread {
@@ -120,8 +122,12 @@ class GroupChatActivity : SecureActivity() {
             belongsHere = {
                 it.conversation == AttachmentConversation.GROUP && it.group == groupId
             },
-            send = { session, path, mediaType, filename, preview ->
-                if (preview == null) {
+            send = { session, path, mediaType, filename, preview, viewOnce, lifetime ->
+                if (viewOnce) {
+                    session.sendGroupViewOnceAttachment(
+                        groupId, path, mediaType, filename, preview, lifetime,
+                    )
+                } else if (preview == null) {
                     session.sendGroupAttachment(groupId, path, mediaType, filename)
                 } else {
                     session.sendGroupAttachmentWithPreview(
@@ -138,6 +144,17 @@ class GroupChatActivity : SecureActivity() {
         )
 
         val input = findViewById<EditText>(R.id.chat_input)
+        configureEphemeralComposer {
+            if (draftMentions.isNotEmpty()) {
+                draftMentions.clear()
+                renderMentionTokens()
+                findViewById<TextView>(R.id.chat_mention_status).apply {
+                    visibility = View.VISIBLE
+                    text = "Semantic mentions were removed because disappearing text is a distinct authenticated content type."
+                    announceForAccessibility(text)
+                }
+            }
+        }
         findViewById<Button>(R.id.chat_mention).apply {
             visibility = View.VISIBLE
             setOnClickListener { showMentionPicker(input) }
@@ -460,6 +477,14 @@ class GroupChatActivity : SecureActivity() {
 
     private fun sendDraft(input: EditText, body: String) {
         val session = NodeHolder.session ?: return
+        val lifetime = selectedEphemeralLifetime()
+        if (lifetime != null) {
+            runNode(work = { session.sendGroupDisappearing(groupId, body, lifetime) }) {
+                clearMentionDraft(input)
+                refresh()
+            }
+            return
+        }
         if (draftMentions.isEmpty()) {
             runNode(work = { session.sendGroup(groupId, body) }) {
                 clearMentionDraft(input)
@@ -777,7 +802,10 @@ private class GroupMessagesAdapter(
     class Holder(view: View) : RecyclerView.ViewHolder(view)
 
     fun submit(list: List<RenderedMessage<GroupMessage>>) {
-        items = list.filter { it.value.contentKind != ContentKind.ATTACHMENT }
+        items = list.filter {
+            it.value.contentKind != ContentKind.ATTACHMENT &&
+                it.value.contentKind != ContentKind.VIEW_ONCE_ATTACHMENT
+        }
         notifyDataSetChanged()
     }
 
@@ -813,6 +841,13 @@ private class GroupMessagesAdapter(
             if (message.edited) {
                 append(" · ")
                 append(context.getString(R.string.message_edited_revision, message.editRevision.toString()))
+            }
+            if (message.contentKind == ContentKind.DISAPPEARING_TEXT && message.expiresAt != null) {
+                append(" · removes ")
+                append(
+                    DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+                        .format(Date(message.expiresAt!!.toLong() * 1000)),
+                )
             }
         }
         holder.itemView.findViewById<TextView>(R.id.group_message_deliveries).apply {

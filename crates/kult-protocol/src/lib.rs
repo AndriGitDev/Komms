@@ -32,6 +32,7 @@ mod capability;
 mod content;
 mod edit;
 mod envelope;
+mod ephemeral;
 mod error;
 mod fragmentation;
 mod group;
@@ -60,16 +61,26 @@ pub use capability::{
     CAPABILITY_MAGIC, MAX_CAPABILITY_FORMATS, MAX_CAPABILITY_KINDS,
 };
 pub use content::{
-    decode_content, encode_attachment, encode_edit, encode_mention, encode_text, DecodedContent,
-    CONTENT_FORMAT_V1, CONTENT_HEADER_LEN, CONTENT_KIND_ATTACHMENT, CONTENT_KIND_EDIT,
-    CONTENT_KIND_MENTION, CONTENT_KIND_TEXT, CONTENT_MAGIC, MAX_COLLECTION_ENTRIES,
-    MAX_CONTENT_FRAME_LEN, MAX_CONTENT_PAYLOAD_LEN, MAX_NESTING_DEPTH,
+    decode_content, encode_attachment, encode_edit, encode_ephemeral, encode_mention, encode_text,
+    DecodedContent, CONTENT_FORMAT_V1, CONTENT_HEADER_LEN, CONTENT_KIND_ATTACHMENT,
+    CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL, CONTENT_KIND_MENTION, CONTENT_KIND_TEXT,
+    CONTENT_MAGIC, MAX_COLLECTION_ENTRIES, MAX_CONTENT_FRAME_LEN, MAX_CONTENT_PAYLOAD_LEN,
+    MAX_NESTING_DEPTH,
 };
 pub use edit::{
     decode_edit_payload, encode_edit_payload, DecodedEdit, Edit, EDIT_HEADER_LEN,
     MAX_EDIT_PAYLOAD_LEN, MAX_EDIT_TEXT_LEN,
 };
-pub use envelope::{Envelope, EnvelopeKind, ENVELOPE_HEADER_LEN};
+pub use envelope::{
+    Envelope, EnvelopeKind, ENVELOPE_HEADER_LEN, ENVELOPE_V1_HEADER_LEN, ENVELOPE_V2_HEADER_LEN,
+    ENVELOPE_VERSION_V1, ENVELOPE_VERSION_V2,
+};
+pub use ephemeral::{
+    decode_ephemeral_payload, encode_disappearing_text_payload,
+    encode_view_once_attachment_payload, retention_bucket, DecodedEphemeral, Ephemeral,
+    EPHEMERAL_HEADER_LEN, MAX_EPHEMERAL_LIFETIME_SECS, MAX_EPHEMERAL_PAYLOAD_LEN,
+    MIN_EPHEMERAL_LIFETIME_SECS, RETENTION_BUCKET_SECS,
+};
 pub use error::ProtocolError;
 pub use fragmentation::{fragment, Reassembler, FRAG_HEADER_LEN, REASSEMBLY_WINDOW_SECS};
 pub use group::{GroupAnnounce, GroupControlPayload, GroupMemberInfo};

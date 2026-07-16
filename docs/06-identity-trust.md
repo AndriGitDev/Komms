@@ -63,7 +63,7 @@ user rename an exact peer in every shipped interface. Names are NFC-normalized a
 bounded; duplicates are valid because the peer key, never display text, is the
 identity. Duplicate, mixed-script/confusable, bidirectional-control, and invisible-
 character risks are shown for explicit review before a warned rename. The label is
-stored only in the sealed contact record, survives restart and `KKR4`, and creates no
+stored only in the sealed contact record, survives restart and `KKR5`, and creates no
 message, capability, lookup, notification, queue, or transport work.
 
 What the network sees remains keys and tokens, never the local petname. An optional

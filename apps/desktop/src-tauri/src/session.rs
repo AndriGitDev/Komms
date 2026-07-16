@@ -1080,6 +1080,8 @@ pub struct UiMessage {
     pub body: String,
     /// `legacy_text`, `text`, `unsupported`, or `malformed`.
     pub content_kind: &'static str,
+    /// Exact authenticated local expiry for ephemeral content.
+    pub expires_at: Option<u64>,
     /// Whether an immutable edit wins over the original.
     pub edited: bool,
     /// Winning positive revision, or zero for the original.
@@ -1194,6 +1196,8 @@ pub struct UiGroupMessage {
     pub body: String,
     /// `legacy_text`, `text`, `unsupported`, or `malformed`.
     pub content_kind: &'static str,
+    /// Exact authenticated local expiry for ephemeral content.
+    pub expires_at: Option<u64>,
     /// Stable semantic Mention spans; empty for other content.
     pub mention_spans: Vec<UiMentionSpan>,
     /// Whether an immutable edit wins over the original.
@@ -1370,6 +1374,12 @@ pub struct UiAttachment {
     pub content_id: String,
     /// Durable transfer lifecycle state.
     pub state: &'static str,
+    /// Whether first-open consumption governs this transfer.
+    pub view_once: bool,
+    /// Exact fallback deadline.
+    pub expires_at: Option<u64>,
+    /// Whether it is terminal after first open or expiry.
+    pub consumed: bool,
     /// Primary object followed by an optional preview.
     pub objects: Vec<UiAttachmentObject>,
 }
@@ -1396,6 +1406,9 @@ impl UiAttachment {
             author: attachment.author,
             content_id: attachment.content_id,
             state: attachment_state_str(attachment.state),
+            view_once: attachment.view_once,
+            expires_at: attachment.expires_at,
+            consumed: attachment.consumed,
             objects: attachment
                 .objects
                 .into_iter()
@@ -1451,6 +1464,8 @@ pub enum UiEvent {
         body: String,
         /// Explicit content interpretation.
         content_kind: &'static str,
+        /// Exact deadline for ephemeral content.
+        expires_at: Option<u64>,
     },
     /// An inbound pairwise Edit was stored; refresh the exact target.
     MessageEdited {
@@ -1524,6 +1539,8 @@ pub enum UiEvent {
         body: String,
         /// Explicit content interpretation.
         content_kind: &'static str,
+        /// Exact deadline for ephemeral content.
+        expires_at: Option<u64>,
         /// Stable semantic Mention spans; empty for other content.
         mention_spans: Vec<UiMentionSpan>,
     },
@@ -1535,6 +1552,19 @@ pub enum UiEvent {
         sender: String,
         /// Original canonical Text content id (hex).
         target_content_id: String,
+    },
+    /// Ephemeral content became terminal on this installation.
+    EphemeralRemoved {
+        /// `pairwise` or `group`.
+        conversation_kind: String,
+        /// Peer or group id.
+        conversation_id: String,
+        /// Authenticated author id.
+        author: String,
+        /// Content id.
+        content_id: String,
+        /// `expired` or `consumed`.
+        reason: String,
     },
     /// A canonical group Mention targets the exact local peer.
     MentionReceived {
@@ -1584,12 +1614,14 @@ impl UiEvent {
                 timestamp,
                 body,
                 content_kind,
+                expires_at,
             } => Self::MessageReceived {
                 peer,
                 id,
                 timestamp,
                 body,
                 content_kind: content_kind_str(content_kind),
+                expires_at,
             },
             Event::MessageEdited {
                 peer,
@@ -1628,6 +1660,7 @@ impl UiEvent {
                 body,
                 content_kind,
                 mention_spans,
+                expires_at,
             } => Self::GroupMessageReceived {
                 group,
                 sender,
@@ -1635,6 +1668,7 @@ impl UiEvent {
                 timestamp,
                 body,
                 content_kind: content_kind_str(content_kind),
+                expires_at,
                 mention_spans: mention_spans
                     .into_iter()
                     .map(|span| UiMentionSpan {
@@ -1652,6 +1686,19 @@ impl UiEvent {
                 group,
                 sender,
                 target_content_id,
+            },
+            Event::EphemeralRemoved {
+                conversation_kind,
+                conversation_id,
+                author,
+                content_id,
+                reason,
+            } => Self::EphemeralRemoved {
+                conversation_kind,
+                conversation_id,
+                author,
+                content_id,
+                reason,
             },
             Event::MentionReceived { id } => Self::MentionReceived { id },
             Event::GroupDeliveryUpdated { id, peer, state } => Self::GroupDeliveryUpdated {
@@ -1726,6 +1773,8 @@ fn content_kind_str(kind: ContentKind) -> &'static str {
         ContentKind::Text => "text",
         ContentKind::Attachment => "attachment",
         ContentKind::Mention => "mention",
+        ContentKind::DisappearingText => "disappearing_text",
+        ContentKind::ViewOnceAttachment => "view_once_attachment",
         ContentKind::Unsupported => "unsupported",
         ContentKind::Malformed => "malformed",
     }
@@ -1972,6 +2021,7 @@ impl Session {
                 timestamp: m.timestamp,
                 body: m.body,
                 content_kind: content_kind_str(m.content_kind),
+                expires_at: m.expires_at,
                 edited: m.edited,
                 edit_revision: m.edit_revision,
                 versions: m
@@ -1991,6 +2041,18 @@ impl Session {
     /// Queue a message; returns its id (progress arrives as events).
     pub fn send(&self, peer: String, body: String) -> Result<String, String> {
         self.node.send(peer, body).map_err(|e| e.to_string())
+    }
+
+    /// Queue pairwise text with exact local expiry.
+    pub fn send_disappearing(
+        &self,
+        peer: String,
+        body: String,
+        lifetime_secs: u64,
+    ) -> Result<String, String> {
+        self.node
+            .send_disappearing(peer, body, lifetime_secs)
+            .map_err(|e| e.to_string())
     }
 
     /// Queue an immutable edit for this identity's exact pairwise Text.
@@ -2059,6 +2121,66 @@ impl Session {
                 .send_group_attachment(group, path, media_type, filename)
                 .map_err(|e| e.to_string()),
         }
+    }
+
+    /// Import a pairwise view-once attachment, including a generated preview when safe.
+    pub fn send_view_once_attachment(
+        &self,
+        peer: String,
+        path: String,
+        media_type: String,
+        filename: Option<String>,
+        lifetime_secs: u64,
+    ) -> Result<String, String> {
+        let staged = PrivateTemp::copy_bounded(
+            "view-once-attachment",
+            Path::new(&path),
+            DESKTOP_ATTACHMENT_MAX_BYTES,
+        )?;
+        let preview = generate_preview(staged.path(), &media_type)?;
+        self.node
+            .send_view_once_attachment(
+                peer,
+                staged.path().display().to_string(),
+                media_type,
+                filename,
+                preview
+                    .as_ref()
+                    .map(|value| value.path().display().to_string()),
+                preview.as_ref().map(|_| "image/jpeg".to_owned()),
+                lifetime_secs,
+            )
+            .map_err(|e| e.to_string())
+    }
+
+    /// Import a group view-once attachment.
+    pub fn send_group_view_once_attachment(
+        &self,
+        group: String,
+        path: String,
+        media_type: String,
+        filename: Option<String>,
+        lifetime_secs: u64,
+    ) -> Result<String, String> {
+        let staged = PrivateTemp::copy_bounded(
+            "view-once-attachment",
+            Path::new(&path),
+            DESKTOP_ATTACHMENT_MAX_BYTES,
+        )?;
+        let preview = generate_preview(staged.path(), &media_type)?;
+        self.node
+            .send_group_view_once_attachment(
+                group,
+                staged.path().display().to_string(),
+                media_type,
+                filename,
+                preview
+                    .as_ref()
+                    .map(|value| value.path().display().to_string()),
+                preview.as_ref().map(|_| "image/jpeg".to_owned()),
+                lifetime_secs,
+            )
+            .map_err(|e| e.to_string())
     }
 
     fn image_review(token: String, draft: &PendingImageEdit) -> Result<UiImageReview, String> {
@@ -2149,6 +2271,7 @@ impl Session {
 
     /// Import only the exact reviewed final image after atomically checking
     /// that the authoritative carrier explanation has not changed.
+    #[allow(clippy::too_many_arguments)] // reviewed-image token plus explicit send policy
     pub fn send_image_edit(
         &self,
         token: String,
@@ -2156,6 +2279,8 @@ impl Session {
         destination: String,
         filename: Option<String>,
         expected_carrier: String,
+        view_once: bool,
+        lifetime_secs: u64,
     ) -> Result<String, String> {
         let current =
             self.attachment_carrier_explanation(conversation.clone(), destination.clone())?;
@@ -2170,7 +2295,31 @@ impl Session {
             .ok_or_else(|| "image draft expired or was discarded".to_owned())?;
         probe_edited_image(draft.final_asset.path().display().to_string())
             .map_err(|error| error.to_string())?;
-        if conversation == "group" {
+        if conversation == "group" && view_once {
+            self.node
+                .send_group_view_once_attachment(
+                    destination,
+                    draft.final_asset.path().display().to_string(),
+                    IMAGE_MEDIA_TYPE.to_owned(),
+                    filename.or_else(|| Some("edited-image.png".to_owned())),
+                    None,
+                    None,
+                    lifetime_secs,
+                )
+                .map_err(|error| error.to_string())
+        } else if conversation == "pairwise" && view_once {
+            self.node
+                .send_view_once_attachment(
+                    destination,
+                    draft.final_asset.path().display().to_string(),
+                    IMAGE_MEDIA_TYPE.to_owned(),
+                    filename.or_else(|| Some("edited-image.png".to_owned())),
+                    None,
+                    None,
+                    lifetime_secs,
+                )
+                .map_err(|error| error.to_string())
+        } else if conversation == "group" {
             self.node
                 .send_group_attachment(
                     destination,
@@ -2432,6 +2581,17 @@ impl Session {
     pub fn export_attachment(&self, transfer: String, path: String) -> Result<(), String> {
         self.node
             .export_attachment(transfer, path)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Terminal first-open of view-once media into a protected new path.
+    pub fn consume_view_once_attachment(
+        &self,
+        transfer: String,
+        path: String,
+    ) -> Result<(), String> {
+        self.node
+            .consume_view_once_attachment(transfer, path)
             .map_err(|e| e.to_string())
     }
 
@@ -3140,6 +3300,7 @@ impl Session {
                 timestamp: message.timestamp,
                 body: message.body,
                 content_kind: content_kind_str(message.content_kind),
+                expires_at: message.expires_at,
                 mention_spans: message
                     .mention_spans
                     .into_iter()
@@ -3177,6 +3338,18 @@ impl Session {
     /// `GroupDeliveryUpdated` events.
     pub fn send_group(&self, group: String, body: String) -> Result<String, String> {
         self.node.send_group(group, body).map_err(|e| e.to_string())
+    }
+
+    /// Queue group text with exact local expiry.
+    pub fn send_group_disappearing(
+        &self,
+        group: String,
+        body: String,
+        lifetime_secs: u64,
+    ) -> Result<String, String> {
+        self.node
+            .send_group_disappearing(group, body, lifetime_secs)
+            .map_err(|e| e.to_string())
     }
 
     /// Queue an immutable edit for this identity's exact group Text.
@@ -3467,6 +3640,7 @@ mod tests {
             timestamp: 7,
             body: "meet at the pass".to_owned(),
             content_kind: "text",
+            expires_at: None,
             mention_spans: Vec::new(),
         })
         .unwrap();
@@ -3499,6 +3673,9 @@ mod tests {
                 author: "05".repeat(32),
                 content_id: "06".repeat(16),
                 state: "awaiting_consent",
+                view_once: false,
+                expires_at: None,
+                consumed: false,
                 objects: vec![UiAttachmentObject {
                     preview: false,
                     total_bytes: 42,

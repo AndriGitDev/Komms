@@ -387,6 +387,16 @@ label.check input { width: auto; margin: 0; }
   border-top: 1px solid var(--line);
 }
 #composer input { margin: 0; }
+.composer-select {
+  display: flex;
+  align-items: center;
+  gap: 0.35em;
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 0.8em;
+  white-space: nowrap;
+}
+.composer-select select { width: auto; min-width: 7.5em; margin: 0; }
 #composer #btn-mention, #composer #btn-record, #composer #btn-attach, #composer #btn-schedule { white-space: nowrap; }
 #composer #btn-record.recording { color: var(--danger); border-color: var(--danger); }
 #mention-picker {
@@ -516,6 +526,8 @@ label.check input { width: auto; margin: 0; }
 .attachment-actions { justify-content: flex-end; margin-top: 0.55em; }
 .attachment-actions button { font-size: 0.78em; }
 .attachment-selection { word-break: break-word; }
+.check-row { display: flex; align-items: center; gap: 0.5em; }
+.check-row input { width: auto; margin: 0; }
 .image-editor-grid { display: grid; grid-template-columns: minmax(16rem, 1fr) minmax(18rem, 1fr); gap: 1rem; }
 .image-review { margin: 0; align-self: start; position: sticky; top: 0; }
 .image-review img { display: block; width: 100%; max-height: 55vh; object-fit: contain; background: #0b1110; border: 1px solid var(--line); border-radius: 8px; }

@@ -1,0 +1,24 @@
+{
+  "schema": "komms-c4-ephemeral-parity-v1",
+  "content_kind": 5,
+  "minimum_lifetime_secs": 60,
+  "maximum_lifetime_secs": 2592000,
+  "retention_bucket_secs": 3600,
+  "text_lifetimes": [60, 3600, 86400, 604800, 2592000],
+  "view_once_lifetimes": [3600, 86400, 604800, 2592000],
+  "history_kinds": {
+    "disappearing_text": "disappearing_text",
+    "view_once_attachment": "view_once_attachment"
+  },
+  "terminal_reasons": ["expired", "consumed"],
+  "honesty": "Removed from this device; recipients and other devices may retain copies.",
+  "guarantees": {
+    "ordinary_export_rejected_for_view_once": true,
+    "preview_and_autoplay_rejected_for_view_once": true,
+    "consume_tombstone_precedes_plaintext_output": true,
+    "ephemeral_plaintext_excluded_from_backup": true,
+    "terminal_tombstones_included_in_backup": true,
+    "remote_erasure_promised": false,
+    "screenshot_prevention_promised": false
+  }
+}

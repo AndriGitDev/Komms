@@ -75,6 +75,11 @@ fn file_presentation_parity_fixture() -> Value {
     .expect("valid shared C1 file-presentation fixture")
 }
 
+fn ephemeral_parity_fixture() -> Value {
+    serde_json::from_str(include_str!("../../../fixtures/c4-ephemeral-parity.json"))
+        .expect("valid shared C4 ephemeral fixture")
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn file_presentation_via_strict_rpc_matches_shared_fail_closed_policy() {
     let fixture = file_presentation_parity_fixture();
@@ -729,6 +734,13 @@ async fn note_to_self_via_rpc_is_local_and_uses_the_reserved_identity() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn two_daemons_message_via_rpc_only() {
+    let ephemeral = ephemeral_parity_fixture();
+    let hour = ephemeral["text_lifetimes"][1].as_u64().unwrap();
+    assert_eq!(ephemeral["content_kind"], json!(5));
+    assert_eq!(
+        ephemeral["guarantees"]["remote_erasure_promised"],
+        json!(false)
+    );
     let dir = tempfile::tempdir().unwrap();
     let alice = Daemon::start(test_config(dir.path(), "alice"))
         .await
@@ -815,6 +827,32 @@ async fn two_daemons_message_via_rpc_only() {
     assert_eq!(record["direction"], json!("out"));
     assert_eq!(record["body"], json!("hello over the daemon"));
 
+    let disappearing = a
+        .ok(json!({
+            "op": "send_disappearing",
+            "peer": bob_peer,
+            "body": "temporary over strict RPC",
+            "lifetime_secs": hour,
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let temporary = b_events
+        .wait_event(|event| event["type"] == json!("message") && event["id"] == json!(disappearing))
+        .await;
+    assert_eq!(temporary["content_kind"], json!("disappearing_text"));
+    assert!(temporary["expires_at"].as_u64().is_some());
+    let temporary_history = b.ok(json!({ "op": "messages", "peer": alice_peer })).await;
+    let temporary_row = temporary_history["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["id"] == json!(disappearing))
+        .unwrap();
+    assert_eq!(temporary_row["content_kind"], json!("disappearing_text"));
+    assert_eq!(temporary_row["expires_at"], temporary["expires_at"]);
+
     tokio::time::sleep(Duration::from_millis(300)).await;
     let editable = a
         .ok(json!({
@@ -861,7 +899,7 @@ async fn two_daemons_message_via_rpc_only() {
         b.ok(json!({ "op": "messages", "peer": alice_peer })).await,
     ] {
         let messages = history["messages"].as_array().unwrap();
-        assert_eq!(messages.len(), 2, "Edit events remain hidden");
+        assert_eq!(messages.len(), 3, "Edit events remain hidden");
         let message = messages
             .iter()
             .find(|message| message["id"] == json!(editable))
@@ -1001,6 +1039,73 @@ async fn two_daemons_message_via_rpc_only() {
         a.ok(json!({ "op": "attachments" })).await["attachments"][0]["state"],
         json!("cancelled")
     );
+
+    let once_bytes = b"strict RPC view-once bytes";
+    let once_source = dir.path().join("rpc-view-once.bin");
+    std::fs::write(&once_source, once_bytes).unwrap();
+    let once_id = a
+        .ok(json!({
+            "op": "attachment_send_view_once",
+            "peer": bob_peer,
+            "path": once_source.display().to_string(),
+            "media_type": "application/octet-stream",
+            "filename": "reveal-once.bin",
+            "lifetime_secs": hour,
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let once_offer = b_events
+        .wait_event(|event| {
+            event["type"] == json!("attachment_updated")
+                && event["attachment"]["content_id"] == json!(once_id)
+        })
+        .await;
+    assert_eq!(once_offer["attachment"]["view_once"], json!(true));
+    assert!(once_offer["attachment"]["expires_at"].as_u64().is_some());
+    let once_transfer = once_offer["attachment"]["transfer_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let once_message = b_events
+        .wait_event(|event| event["type"] == json!("message") && event["id"] == json!(once_id))
+        .await;
+    assert_eq!(once_message["content_kind"], json!("view_once_attachment"));
+    b.ok(json!({ "op": "attachment_accept", "transfer": once_transfer }))
+        .await;
+    b_events
+        .wait_event(|event| {
+            event["type"] == json!("attachment_updated")
+                && event["attachment"]["transfer_id"] == json!(once_transfer)
+                && event["attachment"]["state"] == json!("complete")
+        })
+        .await;
+    assert!(b
+        .call(json!({
+            "op": "attachment_export",
+            "transfer": once_transfer,
+            "path": dir.path().join("forbidden-view-once.bin").display().to_string(),
+        }))
+        .await
+        .unwrap_err()
+        .contains("view-once"));
+    let once_output = dir.path().join("rpc-view-once-output.bin");
+    b.ok(json!({
+        "op": "attachment_consume_view_once",
+        "transfer": once_transfer,
+        "path": once_output.display().to_string(),
+    }))
+    .await;
+    assert_eq!(std::fs::read(&once_output).unwrap(), once_bytes);
+    assert!(b
+        .call(json!({
+            "op": "attachment_consume_view_once",
+            "transfer": once_transfer,
+            "path": dir.path().join("second-view-once.bin").display().to_string(),
+        }))
+        .await
+        .is_err());
 
     // Bob replies over the established session; Alice sees it.
     b.ok(json!({ "op": "send", "peer": alice_peer, "body": "loud and clear" }))

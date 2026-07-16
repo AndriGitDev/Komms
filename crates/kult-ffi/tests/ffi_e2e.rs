@@ -31,6 +31,11 @@ fn file_presentation_parity_fixture() -> serde_json::Value {
     .expect("valid shared C1 file-presentation fixture")
 }
 
+fn ephemeral_parity_fixture() -> serde_json::Value {
+    serde_json::from_str(include_str!("../../../fixtures/c4-ephemeral-parity.json"))
+        .expect("valid shared C4 ephemeral fixture")
+}
+
 fn label_parity_fixture() -> serde_json::Value {
     serde_json::from_str(include_str!("../../../fixtures/b18-label-parity.json"))
         .expect("valid shared B18 label fixture")
@@ -561,7 +566,11 @@ impl Recorder {
             if let Some(hit) = self.events.lock().unwrap().iter().find(|e| pred(e)) {
                 return hit.clone();
             }
-            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {what}; events: {:#?}",
+                self.events.lock().unwrap()
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
     }
@@ -1273,6 +1282,13 @@ fn private_pins_via_ffi_have_typed_parity_restart_and_zero_delivery_work() {
 
 #[test]
 fn two_nodes_message_via_ffi_only() {
+    let ephemeral = ephemeral_parity_fixture();
+    let hour = ephemeral["text_lifetimes"][1].as_u64().unwrap();
+    assert_eq!(ephemeral["content_kind"], serde_json::json!(5));
+    assert_eq!(
+        ephemeral["terminal_reasons"],
+        serde_json::json!(["expired", "consumed"])
+    );
     let dir = tempfile::tempdir().unwrap();
     let a_rec = Recorder::default();
     let b_rec = Recorder::default();
@@ -1354,6 +1370,36 @@ fn two_nodes_message_via_ffi_only() {
     assert_eq!(history[0].state, DeliveryState::Delivered);
     assert_eq!(history[0].body, "hello through the bindings");
 
+    let disappearing = alice
+        .send_disappearing(
+            bob_peer.clone(),
+            "temporary through bindings".to_owned(),
+            hour,
+        )
+        .unwrap();
+    let temporary = b_rec.wait("bob's disappearing message", |event| {
+        matches!(
+            event,
+            Event::MessageReceived {
+                id,
+                content_kind: ContentKind::DisappearingText,
+                expires_at: Some(_),
+                ..
+            } if id == &disappearing
+        )
+    });
+    let event_expiry = match temporary {
+        Event::MessageReceived { expires_at, .. } => expires_at.unwrap(),
+        other => panic!("wrong event: {other:?}"),
+    };
+    let temporary_history = bob.messages_with(alice_peer.clone()).unwrap();
+    let temporary_row = temporary_history
+        .iter()
+        .find(|message| message.id == disappearing)
+        .unwrap();
+    assert_eq!(temporary_row.content_kind, ContentKind::DisappearingText);
+    assert_eq!(temporary_row.expires_at, Some(event_expiry));
+
     // Authenticated capabilities have now crossed the same encrypted
     // session, so a second Text event is editable through exact UniFFI ids.
     std::thread::sleep(Duration::from_millis(300));
@@ -1418,7 +1464,7 @@ fn two_nodes_message_via_ffi_only() {
         alice.messages_with(bob_peer.clone()).unwrap(),
         bob.messages_with(alice_peer.clone()).unwrap(),
     ] {
-        assert_eq!(history.len(), 2, "edit events do not become chat rows");
+        assert_eq!(history.len(), 3, "edit events do not become chat rows");
         let message = history
             .iter()
             .find(|message| message.id == editable)
@@ -1545,6 +1591,79 @@ fn two_nodes_message_via_ffi_only() {
         alice.attachments().unwrap()[0].state,
         AttachmentState::Cancelled
     );
+
+    let once_bytes = b"view-once through UniFFI";
+    let once_source = dir.path().join("ffi-view-once.bin");
+    std::fs::write(&once_source, once_bytes).unwrap();
+    let once_id = alice
+        .send_view_once_attachment(
+            bob_peer.clone(),
+            once_source.display().to_string(),
+            "application/octet-stream".to_owned(),
+            Some("reveal-once.bin".to_owned()),
+            None,
+            None,
+            hour,
+        )
+        .unwrap();
+    let once_offer = b_rec.wait("view-once offer", |event| {
+        matches!(
+            event,
+            Event::AttachmentUpdated { attachment }
+                if attachment.content_id == once_id
+                    && attachment.direction == AttachmentDirection::Inbound
+                    && attachment.view_once
+        )
+    });
+    let once_transfer = match once_offer {
+        Event::AttachmentUpdated { attachment } => {
+            assert!(attachment.expires_at.is_some());
+            attachment.transfer_id
+        }
+        other => panic!("wrong event: {other:?}"),
+    };
+    b_rec.wait("typed view-once message", |event| {
+        matches!(
+            event,
+            Event::MessageReceived {
+                id,
+                content_kind: ContentKind::ViewOnceAttachment,
+                expires_at: Some(_),
+                ..
+            } if id == &once_id
+        )
+    });
+    bob.accept_attachment(once_transfer.clone()).unwrap();
+    b_rec.wait("view-once completion", |event| {
+        matches!(
+            event,
+            Event::AttachmentUpdated { attachment }
+                if attachment.transfer_id == once_transfer
+                    && attachment.state == AttachmentState::Complete
+        )
+    });
+    assert!(bob
+        .export_attachment(
+            once_transfer.clone(),
+            dir.path()
+                .join("forbidden-view-once.bin")
+                .display()
+                .to_string(),
+        )
+        .is_err());
+    let once_output = dir.path().join("ffi-view-once-output.bin");
+    bob.consume_view_once_attachment(once_transfer.clone(), once_output.display().to_string())
+        .unwrap();
+    assert_eq!(std::fs::read(&once_output).unwrap(), once_bytes);
+    assert!(bob
+        .consume_view_once_attachment(
+            once_transfer,
+            dir.path()
+                .join("ffi-view-once-second.bin")
+                .display()
+                .to_string(),
+        )
+        .is_err());
 
     // The same deterministic canonical clip is imported, transferred, and
     // probed through the exact public surface every shell consumes.
@@ -1955,6 +2074,40 @@ fn groups_via_ffi_only() {
         .iter()
         .flat_map(|message| &message.deliveries)
         .all(|delivery| delivery.state == DeliveryState::Delivered));
+
+    let temporary_group = alice
+        .send_group_disappearing(
+            group.clone(),
+            "temporary group through bindings".to_owned(),
+            3_600,
+        )
+        .unwrap();
+    let temporary_group_event = b_rec.wait("bob's disappearing group message", |event| {
+        matches!(
+            event,
+            Event::GroupMessageReceived {
+                id,
+                content_kind: ContentKind::DisappearingText,
+                expires_at: Some(_),
+                ..
+            } if id == &temporary_group
+        )
+    });
+    let temporary_group_expiry = match temporary_group_event {
+        Event::GroupMessageReceived { expires_at, .. } => expires_at.unwrap(),
+        other => panic!("wrong event: {other:?}"),
+    };
+    let temporary_group_row = bob
+        .group_messages(group.clone())
+        .unwrap()
+        .into_iter()
+        .find(|message| message.id == temporary_group)
+        .unwrap();
+    assert_eq!(
+        temporary_group_row.content_kind,
+        ContentKind::DisappearingText
+    );
+    assert_eq!(temporary_group_row.expires_at, Some(temporary_group_expiry));
 
     std::thread::sleep(Duration::from_millis(300));
     let editable = alice

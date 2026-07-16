@@ -81,6 +81,11 @@ impl Envelope {
     pub fn encode(&self) -> Bytes;                          // fixed layout, LE
     pub fn decode(b: &[u8]) -> Result<Self, CodecError>;    // fuzz target #1
 }
+// C4 retained envelopes use v2 with a canonical hour-aligned deletion hint;
+// content-v1 kind 5 binds the exact deadline and same hint under endpoint AEAD.
+pub fn encode_disappearing_text_payload(expires_at: u64, text: &str) -> Result<Vec<u8>>;
+pub fn encode_view_once_attachment_payload(expires_at: u64, manifest: &AttachmentManifest)
+    -> Result<Vec<u8>>;
 pub fn pad(plaintext: &[u8]) -> Padded;                     // buckets per 04 §5
 pub fn fragment(env: &Envelope, mtu: usize) -> Vec<Envelope>;      // type 0x04
 pub struct Reassembler { /* 24h window, per-peer caps, NACK generation (05 §4.2) */ }
@@ -131,6 +136,11 @@ pub struct Node { /* composes store + transports + sessions */ }
 // private petnames: assess_contact_name(peer, proposed)
 //              / rename_contact(peer, proposed, accept_warnings)
 //             → ContactRenamed (local only; exact peer target; no delivery work)
+// ephemeral: send_disappearing_message / send_group_disappearing_message
+//          / send[_group]_view_once_attachment / consume_view_once_attachment
+//          → expiry-bearing history/events + EphemeralRemoved
+// Exact deadline sweep, tombstone-before-output, raw-send refusal, and KKR5
+// exclusion live below the shell; ordinary attachment export rejects view once.
 ```
 
 `kult-ffi` exposes exactly `Node`'s command/event API via UniFFI, nothing more.
@@ -212,6 +222,19 @@ resolver hides edit events, retains ordered versions, and selects maximum
 wire, storage, shell, and qualification contract is
 [18: Authenticated Message Editing](18-message-editing.md).
 
+C4 is a replicated lifecycle feature, not a timer implemented by each shell.
+Only the dedicated pair/group disappearing and view-once APIs may create
+content-v1 kind `0x0005`; generic send and scheduling reject encoded ephemeral
+content, and an anonymous first flight is forbidden. RPC operations are
+`send_disappearing`, `group_send_disappearing`,
+`attachment_send_view_once`, `group_attachment_send_view_once`, and
+`attachment_consume_view_once`; the matching CLI commands use hyphens. UniFFI
+exposes the same typed methods, expiry fields, attachment flags, and terminal
+event. Sweep before all tick work, bind envelope-v2's coarse bucket to the exact
+authenticated deadline, commit a tombstone before reveal output, refuse normal
+export/preview, and keep active ephemeral content out of KKR5. The complete
+contract is [19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
+
 ## 4. Testing strategy (beyond per-milestone acceptance)
 
 - **KATs**: primitive test vectors vendored under `crates/kult-crypto/tests/vectors/`.
@@ -219,7 +242,7 @@ wire, storage, shell, and qualification contract is
   outside bounds ⇒ typed failure. Padding round-trips. Fragment/reassemble = identity.
 - **Fuzz targets** (`cargo-fuzz`): crypto envelope, handshake, bundle, mnemonic,
   and attachment-chunk decoding; protocol envelope, bundle import, reassembly,
-  content, capability, attachment manifest/bulk/ranges, mention, and edit
+  content, capability, attachment manifest/bulk/ranges, mention, edit, and ephemeral
   decoding.
 - **Simulation harness** (M3+): in-process multi-node network with scripted link
   conditions (latency, loss, partitions, MTU), deterministic seed, replayable failures.

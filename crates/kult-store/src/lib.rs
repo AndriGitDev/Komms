@@ -23,12 +23,14 @@ use kult_crypto::{derive_kek, CryptoError, Identity, KdfProfile, Session, Storag
 use kult_protocol::{CapabilityControl, Envelope};
 
 mod backup;
+mod ephemeral;
 mod local_metadata;
 mod media;
 mod note;
 mod scheduled;
 
 pub use backup::BACKUP_MAGIC;
+pub use ephemeral::{EphemeralConversation, EphemeralMode, EphemeralRecord, EphemeralState};
 pub use local_metadata::{
     render_label_color, valid_folder_name, valid_label_color, valid_label_name, ConversationId,
     ConversationMetadata, CustomIconRecord, CustomIconTarget, DraftRecord, FolderAssignment,
@@ -411,6 +413,7 @@ CREATE TABLE IF NOT EXISTS media_objects   (id BLOB PRIMARY KEY, blob BLOB NOT N
 CREATE TABLE IF NOT EXISTS local_metadata  (rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS note_messages   (rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS scheduled_messages (rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS ephemeral (rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
 ";
 
 /// An open, unlocked Komms store.
@@ -431,6 +434,7 @@ pub struct Store {
     k_local_metadata: StorageKey,
     k_notes: StorageKey,
     k_scheduled: StorageKey,
+    k_ephemeral: StorageKey,
     media_dir: PathBuf,
     media_limits: MediaLimits,
 }
@@ -525,6 +529,7 @@ impl Store {
             k_local_metadata: master.derive(b"KK-store-local-metadata"),
             k_notes: master.derive(b"KK-store-notes"),
             k_scheduled: master.derive(b"KK-store-scheduled"),
+            k_ephemeral: master.derive(b"KK-store-ephemeral"),
             media_dir,
             media_limits: MediaLimits::default(),
             conn,
@@ -693,6 +698,33 @@ impl Store {
         Ok(false)
     }
 
+    /// Delete one exact pairwise history row after an expiry tombstone is durable.
+    pub fn delete_message_record(
+        &self,
+        peer: &[u8; 32],
+        direction: Direction,
+        id: &[u8; 16],
+    ) -> Result<bool> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT rowid_, blob FROM messages ORDER BY rowid_")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        for row in rows {
+            let (rowid, sealed) = row?;
+            let plain = self.k_messages.open(b"message", &sealed)?;
+            let record: MessageRecord =
+                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
+            if &record.peer == peer && record.direction == direction && &record.id == id {
+                self.conn
+                    .execute("DELETE FROM messages WHERE rowid_ = ?1", params![rowid])?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     // ---- contacts ----------------------------------------------------------
 
     /// Insert or replace a contact (sealed).
@@ -836,6 +868,32 @@ impl Store {
         self.conn
             .execute("DELETE FROM queue WHERE seq = ?1", params![seq])?;
         Ok(())
+    }
+
+    /// Remove every queued envelope associated with one expired pairwise message.
+    pub fn queue_remove_message(&self, id: &[u8; 16]) -> Result<usize> {
+        let sequences: Vec<i64> = self
+            .queue_all()?
+            .into_iter()
+            .filter_map(|(seq, item)| (item.msg_id.as_ref() == Some(id)).then_some(seq))
+            .collect();
+        for sequence in &sequences {
+            self.queue_ack(*sequence)?;
+        }
+        Ok(sequences.len())
+    }
+
+    /// Remove every queued member copy associated with one expired group message.
+    pub fn queue_remove_group_message(&self, id: &[u8; 16]) -> Result<usize> {
+        let sequences: Vec<i64> = self
+            .queue_all()?
+            .into_iter()
+            .filter_map(|(seq, item)| (item.group_msg_id.as_ref() == Some(id)).then_some(seq))
+            .collect();
+        for sequence in &sequences {
+            self.queue_ack(*sequence)?;
+        }
+        Ok(sequences.len())
     }
 
     // ---- inbound pending (envelopes that cannot be processed yet) ---------
@@ -1038,6 +1096,33 @@ impl Store {
                     "UPDATE group_msgs SET blob = ?2 WHERE rowid_ = ?1",
                     params![rowid, sealed],
                 )?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Delete one exact group history row after an expiry tombstone is durable.
+    pub fn delete_group_message_record(
+        &self,
+        group: &[u8; 32],
+        sender: &[u8; 32],
+        id: &[u8; 16],
+    ) -> Result<bool> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT rowid_, blob FROM group_msgs ORDER BY rowid_")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        for row in rows {
+            let (rowid, sealed) = row?;
+            let plain = self.k_groups.open(b"group-msg", &sealed)?;
+            let record: GroupMessageRecord =
+                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
+            if &record.group == group && &record.sender == sender && &record.id == id {
+                self.conn
+                    .execute("DELETE FROM group_msgs WHERE rowid_ = ?1", params![rowid])?;
                 return Ok(true);
             }
         }

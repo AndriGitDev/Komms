@@ -122,6 +122,30 @@ fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
             "target_content_id",
             "text",
         ]),
+        "send_disappearing" => Some(&["id", "op", "peer", "body", "lifetime_secs"]),
+        "attachment_send_view_once" => Some(&[
+            "id",
+            "op",
+            "peer",
+            "path",
+            "media_type",
+            "filename",
+            "preview_path",
+            "preview_media_type",
+            "lifetime_secs",
+        ]),
+        "group_attachment_send_view_once" => Some(&[
+            "id",
+            "op",
+            "group",
+            "path",
+            "media_type",
+            "filename",
+            "preview_path",
+            "preview_media_type",
+            "lifetime_secs",
+        ]),
+        "attachment_consume_view_once" => Some(&["id", "op", "transfer", "path"]),
         "group_edit_message" => Some(&[
             "id",
             "op",
@@ -130,6 +154,7 @@ fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
             "target_content_id",
             "text",
         ]),
+        "group_send_disappearing" => Some(&["id", "op", "group", "body", "lifetime_secs"]),
         _ => None,
     }
 }
@@ -200,6 +225,15 @@ pub enum Op {
         /// Message body (UTF-8 text).
         body: String,
     },
+    /// Queue pairwise text with exact local expiry and coarse relay retention.
+    SendDisappearing {
+        /// Recipient peer id (hex).
+        peer: String,
+        /// Exact UTF-8 body.
+        body: String,
+        /// Lifetime in seconds (60 through 30 days).
+        lifetime_secs: u64,
+    },
     /// Queue an immutable edit for an exact authored pairwise Text event.
     EditMessage {
         /// Pairwise conversation peer id (hex).
@@ -228,6 +262,25 @@ pub enum Op {
         #[serde(default)]
         preview_media_type: Option<String>,
     },
+    /// Import and queue a pairwise view-once attachment.
+    AttachmentSendViewOnce {
+        /// Recipient peer id (hex).
+        peer: String,
+        /// Plaintext input path selected by the local caller.
+        path: String,
+        /// Authenticated lowercase media-type hint.
+        media_type: String,
+        /// Optional authenticated display basename.
+        filename: Option<String>,
+        /// Optional locally generated preview input path.
+        #[serde(default)]
+        preview_path: Option<String>,
+        /// JPEG/PNG media type required with a preview.
+        #[serde(default)]
+        preview_media_type: Option<String>,
+        /// Fallback lifetime in seconds.
+        lifetime_secs: u64,
+    },
     /// Import and queue a sender-key group attachment.
     GroupAttachmentSend {
         /// Group id (hex).
@@ -244,6 +297,25 @@ pub enum Op {
         /// JPEG/PNG media type required when `preview_path` is present.
         #[serde(default)]
         preview_media_type: Option<String>,
+    },
+    /// Import and queue a sender-key group view-once attachment.
+    GroupAttachmentSendViewOnce {
+        /// Group id (hex).
+        group: String,
+        /// Plaintext input path selected by the local caller.
+        path: String,
+        /// Authenticated lowercase media-type hint.
+        media_type: String,
+        /// Optional authenticated display basename.
+        filename: Option<String>,
+        /// Optional locally generated preview input path.
+        #[serde(default)]
+        preview_path: Option<String>,
+        /// JPEG/PNG media type required with a preview.
+        #[serde(default)]
+        preview_media_type: Option<String>,
+        /// Fallback lifetime in seconds.
+        lifetime_secs: u64,
     },
     /// List render-safe attachment transfer state.
     Attachments,
@@ -281,6 +353,13 @@ pub enum Op {
         /// Export the optional preview instead of the primary object.
         #[serde(default)]
         preview: bool,
+    },
+    /// Consume a view-once primary into a new caller-selected protected file.
+    AttachmentConsumeViewOnce {
+        /// Local transfer id (hex).
+        transfer: String,
+        /// Destination path, created without overwriting.
+        path: String,
     },
     /// Schedule pairwise text for an absolute UTC Unix instant.
     Schedule {
@@ -572,6 +651,15 @@ pub enum Op {
         /// Message body (UTF-8 text).
         body: String,
     },
+    /// Queue group text with exact local expiry and coarse relay retention.
+    GroupSendDisappearing {
+        /// Group id (hex).
+        group: String,
+        /// Exact UTF-8 body.
+        body: String,
+        /// Lifetime in seconds (60 through 30 days).
+        lifetime_secs: u64,
+    },
     /// Queue an immutable edit for an exact authored group Text event.
     GroupEditMessage {
         /// Group id (hex).
@@ -852,6 +940,7 @@ pub fn event_line(event: &Event) -> String {
             "timestamp": timestamp,
             "body": render_event_body(body, content),
             "content_kind": content_kind(content),
+            "expires_at": content_expiry(content),
             "mention_spans": mention_status_json(content),
         }),
         Event::MessageEdited {
@@ -913,6 +1002,7 @@ pub fn event_line(event: &Event) -> String {
             "timestamp": timestamp,
             "body": render_event_body(body, content),
             "content_kind": content_kind(content),
+            "expires_at": content_expiry(content),
             "mention_spans": mention_status_json(content),
         }),
         Event::GroupMessageEdited {
@@ -924,6 +1014,29 @@ pub fn event_line(event: &Event) -> String {
             "group": hex_encode(group),
             "sender": hex_encode(sender),
             "target_content_id": hex_encode(target_content_id),
+        }),
+        Event::EphemeralRemoved {
+            conversation,
+            author,
+            content_id,
+            reason,
+        } => json!({
+            "type": "ephemeral_removed",
+            "conversation": match conversation {
+                kult_store::EphemeralConversation::Pairwise(peer) => {
+                    json!({ "type": "pairwise", "id": hex_encode(peer) })
+                }
+                kult_store::EphemeralConversation::Group(group) => {
+                    json!({ "type": "group", "id": hex_encode(group) })
+                }
+            },
+            "author": hex_encode(author),
+            "content_id": hex_encode(content_id),
+            "reason": match reason {
+                kult_store::EphemeralState::Consumed => "consumed",
+                kult_store::EphemeralState::Expired => "expired",
+                kult_store::EphemeralState::Active => "active",
+            },
         }),
         Event::MentionReceived { id } => json!({
             "type": "mention_received",
@@ -1363,6 +1476,9 @@ pub fn attachment_json(attachment: &AttachmentInfo) -> Value {
         "author": hex_encode(&attachment.author),
         "content_id": hex_encode(&attachment.content_id),
         "state": attachment_state_str(attachment.state),
+        "view_once": attachment.view_once,
+        "expires_at": attachment.expires_at,
+        "consumed": attachment.consumed,
         "objects": attachment.objects.iter().map(|object| json!({
             "preview": object.preview,
             "total_bytes": object.total_bytes,
@@ -1464,7 +1580,7 @@ fn carrier_str(capability: CarrierCapability) -> &'static str {
 /// A group message record as JSON, including honest per-member delivery.
 pub fn group_message_json(message: &ResolvedGroupMessage) -> Value {
     let rec = &message.record;
-    let (body, content_kind, mention_spans) = render_stored_content(&rec.body, true);
+    let (body, content_kind, expires_at, mention_spans) = render_stored_content(&rec.body, true);
     json!({
         "id": hex_encode(&rec.id),
         "group": hex_encode(&rec.group),
@@ -1476,6 +1592,7 @@ pub fn group_message_json(message: &ResolvedGroupMessage) -> Value {
         "timestamp": rec.timestamp,
         "body": body,
         "content_kind": content_kind,
+        "expires_at": expires_at,
         "mention_spans": mention_spans,
         "edited": message.edited,
         "edit_revision": message.winning_revision,
@@ -1490,7 +1607,7 @@ pub fn group_message_json(message: &ResolvedGroupMessage) -> Value {
 /// A message record as JSON.
 pub fn message_json(message: &ResolvedMessage) -> Value {
     let rec = &message.record;
-    let (body, content_kind, mention_spans) = render_stored_content(&rec.body, false);
+    let (body, content_kind, expires_at, mention_spans) = render_stored_content(&rec.body, false);
     json!({
         "id": hex_encode(&rec.id),
         "peer": hex_encode(&rec.peer),
@@ -1502,6 +1619,7 @@ pub fn message_json(message: &ResolvedMessage) -> Value {
         "timestamp": rec.timestamp,
         "body": body,
         "content_kind": content_kind,
+        "expires_at": expires_at,
         "mention_spans": mention_spans,
         "edited": message.edited,
         "edit_revision": message.winning_revision,
@@ -1560,18 +1678,33 @@ fn content_kind(status: &ContentStatus) -> &'static str {
         ContentStatus::Text { .. } => "text",
         ContentStatus::Attachment { .. } => "attachment",
         ContentStatus::Mention { .. } => "mention",
+        ContentStatus::DisappearingText { .. } => "disappearing_text",
+        ContentStatus::ViewOnceAttachment { .. } => "view_once_attachment",
         ContentStatus::Unsupported { .. } => "unsupported",
         ContentStatus::Malformed => "malformed",
         _ => "unsupported",
     }
 }
 
+fn content_expiry(status: &ContentStatus) -> Option<u64> {
+    match status {
+        ContentStatus::DisappearingText { expires_at, .. }
+        | ContentStatus::ViewOnceAttachment { expires_at, .. } => Some(*expires_at),
+        _ => None,
+    }
+}
+
 fn render_event_body(body: &[u8], status: &ContentStatus) -> String {
     match status {
-        ContentStatus::LegacyText | ContentStatus::Text { .. } | ContentStatus::Mention { .. } => {
+        ContentStatus::LegacyText
+        | ContentStatus::Text { .. }
+        | ContentStatus::Mention { .. }
+        | ContentStatus::DisappearingText { .. } => {
             String::from_utf8(body.to_vec()).expect("node exposes only validated UTF-8 text")
         }
-        ContentStatus::Attachment { .. } => String::new(),
+        ContentStatus::Attachment { .. } | ContentStatus::ViewOnceAttachment { .. } => {
+            String::new()
+        }
         ContentStatus::Unsupported { .. } | ContentStatus::Malformed => {
             UNSUPPORTED_MESSAGE.to_owned()
         }
@@ -1601,14 +1734,19 @@ fn mention_spans_json(spans: &[kult_node::MentionSpan]) -> Value {
     )
 }
 
-fn render_stored_content(bytes: &[u8], allow_group_mention: bool) -> (String, &'static str, Value) {
+fn render_stored_content(
+    bytes: &[u8],
+    allow_group_mention: bool,
+) -> (String, &'static str, Option<u64>, Value) {
     match kult_protocol::decode_content(bytes) {
         kult_protocol::DecodedContent::LegacyText(text) => {
-            (text.to_owned(), "legacy_text", json!([]))
+            (text.to_owned(), "legacy_text", None, json!([]))
         }
-        kult_protocol::DecodedContent::Text { text, .. } => (text.to_owned(), "text", json!([])),
+        kult_protocol::DecodedContent::Text { text, .. } => {
+            (text.to_owned(), "text", None, json!([]))
+        }
         kult_protocol::DecodedContent::Attachment { .. } => {
-            (String::new(), "attachment", json!([]))
+            (String::new(), "attachment", None, json!([]))
         }
         kult_protocol::DecodedContent::Mention { mention, .. } if allow_group_mention => {
             let spans = mention
@@ -1618,18 +1756,38 @@ fn render_stored_content(bytes: &[u8], allow_group_mention: bool) -> (String, &'
             (
                 mention.text.to_owned(),
                 "mention",
+                None,
                 mention_spans_json(&spans),
             )
         }
         kult_protocol::DecodedContent::Mention { .. } => {
-            (UNSUPPORTED_MESSAGE.to_owned(), "malformed", json!([]))
+            (UNSUPPORTED_MESSAGE.to_owned(), "malformed", None, json!([]))
         }
-        kult_protocol::DecodedContent::Edit { .. } => (String::new(), "malformed", json!([])),
-        kult_protocol::DecodedContent::Unsupported { .. } => {
-            (UNSUPPORTED_MESSAGE.to_owned(), "unsupported", json!([]))
-        }
+        kult_protocol::DecodedContent::Edit { .. } => (String::new(), "malformed", None, json!([])),
+        kult_protocol::DecodedContent::Ephemeral { ephemeral, .. } => match ephemeral {
+            kult_protocol::Ephemeral::DisappearingText {
+                text, expires_at, ..
+            } => (
+                text.to_owned(),
+                "disappearing_text",
+                Some(expires_at),
+                json!([]),
+            ),
+            kult_protocol::Ephemeral::ViewOnceAttachment { expires_at, .. } => (
+                String::new(),
+                "view_once_attachment",
+                Some(expires_at),
+                json!([]),
+            ),
+        },
+        kult_protocol::DecodedContent::Unsupported { .. } => (
+            UNSUPPORTED_MESSAGE.to_owned(),
+            "unsupported",
+            None,
+            json!([]),
+        ),
         kult_protocol::DecodedContent::Malformed => {
-            (UNSUPPORTED_MESSAGE.to_owned(), "malformed", json!([]))
+            (UNSUPPORTED_MESSAGE.to_owned(), "malformed", None, json!([]))
         }
     }
 }
@@ -2054,9 +2212,10 @@ mod tests {
             preview: None,
         };
         let frame = kult_protocol::encode_attachment([0x44; 16], &manifest).unwrap();
-        let (body, kind, mention_spans) = render_stored_content(&frame, false);
+        let (body, kind, expires_at, mention_spans) = render_stored_content(&frame, false);
         assert!(body.is_empty());
         assert_eq!(kind, "attachment");
+        assert_eq!(expires_at, None);
         assert_eq!(mention_spans, json!([]));
         assert!(!body.contains("private.png"));
     }

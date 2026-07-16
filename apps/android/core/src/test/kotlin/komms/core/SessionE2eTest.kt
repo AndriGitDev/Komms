@@ -151,6 +151,26 @@ class SessionE2eTest {
         val root = File(checkNotNull(System.getProperty("komms.repo.root")))
         Json.parseToJsonElement(File(root, "fixtures/b15-incognito-keyboard-parity.json").readText()).jsonObject
     }
+    private val ephemeralFixture by lazy {
+        val root = File(checkNotNull(System.getProperty("komms.repo.root")))
+        Json.parseToJsonElement(File(root, "fixtures/c4-ephemeral-parity.json").readText()).jsonObject
+    }
+
+    @Test
+    fun `Android ephemeral controls match the shared contract`() {
+        val root = File(checkNotNull(System.getProperty("komms.repo.root")))
+        assertEquals("5", ephemeralFixture.getValue("content_kind").jsonPrimitive.content)
+        assertEquals(
+            listOf("60", "3600", "86400", "604800", "2592000"),
+            ephemeralFixture.getValue("text_lifetimes").jsonArray.map { it.jsonPrimitive.content },
+        )
+        val source = File(root, "apps/android/app/src/main/kotlin/komms/android").walkTopDown()
+            .filter { it.extension == "kt" }.joinToString("\n") { it.readText() }
+        assertTrue("sendDisappearing" in source)
+        assertTrue("sendGroupDisappearing" in source)
+        assertTrue("consumeViewOnceAttachment" in source)
+        assertTrue("!attachment.viewOnce" in source)
+    }
 
     @Test
     fun `message edit fixture has canonical wire and deterministic winner`() {
@@ -510,6 +530,19 @@ class SessionE2eTest {
         assertEquals(DeliveryState.RECEIVED, inbox[0].state)
         assertEquals(formattedSource, inbox[0].body)
 
+        val hour = ephemeralFixture.getValue("text_lifetimes").jsonArray[1]
+            .jsonPrimitive.content.toULong()
+        val temporary = alice.sendDisappearing(bobPeer, "temporary Android text", hour)
+        val temporaryEvent = bEv.wait("Android disappearing message") {
+            (it as? Event.MessageReceived)?.takeIf { event ->
+                event.id == temporary && event.contentKind == ContentKind.DISAPPEARING_TEXT &&
+                    event.expiresAt != null
+            }
+        }
+        val temporaryRow = bob.messages(alicePeer).single { it.id == temporary }
+        assertEquals(ContentKind.DISAPPEARING_TEXT, temporaryRow.contentKind)
+        assertEquals(temporaryEvent.expiresAt, temporaryRow.expiresAt)
+
         Thread.sleep(300)
         val editable = alice.send(bobPeer, "Android edit original")
         bEv.wait("Bob's canonical Android Text") {
@@ -536,7 +569,7 @@ class SessionE2eTest {
             }
         }
         listOf(alice.messages(bobPeer), bob.messages(alicePeer)).forEach { messages ->
-            assertEquals(2, messages.size, "Edit events are not standalone rows")
+            assertEquals(3, messages.size, "Edit events are not standalone rows")
             val message = messages.single { it.id == editable }
             assertEquals("Android edit revised", message.body)
             assertTrue(message.edited)
@@ -618,6 +651,37 @@ class SessionE2eTest {
             AttachmentState.CANCELLED,
             alice.attachments().single { it.transferId == outbound.transferId }.state,
         )
+
+        val onceBytes = "Android view-once bytes".toByteArray()
+        val onceSource = File(dir, "android-view-once.bin").apply { writeBytes(onceBytes) }
+        val onceId = alice.sendViewOnceAttachment(
+            bobPeer, onceSource, "application/octet-stream", "reveal-once.bin",
+            lifetimeSeconds = hour,
+        )
+        val onceOffer = bEv.wait("Android view-once offer") {
+            (it as? Event.AttachmentUpdated)?.takeIf { event ->
+                event.attachment.contentId == onceId && event.attachment.viewOnce
+            }
+        }.attachment
+        assertNotNull(onceOffer.expiresAt)
+        bob.acceptAttachment(onceOffer.transferId)
+        bEv.wait("Android view-once completion") {
+            (it as? Event.AttachmentUpdated)?.takeIf { event ->
+                event.attachment.transferId == onceOffer.transferId &&
+                    event.attachment.state == AttachmentState.COMPLETE
+            }
+        }
+        assertFailsWith<FfiException> {
+            bob.exportAttachment(onceOffer.transferId, File(dir, "forbidden-view-once.bin"))
+        }
+        val onceOutput = File(dir, "android-view-once-output.bin")
+        bob.consumeViewOnceAttachment(onceOffer.transferId, onceOutput)
+        assertContentEquals(onceBytes, onceOutput.readBytes())
+        assertFailsWith<FfiException> {
+            bob.consumeViewOnceAttachment(
+                onceOffer.transferId, File(dir, "android-view-once-second.bin"),
+            )
+        }
 
         val audioBytes = canonicalAudio()
         val nativeAudio = File(dir, "android-native-audio.wav").apply {

@@ -168,6 +168,26 @@ fn open(dir: &Path, name: &str, events: &Events) -> Session {
 }
 
 #[test]
+fn desktop_ephemeral_controls_match_shared_honesty_and_block_render_bypasses() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/c4-ephemeral-parity.json"
+    ))
+    .unwrap();
+    let html = include_str!("../../ui/index.html");
+    let frontend = include_str!("../../ui/main.js");
+    for lifetime in fixture["text_lifetimes"].as_array().unwrap() {
+        assert!(html.contains(&format!("value=\"{}\"", lifetime.as_u64().unwrap())));
+    }
+    assert!(html.contains("recipients and other devices may retain copies"));
+    assert!(frontend.contains("send_disappearing"));
+    assert!(frontend.contains("send_group_disappearing"));
+    assert!(frontend.contains("consume_view_once_attachment"));
+    assert!(frontend.contains("if (!attachment.view_once) actions.append"));
+    assert!(frontend.contains("preview && !attachment.view_once"));
+    assert!(frontend.contains("!attachment.view_once && isAudio"));
+}
+
+#[test]
 fn desktop_text_formatting_matches_shared_corpus_and_uses_inert_dom_only() {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../fixtures/b9-text-formatting-parity.json"
@@ -638,6 +658,33 @@ fn two_desktops_pair_by_bundle_hex_and_message() {
     assert_eq!(inbox[0].state, "received");
     assert_eq!(inbox[0].body, formatted_source);
 
+    let temporary = alice
+        .send_disappearing(bob_peer.clone(), "temporary desktop text".to_owned(), 3_600)
+        .unwrap();
+    let temporary_event = b_ev.wait("desktop disappearing event", |event| {
+        matches!(
+            event,
+            UiEvent::MessageReceived {
+                id,
+                content_kind: "disappearing_text",
+                expires_at: Some(_),
+                ..
+            } if id == &temporary
+        )
+    });
+    let event_expiry = match temporary_event {
+        UiEvent::MessageReceived { expires_at, .. } => expires_at.unwrap(),
+        other => panic!("wrong event: {other:?}"),
+    };
+    let row = bob
+        .messages(alice_peer.clone())
+        .unwrap()
+        .into_iter()
+        .find(|message| message.id == temporary)
+        .unwrap();
+    assert_eq!(row.content_kind, "disappearing_text");
+    assert_eq!(row.expires_at, Some(event_expiry));
+
     std::thread::sleep(Duration::from_millis(300));
     let editable = alice
         .send(bob_peer.clone(), "desktop edit original".to_owned())
@@ -685,7 +732,7 @@ fn two_desktops_pair_by_bundle_hex_and_message() {
         alice.messages(bob_peer.clone()).unwrap(),
         bob.messages(alice_peer.clone()).unwrap(),
     ] {
-        assert_eq!(history.len(), 2, "edit events are not standalone bubbles");
+        assert_eq!(history.len(), 3, "edit events are not standalone bubbles");
         let message = history
             .iter()
             .find(|message| message.id == editable)
@@ -817,6 +864,8 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
             bob_peer,
             Some("field-photo.png".to_owned()),
             carrier,
+            false,
+            86_400,
         )
         .unwrap();
     let outbound = alice.attachments().unwrap();
@@ -955,6 +1004,56 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
         .unwrap();
     assert_eq!(std::fs::read(file_export).unwrap(), file_bytes);
 
+    let once_content = alice
+        .send_view_once_attachment(
+            outbound[0].peer.clone(),
+            file_source.display().to_string(),
+            "application/octet-stream".to_owned(),
+            Some("reveal-once.bin".to_owned()),
+            3_600,
+        )
+        .unwrap();
+    let once_offer = b_ev.wait("desktop view-once offer", |event| {
+        matches!(event, UiEvent::AttachmentUpdated { attachment }
+            if attachment.content_id == once_content
+                && attachment.direction == "inbound"
+                && attachment.view_once)
+    });
+    let once_transfer = match once_offer {
+        UiEvent::AttachmentUpdated { attachment } => {
+            assert!(attachment.expires_at.is_some());
+            attachment.transfer_id
+        }
+        other => panic!("wrong event: {other:?}"),
+    };
+    bob.accept_attachment(once_transfer.clone()).unwrap();
+    b_ev.wait("desktop view-once completion", |event| {
+        matches!(event, UiEvent::AttachmentUpdated { attachment }
+            if attachment.transfer_id == once_transfer && attachment.state == "complete")
+    });
+    assert!(bob
+        .export_attachment(
+            once_transfer.clone(),
+            dir.path()
+                .join("desktop-view-once-forbidden.bin")
+                .display()
+                .to_string(),
+        )
+        .is_err());
+    let once_output = dir.path().join("desktop-view-once-output.bin");
+    bob.consume_view_once_attachment(once_transfer.clone(), once_output.display().to_string())
+        .unwrap();
+    assert_eq!(std::fs::read(&once_output).unwrap(), file_bytes);
+    assert!(bob
+        .consume_view_once_attachment(
+            once_transfer,
+            dir.path()
+                .join("desktop-view-once-second.bin")
+                .display()
+                .to_string(),
+        )
+        .is_err());
+
     let audio_bytes = canonical_audio(1_600);
     let encoded =
         base64::engine::general_purpose::STANDARD.encode(native_audio_with_metadata(&audio_bytes));
@@ -1009,6 +1108,8 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
             group.clone(),
             Some("edited-image.png".to_owned()),
             group_carrier,
+            false,
+            86_400,
         )
         .unwrap();
     let group_offer = b_ev.wait("group attachment offer", |event| {

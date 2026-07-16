@@ -82,6 +82,15 @@ sender-key lane, so no transport can observe the kind and no shell implements
 ordering or authorization independently. See
 [18: Authenticated Message Editing](18-message-editing.md).
 
+C4 ephemeral content crosses every layer without moving deletion policy into a
+shell or relay. `kult-protocol` owns content-v1 kind 5 and envelope v2's coarse
+retention field; `kult-node` binds capabilities, exact deadlines, queueing,
+expiry-before-work, and terminal events; `kult-store` owns sealed lifecycle rows,
+tombstones, media deletion, and KKR5 exclusion; transports only delete sealed
+envelopes from the authenticated hour bucket. RPC/UniFFI and apps expose typed
+choices and honest local-only language. See
+[19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
+
 ## 3. Message lifecycle
 
 ### Send path
@@ -99,8 +108,10 @@ clock advance activates it on the next tick; time-zone changes are display-only.
    the conversation's ratchet.
 4. **kult-crypto** advances the sending chain, encrypts with XChaCha20-Poly1305, and
    encrypts the ratchet header.
-5. **kult-protocol** wraps ciphertext in a **sealed envelope**: the only cleartext field is
-   an opaque per-recipient *delivery token* (see §5). If the selected link's MTU is small
+5. **kult-protocol** wraps ciphertext in a **sealed envelope**. Ordinary v1
+   envelopes expose only an opaque per-recipient *delivery token* (see §5).
+   Ephemeral envelope v2 additionally exposes one hour-aligned deletion bucket,
+   authenticated again inside the encrypted content. If the selected link's MTU is small
    (LoRa ≈ 200 B), the envelope is fragmented.
 6. **Transport scheduler** picks the best available transport(s) for this peer, possibly
    several in parallel (internet + mesh). Duplicate delivery is fine: envelopes are
@@ -155,14 +166,20 @@ server must reproduce Sovereign-mode behavior without migration or data loss.
 
 ## 5. What intermediaries see
 
-A relay, DHT node, or mesh repeater carrying Komms envelopes observes only:
+A relay, DHT node, or mesh repeater carrying ordinary Komms envelopes observes only:
 
 - an opaque, rotating **delivery token** (unlinkable to the recipient's identity key by
   anyone but the recipient and, per-message, the sender),
 - a padded ciphertext in one of a small set of standard size buckets,
 - transport-level source of the immediately preceding hop (unavoidable at layer 4).
 
-No sender identity, no recipient identity, no timestamps beyond arrival time, no
+For C4 ephemeral traffic, the carrier additionally observes one coarse,
+hour-aligned `retention_until` bucket so it can delete sealed work without
+decrypting it. The exact deadline and whether the content is text or view-once
+media remain encrypted. The bucket is a bounded deletion hint, not proof that a
+relay erased every copy.
+
+No sender identity, no recipient identity, no exact content deadline beyond arrival time, no
 conversation linkage. This is the **sealed sender** property; the construction is specified
 in [04: Cryptography §7](04-cryptography.md).
 

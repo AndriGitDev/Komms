@@ -14,7 +14,7 @@ The mutation rewrites only the sealed contact record and emits one local
 `ContactRenamed` event. It creates no DHT lookup, capability change, message,
 envelope, sender-key or ratchet work, mailbox request, notification, analytics,
 queue entry, or internet/LAN/mesh/sneakernet transport work. The petname survives
-restart and is included in the existing `KKR4` contact backup. It is not synced
+restart and is included in the current `KKR5` contact backup. It is not synced
 to peers or linked devices by any other path.
 
 ## 2. Name contract
@@ -77,7 +77,7 @@ For each front door and shell:
    without changing the current record.
 5. Record queue and transport state before rename. Verify they are unchanged and
    only the local rename event appears.
-6. Restart and restore through `KKR4`; verify the exact normalized petname remains
+6. Restart and restore through `KKR5`; verify the exact normalized petname remains
    attached to the same peer key.
 7. With assistive technology and large text enabled, verify the Rename action,
    private-local explanation, warning list, confirmation, error state, and

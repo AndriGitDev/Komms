@@ -12,9 +12,10 @@ use kult_crypto::{
 };
 use kult_protocol::{pad, CapabilityControl, FormatCapabilities};
 use kult_store::{
-    ContactRecord, ConversationId, DeliveryState, Direction, DraftRecord, GroupDelivery,
-    GroupMember, GroupMessageRecord, GroupRecord, LocalMetadataRecord, MessageRecord,
-    NoteMessageRecord, PendingAnnounce, Store, StoreError,
+    ContactRecord, ConversationId, DeliveryState, Direction, DraftRecord, EphemeralConversation,
+    EphemeralMode, EphemeralRecord, EphemeralState, GroupDelivery, GroupMember, GroupMessageRecord,
+    GroupRecord, LocalMetadataRecord, MessageRecord, NoteMessageRecord, PendingAnnounce, Store,
+    StoreError,
 };
 
 const NOW: u64 = 1_800_000_000;
@@ -186,7 +187,7 @@ fn backup_round_trip() {
     store.put_note_message(&note_message, &mut rng).unwrap();
 
     let (file, mnemonic) = store.export_backup(NOW + 100, &mut rng).unwrap();
-    assert_eq!(&file[..4], b"KKR4");
+    assert_eq!(&file[..4], b"KKR5");
     assert!(mnemonic_to_entropy(&mnemonic).is_ok(), "24 valid words");
     let old_group = store.groups().unwrap().remove(0);
     drop(store); // the old device is gone
@@ -431,6 +432,97 @@ fn legacy_v3_backup_restores() {
     .unwrap();
     assert_eq!(restored.local_metadata().unwrap(), local_metadata);
     assert!(restored.note_messages().unwrap().is_empty());
+}
+
+/// The immediately previous KKR4 shape remains restore-compatible.
+#[test]
+fn legacy_v4_backup_restores() {
+    let mut rng = StdRng::seed_from_u64(16);
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::generate(&mut rng);
+    let contacts = Vec::<ContactRecord>::new();
+    let messages = Vec::<MessageRecord>::new();
+    let reset_peers = Vec::<[u8; 32]>::new();
+    let groups = Vec::<()>::new();
+    let group_messages = Vec::<GroupMessageRecord>::new();
+    let local_metadata = Vec::<LocalMetadataRecord>::new();
+    let notes = vec![NoteMessageRecord {
+        id: [11; 16],
+        timestamp: NOW,
+        body: "old KKR4 note".to_owned(),
+    }];
+    let payload = postcard::to_allocvec(&(
+        NOW,
+        identity.to_bytes().to_vec(),
+        &contacts,
+        &messages,
+        &reset_peers,
+        &groups,
+        &group_messages,
+        &local_metadata,
+        &notes,
+    ))
+    .unwrap();
+
+    let entropy = [0x45u8; 32];
+    let mnemonic = kult_crypto::mnemonic_from_entropy(&entropy);
+    let salt = [10u8; 16];
+    let kek = kult_crypto::derive_kek(&entropy, &salt, TEST_KDF).unwrap();
+    let key = kult_crypto::StorageKey::from_bytes(*kek);
+    let mut file = Vec::new();
+    file.extend_from_slice(b"KKR4");
+    file.extend_from_slice(&TEST_KDF.m_cost_kib.to_le_bytes());
+    file.extend_from_slice(&TEST_KDF.t_cost.to_le_bytes());
+    file.extend_from_slice(&TEST_KDF.p_cost.to_le_bytes());
+    file.extend_from_slice(&salt);
+    file.extend_from_slice(&key.seal(b"KK-backup-v1", &payload, &mut rng));
+
+    let restored = Store::restore_backup(
+        &dir.path().join("v4.db"),
+        &file,
+        &mnemonic,
+        b"new-pass",
+        TEST_KDF,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(restored.note_messages().unwrap(), notes);
+    assert!(restored.ephemeral_records().unwrap().is_empty());
+}
+
+#[test]
+fn backup_excludes_ephemeral_plaintext_and_restores_only_terminal_tombstone() {
+    let mut rng = StdRng::seed_from_u64(17);
+    let dir = tempfile::tempdir().unwrap();
+    let (store, identity, _, messages, peer) =
+        populated_store(&dir.path().join("old.db"), &mut rng);
+    let marker = EphemeralRecord {
+        conversation: EphemeralConversation::Pairwise(peer),
+        author: identity.public().ed,
+        content_id: messages[0].id,
+        expires_at: NOW + 3_600,
+        mode: EphemeralMode::DisappearingText,
+        state: EphemeralState::Active,
+        transfer_ids: vec![],
+    };
+    store.put_ephemeral_record(&marker, &mut rng).unwrap();
+    let (file, mnemonic) = store.export_backup(NOW + 10, &mut rng).unwrap();
+    let restored = Store::restore_backup(
+        &dir.path().join("restored.db"),
+        &file,
+        &mnemonic,
+        b"new-pass",
+        TEST_KDF,
+        &mut rng,
+    )
+    .unwrap();
+
+    let history = restored.messages_with(&peer).unwrap();
+    assert_eq!(history, vec![messages[1].clone()]);
+    let tombstones = restored.ephemeral_records().unwrap();
+    assert_eq!(tombstones.len(), 1);
+    assert_eq!(tombstones[0].state, EphemeralState::Expired);
+    assert!(tombstones[0].transfer_ids.is_empty());
 }
 
 #[test]

@@ -25,10 +25,13 @@ struct GroupChatView: View {
     @State private var showFolder = false
     @State private var showLabels = false
     @State private var messageEditor: MessageEditDraft?
+    @State private var ephemeralLifetime: EphemeralLifetime?
 
     private var group: KommsCore.Group? { model.groups.first { $0.id == groupId } }
     private var history: [GroupMessage] {
-        (model.groupHistories[groupId] ?? []).filter { $0.contentKind != .attachment }
+        (model.groupHistories[groupId] ?? []).filter {
+            $0.contentKind != .attachment && $0.contentKind != .viewOnceAttachment
+        }
     }
     private var attachments: [Attachment] {
         model.attachments.filter {
@@ -184,6 +187,13 @@ struct GroupChatView: View {
     private var composerContent: some View {
         VStack(alignment: .leading, spacing: 6) {
             composerActions
+            EphemeralTextControl(lifetime: $ephemeralLifetime)
+                .onChange(of: ephemeralLifetime) { value in
+                    if value != nil && !draftMentions.isEmpty {
+                        draftMentions = []
+                        setMentionStatus("Semantic mentions were removed because disappearing text is a distinct authenticated content type.")
+                    }
+                }
             if !draftMentions.isEmpty {
                 mentionTokens
             }
@@ -347,6 +357,14 @@ struct GroupChatView: View {
         error = nil
         Task {
             do {
+                if let lifetime = ephemeralLifetime {
+                    try await model.sendGroupDisappearing(
+                        group: groupId,
+                        body: body.trimmingCharacters(in: .whitespacesAndNewlines),
+                        lifetimeSeconds: lifetime.rawValue)
+                    clearDraft()
+                    return
+                }
                 if draftMentions.isEmpty {
                     try await model.sendGroup(
                         group: groupId,
@@ -715,6 +733,12 @@ private struct GroupMessageBubble: View {
                 Text(Date(timeIntervalSince1970: TimeInterval(message.timestamp)), style: .time)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                if message.contentKind == .disappearingText, let expiresAt = message.expiresAt {
+                    Text("Removes \(Date(timeIntervalSince1970: TimeInterval(expiresAt)), style: .relative)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .accessibilityHint("Removed locally; other devices may retain copies")
+                }
                 HStack(spacing: 4) {
                     if message.edited {
                         Text("edited r\(message.editRevision)")

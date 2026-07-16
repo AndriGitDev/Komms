@@ -310,6 +310,20 @@ impl Store {
         Ok(())
     }
 
+    /// Delete a transfer, all of its object metadata, and now-unreferenced chunks.
+    /// Callers first persist any semantic tombstone that must survive this erasure.
+    pub fn delete_media_transfer_with_objects(&mut self, local_id: &[u8; 16]) -> Result<()> {
+        let object_ids: Vec<[u8; 16]> = self
+            .media_objects_for_transfer(local_id)?
+            .into_iter()
+            .map(|object| object.local_id)
+            .collect();
+        for object_id in object_ids {
+            self.delete_media_object(&object_id)?;
+        }
+        self.delete_media_transfer(local_id)
+    }
+
     /// Insert or replace one sealed object record after enforcing bounds.
     pub fn put_media_object(
         &self,

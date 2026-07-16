@@ -120,6 +120,12 @@ function fmtTime(unixSecs) {
     : d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+function fmtExpiry(unixSecs) {
+  return new Date(unixSecs * 1000).toLocaleString([], {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+}
+
 const LABEL_COLORS = ["neutral", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink"];
 const LABEL_COLOR_NAMES = Object.fromEntries(LABEL_COLORS.map((color) => [color, color[0].toUpperCase() + color.slice(1)]));
 
@@ -1472,6 +1478,8 @@ function updateChatHead() {
   $("#btn-attach").hidden = isNote;
   $("#btn-record").hidden = isNote;
   $("#btn-schedule").hidden = isNote;
+  $("#expiry-control").hidden = isNote;
+  $("#expiry-honesty").hidden = isNote || $("#composer-expiry").value === "0";
   $("#note-to-self").classList.toggle("active", isNote);
   const target = labelTarget();
   const isPinned = target && state.pins.some((pin) => labelTargetKey(pin.target) === labelTargetKey(target));
@@ -1630,6 +1638,7 @@ function bubble(m, formatted) {
   const meta = document.createElement("span");
   meta.className = "meta";
   meta.append(fmtTime(m.timestamp));
+  appendExpiryMetadata(meta, m);
   if (m.outbound) {
     const st = document.createElement("span");
     st.className = "state" + (m.state === "delivered" ? " state-delivered" : "");
@@ -1667,6 +1676,7 @@ function groupBubble(m, formatted) {
   const meta = document.createElement("span");
   meta.className = "meta";
   meta.textContent = fmtTime(m.timestamp);
+  appendExpiryMetadata(meta, m);
   el.append(meta);
   appendEditMetadata(el, meta, m, true);
   if (m.outbound) {
@@ -1683,6 +1693,15 @@ function groupBubble(m, formatted) {
   }
   state.msgEls.set(m.id, el);
   return el;
+}
+
+function appendExpiryMetadata(meta, message) {
+  if (message.content_kind !== "disappearing_text" || !message.expires_at) return;
+  const marker = document.createElement("span");
+  marker.className = "expiry-marker";
+  marker.textContent = ` · removes ${fmtExpiry(message.expires_at)}`;
+  marker.title = "Removed locally at this time. Other devices may retain copies.";
+  meta.append(marker);
 }
 
 function appendEditMetadata(container, meta, message, group) {
@@ -1820,6 +1839,17 @@ async function exportAttachment(attachment) {
   toast(`Exported ${primary?.filename ?? "attachment"}`);
 }
 
+async function consumeViewOnceAttachment(attachment) {
+  const primary = attachment.objects.find((object) => !object.preview) ?? attachment.objects[0];
+  const name = primary?.filename ?? "view-once-attachment";
+  if (!window.confirm(`Reveal “${name}” once? Komms records consumption and removes its local message and media before writing the file. Other devices and applications may retain copies.`)) return;
+  const path = await savePath({ title: "Reveal view-once attachment once", defaultPath: name });
+  if (!path) return;
+  await call("consume_view_once_attachment", { transfer: attachment.transfer_id, path });
+  toast(`Revealed ${name} once and removed it from Komms on this device`);
+  await renderMessages();
+}
+
 async function openAttachment(attachment) {
   const primary = attachment.objects.find((object) => !object.preview) ?? attachment.objects[0];
   const name = primary?.filename ?? "attachment";
@@ -1848,7 +1878,7 @@ function attachmentRow(attachment) {
   const title = document.createElement("span");
   title.className = "attachment-title";
   const isAudio = primary?.media_type === "audio/wav";
-  title.textContent = isAudio ? "Audio message" : (primary?.filename ?? "Attachment");
+  title.textContent = attachment.view_once ? `View once · ${primary?.filename ?? "Attachment"}` : isAudio ? "Audio message" : (primary?.filename ?? "Attachment");
   const transferState = document.createElement("span");
   transferState.className = `attachment-state ${attachment.state}`;
   transferState.textContent = `${attachment.direction} · ${attachment.state.replaceAll("_", " ")}`;
@@ -1858,7 +1888,9 @@ function attachmentRow(attachment) {
   const safety = document.createElement("div");
   safety.className = "attachment-safety";
   const noScan = document.createElement("p");
-  noScan.textContent = "Sender-provided name and type. Not scanned for malware; completed files never open automatically.";
+  noScan.textContent = attachment.view_once
+    ? `Sender-provided name and type. Not scanned. Opening is terminal here${attachment.expires_at ? `; unopened copy removes ${fmtExpiry(attachment.expires_at)}` : ""}. Other devices may retain copies.`
+    : "Sender-provided name and type. Not scanned for malware; completed files never open automatically.";
   safety.append(noScan);
   for (const warning of primary?.presentation?.warnings ?? []) {
     const message = document.createElement("p");
@@ -1869,7 +1901,7 @@ function attachmentRow(attachment) {
   row.append(safety);
 
   const preview = attachment.objects.find((object) => object.preview && object.state === "complete");
-  if (preview) {
+  if (preview && !attachment.view_once) {
     const image = document.createElement("img");
     image.className = "attachment-preview";
     image.alt = `Local preview of ${primary?.filename ?? "attachment"}`;
@@ -1883,7 +1915,7 @@ function attachmentRow(attachment) {
       })
       .catch(() => image.remove());
   }
-  if (!preview && primary?.media_type === "image/png" && attachment.state === "complete") {
+  if (!attachment.view_once && !preview && primary?.media_type === "image/png" && attachment.state === "complete") {
     const image = document.createElement("img");
     image.className = "attachment-preview";
     image.alt = `Protected exact image from ${attachment.direction === "inbound" ? "sender" : "you"}`;
@@ -1893,7 +1925,7 @@ function attachmentRow(attachment) {
       .catch(() => image.remove());
   }
 
-  if (isAudio && attachment.state === "complete") {
+  if (!attachment.view_once && isAudio && attachment.state === "complete") {
     const audioCard = document.createElement("div");
     audioCard.className = "audio-card";
     audioCard.setAttribute("aria-busy", "true");
@@ -1959,10 +1991,12 @@ function attachmentRow(attachment) {
     }
   }
   if (inbound && attachment.state === "complete") {
-    if (primary?.presentation?.open_policy === "external_open") {
+    if (attachment.view_once) {
+      actions.append(attachmentButton("Reveal once…", "primary", () => consumeViewOnceAttachment(attachment)));
+    } else if (primary?.presentation?.open_policy === "external_open") {
       actions.append(attachmentButton("Open…", "ghost", () => openAttachment(attachment)));
     }
-    actions.append(attachmentButton("Export…", "primary", () => exportAttachment(attachment)));
+    if (!attachment.view_once) actions.append(attachmentButton("Export…", "primary", () => exportAttachment(attachment)));
   }
   if (actions.childElementCount > 0) row.append(actions);
   return row;
@@ -1997,7 +2031,7 @@ async function renderMessages() {
   const box = $("#messages");
   box.textContent = "";
   state.msgEls.clear();
-  const visibleMessages = msgs.filter((message) => message.content_kind !== "attachment");
+  const visibleMessages = msgs.filter((message) => !["attachment", "view_once_attachment"].includes(message.content_kind));
   const formattedMessages = await Promise.all(visibleMessages.map((message) => call("format_text", {
     source: message.body,
     highlights: formattingHighlights(message),
@@ -2027,7 +2061,16 @@ $("#composer").addEventListener("submit", async (e) => {
   const input = $("#composer-input");
   const visibleText = input.value;
   if (!visibleText.trim() || !state.currentId) return;
-  if (state.currentKind === "group" && state.mentionDraft.spans.length > 0) {
+  const lifetimeSecs = Number($("#composer-expiry").value);
+  if (lifetimeSecs > 0) {
+    if (state.currentKind === "group") {
+      await call("send_group_disappearing", { group: state.currentId, body: visibleText.trim(), lifetimeSecs });
+    } else if (state.currentKind === "contact") {
+      await call("send_disappearing", { peer: state.currentId, body: visibleText.trim(), lifetimeSecs });
+    } else {
+      await call("send_note_to_self", { body: visibleText.trim() });
+    }
+  } else if (state.currentKind === "group" && state.mentionDraft.spans.length > 0) {
     if (hasUnpairedSurrogate(visibleText)) {
       toast("The draft contains invalid Unicode and cannot be sent.", true);
       return;
@@ -2074,6 +2117,16 @@ $("#composer").addEventListener("submit", async (e) => {
   input.value = "";
   resetMentionDraft(state.currentKind === "group" ? "Use Mention member to choose an exact current roster identity." : "");
   await renderMessages();
+});
+
+$("#composer-expiry").addEventListener("change", (event) => {
+  const active = event.currentTarget.value !== "0";
+  $("#expiry-honesty").hidden = !active || state.currentKind === "note";
+  if (active && state.mentionDraft.spans.length > 0) {
+    state.mentionDraft.spans = [];
+    renderMentionTokens();
+    $("#mention-status").textContent = "Semantic mentions were removed from this draft because disappearing text is a distinct authenticated content type.";
+  }
 });
 
 function openScheduleModal(message = null) {
@@ -2244,6 +2297,14 @@ async function openImageEditor(selectedName, initial) {
   root.querySelector('[data-f="filename"]').value =
     (selectedName.includes(".") ? selectedName.replace(/\.[^.]+$/, "") : selectedName) + ".png";
   const carrierText = root.querySelector('[data-f="carrier"]');
+  const viewOnce = root.querySelector('[data-f="view-once"]');
+  const lifetime = root.querySelector('[data-f="lifetime"]');
+  const lifetimeRow = root.querySelector('[data-f="view-once-lifetime"]');
+  const viewOnceWarning = root.querySelector('[data-f="view-once-warning"]');
+  viewOnce.addEventListener("change", () => {
+    lifetimeRow.hidden = !viewOnce.checked;
+    viewOnceWarning.hidden = !viewOnce.checked;
+  });
   carrierText.textContent = carrier;
   carrierText.dataset.snapshot = carrier;
   setCropFields(root, null);
@@ -2320,6 +2381,8 @@ async function openImageEditor(selectedName, initial) {
           destination: draft.destination,
           filename: root.querySelector('[data-f="filename"]').value.trim() || null,
           expectedCarrier: carrierText.dataset.snapshot,
+          viewOnce: viewOnce.checked,
+          lifetimeSecs: Number(lifetime.value),
         });
         state.imageDraft = null;
         closeModal();
@@ -2351,6 +2414,14 @@ async function openGenericAttachment(path, selectedName) {
   root.querySelector('[data-f="filename"]').value = selectedName;
   root.querySelector('[data-f="media-type"]').value = guessedMime(selectedName);
   const carrierText = root.querySelector('[data-f="carrier"]');
+  const viewOnce = root.querySelector('[data-f="view-once"]');
+  const lifetime = root.querySelector('[data-f="lifetime"]');
+  const lifetimeRow = root.querySelector('[data-f="view-once-lifetime"]');
+  const viewOnceWarning = root.querySelector('[data-f="view-once-warning"]');
+  viewOnce.addEventListener("change", () => {
+    lifetimeRow.hidden = !viewOnce.checked;
+    viewOnceWarning.hidden = !viewOnce.checked;
+  });
   carrierText.textContent = carrier;
   carrierText.dataset.snapshot = carrier;
   root.addEventListener("click", async (event) => {
@@ -2374,14 +2445,26 @@ async function openGenericAttachment(path, selectedName) {
         return;
       }
       try {
-        await invoke("send_confirmed_attachment", {
-          conversation,
-          destination,
-          path,
-          mediaType,
-          filename: filename || null,
-          expectedCarrier: latest,
-        });
+        if (viewOnce.checked) {
+          const command = conversation === "group" ? "send_group_view_once_attachment" : "send_view_once_attachment";
+          const destinationArgs = conversation === "group" ? { group: destination } : { peer: destination };
+          await invoke(command, {
+            ...destinationArgs,
+            path,
+            mediaType,
+            filename: filename || null,
+            lifetimeSecs: Number(lifetime.value),
+          });
+        } else {
+          await invoke("send_confirmed_attachment", {
+            conversation,
+            destination,
+            path,
+            mediaType,
+            filename: filename || null,
+            expectedCarrier: latest,
+          });
+        }
       } catch (error) {
         const changed = carrierChangedText(error);
         if (changed === null) throw error;
@@ -2473,7 +2556,7 @@ listen("node-event", async ({ payload: ev }) => {
       break;
     }
     case "message_received": {
-      if (ev.content_kind === "attachment") {
+      if (["attachment", "view_once_attachment"].includes(ev.content_kind)) {
         if (state.currentKind === "contact" && ev.peer === state.currentId) await renderMessages();
         break;
       }
@@ -2525,7 +2608,7 @@ listen("node-event", async ({ payload: ev }) => {
       break;
     }
     case "group_message_received": {
-      if (ev.content_kind === "attachment") {
+      if (["attachment", "view_once_attachment"].includes(ev.content_kind)) {
         if (state.currentKind === "group" && ev.group === state.currentId) await renderMessages();
         break;
       }
@@ -2541,6 +2624,13 @@ listen("node-event", async ({ payload: ev }) => {
     }
     case "group_message_edited": {
       if (state.currentKind === "group" && ev.group === state.currentId) await renderMessages();
+      break;
+    }
+    case "ephemeral_removed": {
+      const matches = (ev.conversation_kind === "pairwise" && state.currentKind === "contact" && ev.conversation_id === state.currentId)
+        || (ev.conversation_kind === "group" && state.currentKind === "group" && ev.conversation_id === state.currentId);
+      if (matches) await renderMessages();
+      toast(ev.reason === "consumed" ? "View-once item removed from this device." : "Expired item removed from this device.");
       break;
     }
     case "group_delivery_updated": {

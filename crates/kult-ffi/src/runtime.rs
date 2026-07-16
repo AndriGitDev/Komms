@@ -100,6 +100,12 @@ pub(crate) enum Msg {
         body: Vec<u8>,
         resp: Resp<[u8; 16]>,
     },
+    SendDisappearing {
+        peer: [u8; 32],
+        body: String,
+        lifetime_secs: u64,
+        resp: Resp<[u8; 16]>,
+    },
     EditMessage {
         peer: [u8; 32],
         target_author: [u8; 32],
@@ -114,11 +120,27 @@ pub(crate) enum Msg {
         preview: Option<(AttachmentMetadata, PathBuf)>,
         resp: Resp<[u8; 16]>,
     },
+    AttachmentSendViewOnce {
+        peer: [u8; 32],
+        metadata: AttachmentMetadata,
+        path: PathBuf,
+        preview: Option<(AttachmentMetadata, PathBuf)>,
+        lifetime_secs: u64,
+        resp: Resp<[u8; 16]>,
+    },
     GroupAttachmentSend {
         group: [u8; 32],
         metadata: AttachmentMetadata,
         path: PathBuf,
         preview: Option<(AttachmentMetadata, PathBuf)>,
+        resp: Resp<[u8; 16]>,
+    },
+    GroupAttachmentSendViewOnce {
+        group: [u8; 32],
+        metadata: AttachmentMetadata,
+        path: PathBuf,
+        preview: Option<(AttachmentMetadata, PathBuf)>,
+        lifetime_secs: u64,
         resp: Resp<[u8; 16]>,
     },
     Attachments {
@@ -148,6 +170,11 @@ pub(crate) enum Msg {
         transfer: [u8; 16],
         path: PathBuf,
         preview: bool,
+        resp: Resp<()>,
+    },
+    AttachmentConsumeViewOnce {
+        transfer: [u8; 16],
+        path: PathBuf,
         resp: Resp<()>,
     },
     Schedule {
@@ -367,6 +394,12 @@ pub(crate) enum Msg {
     GroupSend {
         group: [u8; 32],
         body: Vec<u8>,
+        resp: Resp<[u8; 16]>,
+    },
+    GroupSendDisappearing {
+        group: [u8; 32],
+        body: String,
+        lifetime_secs: u64,
         resp: Resp<[u8; 16]>,
     },
     GroupEditMessage {
@@ -788,6 +821,17 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
                     .map_err(fail),
             );
         }
+        Msg::SendDisappearing {
+            peer,
+            body,
+            lifetime_secs,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.send_disappearing_message(&peer, &body, lifetime_secs, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
         Msg::EditMessage {
             peer,
             target_author,
@@ -840,6 +884,41 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
                 });
             let _ = resp.send(result);
         }
+        Msg::AttachmentSendViewOnce {
+            peer,
+            metadata,
+            path,
+            preview,
+            lifetime_secs,
+            resp,
+        } => {
+            let result = std::fs::File::open(path)
+                .map_err(|e| format!("attachment source: {e}"))
+                .and_then(|mut source| {
+                    let mut opened_preview = match preview {
+                        Some((preview_metadata, path)) => Some((
+                            preview_metadata,
+                            std::fs::File::open(path)
+                                .map_err(|e| format!("attachment preview source: {e}"))?,
+                        )),
+                        None => None,
+                    };
+                    let preview = opened_preview
+                        .as_mut()
+                        .map(|(metadata, source)| (&*metadata, source));
+                    node.send_view_once_attachment_with_preview(
+                        &peer,
+                        &metadata,
+                        &mut source,
+                        preview,
+                        lifetime_secs,
+                        now,
+                        &mut OsRng,
+                    )
+                    .map_err(fail)
+                });
+            let _ = resp.send(result);
+        }
         Msg::GroupAttachmentSend {
             group,
             metadata,
@@ -866,6 +945,41 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
                         &metadata,
                         &mut source,
                         preview,
+                        now,
+                        &mut OsRng,
+                    )
+                    .map_err(fail)
+                });
+            let _ = resp.send(result);
+        }
+        Msg::GroupAttachmentSendViewOnce {
+            group,
+            metadata,
+            path,
+            preview,
+            lifetime_secs,
+            resp,
+        } => {
+            let result = std::fs::File::open(path)
+                .map_err(|e| format!("attachment source: {e}"))
+                .and_then(|mut source| {
+                    let mut opened_preview = match preview {
+                        Some((preview_metadata, path)) => Some((
+                            preview_metadata,
+                            std::fs::File::open(path)
+                                .map_err(|e| format!("attachment preview source: {e}"))?,
+                        )),
+                        None => None,
+                    };
+                    let preview = opened_preview
+                        .as_mut()
+                        .map(|(metadata, source)| (&*metadata, source));
+                    node.send_group_view_once_attachment_with_preview(
+                        &group,
+                        &metadata,
+                        &mut source,
+                        preview,
+                        lifetime_secs,
                         now,
                         &mut OsRng,
                     )
@@ -924,6 +1038,26 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
                     result
                 }
                 Err(error) => Err(format!("attachment export: {error}")),
+            };
+            let _ = resp.send(result);
+        }
+        Msg::AttachmentConsumeViewOnce {
+            transfer,
+            path,
+            resp,
+        } => {
+            let result = match open_private(&path) {
+                Ok(mut destination) => {
+                    let result = node
+                        .consume_view_once_attachment(&transfer, &mut destination, now, &mut OsRng)
+                        .map_err(fail);
+                    drop(destination);
+                    if result.is_err() {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                    result
+                }
+                Err(error) => Err(format!("view-once open: {error}")),
             };
             let _ = resp.send(result);
         }
@@ -1183,6 +1317,17 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         Msg::GroupSend { group, body, resp } => {
             let _ = resp.send(
                 node.group_send(&group, &body, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::GroupSendDisappearing {
+            group,
+            body,
+            lifetime_secs,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.group_send_disappearing_message(&group, &body, lifetime_secs, now, &mut OsRng)
                     .map_err(fail),
             );
         }

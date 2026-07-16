@@ -15,14 +15,17 @@ use kult_crypto::{
     GroupHeaderKey, GroupMessage, GroupReceiverChain, GroupSenderChain, IdentityPublic,
 };
 use kult_protocol::{
-    decode_content, delivery_token, encode_edit, encode_mention, encode_text, epoch_day, pad,
-    unpad, DecodedContent, Edit, Envelope, EnvelopeKind, GroupAnnounce, GroupControlPayload,
-    GroupMemberInfo, MailboxKey, CONTENT_FORMAT_V1, CONTENT_KIND_EDIT, CONTENT_KIND_MENTION,
-    MAX_EDIT_TEXT_LEN,
+    decode_content, delivery_token, encode_disappearing_text_payload, encode_edit,
+    encode_ephemeral, encode_mention, encode_text, epoch_day, pad, retention_bucket, unpad,
+    DecodedContent, Edit, Envelope, EnvelopeKind, Ephemeral, GroupAnnounce, GroupControlPayload,
+    GroupMemberInfo, MailboxKey, CONTENT_FORMAT_V1, CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL,
+    CONTENT_KIND_MENTION, MAX_EDIT_TEXT_LEN, MAX_EPHEMERAL_LIFETIME_SECS,
+    MIN_EPHEMERAL_LIFETIME_SECS,
 };
 use kult_store::{
-    ContactRecord, DeliveryState, Direction, GroupDelivery, GroupMember, GroupMessageRecord,
-    GroupRecord, PendingAnnounce, QueueClass, QueueItem,
+    ContactRecord, DeliveryState, Direction, EphemeralConversation, EphemeralMode, EphemeralRecord,
+    EphemeralState, GroupDelivery, GroupMember, GroupMessageRecord, GroupRecord, PendingAnnounce,
+    QueueClass, QueueItem,
 };
 
 use crate::api::{
@@ -145,6 +148,7 @@ impl Node {
         match decode_content(body) {
             DecodedContent::Mention { .. } => return Err(NodeError::InvalidMention),
             DecodedContent::Edit { .. } => return Err(NodeError::InvalidEdit),
+            DecodedContent::Ephemeral { .. } => return Err(NodeError::InvalidEphemeral),
             _ => {}
         }
         let mut id = [0u8; 16];
@@ -357,6 +361,67 @@ impl Node {
         self.group_send_content_with_id(group, wire_content, id, now, now, rng)
     }
 
+    /// Queue disappearing UTF-8 only after every current co-member has
+    /// authenticated exact ephemeral support.
+    pub fn group_send_disappearing_message(
+        &mut self,
+        group: &[u8; 32],
+        text: &str,
+        lifetime_secs: u64,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        if text.is_empty()
+            || !(MIN_EPHEMERAL_LIFETIME_SECS..=MAX_EPHEMERAL_LIFETIME_SECS).contains(&lifetime_secs)
+        {
+            return Err(NodeError::InvalidEphemeral);
+        }
+        let rec = self
+            .store
+            .get_group(group)?
+            .ok_or(NodeError::UnknownGroup)?;
+        let me = self.identity.public().ed;
+        if !rec.members.iter().any(|member| member.peer == me) {
+            return Err(NodeError::InvalidEphemeral);
+        }
+        for member in rec.members.iter().filter(|member| member.peer != me) {
+            if !self.sessions.contains_key(&member.peer)
+                || !self.peer_supports_kind(&member.peer, CONTENT_KIND_EPHEMERAL)?
+            {
+                return Err(NodeError::EphemeralUnsupported);
+            }
+        }
+        let expires_at = now
+            .checked_add(lifetime_secs)
+            .ok_or(NodeError::InvalidEphemeral)?;
+        let retention_until = retention_bucket(expires_at)?;
+        let mut id = [0u8; 16];
+        rng.fill_bytes(&mut id);
+        let payload = encode_disappearing_text_payload(expires_at, text)?;
+        let wire_content = encode_ephemeral(id, &payload)?;
+        self.store.put_ephemeral_record(
+            &EphemeralRecord {
+                conversation: EphemeralConversation::Group(*group),
+                author: me,
+                content_id: id,
+                expires_at,
+                mode: EphemeralMode::DisappearingText,
+                state: EphemeralState::Active,
+                transfer_ids: Vec::new(),
+            },
+            rng,
+        )?;
+        self.group_send_content_with_id_retention(
+            group,
+            wire_content,
+            id,
+            now,
+            now,
+            Some(retention_until),
+            rng,
+        )
+    }
+
     fn group_send_content_with_id(
         &mut self,
         group: &[u8; 32],
@@ -364,6 +429,28 @@ impl Node {
         id: [u8; 16],
         timestamp: u64,
         now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        self.group_send_content_with_id_retention(
+            group,
+            wire_content,
+            id,
+            timestamp,
+            now,
+            None,
+            rng,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // canonical group send plus optional relay hint
+    fn group_send_content_with_id_retention(
+        &mut self,
+        group: &[u8; 32],
+        wire_content: Vec<u8>,
+        id: [u8; 16],
+        timestamp: u64,
+        now: u64,
+        retention_until: Option<u64>,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 16]> {
         let mut rec = self
@@ -412,7 +499,15 @@ impl Node {
 
         let mut unserved = false;
         for d in record.deliveries.iter_mut() {
-            match self.queue_group_copy(&d.peer, &wire, id, QueueClass::Normal, now, rng)? {
+            match self.queue_group_copy(
+                &d.peer,
+                &wire,
+                id,
+                QueueClass::Normal,
+                retention_until,
+                now,
+                rng,
+            )? {
                 Some(cid) => d.wire_id = Some(cid),
                 None => unserved = true,
             }
@@ -632,6 +727,7 @@ impl Node {
                     &wire,
                     record.id,
                     QueueClass::Normal,
+                    ephemeral_retention(&record.body),
                     now,
                     rng,
                 )? {
@@ -756,12 +852,36 @@ impl Node {
             };
 
             let decoded = decode_content(&body);
+            let authenticated_retention = match decoded {
+                DecodedContent::Ephemeral { ephemeral, .. } => Some(match ephemeral {
+                    Ephemeral::DisappearingText {
+                        retention_until, ..
+                    }
+                    | Ephemeral::ViewOnceAttachment {
+                        retention_until, ..
+                    } => retention_until,
+                }),
+                _ => None,
+            };
+            if env.retention_until != authenticated_retention {
+                return done(self);
+            }
             let decoded_is_edit = matches!(decoded, DecodedContent::Edit { .. });
             if let DecodedContent::Text { id, .. }
             | DecodedContent::Attachment { id, .. }
             | DecodedContent::Mention { id, .. }
-            | DecodedContent::Edit { id, .. } = decoded
+            | DecodedContent::Edit { id, .. }
+            | DecodedContent::Ephemeral { id, .. } = decoded
             {
+                let conversation = EphemeralConversation::Group(rec.id);
+                if self
+                    .store
+                    .get_ephemeral_record(&conversation, &peer, &id)?
+                    .is_some()
+                {
+                    acks.push((peer, env.content_id()));
+                    return done(self);
+                }
                 let duplicate = self.store.group_messages(&rec.id)?.iter().any(|record| {
                     record.direction == Direction::Inbound
                         && record.sender == peer
@@ -771,6 +891,7 @@ impl Node {
                                 | DecodedContent::Attachment { id: stored_id, .. }
                                 | DecodedContent::Mention { id: stored_id, .. }
                                 | DecodedContent::Edit { id: stored_id, .. }
+                                | DecodedContent::Ephemeral { id: stored_id, .. }
                                 if stored_id == id
                         )
                 });
@@ -802,6 +923,7 @@ impl Node {
                         now,
                         rng,
                     )?;
+                    self.emit_attachment_update(&transfer)?;
                     (id, Vec::new(), ContentStatus::Attachment { id, transfer })
                 }
                 DecodedContent::Mention { id, mention } => {
@@ -824,6 +946,112 @@ impl Node {
                     },
                 ),
                 DecodedContent::Edit { id, .. } => (id, Vec::new(), ContentStatus::Malformed),
+                DecodedContent::Ephemeral {
+                    id,
+                    ephemeral:
+                        Ephemeral::DisappearingText {
+                            expires_at, text, ..
+                        },
+                } => {
+                    let state = if now >= expires_at {
+                        EphemeralState::Expired
+                    } else {
+                        EphemeralState::Active
+                    };
+                    self.store.put_ephemeral_record(
+                        &EphemeralRecord {
+                            conversation: EphemeralConversation::Group(rec.id),
+                            author: peer,
+                            content_id: id,
+                            expires_at,
+                            mode: EphemeralMode::DisappearingText,
+                            state,
+                            transfer_ids: Vec::new(),
+                        },
+                        rng,
+                    )?;
+                    if state == EphemeralState::Expired {
+                        self.events.push_back(Event::EphemeralRemoved {
+                            conversation: EphemeralConversation::Group(rec.id),
+                            author: peer,
+                            content_id: id,
+                            reason: state,
+                        });
+                        acks.push((peer, env.content_id()));
+                        return done(self);
+                    }
+                    (
+                        id,
+                        text.as_bytes().to_vec(),
+                        ContentStatus::DisappearingText { id, expires_at },
+                    )
+                }
+                DecodedContent::Ephemeral {
+                    id,
+                    ephemeral:
+                        Ephemeral::ViewOnceAttachment {
+                            expires_at,
+                            manifest,
+                            ..
+                        },
+                } => {
+                    if now >= expires_at {
+                        self.store.put_ephemeral_record(
+                            &EphemeralRecord {
+                                conversation: EphemeralConversation::Group(rec.id),
+                                author: peer,
+                                content_id: id,
+                                expires_at,
+                                mode: EphemeralMode::ViewOnceAttachment,
+                                state: EphemeralState::Expired,
+                                transfer_ids: Vec::new(),
+                            },
+                            rng,
+                        )?;
+                        self.events.push_back(Event::EphemeralRemoved {
+                            conversation: EphemeralConversation::Group(rec.id),
+                            author: peer,
+                            content_id: id,
+                            reason: EphemeralState::Expired,
+                        });
+                        acks.push((peer, env.content_id()));
+                        return done(self);
+                    }
+                    let entitled_peers = rec.members.iter().map(|member| member.peer).collect();
+                    let transfer = self.record_group_attachment_offer(
+                        crate::attachment::GroupAttachmentOffer {
+                            group: rec.id,
+                            author: peer,
+                            entitled_peers,
+                        },
+                        id,
+                        &manifest,
+                        now,
+                        rng,
+                    )?;
+                    self.store.put_ephemeral_record(
+                        &EphemeralRecord {
+                            conversation: EphemeralConversation::Group(rec.id),
+                            author: peer,
+                            content_id: id,
+                            expires_at,
+                            mode: EphemeralMode::ViewOnceAttachment,
+                            state: EphemeralState::Active,
+                            transfer_ids: vec![transfer],
+                        },
+                        rng,
+                    )?;
+                    self.emit_attachment_update(&transfer)?;
+                    (
+                        id,
+                        Vec::new(),
+                        ContentStatus::ViewOnceAttachment {
+                            id,
+                            transfer,
+                            expires_at,
+                        },
+                    )
+                }
                 DecodedContent::Unsupported {
                     format_version,
                     kind,
@@ -1214,12 +1442,14 @@ impl Node {
     /// One member's copy of a group ciphertext, if their pairwise session
     /// exists (the delivery token needs it). `None` means "not yet" — the
     /// tick retries once the session appears.
+    #[allow(clippy::too_many_arguments)] // exact fan-out identity, timing, and retention inputs
     fn queue_group_copy(
         &mut self,
         peer: &[u8; 32],
         wire: &[u8],
         group_msg_id: [u8; 16],
         class: QueueClass,
+        retention_until: Option<u64>,
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Option<[u8; 16]>> {
@@ -1231,7 +1461,12 @@ impl Node {
             epoch_day(now),
             peer,
         );
-        let envelope = Envelope::new(EnvelopeKind::GroupMessage, token, wire.to_vec());
+        let envelope = match retention_until {
+            Some(deadline) => {
+                Envelope::new_retained(EnvelopeKind::GroupMessage, token, deadline, wire.to_vec())?
+            }
+            None => Envelope::new(EnvelopeKind::GroupMessage, token, wire.to_vec()),
+        };
         let cid = envelope.content_id();
         self.store.queue_push(
             &QueueItem {
@@ -1295,6 +1530,7 @@ impl Node {
                 &wire,
                 record.id,
                 QueueClass::Bulk,
+                ephemeral_retention(&record.body),
                 now,
                 rng,
             )?;
@@ -1407,6 +1643,22 @@ fn encode_chain(chain: &GroupSenderChain) -> Result<Vec<u8>> {
 
 fn decode_chain(blob: &[u8]) -> Result<GroupSenderChain> {
     postcard::from_bytes(blob).map_err(|_| NodeError::CorruptState)
+}
+
+fn ephemeral_retention(body: &[u8]) -> Option<u64> {
+    match decode_content(body) {
+        DecodedContent::Ephemeral {
+            ephemeral:
+                Ephemeral::DisappearingText {
+                    retention_until, ..
+                }
+                | Ephemeral::ViewOnceAttachment {
+                    retention_until, ..
+                },
+            ..
+        } => Some(retention_until),
+        _ => None,
+    }
 }
 
 /// Announce entries for every roster member but `me`, snapshotting `chain`

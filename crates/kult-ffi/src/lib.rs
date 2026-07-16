@@ -475,6 +475,10 @@ pub enum ContentKind {
     Attachment,
     /// Canonical group Mention with stable peer-targeted UTF-8 byte spans.
     Mention,
+    /// Canonical disappearing UTF-8 with an exact local deadline.
+    DisappearingText,
+    /// Canonical view-once attachment offer.
+    ViewOnceAttachment,
     /// Authenticated content this version cannot interpret.
     Unsupported,
     /// A typed frame that violated the canonical contract.
@@ -688,6 +692,12 @@ pub struct Attachment {
     pub content_id: String,
     /// Transfer lifecycle state.
     pub state: AttachmentState,
+    /// Whether first-open consumption governs this transfer.
+    pub view_once: bool,
+    /// Exact fallback deadline for view-once media.
+    pub expires_at: Option<u64>,
+    /// Whether it is permanently unavailable after open/expiry.
+    pub consumed: bool,
     /// Primary object followed by an optional preview.
     pub objects: Vec<AttachmentObject>,
 }
@@ -709,6 +719,9 @@ impl Attachment {
             author: hex_encode(&attachment.author),
             content_id: hex_encode(&attachment.content_id),
             state: AttachmentState::from_store(attachment.state),
+            view_once: attachment.view_once,
+            expires_at: attachment.expires_at,
+            consumed: attachment.consumed,
             objects: attachment
                 .objects
                 .into_iter()
@@ -1347,6 +1360,8 @@ pub struct Message {
     pub body: String,
     /// Explicit content interpretation.
     pub content_kind: ContentKind,
+    /// Exact authenticated local expiry for ephemeral content.
+    pub expires_at: Option<u64>,
     /// Whether a valid immutable edit wins over the original.
     pub edited: bool,
     /// Winning edit revision, or zero for the original.
@@ -1476,6 +1491,8 @@ pub struct GroupMessage {
     pub body: String,
     /// Explicit content interpretation.
     pub content_kind: ContentKind,
+    /// Exact authenticated local expiry for ephemeral content.
+    pub expires_at: Option<u64>,
     /// Stable semantic Mention spans; empty for every other content kind.
     pub mention_spans: Vec<MentionSpan>,
     /// Whether a valid immutable edit wins over the original.
@@ -1583,6 +1600,8 @@ pub enum Event {
         body: String,
         /// Explicit content interpretation.
         content_kind: ContentKind,
+        /// Exact deadline for ephemeral content.
+        expires_at: Option<u64>,
     },
     /// A canonical inbound edit was stored; refresh the exact pairwise target.
     MessageEdited {
@@ -1653,6 +1672,8 @@ pub enum Event {
         body: String,
         /// Explicit content interpretation.
         content_kind: ContentKind,
+        /// Exact deadline for ephemeral content.
+        expires_at: Option<u64>,
         /// Stable semantic spans; empty for every other content kind.
         mention_spans: Vec<MentionSpan>,
     },
@@ -1664,6 +1685,19 @@ pub enum Event {
         sender: String,
         /// Original canonical Text content id (hex).
         target_content_id: String,
+    },
+    /// Ephemeral plaintext/media became terminal on this installation.
+    EphemeralRemoved {
+        /// `pairwise` or `group`.
+        conversation_kind: String,
+        /// Peer or group id (hex).
+        conversation_id: String,
+        /// Authenticated author id (hex).
+        author: String,
+        /// Content id (hex).
+        content_id: String,
+        /// `expired` or `consumed`.
+        reason: String,
     },
     /// A stored canonical group Mention targets this exact local peer.
     MentionReceived {
@@ -1724,6 +1758,7 @@ impl Event {
                 timestamp,
                 body: render_event_body(&body, &content),
                 content_kind: content_kind(&content),
+                expires_at: content_expiry(&content),
             },
             kult_node::Event::MessageEdited {
                 peer,
@@ -1777,6 +1812,7 @@ impl Event {
                 timestamp,
                 body: render_event_body(&body, &content),
                 content_kind: content_kind(&content),
+                expires_at: content_expiry(&content),
                 mention_spans: mention_status(&content),
             },
             kult_node::Event::GroupMessageEdited {
@@ -1788,6 +1824,33 @@ impl Event {
                 sender: hex_encode(&sender),
                 target_content_id: hex_encode(&target_content_id),
             },
+            kult_node::Event::EphemeralRemoved {
+                conversation,
+                author,
+                content_id,
+                reason,
+            } => {
+                let (conversation_kind, conversation_id) = match conversation {
+                    kult_store::EphemeralConversation::Pairwise(peer) => {
+                        ("pairwise".to_owned(), hex_encode(&peer))
+                    }
+                    kult_store::EphemeralConversation::Group(group) => {
+                        ("group".to_owned(), hex_encode(&group))
+                    }
+                };
+                Self::EphemeralRemoved {
+                    conversation_kind,
+                    conversation_id,
+                    author: hex_encode(&author),
+                    content_id: hex_encode(&content_id),
+                    reason: match reason {
+                        kult_store::EphemeralState::Expired => "expired",
+                        kult_store::EphemeralState::Consumed => "consumed",
+                        kult_store::EphemeralState::Active => "active",
+                    }
+                    .to_owned(),
+                }
+            }
             kult_node::Event::MentionReceived { id } => Self::MentionReceived {
                 id: hex_encode(&id),
             },
@@ -1992,6 +2055,23 @@ impl KultNode {
         .map(|id| hex_encode(&id))
     }
 
+    /// Queue pairwise UTF-8 with a 60-second through 30-day local lifetime.
+    pub fn send_disappearing(
+        &self,
+        peer: String,
+        body: String,
+        lifetime_secs: u64,
+    ) -> Result<String, FfiError> {
+        let peer = parse_peer(&peer)?;
+        self.call(|resp| Msg::SendDisappearing {
+            peer,
+            body,
+            lifetime_secs,
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
     /// Send one immutable edit targeting this identity's exact canonical Text.
     pub fn edit_message(
         &self,
@@ -2069,6 +2149,48 @@ impl KultNode {
         .map(|id| hex_encode(&id))
     }
 
+    /// Import a pairwise view-once attachment with an optional protected preview.
+    #[allow(clippy::too_many_arguments)] // stable UniFFI flat-value boundary
+    pub fn send_view_once_attachment(
+        &self,
+        peer: String,
+        path: String,
+        media_type: String,
+        filename: Option<String>,
+        preview_path: Option<String>,
+        preview_media_type: Option<String>,
+        lifetime_secs: u64,
+    ) -> Result<String, FfiError> {
+        let peer = parse_peer(&peer)?;
+        let preview = match (preview_path, preview_media_type) {
+            (None, None) => None,
+            (Some(path), Some(media_type)) => Some((
+                kult_node::AttachmentMetadata {
+                    media_type,
+                    filename: None,
+                },
+                PathBuf::from(path),
+            )),
+            _ => {
+                return Err(FfiError::Node {
+                    reason: "preview path/type must be paired".into(),
+                })
+            }
+        };
+        self.call(|resp| Msg::AttachmentSendViewOnce {
+            peer,
+            metadata: kult_node::AttachmentMetadata {
+                media_type,
+                filename,
+            },
+            path: PathBuf::from(path),
+            preview,
+            lifetime_secs,
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
     /// Import a caller-selected file as one encrypt-once sender-key group
     /// attachment. Returns its content id (hex).
     pub fn send_group_attachment(
@@ -2119,6 +2241,48 @@ impl KultNode {
                 },
                 PathBuf::from(preview_path),
             )),
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
+    /// Import a sender-key group view-once attachment.
+    #[allow(clippy::too_many_arguments)] // stable UniFFI flat-value boundary
+    pub fn send_group_view_once_attachment(
+        &self,
+        group: String,
+        path: String,
+        media_type: String,
+        filename: Option<String>,
+        preview_path: Option<String>,
+        preview_media_type: Option<String>,
+        lifetime_secs: u64,
+    ) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        let preview = match (preview_path, preview_media_type) {
+            (None, None) => None,
+            (Some(path), Some(media_type)) => Some((
+                kult_node::AttachmentMetadata {
+                    media_type,
+                    filename: None,
+                },
+                PathBuf::from(path),
+            )),
+            _ => {
+                return Err(FfiError::Node {
+                    reason: "preview path/type must be paired".into(),
+                })
+            }
+        };
+        self.call(|resp| Msg::GroupAttachmentSendViewOnce {
+            group,
+            metadata: kult_node::AttachmentMetadata {
+                media_type,
+                filename,
+            },
+            path: PathBuf::from(path),
+            preview,
+            lifetime_secs,
             resp,
         })
         .map(|id| hex_encode(&id))
@@ -2187,6 +2351,20 @@ impl KultNode {
             transfer,
             path: PathBuf::from(path),
             preview: true,
+            resp,
+        })
+    }
+
+    /// Terminal first open of a view-once primary into a protected new path.
+    pub fn consume_view_once_attachment(
+        &self,
+        transfer: String,
+        path: String,
+    ) -> Result<(), FfiError> {
+        let transfer = parse_transfer(&transfer)?;
+        self.call(|resp| Msg::AttachmentConsumeViewOnce {
+            transfer,
+            path: PathBuf::from(path),
             resp,
         })
     }
@@ -2826,6 +3004,23 @@ impl KultNode {
         .map(|id| hex_encode(&id))
     }
 
+    /// Queue group UTF-8 with an exact local lifetime on every installation.
+    pub fn send_group_disappearing(
+        &self,
+        group: String,
+        body: String,
+        lifetime_secs: u64,
+    ) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        self.call(|resp| Msg::GroupSendDisappearing {
+            group,
+            body,
+            lifetime_secs,
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
     /// Send one immutable edit targeting this identity's exact group Text.
     pub fn edit_group_message(
         &self,
@@ -2950,6 +3145,8 @@ impl KultNode {
             .iter()
             .map(|message| {
                 let record = &message.record;
+                let decoded = kult_protocol::decode_content(&record.body);
+                let expires_at = decoded_content_expiry(&decoded);
                 let (body, content_kind, mention_spans) = render_stored_content(&record.body, true);
                 GroupMessage {
                     id: hex_encode(&record.id),
@@ -2962,6 +3159,7 @@ impl KultNode {
                     timestamp: record.timestamp,
                     body,
                     content_kind,
+                    expires_at,
                     mention_spans,
                     edited: message.edited,
                     edit_revision: message.winning_revision,
@@ -3014,6 +3212,8 @@ impl KultNode {
             .iter()
             .map(|message| {
                 let record = &message.record;
+                let decoded = kult_protocol::decode_content(&record.body);
+                let expires_at = decoded_content_expiry(&decoded);
                 let (body, content_kind, _) = render_stored_content(&record.body, false);
                 Message {
                     id: hex_encode(&record.id),
@@ -3026,6 +3226,7 @@ impl KultNode {
                     timestamp: record.timestamp,
                     body,
                     content_kind,
+                    expires_at,
                     edited: message.edited,
                     edit_revision: message.winning_revision,
                     versions: message
@@ -3648,9 +3849,31 @@ fn content_kind(status: &kult_node::ContentStatus) -> ContentKind {
         kult_node::ContentStatus::Text { .. } => ContentKind::Text,
         kult_node::ContentStatus::Attachment { .. } => ContentKind::Attachment,
         kult_node::ContentStatus::Mention { .. } => ContentKind::Mention,
+        kult_node::ContentStatus::DisappearingText { .. } => ContentKind::DisappearingText,
+        kult_node::ContentStatus::ViewOnceAttachment { .. } => ContentKind::ViewOnceAttachment,
         kult_node::ContentStatus::Unsupported { .. } => ContentKind::Unsupported,
         kult_node::ContentStatus::Malformed => ContentKind::Malformed,
         _ => ContentKind::Unsupported,
+    }
+}
+
+fn content_expiry(status: &kult_node::ContentStatus) -> Option<u64> {
+    match status {
+        kult_node::ContentStatus::DisappearingText { expires_at, .. }
+        | kult_node::ContentStatus::ViewOnceAttachment { expires_at, .. } => Some(*expires_at),
+        _ => None,
+    }
+}
+
+fn decoded_content_expiry(content: &kult_protocol::DecodedContent<'_>) -> Option<u64> {
+    match content {
+        kult_protocol::DecodedContent::Ephemeral {
+            ephemeral:
+                kult_protocol::Ephemeral::DisappearingText { expires_at, .. }
+                | kult_protocol::Ephemeral::ViewOnceAttachment { expires_at, .. },
+            ..
+        } => Some(*expires_at),
+        _ => None,
     }
 }
 
@@ -3658,10 +3881,12 @@ fn render_event_body(body: &[u8], status: &kult_node::ContentStatus) -> String {
     match status {
         kult_node::ContentStatus::LegacyText
         | kult_node::ContentStatus::Text { .. }
-        | kult_node::ContentStatus::Mention { .. } => {
+        | kult_node::ContentStatus::Mention { .. }
+        | kult_node::ContentStatus::DisappearingText { .. } => {
             String::from_utf8(body.to_vec()).expect("node exposes only validated UTF-8 text")
         }
-        kult_node::ContentStatus::Attachment { .. } => String::new(),
+        kult_node::ContentStatus::Attachment { .. }
+        | kult_node::ContentStatus::ViewOnceAttachment { .. } => String::new(),
         kult_node::ContentStatus::Unsupported { .. } | kult_node::ContentStatus::Malformed => {
             UNSUPPORTED_MESSAGE.to_owned()
         }
@@ -3718,6 +3943,14 @@ fn render_stored_content(
             ContentKind::Malformed,
             Vec::new(),
         ),
+        kult_protocol::DecodedContent::Ephemeral { ephemeral, .. } => match ephemeral {
+            kult_protocol::Ephemeral::DisappearingText { text, .. } => {
+                (text.to_owned(), ContentKind::DisappearingText, Vec::new())
+            }
+            kult_protocol::Ephemeral::ViewOnceAttachment { .. } => {
+                (String::new(), ContentKind::ViewOnceAttachment, Vec::new())
+            }
+        },
         kult_protocol::DecodedContent::Unsupported { .. } => (
             UNSUPPORTED_MESSAGE.to_owned(),
             ContentKind::Unsupported,
@@ -3868,12 +4101,14 @@ mod tests {
                 timestamp,
                 body,
                 content_kind,
+                expires_at,
             } => {
                 assert_eq!(peer, "01".repeat(32));
                 assert_eq!(id, "02".repeat(16));
                 assert_eq!(timestamp, 7);
                 assert_eq!(body, "hi");
                 assert_eq!(content_kind, ContentKind::LegacyText);
+                assert_eq!(expires_at, None);
             }
             other => panic!("wrong variant: {other:?}"),
         }
@@ -3925,6 +4160,9 @@ mod tests {
                 author: [0x12; 32],
                 content_id: [0x13; 16],
                 state: kult_store::MediaTransferState::AwaitingConsent,
+                view_once: false,
+                expires_at: None,
+                consumed: false,
                 objects: vec![kult_node::AttachmentObjectInfo {
                     preview: false,
                     total_bytes: 1,

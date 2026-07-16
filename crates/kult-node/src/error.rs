@@ -52,6 +52,12 @@ pub enum NodeError {
     InvalidEdit,
     /// The target already has the maximum number of locally authored edits.
     EditLimit,
+    /// The peer/group lacks ephemeral v1 plus envelope-v2 support.
+    EphemeralUnsupported,
+    /// Lifetime, deadline, content, hint binding, or lifecycle is invalid.
+    InvalidEphemeral,
+    /// Ordinary preview/export is forbidden for a view-once attachment.
+    ViewOnceExportForbidden,
     /// The peer has not authenticated support for the complete attachment
     /// manifest and bulk-lane contract.
     AttachmentUnsupported,
@@ -104,6 +110,13 @@ impl std::fmt::Display for NodeError {
             }
             Self::InvalidEdit => f.write_str("invalid message edit target, author, or text"),
             Self::EditLimit => f.write_str("message edit limit reached"),
+            Self::EphemeralUnsupported => {
+                f.write_str("peer or group member does not support ephemeral content")
+            }
+            Self::InvalidEphemeral => f.write_str("invalid ephemeral content or lifecycle"),
+            Self::ViewOnceExportForbidden => {
+                f.write_str("view-once attachment requires terminal consume")
+            }
             Self::AttachmentUnsupported => {
                 f.write_str("peer does not advertise attachment support")
             }

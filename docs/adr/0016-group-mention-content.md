@@ -238,7 +238,7 @@ fan-out, mailbox, sneakernet, LAN, internet, and mesh scheduling behavior is
 unchanged. Mention is ordinary text-sized `QueueClass::Normal` content; it gets no
 special airtime or priority rule.
 
-KKR4 already backs up sealed group message bodies as opaque bytes, so no backup
+KKR5 backs up ordinary sealed group message bodies as opaque bytes, so no backup
 format bump or migration is needed. Restored valid, unknown, and malformed
 Mention bodies retain exact bytes and re-decode locally. As required by ADR-0011
 and ADR-0012, live pairwise sessions, capability snapshots, and group chains are
@@ -420,7 +420,7 @@ accessibility, backup/restore, mixed-version, metadata-leakage, and diff checks.
 - Group Mention availability progresses at the least-capable current co-member.
   Users retain an explicit readable plain-text path with honestly reduced
   semantics and zero mention notification.
-- Storage and KKR4 need no format migration because exact bodies are already
+- Storage and KKR5 need no format migration because exact ordinary bodies are already
   sealed opaque bytes; APIs and shells do need new render-safe structured records.
 - Native shells must maintain byte-accurate semantic drafts despite UTF-16/String
   editing models, IME composition, restoration, accessibility, and bidi layout.

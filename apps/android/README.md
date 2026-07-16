@@ -27,11 +27,17 @@ own, verbatim.
   accessible row action. Android targets the exact peer key, uses an incognito
   field, previews shared NFC normalization and duplicate/confusable/bidi/
   invisible warnings, and confirms before accepting risk. Duplicate names remain
-  separate; restart/`KKR4` preserves the rename with zero delivery work.
+  separate; restart/`KKR5` preserves the rename with zero delivery work.
 - **Message** with honest delivery states: `queued` → `sent` (handed to a
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted
   mesh links.
+- **Send disappearing pairwise/group text and view-once attachments** with
+  explicit native lifetime controls and honest device-local removal copy.
+  Expired rows are filtered/refreshed from typed core events. View-once review
+  disables ordinary preview, audio, open, and export; the first explicit reveal
+  consumes into an app-private FileProvider path and remains terminal even when
+  Android cannot hand the output to another app.
 - **Edit authored canonical Text** in pairwise and group history through a
   native `IncognitoEditText` dialog. The action is available only on exact
   outbound text, uses shared capability/authorship checks, refreshes on typed
@@ -102,7 +108,7 @@ own, verbatim.
 - **Choose System, Light, or Dark appearance** from Settings, including before
   unlock. AppCompat DayNight is applied in `Application.onCreate` so the gate
   does not flash the wrong palette; after unlock the sealed F5 value wins and is
-  restored by `KKR4`. Light/night resources use semantic roles and WCAG-tested
+  restored by `KKR5`. Light/night resources use semantic roles and WCAG-tested
   reference contrast, Android high-contrast text and disabled-animation settings
   remain native, and delivery/security rows retain non-color cues.
 - **Manage private custom icons** for contacts, groups, folders, and note-to-self.
@@ -111,7 +117,7 @@ own, verbatim.
   fallback, and quota usage. Selected content is copied only into a short-lived
   app-private file before the shared core emits a metadata-free 256×256 RGBA PNG.
   The 512 KiB/1,024-record/64 MiB limits and corrupt fallback are shared with
-  every shell; `KKR4` is the only portability path and no icon creates network,
+  every shell; `KKR5` is the only portability path and no icon creates network,
   permission beyond the picker, notification, capability, or transport work.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends (desktop included), compared aloud or by scanning each other's
@@ -128,6 +134,11 @@ own, verbatim.
   as `kultd`'s flags.
 - A **foreground service** keeps the node delivering while the app is
   backgrounded; **Lock** stops the node and returns to the gate.
+
+C4 deadline calculation, capability checks, deletion, terminal tombstones, and
+KKR5 exclusion are shared-core behavior. Android APK/device qualification still
+requires an installed SDK; the SDK-free `:core:test` suite pins bindings and app
+source parity. See [C4 semantics and qualification](../../docs/19-ephemeral-messages.md).
 
 ## Layout
 
@@ -163,29 +174,29 @@ peer/group/note targets, stable order, any/all results, restart, and errors.
 Labels request no Contacts, clipboard, broad-storage, notification, nearby, or
 network permission. Label data never appears in notification channels, lock
 screen metadata, recent-task titles, logs, crash/analytics payloads, or
-unprotected state. `KKR4` preserves exact definitions and memberships; message
+unprotected state. `KKR5` preserves exact definitions and memberships; message
 labels and linked-device synchronization remain deferred.
 
 Folder acceptance drives the shared B10 fixture through Rust RPC, UniFFI,
 Kotlin, and Swift, including exact Unicode, duplicate names, stable manual order,
 typed peer/group/note targets, single membership, label composition, restart,
 deletion, and structured errors. Folder state requests no additional permission,
-never leaves sealed local storage, and `KKR4` is its only portability path.
+never leaves sealed local storage, and `KKR5` is its only portability path.
 
 Pin acceptance drives the shared B11 fixture through Rust RPC, UniFFI, Kotlin,
 and Swift, covering exact typed peer/group/note targets, append and complete-set
 reorder, folder/label composition, activity ordering, stale cleanup/reactivation,
-restart, structured limits/errors, and zero delivery work. `KKR4` is the only
+restart, structured limits/errors, and zero delivery work. `KKR5` is the only
 portability path; message pins and linked-device pin sync remain deferred.
 
 Theme acceptance drives the shared B12 fixture through Rust RPC, UniFFI, Kotlin,
 and Swift: exact vocabulary/roles, first-run System, idempotency, restart,
-`KKR4`, one local event, and zero queued or transport work. The ordinary private
+`KKR5`, one local event, and zero queued or transport work. The ordinary private
 preference cache carries no identity, message, contact, or network data.
 
 Custom-icon acceptance drives the shared B13 fixture through Rust RPC, UniFFI,
 Kotlin, and Swift: all four exact target types, canonical metadata-free output,
-quota accounting, restart/`KKR4`, generated-initials fallback, local events, and
+quota accounting, restart/`KKR5`, generated-initials fallback, local events, and
 zero delivery work. The Android manager uses SAF access only for the explicit
 selection and deletes its app-private transient after the blocking core call.
 

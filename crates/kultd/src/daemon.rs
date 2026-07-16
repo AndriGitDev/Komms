@@ -562,6 +562,17 @@ async fn handle_op(
                 .map_err(fail)?;
             Ok(json!({ "id": wire::hex_encode(&id) }))
         }
+        Op::SendDisappearing {
+            peer,
+            body,
+            lifetime_secs,
+        } => {
+            let peer = wire::parse_peer(&peer)?;
+            let id = node
+                .send_disappearing_message(&peer, &body, lifetime_secs, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
         Op::EditMessage {
             peer,
             target_author,
@@ -614,6 +625,39 @@ async fn handle_op(
                 .map_err(fail)?;
             Ok(json!({ "id": wire::hex_encode(&id) }))
         }
+        Op::AttachmentSendViewOnce {
+            peer,
+            path,
+            media_type,
+            filename,
+            preview_path,
+            preview_media_type,
+            lifetime_secs,
+        } => {
+            let peer = wire::parse_peer(&peer)?;
+            let mut source =
+                std::fs::File::open(&path).map_err(|e| format!("attachment source: {e}"))?;
+            let metadata = kult_node::AttachmentMetadata {
+                media_type,
+                filename,
+            };
+            let mut preview = open_preview(preview_path, preview_media_type)?;
+            let preview = preview
+                .as_mut()
+                .map(|(metadata, source)| (&*metadata, source));
+            let id = node
+                .send_view_once_attachment_with_preview(
+                    &peer,
+                    &metadata,
+                    &mut source,
+                    preview,
+                    lifetime_secs,
+                    now(),
+                    &mut OsRng,
+                )
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
         Op::GroupAttachmentSend {
             group,
             path,
@@ -639,6 +683,39 @@ async fn handle_op(
                     &metadata,
                     &mut source,
                     preview,
+                    now(),
+                    &mut OsRng,
+                )
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::GroupAttachmentSendViewOnce {
+            group,
+            path,
+            media_type,
+            filename,
+            preview_path,
+            preview_media_type,
+            lifetime_secs,
+        } => {
+            let group = wire::parse_group(&group)?;
+            let mut source =
+                std::fs::File::open(&path).map_err(|e| format!("attachment source: {e}"))?;
+            let metadata = kult_node::AttachmentMetadata {
+                media_type,
+                filename,
+            };
+            let mut preview = open_preview(preview_path, preview_media_type)?;
+            let preview = preview
+                .as_mut()
+                .map(|(metadata, source)| (&*metadata, source));
+            let id = node
+                .send_group_view_once_attachment_with_preview(
+                    &group,
+                    &metadata,
+                    &mut source,
+                    preview,
+                    lifetime_secs,
                     now(),
                     &mut OsRng,
                 )
@@ -693,6 +770,20 @@ async fn handle_op(
             let mut destination =
                 open_private(destination_path).map_err(|e| format!("attachment export: {e}"))?;
             if let Err(error) = node.export_attachment_object(&transfer, preview, &mut destination)
+            {
+                drop(destination);
+                let _ = std::fs::remove_file(destination_path);
+                return Err(fail(error));
+            }
+            Ok(json!({ "path": path }))
+        }
+        Op::AttachmentConsumeViewOnce { transfer, path } => {
+            let transfer = wire::parse_transfer(&transfer)?;
+            let destination_path = std::path::Path::new(&path);
+            let mut destination =
+                open_private(destination_path).map_err(|e| format!("view-once open: {e}"))?;
+            if let Err(error) =
+                node.consume_view_once_attachment(&transfer, &mut destination, now(), &mut OsRng)
             {
                 drop(destination);
                 let _ = std::fs::remove_file(destination_path);
@@ -1174,6 +1265,17 @@ async fn handle_op(
             let group = wire::parse_group(&group)?;
             let id = node
                 .group_send(&group, body.as_bytes(), now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::GroupSendDisappearing {
+            group,
+            body,
+            lifetime_secs,
+        } => {
+            let group = wire::parse_group(&group)?;
+            let id = node
+                .group_send_disappearing_message(&group, &body, lifetime_secs, now(), &mut OsRng)
                 .map_err(fail)?;
             Ok(json!({ "id": wire::hex_encode(&id) }))
         }

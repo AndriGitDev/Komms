@@ -17,13 +17,16 @@ struct ChatView: View {
     @State private var showLabels = false
     @State private var scheduleEditor: ScheduleEditor?
     @State private var messageEditor: MessageEditDraft?
+    @State private var ephemeralLifetime: EphemeralLifetime?
 
     private var contact: Contact? {
         model.contacts.first { $0.peer == peer }
     }
 
     private var history: [Message] {
-        (model.histories[peer] ?? []).filter { $0.contentKind != .attachment }
+        (model.histories[peer] ?? []).filter {
+            $0.contentKind != .attachment && $0.contentKind != .viewOnceAttachment
+        }
     }
     private var attachments: [Attachment] {
         model.attachments.filter {
@@ -84,6 +87,8 @@ struct ChatView: View {
                     .padding(.horizontal)
             }
 
+            EphemeralTextControl(lifetime: $ephemeralLifetime)
+                .padding(.horizontal)
             HStack {
                 AttachmentPickerButton(destination: .peer(peer)) { error in
                     self.error = error
@@ -178,7 +183,12 @@ struct ChatView: View {
         error = nil
         Task {
             do {
-                try await model.send(peer: peer, body: body)
+                if let lifetime = ephemeralLifetime {
+                    try await model.sendDisappearing(
+                        peer: peer, body: body, lifetimeSeconds: lifetime.rawValue)
+                } else {
+                    try await model.send(peer: peer, body: body)
+                }
             } catch {
                 self.error = errorText(error)
             }
@@ -242,6 +252,12 @@ private struct MessageBubble: View {
                     Text("edited r\(message.editRevision)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                }
+                if message.contentKind == .disappearingText, let expiresAt = message.expiresAt {
+                    Text("Removes \(Date(timeIntervalSince1970: TimeInterval(expiresAt)), style: .relative)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .accessibilityHint("Removed locally; other devices may retain copies")
                 }
                 if message.edited {
                     EditVersionHistoryView(versions: message.versions)

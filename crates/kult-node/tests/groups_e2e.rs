@@ -427,7 +427,7 @@ async fn membership_changes_rotate_and_exclude() {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Backup/restore (KKR4): groups and history ride the backup; the
+// 3. Backup/restore (KKR5): groups and ordinary history ride the backup; the
 //    restored node re-handshakes, announces a fresh chain, co-members
 //    redistribute theirs, and messaging resumes in both directions.
 // ---------------------------------------------------------------------------
@@ -560,7 +560,7 @@ async fn restore_from_backup_reannounces_and_resumes() {
         other => panic!("expected restored canonical mention, got {other:?}"),
     }
 
-    // Capability snapshots are intentionally excluded from KKR4 because
+    // Capability snapshots are intentionally excluded from KKR5 because
     // their authentication is session-bound. The old review token therefore
     // fails closed until the restored device completes a fresh handshake and
     // receives a new authenticated snapshot.

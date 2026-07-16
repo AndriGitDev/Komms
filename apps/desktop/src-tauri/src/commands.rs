@@ -265,6 +265,7 @@ macro_rules! forward {
     ($(#[$doc:meta])* $name:ident($($arg:ident: $ty:ty),*) -> $ret:ty, |$s:ident| $body:expr) => {
         $(#[$doc])*
         #[tauri::command]
+        #[allow(clippy::too_many_arguments)] // flat Tauri IPC boundary
         pub async fn $name(state: State<'_, AppState>, $($arg: $ty),*) -> Result<$ret, String> {
             let $s = state.session()?;
             blocking(move || $body).await
@@ -323,9 +324,11 @@ forward!(
         conversation: String,
         destination: String,
         filename: Option<String>,
-        expected_carrier: String
+        expected_carrier: String,
+        view_once: bool,
+        lifetime_secs: u64
     ) -> String,
-    |s| s.send_image_edit(token, conversation, destination, filename, expected_carrier)
+    |s| s.send_image_edit(token, conversation, destination, filename, expected_carrier, view_once, lifetime_secs)
 );
 forward!(
     /// Stage and import one explicitly confirmed non-image file.
@@ -410,6 +413,11 @@ forward!(
     send(peer: String, body: String) -> String, |s| s.send(peer, body)
 );
 forward!(
+    /// Queue pairwise text with exact local expiry.
+    send_disappearing(peer: String, body: String, lifetime_secs: u64) -> String,
+    |s| s.send_disappearing(peer, body, lifetime_secs)
+);
+forward!(
     /// Queue an immutable edit for an exact pairwise Text event.
     edit_message(peer: String, target_author: String, target_content_id: String, text: String) -> String,
     |s| s.edit_message(peer, target_author, target_content_id, text)
@@ -417,6 +425,16 @@ forward!(
 forward!(
     /// Every attachment transfer as render-safe state.
     attachments() -> Vec<UiAttachment>, |s| s.attachments()
+);
+forward!(
+    /// Import a pairwise view-once attachment.
+    send_view_once_attachment(peer: String, path: String, media_type: String, filename: Option<String>, lifetime_secs: u64) -> String,
+    |s| s.send_view_once_attachment(peer, path, media_type, filename, lifetime_secs)
+);
+forward!(
+    /// Import a group view-once attachment.
+    send_group_view_once_attachment(group: String, path: String, media_type: String, filename: Option<String>, lifetime_secs: u64) -> String,
+    |s| s.send_group_view_once_attachment(group, path, media_type, filename, lifetime_secs)
 );
 forward!(
     /// Accept an inbound attachment offer.
@@ -441,6 +459,11 @@ forward!(
 forward!(
     /// Export a completed primary object to a protected new path.
     export_attachment(transfer: String, path: String) -> (), |s| s.export_attachment(transfer, path)
+);
+forward!(
+    /// Terminal first-open of view-once media into a protected new path.
+    consume_view_once_attachment(transfer: String, path: String) -> (),
+    |s| s.consume_view_once_attachment(transfer, path)
 );
 forward!(
     /// Explicitly hand a recognized completed inbound file to the operating system.
@@ -667,6 +690,11 @@ forward!(
 forward!(
     /// Queue a message to a group.
     send_group(group: String, body: String) -> String, |s| s.send_group(group, body)
+);
+forward!(
+    /// Queue group text with exact local expiry.
+    send_group_disappearing(group: String, body: String, lifetime_secs: u64) -> String,
+    |s| s.send_group_disappearing(group, body, lifetime_secs)
 );
 forward!(
     /// Queue an immutable edit for an exact group Text event.

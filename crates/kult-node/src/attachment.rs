@@ -17,14 +17,17 @@ use kult_crypto::{
 };
 use kult_protocol::{
     decode_attachment_bulk_record, decode_content, delivery_token, encode_attachment,
-    encode_attachment_bulk_record, epoch_day, pad, pad_to_minimum, validate_missing_ranges,
-    AttachmentBulkOperation, AttachmentBulkRecord, AttachmentManifest, AttachmentObject,
-    AttachmentReason, AttachmentRole, AttachmentScope, DecodedAttachmentBulkRecord, DecodedContent,
-    Envelope, EnvelopeKind, MailboxKey, MissingRange, CONTENT_FORMAT_V1, CONTENT_KIND_ATTACHMENT,
-    MAX_PREVIEW_OBJECT_LEN, MAX_PRIMARY_OBJECT_LEN,
+    encode_attachment_bulk_record, encode_ephemeral, encode_view_once_attachment_payload,
+    epoch_day, pad, pad_to_minimum, validate_missing_ranges, AttachmentBulkOperation,
+    AttachmentBulkRecord, AttachmentManifest, AttachmentObject, AttachmentReason, AttachmentRole,
+    AttachmentScope, DecodedAttachmentBulkRecord, DecodedContent, Envelope, EnvelopeKind,
+    Ephemeral, MailboxKey, MissingRange, CONTENT_FORMAT_V1, CONTENT_KIND_ATTACHMENT,
+    CONTENT_KIND_EPHEMERAL, MAX_EPHEMERAL_LIFETIME_SECS, MAX_PREVIEW_OBJECT_LEN,
+    MAX_PRIMARY_OBJECT_LEN, MIN_EPHEMERAL_LIFETIME_SECS,
 };
 use kult_store::{
-    DeliveryState, Direction, GroupDelivery, GroupMessageRecord, MediaDirection, MediaObjectRecord,
+    DeliveryState, Direction, EphemeralConversation, EphemeralMode, EphemeralRecord,
+    EphemeralState, GroupDelivery, GroupMessageRecord, MediaDirection, MediaObjectRecord,
     MediaRecord, MediaScope, MediaTransferRecord, MediaTransferState, MessageRecord, QueueClass,
     QueueItem, Store, StoreError,
 };
@@ -201,7 +204,74 @@ impl Node {
         peer: &[u8; 32],
         metadata: &AttachmentMetadata,
         source: &mut R,
+        preview: Option<(&AttachmentMetadata, &mut P)>,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        self.send_pairwise_attachment_with_preview_mode(
+            peer, metadata, source, preview, None, now, rng,
+        )
+    }
+
+    /// Import a pairwise attachment whose decryptable local source is
+    /// durably consumed by its first explicit open, with deadline fallback.
+    pub fn send_view_once_attachment<R: Read + Seek>(
+        &mut self,
+        peer: &[u8; 32],
+        metadata: &AttachmentMetadata,
+        source: &mut R,
+        lifetime_secs: u64,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        self.send_view_once_attachment_with_preview::<R, R>(
+            peer,
+            metadata,
+            source,
+            None,
+            lifetime_secs,
+            now,
+            rng,
+        )
+    }
+
+    /// View-once pairwise import with an optional bounded preview.
+    #[allow(clippy::too_many_arguments)] // explicit streams, policy, time, and RNG boundaries
+    pub fn send_view_once_attachment_with_preview<R: Read + Seek, P: Read + Seek>(
+        &mut self,
+        peer: &[u8; 32],
+        metadata: &AttachmentMetadata,
+        source: &mut R,
+        preview: Option<(&AttachmentMetadata, &mut P)>,
+        lifetime_secs: u64,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        if !(MIN_EPHEMERAL_LIFETIME_SECS..=MAX_EPHEMERAL_LIFETIME_SECS).contains(&lifetime_secs) {
+            return Err(NodeError::InvalidEphemeral);
+        }
+        let expires_at = now
+            .checked_add(lifetime_secs)
+            .ok_or(NodeError::InvalidEphemeral)?;
+        self.send_pairwise_attachment_with_preview_mode(
+            peer,
+            metadata,
+            source,
+            preview,
+            Some(expires_at),
+            now,
+            rng,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // shared ordinary/view-once import primitive
+    fn send_pairwise_attachment_with_preview_mode<R: Read + Seek, P: Read + Seek>(
+        &mut self,
+        peer: &[u8; 32],
+        metadata: &AttachmentMetadata,
+        source: &mut R,
         mut preview: Option<(&AttachmentMetadata, &mut P)>,
+        expires_at: Option<u64>,
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 16]> {
@@ -210,6 +280,12 @@ impl Node {
             .ok_or(NodeError::UnknownPeer)?;
         if !self.peer_supports_attachment(peer)? {
             return Err(NodeError::AttachmentUnsupported);
+        }
+        if expires_at.is_some()
+            && (!self.sessions.contains_key(peer)
+                || !self.peer_supports_kind(peer, CONTENT_KIND_EPHEMERAL)?)
+        {
+            return Err(NodeError::EphemeralUnsupported);
         }
 
         let primary = attachment_source_details(source, MAX_PRIMARY_OBJECT_LEN)?;
@@ -270,8 +346,14 @@ impl Node {
             },
             preview: preview_manifest,
         };
-        let frame =
-            encode_attachment(content_id, &manifest).map_err(|_| NodeError::InvalidAttachment)?;
+        let frame = match expires_at {
+            Some(deadline) => encode_ephemeral(
+                content_id,
+                &encode_view_once_attachment_payload(deadline, &manifest)?,
+            )?,
+            None => encode_attachment(content_id, &manifest)
+                .map_err(|_| NodeError::InvalidAttachment)?,
+        };
         let me = self.identity.public().ed;
         let scope_id = attachment_pairwise_scope_id(&me, peer);
         let transfer = MediaTransferRecord {
@@ -363,6 +445,20 @@ impl Node {
                 rng,
             )?;
         }
+        if let Some(expires_at) = expires_at {
+            self.store.put_ephemeral_record(
+                &EphemeralRecord {
+                    conversation: EphemeralConversation::Pairwise(*peer),
+                    author: me,
+                    content_id,
+                    expires_at,
+                    mode: EphemeralMode::ViewOnceAttachment,
+                    state: EphemeralState::Active,
+                    transfer_ids: vec![transfer_id],
+                },
+                rng,
+            )?;
+        }
         self.emit_attachment_update(&transfer_id)?;
         Ok(content_id)
     }
@@ -390,7 +486,73 @@ impl Node {
         group: &[u8; 32],
         metadata: &AttachmentMetadata,
         source: &mut R,
+        preview: Option<(&AttachmentMetadata, &mut P)>,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        self.send_group_attachment_with_preview_mode(
+            group, metadata, source, preview, None, now, rng,
+        )
+    }
+
+    /// Import one sender-key group view-once attachment with deadline fallback.
+    pub fn send_group_view_once_attachment<R: Read + Seek>(
+        &mut self,
+        group: &[u8; 32],
+        metadata: &AttachmentMetadata,
+        source: &mut R,
+        lifetime_secs: u64,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        self.send_group_view_once_attachment_with_preview::<R, R>(
+            group,
+            metadata,
+            source,
+            None,
+            lifetime_secs,
+            now,
+            rng,
+        )
+    }
+
+    /// Group view-once import with an optional bounded preview.
+    #[allow(clippy::too_many_arguments)] // explicit streams, policy, time, and RNG boundaries
+    pub fn send_group_view_once_attachment_with_preview<R: Read + Seek, P: Read + Seek>(
+        &mut self,
+        group: &[u8; 32],
+        metadata: &AttachmentMetadata,
+        source: &mut R,
+        preview: Option<(&AttachmentMetadata, &mut P)>,
+        lifetime_secs: u64,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        if !(MIN_EPHEMERAL_LIFETIME_SECS..=MAX_EPHEMERAL_LIFETIME_SECS).contains(&lifetime_secs) {
+            return Err(NodeError::InvalidEphemeral);
+        }
+        let expires_at = now
+            .checked_add(lifetime_secs)
+            .ok_or(NodeError::InvalidEphemeral)?;
+        self.send_group_attachment_with_preview_mode(
+            group,
+            metadata,
+            source,
+            preview,
+            Some(expires_at),
+            now,
+            rng,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // shared ordinary/view-once import primitive
+    fn send_group_attachment_with_preview_mode<R: Read + Seek, P: Read + Seek>(
+        &mut self,
+        group: &[u8; 32],
+        metadata: &AttachmentMetadata,
+        source: &mut R,
         mut preview: Option<(&AttachmentMetadata, &mut P)>,
+        expires_at: Option<u64>,
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 16]> {
@@ -411,6 +573,12 @@ impl Node {
         for peer in &peers {
             if !self.peer_supports_attachment(peer)? {
                 return Err(NodeError::AttachmentUnsupported);
+            }
+            if expires_at.is_some()
+                && (!self.sessions.contains_key(peer)
+                    || !self.peer_supports_kind(peer, CONTENT_KIND_EPHEMERAL)?)
+            {
+                return Err(NodeError::EphemeralUnsupported);
             }
         }
 
@@ -461,8 +629,14 @@ impl Node {
             },
             preview: preview_manifest,
         };
-        let frame =
-            encode_attachment(content_id, &manifest).map_err(|_| NodeError::InvalidAttachment)?;
+        let frame = match expires_at {
+            Some(deadline) => encode_ephemeral(
+                content_id,
+                &encode_view_once_attachment_payload(deadline, &manifest)?,
+            )?,
+            None => encode_attachment(content_id, &manifest)
+                .map_err(|_| NodeError::InvalidAttachment)?,
+        };
         self.store.put_group_message(
             &GroupMessageRecord {
                 id: content_id,
@@ -579,6 +753,23 @@ impl Node {
                 rng,
             )?;
         }
+        if let Some(expires_at) = expires_at {
+            self.store.put_ephemeral_record(
+                &EphemeralRecord {
+                    conversation: EphemeralConversation::Group(*group),
+                    author: me,
+                    content_id,
+                    expires_at,
+                    mode: EphemeralMode::ViewOnceAttachment,
+                    state: EphemeralState::Active,
+                    transfer_ids: rows
+                        .iter()
+                        .map(|(transfer, _, _)| transfer.local_id)
+                        .collect(),
+                },
+                rng,
+            )?;
+        }
         for (transfer, _, _) in &rows {
             self.emit_attachment_update(&transfer.local_id)?;
         }
@@ -612,6 +803,21 @@ impl Node {
     /// application-provided protected handle. Preview export is intended for
     /// transient local rendering and never selects a filesystem path itself.
     pub fn export_attachment_object<W: Write>(
+        &self,
+        transfer_id: &[u8; 16],
+        preview: bool,
+        destination: &mut W,
+    ) -> Result<()> {
+        if self.store.ephemeral_records()?.iter().any(|record| {
+            record.mode == EphemeralMode::ViewOnceAttachment
+                && record.transfer_ids.contains(transfer_id)
+        }) {
+            return Err(NodeError::ViewOnceExportForbidden);
+        }
+        self.export_attachment_object_inner(transfer_id, preview, destination)
+    }
+
+    fn export_attachment_object_inner<W: Write>(
         &self,
         transfer_id: &[u8; 16],
         preview: bool,
@@ -658,6 +864,73 @@ impl Node {
         }
         destination.flush()?;
         Ok(())
+    }
+
+    /// Consume a completed view-once primary into a protected application
+    /// handle. The tombstone is durable before the first plaintext byte is
+    /// emitted; success or I/O failure then removes every decryptable local
+    /// source associated with the content id.
+    pub fn consume_view_once_attachment<W: Write>(
+        &mut self,
+        transfer_id: &[u8; 16],
+        destination: &mut W,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let mut record = self
+            .store
+            .ephemeral_records()?
+            .into_iter()
+            .find(|record| {
+                record.mode == EphemeralMode::ViewOnceAttachment
+                    && record.transfer_ids.contains(transfer_id)
+            })
+            .ok_or(NodeError::InvalidEphemeral)?;
+        if record.state != EphemeralState::Active || now >= record.expires_at {
+            return Err(NodeError::InvalidEphemeral);
+        }
+        record.state = EphemeralState::Consumed;
+        self.store.put_ephemeral_record(&record, rng)?;
+
+        let export = self.export_attachment_object_inner(transfer_id, false, destination);
+        let me = self.identity.public().ed;
+        match record.conversation {
+            EphemeralConversation::Pairwise(peer) => {
+                let direction = if record.author == me {
+                    Direction::Outbound
+                } else {
+                    Direction::Inbound
+                };
+                self.store
+                    .delete_message_record(&peer, direction, &record.content_id)?;
+                if direction == Direction::Outbound {
+                    self.store.queue_remove_message(&record.content_id)?;
+                }
+            }
+            EphemeralConversation::Group(group) => {
+                self.store.delete_group_message_record(
+                    &group,
+                    &record.author,
+                    &record.content_id,
+                )?;
+                if record.author == me {
+                    self.store.queue_remove_group_message(&record.content_id)?;
+                }
+            }
+        }
+        for transfer in &record.transfer_ids {
+            if self.store.get_media_transfer(transfer)?.is_some() {
+                self.store.delete_media_transfer_with_objects(transfer)?;
+            }
+            self.attachment_request_at.remove(transfer);
+        }
+        self.events.push_back(Event::EphemeralRemoved {
+            conversation: record.conversation,
+            author: record.author,
+            content_id: record.content_id,
+            reason: EphemeralState::Consumed,
+        });
+        export
     }
 
     /// Accept an inbound offer. The next eligible tick requests all missing
@@ -845,7 +1118,6 @@ impl Node {
                 rng,
             )?;
         }
-        self.emit_attachment_update(&transfer_id)?;
         Ok(transfer_id)
     }
 
@@ -894,7 +1166,6 @@ impl Node {
                 rng,
             )?;
         }
-        self.emit_attachment_update(&transfer_id)?;
         Ok(transfer_id)
     }
 
@@ -1428,7 +1699,12 @@ impl Node {
             &transfer.peer,
         );
         self.store.put_session(&transfer.peer, session, rng)?;
-        let envelope = Envelope::new(EnvelopeKind::Message, token, ratchet.encode());
+        let envelope = match attachment_ephemeral_retention(&message.body) {
+            Some(deadline) => {
+                Envelope::new_retained(EnvelopeKind::Message, token, deadline, ratchet.encode())?
+            }
+            None => Envelope::new(EnvelopeKind::Message, token, ratchet.encode()),
+        };
         message.wire_id = Some(envelope.content_id());
         self.store.update_message(&message, rng)?;
         self.store.queue_push(
@@ -1561,6 +1837,10 @@ impl Node {
     }
 
     fn attachment_info(&self, transfer: &MediaTransferRecord) -> Result<AttachmentInfo> {
+        let ephemeral = self.store.ephemeral_records()?.into_iter().find(|record| {
+            record.mode == EphemeralMode::ViewOnceAttachment
+                && record.transfer_ids.contains(&transfer.local_id)
+        });
         let objects = self
             .store
             .media_objects_for_transfer(&transfer.local_id)?
@@ -1593,6 +1873,11 @@ impl Node {
             author: transfer.manifest_author,
             content_id: transfer.manifest_content_id,
             state: transfer.state,
+            view_once: ephemeral.is_some(),
+            expires_at: ephemeral.as_ref().map(|record| record.expires_at),
+            consumed: ephemeral
+                .as_ref()
+                .is_some_and(|record| record.state != EphemeralState::Active),
             objects,
         })
     }
@@ -1674,8 +1959,13 @@ impl Node {
             }
             .ok_or(NodeError::UnknownAttachment)?,
         );
-        let DecodedContent::Attachment { manifest, .. } = decode_content(&body) else {
-            return Err(NodeError::InvalidAttachment);
+        let manifest = match decode_content(&body) {
+            DecodedContent::Attachment { manifest, .. }
+            | DecodedContent::Ephemeral {
+                ephemeral: Ephemeral::ViewOnceAttachment { manifest, .. },
+                ..
+            } => manifest,
+            _ => return Err(NodeError::InvalidAttachment),
         };
         Ok(ManifestData {
             attachment_key: manifest.attachment_key,
@@ -1748,6 +2038,19 @@ fn missing_ranges(object: &MediaObjectRecord) -> Vec<MissingRange> {
         });
     }
     ranges
+}
+
+fn attachment_ephemeral_retention(body: &[u8]) -> Option<u64> {
+    match decode_content(body) {
+        DecodedContent::Ephemeral {
+            ephemeral:
+                Ephemeral::ViewOnceAttachment {
+                    retention_until, ..
+                },
+            ..
+        } => Some(retention_until),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

@@ -213,6 +213,16 @@
         <section id="attachment-transfers" aria-label="Attachment transfers" hidden></section>
         <form id="composer" autocomplete="off">
           <input type="text" id="composer-input" data-incognito-input="message" placeholder="Message…" aria-describedby="mention-status" />
+          <label id="expiry-control" class="composer-select">Remove after
+            <select id="composer-expiry" aria-describedby="expiry-honesty">
+              <option value="0">Off</option>
+              <option value="60">1 minute</option>
+              <option value="3600">1 hour</option>
+              <option value="86400">1 day</option>
+              <option value="604800">7 days</option>
+              <option value="2592000">30 days</option>
+            </select>
+          </label>
           <button type="button" id="btn-mention" class="ghost" aria-haspopup="listbox" aria-expanded="false" hidden>Mention member</button>
           <div id="mention-picker" role="listbox" aria-label="Current group members" hidden></div>
           <button type="button" id="btn-record" class="ghost" aria-pressed="false">Record audio</button>
@@ -222,6 +232,7 @@
         </form>
         <div id="mention-tokens" aria-label="Semantic mentions in this draft" hidden></div>
         <p id="mention-status" class="composer-note" role="status" aria-live="polite"></p>
+        <p id="expiry-honesty" class="composer-note" hidden>Removed from this device at the selected time; recipients and other devices may retain copies.</p>
         <p id="recording-status" class="sr-status" role="status" aria-live="polite"></p>
       </div>
     </main>
@@ -272,6 +283,16 @@
     <label>MIME type
       <input type="text" data-f="media-type" data-incognito-input="technical" spellcheck="false" placeholder="application/octet-stream" />
     </label>
+    <label class="check-row"><input type="checkbox" data-f="view-once" /> View once</label>
+    <label data-f="view-once-lifetime" hidden>Remove unopened copy after
+      <select data-f="lifetime">
+        <option value="3600">1 hour</option>
+        <option value="86400" selected>1 day</option>
+        <option value="604800">7 days</option>
+        <option value="2592000">30 days</option>
+      </select>
+    </label>
+    <p class="modal-note warn" data-f="view-once-warning" hidden>Opening is terminal on this installation. The item is removed here before it is shown; recipients, other devices, screenshots, and external applications may retain copies.</p>
     <p class="modal-note warn" data-f="carrier" role="status"></p>
     <p class="error" data-f="error" hidden></p>
     <div class="row split">
@@ -335,6 +356,16 @@
     <label>Display filename
       <input type="text" data-f="filename" data-incognito-input="name" spellcheck="false" />
     </label>
+    <label class="check-row"><input type="checkbox" data-f="view-once" /> View once</label>
+    <label data-f="view-once-lifetime" hidden>Remove unopened copy after
+      <select data-f="lifetime">
+        <option value="3600">1 hour</option>
+        <option value="86400" selected>1 day</option>
+        <option value="604800">7 days</option>
+        <option value="2592000">30 days</option>
+      </select>
+    </label>
+    <p class="modal-note warn" data-f="view-once-warning" hidden>Opening is terminal on this installation. The item is removed here before it is shown; recipients, other devices, screenshots, and external applications may retain copies.</p>
     <p class="modal-note warn" data-f="carrier" role="status"></p>
     <p class="error" data-f="error" hidden></p>
     <div class="row split">

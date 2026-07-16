@@ -33,16 +33,22 @@ COMMANDS:
     contact-rename PEER_HEX [--accept-warnings] NAME...
                                     rename one private local petname; warning review is explicit
     send PEER_HEX TEXT...           queue a message
+    send-disappearing PEER_HEX LIFETIME_SECS TEXT...
+                                    remove locally at deadline; relay hint is hourly
     edit PEER_HEX AUTHOR_HEX CONTENT_ID TEXT...
                                     immutably edit this identity's exact pairwise Text event
     attachment-send PEER_HEX PATH MEDIA_TYPE [FILENAME]
                                     import and queue a pairwise attachment
     attachment-send-preview PEER_HEX PATH MEDIA_TYPE PREVIEW_PATH PREVIEW_MEDIA_TYPE [FILENAME]
                                     import pairwise content plus a sealed preview
+    attachment-send-view-once PEER_HEX LIFETIME_SECS PATH MEDIA_TYPE [FILENAME]
+                                    consume local decryptable source on first open
     group-attachment-send GROUP_HEX PATH MEDIA_TYPE [FILENAME]
                                     import and queue a group attachment
     group-attachment-send-preview GROUP_HEX PATH MEDIA_TYPE PREVIEW_PATH PREVIEW_MEDIA_TYPE [FILENAME]
                                     import group content plus a sealed preview
+    group-attachment-send-view-once GROUP_HEX LIFETIME_SECS PATH MEDIA_TYPE [FILENAME]
+                                    group view-once attachment with fallback deadline
     attachments                     list render-safe attachment transfers
     attachment-accept TRANSFER_HEX  accept an inbound offer
     attachment-reject TRANSFER_HEX  reject an inbound offer
@@ -53,6 +59,8 @@ COMMANDS:
                                     stream a completed object to a new file
     attachment-preview-export TRANSFER_HEX PATH
                                     stream a sealed preview to a new file
+    attachment-consume-view-once TRANSFER_HEX PATH
+                                    terminal first open into a protected new file
     schedule PEER_HEX UNIX_SECS TEXT... schedule pairwise text at a UTC instant
     group-schedule GROUP_HEX UNIX_SECS TEXT... schedule group text
     scheduled                       list scheduled messages
@@ -116,6 +124,8 @@ COMMANDS:
                                     compose folder, label, then pin ordering
     group-create NAME [MEMBER_HEX]... create a sender-key group
     group-send GROUP_HEX TEXT...     queue a group message
+    group-send-disappearing GROUP_HEX LIFETIME_SECS TEXT...
+                                    queue group text with exact local expiry
     group-edit GROUP_HEX AUTHOR_HEX CONTENT_ID TEXT...
                                     immutably edit this identity's exact group Text event
     group-mention-capability GROUP_HEX
@@ -355,6 +365,18 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
             need(2)?;
             json!({ "op": "send", "peer": args[0], "body": args[1..].join(" ") })
         }
+        "send-disappearing" => {
+            need(3)?;
+            let lifetime_secs: u64 = args[1]
+                .parse()
+                .map_err(|_| "send-disappearing: lifetime must be an unsigned integer")?;
+            json!({
+                "op": "send_disappearing",
+                "peer": args[0],
+                "lifetime_secs": lifetime_secs,
+                "body": args[2..].join(" "),
+            })
+        }
         "edit" => {
             need(4)?;
             json!({
@@ -393,6 +415,23 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
                 "filename": args.get(5),
             })
         }
+        "attachment-send-view-once" => {
+            need(4)?;
+            if args.len() > 5 {
+                return Err("attachment-send-view-once: too many arguments".to_owned());
+            }
+            let lifetime_secs: u64 = args[1]
+                .parse()
+                .map_err(|_| "attachment-send-view-once: lifetime must be unsigned")?;
+            json!({
+                "op": "attachment_send_view_once",
+                "peer": args[0],
+                "lifetime_secs": lifetime_secs,
+                "path": args[2],
+                "media_type": args[3],
+                "filename": args.get(4),
+            })
+        }
         "group-attachment-send" => {
             need(3)?;
             if args.len() > 4 {
@@ -419,6 +458,23 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
                 "preview_path": args[3],
                 "preview_media_type": args[4],
                 "filename": args.get(5),
+            })
+        }
+        "group-attachment-send-view-once" => {
+            need(4)?;
+            if args.len() > 5 {
+                return Err("group-attachment-send-view-once: too many arguments".to_owned());
+            }
+            let lifetime_secs: u64 = args[1]
+                .parse()
+                .map_err(|_| "group-attachment-send-view-once: lifetime must be unsigned")?;
+            json!({
+                "op": "group_attachment_send_view_once",
+                "group": args[0],
+                "lifetime_secs": lifetime_secs,
+                "path": args[2],
+                "media_type": args[3],
+                "filename": args.get(4),
             })
         }
         "attachments" => json!({ "op": "attachments" }),
@@ -453,6 +509,17 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
                 "transfer": args[0],
                 "path": args[1],
                 "preview": true,
+            })
+        }
+        "attachment-consume-view-once" => {
+            need(2)?;
+            if args.len() != 2 {
+                return Err("attachment-consume-view-once: expected TRANSFER PATH".to_owned());
+            }
+            json!({
+                "op": "attachment_consume_view_once",
+                "transfer": args[0],
+                "path": args[1],
             })
         }
         "schedule" => {
@@ -861,6 +928,18 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
             need(2)?;
             json!({ "op": "group_send", "group": args[0], "body": args[1..].join(" ") })
         }
+        "group-send-disappearing" => {
+            need(3)?;
+            let lifetime_secs: u64 = args[1]
+                .parse()
+                .map_err(|_| "group-send-disappearing: lifetime must be unsigned")?;
+            json!({
+                "op": "group_send_disappearing",
+                "group": args[0],
+                "lifetime_secs": lifetime_secs,
+                "body": args[2..].join(" "),
+            })
+        }
         "group-edit" => {
             need(4)?;
             json!({
@@ -1153,6 +1232,54 @@ mod tests {
         )
         .unwrap();
         assert_eq!(request["body"], json!("meet there"));
+        assert_eq!(
+            build_request(
+                "send-disappearing",
+                &["04".repeat(32), "3600".to_owned(), "temporary".to_owned()]
+            )
+            .unwrap(),
+            json!({
+                "op": "send_disappearing",
+                "peer": "04".repeat(32),
+                "body": "temporary",
+                "lifetime_secs": 3600,
+            })
+        );
+        assert_eq!(
+            build_request(
+                "group-send-disappearing",
+                &["05".repeat(32), "60".to_owned(), "brief".to_owned()]
+            )
+            .unwrap()["op"],
+            json!("group_send_disappearing")
+        );
+        assert_eq!(
+            build_request(
+                "attachment-send-view-once",
+                &[
+                    "06".repeat(32),
+                    "86400".to_owned(),
+                    "/tmp/once.bin".to_owned(),
+                    "application/octet-stream".to_owned(),
+                    "once.bin".to_owned(),
+                ]
+            )
+            .unwrap()["op"],
+            json!("attachment_send_view_once")
+        );
+        assert_eq!(
+            build_request(
+                "attachment-consume-view-once",
+                &["07".repeat(16), "/tmp/revealed.bin".to_owned()]
+            )
+            .unwrap()["op"],
+            json!("attachment_consume_view_once")
+        );
+        assert!(build_request(
+            "send-disappearing",
+            &["04".repeat(32), "never".to_owned(), "temporary".to_owned()]
+        )
+        .is_err());
         let request = build_request(
             "group-mention-send",
             &[

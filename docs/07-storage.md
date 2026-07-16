@@ -37,6 +37,7 @@ HKDF per-domain keys.
 | `prekeys` | Own signed/PQ/one-time prekey secrets | One-time prekeys deleted on use |
 | `pending` | Inbound envelopes not yet readable (arrived before their session) | Ciphertext only; TTL-bounded |
 | `media` | Attachment blobs, chunked | Each chunk sealed; keys stored in `messages` |
+| `ephemeral` | Exact local deadlines, mode, transfer references, active/terminal lifecycle | Sealed separately; terminal tombstones block resurrection after plaintext/media deletion |
 | `local_metadata` | Conversation types, folders, pins, labels, drafts, UI preferences, custom icons | Local-only; keys and relationships are inside sealed blobs |
 
 Every blob is individually AEAD-sealed (XChaCha20-Poly1305, random 24-byte nonce, table
@@ -46,24 +47,34 @@ approximate sizes; rows can't be transplanted across tables or databases.
 B9 formatting creates no additional durable state. The `messages`,
 `scheduled_messages`, group history, and note-to-self rows retain exact source
 bytes under their existing seals; formatting markers are not rewritten and no
-rendered HTML/attributed text or cache is persisted. `KKR4` therefore carries
+rendered HTML/attributed text or cache is persisted. `KKR5` therefore carries
 the same source it already carried and needs no format or migration change.
 
 C3 edits also add no mutable plaintext projection. Canonical originals and edit
 events remain separate individually sealed pairwise/group history rows; derived
 history hides edit rows and returns the winning text, marker, revision, and
 ordered versions. The winner is rebuilt from authenticated rows after restart or
-restore, including edit-before-original order. `KKR4` already carries those
+restore, including edit-before-original order. `KKR5` carries those
 history rows, so no backup version or migration changes. The node caps locally
 authored edits at 64 per target; it retains every authenticated inbound edit so
 admission order cannot change convergence. See
 [18: Authenticated Message Editing](18-message-editing.md).
 
+C4 keeps lifecycle state separate from history. Every disappearing/view-once id
+is keyed by exact conversation, authenticated author, and content id. The node
+sweeps due rows before receive, scheduled activation, attachment work, or queue
+flush. Expiry/first reveal deletes exact history and queue rows plus every
+associated media object/chunk, then retains only a sealed terminal tombstone.
+Duplicate, delayed, reordered, and expiry-before-original delivery cannot
+rehydrate it. Ordinary export/preview refuses any transfer referenced by a
+view-once row; terminal consume commits the tombstone before the first output
+byte. See [19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
+
 B12 stores only the canonical `system`, `light`, or `dark` bytes under the sealed
 UI-preference key `appearance.theme`. Missing or unknown legacy values render as
 System without a read-time rewrite. The small shell cache used before unlock is
 non-sensitive presentation state; after unlock the sealed F5 value is
-authoritative and is the only value carried by `KKR4` to another device.
+authoritative and is the only value carried by `KKR5` to another device.
 
 ### Protected application transients
 
@@ -153,25 +164,27 @@ trade for this project.)
 
 ## 4. Backup & portability
 
-- **Encrypted backup file**: single-file export (identity + contacts + history +
+- **Encrypted backup file**: single-file export (identity + contacts + ordinary history +
   local organization/drafts/preferences/icons + note-to-self history +
-  session-reset markers), sealed under a key derived from a BIP-39-style
+  terminal ephemeral tombstones + session-reset markers), sealed under a key derived from a BIP-39-style
   mnemonic via Argon2id. `KKR3` added the sealed local metadata domain and
-  `KKR4` adds sealed note-to-self history; older `KKR1`, `KKR2`, and `KKR3`
-  files remain restorable. Restoring on a new
+  `KKR4` added sealed note-to-self history; current `KKR5` adds terminal
+  ephemeral tombstones while excluding every active ephemeral history row,
+  manifest, transfer, and media chunk. Older `KKR1` through `KKR4` files remain
+  restorable. Restoring on a new
   device resumes identity; sessions re-handshake (ratchet states are deliberately *not*
   portable, importing stale ratchet state is a correctness and security hazard). Format
   and mechanism: ADR-0011.
-- **B18 label backup behavior**: `KKR4` preserves exact label IDs, names, color
+- **B18 label backup behavior**: `KKR5` preserves exact label IDs, names, color
   tokens, insertion order, assignments, and stale-reference behavior. Labels
   have no independent cloud, server, or linked-device synchronization path.
-- **B10 folder backup behavior**: `KKR4` preserves exact folder IDs, names,
+- **B10 folder backup behavior**: `KKR5` preserves exact folder IDs, names,
   manual order, single-membership assignments, and stale-reference behavior.
   Folders have no independent cloud, server, or linked-device synchronization.
-- **B11 pin backup behavior**: `KKR4` preserves exact typed targets, durable
+- **B11 pin backup behavior**: `KKR5` preserves exact typed targets, durable
   order, and stale/reactivation behavior. Pins have no independent cloud,
   server, or linked-device synchronization path.
-- **B13 custom-icon backup behavior**: `KKR4` preserves each canonical sealed
+- **B13 custom-icon backup behavior**: `KKR5` preserves each canonical sealed
   PNG under its exact typed contact/group/folder/note-to-self target. Restore
   reuses the same strict read verification and generated-initials fallback.
   Icons have no avatar URL, cloud, server, peer, or linked-device synchronization
@@ -184,6 +197,10 @@ trade for this project.)
   with ordinary sealed history. Restore recomputes the authorized deterministic
   winner and prior-version list; it never imports a mutable current-body cache
   or discards stale losing revisions.
+- **C4 ephemeral backup behavior**: no live disappearing plaintext, view-once
+  manifest, or associated media enters KKR5. Terminal tombstones do, so restore
+  cannot resurrect a removed content id. Active ephemeral content is
+  intentionally non-portable and there is no remote-erasure claim.
 - **Plaintext export**: JSON-lines + media directory, clearly warned as plaintext.
   The user's data is the user's.
 - **Panic wipe** (roadmap M6): duress passphrase unlocking a decoy profile while

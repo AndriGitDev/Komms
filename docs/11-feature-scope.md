@@ -48,7 +48,7 @@ status and prerequisites are tracked in the delivery plan.
   work. An optional signed self-display name may later be advertised as a
   non-unique suggestion, but it is not implemented and could never silently
   override the recipient's petname.
-- **Secure backups.** Shipped: the `KKR4` mnemonic-sealed backup (Argon2id under a
+- **Secure backups.** Shipped: the `KKR5` mnemonic-sealed backup (Argon2id under a
   24-word BIP-39 phrase, ADR-0011/ADR-0012), including sealed local metadata and
   note-to-self history; `KKR1`/`KKR2`/`KKR3` remain restorable. Stored locally or
   moved by sneakernet; no cloud.
@@ -75,7 +75,7 @@ status and prerequisites are tracked in the delivery plan.
   manual order, idempotent append/unpin, complete-set reorder including stale
   targets, deterministic activity tie-breaking, cleanup, and reactivation stay
   local. Folder selection and label filtering precede one leading pinned block.
-  The limit is 8,192, `KKR4` is the only portability path, and every operation
+  The limit is 8,192, `KKR5` is the only portability path, and every operation
   creates zero network, notification, crypto, or transport work. Message pins
   remain a separate design because they require stable message references.
 - **Dark mode.** Shipped as the exact `system` / `light` / `dark` preference
@@ -84,7 +84,7 @@ status and prerequisites are tracked in the delivery plan.
   changes live; desktop uses semantic CSS roles, Android uses DayNight resources,
   and iOS uses adaptive system colors. Reference palettes meet WCAG normal-text
   contrast, high-contrast and reduced-motion behavior remains native, and color
-  is never the only security or delivery signal. `KKR4` is the authoritative
+  is never the only security or delivery signal. `KKR5` is the authoritative
   portability path; a small non-sensitive device cache exists only to style the
   pre-unlock gate without a flash.
 - **Custom icons.** Shipped for contacts, groups, folders, and note-to-self over
@@ -93,7 +93,7 @@ status and prerequisites are tracked in the delivery plan.
   metadata-free 256×256 RGBA PNGs after orientation normalization and square
   crop. Animated/decompression-heavy inputs fail closed. Limits are 512 KiB per
   icon, 1,024 records, and 64 MiB aggregate; reads safely fall back after corrupt
-  or legacy non-canonical bytes. `KKR4` is the only portability path. Icons never
+  or legacy non-canonical bytes. `KKR5` is the only portability path. Icons never
   enter avatar URLs, peer sync, envelopes, capabilities, queues, notifications,
   DHT state, or transport work.
 - **Screen security.** Shipped as an always-on pre-unlock policy. The shared
@@ -132,7 +132,7 @@ status and prerequisites are tracked in the delivery plan.
   managers, non-color badges, assignment actions, stale-record cleanup, and
   deterministic match-any/match-all filters are local presentation only. Limits
   are 128 live labels, 8,192 assignments, 32 labels per conversation, and 256
-  UTF-8 bytes per name. `KKR4` preserves exact identity, ordering, membership,
+  UTF-8 bytes per name. `KKR5` preserves exact identity, ordering, membership,
   and stale behavior. Labels do not affect messages, delivery, search, unread
   truth, notifications, or transports and do not sync remotely. Message labels,
   shared tags, and linked-device label sync remain separate work; B11
@@ -144,7 +144,7 @@ status and prerequisites are tracked in the delivery plan.
   never display-name inference. Create, rename, complete-set reorder, move,
   unfile, deletion review/cascade, and stale cleanup are atomic local operations.
   Folder selection runs before the independent B18 any/all label filter. Limits
-  are 128 folders, 8,192 assignments, and 256 UTF-8 bytes per name. `KKR4`
+  are 128 folders, 8,192 assignments, and 256 UTF-8 bytes per name. `KKR5`
   preserves exact identity, order, membership, and stale behavior. Folders do
   not affect messages, delivery, search, unread truth, notifications, transports,
   or remote state and are not synchronized between devices.
@@ -174,11 +174,14 @@ and degrade honestly, exactly as the delivery ladder already does.
   and complete current-group capability are required before send; legacy text,
   attachments, mentions, and other edits remain non-editable. Editing is not
   erasure. See [18: Authenticated Message Editing](18-message-editing.md).
-- **Disappearing messages / view-once media.** Client-side expiry is easy; the
-  hard part is enforcing deletion across mailbox stores and mesh relays that hold
-  sealed copies. Network retention needs a bounded relay-visible deletion hint,
-  cryptographically bound to the encrypted content, because an intermediary
-  cannot act on an expiry value visible only after decryption.
+- **Disappearing messages / view-once media.** Shipped for pairwise and groups
+  through every front door and shell. Exact authenticated local deadlines,
+  terminal sealed tombstones, KKR5 plaintext/media exclusion, and first-output
+  view-once consumption compose with a coarse hour-aligned envelope-v2 deletion
+  hint for mailboxes/bridges. The promise is local to each installation: relays
+  and recipients may retain copies, and Komms does not promise remote erasure or
+  screenshot prevention. See
+  [19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
 - **Group polls.** Feasible as structured payload broadcast over the shipped
   sender-key groups (ADR-0012), with authenticated idempotent vote events and a
   deterministic tally that converges after delayed or reordered delivery.

@@ -102,6 +102,21 @@ private struct MessageEditParityFixture: Decodable {
     }
 }
 
+private struct EphemeralParityFixture: Decodable {
+    let schema: String
+    let contentKind: UInt8
+    let textLifetimes: [UInt64]
+
+    static func load() throws -> Self {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let data = try Data(contentsOf: root.appendingPathComponent("fixtures/c4-ephemeral-parity.json"))
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(Self.self, from: data)
+    }
+}
+
 private func fileKindName(_ kind: AttachmentFileKind) -> String {
     switch kind {
     case .image: "image"
@@ -567,6 +582,24 @@ final class SessionE2eTests: XCTestCase {
         return dir
     }
 
+    func testIOSEphemeralControlsMatchSharedContract() throws {
+        let fixture = try EphemeralParityFixture.load()
+        XCTAssertEqual("komms-c4-ephemeral-parity-v1", fixture.schema)
+        XCTAssertEqual(5, fixture.contentKind)
+        XCTAssertEqual([60, 3_600, 86_400, 604_800, 2_592_000], fixture.textLifetimes)
+
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let app = root.appendingPathComponent("apps/ios/KommsApp/Sources")
+        let source = try ["AppModel.swift", "ChatView.swift", "GroupChatView.swift", "AttachmentView.swift"]
+            .map { try String(contentsOf: app.appendingPathComponent($0), encoding: .utf8) }
+            .joined(separator: "\n")
+        XCTAssertTrue(source.contains("sendDisappearing"))
+        XCTAssertTrue(source.contains("sendGroupDisappearing"))
+        XCTAssertTrue(source.contains("consumeViewOnceAttachment"))
+        XCTAssertTrue(source.contains("!attachment.viewOnce"))
+    }
+
     func testPrivateThemeDefaultsPersistsRestartsAndEmitsOneLocalEvent() throws {
         let fixture = try ThemeParityFixture.load()
         XCTAssertEqual("appearance.theme", fixture.preferenceKey)
@@ -668,7 +701,7 @@ final class SessionE2eTests: XCTestCase {
         let formattedSource = "**hello** from iOS ![pixel](https://invalid.test/p.png)"
         let msgId = try alice.send(peer: bobPeer, body: formattedSource)
         let got = try bEv.wait("bob's message event") { event -> (peer: String, body: String)? in
-            if case let .messageReceived(peer, _, _, body, _) = event { return (peer, body) }
+            if case let .messageReceived(peer, _, _, body, _, _) = event { return (peer, body) }
             return nil
         }
         XCTAssertEqual(alicePeer, got.peer)
@@ -698,7 +731,7 @@ final class SessionE2eTests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.3)
         let editable = try alice.send(peer: bobPeer, body: "iOS edit original")
         _ = try bEv.wait("Bob's canonical iOS Text") { event -> Void? in
-            if case let .messageReceived(_, id, _, _, kind) = event,
+            if case let .messageReceived(_, id, _, _, kind, _) = event,
                id == editable, kind == .text { return () }
             return nil
         }
@@ -999,7 +1032,7 @@ final class SessionE2eTests: XCTestCase {
         let capabilityProbe = try alice.send(
             peer: bobPeer, body: "attachment capability handshake")
         _ = try bEv.wait("attachment capability handshake") { event -> Void? in
-            if case let .messageReceived(peer, _, _, body, _) = event,
+            if case let .messageReceived(peer, _, _, body, _, _) = event,
                peer == aliceAtBob, body == "attachment capability handshake" {
                 return ()
             }
@@ -1068,7 +1101,7 @@ final class SessionE2eTests: XCTestCase {
         // history exposes one truthful state per recipient.
         let first = try alice.sendGroup(group: group, body: "Meet at the north trailhead")
         _ = try bEv.wait("Bob's group message") { event -> Void? in
-            if case let .groupMessageReceived(receivedGroup, _, _, _, body, _, _) = event,
+            if case let .groupMessageReceived(receivedGroup, _, _, _, body, _, _, _) = event,
                receivedGroup == group, body == "Meet at the north trailhead" {
                 return ()
             }
@@ -1106,7 +1139,7 @@ final class SessionE2eTests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.3)
         let editable = try alice.sendGroup(group: group, body: "iOS group edit original")
         _ = try bEv.wait("Bob's editable iOS group Text") { event -> Void? in
-            if case let .groupMessageReceived(_, _, id, _, _, kind, _) = event,
+            if case let .groupMessageReceived(_, _, id, _, _, kind, _, _) = event,
                id == editable, kind == .text { return () }
             return nil
         }
@@ -1172,7 +1205,7 @@ final class SessionE2eTests: XCTestCase {
 
         let handshake = try alice.send(peer: bobPeer, body: "mention capability handshake")
         _ = try bEv.wait("mention capability handshake") { event -> Void? in
-            if case let .messageReceived(peer, _, _, body, _) = event,
+            if case let .messageReceived(peer, _, _, body, _, _) = event,
                peer == aliceAtBob, body == "mention capability handshake" { return () }
             return nil
         }
@@ -1218,7 +1251,7 @@ final class SessionE2eTests: XCTestCase {
             id: String, spans: [MentionSpan]
         )? in
             if case let .groupMessageReceived(
-                receivedGroup, _, id, _, body, kind, spans
+                receivedGroup, _, id, _, body, kind, _, spans
             ) = event,
                id == mentionId, receivedGroup == group, body == text, kind == .mention {
                 return (id, spans)
@@ -1239,7 +1272,7 @@ final class SessionE2eTests: XCTestCase {
 
         let plainId = try alice.sendGroup(group: group, body: text)
         _ = try bEv.wait("plain fallback") { event -> Void? in
-            if case let .groupMessageReceived(_, _, id, _, body, kind, spans) = event,
+            if case let .groupMessageReceived(_, _, id, _, body, kind, _, spans) = event,
                id == plainId, body == text, kind == .text, spans.isEmpty { return () }
             return nil
         }
@@ -1326,7 +1359,7 @@ final class SessionE2eTests: XCTestCase {
         try bob.setHints(peer: alicePeer, hints: multiaddrHint(try listenAddr(alice)))
         _ = try bob.send(peer: alicePeer, body: "glad you're back")
         let got = try aEv.wait("alice's message event") { event -> String? in
-            if case let .messageReceived(_, _, _, body, _) = event { return body }
+            if case let .messageReceived(_, _, _, body, _, _) = event { return body }
             return nil
         }
         XCTAssertEqual("glad you're back", got)

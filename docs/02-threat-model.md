@@ -172,6 +172,17 @@ may retain, copy, capture, or export any prior version, and the UI never describ
 editing as remote deletion. Exact limits are in
 [18: Authenticated Message Editing](18-message-editing.md).
 
+C4 ephemeral content narrows local retention; it does not create remote
+deletion authority. Exact deadlines and first-open state are authenticated and
+sealed per installation, and terminal tombstones prevent delayed ciphertext or
+backup restore from rehydrating removed plaintext. KKR5 excludes live ephemeral
+history/manifests/media. Envelope carriers learn one hour-aligned deletion
+bucket and may delete early, ignore the hint, or retain copied ciphertext;
+recipients and compromised endpoints may capture plaintext. View once blocks
+Komms's ordinary preview/export/playback paths but is not DRM or universal
+screenshot prevention. See
+[19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
+
 Private folders, conversation pins, and labels are endpoint organization, never
 communications metadata. Their definitions, single-folder assignments,
 exact typed peer/group/note-to-self pins, and many-to-many label memberships
@@ -180,7 +191,7 @@ folder/label view preferences remain device-local. An organization operation
 creates no envelope, mailbox, mesh, sneakernet,
 LAN, internet, DHT, capability, sender-key, ratchet, delivery-token, analytics,
 or remote-notification work. A copied SQLite database reveals only the already
-accepted row count and approximate sealed blob sizes. `KKR4` is the only folder,
+accepted row count and approximate sealed blob sizes. `KKR5` is the only folder,
 pin, or label portability mechanism: none has server or linked-device
 synchronization. Once rendered on an unlocked endpoint, organization text has
 the same bounded A7 exposure as the rest of the user's visible local data.

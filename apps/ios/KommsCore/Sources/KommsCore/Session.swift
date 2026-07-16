@@ -164,6 +164,11 @@ public final class Session: @unchecked Sendable {
         try node.send(peer: peer, body: body)
     }
 
+    /// Queue pairwise text with an authenticated exact local deadline.
+    public func sendDisappearing(peer: String, body: String, lifetimeSeconds: UInt64) throws -> String {
+        try node.sendDisappearing(peer: peer, body: body, lifetimeSecs: lifetimeSeconds)
+    }
+
     /// Queue an immutable edit for this identity's exact pairwise Text event.
     public func editMessage(
         peer: String,
@@ -202,6 +207,17 @@ public final class Session: @unchecked Sendable {
             previewPath: preview.path, previewMediaType: "image/jpeg")
     }
 
+    /// Import a pairwise attachment whose first local reveal is terminal.
+    public func sendViewOnceAttachment(
+        peer: String, path: URL, mediaType: String, filename: String?,
+        preview: URL? = nil, lifetimeSeconds: UInt64
+    ) throws -> String {
+        try node.sendViewOnceAttachment(
+            peer: peer, path: path.path, mediaType: mediaType, filename: filename,
+            previewPath: preview?.path, previewMediaType: preview == nil ? nil : "image/jpeg",
+            lifetimeSecs: lifetimeSeconds)
+    }
+
     /// Import one app-private path as an encrypt-once group attachment.
     public func sendGroupAttachment(
         group: String,
@@ -224,6 +240,17 @@ public final class Session: @unchecked Sendable {
         try node.sendGroupAttachmentWithPreview(
             group: group, path: path.path, mediaType: mediaType, filename: filename,
             previewPath: preview.path, previewMediaType: "image/jpeg")
+    }
+
+    /// Import a group attachment whose first local reveal is terminal.
+    public func sendGroupViewOnceAttachment(
+        group: String, path: URL, mediaType: String, filename: String?,
+        preview: URL? = nil, lifetimeSeconds: UInt64
+    ) throws -> String {
+        try node.sendGroupViewOnceAttachment(
+            group: group, path: path.path, mediaType: mediaType, filename: filename,
+            previewPath: preview?.path, previewMediaType: preview == nil ? nil : "image/jpeg",
+            lifetimeSecs: lifetimeSeconds)
     }
 
     /// Every supported transfer as render-safe state.
@@ -257,6 +284,11 @@ public final class Session: @unchecked Sendable {
     /// Stream a completed primary object to a protected, new app-private path.
     public func exportAttachment(transfer: String, to path: URL) throws {
         try node.exportAttachment(transfer: transfer, path: path.path)
+    }
+
+    /// Terminal first reveal of view-once media into a protected new path.
+    public func consumeViewOnceAttachment(transfer: String, to path: URL) throws {
+        try node.consumeViewOnceAttachment(transfer: transfer, path: path.path)
     }
 
     /// Decrypt a sealed preview into a protected app-private path.
@@ -603,6 +635,13 @@ public final class Session: @unchecked Sendable {
     /// Queue a group message; progress is reported independently per member.
     public func sendGroup(group: String, body: String) throws -> String {
         try node.sendGroup(group: group, body: body)
+    }
+
+    /// Queue group text with an authenticated exact local deadline.
+    public func sendGroupDisappearing(
+        group: String, body: String, lifetimeSeconds: UInt64
+    ) throws -> String {
+        try node.sendGroupDisappearing(group: group, body: body, lifetimeSecs: lifetimeSeconds)
     }
 
     /// Queue an immutable edit for this identity's exact group Text event.

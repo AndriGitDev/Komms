@@ -258,7 +258,13 @@ impl BridgeBuffer {
         }
     }
 
-    fn push(&mut self, envelope: Envelope, encoded_len: usize) -> bool {
+    fn push(&mut self, envelope: Envelope, encoded_len: usize, now: u64) -> bool {
+        if envelope
+            .retention_until
+            .is_some_and(|deadline| deadline <= now)
+        {
+            return true;
+        }
         if encoded_len > BRIDGE_DEPOSIT_MAX_BYTES
             || self.queue.len() >= BRIDGE_BUFFER_MAX_ITEMS
             || self.bytes + encoded_len > BRIDGE_BUFFER_MAX_BYTES
@@ -1086,7 +1092,7 @@ async fn run_swarm(
                                                     buffer
                                                         .lock()
                                                         .expect("lock")
-                                                        .push(env, envelope.len())
+                                                        .push(env, envelope.len(), now)
                                                 })
                                             }
                                         }

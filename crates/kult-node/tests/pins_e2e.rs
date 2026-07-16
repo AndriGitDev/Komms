@@ -171,7 +171,7 @@ fn typed_pin_order_folder_label_composition_restart_and_zero_network_work() {
 }
 
 #[test]
-fn stale_pin_reactivation_cleanup_errors_and_kkr4_round_trip_are_honest() {
+fn stale_pin_reactivation_cleanup_errors_and_kkr5_round_trip_are_honest() {
     let mut rng = StdRng::seed_from_u64(0xb1102);
     let directory = tempfile::tempdir().unwrap();
     let (mut node, _peer, group) = node_with_contact_and_group(directory.path(), &mut rng);
@@ -192,7 +192,7 @@ fn stale_pin_reactivation_cleanup_errors_and_kkr4_round_trip_are_honest() {
     ));
 
     let (backup, mnemonic) = node.export_backup(NOW + 2, &mut rng).unwrap();
-    assert_eq!(&backup[..4], b"KKR4");
+    assert_eq!(&backup[..4], b"KKR5");
     let mut restored = Node::restore(
         &directory.path().join("restored.db"),
         &backup,

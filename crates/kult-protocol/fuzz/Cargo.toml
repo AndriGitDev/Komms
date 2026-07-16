@@ -82,5 +82,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "ephemeral_decode"
+path = "fuzz_targets/ephemeral_decode.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

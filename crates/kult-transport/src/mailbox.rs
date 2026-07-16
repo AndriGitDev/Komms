@@ -15,6 +15,8 @@
 
 use std::collections::HashMap;
 
+use kult_protocol::Envelope;
+
 /// Resource limits and retention for a node's mailbox service. Relays are
 /// volunteer nodes, so every axis is capped; a deposit beyond a cap is
 /// refused, which the sender's delivery engine surfaces as a failed send and
@@ -162,16 +164,24 @@ impl MailboxStore {
         if queue.iter().any(|q| q.bytes == bytes) {
             return true;
         }
+        let policy_expiry = now.saturating_add(self.config.envelope_ttl_secs);
+        let expires_at = Envelope::decode(&bytes)
+            .ok()
+            .and_then(|envelope| envelope.retention_until)
+            .map_or(policy_expiry, |hint| hint.min(policy_expiry));
+        // The hint is a deletion instruction, not sender authentication.
+        // Treat an already-expired valid deposit as accepted-and-discarded
+        // so retries cannot keep it alive at another relay.
+        if expires_at <= now {
+            return true;
+        }
         if queue.len() >= self.config.max_per_token
             || self.total_bytes + bytes.len() > self.config.max_total_bytes
         {
             return false;
         }
         self.total_bytes += bytes.len();
-        queue.push(QueuedEnvelope {
-            expires_at: now + self.config.envelope_ttl_secs,
-            bytes,
-        });
+        queue.push(QueuedEnvelope { expires_at, bytes });
         true
     }
 
@@ -273,6 +283,34 @@ mod tests {
         // Registration TTL passes without a refresh: deposits refused again.
         assert!(!s.deposit([1; 32], vec![9], NOW + 1_500));
         assert_eq!(s.total_bytes, 0, "expiry returned every byte");
+    }
+
+    #[test]
+    fn v2_hint_shortens_but_never_extends_relay_policy() {
+        let mut s = store();
+        let token = [9; 32];
+        s.checkin(&[token], NOW);
+        let early = Envelope::new_retained(
+            kult_protocol::EnvelopeKind::Message,
+            token,
+            NOW - (NOW % 3_600) + 3_600,
+            vec![1],
+        )
+        .unwrap()
+        .encode();
+        assert!(s.deposit(token, early, NOW));
+        assert!(s.checkin(&[token], NOW + 3_601).is_empty());
+
+        let late = Envelope::new_retained(
+            kult_protocol::EnvelopeKind::Message,
+            token,
+            NOW - (NOW % 3_600) + 36_000,
+            vec![2],
+        )
+        .unwrap()
+        .encode();
+        assert!(s.deposit(token, late, NOW));
+        assert!(s.checkin(&[token], NOW + 101).is_empty());
     }
 
     #[test]

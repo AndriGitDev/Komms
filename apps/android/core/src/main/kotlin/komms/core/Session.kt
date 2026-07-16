@@ -217,6 +217,10 @@ class Session private constructor(private val node: KultNode) {
     /** Queue a message; returns its id (progress arrives as events). */
     fun send(peer: String, body: String): String = node.send(peer, body)
 
+    /** Queue pairwise text with an authenticated exact local deadline. */
+    fun sendDisappearing(peer: String, body: String, lifetimeSeconds: ULong): String =
+        node.sendDisappearing(peer, body, lifetimeSeconds)
+
     /** Queue an immutable edit for this identity's exact pairwise Text event. */
     fun editMessage(
         peer: String,
@@ -248,6 +252,19 @@ class Session private constructor(private val node: KultNode) {
         peer, path.absolutePath, mediaType, filename, preview.absolutePath, "image/jpeg",
     )
 
+    /** Import pairwise media whose first local reveal is terminal. */
+    fun sendViewOnceAttachment(
+        peer: String,
+        path: File,
+        mediaType: String,
+        filename: String?,
+        preview: File? = null,
+        lifetimeSeconds: ULong,
+    ): String = node.sendViewOnceAttachment(
+        peer, path.absolutePath, mediaType, filename,
+        preview?.absolutePath, preview?.let { "image/jpeg" }, lifetimeSeconds,
+    )
+
     /** Import one app-private path as an encrypt-once group attachment. */
     fun sendGroupAttachment(
         group: String,
@@ -265,6 +282,19 @@ class Session private constructor(private val node: KultNode) {
         preview: File,
     ): String = node.sendGroupAttachmentWithPreview(
         group, path.absolutePath, mediaType, filename, preview.absolutePath, "image/jpeg",
+    )
+
+    /** Import group media whose first local reveal is terminal. */
+    fun sendGroupViewOnceAttachment(
+        group: String,
+        path: File,
+        mediaType: String,
+        filename: String?,
+        preview: File? = null,
+        lifetimeSeconds: ULong,
+    ): String = node.sendGroupViewOnceAttachment(
+        group, path.absolutePath, mediaType, filename,
+        preview?.absolutePath, preview?.let { "image/jpeg" }, lifetimeSeconds,
     )
 
     /** Every supported transfer as render-safe state. */
@@ -291,6 +321,10 @@ class Session private constructor(private val node: KultNode) {
      */
     fun exportAttachment(transfer: String, path: File) =
         node.exportAttachment(transfer, path.absolutePath)
+
+    /** Terminally consume view-once media into a protected new path. */
+    fun consumeViewOnceAttachment(transfer: String, path: File) =
+        node.consumeViewOnceAttachment(transfer, path.absolutePath)
 
     /** Decrypt a sealed preview into a protected app-private path. */
     fun exportAttachmentPreview(transfer: String, path: File) =
@@ -564,6 +598,10 @@ class Session private constructor(private val node: KultNode) {
 
     /** Queue a group message; progress is reported independently per member. */
     fun sendGroup(group: String, body: String): String = node.sendGroup(group, body)
+
+    /** Queue group text with an authenticated exact local deadline. */
+    fun sendGroupDisappearing(group: String, body: String, lifetimeSeconds: ULong): String =
+        node.sendGroupDisappearing(group, body, lifetimeSeconds)
 
     /** Queue an immutable edit for this identity's exact group Text event. */
     fun editGroupMessage(

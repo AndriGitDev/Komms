@@ -59,6 +59,8 @@ class ChatActivity : SecureActivity() {
             is Event.AttachmentUpdated ->
                 ::attachmentController.isInitialized &&
                     attachmentController.isRelevant(event.attachment)
+            is Event.EphemeralRemoved ->
+                event.conversationKind == "pairwise" && event.conversationId == peer
             else -> false
         }
         if (relevant) runOnUiThread { refresh() }
@@ -92,8 +94,12 @@ class ChatActivity : SecureActivity() {
             belongsHere = {
                 it.conversation == AttachmentConversation.PAIRWISE && it.peer == peer
             },
-            send = { session, path, mediaType, filename, preview ->
-                if (preview == null) {
+            send = { session, path, mediaType, filename, preview, viewOnce, lifetime ->
+                if (viewOnce) {
+                    session.sendViewOnceAttachment(
+                        peer, path, mediaType, filename, preview, lifetime,
+                    )
+                } else if (preview == null) {
                     session.sendAttachment(peer, path, mediaType, filename)
                 } else {
                     session.sendAttachmentWithPreview(peer, path, mediaType, filename, preview)
@@ -106,6 +112,7 @@ class ChatActivity : SecureActivity() {
         )
 
         val input = findViewById<EditText>(R.id.chat_input)
+        configureEphemeralComposer()
         findViewById<android.widget.Button>(R.id.chat_schedule).setOnClickListener {
             schedule(input, null)
         }
@@ -113,7 +120,11 @@ class ChatActivity : SecureActivity() {
             val body = input.text.toString()
             if (body.isEmpty()) return@setOnClickListener
             val session = NodeHolder.session ?: return@setOnClickListener
-            runNode(work = { session.send(peer, body) }) {
+            val lifetime = selectedEphemeralLifetime()
+            runNode(work = {
+                if (lifetime == null) session.send(peer, body)
+                else session.sendDisappearing(peer, body, lifetime)
+            }) {
                 input.text.clear()
                 refresh()
             }
@@ -275,7 +286,10 @@ private class MessagesAdapter(
     class Holder(view: android.view.View) : RecyclerView.ViewHolder(view)
 
     fun submit(list: List<RenderedMessage<Message>>) {
-        items = list.filter { it.value.contentKind != ContentKind.ATTACHMENT }
+        items = list.filter {
+            it.value.contentKind != ContentKind.ATTACHMENT &&
+                it.value.contentKind != ContentKind.VIEW_ONCE_ATTACHMENT
+        }
         notifyDataSetChanged()
     }
 
@@ -314,6 +328,13 @@ private class MessagesAdapter(
             if (message.edited) {
                 append(" · ")
                 append(context.getString(R.string.message_edited_revision, message.editRevision.toString()))
+            }
+            if (message.contentKind == ContentKind.DISAPPEARING_TEXT && message.expiresAt != null) {
+                append(" · removes ")
+                append(
+                    DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+                        .format(Date(message.expiresAt!!.toLong() * 1000)),
+                )
             }
         }
         holder.itemView.findViewById<Button>(R.id.message_edit).apply {

@@ -245,7 +245,8 @@ final class AppModel: ObservableObject {
              .noteToSelfMessageAdded,
              .carrierCapabilityChanged,
              .groupUpdated, .groupMessageReceived, .groupMessageEdited, .groupDeliveryUpdated,
-             .attachmentUpdated, .foldersChanged, .labelsChanged, .pinsChanged:
+             .attachmentUpdated, .ephemeralRemoved,
+             .foldersChanged, .labelsChanged, .pinsChanged:
             Task { await refresh() }
         case .mentionReceived:
             notices.append("You were mentioned in a group.")
@@ -537,6 +538,15 @@ final class AppModel: ObservableObject {
         await refresh()
     }
 
+    func sendDisappearing(peer: String, body: String, lifetimeSeconds: UInt64) async throws {
+        guard let session else { return }
+        _ = try await run {
+            try session.sendDisappearing(
+                peer: peer, body: body, lifetimeSeconds: lifetimeSeconds)
+        }
+        await refresh()
+    }
+
     func editMessage(peer: String, targetContentId: String, text: String) async throws {
         guard let session, let targetAuthor = status?.peer else {
             throw InputError("node is locked")
@@ -633,7 +643,9 @@ final class AppModel: ObservableObject {
     func sendPreparedAttachment(
         destination: AttachmentDestination,
         prepared: PreparedAttachment,
-        expectedCarrier: String
+        expectedCarrier: String,
+        viewOnce: Bool = false,
+        lifetimeSeconds: UInt64 = 86_400
     ) async throws {
         guard let session else { throw InputError("node is locked") }
         _ = try await run {
@@ -648,20 +660,40 @@ final class AppModel: ObservableObject {
             }
             switch (destination, prepared.kind) {
             case (.peer(let peer), .generic(let file)):
+                if viewOnce {
+                    return try session.sendViewOnceAttachment(
+                        peer: peer, path: file.staged, mediaType: file.mediaType,
+                        filename: file.filename, lifetimeSeconds: lifetimeSeconds)
+                }
                 return try session.sendAttachment(
                     peer: peer, path: file.staged, mediaType: file.mediaType,
                     filename: file.filename)
             case (.group(let group), .generic(let file)):
+                if viewOnce {
+                    return try session.sendGroupViewOnceAttachment(
+                        group: group, path: file.staged, mediaType: file.mediaType,
+                        filename: file.filename, lifetimeSeconds: lifetimeSeconds)
+                }
                 return try session.sendGroupAttachment(
                     group: group, path: file.staged, mediaType: file.mediaType,
                     filename: file.filename)
             case (.peer(let peer), .image(let image)):
                 _ = try session.probeImage(image.finalAsset)
+                if viewOnce {
+                    return try session.sendViewOnceAttachment(
+                        peer: peer, path: image.finalAsset, mediaType: "image/png",
+                        filename: image.filename, lifetimeSeconds: lifetimeSeconds)
+                }
                 return try session.sendAttachment(
                     peer: peer, path: image.finalAsset, mediaType: "image/png",
                     filename: image.filename)
             case (.group(let group), .image(let image)):
                 _ = try session.probeImage(image.finalAsset)
+                if viewOnce {
+                    return try session.sendGroupViewOnceAttachment(
+                        group: group, path: image.finalAsset, mediaType: "image/png",
+                        filename: image.filename, lifetimeSeconds: lifetimeSeconds)
+                }
                 return try session.sendGroupAttachment(
                     group: group, path: image.finalAsset, mediaType: "image/png",
                     filename: image.filename)
@@ -707,6 +739,29 @@ final class AppModel: ObservableObject {
                 try session.exportAttachment(transfer: transfer, to: destination)
                 try protectTransient(destination)
             }
+            return destination
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw error
+        }
+    }
+
+    /// Terminally consume view-once media into a protected app-private URL.
+    func prepareViewOnceReveal(transfer: String, filename: String?) async throws -> URL {
+        guard let session else { throw InputError("node is locked") }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("komms-view-once-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try protectTransient(directory)
+        let basename = URL(fileURLWithPath: filename ?? "view-once-attachment").lastPathComponent
+        let destination = directory.appendingPathComponent(
+            basename.isEmpty ? "view-once-attachment" : basename, isDirectory: false)
+        do {
+            try await run {
+                try session.consumeViewOnceAttachment(transfer: transfer, to: destination)
+                try protectTransient(destination)
+            }
+            await refresh()
             return destination
         } catch {
             try? FileManager.default.removeItem(at: directory)
@@ -895,6 +950,17 @@ final class AppModel: ObservableObject {
     func sendGroup(group: String, body: String) async throws {
         guard let session else { return }
         _ = try await run { try session.sendGroup(group: group, body: body) }
+        await refresh()
+    }
+
+    func sendGroupDisappearing(
+        group: String, body: String, lifetimeSeconds: UInt64
+    ) async throws {
+        guard let session else { return }
+        _ = try await run {
+            try session.sendGroupDisappearing(
+                group: group, body: body, lifetimeSeconds: lifetimeSeconds)
+        }
         await refresh()
     }
 

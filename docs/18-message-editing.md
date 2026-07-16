@@ -67,7 +67,7 @@ revision zero. This gives the same result for:
 - duplicate delivery;
 - stale revisions arriving late;
 - two same-revision edits minted by future linked devices;
-- restart and `KKR4` backup/restore; and
+- restart and `KKR5` backup/restore; and
 - different carrier paths delivering records in different orders.
 
 The random id is only a deterministic tie-breaker; it does not claim causal or
@@ -80,7 +80,7 @@ so would make endpoints disagree.
 
 The existing sealed pairwise/group history rows retain exact originals and edit
 events. No plaintext `current_body` column, mutable source row, or new backup
-format exists. `KKR4` carries those sealed history records unchanged and the
+format exists. `KKR5` carries those sealed history records unchanged and the
 derived winner is rebuilt after open or restore. A copied database continues to
 leak only the already accepted sealed-row count and approximate sizes.
 

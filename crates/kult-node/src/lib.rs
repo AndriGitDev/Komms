@@ -44,15 +44,18 @@ use kult_crypto::{
     InitialMessage, KdfProfile, PrekeyBundle, RatchetMessage, SafetyNumber,
 };
 use kult_protocol::{
-    decode_content, delivery_token, encode_edit, encode_text, epoch_day, fragment, intro_token,
-    is_capability_control, pad, unpad, CapabilityControl, DecodedContent, Edit, Envelope,
-    EnvelopeKind, FormatCapabilities, MailboxKey, Reassembler, ReceiptPayload, CONTENT_FORMAT_V1,
-    CONTENT_KIND_ATTACHMENT, CONTENT_KIND_EDIT, CONTENT_KIND_MENTION, CONTENT_KIND_TEXT,
-    ENVELOPE_HEADER_LEN, MAX_EDIT_TEXT_LEN, REASSEMBLY_WINDOW_SECS,
+    decode_content, delivery_token, encode_disappearing_text_payload, encode_edit,
+    encode_ephemeral, encode_text, epoch_day, fragment, intro_token, is_capability_control, pad,
+    retention_bucket, unpad, CapabilityControl, DecodedContent, Edit, Envelope, EnvelopeKind,
+    Ephemeral, FormatCapabilities, MailboxKey, Reassembler, ReceiptPayload, CONTENT_FORMAT_V1,
+    CONTENT_KIND_ATTACHMENT, CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL, CONTENT_KIND_MENTION,
+    CONTENT_KIND_TEXT, ENVELOPE_HEADER_LEN, MAX_EDIT_TEXT_LEN, MAX_EPHEMERAL_LIFETIME_SECS,
+    MIN_EPHEMERAL_LIFETIME_SECS, REASSEMBLY_WINDOW_SECS,
 };
 use kult_store::{
     ContactRecord, ConversationId, ConversationMetadata, DeliveryState, Direction,
-    LocalMetadataKey, LocalMetadataRecord, MessageRecord, NoteMessageRecord, QueueClass, QueueItem,
+    EphemeralConversation, EphemeralMode, EphemeralRecord, EphemeralState, LocalMetadataKey,
+    LocalMetadataRecord, MessageRecord, NoteMessageRecord, QueueClass, QueueItem,
     ScheduledConversation as StoreScheduledConversation, ScheduledMessageRecord, Store,
 };
 use kult_transport::{CostClass, DeliveryHint, Discovery, Reachability, Transport};
@@ -233,6 +236,7 @@ struct PartialMeta {
 struct SentFragments {
     peer: [u8; 32],
     token: [u8; 32],
+    retention_until: Option<u64>,
     bodies: Vec<Vec<u8>>,
     sent_at: u64,
 }
@@ -284,7 +288,13 @@ impl Bridge {
 
     /// Admit one foreign envelope, if it is new and fits every cap.
     fn admit(&mut self, envelope: &Envelope, from_mesh: bool, now: u64) {
-        let encoded_len = ENVELOPE_HEADER_LEN + envelope.body.len();
+        if envelope
+            .retention_until
+            .is_some_and(|deadline| deadline <= now)
+        {
+            return;
+        }
+        let encoded_len = envelope.header_len() + envelope.body.len();
         // Anything over the airtime ceiling could neither ride the mesh nor
         // have come off it whole — never transit (§4.2 rule 3).
         if encoded_len > AIRTIME_CEILING_BYTES {
@@ -793,6 +803,13 @@ impl Node {
             Command::Send { peer, body } => {
                 self.send_message(&peer, &body, now, rng)?;
             }
+            Command::SendDisappearing {
+                peer,
+                body,
+                lifetime_secs,
+            } => {
+                self.send_disappearing_message(&peer, &body, lifetime_secs, now, rng)?;
+            }
             Command::Schedule {
                 peer,
                 body,
@@ -838,6 +855,13 @@ impl Node {
             Command::GroupSend { group, body } => {
                 self.group_send(&group, &body, now, rng)?;
             }
+            Command::GroupSendDisappearing {
+                group,
+                body,
+                lifetime_secs,
+            } => {
+                self.group_send_disappearing_message(&group, &body, lifetime_secs, now, rng)?;
+            }
             Command::GroupMentionSend {
                 group,
                 text,
@@ -881,6 +905,7 @@ impl Node {
         match decode_content(body) {
             DecodedContent::Mention { .. } => return Err(NodeError::InvalidMention),
             DecodedContent::Edit { .. } => return Err(NodeError::InvalidEdit),
+            DecodedContent::Ephemeral { .. } => return Err(NodeError::InvalidEphemeral),
             _ => {}
         }
         let mut id = [0u8; 16];
@@ -953,6 +978,51 @@ impl Node {
         self.send_message_with_id(peer, &wire, id, now, now, rng)
     }
 
+    /// Queue UTF-8 that is removed from local history at an exact deadline.
+    /// The peer must have authenticated support and a live session: an
+    /// unnegotiated anonymous first flight is deliberately never ephemeral.
+    pub fn send_disappearing_message(
+        &mut self,
+        peer: &[u8; 32],
+        text: &str,
+        lifetime_secs: u64,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        if text.is_empty()
+            || !(MIN_EPHEMERAL_LIFETIME_SECS..=MAX_EPHEMERAL_LIFETIME_SECS).contains(&lifetime_secs)
+        {
+            return Err(NodeError::InvalidEphemeral);
+        }
+        if !self.sessions.contains_key(peer)
+            || !self.peer_supports_kind(peer, CONTENT_KIND_EPHEMERAL)?
+        {
+            return Err(NodeError::EphemeralUnsupported);
+        }
+        let expires_at = now
+            .checked_add(lifetime_secs)
+            .ok_or(NodeError::InvalidEphemeral)?;
+        let retention_until = retention_bucket(expires_at)?;
+        let mut id = [0u8; 16];
+        rng.fill_bytes(&mut id);
+        let payload = encode_disappearing_text_payload(expires_at, text)?;
+        let wire = encode_ephemeral(id, &payload)?;
+        let me = self.identity.public().ed;
+        self.store.put_ephemeral_record(
+            &EphemeralRecord {
+                conversation: EphemeralConversation::Pairwise(*peer),
+                author: me,
+                content_id: id,
+                expires_at,
+                mode: EphemeralMode::DisappearingText,
+                state: EphemeralState::Active,
+                transfer_ids: Vec::new(),
+            },
+            rng,
+        )?;
+        self.send_message_with_id_retention(peer, &wire, id, now, now, Some(retention_until), rng)
+    }
+
     fn send_message_with_id(
         &mut self,
         peer: &[u8; 32],
@@ -960,6 +1030,20 @@ impl Node {
         id: [u8; 16],
         timestamp: u64,
         now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        self.send_message_with_id_retention(peer, body, id, timestamp, now, None, rng)
+    }
+
+    #[allow(clippy::too_many_arguments)] // canonical pair send plus optional relay hint
+    fn send_message_with_id_retention(
+        &mut self,
+        peer: &[u8; 32],
+        body: &[u8],
+        id: [u8; 16],
+        timestamp: u64,
+        now: u64,
+        retention_until: Option<u64>,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 16]> {
         // Mention is permanently group-only. Reject a canonical frame before
@@ -1007,8 +1091,16 @@ impl Node {
                 peer,
             );
             self.store.put_session(peer, session, rng)?;
-            Envelope::new(EnvelopeKind::Message, token, msg.encode())
+            match retention_until {
+                Some(deadline) => {
+                    Envelope::new_retained(EnvelopeKind::Message, token, deadline, msg.encode())?
+                }
+                None => Envelope::new(EnvelopeKind::Message, token, msg.encode()),
+            }
         } else {
+            if retention_until.is_some() {
+                return Err(NodeError::EphemeralUnsupported);
+            }
             if contact.bundle.is_empty() {
                 return Err(NodeError::NoSession);
             }
@@ -1196,6 +1288,10 @@ impl Node {
             self.store.reconcile_media(rng)?;
             self.media_reconciled = true;
         }
+        // Expiry is core-owned and runs before any queue activation, receive,
+        // attachment request, or transport flush. A restart and a clock jump
+        // therefore cannot revive or transmit already-expired plaintext.
+        self.sweep_ephemeral(now, rng)?;
         // 0. Session-reset markers (a restore happened): queue fresh
         //    handshakes so re-keyed traffic flows without waiting for the
         //    user to send first.
@@ -1268,7 +1364,9 @@ impl Node {
                 continue;
             }
             for (env, first_seen) in stash {
-                if now.saturating_sub(first_seen) <= PENDING_TTL_SECS {
+                if now.saturating_sub(first_seen) <= PENDING_TTL_SECS
+                    && env.retention_until.is_none_or(|deadline| deadline > now)
+                {
                     self.store.pending_push(&env, first_seen, rng)?;
                 }
             }
@@ -1361,6 +1459,60 @@ impl Node {
             intro_token(peer, epoch_day(now)),
             sealed,
         ))
+    }
+
+    fn sweep_ephemeral(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<()> {
+        let due: Vec<EphemeralRecord> = self
+            .store
+            .ephemeral_records()?
+            .into_iter()
+            .filter(|record| record.state == EphemeralState::Active && now >= record.expires_at)
+            .collect();
+        let me = self.identity.public().ed;
+        for mut record in due {
+            // Tombstone first. If the process stops between this write and
+            // physical cleanup, every public read/open path sees the record
+            // as terminal and cleanup resumes on the next tick.
+            record.state = EphemeralState::Expired;
+            self.store.put_ephemeral_record(&record, rng)?;
+            match record.conversation {
+                EphemeralConversation::Pairwise(peer) => {
+                    let direction = if record.author == me {
+                        Direction::Outbound
+                    } else {
+                        Direction::Inbound
+                    };
+                    self.store
+                        .delete_message_record(&peer, direction, &record.content_id)?;
+                    if direction == Direction::Outbound {
+                        self.store.queue_remove_message(&record.content_id)?;
+                    }
+                }
+                EphemeralConversation::Group(group) => {
+                    self.store.delete_group_message_record(
+                        &group,
+                        &record.author,
+                        &record.content_id,
+                    )?;
+                    if record.author == me {
+                        self.store.queue_remove_group_message(&record.content_id)?;
+                    }
+                }
+            }
+            for transfer in record.transfer_ids {
+                if self.store.get_media_transfer(&transfer)?.is_some() {
+                    self.store.delete_media_transfer_with_objects(&transfer)?;
+                }
+                self.attachment_request_at.remove(&transfer);
+            }
+            self.events.push_back(Event::EphemeralRemoved {
+                conversation: record.conversation,
+                author: record.author,
+                content_id: record.content_id,
+                reason: EphemeralState::Expired,
+            });
+        }
+        Ok(())
     }
 
     fn activate_scheduled_messages(
@@ -1597,7 +1749,7 @@ impl Node {
         // after restore), not a message — nothing to record or receipt.
         if let Ok(body) = unpad(&first_payload) {
             if !body.is_empty() {
-                self.record_inbound(peer, body, now, rng)?;
+                self.record_inbound(peer, body, None, now, rng)?;
                 acks.push((peer, env.content_id()));
             }
         }
@@ -1640,7 +1792,7 @@ impl Node {
 
         match env.kind {
             EnvelopeKind::Message => {
-                self.record_inbound(peer, body, now, rng)?;
+                self.record_inbound(peer, body, env.retention_until, now, rng)?;
                 acks.push((peer, env.content_id()));
             }
             EnvelopeKind::Receipt => {
@@ -1655,7 +1807,7 @@ impl Node {
                         }
                     }
                 } else if let Ok(receipt) = ReceiptPayload::decode(&body) {
-                    self.apply_receipt(&peer, &receipt, rng)?;
+                    self.apply_receipt(&peer, &receipt, now, rng)?;
                 }
             }
             EnvelopeKind::GroupControl => {
@@ -1677,16 +1829,43 @@ impl Node {
         &mut self,
         peer: [u8; 32],
         body: Vec<u8>,
+        envelope_retention: Option<u64>,
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
         let decoded = decode_content(&body);
+        let authenticated_retention = match decoded {
+            DecodedContent::Ephemeral { ephemeral, .. } => Some(match ephemeral {
+                Ephemeral::DisappearingText {
+                    retention_until, ..
+                }
+                | Ephemeral::ViewOnceAttachment {
+                    retention_until, ..
+                } => retention_until,
+            }),
+            _ => None,
+        };
+        // A relay-visible hint is accepted only when the decrypted content
+        // binds the exact same canonical bucket. v1 ephemeral content and
+        // v2 ordinary content both fail closed without entering history.
+        if envelope_retention != authenticated_retention {
+            return Ok(());
+        }
         let decoded_is_edit = matches!(decoded, DecodedContent::Edit { .. });
         if let DecodedContent::Text { id, .. }
         | DecodedContent::Attachment { id, .. }
         | DecodedContent::Mention { id, .. }
-        | DecodedContent::Edit { id, .. } = decoded
+        | DecodedContent::Edit { id, .. }
+        | DecodedContent::Ephemeral { id, .. } = decoded
         {
+            let conversation = EphemeralConversation::Pairwise(peer);
+            if self
+                .store
+                .get_ephemeral_record(&conversation, &peer, &id)?
+                .is_some()
+            {
+                return Ok(());
+            }
             let duplicate = self.store.messages_with(&peer)?.iter().any(|record| {
                 record.direction == Direction::Inbound
                     && matches!(
@@ -1695,6 +1874,7 @@ impl Node {
                             | DecodedContent::Attachment { id: stored_id, .. }
                             | DecodedContent::Mention { id: stored_id, .. }
                             | DecodedContent::Edit { id: stored_id, .. }
+                            | DecodedContent::Ephemeral { id: stored_id, .. }
                             if stored_id == id
                     )
             });
@@ -1714,6 +1894,7 @@ impl Node {
             DecodedContent::Attachment { id, manifest } => {
                 let transfer =
                     self.record_pairwise_attachment_offer(peer, id, &manifest, now, rng)?;
+                self.emit_attachment_update(&transfer)?;
                 (id, Vec::new(), ContentStatus::Attachment { id, transfer })
             }
             DecodedContent::Edit { id, edit } if edit.target_author == peer => (
@@ -1727,6 +1908,103 @@ impl Node {
                 },
             ),
             DecodedContent::Edit { id, .. } => (id, Vec::new(), ContentStatus::Malformed),
+            DecodedContent::Ephemeral {
+                id,
+                ephemeral:
+                    Ephemeral::DisappearingText {
+                        expires_at, text, ..
+                    },
+            } => {
+                let state = if now >= expires_at {
+                    EphemeralState::Expired
+                } else {
+                    EphemeralState::Active
+                };
+                self.store.put_ephemeral_record(
+                    &EphemeralRecord {
+                        conversation: EphemeralConversation::Pairwise(peer),
+                        author: peer,
+                        content_id: id,
+                        expires_at,
+                        mode: EphemeralMode::DisappearingText,
+                        state,
+                        transfer_ids: Vec::new(),
+                    },
+                    rng,
+                )?;
+                if state == EphemeralState::Expired {
+                    self.events.push_back(Event::EphemeralRemoved {
+                        conversation: EphemeralConversation::Pairwise(peer),
+                        author: peer,
+                        content_id: id,
+                        reason: state,
+                    });
+                    return Ok(());
+                }
+                (
+                    id,
+                    text.as_bytes().to_vec(),
+                    ContentStatus::DisappearingText { id, expires_at },
+                )
+            }
+            DecodedContent::Ephemeral {
+                id,
+                ephemeral:
+                    Ephemeral::ViewOnceAttachment {
+                        expires_at,
+                        manifest,
+                        ..
+                    },
+            } => {
+                if now >= expires_at {
+                    self.store.put_ephemeral_record(
+                        &EphemeralRecord {
+                            conversation: EphemeralConversation::Pairwise(peer),
+                            author: peer,
+                            content_id: id,
+                            expires_at,
+                            mode: EphemeralMode::ViewOnceAttachment,
+                            state: EphemeralState::Expired,
+                            transfer_ids: Vec::new(),
+                        },
+                        rng,
+                    )?;
+                    self.events.push_back(Event::EphemeralRemoved {
+                        conversation: EphemeralConversation::Pairwise(peer),
+                        author: peer,
+                        content_id: id,
+                        reason: EphemeralState::Expired,
+                    });
+                    return Ok(());
+                }
+                let transfer =
+                    self.record_pairwise_attachment_offer(peer, id, &manifest, now, rng)?;
+                self.store.put_ephemeral_record(
+                    &EphemeralRecord {
+                        conversation: EphemeralConversation::Pairwise(peer),
+                        author: peer,
+                        content_id: id,
+                        expires_at,
+                        mode: EphemeralMode::ViewOnceAttachment,
+                        state: EphemeralState::Active,
+                        transfer_ids: vec![transfer],
+                    },
+                    rng,
+                )?;
+                // The first offer event must already carry the view-once
+                // restriction; briefly surfacing an ordinary attachment
+                // would expose preview/export actions before the marker.
+                self.emit_attachment_update(&transfer)?;
+                (
+                    id,
+                    Vec::new(),
+                    ContentStatus::ViewOnceAttachment {
+                        id,
+                        transfer,
+                        expires_at,
+                    },
+                )
+            }
             // Mention is group-only. Retain exact authenticated bytes as a
             // malformed pairwise record and never surface spans or notify.
             DecodedContent::Mention { .. } => {
@@ -1806,6 +2084,7 @@ impl Node {
                     CONTENT_KIND_ATTACHMENT,
                     CONTENT_KIND_MENTION,
                     CONTENT_KIND_EDIT,
+                    CONTENT_KIND_EPHEMERAL,
                 ],
             }],
         }
@@ -1859,6 +2138,7 @@ impl Node {
         &mut self,
         peer: &[u8; 32],
         receipt: &ReceiptPayload,
+        now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
         // Selective retransmission (docs/05-transports.md §4.2 rule 2):
@@ -1878,13 +2158,23 @@ impl Node {
                 let Some(body) = cached.bodies.get(usize::from(i)) else {
                     continue;
                 };
+                let envelope = match cached.retention_until {
+                    Some(deadline) if deadline > now => Envelope::new_retained(
+                        EnvelopeKind::Fragment,
+                        cached.token,
+                        deadline,
+                        body.clone(),
+                    )?,
+                    Some(_) => continue,
+                    None => Envelope::new(EnvelopeKind::Fragment, cached.token, body.clone()),
+                };
                 self.store.queue_push(
                     &QueueItem {
                         peer: *peer,
                         msg_id: None,
                         group_msg_id: None,
                         class: QueueClass::Normal,
-                        envelope: Envelope::new(EnvelopeKind::Fragment, cached.token, body.clone()),
+                        envelope,
                     },
                     rng,
                 )?;
@@ -2022,6 +2312,16 @@ impl Node {
         let mut queue = self.store.queue_all()?;
         queue.sort_by_key(|(seq, item)| (flush_class(item.envelope.kind), *seq));
         for (seq, item) in queue {
+            if item
+                .envelope
+                .retention_until
+                .is_some_and(|deadline| deadline <= now)
+            {
+                self.store.queue_ack(seq)?;
+                self.backoff.remove(&seq);
+                self.held_notified.remove(&seq);
+                continue;
+            }
             if let Some(b) = self.backoff.get(&seq) {
                 if now < b.next_ok {
                     continue;
@@ -2063,7 +2363,13 @@ impl Node {
             for (_, transport, hint) in &candidates {
                 if let Ok(fragments) = send_via(transport.as_ref(), hint, &item.envelope).await {
                     if let Some(bodies) = fragments {
-                        self.remember_fragments(item.peer, item.envelope.token, bodies, now);
+                        self.remember_fragments(
+                            item.peer,
+                            item.envelope.token,
+                            item.envelope.retention_until,
+                            bodies,
+                            now,
+                        );
                     }
                     sent = true;
                     break;
@@ -2117,9 +2423,13 @@ impl Node {
         let Some(bridge) = &mut self.bridge else {
             return;
         };
-        bridge
-            .queue
-            .retain(|item| now.saturating_sub(item.first_seen) <= TRANSIT_TTL_SECS);
+        bridge.queue.retain(|item| {
+            now.saturating_sub(item.first_seen) <= TRANSIT_TTL_SECS
+                && item
+                    .envelope
+                    .retention_until
+                    .is_none_or(|deadline| deadline > now)
+        });
         if bridge.queue.is_empty() {
             bridge.queue_bytes = 0;
             return;
@@ -2216,7 +2526,7 @@ impl Node {
         let bridge = self.bridge.as_mut().expect("bridge unchanged during flush");
         bridge.queue_bytes = kept
             .iter()
-            .map(|i| ENVELOPE_HEADER_LEN + i.envelope.body.len())
+            .map(|i| i.envelope.header_len() + i.envelope.body.len())
             .sum();
         bridge.queue = kept;
     }
@@ -2229,6 +2539,7 @@ impl Node {
         &mut self,
         peer: [u8; 32],
         token: [u8; 32],
+        retention_until: Option<u64>,
         bodies: Vec<Vec<u8>>,
         now: u64,
     ) {
@@ -2257,6 +2568,7 @@ impl Node {
             SentFragments {
                 peer,
                 token,
+                retention_until,
                 bodies,
                 sent_at: now,
             },
@@ -2354,12 +2666,16 @@ async fn send_via(
         ))?;
     let bodies = fragment(&encoded, budget)?;
     for body in &bodies {
-        transport
-            .send(
-                hint,
-                &Envelope::new(EnvelopeKind::Fragment, envelope.token, body.clone()),
-            )
-            .await?;
+        let fragment_envelope = match envelope.retention_until {
+            Some(deadline) => Envelope::new_retained(
+                EnvelopeKind::Fragment,
+                envelope.token,
+                deadline,
+                body.clone(),
+            )?,
+            None => Envelope::new(EnvelopeKind::Fragment, envelope.token, body.clone()),
+        };
+        transport.send(hint, &fragment_envelope).await?;
     }
     Ok(Some(bodies))
 }

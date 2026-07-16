@@ -31,6 +31,11 @@ Rules every implementation must obey:
    plaintext link: the envelope is self-protecting.
 4. **Honest signals.** `SendReceipt` distinguishes *handed to link* from *acknowledged by
    next hop* from nothing; the delivery engine and UI depend on not lying.
+5. **Retention is deletion-only.** Envelope v2's hour-aligned
+   `retention_until` may shorten queue life but never authorizes a transport to
+   extend its configured maximum, infer an exact content deadline, or claim
+   physical erasure. Expired envelopes are refused on admission and removed on
+   load, check-in, forwarding, and periodic cleanup.
 
 The **transport scheduler** in `kult-node` ranks available transports per recipient by
 (reachability, latency class, cost class) and may send duplicates across rungs:
@@ -71,6 +76,17 @@ envelope or conversation data, and provider acknowledgement never changes
 delivery state. Sovereign mode registers with neither service. Private mode
 uses Tor or a non-colluding Oblivious HTTP ingress; Standard mode uses direct
 HTTPS. Complete failure falls back to the unchanged transports in this document.
+
+### 2.2 Ephemeral retention at intermediaries
+
+C4 mailbox, bridge, queue, and fragment records preserve envelope v2's coarse
+retention bucket end to end. Every store applies the earlier of its ordinary
+maximum TTL and that bucket. A restart re-evaluates absolute Unix time before
+returning or forwarding a row; a fragment may never outlive its parent
+envelope. The receiver verifies the same bucket inside the authenticated
+content, because relays can delete but cannot authenticate a sender or safely
+rewrite the hint. Exact endpoint semantics and limitations are in
+[19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
 
 ## 3. Proximity transports
 

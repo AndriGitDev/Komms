@@ -304,6 +304,15 @@ pub enum Command {
         /// Message body (will be padded and encrypted).
         body: Vec<u8>,
     },
+    /// Queue pairwise text with an authenticated exact local deadline.
+    SendDisappearing {
+        /// Recipient identity.
+        peer: [u8; 32],
+        /// Exact UTF-8 text.
+        body: String,
+        /// Relative lifetime in seconds, from 60 seconds through 30 days.
+        lifetime_secs: u64,
+    },
     /// Persist pairwise text until an absolute UTC send instant.
     Schedule {
         /// Recipient (Ed25519 identity key bytes).
@@ -386,6 +395,15 @@ pub enum Command {
         group: [u8; 32],
         /// Message body (will be padded and encrypted).
         body: Vec<u8>,
+    },
+    /// Queue group text with an authenticated exact local deadline.
+    GroupSendDisappearing {
+        /// Group id.
+        group: [u8; 32],
+        /// Exact UTF-8 text.
+        body: String,
+        /// Relative lifetime in seconds, from 60 seconds through 30 days.
+        lifetime_secs: u64,
     },
     /// Queue canonical semantic Mention content to a sender-key group after
     /// exact roster/capability review revalidation (ADR-0016).
@@ -506,6 +524,12 @@ pub struct AttachmentInfo {
     pub content_id: [u8; 16],
     /// Transfer-level lifecycle state.
     pub state: MediaTransferState,
+    /// Whether this transfer is governed by first-open consumption.
+    pub view_once: bool,
+    /// Exact fallback deadline for view-once media.
+    pub expires_at: Option<u64>,
+    /// Whether first-open or expiry has made the source permanently unavailable.
+    pub consumed: bool,
     /// Primary object followed by an optional preview.
     pub objects: Vec<AttachmentObjectInfo>,
 }
@@ -666,6 +690,22 @@ pub enum ContentStatus {
         /// Positive author-local revision.
         revision: u64,
     },
+    /// Canonical disappearing UTF-8 removed locally at the exact deadline.
+    DisappearingText {
+        /// Content id scoped to the conversation and author.
+        id: [u8; 16],
+        /// Exact authenticated Unix-seconds local deadline.
+        expires_at: u64,
+    },
+    /// Canonical view-once attachment offer.
+    ViewOnceAttachment {
+        /// Content id scoped to the conversation and author.
+        id: [u8; 16],
+        /// Random local transfer id used by consent/open state APIs.
+        transfer: [u8; 16],
+        /// Exact authenticated fallback deadline.
+        expires_at: u64,
+    },
     /// Authenticated content this client version cannot interpret.
     Unsupported {
         /// Typed framing version, when known.
@@ -822,6 +862,17 @@ pub enum Event {
         sender: [u8; 32],
         /// Original canonical Text content id.
         target_content_id: [u8; 16],
+    },
+    /// Ephemeral plaintext or decryptable media was durably removed locally.
+    EphemeralRemoved {
+        /// Exact pairwise or group scope.
+        conversation: kult_store::EphemeralConversation,
+        /// Authenticated author identity.
+        author: [u8; 32],
+        /// Author-minted content id.
+        content_id: [u8; 16],
+        /// Whether a deadline or first open caused removal.
+        reason: kult_store::EphemeralState,
     },
     /// A durably stored canonical group Mention targets this exact local peer.
     /// Applications re-read the record by id; no text or target list is copied

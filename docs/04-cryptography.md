@@ -109,11 +109,19 @@ Compact binary, little-endian, fixed field order (no self-describing serializati
 hot path: every byte counts on LoRa). One envelope per message or fragment:
 
 ```
-byte    0      : version (0x01)
+byte    0      : version (0x01 ordinary | 0x02 retained)
 byte    1      : type (0x01 msg | 0x02 handshake | 0x03 receipt | 0x04 fragment)
 bytes   2..34  : delivery token (32 B, §7)
-bytes  34..N   : body (type-specific, always ciphertext)
+bytes  34..42  : v2 only: retention_until (u64 LE, hour-aligned Unix seconds)
+bytes  34/42..N: body (type-specific, always ciphertext)
 ```
+
+Envelope v2 is used only when sealed work carries an authenticated ephemeral
+retention bucket. The cleartext value lets an intermediary delete without keys;
+the recipient accepts it only when content-v1 kind `0x0005` contains the exact
+same canonical hour ceiling. A missing, extra, non-canonical, or mismatched hint
+is terminal and never enters history. The hint is advisory to a relay and does
+not weaken endpoint authentication.
 
 Bodies by type. `msg`/`receipt`: an encoded ratchet message
 (`version ‖ encrypted header(80) ‖ nonce(24) ‖ ciphertext+tag`); `handshake`: an
@@ -140,6 +148,23 @@ Resolution by maximum `(revision, edit_content_id)` is application convergence,
 not a new cryptographic primitive or signature. The normative encoding and
 compatibility contract are [ADR-0020](adr/0020-authenticated-message-edits.md)
 and [18: Authenticated Message Editing](18-message-editing.md).
+
+### 5.2 Authenticated ephemeral content
+
+C4 uses content-v1 kind `0x0005`. Its payload is
+`version(1) ‖ mode(1) ‖ reserved(2) ‖ expires_at(8) ‖ retention_until(8) ‖
+body_len(4) ‖ body`. Mode 1 carries non-empty bounded UTF-8; mode 2 carries the
+existing canonical attachment manifest. `retention_until` must equal the
+one-hour ceiling of the exact `expires_at`; supported lifetimes are 60 seconds
+through 30 days. The whole payload remains inside pairwise Double Ratchet or
+group sender-key encryption.
+
+Exact local expiry and first-open consumption are lifecycle rules, not new
+cryptographic erasure primitives. Terminal sealed tombstones prevent duplicate
+or reordered ciphertext from restoring plaintext. Encoding, compatibility,
+metadata leakage, and backup behavior are normative in
+[ADR-0021](adr/0021-ephemeral-retention.md) and summarized in
+[19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
 
 ## 6. Group messaging (v1: sender keys)
 

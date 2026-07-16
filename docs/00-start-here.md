@@ -52,9 +52,9 @@ Our full, frank list is in the [threat model](02-threat-model.md).
 
 As an alpha built from source. There are no supported installers or app-store
 releases yet, but desktop, Android, and iOS shells all exist over the same Rust
-core. The repository's automated matrix exercises the core, desktop behavior,
-Android behavior and APK assembly, iOS behavior, and the gated iOS simulator
-build. Hands-on device qualification, distribution, the physical radio bench,
+core. The local verification matrix exercises the shared core, desktop behavior,
+the Android SDK-free bindings/core, and Swift parsing/host behavior. Android APK
+and iOS simulator builds require their full platform SDKs. Hands-on device qualification, distribution, the physical radio bench,
 and the external audit remain before a stable release.
 
 Messages may use a small safe formatting subset for emphasis, strong text,
@@ -75,6 +75,14 @@ inspectable version history, and derives the same winner even when offline
 carriers deliver edits out of order. Editing does not erase what another device
 already received or copied. See
 [Authenticated Message Editing](18-message-editing.md).
+
+You can also choose disappearing text or a view-once attachment. Komms removes
+its local decryptable copy at the selected deadline, or after the first explicit
+view-once reveal, and prevents delayed delivery or backup restore from reviving
+that item. This does not delete a recipient's capture, control another device,
+or guarantee screenshot prevention. Relays see one coarse deletion bucket but
+not the exact deadline or content. See
+[Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
 
 If you're comfortable with a terminal, the desktop shell is the quickest start:
 
@@ -106,6 +114,7 @@ Platform build instructions:
 | which product features fit the model | [Feature Scope](11-feature-scope.md) |
 | the exact delivery status of each feature | [Feature Delivery Plan](12-feature-delivery-plan.md) |
 | how authored message edits work and what they cannot erase | [Authenticated Message Editing](18-message-editing.md) |
+| what disappearing/view-once means—and what it cannot erase | [Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md) |
 | why a technical decision was made | [ADR Index](adr/README.md) |
 
 ## How can I help?

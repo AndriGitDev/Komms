@@ -7,10 +7,10 @@
 use alloc::vec::Vec;
 
 use crate::{
-    decode_attachment_manifest, decode_edit_payload, decode_mention_payload,
-    encode_attachment_manifest, encode_edit_payload, encode_mention_payload, AttachmentManifest,
-    DecodedAttachmentManifest, DecodedEdit, DecodedMention, Edit, Mention, MentionSpan,
-    ProtocolError, Result,
+    decode_attachment_manifest, decode_edit_payload, decode_ephemeral_payload,
+    decode_mention_payload, encode_attachment_manifest, encode_edit_payload,
+    encode_mention_payload, AttachmentManifest, DecodedAttachmentManifest, DecodedEdit,
+    DecodedEphemeral, DecodedMention, Edit, Ephemeral, Mention, MentionSpan, ProtocolError, Result,
 };
 
 /// Prefix that unambiguously distinguishes typed content from valid UTF-8.
@@ -25,6 +25,8 @@ pub const CONTENT_KIND_ATTACHMENT: u16 = 2;
 pub const CONTENT_KIND_MENTION: u16 = 3;
 /// The v1 kind assigned to immutable authenticated message edits.
 pub const CONTENT_KIND_EDIT: u16 = 4;
+/// The v1 kind assigned to disappearing text and view-once attachments.
+pub const CONTENT_KIND_EPHEMERAL: u16 = 5;
 /// Size of the fixed v1 content header.
 pub const CONTENT_HEADER_LEN: usize = 28;
 /// Maximum unpadded content frame size.
@@ -73,6 +75,13 @@ pub enum DecodedContent<'a> {
         id: [u8; 16],
         /// Exact target, revision, and replacement text.
         edit: Edit<'a>,
+    },
+    /// Canonical v1 content with authenticated local/network retention semantics.
+    Ephemeral {
+        /// Random author-minted id, scoped to the conversation and author.
+        id: [u8; 16],
+        /// Exact supported ephemeral mode and payload.
+        ephemeral: Ephemeral<'a>,
     },
     /// Authenticated bytes the current client cannot interpret.
     Unsupported {
@@ -142,6 +151,22 @@ pub fn encode_edit(id: [u8; 16], edit: &Edit<'_>) -> Result<Vec<u8>> {
     frame.extend_from_slice(&id);
     frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     frame.extend_from_slice(&payload);
+    Ok(frame)
+}
+
+/// Wrap one canonical ephemeral payload in the common v1 content frame.
+pub fn encode_ephemeral(id: [u8; 16], payload: &[u8]) -> Result<Vec<u8>> {
+    if payload.len() > MAX_CONTENT_PAYLOAD_LEN {
+        return Err(ProtocolError::TooLarge);
+    }
+    let mut frame = Vec::with_capacity(CONTENT_HEADER_LEN + payload.len());
+    frame.extend_from_slice(&CONTENT_MAGIC);
+    frame.push(CONTENT_FORMAT_V1);
+    frame.extend_from_slice(&CONTENT_KIND_EPHEMERAL.to_le_bytes());
+    frame.push(0);
+    frame.extend_from_slice(&id);
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    frame.extend_from_slice(payload);
     Ok(frame)
 }
 
@@ -224,6 +249,14 @@ pub fn decode_content(bytes: &[u8]) -> DecodedContent<'_> {
         CONTENT_KIND_EDIT => match decode_edit_payload(payload) {
             DecodedEdit::Edit(edit) => DecodedContent::Edit { id, edit },
             DecodedEdit::Malformed => DecodedContent::Malformed,
+        },
+        CONTENT_KIND_EPHEMERAL => match decode_ephemeral_payload(payload) {
+            DecodedEphemeral::Ephemeral(ephemeral) => DecodedContent::Ephemeral { id, ephemeral },
+            DecodedEphemeral::Unsupported => DecodedContent::Unsupported {
+                format_version: Some(format_version),
+                kind: Some(kind),
+            },
+            DecodedEphemeral::Malformed => DecodedContent::Malformed,
         },
         _ => DecodedContent::Unsupported {
             format_version: Some(format_version),

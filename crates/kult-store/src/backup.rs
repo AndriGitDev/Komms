@@ -25,13 +25,12 @@
 //! File layout (strict, all-or-nothing, like the sneakernet bundle format):
 //!
 //! ```text
-//! magic "KKR4" (4) ‖ m_cost_kib u32 LE ‖ t_cost u32 LE ‖ p_cost u32 LE
+//! magic "KKR5" (4) ‖ m_cost_kib u32 LE ‖ t_cost u32 LE ‖ p_cost u32 LE
 //!   ‖ salt (16) ‖ sealed( postcard(BackupPayload) )
 //! ```
 //!
-//! Files with the older `KKR1` (pre-groups), `KKR2` (pre-local-metadata),
-//! and `KKR3` (pre-note-to-self) magic still restore with the same header
-//! layout.
+//! Files with the older `KKR1` through `KKR4` magic still restore with the
+//! same header layout.
 //!
 //! The Argon2id cost parameters ride in the header so a backup written on
 //! one device class (mobile profile) restores on any other; the sealed
@@ -51,12 +50,15 @@ use kult_crypto::{
 };
 
 use crate::{
-    ContactRecord, GroupMember, GroupMessageRecord, GroupRecord, LocalMetadataRecord,
-    MessageRecord, NoteMessageRecord, PendingAnnounce, Result, Store, StoreError,
+    ContactRecord, EphemeralConversation, EphemeralRecord, EphemeralState, GroupMember,
+    GroupMessageRecord, GroupRecord, LocalMetadataRecord, MessageRecord, NoteMessageRecord,
+    PendingAnnounce, Result, Store, StoreError,
 };
 
 /// Backup file magic: Komms recovery file, format 4 (note-to-self included).
-pub const BACKUP_MAGIC: [u8; 4] = *b"KKR4";
+pub const BACKUP_MAGIC: [u8; 4] = *b"KKR5";
+/// The pre-ephemeral-tombstone format 4 magic — still restorable.
+pub const BACKUP_MAGIC_V4: [u8; 4] = *b"KKR4";
 /// The pre-note-to-self format 3 magic — still restorable.
 pub const BACKUP_MAGIC_V3: [u8; 4] = *b"KKR3";
 /// The pre-local-metadata format 2 magic — still restorable.
@@ -100,6 +102,22 @@ struct BackupPayload {
     /// User-authored local organization, drafts, preferences, and icons.
     local_metadata: Vec<LocalMetadataRecord>,
     /// First-class local note-to-self text history.
+    note_messages: Vec<NoteMessageRecord>,
+    /// Tombstones only: ephemeral plaintext/media is never backed up.
+    ephemeral: Vec<EphemeralRecord>,
+}
+
+/// The `KKR4` payload shape, before ephemeral tombstones existed.
+#[derive(Serialize, Deserialize)]
+struct BackupPayloadV4 {
+    created_at: u64,
+    identity: Vec<u8>,
+    contacts: Vec<ContactRecord>,
+    messages: Vec<MessageRecord>,
+    reset_peers: Vec<[u8; 32]>,
+    groups: Vec<BackupGroup>,
+    group_messages: Vec<GroupMessageRecord>,
+    local_metadata: Vec<LocalMetadataRecord>,
     note_messages: Vec<NoteMessageRecord>,
 }
 
@@ -163,11 +181,36 @@ impl Store {
         rng: &mut impl CryptoRngCore,
     ) -> Result<(Vec<u8>, Zeroizing<String>)> {
         let identity = self.get_identity()?.ok_or(StoreError::NotAStore)?;
+        let mut ephemeral = self.ephemeral_records()?;
+        // Recovery never resurrects content carrying an erasure promise.
+        // Convert even currently-live markers into terminal tombstones and
+        // omit all associated plaintext and media (media is excluded from
+        // every backup generation already).
+        for record in &mut ephemeral {
+            record.state = EphemeralState::Expired;
+            record.transfer_ids.clear();
+        }
+        let me = identity.public().ed;
         let payload = BackupPayload {
             created_at: now,
             identity: identity.to_bytes().to_vec(),
             contacts: self.contacts()?,
-            messages: self.all_messages()?,
+            messages: self
+                .all_messages()?
+                .into_iter()
+                .filter(|message| {
+                    let author = if message.direction == crate::Direction::Outbound {
+                        me
+                    } else {
+                        message.peer
+                    };
+                    !ephemeral.iter().any(|record| {
+                        record.conversation == EphemeralConversation::Pairwise(message.peer)
+                            && record.author == author
+                            && record.content_id == message.id
+                    })
+                })
+                .collect(),
             reset_peers: self.session_peers()?,
             groups: self
                 .groups()?
@@ -184,6 +227,13 @@ impl Store {
             group_messages: self
                 .all_group_messages()?
                 .into_iter()
+                .filter(|message| {
+                    !ephemeral.iter().any(|record| {
+                        record.conversation == EphemeralConversation::Group(message.group)
+                            && record.author == message.sender
+                            && record.content_id == message.id
+                    })
+                })
                 .map(|mut m| {
                     m.wire_body = None;
                     m
@@ -191,6 +241,7 @@ impl Store {
                 .collect(),
             local_metadata: self.local_metadata()?,
             note_messages: self.note_messages()?,
+            ephemeral,
         };
         let plain =
             Zeroizing::new(postcard::to_allocvec(&payload).map_err(|_| StoreError::Serialization)?);
@@ -235,7 +286,8 @@ impl Store {
             return Err(StoreError::NotABackup);
         }
         let version = match <[u8; 4]>::try_from(&backup[..4]).expect("length checked") {
-            BACKUP_MAGIC => 4,
+            BACKUP_MAGIC => 5,
+            BACKUP_MAGIC_V4 => 4,
             BACKUP_MAGIC_V3 => 3,
             BACKUP_MAGIC_V2 => 2,
             BACKUP_MAGIC_V1 => 1,
@@ -268,6 +320,7 @@ impl Store {
                     group_messages: Vec::new(),
                     local_metadata: Vec::new(),
                     note_messages: Vec::new(),
+                    ephemeral: Vec::new(),
                 }
             }
             2 => {
@@ -282,6 +335,7 @@ impl Store {
                     group_messages: v2.group_messages,
                     local_metadata: Vec::new(),
                     note_messages: Vec::new(),
+                    ephemeral: Vec::new(),
                 }
             }
             3 => {
@@ -296,9 +350,25 @@ impl Store {
                     group_messages: v3.group_messages,
                     local_metadata: v3.local_metadata,
                     note_messages: Vec::new(),
+                    ephemeral: Vec::new(),
                 }
             }
-            4 => decode_exact(&plain)?,
+            4 => {
+                let v4: BackupPayloadV4 = decode_exact(&plain)?;
+                BackupPayload {
+                    created_at: v4.created_at,
+                    identity: v4.identity,
+                    contacts: v4.contacts,
+                    messages: v4.messages,
+                    reset_peers: v4.reset_peers,
+                    groups: v4.groups,
+                    group_messages: v4.group_messages,
+                    local_metadata: v4.local_metadata,
+                    note_messages: v4.note_messages,
+                    ephemeral: Vec::new(),
+                }
+            }
+            5 => decode_exact(&plain)?,
             _ => unreachable!("version matched above"),
         };
         let identity_bytes: Zeroizing<[u8; 64]> = Zeroizing::new(
@@ -365,6 +435,9 @@ impl Store {
         }
         for message in &payload.note_messages {
             store.put_note_message(message, rng)?;
+        }
+        for record in &payload.ephemeral {
+            store.put_ephemeral_record(record, rng)?;
         }
         Ok(store)
     }
