@@ -13,6 +13,11 @@ are the node's own, verbatim.
   inactive/background transitions, and responds to UIKit capture notifications.
   Settings explicitly state that iOS cannot universally block still screenshots
   and that capture notification is not retroactive.
+- **Reduce keyboard retention on every SwiftUI editor.** All 20 text editors
+  disable autocorrection through one audited modifier; message/name fields keep
+  only explicit capitalization semantics. Passphrases and recovery mnemonics use
+  `SecureField`. Settings state that iOS has no per-field personalized-learning
+  guarantee and non-secure third-party keyboards remain best effort.
 - **Create / unlock / restore** an encrypted store at the gate; restoring
   takes a `.kkr` backup file plus its 24-word mnemonic.
 - **Pair out-of-band**: show your prekey bundle as a QR, scan a friend's

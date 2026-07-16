@@ -12,6 +12,11 @@ own, verbatim.
   before each activity draws. Compliant screenshots, screen recordings, and
   recent-task previews are blocked. Settings show the shared B14 policy and its
   compromised-device, overlay/accessibility-abuse, and external-camera limits.
+- **Request private keyboard behavior on every text editor.** All 16 XML fields
+  and 5 programmatic fields use `IncognitoEditText`, which sets Android's
+  no-personalized-learning and no-suggestions metadata. Passphrases and recovery
+  mnemonics are masked. Settings state honestly that third-party IMEs may ignore
+  the request.
 - **Create / unlock / restore** an encrypted store at the gate; restoring
   takes a `.kkr` backup file plus its 24-word mnemonic.
 - **Pair out-of-band**: show your prekey bundle as a QR, scan a friend's
