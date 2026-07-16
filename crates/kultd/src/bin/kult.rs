@@ -51,6 +51,7 @@ COMMANDS:
     schedule-cancel ID              cancel a scheduled message
     note TEXT...                    append to the local note-to-self conversation
     note-messages                   local note-to-self history
+    screen-security PLATFORM        show always-on android/ios/desktop protection and limits
     theme                          show system/light/dark appearance choice
     theme-set system|light|dark    persist the private local appearance choice
     icon TARGET                    show one sealed icon or generated-initials fallback
@@ -440,6 +441,13 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
             json!({ "op": "note_to_self_send", "body": args.join(" ") })
         }
         "note-messages" => json!({ "op": "note_to_self_messages" }),
+        "screen-security" => {
+            need(1)?;
+            if args.len() != 1 || !matches!(args[0].as_str(), "android" | "ios" | "desktop") {
+                return Err("screen-security: expected android, ios, or desktop".to_owned());
+            }
+            json!({ "op": "screen_security_policy", "platform": args[0] })
+        }
         "theme" => {
             if !args.is_empty() {
                 return Err("theme: too many arguments".to_owned());
@@ -1169,6 +1177,11 @@ mod tests {
             build_request("theme", &[]).unwrap(),
             json!({ "op": "theme" })
         );
+        assert_eq!(
+            build_request("screen-security", &["desktop".to_owned()]).unwrap(),
+            json!({ "op": "screen_security_policy", "platform": "desktop" })
+        );
+        assert!(build_request("screen-security", &["web".to_owned()]).is_err());
         assert_eq!(
             build_request("theme-set", &["dark".to_owned()]).unwrap(),
             json!({ "op": "theme_set", "preference": "dark" })

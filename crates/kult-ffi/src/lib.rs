@@ -620,6 +620,79 @@ pub struct ThemeInfo {
     pub persisted: bool,
 }
 
+/// Shipped platform whose native screen-security policy is requested.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ScreenSecurityPlatform {
+    /// Android application window.
+    Android,
+    /// iOS application scene.
+    Ios,
+    /// Tauri desktop application window.
+    Desktop,
+}
+
+/// Strength of one platform screen-security capability.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ScreenSecurityLevel {
+    /// Komms enables the supported native protection across its whole surface.
+    PlatformEnforced,
+    /// Komms requests native protection, but the environment may ignore it.
+    BestEffort,
+    /// The platform has no honest API for this capability.
+    Unavailable,
+}
+
+/// Immutable, render-safe B14 policy for one shipped shell.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ScreenSecurityPolicy {
+    /// Platform this policy describes.
+    pub platform: ScreenSecurityPlatform,
+    /// Always true; protection applies before the encrypted store opens.
+    pub always_on: bool,
+    /// Screenshot and screen-recording prevention strength.
+    pub capture_prevention: ScreenSecurityLevel,
+    /// App-switcher, task-preview, or recent-window obscuring strength.
+    pub background_obscuring: ScreenSecurityLevel,
+    /// Live capture detection strength.
+    pub capture_detection: ScreenSecurityLevel,
+    /// Immediate user-triggered session lock strength.
+    pub rapid_lock: ScreenSecurityLevel,
+    /// Short native-mechanism description.
+    pub mechanism: String,
+    /// Honest platform limitations shown beside the claims.
+    pub limitations: Vec<String>,
+}
+
+/// Return the shared always-on B14 policy without opening a node or store.
+#[uniffi::export]
+pub fn screen_security_policy(platform: ScreenSecurityPlatform) -> ScreenSecurityPolicy {
+    let node_platform = match platform {
+        ScreenSecurityPlatform::Android => kult_node::ScreenSecurityPlatform::Android,
+        ScreenSecurityPlatform::Ios => kult_node::ScreenSecurityPlatform::Ios,
+        ScreenSecurityPlatform::Desktop => kult_node::ScreenSecurityPlatform::Desktop,
+    };
+    let policy = kult_node::screen_security_policy(node_platform);
+    let level = |value| match value {
+        kult_node::ScreenSecurityLevel::PlatformEnforced => ScreenSecurityLevel::PlatformEnforced,
+        kult_node::ScreenSecurityLevel::BestEffort => ScreenSecurityLevel::BestEffort,
+        kult_node::ScreenSecurityLevel::Unavailable => ScreenSecurityLevel::Unavailable,
+    };
+    ScreenSecurityPolicy {
+        platform,
+        always_on: policy.always_on,
+        capture_prevention: level(policy.capture_prevention),
+        background_obscuring: level(policy.background_obscuring),
+        capture_detection: level(policy.capture_detection),
+        rapid_lock: level(policy.rapid_lock),
+        mechanism: policy.mechanism.to_owned(),
+        limitations: policy
+            .limitations
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect(),
+    }
+}
+
 /// Exact typed target kind for one private local custom icon.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum CustomIconTargetKind {
