@@ -68,6 +68,18 @@ pub const THEME_SEMANTIC_ROLES: [&str; 15] = [
 ];
 /// Maximum bytes in one already-sanitized custom icon (512 KiB).
 pub const MAX_CUSTOM_ICON_BYTES: usize = 512 * 1024;
+/// Maximum durable custom-icon records across every target kind.
+pub const MAX_CUSTOM_ICONS: usize = 1_024;
+/// Maximum aggregate encoded custom-icon bytes (64 MiB).
+pub const MAX_CUSTOM_ICON_TOTAL_BYTES: usize = 64 * 1024 * 1024;
+/// Exact square edge of every canonical B13 icon.
+pub const CUSTOM_ICON_DIMENSION: u32 = 256;
+/// Exact media type of every canonical B13 icon.
+pub const CUSTOM_ICON_MEDIA_TYPE: &str = "image/png";
+/// Stable bundled glyph vocabulary rendered locally by the shared core.
+pub const CUSTOM_ICON_BUNDLED_GLYPHS: [&str; 8] = [
+    "person", "group", "folder", "note", "star", "heart", "shield", "compass",
+];
 
 /// Stable identity and type of a conversation in local metadata.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -464,7 +476,7 @@ impl LocalMetadataRecord {
                 string_ok(&record.key) && record.value.len() <= MAX_UI_PREFERENCE_VALUE_BYTES
             }
             Self::CustomIcon(record) => {
-                string_ok(&record.media_type)
+                record.media_type == CUSTOM_ICON_MEDIA_TYPE
                     && !record.bytes.is_empty()
                     && record.bytes.len() <= MAX_CUSTOM_ICON_BYTES
             }
@@ -513,6 +525,91 @@ impl Store {
         Ok(true)
     }
 
+    /// Read one sealed custom icon by its exact typed local target.
+    pub fn custom_icon(&self, target: &CustomIconTarget) -> Result<Option<CustomIconRecord>> {
+        Ok(self
+            .get_local_metadata(&LocalMetadataKey::CustomIcon(target.clone()))?
+            .and_then(|record| match record {
+                LocalMetadataRecord::CustomIcon(icon) => Some(icon),
+                _ => None,
+            }))
+    }
+
+    /// Return durable icon record and encoded-byte usage.
+    pub fn custom_icon_usage(&self) -> Result<(usize, usize)> {
+        let icons = self
+            .local_metadata_rows()?
+            .into_iter()
+            .filter_map(|(_, record)| match record {
+                LocalMetadataRecord::CustomIcon(icon) => Some(icon),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let bytes = icons.iter().try_fold(0usize, |total, icon| {
+            total
+                .checked_add(icon.bytes.len())
+                .ok_or(StoreError::CustomIconQuota)
+        })?;
+        Ok((icons.len(), bytes))
+    }
+
+    /// Idempotently insert or replace one canonical custom icon.
+    ///
+    /// The caller is responsible for canonical PNG validation; this sealed
+    /// boundary independently enforces media type, per-record, count, and
+    /// aggregate byte limits.
+    pub fn set_custom_icon(
+        &self,
+        record: &CustomIconRecord,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<bool> {
+        LocalMetadataRecord::CustomIcon(record.clone()).validate()?;
+        let existing = self.validate_custom_icon_quota(record)?;
+        if existing.as_ref() == Some(record) {
+            return Ok(false);
+        }
+        self.put_local_metadata(&LocalMetadataRecord::CustomIcon(record.clone()), rng)?;
+        Ok(true)
+    }
+
+    fn validate_custom_icon_quota(
+        &self,
+        record: &CustomIconRecord,
+    ) -> Result<Option<CustomIconRecord>> {
+        let rows = self.local_metadata_rows()?;
+        let mut count = 0usize;
+        let mut total = 0usize;
+        let mut existing = None;
+        for (_, stored) in &rows {
+            if let LocalMetadataRecord::CustomIcon(icon) = stored {
+                count = count.checked_add(1).ok_or(StoreError::CustomIconLimit)?;
+                total = total
+                    .checked_add(icon.bytes.len())
+                    .ok_or(StoreError::CustomIconQuota)?;
+                if icon.target == record.target {
+                    existing = Some(icon);
+                }
+            }
+        }
+        if existing.is_none() && count >= MAX_CUSTOM_ICONS {
+            return Err(StoreError::CustomIconLimit);
+        }
+        let replaced = existing.as_ref().map_or(0, |icon| icon.bytes.len());
+        let next_total = total
+            .checked_sub(replaced)
+            .and_then(|value| value.checked_add(record.bytes.len()))
+            .ok_or(StoreError::CustomIconQuota)?;
+        if next_total > MAX_CUSTOM_ICON_TOTAL_BYTES {
+            return Err(StoreError::CustomIconQuota);
+        }
+        Ok(existing.cloned())
+    }
+
+    /// Delete one custom icon. Missing icons are an honest no-op.
+    pub fn delete_custom_icon(&self, target: &CustomIconTarget) -> Result<bool> {
+        self.delete_local_metadata(&LocalMetadataKey::CustomIcon(target.clone()))
+    }
+
     /// Insert or replace one independently sealed local metadata record.
     pub fn put_local_metadata(
         &self,
@@ -520,6 +617,9 @@ impl Store {
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
         record.validate()?;
+        if let LocalMetadataRecord::CustomIcon(icon) = record {
+            self.validate_custom_icon_quota(icon)?;
+        }
         let key = record.key();
         let existing = self
             .local_metadata_rows()?
@@ -767,11 +867,17 @@ impl Store {
         let rows = self.local_metadata_rows()?;
         let mut folder_row = None;
         let mut assignment_rows = Vec::new();
+        let mut icon_row = None;
         for (rowid, record) in rows {
             match record {
                 LocalMetadataRecord::Folder(folder) if folder.id == *id => folder_row = Some(rowid),
                 LocalMetadataRecord::FolderAssignment(assignment) if assignment.folder == *id => {
                     assignment_rows.push(rowid)
+                }
+                LocalMetadataRecord::CustomIcon(icon)
+                    if icon.target == CustomIconTarget::Folder(*id) =>
+                {
+                    icon_row = Some(rowid)
                 }
                 _ => {}
             }
@@ -780,6 +886,12 @@ impl Store {
         let count = assignment_rows.len();
         let tx = self.conn.unchecked_transaction()?;
         for rowid in assignment_rows {
+            tx.execute(
+                "DELETE FROM local_metadata WHERE rowid_ = ?1",
+                params![rowid],
+            )?;
+        }
+        if let Some(rowid) = icon_row {
             tx.execute(
                 "DELETE FROM local_metadata WHERE rowid_ = ?1",
                 params![rowid],
@@ -1916,6 +2028,76 @@ mod label_tests {
             .unwrap();
         }
         tx.commit().unwrap();
+    }
+
+    fn icon_for(target: CustomIconTarget, bytes: usize) -> CustomIconRecord {
+        CustomIconRecord {
+            target,
+            media_type: CUSTOM_ICON_MEDIA_TYPE.to_owned(),
+            bytes: vec![0x5a; bytes],
+        }
+    }
+
+    #[test]
+    fn custom_icons_enforce_idempotency_replacement_and_count_at_every_write_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, mut rng) = store_at(&dir.path().join("icons-count.db"), 0xb130);
+        let note = icon_for(CustomIconTarget::NoteToSelf, 7);
+        assert!(store.set_custom_icon(&note, &mut rng).unwrap());
+        assert!(!store.set_custom_icon(&note, &mut rng).unwrap());
+        let replacement = icon_for(CustomIconTarget::NoteToSelf, 13);
+        assert!(store.set_custom_icon(&replacement, &mut rng).unwrap());
+        assert_eq!(store.custom_icon_usage().unwrap(), (1, 13));
+        assert_eq!(
+            store.custom_icon(&CustomIconTarget::NoteToSelf).unwrap(),
+            Some(replacement)
+        );
+
+        let records = (0..MAX_CUSTOM_ICONS - 1).map(|index| {
+            let mut id = [0u8; 16];
+            id[..8].copy_from_slice(&(index as u64).to_be_bytes());
+            LocalMetadataRecord::CustomIcon(icon_for(CustomIconTarget::Folder(id), 1))
+        });
+        insert_direct(&store, records, &mut rng);
+        assert_eq!(store.custom_icon_usage().unwrap().0, MAX_CUSTOM_ICONS);
+        let overflow =
+            LocalMetadataRecord::CustomIcon(icon_for(CustomIconTarget::Contact([9; 32]), 1));
+        assert!(matches!(
+            store.put_local_metadata(&overflow, &mut rng),
+            Err(StoreError::CustomIconLimit)
+        ));
+        assert!(matches!(
+            store.set_custom_icon(&icon_for(CustomIconTarget::Group([8; 32]), 1), &mut rng,),
+            Err(StoreError::CustomIconLimit)
+        ));
+    }
+
+    #[test]
+    fn custom_icons_enforce_aggregate_quota_at_low_level_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, mut rng) = store_at(&dir.path().join("icons-quota.db"), 0xb131);
+        let records = (0..(MAX_CUSTOM_ICON_TOTAL_BYTES / MAX_CUSTOM_ICON_BYTES)).map(|index| {
+            let mut id = [0u8; 32];
+            id[..8].copy_from_slice(&(index as u64).to_be_bytes());
+            LocalMetadataRecord::CustomIcon(icon_for(
+                CustomIconTarget::Contact(id),
+                MAX_CUSTOM_ICON_BYTES,
+            ))
+        });
+        insert_direct(&store, records, &mut rng);
+        assert_eq!(
+            store.custom_icon_usage().unwrap(),
+            (
+                MAX_CUSTOM_ICON_TOTAL_BYTES / MAX_CUSTOM_ICON_BYTES,
+                MAX_CUSTOM_ICON_TOTAL_BYTES,
+            )
+        );
+        let overflow =
+            LocalMetadataRecord::CustomIcon(icon_for(CustomIconTarget::Group([7; 32]), 1));
+        assert!(matches!(
+            store.put_local_metadata(&overflow, &mut rng),
+            Err(StoreError::CustomIconQuota)
+        ));
     }
 
     #[test]

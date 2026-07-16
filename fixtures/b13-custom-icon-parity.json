@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "target_types": ["contact", "group", "folder", "note_to_self"],
+  "fallback": "generated_initials",
+  "bundled_glyphs": [
+    "person",
+    "group",
+    "folder",
+    "note",
+    "star",
+    "heart",
+    "shield",
+    "compass"
+  ],
+  "input": {
+    "formats": ["image/jpeg", "image/png"],
+    "max_encoded_bytes": 33554432,
+    "max_dimension": 4096,
+    "max_pixels": 12000000,
+    "animated_png": false,
+    "default_crop": "centered_square",
+    "explicit_crop": "oriented_square_pixels"
+  },
+  "canonical_output": {
+    "media_type": "image/png",
+    "width": 256,
+    "height": 256,
+    "bit_depth": 8,
+    "color_type": "rgba",
+    "interlaced": false,
+    "allowed_chunks": ["IHDR", "IDAT", "IEND"],
+    "max_encoded_bytes": 524288
+  },
+  "sealed_quota": {
+    "max_records": 1024,
+    "max_total_encoded_bytes": 67108864,
+    "one_per_exact_target": true
+  },
+  "network_behavior": {
+    "avatar_urls": false,
+    "peer_sync": false,
+    "envelopes": 0,
+    "queue_items": 0,
+    "capability_changes": 0,
+    "transport_work": 0
+  },
+  "backup": "KKR4"
+}

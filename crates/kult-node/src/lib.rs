@@ -63,6 +63,7 @@ mod carrier;
 mod error;
 mod folders;
 mod groups;
+mod icons;
 mod labels;
 mod pins;
 mod theme;
@@ -71,19 +72,22 @@ mod vault;
 pub use api::{
     AttachmentConversation, AttachmentDirection, AttachmentInfo, AttachmentMetadata,
     AttachmentObjectInfo, CarrierCapability, CarrierCapabilitySnapshot, Command, ContentStatus,
-    Event, FolderConversationInfo, FolderConversationList, FolderInfo, FolderSelection, GroupInfo,
-    GroupMentionCapability, LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode,
-    MentionCapabilityIssue, MentionCapabilityIssueReason, MentionSpan, PinConversationInfo,
-    PinConversationList, PinInfo, ScheduledConversation, ScheduledMessageInfo, StaleFolderInfo,
+    CustomIconCrop, CustomIconInfo, CustomIconUsage, Event, FolderConversationInfo,
+    FolderConversationList, FolderInfo, FolderSelection, GroupInfo, GroupMentionCapability,
+    LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode, MentionCapabilityIssue,
+    MentionCapabilityIssueReason, MentionSpan, PinConversationInfo, PinConversationList, PinInfo,
+    ScheduledConversation, ScheduledMessageInfo, StaleFolderInfo,
     StaleFolderReason as NodeStaleFolderReason, StaleLabelInfo,
     StaleLabelReason as NodeStaleLabelReason,
 };
 pub use error::NodeError;
 pub use kult_store::{
-    ConversationId as LabelConversationId, ThemePreference, FOLDER_ID_RETRY_LIMIT, LABEL_COLORS,
-    MAX_FOLDERS, MAX_FOLDER_ASSIGNMENTS, MAX_LABELS, MAX_LABELS_PER_CONVERSATION,
-    MAX_LABEL_ASSIGNMENTS, MAX_LOCAL_METADATA_STRING_BYTES, MAX_PINS, NOTE_TO_SELF_CONVERSATION_ID,
-    THEME_PREFERENCES, THEME_PREFERENCE_KEY, THEME_SEMANTIC_ROLES,
+    ConversationId as LabelConversationId, CustomIconTarget, ThemePreference,
+    CUSTOM_ICON_BUNDLED_GLYPHS, CUSTOM_ICON_DIMENSION, CUSTOM_ICON_MEDIA_TYPE,
+    FOLDER_ID_RETRY_LIMIT, LABEL_COLORS, MAX_CUSTOM_ICONS, MAX_CUSTOM_ICON_BYTES,
+    MAX_CUSTOM_ICON_TOTAL_BYTES, MAX_FOLDERS, MAX_FOLDER_ASSIGNMENTS, MAX_LABELS,
+    MAX_LABELS_PER_CONVERSATION, MAX_LABEL_ASSIGNMENTS, MAX_LOCAL_METADATA_STRING_BYTES, MAX_PINS,
+    NOTE_TO_SELF_CONVERSATION_ID, THEME_PREFERENCES, THEME_PREFERENCE_KEY, THEME_SEMANTIC_ROLES,
 };
 
 use vault::PrekeyVault;
