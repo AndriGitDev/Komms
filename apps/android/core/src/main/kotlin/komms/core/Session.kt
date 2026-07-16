@@ -196,6 +196,13 @@ class Session private constructor(private val node: KultNode) {
     /** All stored contacts. */
     fun contacts(): List<Contact> = node.contacts()
 
+    /** Assess a proposed private local petname without mutation. */
+    fun assessContactName(peer: String, name: String) = node.assessContactName(peer, name)
+
+    /** Rename one contact by exact peer id after explicit warning review. */
+    fun renameContact(peer: String, name: String, acceptWarnings: Boolean) =
+        node.renameContact(peer, name, acceptWarnings)
+
     /** Message history with a peer. */
     fun messages(peer: String): List<Message> = node.messagesWith(peer)
 

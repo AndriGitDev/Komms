@@ -86,6 +86,17 @@ pub(crate) enum Msg {
         address: String,
         resp: Resp<[u8; 32]>,
     },
+    AssessContactName {
+        peer: [u8; 32],
+        name: String,
+        resp: Resp<kult_node::ContactNameAssessment>,
+    },
+    RenameContact {
+        peer: [u8; 32],
+        name: String,
+        accept_warnings: bool,
+        resp: Resp<kult_node::ContactNameAssessment>,
+    },
     Send {
         peer: [u8; 32],
         body: Vec<u8>,
@@ -742,6 +753,20 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
             let _ = resp.send(
                 node.add_contact_by_address(&name, &address, now, &mut OsRng)
                     .await
+                    .map_err(fail),
+            );
+        }
+        Msg::AssessContactName { peer, name, resp } => {
+            let _ = resp.send(node.assess_contact_name(&peer, &name).map_err(fail));
+        }
+        Msg::RenameContact {
+            peer,
+            name,
+            accept_warnings,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.rename_contact(&peer, &name, accept_warnings, &mut OsRng)
                     .map_err(fail),
             );
         }

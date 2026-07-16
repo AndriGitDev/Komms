@@ -1432,6 +1432,7 @@ function updateChatHead() {
   $("#chat-name").textContent = isNote ? "Note to self" : isGroup ? (group?.name ?? "") : (contact?.name ?? "");
   $("#chat-verified").hidden = isGroup || isNote || !contact?.verified;
   $("#btn-verify").hidden = isGroup || isNote;
+  $("#btn-rename-contact").hidden = isGroup || isNote;
   $("#btn-hints").hidden = isGroup || isNote;
   $("#btn-group-details").hidden = !isGroup;
   $("#btn-mention").hidden = !isGroup;
@@ -1446,6 +1447,58 @@ function updateChatHead() {
   if (target) renderTargetBadges($("#chat-label-badges"), target);
   else $("#chat-label-badges").replaceChildren();
 }
+
+function contactNameWarningText(assessment) {
+  const messages = [];
+  if (assessment.warnings.includes("duplicate_name")) {
+    messages.push(`${assessment.duplicate_count} other contact${assessment.duplicate_count === 1 ? " has" : "s have"} this exact private petname.`);
+  }
+  if (assessment.warnings.includes("confusable_name")) {
+    messages.push("This name mixes lookalike scripts or resembles another local petname.");
+  }
+  if (assessment.warnings.includes("bidirectional_control")) {
+    messages.push("This name contains directional controls that can change display order.");
+  }
+  if (assessment.warnings.includes("invisible_character")) {
+    messages.push("This name contains invisible formatting characters.");
+  }
+  return messages.join("\n");
+}
+
+$("#btn-rename-contact").addEventListener("click", () => {
+  const peer = state.currentId;
+  const contact = state.contacts.find((candidate) => candidate.peer === peer);
+  if (!peer || !contact) return;
+  const root = openModal(`Rename ${contact.name || "contact"}`, "tpl-rename-contact");
+  const input = root.querySelector('[data-f="name"]');
+  input.value = contact.name;
+  root.querySelector('[data-act="save"]').addEventListener("click", async () => {
+    const error = root.querySelector('[data-f="error"]');
+    error.hidden = true;
+    try {
+      const proposed = input.value;
+      const assessment = await invoke("assess_contact_name", { peer, name: proposed });
+      let acceptWarnings = false;
+      if (assessment.warnings.length > 0) {
+        const warning = contactNameWarningText(assessment);
+        acceptWarnings = window.confirm(`${warning}\n\nStore “${assessment.normalized_name}” anyway? Duplicate names remain separate by peer identity.`);
+        if (!acceptWarnings) return;
+      }
+      const renamed = await invoke("rename_contact", {
+        peer,
+        name: proposed,
+        acceptWarnings,
+      });
+      closeModal();
+      await refreshContacts();
+      await refreshGroups();
+      toast(`Private petname changed to ${renamed.normalized_name}`);
+    } catch (e) {
+      error.textContent = String(e);
+      error.hidden = false;
+    }
+  });
+});
 
 $("#btn-conversation-pin").addEventListener("click", async () => {
   const target = labelTarget();
@@ -2342,6 +2395,10 @@ listen("node-event", async ({ payload: ev }) => {
     case "contact_added":
       toast("New contact from an incoming handshake — unverified");
       await refreshContacts();
+      break;
+    case "contact_renamed":
+      await refreshContacts();
+      await refreshGroups();
       break;
     case "session_established": {
       const known = state.contacts.some((c) => c.peer === ev.peer);

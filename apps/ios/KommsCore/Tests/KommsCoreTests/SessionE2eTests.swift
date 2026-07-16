@@ -15,6 +15,21 @@ private struct Timeout: Error, CustomStringConvertible {
     var description: String { "timed out waiting for \(what)" }
 }
 
+private struct ContactRenameParityFixture: Decodable {
+    let decomposedName: String
+    let normalizedName: String
+    let duplicateName: String
+
+    static func load() throws -> Self {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let data = try Data(contentsOf: root.appendingPathComponent("fixtures/b5-contact-rename-parity.json"))
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(Self.self, from: data)
+    }
+}
+
 private struct LabelParityFixture: Decodable {
     let duplicateName: String
     let createColors: [String]
@@ -308,6 +323,44 @@ private func imageRecipe() -> ImageEditRecipe {
 }
 
 final class SessionE2eTests: XCTestCase {
+    func testPrivateContactRenameIsNormalizedWarnedDuplicateCapableAndRestartSafe() throws {
+        let fixture = try ContactRenameParityFixture.load()
+        let dir = try tempDir()
+        let events = Events()
+        var alice = try open(dir, "contact-rename-alice", events)
+        let bob = try open(dir, "contact-rename-bob", Events())
+        _ = try alice.addContact(name: fixture.duplicateName, bundleHex: alice.myBundleHex(), hints: [])
+        let bobPeer = try alice.addContact(name: "Bob", bundleHex: bob.myBundleHex(), hints: [])
+        let queuedBefore = try alice.status().queued
+
+        let normalized = try alice.renameContact(
+            peer: bobPeer, name: fixture.decomposedName, acceptWarnings: false)
+        XCTAssertEqual(fixture.normalizedName, normalized.normalizedName)
+        XCTAssertTrue(normalized.changedByNormalization)
+
+        let duplicate = try alice.assessContactName(peer: bobPeer, name: fixture.duplicateName)
+        XCTAssertEqual(1, duplicate.duplicateCount)
+        XCTAssertEqual([.duplicateName], duplicate.warnings)
+        XCTAssertThrowsError(try alice.renameContact(
+            peer: bobPeer, name: fixture.duplicateName, acceptWarnings: false))
+        _ = try alice.renameContact(
+            peer: bobPeer, name: fixture.duplicateName, acceptWarnings: true)
+        XCTAssertEqual(2, try alice.contacts().filter { $0.name == fixture.duplicateName }.count)
+        _ = try events.wait("contact renamed") { event -> String? in
+            if case .contactRenamed(let peer, _) = event, peer == bobPeer { return peer }
+            return nil
+        }
+        XCTAssertEqual(queuedBefore, try alice.status().queued)
+        alice.stop()
+
+        alice = try open(dir, "contact-rename-alice", Events())
+        XCTAssertEqual(
+            fixture.duplicateName,
+            try alice.contacts().first(where: { $0.peer == bobPeer })?.name)
+        alice.stop()
+        bob.stop()
+    }
+
     func testIncognitoKeyboardPolicyAndEveryIOSFieldAreCoveredBeforeUnlock() throws {
         let fixture = try IncognitoKeyboardParityFixture.load()
         let policy = incognitoKeyboardPolicy(platform: .ios)
@@ -330,7 +383,7 @@ final class SessionE2eTests: XCTestCase {
         let text = try files.map { try String(contentsOf: $0, encoding: .utf8) }.joined(separator: "\n")
         let occurrences = { (needle: String) in text.components(separatedBy: needle).count - 1 }
         let editors = occurrences("TextField(") + occurrences("SecureField(") + occurrences("TextEditor(")
-        XCTAssertEqual(20, editors)
+        XCTAssertEqual(21, editors)
         XCTAssertEqual(editors, occurrences(".incognitoKeyboard("))
         let gate = try String(contentsOf: source.appendingPathComponent("GateView.swift"), encoding: .utf8)
         XCTAssertTrue(gate.contains("SecureField(\"24-word mnemonic\""))

@@ -60,6 +60,7 @@ use kult_transport::{CostClass, DeliveryHint, Discovery, Reachability, Transport
 mod api;
 mod attachment;
 mod carrier;
+mod contact_names;
 mod error;
 mod folders;
 mod groups;
@@ -82,6 +83,7 @@ pub use api::{
     StaleFolderReason as NodeStaleFolderReason, StaleLabelInfo,
     StaleLabelReason as NodeStaleLabelReason,
 };
+pub use contact_names::{ContactNameAssessment, ContactNameWarning, MAX_CONTACT_NAME_BYTES};
 pub use error::NodeError;
 pub use incognito_keyboard::{
     incognito_keyboard_policy, IncognitoKeyboardLevel, IncognitoKeyboardPlatform,
@@ -639,6 +641,7 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 32]> {
+        let name = contact_names::normalize_contact_name(name)?;
         let verified = PrekeyBundle::decode(bundle_bytes)?.verify(now)?;
         let peer = verified.bundle().identity.ed;
         let identity = postcard::to_allocvec(&verified.bundle().identity)
@@ -647,7 +650,7 @@ impl Node {
             &ContactRecord {
                 peer,
                 identity,
-                name: name.to_owned(),
+                name,
                 bundle: bundle_bytes.to_vec(),
                 hints: encode_hints(hints),
                 verified: false,
@@ -655,6 +658,50 @@ impl Node {
             rng,
         )?;
         Ok(peer)
+    }
+
+    /// Validate and assess one proposed private local petname without mutation.
+    pub fn assess_contact_name(
+        &self,
+        peer: &[u8; 32],
+        proposed_name: &str,
+    ) -> Result<ContactNameAssessment> {
+        if self.store.get_contact(peer)?.is_none() {
+            return Err(NodeError::UnknownPeer);
+        }
+        contact_names::assess_contact_name(peer, proposed_name, &self.store.contacts()?)
+    }
+
+    /// Rename one stored contact locally by exact peer identity.
+    ///
+    /// Duplicate names remain valid. Any deterministic spoofing or duplicate
+    /// warning must be explicitly acknowledged by the caller before the sealed
+    /// contact blob is replaced. No envelope, capability, receipt, or transport
+    /// work is created.
+    pub fn rename_contact(
+        &mut self,
+        peer: &[u8; 32],
+        proposed_name: &str,
+        accept_warnings: bool,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<ContactNameAssessment> {
+        let assessment = self.assess_contact_name(peer, proposed_name)?;
+        if !assessment.warnings.is_empty() && !accept_warnings {
+            return Err(NodeError::ContactNameReviewRequired);
+        }
+        let mut contact = self
+            .store
+            .get_contact(peer)?
+            .ok_or(NodeError::UnknownPeer)?;
+        if contact.name != assessment.normalized_name {
+            contact.name.clone_from(&assessment.normalized_name);
+            self.store.put_contact(&contact, rng)?;
+            self.events.push_back(Event::ContactRenamed {
+                peer: *peer,
+                name: assessment.normalized_name.clone(),
+            });
+        }
+        Ok(assessment)
     }
 
     /// Replace a contact's delivery hints.
@@ -753,6 +800,13 @@ impl Node {
                 hints,
             } => {
                 self.add_contact(&name, &bundle, &hints, now, rng)?;
+            }
+            Command::RenameContact {
+                peer,
+                name,
+                accept_warnings,
+            } => {
+                self.rename_contact(&peer, &name, accept_warnings, rng)?;
             }
             Command::SetHints { peer, hints } => self.set_hints(&peer, &hints, rng)?,
             Command::MarkVerified { peer } => self.mark_verified(&peer, rng)?,

@@ -137,6 +137,18 @@ public final class Session: @unchecked Sendable {
     /// All stored contacts.
     public func contacts() throws -> [Contact] { try node.contacts() }
 
+    /// Assess a proposed private local petname without mutation.
+    public func assessContactName(peer: String, name: String) throws -> ContactNameAssessment {
+        try node.assessContactName(peer: peer, name: name)
+    }
+
+    /// Rename one contact by exact peer id after explicit warning review.
+    public func renameContact(
+        peer: String, name: String, acceptWarnings: Bool
+    ) throws -> ContactNameAssessment {
+        try node.renameContact(peer: peer, name: name, acceptWarnings: acceptWarnings)
+    }
+
     /// Message history with a peer.
     public func messages(peer: String) throws -> [Message] { try node.messagesWith(peer: peer) }
 

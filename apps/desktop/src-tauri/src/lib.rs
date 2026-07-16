@@ -51,6 +51,8 @@ pub fn run() {
             commands::add_contact,
             commands::add_contact_by_address,
             commands::contacts,
+            commands::assess_contact_name,
+            commands::rename_contact,
             commands::messages,
             commands::send,
             commands::send_recorded_audio,

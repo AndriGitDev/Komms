@@ -528,6 +528,22 @@ async fn handle_op(
                 .map_err(fail)?;
             Ok(json!({ "peer": wire::hex_encode(&peer) }))
         }
+        Op::ContactNameAssessment { peer, name } => {
+            let peer = wire::parse_peer(&peer)?;
+            let assessment = node.assess_contact_name(&peer, &name).map_err(fail)?;
+            Ok(wire::contact_name_assessment_json(&assessment))
+        }
+        Op::RenameContact {
+            peer,
+            name,
+            accept_warnings,
+        } => {
+            let peer = wire::parse_peer(&peer)?;
+            let assessment = node
+                .rename_contact(&peer, &name, accept_warnings, &mut OsRng)
+                .map_err(fail)?;
+            Ok(wire::contact_name_assessment_json(&assessment))
+        }
         Op::Send { peer, body } => {
             let peer = wire::parse_peer(&peer)?;
             let id = node

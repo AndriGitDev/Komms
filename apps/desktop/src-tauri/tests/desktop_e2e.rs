@@ -168,6 +168,93 @@ fn open(dir: &Path, name: &str, events: &Events) -> Session {
 }
 
 #[test]
+fn desktop_private_contact_rename_is_normalized_warned_duplicate_capable_and_durable() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/b5-contact-rename-parity.json"
+    ))
+    .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let events = Events::default();
+    let mut alice = open(directory.path(), "contact-rename-alice", &events);
+    let bob = open(directory.path(), "contact-rename-bob", &Events::default());
+    alice
+        .add_contact(
+            fixture["duplicate_name"].as_str().unwrap().to_owned(),
+            &alice.my_bundle().unwrap().hex,
+            &[],
+        )
+        .unwrap();
+    let bob_peer = alice
+        .add_contact("Bob".to_owned(), &bob.my_bundle().unwrap().hex, &[])
+        .unwrap();
+    let queued_before = alice.status().unwrap().queued;
+
+    let normalized = alice
+        .rename_contact(
+            bob_peer.clone(),
+            fixture["decomposed_name"].as_str().unwrap().to_owned(),
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        normalized.normalized_name,
+        fixture["normalized_name"].as_str().unwrap()
+    );
+    assert!(normalized.changed_by_normalization);
+    let duplicate = alice
+        .assess_contact_name(
+            bob_peer.clone(),
+            fixture["duplicate_name"].as_str().unwrap().to_owned(),
+        )
+        .unwrap();
+    assert_eq!(duplicate.duplicate_count, 1);
+    assert_eq!(duplicate.warnings, ["duplicate_name"]);
+    assert!(alice
+        .rename_contact(
+            bob_peer.clone(),
+            fixture["duplicate_name"].as_str().unwrap().to_owned(),
+            false,
+        )
+        .is_err());
+    alice
+        .rename_contact(
+            bob_peer.clone(),
+            fixture["duplicate_name"].as_str().unwrap().to_owned(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(
+        alice
+            .contacts()
+            .unwrap()
+            .into_iter()
+            .filter(|contact| contact.name == fixture["duplicate_name"].as_str().unwrap())
+            .count(),
+        2
+    );
+    events.wait("contact renamed", |event| {
+        matches!(event, UiEvent::ContactRenamed { peer, name }
+            if peer == &bob_peer && name == fixture["duplicate_name"].as_str().unwrap())
+    });
+    assert_eq!(alice.status().unwrap().queued, queued_before);
+    alice.stop();
+
+    alice = open(directory.path(), "contact-rename-alice", &Events::default());
+    assert_eq!(
+        alice
+            .contacts()
+            .unwrap()
+            .into_iter()
+            .find(|contact| contact.peer == bob_peer)
+            .unwrap()
+            .name,
+        fixture["duplicate_name"].as_str().unwrap()
+    );
+    alice.stop();
+    bob.stop();
+}
+
+#[test]
 fn desktop_screen_security_is_always_on_best_effort_with_rapid_lock() {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../fixtures/b14-screen-security-parity.json"
@@ -230,7 +317,7 @@ fn desktop_incognito_keyboard_covers_every_editable_text_field_before_unlock() {
         - html
             .matches("<textarea class=\"share-hex\" rows=\"4\" readonly")
             .count();
-    assert_eq!(24, editable_text_fields);
+    assert_eq!(25, editable_text_fields);
     assert_eq!(
         editable_text_fields,
         html.matches("data-incognito-input=").count()

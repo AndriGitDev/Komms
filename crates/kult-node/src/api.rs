@@ -306,6 +306,15 @@ pub enum Command {
         /// How to reach them, per transport.
         hints: Vec<DeliveryHint>,
     },
+    /// Rename a stored contact's private local petname by exact peer identity.
+    RenameContact {
+        /// The contact; display names are never accepted as targets.
+        peer: [u8; 32],
+        /// Proposed UTF-8 petname; the node stores its NFC form.
+        name: String,
+        /// Explicit acknowledgement of duplicate/spoofing warnings.
+        accept_warnings: bool,
+    },
     /// Replace a contact's delivery hints.
     SetHints {
         /// The contact.
@@ -685,6 +694,13 @@ pub enum Event {
     ContactAdded {
         /// The new peer (Ed25519 identity key bytes).
         peer: [u8; 32],
+    },
+    /// A contact's sealed private local petname changed.
+    ContactRenamed {
+        /// Exact stable peer identity.
+        peer: [u8; 32],
+        /// Canonical NFC petname now stored locally.
+        name: String,
     },
     /// A ratchet session with this peer was (re-)established from an inbound
     /// handshake. A *re*-establishment for a known contact means their key

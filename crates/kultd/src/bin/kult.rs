@@ -25,6 +25,10 @@ COMMANDS:
                                 [--mesh NODE|broadcast]...
                                     add a contact from an out-of-band bundle
     add NAME ADDRESS                add a contact from a kult address (DHT)
+    contact-name-check PEER_HEX NAME...
+                                    preview NFC form and local spoofing/duplicate warnings
+    contact-rename PEER_HEX [--accept-warnings] NAME...
+                                    rename one private local petname; warning review is explicit
     send PEER_HEX TEXT...           queue a message
     attachment-send PEER_HEX PATH MEDIA_TYPE [FILENAME]
                                     import and queue a pairwise attachment
@@ -301,6 +305,30 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
         "add" => {
             need(2)?;
             json!({ "op": "add_by_address", "name": args[0], "address": args[1] })
+        }
+        "contact-name-check" => {
+            need(2)?;
+            json!({
+                "op": "contact_name_assessment",
+                "peer": args[0],
+                "name": args[1..].join(" "),
+            })
+        }
+        "contact-rename" => {
+            need(2)?;
+            let accept_warnings = args
+                .get(1)
+                .is_some_and(|value| value == "--accept-warnings");
+            let name_start = if accept_warnings { 2 } else { 1 };
+            if args.len() <= name_start {
+                return Err("contact-rename: missing name".to_owned());
+            }
+            json!({
+                "op": "rename_contact",
+                "peer": args[0],
+                "name": args[name_start..].join(" "),
+                "accept_warnings": accept_warnings,
+            })
         }
         "send" => {
             need(2)?;
@@ -1089,6 +1117,42 @@ mod tests {
             build_request("carriers", &[]).unwrap(),
             json!({ "op": "carrier_capabilities" })
         );
+        let peer = "ca".repeat(32);
+        assert_eq!(
+            build_request(
+                "contact-name-check",
+                &[peer.clone(), "Cafe\u{301}".to_owned()]
+            )
+            .unwrap(),
+            json!({
+                "op": "contact_name_assessment",
+                "peer": peer,
+                "name": "Cafe\u{301}",
+            })
+        );
+        assert_eq!(
+            build_request(
+                "contact-rename",
+                &[
+                    peer.clone(),
+                    "--accept-warnings".to_owned(),
+                    "same".to_owned(),
+                    "name".to_owned(),
+                ]
+            )
+            .unwrap(),
+            json!({
+                "op": "rename_contact",
+                "peer": peer,
+                "name": "same name",
+                "accept_warnings": true,
+            })
+        );
+        assert!(build_request(
+            "contact-rename",
+            &["ca".repeat(32), "--accept-warnings".to_owned()]
+        )
+        .is_err());
         assert_eq!(
             build_request("note", &["remember".to_owned(), "this".to_owned()]).unwrap(),
             json!({ "op": "note_to_self_send", "body": "remember this" })

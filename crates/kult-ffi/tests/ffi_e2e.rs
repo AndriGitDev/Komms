@@ -13,13 +13,13 @@ use std::time::{Duration, Instant};
 use kult_ffi::{
     default_config, edit_image, incognito_keyboard_policy, probe_edited_image,
     probe_recorded_audio, screen_security_policy, AttachmentDirection, AttachmentState,
-    CarrierCapability, Config, ContentKind, CustomIconCrop, CustomIconTarget, CustomIconTargetKind,
-    DeliveryState, Event, EventListener, FfiError, FolderErrorCode, FolderSelection,
-    FolderSelectionKind, FolderTarget, FolderTargetKind, Hint, ImageCrop, ImageEditRecipe,
-    ImageEditRegion, ImageEditRegionKind, IncognitoKeyboardLevel, IncognitoKeyboardPlatform,
-    KdfChoice, KultNode, LabelErrorCode, LabelMatchMode, LabelTarget, LabelTargetKind, MentionSpan,
-    PinErrorCode, PinTarget, PinTargetKind, ScheduledConversation, ScreenSecurityLevel,
-    ScreenSecurityPlatform, ThemePreference,
+    CarrierCapability, Config, ContactNameWarning, ContentKind, CustomIconCrop, CustomIconTarget,
+    CustomIconTargetKind, DeliveryState, Event, EventListener, FfiError, FolderErrorCode,
+    FolderSelection, FolderSelectionKind, FolderTarget, FolderTargetKind, Hint, ImageCrop,
+    ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, IncognitoKeyboardLevel,
+    IncognitoKeyboardPlatform, KdfChoice, KultNode, LabelErrorCode, LabelMatchMode, LabelTarget,
+    LabelTargetKind, MentionSpan, PinErrorCode, PinTarget, PinTargetKind, ScheduledConversation,
+    ScreenSecurityLevel, ScreenSecurityPlatform, ThemePreference,
 };
 
 fn label_parity_fixture() -> serde_json::Value {
@@ -61,6 +61,100 @@ fn incognito_keyboard_parity_fixture() -> serde_json::Value {
         "../../../fixtures/b15-incognito-keyboard-parity.json"
     ))
     .expect("valid shared B15 incognito-keyboard fixture")
+}
+
+fn contact_rename_parity_fixture() -> serde_json::Value {
+    serde_json::from_str(include_str!(
+        "../../../fixtures/b5-contact-rename-parity.json"
+    ))
+    .expect("valid shared B5 contact-rename fixture")
+}
+
+#[test]
+fn contact_rename_is_normalized_warned_private_and_duplicate_capable_via_ffi() {
+    let fixture = contact_rename_parity_fixture();
+    let directory = tempfile::tempdir().unwrap();
+    let events = Recorder::default();
+    let alice = KultNode::start(
+        test_config(directory.path(), "contact-rename-alice"),
+        Box::new(events.clone()),
+    )
+    .unwrap();
+    let bob = KultNode::start(
+        test_config(directory.path(), "contact-rename-bob"),
+        Box::new(Recorder::default()),
+    )
+    .unwrap();
+    let carol = KultNode::start(
+        test_config(directory.path(), "contact-rename-carol"),
+        Box::new(Recorder::default()),
+    )
+    .unwrap();
+    let bob_peer = alice
+        .add_contact("Bob".to_owned(), bob.handshake_bundle().unwrap(), vec![])
+        .unwrap();
+    let carol_peer = alice
+        .add_contact(
+            fixture["duplicate_name"].as_str().unwrap().to_owned(),
+            carol.handshake_bundle().unwrap(),
+            vec![],
+        )
+        .unwrap();
+    assert_ne!(bob_peer, carol_peer);
+    let queued_before = alice.status().unwrap().queued;
+
+    let normalized = alice
+        .rename_contact(
+            bob_peer.clone(),
+            fixture["decomposed_name"].as_str().unwrap().to_owned(),
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        normalized.normalized_name,
+        fixture["normalized_name"].as_str().unwrap()
+    );
+    assert!(normalized.changed_by_normalization);
+
+    let duplicate = alice
+        .assess_contact_name(
+            bob_peer.clone(),
+            fixture["duplicate_name"].as_str().unwrap().to_owned(),
+        )
+        .unwrap();
+    assert_eq!(duplicate.duplicate_count, 1);
+    assert_eq!(duplicate.warnings, vec![ContactNameWarning::DuplicateName]);
+    assert!(alice
+        .rename_contact(
+            bob_peer.clone(),
+            fixture["duplicate_name"].as_str().unwrap().to_owned(),
+            false,
+        )
+        .is_err());
+    alice
+        .rename_contact(
+            bob_peer.clone(),
+            fixture["duplicate_name"].as_str().unwrap().to_owned(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(
+        alice
+            .contacts()
+            .unwrap()
+            .into_iter()
+            .filter(|contact| { contact.name == fixture["duplicate_name"].as_str().unwrap() })
+            .count(),
+        2
+    );
+    assert_eq!(alice.status().unwrap().queued, queued_before);
+    events.wait("contact renamed", |event| {
+        matches!(event, Event::ContactRenamed { peer, name }
+            if peer == &bob_peer && name == fixture["duplicate_name"].as_str().unwrap())
+    });
+    alice.stop();
+    bob.stop();
+    carol.stop();
 }
 
 #[test]

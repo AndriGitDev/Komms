@@ -1,0 +1,15 @@
+{
+  "max_utf8_bytes": 256,
+  "decomposed_name": "Café",
+  "normalized_name": "Café",
+  "duplicate_name": "same name",
+  "confusable_name": "pаypal",
+  "confusable_warning": "confusable_name",
+  "duplicate_warning": "duplicate_name",
+  "privacy": {
+    "sealed_local_only": true,
+    "duplicate_capable": true,
+    "mutation_target": "peer_id",
+    "creates_delivery_work": false
+  }
+}

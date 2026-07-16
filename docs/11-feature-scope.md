@@ -42,9 +42,12 @@ status and prerequisites are tracked in the delivery plan.
   because users ask for it by name.
 - **Usernames / contact names.** Identity is a keypair and the authoritative
   human label is a local petname, never a phone number or central-registry name
-  (see [06: Identity & Trust](06-identity-trust.md)). An optional signed
-  self-display name may later be advertised as a non-unique suggestion, but it
-  never silently overrides the recipient's petname.
+  (see [06: Identity & Trust](06-identity-trust.md)). B5 local rename is shipped
+  through every interface with NFC normalization, duplicate/confusable/bidi/
+  invisible review, exact peer targeting, restart durability, and zero network
+  work. An optional signed self-display name may later be advertised as a
+  non-unique suggestion, but it is not implemented and could never silently
+  override the recipient's petname.
 - **Secure backups.** Shipped: the `KKR4` mnemonic-sealed backup (Argon2id under a
   24-word BIP-39 phrase, ADR-0011/ADR-0012), including sealed local metadata and
   note-to-self history; `KKR1`/`KKR2`/`KKR3` remain restorable. Stored locally or

@@ -13,7 +13,7 @@ are the node's own, verbatim.
   inactive/background transitions, and responds to UIKit capture notifications.
   Settings explicitly state that iOS cannot universally block still screenshots
   and that capture notification is not retroactive.
-- **Reduce keyboard retention on every SwiftUI editor.** All 20 text editors
+- **Reduce keyboard retention on every SwiftUI editor.** All 21 text editors
   disable autocorrection through one audited modifier; message/name fields keep
   only explicit capitalization semantics. Passphrases and recovery mnemonics use
   `SecureField`. Settings state that iOS has no per-field personalized-learning
@@ -24,6 +24,11 @@ are the node's own, verbatim.
   with the camera (or paste the hex, interoperable with the desktop and
   Android apps and `kult bundle` / `kult add`), or add a contact from
   their kult address alone via DHT lookup.
+- **Rename a contact's private local petname** through swipe or context-menu
+  actions. SwiftUI targets the exact peer key, uses the shared incognito field,
+  previews NFC normalization and duplicate/confusable/bidi/invisible warnings,
+  and requires explicit acceptance for risk. Duplicate names remain distinct;
+  restart/`KKR4` preserves the local rename with zero delivery work.
 - **Message** with honest delivery states: `queued` → `sent` (handed to a
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted

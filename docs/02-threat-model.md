@@ -14,7 +14,7 @@ back to a row in this document.
 | **Identity keys** | Long-term Ed25519/X25519 key material that *is* a user's identity. |
 | **Session state** | Ratchet state whose compromise could expose past or future messages. |
 | **Local message history** | Decrypted content visible to an unlocked endpoint and its independently sealed at-rest representation. |
-| **Social graph** | Contact lists and group memberships. |
+| **Social graph** | Contact lists, private local petnames, and group memberships. |
 | **Private organization** | Local folder/label definitions, exact typed conversation pins, stable IDs, order, memberships, selected views/filters, and stale-reference diagnostics. |
 | **Availability** | The ability to communicate at all, including when infrastructure is down or hostile. |
 
@@ -132,6 +132,7 @@ and qualification are in [14: Incognito Keyboard](14-incognito-keyboard.md).
 | **Availability off-grid** | Communication survives infrastructure loss. | Transport abstraction with LoRa mesh + sneakernet fallbacks. |
 | **Local display minimization** | Reduce accidental disclosure from capture and task/app-switcher previews where native APIs permit. | Always-on B14 shell protections and explicit unsupported states; not an endpoint-compromise defense. |
 | **Local input minimization** | Reduce keyboard learning, correction, spellcheck, autofill, and secret-field exposure where native APIs permit. | Always-on B15 field controls and explicit best-effort/unavailable states; not an endpoint-compromise defense. |
+| **Identity-text safety** | Keep mutable human labels from becoming identity or silently hiding spoofing risk. | Exact peer-key targeting, NFC normalization, duplicate/confusable/bidi/invisible warnings, and explicit review for warned B5 renames. |
 | **Sovereignty** | Users hold their own keys and data; anyone can run every component. | Local-first storage, AGPLv3, no privileged nodes. |
 
 Optional Hybrid Infrastructure Layer modes do not change the confidentiality,
@@ -157,6 +158,15 @@ accepted row count and approximate sealed blob sizes. `KKR4` is the only folder,
 pin, or label portability mechanism: none has server or linked-device
 synchronization. Once rendered on an unlocked endpoint, organization text has
 the same bounded A7 exposure as the rest of the user's visible local data.
+
+Contact petnames have the same endpoint-only boundary. Rename rewrites only the
+sealed local contact record and emits a local event; it does not advertise,
+resolve, or synchronize a name. Names may duplicate, so every action targets the
+peer key and interfaces retain disambiguating context. Warning heuristics reduce
+accidental Unicode spoofing but are not a complete UTS #39 implementation and
+cannot make two visually similar labels safe by themselves. A user may
+explicitly accept a warned name; endpoint compromise and deliberate deception
+remain A7 limitations.
 
 Some platform workflows require bounded plaintext transients after unlock—for
 example, an OS picker import, recorder review, image edit, playback, or explicit

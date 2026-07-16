@@ -504,6 +504,54 @@ pub struct Contact {
     pub verified: bool,
 }
 
+/// One deterministic local warning for a proposed contact petname.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ContactNameWarning {
+    /// Another contact already has the same NFC-normalized petname.
+    DuplicateName,
+    /// Mixed scripts or a local lookalike collision may be deceptive.
+    ConfusableName,
+    /// Directional formatting controls can make display order misleading.
+    BidirectionalControl,
+    /// Invisible formatting characters can hide meaningful differences.
+    InvisibleCharacter,
+}
+
+impl From<kult_node::ContactNameWarning> for ContactNameWarning {
+    fn from(value: kult_node::ContactNameWarning) -> Self {
+        match value {
+            kult_node::ContactNameWarning::DuplicateName => Self::DuplicateName,
+            kult_node::ContactNameWarning::ConfusableName => Self::ConfusableName,
+            kult_node::ContactNameWarning::BidirectionalControl => Self::BidirectionalControl,
+            kult_node::ContactNameWarning::InvisibleCharacter => Self::InvisibleCharacter,
+        }
+    }
+}
+
+/// Canonical proposed petname and its local-only review warnings.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ContactNameAssessment {
+    /// NFC value that will be stored after confirmation.
+    pub normalized_name: String,
+    /// Whether canonical normalization changed the proposed scalar sequence.
+    pub changed_by_normalization: bool,
+    /// Ordered warning kinds; empty means no explicit acknowledgement is needed.
+    pub warnings: Vec<ContactNameWarning>,
+    /// Number of other contacts with this exact canonical petname.
+    pub duplicate_count: u32,
+}
+
+impl From<kult_node::ContactNameAssessment> for ContactNameAssessment {
+    fn from(value: kult_node::ContactNameAssessment) -> Self {
+        Self {
+            normalized_name: value.normalized_name,
+            changed_by_normalization: value.changed_by_normalization,
+            warnings: value.warnings.into_iter().map(Into::into).collect(),
+            duplicate_count: value.duplicate_count,
+        }
+    }
+}
+
 /// Exact typed target kind for local folder assignment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum FolderTargetKind {
@@ -1295,6 +1343,13 @@ pub enum Event {
         /// The new peer (hex).
         peer: String,
     },
+    /// A stored contact's sealed private local petname changed.
+    ContactRenamed {
+        /// Exact stable peer id (hex).
+        peer: String,
+        /// Canonical NFC petname now stored locally.
+        name: String,
+    },
     /// A ratchet session with this peer was (re-)established from an
     /// inbound handshake. A *re*-establishment for a known contact means
     /// their key or device changed — surface it.
@@ -1408,6 +1463,10 @@ impl Event {
             },
             kult_node::Event::ContactAdded { peer } => Self::ContactAdded {
                 peer: hex_encode(&peer),
+            },
+            kult_node::Event::ContactRenamed { peer, name } => Self::ContactRenamed {
+                peer: hex_encode(&peer),
+                name,
             },
             kult_node::Event::SessionEstablished { peer } => Self::SessionEstablished {
                 peer: hex_encode(&peer),
@@ -1578,6 +1637,34 @@ impl KultNode {
             resp,
         })
         .map(|peer| hex_encode(&peer))
+    }
+
+    /// Validate and assess a proposed private local petname without mutation.
+    pub fn assess_contact_name(
+        &self,
+        peer: String,
+        name: String,
+    ) -> Result<ContactNameAssessment, FfiError> {
+        let peer = parse_peer(&peer)?;
+        self.call(|resp| Msg::AssessContactName { peer, name, resp })
+            .map(Into::into)
+    }
+
+    /// Rename one contact locally by exact peer id, with explicit warning review.
+    pub fn rename_contact(
+        &self,
+        peer: String,
+        name: String,
+        accept_warnings: bool,
+    ) -> Result<ContactNameAssessment, FfiError> {
+        let peer = parse_peer(&peer)?;
+        self.call(|resp| Msg::RenameContact {
+            peer,
+            name,
+            accept_warnings,
+            resp,
+        })
+        .map(Into::into)
     }
 
     /// Queue a message to a known contact. Returns the message record id

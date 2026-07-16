@@ -15,6 +15,10 @@ pub enum NodeError {
     Transport(kult_transport::TransportError),
     /// The peer is not a stored contact.
     UnknownPeer,
+    /// A local petname is empty, control-bearing, or exceeds its canonical bound.
+    InvalidContactName,
+    /// The proposed petname has warnings that the caller has not acknowledged.
+    ContactNameReviewRequired,
     /// No established session and no stored prekey bundle to start one —
     /// this contact was learned from an inbound handshake that hasn't
     /// completed, or their bundle was never imported.
@@ -69,6 +73,10 @@ impl std::fmt::Display for NodeError {
             Self::Protocol(e) => write!(f, "protocol error: {e}"),
             Self::Transport(e) => write!(f, "transport error: {e}"),
             Self::UnknownPeer => f.write_str("peer is not a stored contact"),
+            Self::InvalidContactName => f.write_str("invalid contact name"),
+            Self::ContactNameReviewRequired => {
+                f.write_str("contact name warnings require explicit confirmation")
+            }
             Self::NoSession => f.write_str("no session and no prekey bundle for this peer"),
             Self::CorruptState => f.write_str("node state missing or corrupt"),
             Self::NoDiscovery => f.write_str("no usable discovery plane"),

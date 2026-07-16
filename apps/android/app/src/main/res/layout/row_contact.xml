@@ -49,4 +49,11 @@
         android:visibility="gone"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content" />
+
+    <Button
+        android:id="@+id/contact_rename"
+        style="?android:attr/buttonBarButtonStyle"
+        android:text="@string/contact_rename_action"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content" />
 </LinearLayout>
