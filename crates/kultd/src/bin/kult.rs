@@ -22,6 +22,8 @@ COMMANDS:
     status                          daemon and node status
     bundle                          export a fresh prekey bundle (hex)
     format-text TEXT...             render the safe local text model as JSON
+    file-presentation MEDIA_TYPE [FILENAME]
+                                    classify untrusted file hints; never scans or opens content
     add-contact NAME BUNDLE_HEX [--hint MULTIADDR]... [--relay MULTIADDR]...
                                 [--mesh NODE|broadcast]...
                                     add a contact from an out-of-band bundle
@@ -297,6 +299,16 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
         "format-text" => {
             need(1)?;
             json!({ "op": "format_text", "source": args.join(" "), "highlights": [] })
+        }
+        "file-presentation" => {
+            if !(1..=2).contains(&args.len()) {
+                return Err("file-presentation: expected MEDIA_TYPE [FILENAME]".to_owned());
+            }
+            json!({
+                "op": "attachment_file_presentation",
+                "media_type": args[0],
+                "filename": args.get(1),
+            })
         }
         "add-contact" => {
             need(2)?;
@@ -1084,6 +1096,24 @@ mod tests {
         assert_eq!(formatted["source"], json!("**safe** <b>literal</b>"));
         assert_eq!(formatted["highlights"], json!([]));
         assert!(build_request("format-text", &[]).is_err());
+
+        let file = build_request(
+            "file-presentation",
+            &["application/pdf".to_owned(), "report.pdf".to_owned()],
+        )
+        .unwrap();
+        assert_eq!(file["op"], json!("attachment_file_presentation"));
+        assert_eq!(file["filename"], json!("report.pdf"));
+        assert!(build_request("file-presentation", &[]).is_err());
+        assert!(build_request(
+            "file-presentation",
+            &[
+                "text/plain".to_owned(),
+                "a.txt".to_owned(),
+                "extra".to_owned()
+            ]
+        )
+        .is_err());
 
         let request = build_request(
             "group-create",

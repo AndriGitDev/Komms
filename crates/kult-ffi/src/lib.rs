@@ -524,6 +524,114 @@ pub enum AttachmentState {
     Unavailable,
 }
 
+/// Inert local category derived from untrusted attachment display hints.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum AttachmentFileKind {
+    /// Still-image hint.
+    Image,
+    /// Audio hint.
+    Audio,
+    /// Video hint.
+    Video,
+    /// Document or textual-data hint.
+    Document,
+    /// Archive hint.
+    Archive,
+    /// Executable, script, installer, or active-document hint.
+    Executable,
+    /// Unrecognized or generic binary hint.
+    Other,
+}
+
+/// Strongest local action permitted for a completed attachment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum AttachmentOpenPolicy {
+    /// Existing bounded protected image/audio rendering may be offered.
+    ProtectedMedia,
+    /// An explicit user action may hand a protected materialization to the OS.
+    ExternalOpen,
+    /// Caller-selected export is the only permitted presentation action.
+    ExportOnly,
+}
+
+/// Stable caution derived from untrusted authenticated file hints.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum AttachmentFileWarning {
+    /// Filename extension and media type disagree.
+    MediaTypeMismatch,
+    /// A hint identifies executable or active content.
+    DangerousType,
+    /// A hint is outside the reviewed type set.
+    UnrecognizedType,
+    /// No filename was supplied for extension comparison.
+    MissingFilename,
+}
+
+/// Shared local presentation decision. It never claims that content is safe.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct AttachmentFilePresentation {
+    /// Inert icon/label category.
+    pub kind: AttachmentFileKind,
+    /// Strongest permitted local action.
+    pub open_policy: AttachmentOpenPolicy,
+    /// Canonically ordered warnings.
+    pub warnings: Vec<AttachmentFileWarning>,
+}
+
+impl AttachmentFilePresentation {
+    fn from_node(value: kult_node::AttachmentFilePresentation) -> Self {
+        Self {
+            kind: match value.kind {
+                kult_node::AttachmentFileKind::Image => AttachmentFileKind::Image,
+                kult_node::AttachmentFileKind::Audio => AttachmentFileKind::Audio,
+                kult_node::AttachmentFileKind::Video => AttachmentFileKind::Video,
+                kult_node::AttachmentFileKind::Document => AttachmentFileKind::Document,
+                kult_node::AttachmentFileKind::Archive => AttachmentFileKind::Archive,
+                kult_node::AttachmentFileKind::Executable => AttachmentFileKind::Executable,
+                kult_node::AttachmentFileKind::Other => AttachmentFileKind::Other,
+            },
+            open_policy: match value.open_policy {
+                kult_node::AttachmentOpenPolicy::ProtectedMedia => {
+                    AttachmentOpenPolicy::ProtectedMedia
+                }
+                kult_node::AttachmentOpenPolicy::ExternalOpen => AttachmentOpenPolicy::ExternalOpen,
+                kult_node::AttachmentOpenPolicy::ExportOnly => AttachmentOpenPolicy::ExportOnly,
+            },
+            warnings: value
+                .warnings
+                .into_iter()
+                .map(|warning| match warning {
+                    kult_node::AttachmentFileWarning::MediaTypeMismatch => {
+                        AttachmentFileWarning::MediaTypeMismatch
+                    }
+                    kult_node::AttachmentFileWarning::DangerousType => {
+                        AttachmentFileWarning::DangerousType
+                    }
+                    kult_node::AttachmentFileWarning::UnrecognizedType => {
+                        AttachmentFileWarning::UnrecognizedType
+                    }
+                    kult_node::AttachmentFileWarning::MissingFilename => {
+                        AttachmentFileWarning::MissingFilename
+                    }
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Apply the shared bounded C1 file-presentation policy without touching
+/// storage, transports, crypto, or the network.
+#[uniffi::export]
+pub fn attachment_file_presentation(
+    media_type: String,
+    filename: Option<String>,
+) -> AttachmentFilePresentation {
+    AttachmentFilePresentation::from_node(kult_node::classify_attachment_file(
+        &media_type,
+        filename.as_deref(),
+    ))
+}
+
 impl AttachmentState {
     fn from_store(state: kult_store::MediaTransferState) -> Self {
         match state {
@@ -554,6 +662,8 @@ pub struct AttachmentObject {
     pub media_type: String,
     /// Optional sanitized display basename.
     pub filename: Option<String>,
+    /// Shared conservative local presentation decision.
+    pub presentation: AttachmentFilePresentation,
     /// Object lifecycle state.
     pub state: AttachmentState,
 }
@@ -608,6 +718,7 @@ impl Attachment {
                     verified_bytes: object.verified_bytes,
                     media_type: object.media_type,
                     filename: object.filename,
+                    presentation: AttachmentFilePresentation::from_node(object.presentation),
                     state: AttachmentState::from_store(object.state),
                 })
                 .collect(),
@@ -3692,6 +3803,10 @@ mod tests {
                     verified_bytes: 0,
                     media_type: "image/png".to_owned(),
                     filename: Some("private.png".to_owned()),
+                    presentation: kult_node::classify_attachment_file(
+                        "image/png",
+                        Some("private.png"),
+                    ),
                     state: kult_store::MediaTransferState::AwaitingConsent,
                 }],
             },

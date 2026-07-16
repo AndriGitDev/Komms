@@ -62,6 +62,7 @@ mod attachment;
 mod carrier;
 mod contact_names;
 mod error;
+mod file_presentation;
 mod folders;
 mod groups;
 mod icons;
@@ -86,6 +87,10 @@ pub use api::{
 };
 pub use contact_names::{ContactNameAssessment, ContactNameWarning, MAX_CONTACT_NAME_BYTES};
 pub use error::NodeError;
+pub use file_presentation::{
+    classify_attachment_file, AttachmentFileKind, AttachmentFilePresentation,
+    AttachmentFileWarning, AttachmentOpenPolicy,
+};
 pub use incognito_keyboard::{
     incognito_keyboard_policy, IncognitoKeyboardLevel, IncognitoKeyboardPlatform,
     IncognitoKeyboardPolicy, INCOGNITO_KEYBOARD_PROTECTED_FIELDS,

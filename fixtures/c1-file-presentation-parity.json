@@ -1,0 +1,67 @@
+{
+  "cases": [
+    {
+      "media_type": "application/pdf",
+      "filename": "report.pdf",
+      "kind": "document",
+      "open_policy": "external_open",
+      "warnings": []
+    },
+    {
+      "media_type": "image/png",
+      "filename": "photo.png",
+      "kind": "image",
+      "open_policy": "protected_media",
+      "warnings": []
+    },
+    {
+      "media_type": "audio/mpeg",
+      "filename": "field-note.mp3",
+      "kind": "audio",
+      "open_policy": "external_open",
+      "warnings": []
+    },
+    {
+      "media_type": "application/zip",
+      "filename": "evidence.zip",
+      "kind": "archive",
+      "open_policy": "external_open",
+      "warnings": []
+    },
+    {
+      "media_type": "application/pdf",
+      "filename": "invoice.pdf.exe",
+      "kind": "executable",
+      "open_policy": "export_only",
+      "warnings": ["media_type_mismatch", "dangerous_type"]
+    },
+    {
+      "media_type": "text/html",
+      "filename": "page.html",
+      "kind": "executable",
+      "open_policy": "export_only",
+      "warnings": ["dangerous_type"]
+    },
+    {
+      "media_type": "application/octet-stream",
+      "filename": "payload.bin",
+      "kind": "other",
+      "open_policy": "export_only",
+      "warnings": ["unrecognized_type"]
+    },
+    {
+      "media_type": "application/pdf",
+      "filename": null,
+      "kind": "document",
+      "open_policy": "export_only",
+      "warnings": ["unrecognized_type", "missing_filename"]
+    },
+    {
+      "media_type": "application/x-custom",
+      "filename": "data.xyz",
+      "kind": "other",
+      "open_policy": "export_only",
+      "warnings": ["unrecognized_type"]
+    }
+  ]
+}

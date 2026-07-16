@@ -1747,6 +1747,24 @@ async function exportAttachment(attachment) {
   toast(`Exported ${primary?.filename ?? "attachment"}`);
 }
 
+async function openAttachment(attachment) {
+  const primary = attachment.objects.find((object) => !object.preview) ?? attachment.objects[0];
+  const name = primary?.filename ?? "attachment";
+  if (!window.confirm(`Open “${name}” with another application? The file was not scanned for malware.`)) return;
+  await call("open_attachment", { transfer: attachment.transfer_id });
+  toast(`Opened ${name}`);
+}
+
+function attachmentWarningText(warning) {
+  switch (warning) {
+    case "media_type_mismatch": return "The filename extension and claimed media type disagree.";
+    case "dangerous_type": return "This name or type can contain executable or active content.";
+    case "unrecognized_type": return "Komms does not recognize this file type.";
+    case "missing_filename": return "No filename was supplied, so its extension cannot be checked.";
+    default: return "This file has an unknown presentation warning.";
+  }
+}
+
 function attachmentRow(attachment) {
   const primary = attachment.objects.find((object) => !object.preview) ?? attachment.objects[0];
   const row = document.createElement("article");
@@ -1763,6 +1781,19 @@ function attachmentRow(attachment) {
   transferState.textContent = `${attachment.direction} · ${attachment.state.replaceAll("_", " ")}`;
   head.append(title, transferState);
   row.append(head);
+
+  const safety = document.createElement("div");
+  safety.className = "attachment-safety";
+  const noScan = document.createElement("p");
+  noScan.textContent = "Sender-provided name and type. Not scanned for malware; completed files never open automatically.";
+  safety.append(noScan);
+  for (const warning of primary?.presentation?.warnings ?? []) {
+    const message = document.createElement("p");
+    message.className = "attachment-warning";
+    message.textContent = attachmentWarningText(warning);
+    safety.append(message);
+  }
+  row.append(safety);
 
   const preview = attachment.objects.find((object) => object.preview && object.state === "complete");
   if (preview) {
@@ -1855,6 +1886,9 @@ function attachmentRow(attachment) {
     }
   }
   if (inbound && attachment.state === "complete") {
+    if (primary?.presentation?.open_policy === "external_open") {
+      actions.append(attachmentButton("Open…", "ghost", () => openAttachment(attachment)));
+    }
     actions.append(attachmentButton("Export…", "primary", () => exportAttachment(attachment)));
   }
   if (actions.childElementCount > 0) row.append(actions);

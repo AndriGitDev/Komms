@@ -158,9 +158,11 @@ and degrade honestly, exactly as the delivery ladder already does.
 - **File sharing.** The bounded F3 pipeline is shipped across desktop, Android,
   and iOS: independently sealed resumable chunks, explicit consent and lifecycle
   controls, protected export, exact progress, and pairwise/encrypt-once group
-  transfer. A hard no-airtime class holds every bulk object for a faster link;
-  richer non-image media presentation remains product polish rather than a new
-  transport design.
+  transfer. Safe generic rows now share a fail-closed filename/media-type policy,
+  explicit warned open for reviewed matches, and export-only handling for active,
+  mismatched, unknown, or nameless files. A hard no-airtime class still holds
+  every bulk object for a faster link; no scanner, remote preview, or new
+  transport behavior is implied.
 - **Linked devices.** One account identity uses separately authenticated device
   keys, per-device sessions, revocation, and deterministic sync. Linking happens
   proximately through a confirmed QR or LAN ceremony, never by copying live

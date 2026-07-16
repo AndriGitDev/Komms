@@ -72,6 +72,7 @@ pub fn run() {
             commands::pause_attachment,
             commands::resume_attachment,
             commands::export_attachment,
+            commands::open_attachment,
             commands::attachment_preview,
             commands::attachment_audio,
             commands::attachment_image,

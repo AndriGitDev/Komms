@@ -166,6 +166,16 @@
     <string name="attachment_resume">Resume</string>
     <string name="attachment_cancel">Cancel</string>
     <string name="attachment_export">Export…</string>
+    <string name="attachment_open">Open…</string>
+    <string name="attachment_open_title">Open completed file</string>
+    <string name="attachment_open_confirmation">Open “%1$s” with another application? The sender-provided file was not scanned for malware.</string>
+    <string name="attachment_open_failed">No application could open this file.</string>
+    <string name="attachment_export_only">This file can only be exported because its name or type is unknown, mismatched, or potentially active.</string>
+    <string name="attachment_safety_notice">Sender-provided name and type. Not scanned for malware; completed files never open automatically.</string>
+    <string name="attachment_warning_mismatch">The filename extension and claimed media type disagree.</string>
+    <string name="attachment_warning_dangerous">This name or type can contain executable or active content.</string>
+    <string name="attachment_warning_unrecognized">Komms does not recognize this file type.</string>
+    <string name="attachment_warning_missing_name">No filename was supplied, so its extension cannot be checked.</string>
     <string name="attachment_state_offered">offered</string>
     <string name="attachment_state_awaiting_consent">awaiting consent</string>
     <string name="attachment_state_queued">queued</string>

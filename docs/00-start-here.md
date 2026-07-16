@@ -63,6 +63,12 @@ and on the wire; each app renders it locally without HTML, clickable links,
 remote images, or background fetches. See
 [Safe Text Formatting](16-safe-text-formatting.md) for the exact promise.
 
+Received files never open automatically. Their displayed name and type are
+sender-provided hints, not a malware verdict. Unknown, mismatched, or active
+types remain export-only; a reviewed matching type still requires an explicit
+warning and user action before operating-system handoff. See
+[Safe File Presentation](17-safe-file-presentation.md).
+
 If you're comfortable with a terminal, the desktop shell is the quickest start:
 
 ```sh

@@ -878,6 +878,20 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
         matches!(event, UiEvent::AttachmentUpdated { attachment }
             if attachment.transfer_id == file_transfer && attachment.state == "complete")
     });
+    let generic = bob
+        .attachments()
+        .unwrap()
+        .into_iter()
+        .find(|attachment| attachment.transfer_id == file_transfer)
+        .unwrap();
+    assert_eq!(generic.objects[0].presentation.kind, "other");
+    assert_eq!(generic.objects[0].presentation.open_policy, "export_only");
+    assert_eq!(
+        generic.objects[0].presentation.warnings,
+        vec!["unrecognized_type"]
+    );
+    let err = bob.open_attachment(file_transfer.clone()).unwrap_err();
+    assert!(err.contains("export only"), "got: {err}");
     let file_export = dir.path().join("desktop-generic-received.bin");
     bob.export_attachment(file_transfer, file_export.display().to_string())
         .unwrap();

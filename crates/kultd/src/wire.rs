@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use kult_node::{
-    AttachmentConversation, AttachmentDirection, AttachmentInfo, CarrierCapability,
+    AttachmentConversation, AttachmentDirection, AttachmentFileKind, AttachmentFilePresentation,
+    AttachmentFileWarning, AttachmentInfo, AttachmentOpenPolicy, CarrierCapability,
     CarrierCapabilitySnapshot, ContactNameAssessment, ContactNameWarning, ContentStatus,
     CustomIconInfo, CustomIconTarget, CustomIconUsage, Event, FolderConversationInfo,
     FolderConversationList, FolderInfo, FolderSelection, GroupInfo, GroupMentionCapability,
@@ -112,6 +113,7 @@ fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
         "pin_reorder" => Some(&["id", "op", "targets"]),
         "pin_conversations" => Some(&["id", "op", "selection", "labels", "mode"]),
         "format_text" => Some(&["id", "op", "source", "highlights"]),
+        "attachment_file_presentation" => Some(&["id", "op", "media_type", "filename"]),
         _ => None,
     }
 }
@@ -133,6 +135,13 @@ pub enum Op {
         /// Optional existing semantic ranges composed as inert highlights.
         #[serde(default)]
         highlights: Vec<TextFormatHighlightInput>,
+    },
+    /// Classify untrusted authenticated attachment hints for inert local UI.
+    AttachmentFilePresentation {
+        /// Exact lower-case media-type hint.
+        media_type: String,
+        /// Optional sanitized display basename.
+        filename: Option<String>,
     },
     /// Add a contact from an out-of-band prekey bundle.
     AddContact {
@@ -1304,8 +1313,35 @@ pub fn attachment_json(attachment: &AttachmentInfo) -> Value {
             "verified_bytes": object.verified_bytes,
             "media_type": object.media_type,
             "filename": object.filename,
+            "presentation": attachment_file_presentation_json(&object.presentation),
             "state": attachment_state_str(object.state),
         })).collect::<Vec<_>>(),
+    })
+}
+
+/// Stable snake-case JSON for the shared C1 file-presentation policy.
+pub fn attachment_file_presentation_json(presentation: &AttachmentFilePresentation) -> Value {
+    json!({
+        "kind": match presentation.kind {
+            AttachmentFileKind::Image => "image",
+            AttachmentFileKind::Audio => "audio",
+            AttachmentFileKind::Video => "video",
+            AttachmentFileKind::Document => "document",
+            AttachmentFileKind::Archive => "archive",
+            AttachmentFileKind::Executable => "executable",
+            AttachmentFileKind::Other => "other",
+        },
+        "open_policy": match presentation.open_policy {
+            AttachmentOpenPolicy::ProtectedMedia => "protected_media",
+            AttachmentOpenPolicy::ExternalOpen => "external_open",
+            AttachmentOpenPolicy::ExportOnly => "export_only",
+        },
+        "warnings": presentation.warnings.iter().map(|warning| match warning {
+            AttachmentFileWarning::MediaTypeMismatch => "media_type_mismatch",
+            AttachmentFileWarning::DangerousType => "dangerous_type",
+            AttachmentFileWarning::UnrecognizedType => "unrecognized_type",
+            AttachmentFileWarning::MissingFilename => "missing_filename",
+        }).collect::<Vec<_>>(),
     })
 }
 
@@ -1680,6 +1716,30 @@ mod tests {
                     ],
                 }],
                 "used_fallback": false,
+            })
+        );
+    }
+
+    #[test]
+    fn file_presentation_rpc_is_strict_and_fail_closed() {
+        let request = parse_request(
+            r#"{"id":10,"op":"attachment_file_presentation","media_type":"application/pdf","filename":"invoice.pdf.exe"}"#,
+        )
+        .unwrap();
+        assert!(matches!(request.op, Op::AttachmentFilePresentation { .. }));
+        assert!(parse_request(
+            r#"{"id":10,"op":"attachment_file_presentation","media_type":"application/pdf","filename":"report.pdf","scan":true}"#,
+        )
+        .is_err());
+
+        let presentation =
+            kult_node::classify_attachment_file("application/pdf", Some("invoice.pdf.exe"));
+        assert_eq!(
+            attachment_file_presentation_json(&presentation),
+            json!({
+                "kind": "executable",
+                "open_policy": "export_only",
+                "warnings": ["media_type_mismatch", "dangerous_type"],
             })
         );
     }

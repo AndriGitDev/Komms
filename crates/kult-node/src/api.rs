@@ -436,6 +436,8 @@ pub struct AttachmentObjectInfo {
     pub media_type: String,
     /// Optional sanitized filename display hint.
     pub filename: Option<String>,
+    /// Conservative local classification of the authenticated display hints.
+    pub presentation: crate::AttachmentFilePresentation,
     /// Durable lifecycle state.
     pub state: MediaTransferState,
 }

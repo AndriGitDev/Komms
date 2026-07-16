@@ -514,6 +514,12 @@ async fn handle_op(
             let formatted = kult_node::format_text(&source, &highlights).map_err(fail)?;
             Ok(wire::formatted_text_json(&formatted))
         }
+        Op::AttachmentFilePresentation {
+            media_type,
+            filename,
+        } => Ok(wire::attachment_file_presentation_json(
+            &kult_node::classify_attachment_file(&media_type, filename.as_deref()),
+        )),
         Op::AddContact {
             name,
             bundle,

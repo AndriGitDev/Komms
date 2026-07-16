@@ -27,6 +27,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import uniffi.kult_ffi.AttachmentConversation
 import uniffi.kult_ffi.AttachmentDirection
 import uniffi.kult_ffi.AttachmentState
+import uniffi.kult_ffi.attachmentFilePresentation
 import uniffi.kult_ffi.ContentKind
 import uniffi.kult_ffi.ContactNameWarning
 import uniffi.kult_ffi.CustomIconCrop
@@ -102,6 +103,12 @@ private fun listenAddr(session: Session): String {
 private fun multiaddrHint(addr: String) = listOf(HintSpec("multiaddr", addr))
 
 class SessionE2eTest {
+    private val filePresentationFixture by lazy {
+        val root = File(checkNotNull(System.getProperty("komms.repo.root")))
+        Json.parseToJsonElement(
+            File(root, "fixtures/c1-file-presentation-parity.json").readText(),
+        ).jsonObject
+    }
     private val textFormattingFixture by lazy {
         val root = File(checkNotNull(System.getProperty("komms.repo.root")))
         Json.parseToJsonElement(File(root, "fixtures/b9-text-formatting-parity.json").readText()).jsonObject
@@ -137,6 +144,30 @@ class SessionE2eTest {
     private val incognitoKeyboardFixture by lazy {
         val root = File(checkNotNull(System.getProperty("komms.repo.root")))
         Json.parseToJsonElement(File(root, "fixtures/b15-incognito-keyboard-parity.json").readText()).jsonObject
+    }
+
+    @Test
+    fun `file presentation policy matches shared fail closed fixture`() {
+        for (case in filePresentationFixture["cases"]!!.jsonArray) {
+            val value = case.jsonObject
+            val filename = value["filename"]
+                ?.jsonPrimitive
+                ?.takeUnless { it.toString() == "null" }
+                ?.content
+            val result = attachmentFilePresentation(
+                value["media_type"]!!.jsonPrimitive.content,
+                filename,
+            )
+            assertEquals(value["kind"]!!.jsonPrimitive.content, result.kind.name.lowercase())
+            assertEquals(
+                value["open_policy"]!!.jsonPrimitive.content,
+                result.openPolicy.name.lowercase(),
+            )
+            assertEquals(
+                value["warnings"]!!.jsonArray.map { it.jsonPrimitive.content },
+                result.warnings.map { it.name.lowercase() },
+            )
+        }
     }
 
     @Test

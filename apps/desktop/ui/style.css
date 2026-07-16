@@ -472,7 +472,16 @@ label.check input { width: auto; margin: 0; }
   gap: 0.55em;
 }
 .attachment-head { justify-content: space-between; }
-.attachment-title { font-weight: 600; word-break: break-word; }
+.attachment-title { font-weight: 600; word-break: break-word; unicode-bidi: isolate; }
+
+.attachment-safety {
+  border-inline-start: 3px solid var(--border);
+  padding-inline-start: 0.65rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.attachment-safety p { margin: 0.15rem 0; }
+.attachment-safety .attachment-warning { color: var(--danger); font-weight: 650; }
 .attachment-state {
   color: var(--text-dim);
   font-size: 0.78em;

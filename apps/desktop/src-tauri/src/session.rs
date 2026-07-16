@@ -25,8 +25,12 @@ use serde::{Deserialize, Serialize};
 
 use kult_ffi::{
     canonicalize_recorded_audio, default_config, edit_image, probe_edited_image,
-    probe_recorded_audio, Attachment, AttachmentConversation, AttachmentDirection, AttachmentState,
-    AudioInfo, CarrierCapability, Config, ContactNameAssessment as FfiContactNameAssessment,
+    probe_recorded_audio, Attachment, AttachmentConversation, AttachmentDirection,
+    AttachmentFileKind as FfiAttachmentFileKind,
+    AttachmentFilePresentation as FfiAttachmentFilePresentation,
+    AttachmentFileWarning as FfiAttachmentFileWarning,
+    AttachmentOpenPolicy as FfiAttachmentOpenPolicy, AttachmentState, AudioInfo,
+    CarrierCapability, Config, ContactNameAssessment as FfiContactNameAssessment,
     ContactNameWarning as FfiContactNameWarning, ContentKind, CustomIcon as FfiCustomIcon,
     CustomIconCrop as FfiCustomIconCrop, CustomIconTarget as FfiCustomIconTarget,
     CustomIconTargetKind as FfiCustomIconTargetKind, DeliveryState, Direction, Event,
@@ -262,6 +266,27 @@ fn cleanup_media_temps() {
             let _ = std::fs::remove_file(entry.path());
         }
     }
+}
+
+fn open_with_system(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(target_os = "linux")]
+    let mut command = std::process::Command::new("xdg-open");
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("rundll32.exe");
+        command.arg("url.dll,FileProtocolHandler");
+        command
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    return Err("external file opening is unavailable on this platform".to_owned());
+
+    command
+        .arg(path)
+        .spawn()
+        .map_err(|error| format!("could not open attachment: {error}"))?;
+    Ok(())
 }
 
 fn generate_preview(path: &Path, media_type: &str) -> Result<Option<PrivateTemp>, String> {
@@ -1252,8 +1277,52 @@ pub struct UiAttachmentObject {
     pub media_type: String,
     /// Optional sanitized display basename.
     pub filename: Option<String>,
+    /// Shared conservative local file-presentation decision.
+    pub presentation: UiAttachmentFilePresentation,
     /// Durable object lifecycle state.
     pub state: &'static str,
+}
+
+/// Stable webview tokens for the shared C1 attachment policy.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiAttachmentFilePresentation {
+    /// Inert icon/label category.
+    pub kind: &'static str,
+    /// `protected_media`, `external_open`, or `export_only`.
+    pub open_policy: &'static str,
+    /// Canonically ordered caution tokens.
+    pub warnings: Vec<&'static str>,
+}
+
+impl UiAttachmentFilePresentation {
+    fn from_ffi(value: FfiAttachmentFilePresentation) -> Self {
+        Self {
+            kind: match value.kind {
+                FfiAttachmentFileKind::Image => "image",
+                FfiAttachmentFileKind::Audio => "audio",
+                FfiAttachmentFileKind::Video => "video",
+                FfiAttachmentFileKind::Document => "document",
+                FfiAttachmentFileKind::Archive => "archive",
+                FfiAttachmentFileKind::Executable => "executable",
+                FfiAttachmentFileKind::Other => "other",
+            },
+            open_policy: match value.open_policy {
+                FfiAttachmentOpenPolicy::ProtectedMedia => "protected_media",
+                FfiAttachmentOpenPolicy::ExternalOpen => "external_open",
+                FfiAttachmentOpenPolicy::ExportOnly => "export_only",
+            },
+            warnings: value
+                .warnings
+                .into_iter()
+                .map(|warning| match warning {
+                    FfiAttachmentFileWarning::MediaTypeMismatch => "media_type_mismatch",
+                    FfiAttachmentFileWarning::DangerousType => "dangerous_type",
+                    FfiAttachmentFileWarning::UnrecognizedType => "unrecognized_type",
+                    FfiAttachmentFileWarning::MissingFilename => "missing_filename",
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Render-safe attachment transfer state for the webview event stream.
@@ -1310,6 +1379,7 @@ impl UiAttachment {
                     verified_bytes: object.verified_bytes,
                     media_type: object.media_type,
                     filename: object.filename,
+                    presentation: UiAttachmentFilePresentation::from_ffi(object.presentation),
                     state: attachment_state_str(object.state),
                 })
                 .collect(),
@@ -1658,6 +1728,7 @@ impl EventListener for Forwarder {
 pub struct Session {
     node: Arc<KultNode>,
     pending_images: Mutex<HashMap<String, PendingImageEdit>>,
+    opened_attachments: Mutex<HashMap<String, PrivateTemp>>,
 }
 
 impl Session {
@@ -1678,6 +1749,7 @@ impl Session {
         Ok(Self {
             node,
             pending_images: Mutex::new(HashMap::new()),
+            opened_attachments: Mutex::new(HashMap::new()),
         })
     }
 
@@ -1699,6 +1771,7 @@ impl Session {
         Ok(Self {
             node,
             pending_images: Mutex::new(HashMap::new()),
+            opened_attachments: Mutex::new(HashMap::new()),
         })
     }
 
@@ -2277,6 +2350,54 @@ impl Session {
         self.node
             .export_attachment(transfer, path)
             .map_err(|e| e.to_string())
+    }
+
+    /// Materialize one completed inbound recognized file into a protected
+    /// transient and hand it to the operating system after explicit user
+    /// action. Suspicious, mismatched, active, or unknown hints remain
+    /// export-only. The transient is retained only for this unlocked session.
+    pub fn open_attachment(&self, transfer: String) -> Result<(), String> {
+        let attachment = self
+            .node
+            .attachments()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|attachment| attachment.transfer_id == transfer)
+            .ok_or_else(|| "attachment is unavailable".to_owned())?;
+        if attachment.direction != AttachmentDirection::Inbound
+            || attachment.state != AttachmentState::Complete
+        {
+            return Err("only completed inbound attachments can be opened".to_owned());
+        }
+        let primary = attachment
+            .objects
+            .into_iter()
+            .find(|object| !object.preview)
+            .ok_or_else(|| "attachment primary object is unavailable".to_owned())?;
+        if primary.presentation.open_policy != FfiAttachmentOpenPolicy::ExternalOpen {
+            return Err("attachment policy permits caller-selected export only".to_owned());
+        }
+        let extension = primary
+            .filename
+            .as_deref()
+            .and_then(|name| Path::new(name).extension())
+            .and_then(|value| value.to_str())
+            .filter(|value| {
+                !value.is_empty()
+                    && value.len() <= 16
+                    && value.as_bytes().iter().all(u8::is_ascii_alphanumeric)
+            })
+            .unwrap_or("bin");
+        let materialized = PrivateTemp::destination(extension)?;
+        self.node
+            .export_attachment(transfer.clone(), materialized.path().display().to_string())
+            .map_err(|error| error.to_string())?;
+        open_with_system(materialized.path())?;
+        self.opened_attachments
+            .lock()
+            .map_err(|_| "opened attachment state is unavailable".to_owned())?
+            .insert(transfer, materialized);
+        Ok(())
     }
 
     /// Decrypt a completed sealed preview into a short-lived protected file,
@@ -3276,6 +3397,11 @@ mod tests {
                     verified_bytes: 0,
                     media_type: "application/octet-stream".to_owned(),
                     filename: Some("notes.bin".to_owned()),
+                    presentation: UiAttachmentFilePresentation {
+                        kind: "other",
+                        open_policy: "export_only",
+                        warnings: vec!["unrecognized_type"],
+                    },
                     state: "awaiting_consent",
                 }],
             },

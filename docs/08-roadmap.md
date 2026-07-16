@@ -394,6 +394,16 @@ receiver rendering/export, and zero manifest/chunk/range or other bulk mesh
 airtime. Video, cloud/generative editing, filters, face recognition, project
 files, and protocol changes remain out of scope.
 
+C1 generic non-image presentation is now shipped without changing ADR-0015's
+wire or carrier contract. One shared Rust policy classifies untrusted filename
+and media-type hints, forces active, mismatched, unknown, or nameless objects to
+export-only, and permits only explicit warned OS handoff for reviewed matching
+types. RPC/CLI, UniFFI, desktop, Android, and iOS expose the same typed decision;
+cross-language fixtures and local two-node lifecycle tests cover exact export,
+resume, no auto-open, protected temporary cleanup, and zero new delivery work.
+Hands-on Android/iOS interaction remains an M5 qualification gate. See
+[17: Safe File Presentation](17-safe-file-presentation.md).
+
 B17 group mentions are shipped end to end under
 [ADR-0016](adr/0016-group-mention-content.md). The immutable kind `0x0003`
 preserves exact fallback UTF-8 plus canonical sorted, non-overlapping UTF-8 byte

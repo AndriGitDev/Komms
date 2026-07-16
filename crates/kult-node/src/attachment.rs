@@ -1569,6 +1569,10 @@ impl Node {
                 preview: object.role == AttachmentRole::Preview as u8,
                 total_bytes: object.total_len,
                 verified_bytes: object.verified_bytes,
+                presentation: crate::classify_attachment_file(
+                    &object.media_type,
+                    object.filename.as_deref(),
+                ),
                 media_type: object.media_type,
                 filename: object.filename,
                 state: object.state,

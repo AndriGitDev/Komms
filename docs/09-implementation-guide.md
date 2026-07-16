@@ -189,6 +189,16 @@ plain-text projection for copy, and must include pairwise, group, note-to-self,
 and scheduled paths. The full contract is
 [16: Safe Text Formatting](16-safe-text-formatting.md).
 
+C1 file presentation is another pure local decision over authenticated but
+untrusted display hints. Rust uses `classify_attachment_file(media_type,
+filename)`; strict RPC uses `attachment_file_presentation`, the CLI uses
+`kult file-presentation`, and UniFFI exposes the same typed record. Shells must
+consume the returned policy, bidi-isolate filenames, never auto-open, never
+claim scanning, and recheck completed inbound state before protected temporary
+materialization. Do not add sniffing, preview, scanner, or transport behavior to
+this API. The complete contract is
+[17: Safe File Presentation](17-safe-file-presentation.md).
+
 ## 4. Testing strategy (beyond per-milestone acceptance)
 
 - **KATs**: primitive test vectors vendored under `crates/kult-crypto/tests/vectors/`.

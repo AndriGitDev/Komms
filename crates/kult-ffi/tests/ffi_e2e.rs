@@ -11,8 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use kult_ffi::{
-    default_config, edit_image, incognito_keyboard_policy, probe_edited_image,
-    probe_recorded_audio, screen_security_policy, AttachmentDirection, AttachmentState,
+    attachment_file_presentation, default_config, edit_image, incognito_keyboard_policy,
+    probe_edited_image, probe_recorded_audio, screen_security_policy, AttachmentDirection,
+    AttachmentFileKind, AttachmentFileWarning, AttachmentOpenPolicy, AttachmentState,
     CarrierCapability, Config, ContactNameWarning, ContentKind, CustomIconCrop, CustomIconTarget,
     CustomIconTargetKind, DeliveryState, Event, EventListener, FfiError, FolderErrorCode,
     FolderSelection, FolderSelectionKind, FolderTarget, FolderTargetKind, Hint, ImageCrop,
@@ -22,6 +23,13 @@ use kult_ffi::{
     ScreenSecurityLevel, ScreenSecurityPlatform, TextFormatBlockKind, TextFormatHighlight,
     ThemePreference,
 };
+
+fn file_presentation_parity_fixture() -> serde_json::Value {
+    serde_json::from_str(include_str!(
+        "../../../fixtures/c1-file-presentation-parity.json"
+    ))
+    .expect("valid shared C1 file-presentation fixture")
+}
 
 fn label_parity_fixture() -> serde_json::Value {
     serde_json::from_str(include_str!("../../../fixtures/b18-label-parity.json"))
@@ -76,6 +84,52 @@ fn text_formatting_parity_fixture() -> serde_json::Value {
         "../../../fixtures/b9-text-formatting-parity.json"
     ))
     .expect("valid shared B9 text-formatting fixture")
+}
+
+#[test]
+fn file_presentation_via_ffi_matches_shared_fail_closed_policy() {
+    let fixture = file_presentation_parity_fixture();
+    for case in fixture["cases"].as_array().unwrap() {
+        let result = attachment_file_presentation(
+            case["media_type"].as_str().unwrap().to_owned(),
+            case["filename"].as_str().map(ToOwned::to_owned),
+        );
+        let kind = match result.kind {
+            AttachmentFileKind::Image => "image",
+            AttachmentFileKind::Audio => "audio",
+            AttachmentFileKind::Video => "video",
+            AttachmentFileKind::Document => "document",
+            AttachmentFileKind::Archive => "archive",
+            AttachmentFileKind::Executable => "executable",
+            AttachmentFileKind::Other => "other",
+        };
+        let policy = match result.open_policy {
+            AttachmentOpenPolicy::ProtectedMedia => "protected_media",
+            AttachmentOpenPolicy::ExternalOpen => "external_open",
+            AttachmentOpenPolicy::ExportOnly => "export_only",
+        };
+        let warnings = result
+            .warnings
+            .into_iter()
+            .map(|warning| match warning {
+                AttachmentFileWarning::MediaTypeMismatch => "media_type_mismatch",
+                AttachmentFileWarning::DangerousType => "dangerous_type",
+                AttachmentFileWarning::UnrecognizedType => "unrecognized_type",
+                AttachmentFileWarning::MissingFilename => "missing_filename",
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(kind, case["kind"].as_str().unwrap());
+        assert_eq!(policy, case["open_policy"].as_str().unwrap());
+        assert_eq!(
+            warnings,
+            case["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_str().unwrap())
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 #[test]

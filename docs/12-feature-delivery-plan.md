@@ -48,7 +48,7 @@ accepted designs before individual shells implement UI.
 | Local still-image editing | Shipped | Keep shared deterministic semantics, cleanup, exact-review, and metadata-removal gates stable; video remains out of scope. |
 | Mentions | Shipped | ADR-0016 canonical peer targets, current-roster composers, conservative group capability gating, and local navigation/notification. |
 | Labels | Shipped (contact/conversation) | Private pairwise, group, and note-to-self labels with fixed limits, stale cleanup, and accessible any/all filtering; message labels remain deferred. |
-| File sharing | Partial | Bounded cross-shell F3 delivery and generic pre-send F4 confirmation are shipped; richer non-image media presentation remains. |
+| File sharing | Shipped | Bounded F3/F4 delivery plus shared fail-closed file rows, explicit warned open/export, mismatch handling, lifecycle cleanup, and cross-language parity. |
 | Linked devices | Planned | Proximate linking, device keys, sync, revocation, and recovery. |
 | Message editing | Planned | Authenticated revisions and deterministic offline reconciliation. |
 | Disappearing/view-once messages | Planned | Expiry semantics, relay metadata design, deletion limits. |
@@ -664,10 +664,11 @@ outside B18.
 
 ### C1. File sharing
 
-**State:** partial. Bounded attachments and the generic pre-send F4 explanation,
+**State:** shipped. Bounded attachments and the generic pre-send F4 explanation,
 fresh verdict recheck, changed-verdict reconfirmation, and explicit send/discard
-flow are shipped across desktop, Android, and iOS. Richer non-image media polish
-remains.
+flow are shipped across desktop, Android, and iOS. Generic non-image rows use one
+shared fail-closed filename/media-type policy with explicit warned open/export,
+protected temporary lifecycle, and no auto-open or scanning claim.
 
 **Depends on:** F2, F3, F4. **Governed by:** ADR-0015.
 
@@ -874,7 +875,7 @@ honest. Parallel work is safe only where rows do not share a foundation.
 | **0: Shared foundations** | Complete | F1–F5 are implemented; ADR-0015 remains formally Proposed despite the shipped attachment pipeline. |
 | **Parallel: mobile reachability** | Design-only | Accept ADR-0017–0019, then implement C8 behind reversible feature gates. |
 | **1: Local-first product polish** | Complete | B5, B7–B15, and B18 are shipped; optional signed self-display suggestions remain a separate format-gated extension to B5. |
-| **2: Typed content and asynchronous media** | Substantially complete | F2/F3, B2, B16, and B17 are shipped; C1 is usable across all shells with richer media polish remaining. |
+| **2: Typed content and asynchronous media** | Complete | F2/F3, B2, B16, B17, and C1 are shipped across the shared core and all three shells; hands-on device evidence remains an M5 release gate. |
 | **3: Replicated conversation features** | Planned | C3, C4, C5, and C6. |
 | **4: Multi-device** | Planned | C2, followed by cross-device hardening of Wave 3. |
 | **5: Real-time media** | Design-only | ADR-0013 spike and C7, restricted to qualified internet/LAN paths. |
@@ -957,14 +958,13 @@ reviewable PR:
    and bounded safe text formatting through every front door and shell;
    ADR-0015's formal status remains Proposed.
 
-The next implementation-ready product slice is the remaining C1 non-image file
-presentation and qualification work over the already shipped F3/F4 pipeline.
-Keep the manifest/chunk/consent/carrier contract unchanged: add safe generic
-file rows and explicit open/export affordances for completed content, stronger
-filename/media-type mismatch handling, accessibility and lifecycle polish, and
-cross-shell malicious-file/large-file/resume qualification without auto-open,
-remote scanning, previews, or new mesh behavior. C3 edits, C4 expiry, C5 polls,
-C6 roles, C2 linked devices, and C7 calls remain behind their stated ADR gates.
+The C1 non-image file presentation slice is shipped over the unchanged F3/F4
+pipeline: safe generic rows, explicit open/export affordances, stronger
+filename/media-type mismatch handling, accessibility/lifecycle behavior, and
+malicious-file/large-file/resume qualification add no auto-open, remote scanning,
+preview, or mesh behavior. The next product programs are C3 edits, C4 expiry,
+C5 polls, C6 roles, C2 linked devices, and C7 calls; each remains behind its
+stated ADR gate until that decision is written and accepted.
 Optional signed self-display suggestions remain deferred behind their separate
 bundle-format ADR and compatibility work.
 Replicated edits/expiry/polls/roles, linked-device identity, real-time media, and

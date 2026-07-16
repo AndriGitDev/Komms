@@ -438,6 +438,10 @@ forward!(
     export_attachment(transfer: String, path: String) -> (), |s| s.export_attachment(transfer, path)
 );
 forward!(
+    /// Explicitly hand a recognized completed inbound file to the operating system.
+    open_attachment(transfer: String) -> (), |s| s.open_attachment(transfer)
+);
+forward!(
     /// Return a completed sealed preview as a bounded data URL.
     attachment_preview(transfer: String) -> String, |s| s.attachment_preview(transfer)
 );

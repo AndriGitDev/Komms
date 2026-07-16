@@ -68,6 +68,40 @@ fn text_formatting_parity_fixture() -> Value {
     .expect("valid shared B9 text-formatting fixture")
 }
 
+fn file_presentation_parity_fixture() -> Value {
+    serde_json::from_str(include_str!(
+        "../../../fixtures/c1-file-presentation-parity.json"
+    ))
+    .expect("valid shared C1 file-presentation fixture")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn file_presentation_via_strict_rpc_matches_shared_fail_closed_policy() {
+    let fixture = file_presentation_parity_fixture();
+    let directory = tempfile::tempdir().unwrap();
+    let daemon = Daemon::start(test_config(directory.path(), "file-presentation-rpc"))
+        .await
+        .unwrap();
+    let mut client = Client::connect(&daemon.socket_path).await;
+    let queued = client.ok(json!({ "op": "status" })).await["queued"].clone();
+
+    for case in fixture["cases"].as_array().unwrap() {
+        let presentation = client
+            .ok(json!({
+                "op": "attachment_file_presentation",
+                "media_type": case["media_type"],
+                "filename": case["filename"],
+            }))
+            .await;
+        assert_eq!(presentation["kind"], case["kind"]);
+        assert_eq!(presentation["open_policy"], case["open_policy"]);
+        assert_eq!(presentation["warnings"], case["warnings"]);
+    }
+
+    assert_eq!(client.ok(json!({ "op": "status" })).await["queued"], queued);
+    daemon.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn safe_text_formatting_via_strict_rpc_matches_shared_corpus_without_delivery_work() {
     let fixture = text_formatting_parity_fixture();

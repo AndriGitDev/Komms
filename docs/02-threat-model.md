@@ -117,6 +117,20 @@ malicious input method, accessibility or overlay abuse, privileged writing
 tools, hardware with its own storage, or external observation. Exact behavior
 and qualification are in [14: Incognito Keyboard](14-incognito-keyboard.md).
 
+### A10: Malicious received files (opportunistic or targeted)
+
+A peer sends active content, a disguised executable, or bytes whose authenticated
+filename and media-type hints are misleading, hoping the recipient or a local
+viewer executes them.
+
+**Defense (bounded):** C1 never auto-opens attachments, marks all names and types
+as untrusted sender claims, makes active/mismatched/unknown/nameless files
+export-only, and requires an unscanned warning plus explicit confirmation for
+the reviewed external-open set. Materialization is app-private and temporary.
+This does not prove content safe, replace malware scanning, sandbox a third-party
+viewer, or defeat A7. Exact behavior is in
+[17: Safe File Presentation](17-safe-file-presentation.md).
+
 ## 3. Security goals
 
 | Goal | Meaning | Mechanism |

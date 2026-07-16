@@ -52,6 +52,55 @@ private struct TextFormattingParityFixture: Decodable {
     }
 }
 
+private struct FilePresentationParityFixture: Decodable {
+    struct Case: Decodable {
+        let mediaType: String
+        let filename: String?
+        let kind: String
+        let openPolicy: String
+        let warnings: [String]
+    }
+    let cases: [Case]
+
+    static func load() throws -> Self {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let data = try Data(contentsOf: root.appendingPathComponent("fixtures/c1-file-presentation-parity.json"))
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(Self.self, from: data)
+    }
+}
+
+private func fileKindName(_ kind: AttachmentFileKind) -> String {
+    switch kind {
+    case .image: "image"
+    case .audio: "audio"
+    case .video: "video"
+    case .document: "document"
+    case .archive: "archive"
+    case .executable: "executable"
+    case .other: "other"
+    }
+}
+
+private func openPolicyName(_ policy: AttachmentOpenPolicy) -> String {
+    switch policy {
+    case .protectedMedia: "protected_media"
+    case .externalOpen: "external_open"
+    case .exportOnly: "export_only"
+    }
+}
+
+private func fileWarningName(_ warning: AttachmentFileWarning) -> String {
+    switch warning {
+    case .mediaTypeMismatch: "media_type_mismatch"
+    case .dangerousType: "dangerous_type"
+    case .unrecognizedType: "unrecognized_type"
+    case .missingFilename: "missing_filename"
+    }
+}
+
 private struct LabelParityFixture: Decodable {
     let duplicateName: String
     let createColors: [String]
@@ -345,6 +394,18 @@ private func imageRecipe() -> ImageEditRecipe {
 }
 
 final class SessionE2eTests: XCTestCase {
+    func testFilePresentationMatchesSharedFailClosedFixture() throws {
+        let fixture = try FilePresentationParityFixture.load()
+        for record in fixture.cases {
+            let result = attachmentFilePresentation(
+                mediaType: record.mediaType,
+                filename: record.filename)
+            XCTAssertEqual(record.kind, fileKindName(result.kind))
+            XCTAssertEqual(record.openPolicy, openPolicyName(result.openPolicy))
+            XCTAssertEqual(record.warnings, result.warnings.map(fileWarningName))
+        }
+    }
+
     func testTextFormattingMatchesSharedInertCorpus() throws {
         let fixture = try TextFormattingParityFixture.load()
         let session = try open(try tempDir(), "text-formatting", Events())
