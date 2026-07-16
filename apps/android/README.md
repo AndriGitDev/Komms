@@ -13,7 +13,7 @@ own, verbatim.
   recent-task previews are blocked. Settings show the shared B14 policy and its
   compromised-device, overlay/accessibility-abuse, and external-camera limits.
 - **Request private keyboard behavior on every text editor.** All 16 XML fields
-  and 5 programmatic fields use `IncognitoEditText`, which sets Android's
+  and every programmatic field use `IncognitoEditText`, which sets Android's
   no-personalized-learning and no-suggestions metadata. Passphrases and recovery
   mnemonics are masked. Settings state honestly that third-party IMEs may ignore
   the request.
@@ -23,6 +23,11 @@ own, verbatim.
   with the camera (or paste the hex, interoperable with the desktop app
   and `kult bundle` / `kult add`), or add a contact from their kult
   address alone via DHT lookup.
+- **Rename a contact's private local petname** with an explicit TalkBack-
+  accessible row action. Android targets the exact peer key, uses an incognito
+  field, previews shared NFC normalization and duplicate/confusable/bidi/
+  invisible warnings, and confirms before accepting risk. Duplicate names remain
+  separate; restart/`KKR4` preserves the rename with zero delivery work.
 - **Message** with honest delivery states: `queued` → `sent` (handed to a
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted

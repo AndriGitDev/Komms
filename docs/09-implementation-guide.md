@@ -128,6 +128,9 @@ pub struct Node { /* composes store + transports + sessions */ }
 //             → immutable pre-unlock capability/limitation contract; no store
 // input privacy: incognito_keyboard_policy(platform)
 //             → immutable pre-unlock field/control/limitation contract; no store
+// private petnames: assess_contact_name(peer, proposed)
+//              / rename_contact(peer, proposed, accept_warnings)
+//             → ContactRenamed (local only; exact peer target; no delivery work)
 ```
 
 `kult-ffi` exposes exactly `Node`'s command/event API via UniFFI, nothing more.
@@ -165,6 +168,17 @@ of every textual field. New search or naming inputs are incomplete until they
 join that inventory. The native contract is
 [14: Incognito Keyboard](14-incognito-keyboard.md).
 
+B5 contact rename is a local contact-record mutation, not a protocol identity
+operation. The daemon mirrors it as strict `contact_name_assessment` and
+`rename_contact` RPC operations; the CLI spells them `kult contact-name-check`
+and `kult contact-rename [--accept-warnings]`. Every front door must call the
+shared assessment, display all returned warning codes, and pass explicit
+acceptance before a warned mutation. Shells must target an exact peer key and
+must never resolve, mention, or retarget by petname. New name inputs also remain
+inside the B15 incognito-field inventories. The complete contract and manual
+qualification matrix are in
+[15: Private Contact Names](15-contact-petnames.md).
+
 ## 4. Testing strategy (beyond per-milestone acceptance)
 
 - **KATs**: primitive test vectors vendored under `crates/kult-crypto/tests/vectors/`.
@@ -191,6 +205,7 @@ Every PR: CI green + one review. Additionally:
 | Dependencies | `cargo-deny` diff reviewed; new crypto deps need an ADR |
 | Storage schema | Migration + "copied-file leakage" checklist from 07 §2 |
 | Sealed local metadata | Limit, stale-reference, transaction/failure, KKR compatibility, and zero-network-work matrices |
+| Contact petname mutation | Exact peer targeting, normalization, warning review, duplicate-name disambiguation, restart/KKR compatibility, and zero-network-work evidence |
 | Desktop/mobile shell | Relevant accessibility, lifecycle, protected-transient cleanup, and real build evidence |
 
 ## 6. Definition of done (any milestone)

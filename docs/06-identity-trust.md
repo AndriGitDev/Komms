@@ -58,10 +58,18 @@ displayed persistently, and never synced anywhere.
 ## 4. Petnames
 
 Global usernames require a global authority, excluded by design. Instead, **petnames**:
-every contact's display name is a private, local label chosen by *you*. What the network
-sees is only keys and tokens. A contact may *suggest* a display name inside the encrypted
-channel (transmitted end-to-end, shown as "suggested: …" until accepted). No name
-squatting, no impersonation surface, no takedown target.
+every contact's display name is a private, local label chosen by *you*. B5 lets the
+user rename an exact peer in every shipped interface. Names are NFC-normalized and
+bounded; duplicates are valid because the peer key, never display text, is the
+identity. Duplicate, mixed-script/confusable, bidirectional-control, and invisible-
+character risks are shown for explicit review before a warned rename. The label is
+stored only in the sealed contact record, survives restart and `KKR4`, and creates no
+message, capability, lookup, notification, queue, or transport work.
+
+What the network sees remains keys and tokens, never the local petname. An optional
+signed self-display suggestion is not implemented. It would be non-unique, could
+never silently replace a local petname, and requires a separate bundle-format ADR and
+compatibility path. See [15: Private Contact Names](15-contact-petnames.md).
 
 ## 5. Key lifecycle
 

@@ -418,6 +418,17 @@ included in `KKR4`. Note-to-self text is shipped through every shell under one
 reserved identity; folders, conversation pins, labels, appearance, and bounded
 metadata-free custom icons now ship as separate local experiences.
 
+B5 private contact rename is shipped end to end through `kult-node`, strict
+RPC/CLI, UniFFI, desktop, Android, and iOS. The peer key remains the only identity
+and mutation target. Petnames are private local contact-record fields,
+NFC-normalized and bounded to 256 UTF-8 bytes; duplicate names are permitted.
+The shared assessment reports normalization plus duplicate,
+mixed-script/confusable, bidirectional-control, and invisible-character risks,
+and warned mutations require explicit acceptance. Rename emits one local event,
+survives restart and `KKR4`, and produces zero discovery, notification, queue,
+envelope, capability, or transport work. Optional signed self-display
+suggestions remain a separate unimplemented bundle-format/compatibility program.
+
 B13 private custom icons are shipped end to end across the existing F5 record,
 `kult-node`, RPC/CLI, UniFFI, desktop, Android, and iOS. Exact contact, group,
 folder, and note-to-self targets render generated initials when absent or after a

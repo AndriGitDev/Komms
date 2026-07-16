@@ -33,7 +33,7 @@ accepted designs before individual shells implement UI.
 | Recorded audio messages | Shipped | Keep the canonical profile, lifecycle cleanup, F3/F4 behavior, and cross-platform acceptance gates stable. |
 | End-to-end encryption | Assurance | Continuous audit, KAT, fuzz, and regression gates. |
 | Post-quantum handshake | Assurance | Crypto-agility and downgrade-safe future upgrades. |
-| Contact names / usernames | Partial | Local petnames exist; rename UX and optional signed self-display name do not. |
+| Contact names / usernames | Partial | B5 local petname rename is shipped end to end; optional signed self-display suggestions remain deferred. |
 | Secure backups | Shipped | Future feature data must be added without leaking or silently omitting it. |
 | Note to self | Shipped (text) | Attachments follow F3 shell integration. |
 | Queued messages | Shipped | Already part of the honest delivery engine. |
@@ -284,17 +284,25 @@ Acceptance:
 
 ### B5. Contact names and usernames
 
-**State:** local petnames shipped; broader UX partial.
+**State:** local petname rename shipped end to end; optional remote suggestion
+deferred.
 
-Deliver contact rename in all shells first. Petnames remain authoritative and
-never leave the device. If an optional self-selected display name is desired,
-add it as a signed, non-unique suggestion in the prekey bundle/DHT record; a
-recipient may accept it initially but their local petname always overrides it.
-This is not a global username registry and must not imply uniqueness.
+The shipped B5 slice reaches `kult-node`, strict RPC/CLI, UniFFI, desktop,
+Android, and iOS. Rename always targets the exact peer key, NFC-normalizes and
+bounds the proposed name, permits duplicates, and assesses duplicate,
+mixed-script/confusable, bidirectional-control, and invisible-character risks.
+A warned rename requires explicit acceptance. The mutation rewrites only the
+sealed contact record, emits one endpoint-local event, survives restart and
+`KKR4`, and creates zero lookup, capability, message, notification, queue,
+envelope, or transport work. The shared B5 fixture and cross-surface tests pin
+normalization, warnings, duplicate acceptance, persistence, and privacy.
 
-A bundle-format change requires an ADR and compatibility path. Acceptance covers
-Unicode normalization, spoofing/confusable warnings, duplicate names, and the
-fact that changing a remote suggestion never silently renames a local petname.
+If an optional self-selected display name is desired later, add it as a signed,
+non-unique suggestion in the prekey bundle/DHT record. A recipient may choose
+to accept it initially, but it can never silently override their local petname.
+That is not a global username registry and must not imply uniqueness. The
+bundle-format change still requires its own ADR, compatibility path, and tests
+for remote-suggestion changes. It is not part of shipped B5.
 
 ### B6. Secure backups
 
@@ -852,7 +860,7 @@ honest. Parallel work is safe only where rows do not share a foundation.
 |---|---|---|
 | **0: Shared foundations** | Complete | F1–F5 are implemented; ADR-0015 remains formally Proposed despite the shipped attachment pipeline. |
 | **Parallel: mobile reachability** | Design-only | Accept ADR-0017–0019, then implement C8 behind reversible feature gates. |
-| **1: Local-first product polish** | In progress | B7, B8, B10–B15, and B18 are shipped; B5 and B9 remain. |
+| **1: Local-first product polish** | In progress | B5, B7, B8, B10–B15, and B18 are shipped; B9 remains. |
 | **2: Typed content and asynchronous media** | Substantially complete | F2/F3, B2, B16, and B17 are shipped; C1 is usable across all shells with richer media polish remaining. |
 | **3: Replicated conversation features** | Planned | C3, C4, C5, and C6. |
 | **4: Multi-device** | Planned | C2, followed by cross-device hardening of Wave 3. |
@@ -923,7 +931,7 @@ reviewable PR:
 2. completed: add group list/history/create/send UI to desktop, Android, and iOS;
 3. completed: build the per-peer carrier capability API and pin mesh-only
    decisions in node, scheduler, and FFI tests;
-4. completed through B10 folders, B11 conversation pins, B12 appearance,
+4. completed through B5 private contact rename, B10 folders, B11 conversation pins, B12 appearance,
    B13 custom icons, B14 screen security, B15 incognito keyboard, and B18 labels: add the
    sealed local metadata foundation, note-to-self, private single-membership
    conversation folders, exact typed conversation pins, and private
@@ -935,9 +943,13 @@ reviewable PR:
 5. completed: ship typed content, attachments, audio, image editing, and mentions
    through every front door and shell; ADR-0015's formal status remains Proposed.
 
-The next high-value local-first slice is the local part of B5: contact rename UX
-through RPC/CLI, UniFFI, desktop, Android, and iOS while keeping petnames private,
-duplicate-capable, and authoritative. Optional signed self-display suggestions
-remain deferred behind their separate bundle-format ADR and compatibility work.
+The next high-value local-first slice is B9 safe text formatting: keep canonical
+source text in the existing encrypted content path and render a deliberately
+small, bounded CommonMark-style subset locally through RPC/CLI, UniFFI, desktop,
+Android, and iOS. A shared conformance and malicious-input corpus must pin exact
+plain-text fallback, copy-as-plain-text, huge-nesting limits, Unicode/bidi
+behavior, and consistent rendering without introducing active content.
+Optional signed self-display suggestions remain deferred behind their separate
+bundle-format ADR and compatibility work.
 Replicated edits/expiry/polls/roles, linked-device identity, real-time media, and
 optional hybrid services remain separate programs with their stated ADR gates.

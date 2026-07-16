@@ -14,7 +14,7 @@ security indicators are the node's own, verbatim.
   lock path. Capture protection remains honestly best effort because desktop OS,
   window-server, compositor, privileged-software, and external-camera behavior
   cannot be controlled universally.
-- **Reduce input retention on every editable text control.** All 24 controls are
+- **Reduce input retention on every editable text control.** All 25 controls are
   semantically classified and receive disabled autocomplete, autocorrect,
   autocapitalization, and spellcheck at startup and after modal cloning.
   Passphrases and recovery mnemonics are password inputs. The unlock screen
@@ -25,6 +25,11 @@ security indicators are the node's own, verbatim.
 - **Pair out-of-band**: share your prekey bundle as a QR code or pasteable
   hex (interoperable with `kult bundle` / `kult add`), or add a contact
   from their kult address alone via DHT lookup.
+- **Rename a contact's private local petname** from the active chat. The shell
+  targets the exact peer key, previews shared NFC normalization and duplicate/
+  confusable/bidi/invisible warnings, and requires explicit confirmation before
+  accepting a warned name. Duplicate names remain separate; rename survives
+  restart/`KKR4` and creates no network, notification, queue, or transport work.
 - **Message** with honest delivery states: `queued` → `sent` (handed to a
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted
