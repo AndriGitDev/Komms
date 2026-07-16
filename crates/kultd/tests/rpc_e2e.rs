@@ -33,6 +33,13 @@ fn theme_parity_fixture() -> Value {
         .expect("valid shared B12 theme fixture")
 }
 
+fn custom_icon_parity_fixture() -> Value {
+    serde_json::from_str(include_str!(
+        "../../../fixtures/b13-custom-icon-parity.json"
+    ))
+    .expect("valid shared B13 custom-icon fixture")
+}
+
 fn relative_luminance(hex: &str) -> f64 {
     let channel = |start| {
         let value = u8::from_str_radix(&hex[start..start + 2], 16).unwrap() as f64 / 255.0;
@@ -108,6 +115,100 @@ async fn private_theme_via_strict_rpc_defaults_changes_and_stays_local() {
         .unwrap_err();
     assert!(error.contains("system, light, dark"));
     daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn private_custom_icons_via_strict_rpc_are_canonical_durable_and_local() {
+    let fixture = custom_icon_parity_fixture();
+    let directory = tempfile::tempdir().unwrap();
+    let daemon = Daemon::start(test_config(directory.path(), "icons-rpc"))
+        .await
+        .unwrap();
+    let mut client = Client::connect(&daemon.socket_path).await;
+    let mut events = Client::connect(&daemon.socket_path).await;
+    events.ok(json!({ "op": "subscribe" })).await;
+    let note = json!({ "type": "note_to_self" });
+    assert!(client
+        .ok(json!({ "op": "custom_icon", "target": note }))
+        .await["icon"]
+        .is_null());
+    let queued = client.ok(json!({ "op": "status" })).await["queued"].clone();
+
+    let note_icon = client
+        .ok(json!({
+            "op": "custom_icon_set_bundled",
+            "target": note,
+            "glyph": fixture["bundled_glyphs"][7],
+        }))
+        .await;
+    assert_eq!(
+        note_icon["media_type"],
+        fixture["canonical_output"]["media_type"]
+    );
+    assert_eq!(note_icon["width"], fixture["canonical_output"]["width"]);
+    assert_eq!(note_icon["height"], fixture["canonical_output"]["height"]);
+    assert!(note_icon["bytes"].as_str().unwrap().starts_with("89504e47"));
+    events
+        .wait_event(|event| event["type"] == "custom_icons_changed")
+        .await;
+
+    let folder = client
+        .ok(json!({ "op": "folder_create", "name": "Icon target" }))
+        .await;
+    let folder_target = json!({ "type": "folder", "id": folder["id"] });
+    let folder_icon = client
+        .ok(json!({
+            "op": "custom_icon_set_bundled",
+            "target": folder_target,
+            "glyph": "folder",
+        }))
+        .await;
+    assert_ne!(folder_icon["bytes"], note_icon["bytes"]);
+    let usage = client.ok(json!({ "op": "custom_icon_usage" })).await;
+    assert_eq!(usage["records"], 2);
+    assert_eq!(
+        usage["bytes"].as_u64().unwrap(),
+        (note_icon["bytes"].as_str().unwrap().len() + folder_icon["bytes"].as_str().unwrap().len())
+            as u64
+            / 2
+    );
+    assert_eq!(client.ok(json!({ "op": "status" })).await["queued"], queued);
+    assert!(client
+        .call(json!({
+            "op": "custom_icon_set_bundled",
+            "target": note,
+            "glyph": "remote-url",
+        }))
+        .await
+        .unwrap_err()
+        .contains("custom icon"));
+    assert!(client
+        .ok(json!({ "op": "custom_icon_clear", "target": folder_target }))
+        .await["changed"]
+        .as_bool()
+        .unwrap());
+    assert!(!client
+        .ok(json!({ "op": "custom_icon_clear", "target": folder_target }))
+        .await["changed"]
+        .as_bool()
+        .unwrap());
+    daemon.shutdown().await;
+
+    let reopened = Daemon::start(test_config(directory.path(), "icons-rpc"))
+        .await
+        .unwrap();
+    let mut client = Client::connect(&reopened.socket_path).await;
+    assert_eq!(
+        client
+            .ok(json!({ "op": "custom_icon", "target": note }))
+            .await["icon"]["bytes"],
+        note_icon["bytes"]
+    );
+    assert_eq!(
+        client.ok(json!({ "op": "custom_icon_usage" })).await["records"],
+        1
+    );
+    reopened.shutdown().await;
 }
 
 /// Argon2id light enough for tests (same profile the node e2e tests use).

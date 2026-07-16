@@ -53,6 +53,14 @@ COMMANDS:
     note-messages                   local note-to-self history
     theme                          show system/light/dark appearance choice
     theme-set system|light|dark    persist the private local appearance choice
+    icon TARGET                    show one sealed icon or generated-initials fallback
+    icon-set-image TARGET PATH [X Y SIZE]
+                                    crop/sanitize a selected local JPEG/PNG
+    icon-set-glyph TARGET GLYPH    use person/group/folder/note/star/heart/shield/compass
+    icon-clear TARGET              return to generated initials
+    icon-usage                     show sealed icon record and byte usage
+                                    TARGET is contact:HEX, group:HEX, folder:HEX,
+                                    or note-to-self
     folder-create NAME...           create a private local folder
     folders                         list folders in deterministic manual order
     folder-get FOLDER_ID            get one folder by 32-hex-character id
@@ -219,6 +227,29 @@ fn parse_label_target(value: &str) -> Result<Value, String> {
         "peer" => Ok(json!({ "type": "peer", "id": id.to_ascii_lowercase() })),
         "group" => Ok(json!({ "type": "group", "id": id.to_ascii_lowercase() })),
         _ => Err("target must be peer:HEX, group:HEX, or note-to-self".to_owned()),
+    }
+}
+
+fn parse_custom_icon_target(value: &str) -> Result<Value, String> {
+    if value == "note-to-self" {
+        return Ok(json!({ "type": "note_to_self" }));
+    }
+    let (kind, id) = value.split_once(':').ok_or_else(|| {
+        "icon target must be contact:HEX, group:HEX, folder:HEX, or note-to-self".to_owned()
+    })?;
+    let expected = if kind == "folder" { 32 } else { 64 };
+    if id.len() != expected || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!(
+            "{kind} icon target id must be {expected} hexadecimal characters"
+        ));
+    }
+    match kind {
+        "contact" | "group" | "folder" => {
+            Ok(json!({ "type": kind, "id": id.to_ascii_lowercase() }))
+        }
+        _ => Err(
+            "icon target must be contact:HEX, group:HEX, folder:HEX, or note-to-self".to_owned(),
+        ),
     }
 }
 
@@ -421,6 +452,64 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
                 return Err("theme-set: expected system, light, or dark".to_owned());
             }
             json!({ "op": "theme_set", "preference": args[0] })
+        }
+        "icon" | "icon-clear" => {
+            need(1)?;
+            if args.len() != 1 {
+                return Err(format!("{command}: too many arguments"));
+            }
+            json!({
+                "op": if command == "icon" { "custom_icon" } else { "custom_icon_clear" },
+                "target": parse_custom_icon_target(&args[0])?,
+            })
+        }
+        "icon-set-image" => {
+            need(2)?;
+            if args.len() != 2 && args.len() != 5 {
+                return Err("icon-set-image: expected TARGET PATH [X Y SIZE]".to_owned());
+            }
+            let crop = if args.len() == 5 {
+                let parse = |value: &str| {
+                    value
+                        .parse::<u32>()
+                        .map_err(|_| "icon crop values must be unsigned integers".to_owned())
+                };
+                let x = parse(&args[2])?;
+                let y = parse(&args[3])?;
+                let size = parse(&args[4])?;
+                Some(json!({ "x": x, "y": y, "width": size, "height": size }))
+            } else {
+                None
+            };
+            json!({
+                "op": "custom_icon_set_path",
+                "target": parse_custom_icon_target(&args[0])?,
+                "path": args[1],
+                "crop": crop,
+            })
+        }
+        "icon-set-glyph" => {
+            need(2)?;
+            if args.len() != 2 {
+                return Err("icon-set-glyph: too many arguments".to_owned());
+            }
+            const GLYPHS: [&str; 8] = [
+                "person", "group", "folder", "note", "star", "heart", "shield", "compass",
+            ];
+            if !GLYPHS.contains(&args[1].as_str()) {
+                return Err("icon-set-glyph: unsupported bundled glyph".to_owned());
+            }
+            json!({
+                "op": "custom_icon_set_bundled",
+                "target": parse_custom_icon_target(&args[0])?,
+                "glyph": args[1],
+            })
+        }
+        "icon-usage" => {
+            if !args.is_empty() {
+                return Err("icon-usage: too many arguments".to_owned());
+            }
+            json!({ "op": "custom_icon_usage" })
         }
         "folder-create" => {
             need(1)?;
@@ -1086,6 +1175,45 @@ mod tests {
         );
         assert!(build_request("theme", &["trailing".to_owned()]).is_err());
         assert!(build_request("theme-set", &["sepia".to_owned()]).is_err());
+        assert_eq!(
+            build_request("icon", &["note-to-self".to_owned()]).unwrap(),
+            json!({ "op": "custom_icon", "target": { "type": "note_to_self" } })
+        );
+        assert_eq!(
+            build_request(
+                "icon-set-glyph",
+                &[format!("contact:{}", "ab".repeat(32)), "shield".to_owned()]
+            )
+            .unwrap(),
+            json!({
+                "op": "custom_icon_set_bundled",
+                "target": { "type": "contact", "id": "ab".repeat(32) },
+                "glyph": "shield",
+            })
+        );
+        assert_eq!(
+            build_request(
+                "icon-set-image",
+                &[
+                    format!("folder:{}", "cd".repeat(16)),
+                    "/tmp/icon.png".to_owned(),
+                    "1".to_owned(),
+                    "2".to_owned(),
+                    "30".to_owned(),
+                ]
+            )
+            .unwrap()["crop"],
+            json!({ "x": 1, "y": 2, "width": 30, "height": 30 })
+        );
+        assert_eq!(
+            build_request("icon-usage", &[]).unwrap(),
+            json!({ "op": "custom_icon_usage" })
+        );
+        assert!(build_request(
+            "icon-set-glyph",
+            &["note-to-self".to_owned(), "remote-url".to_owned()]
+        )
+        .is_err());
         assert_eq!(
             build_request("folder-get", std::slice::from_ref(&folder)).unwrap(),
             json!({ "op": "folder_get", "folder": folder })

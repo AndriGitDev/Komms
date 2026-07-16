@@ -173,6 +173,28 @@ pub(crate) enum Msg {
         preference: kult_node::ThemePreference,
         resp: Resp<bool>,
     },
+    CustomIcon {
+        target: kult_node::CustomIconTarget,
+        resp: Resp<Option<kult_node::CustomIconInfo>>,
+    },
+    CustomIconSetPath {
+        target: kult_node::CustomIconTarget,
+        path: PathBuf,
+        crop: Option<kult_node::CustomIconCrop>,
+        resp: Resp<kult_node::CustomIconInfo>,
+    },
+    CustomIconSetBundled {
+        target: kult_node::CustomIconTarget,
+        glyph: String,
+        resp: Resp<kult_node::CustomIconInfo>,
+    },
+    CustomIconClear {
+        target: kult_node::CustomIconTarget,
+        resp: Resp<bool>,
+    },
+    CustomIconUsage {
+        resp: Resp<kult_node::CustomIconUsage>,
+    },
     FolderCreate {
         name: String,
         resp: Resp<FolderInfo>,
@@ -906,6 +928,36 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
                 node.set_theme_preference(preference, &mut OsRng)
                     .map_err(fail),
             );
+        }
+        Msg::CustomIcon { target, resp } => {
+            let _ = resp.send(node.custom_icon(&target).map_err(fail));
+        }
+        Msg::CustomIconSetPath {
+            target,
+            path,
+            crop,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.set_custom_icon_from_path(target, &path, crop, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::CustomIconSetBundled {
+            target,
+            glyph,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.set_bundled_custom_icon(target, &glyph, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::CustomIconClear { target, resp } => {
+            let _ = resp.send(node.clear_custom_icon(&target).map_err(fail));
+        }
+        Msg::CustomIconUsage { resp } => {
+            let _ = resp.send(node.custom_icon_usage().map_err(fail));
         }
         Msg::FolderCreate { name, resp } => {
             let _ = resp.send(node.create_folder(&name, &mut OsRng).map_err(fail));

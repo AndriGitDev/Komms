@@ -620,6 +620,65 @@ pub struct ThemeInfo {
     pub persisted: bool,
 }
 
+/// Exact typed target kind for one private local custom icon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum CustomIconTargetKind {
+    /// Contact keyed by peer identity.
+    Contact,
+    /// Sender-key group keyed by group id.
+    Group,
+    /// Private local folder keyed by its random stable id.
+    Folder,
+    /// Reserved local note-to-self conversation.
+    NoteToSelf,
+}
+
+/// Exact technical target used by custom-icon operations.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct CustomIconTarget {
+    /// Target type; display names and list positions are never accepted.
+    pub kind: CustomIconTargetKind,
+    /// 64-hex peer/group id, 32-hex folder id, or absent for note-to-self.
+    pub id: Option<String>,
+}
+
+/// Optional exact square crop in oriented source pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct CustomIconCrop {
+    /// Left edge after orientation normalization.
+    pub x: u32,
+    /// Top edge after orientation normalization.
+    pub y: u32,
+    /// Non-zero crop width.
+    pub width: u32,
+    /// Non-zero crop height; must equal width.
+    pub height: u32,
+}
+
+/// Canonical render-safe local custom icon.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct CustomIcon {
+    /// Exact typed target.
+    pub target: CustomIconTarget,
+    /// Canonical `image/png` media type.
+    pub media_type: String,
+    /// Exact metadata-free 256×256 RGBA PNG bytes.
+    pub bytes: Vec<u8>,
+    /// Canonical width.
+    pub width: u32,
+    /// Canonical height.
+    pub height: u32,
+}
+
+/// Current sealed custom-icon quota usage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct CustomIconQuotaUsage {
+    /// Durable icon records.
+    pub records: u64,
+    /// Aggregate encoded bytes.
+    pub bytes: u64,
+}
+
 /// Exact typed target kind for local label membership.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum LabelTargetKind {
@@ -1010,6 +1069,8 @@ pub struct Status {
 /// (docs/09-implementation-guide.md §3.5).
 #[derive(Clone, Debug, uniffi::Enum)]
 pub enum Event {
+    /// Private local custom icons changed; shells re-read visible targets.
+    CustomIconsChanged,
     /// Private local appearance preference changed; shells re-read it.
     ThemeChanged,
     /// Private local folders changed; shells re-read local folder state.
@@ -1141,6 +1202,7 @@ impl Event {
     /// update, never silently mislabeled.
     fn from_node(event: kult_node::Event) -> Option<Self> {
         Some(match event {
+            kult_node::Event::CustomIconsChanged => Self::CustomIconsChanged,
             kult_node::Event::ThemeChanged => Self::ThemeChanged,
             kult_node::Event::FoldersChanged => Self::FoldersChanged,
             kult_node::Event::LabelsChanged => Self::LabelsChanged,
@@ -1669,6 +1731,67 @@ impl KultNode {
         self.call(|resp| Msg::ThemeSet {
             preference: preference.into_node(),
             resp,
+        })
+    }
+
+    /// Read one canonical sealed icon, or `None` for generated-initials fallback.
+    pub fn custom_icon(&self, target: CustomIconTarget) -> Result<Option<CustomIcon>, FfiError> {
+        let target = parse_custom_icon_target_ffi(&target)?;
+        Ok(self
+            .call(|resp| Msg::CustomIcon { target, resp })?
+            .map(CustomIcon::from_node))
+    }
+
+    /// Center-crop or explicitly square-crop a local JPEG/PNG and seal it.
+    pub fn set_custom_icon_from_path(
+        &self,
+        target: CustomIconTarget,
+        path: String,
+        crop: Option<CustomIconCrop>,
+    ) -> Result<CustomIcon, FfiError> {
+        let target = parse_custom_icon_target_ffi(&target)?;
+        let crop = crop.map(|crop| kult_node::CustomIconCrop {
+            x: crop.x,
+            y: crop.y,
+            width: crop.width,
+            height: crop.height,
+        });
+        self.call(|resp| Msg::CustomIconSetPath {
+            target,
+            path: PathBuf::from(path),
+            crop,
+            resp,
+        })
+        .map(CustomIcon::from_node)
+    }
+
+    /// Render and seal one exact bundled glyph token.
+    pub fn set_bundled_custom_icon(
+        &self,
+        target: CustomIconTarget,
+        glyph: String,
+    ) -> Result<CustomIcon, FfiError> {
+        let target = parse_custom_icon_target_ffi(&target)?;
+        self.call(|resp| Msg::CustomIconSetBundled {
+            target,
+            glyph,
+            resp,
+        })
+        .map(CustomIcon::from_node)
+    }
+
+    /// Remove one icon and return to deterministic generated initials.
+    pub fn clear_custom_icon(&self, target: CustomIconTarget) -> Result<bool, FfiError> {
+        let target = parse_custom_icon_target_ffi(&target)?;
+        self.call(|resp| Msg::CustomIconClear { target, resp })
+    }
+
+    /// Read current sealed icon quota usage.
+    pub fn custom_icon_quota_usage(&self) -> Result<CustomIconQuotaUsage, FfiError> {
+        let usage = self.call(|resp| Msg::CustomIconUsage { resp })?;
+        Ok(CustomIconQuotaUsage {
+            records: usage.records as u64,
+            bytes: usage.bytes as u64,
         })
     }
 
@@ -2431,6 +2554,39 @@ impl ThemePreference {
     }
 }
 
+impl CustomIcon {
+    fn from_node(icon: kult_node::CustomIconInfo) -> Self {
+        Self {
+            target: custom_icon_target_from_node(&icon.target),
+            media_type: icon.media_type,
+            bytes: icon.bytes,
+            width: icon.width,
+            height: icon.height,
+        }
+    }
+}
+
+fn custom_icon_target_from_node(target: &kult_node::CustomIconTarget) -> CustomIconTarget {
+    match target {
+        kult_node::CustomIconTarget::Contact(id) => CustomIconTarget {
+            kind: CustomIconTargetKind::Contact,
+            id: Some(hex_encode(id)),
+        },
+        kult_node::CustomIconTarget::Group(id) => CustomIconTarget {
+            kind: CustomIconTargetKind::Group,
+            id: Some(hex_encode(id)),
+        },
+        kult_node::CustomIconTarget::Folder(id) => CustomIconTarget {
+            kind: CustomIconTargetKind::Folder,
+            id: Some(hex_encode(id)),
+        },
+        kult_node::CustomIconTarget::NoteToSelf => CustomIconTarget {
+            kind: CustomIconTargetKind::NoteToSelf,
+            id: None,
+        },
+    }
+}
+
 impl FolderConversation {
     fn from_node(conversation: kult_node::FolderConversationInfo) -> Self {
         Self {
@@ -2635,6 +2791,27 @@ fn folder_selection_from_node(selection: kult_node::FolderSelection) -> FolderSe
 
 fn parse_folder_ffi(value: &str) -> Result<[u8; 16], FfiError> {
     parse_message(value).map_err(|_| folder_error(FolderErrorCode::InvalidId, "invalid folder id"))
+}
+
+fn parse_custom_icon_target_ffi(
+    target: &CustomIconTarget,
+) -> Result<kult_node::CustomIconTarget, FfiError> {
+    let invalid = || FfiError::Node {
+        reason: "invalid custom icon target".to_owned(),
+    };
+    match (&target.kind, &target.id) {
+        (CustomIconTargetKind::Contact, Some(id)) => parse_peer(id)
+            .map(kult_node::CustomIconTarget::Contact)
+            .map_err(|_| invalid()),
+        (CustomIconTargetKind::Group, Some(id)) => parse_group(id)
+            .map(kult_node::CustomIconTarget::Group)
+            .map_err(|_| invalid()),
+        (CustomIconTargetKind::Folder, Some(id)) => parse_folder_ffi(id)
+            .map(kult_node::CustomIconTarget::Folder)
+            .map_err(|_| invalid()),
+        (CustomIconTargetKind::NoteToSelf, None) => Ok(kult_node::CustomIconTarget::NoteToSelf),
+        _ => Err(invalid()),
+    }
 }
 
 fn parse_folder_target_ffi(target: &FolderTarget) -> Result<kult_store::ConversationId, FfiError> {

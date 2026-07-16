@@ -11,12 +11,12 @@ use serde_json::{json, Value};
 
 use kult_node::{
     AttachmentConversation, AttachmentDirection, AttachmentInfo, CarrierCapability,
-    CarrierCapabilitySnapshot, ContentStatus, Event, FolderConversationInfo,
-    FolderConversationList, FolderInfo, FolderSelection, GroupInfo, GroupMentionCapability,
-    LabelConversationInfo, LabelFilterInfo, LabelInfo, MentionCapabilityIssueReason,
-    NodeStaleFolderReason, NodeStaleLabelReason, PinConversationInfo, PinConversationList, PinInfo,
-    ScheduledConversation, ScheduledMessageInfo, StaleFolderInfo, StaleLabelInfo,
-    NOTE_TO_SELF_CONVERSATION_ID,
+    CarrierCapabilitySnapshot, ContentStatus, CustomIconInfo, CustomIconTarget, CustomIconUsage,
+    Event, FolderConversationInfo, FolderConversationList, FolderInfo, FolderSelection, GroupInfo,
+    GroupMentionCapability, LabelConversationInfo, LabelFilterInfo, LabelInfo,
+    MentionCapabilityIssueReason, NodeStaleFolderReason, NodeStaleLabelReason, PinConversationInfo,
+    PinConversationList, PinInfo, ScheduledConversation, ScheduledMessageInfo, StaleFolderInfo,
+    StaleLabelInfo, NOTE_TO_SELF_CONVERSATION_ID,
 };
 use kult_store::{
     valid_folder_name, valid_label_color, valid_label_name, ConversationId, DeliveryState,
@@ -58,6 +58,10 @@ fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
     match op {
         "theme" => Some(&["id", "op"]),
         "theme_set" => Some(&["id", "op", "preference"]),
+        "custom_icon" | "custom_icon_clear" => Some(&["id", "op", "target"]),
+        "custom_icon_set_path" => Some(&["id", "op", "target", "path", "crop"]),
+        "custom_icon_set_bundled" => Some(&["id", "op", "target", "glyph"]),
+        "custom_icon_usage" => Some(&["id", "op"]),
         "folder_create" => Some(&["id", "op", "name"]),
         "folders" | "folder_stale" => Some(&["id", "op"]),
         "folder_get" | "folder_delete_preview" | "folder_membership" => {
@@ -240,6 +244,35 @@ pub enum Op {
         /// One of `system`, `light`, or `dark`.
         preference: String,
     },
+    /// Read one canonical sealed icon, or null for generated initials.
+    CustomIcon {
+        /// Exact typed local target.
+        target: CustomIconTargetInput,
+    },
+    /// Crop, sanitize, canonicalize, and seal one selected local JPEG/PNG.
+    CustomIconSetPath {
+        /// Exact typed local target.
+        target: CustomIconTargetInput,
+        /// Caller-selected local input path.
+        path: String,
+        /// Optional exact square crop in oriented source pixels.
+        #[serde(default)]
+        crop: Option<CustomIconCropInput>,
+    },
+    /// Render and seal one bundled glyph token.
+    CustomIconSetBundled {
+        /// Exact typed local target.
+        target: CustomIconTargetInput,
+        /// One canonical bundled glyph token.
+        glyph: String,
+    },
+    /// Remove one icon and return to generated initials.
+    CustomIconClear {
+        /// Exact typed local target.
+        target: CustomIconTargetInput,
+    },
+    /// Read current sealed icon quota usage.
+    CustomIconUsage,
     /// Create one private local conversation folder.
     FolderCreate {
         /// Exact UTF-8 folder name.
@@ -556,6 +589,43 @@ pub enum LabelTargetInput {
     NoteToSelf,
 }
 
+/// An exact local custom-icon target, including folder identities.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CustomIconTargetInput {
+    /// Contact keyed by peer identity.
+    Contact {
+        /// 64-hex-character peer id.
+        id: String,
+    },
+    /// Sender-key group keyed by group id.
+    Group {
+        /// 64-hex-character group id.
+        id: String,
+    },
+    /// Private local folder keyed by its stable id.
+    Folder {
+        /// 32-hex-character folder id.
+        id: String,
+    },
+    /// Reserved local note-to-self conversation.
+    NoteToSelf {},
+}
+
+/// Optional exact square crop in oriented source pixels.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CustomIconCropInput {
+    /// Left edge after orientation normalization.
+    pub x: u32,
+    /// Top edge after orientation normalization.
+    pub y: u32,
+    /// Non-zero crop width.
+    pub width: u32,
+    /// Non-zero crop height; must equal width.
+    pub height: u32,
+}
+
 /// Label filter matching mode on the RPC surface.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -630,6 +700,9 @@ pub fn err(id: u64, message: &str) -> String {
 /// An event line for subscribed connections.
 pub fn event_line(event: &Event) -> String {
     let body = match event {
+        Event::CustomIconsChanged => json!({
+            "type": "custom_icons_changed",
+        }),
         Event::ThemeChanged => json!({
             "type": "theme_changed",
         }),
@@ -745,6 +818,47 @@ pub fn event_line(event: &Event) -> String {
 pub fn parse_theme(value: &str) -> Result<kult_node::ThemePreference, String> {
     kult_node::ThemePreference::parse(value)
         .ok_or_else(|| "preference must be one of: system, light, dark".to_owned())
+}
+
+/// Parse one exact icon target without display-name inference.
+pub fn parse_custom_icon_target(
+    target: &CustomIconTargetInput,
+) -> Result<CustomIconTarget, String> {
+    match target {
+        CustomIconTargetInput::Contact { id } => Ok(CustomIconTarget::Contact(parse_peer(id)?)),
+        CustomIconTargetInput::Group { id } => Ok(CustomIconTarget::Group(parse_group(id)?)),
+        CustomIconTargetInput::Folder { id } => Ok(CustomIconTarget::Folder(parse_folder(id)?)),
+        CustomIconTargetInput::NoteToSelf {} => Ok(CustomIconTarget::NoteToSelf),
+    }
+}
+
+/// Render one canonical icon, including its local PNG bytes as lowercase hex.
+pub fn custom_icon_json(icon: &CustomIconInfo) -> Value {
+    json!({
+        "target": custom_icon_target_json(&icon.target),
+        "media_type": icon.media_type,
+        "bytes": hex_encode(&icon.bytes),
+        "width": icon.width,
+        "height": icon.height,
+    })
+}
+
+/// Render current sealed icon quota use.
+pub fn custom_icon_usage_json(usage: CustomIconUsage) -> Value {
+    json!({
+        "records": usage.records,
+        "bytes": usage.bytes,
+    })
+}
+
+/// Render one exact typed local icon target.
+pub fn custom_icon_target_json(target: &CustomIconTarget) -> Value {
+    match target {
+        CustomIconTarget::Contact(id) => json!({ "type": "contact", "id": hex_encode(id) }),
+        CustomIconTarget::Group(id) => json!({ "type": "group", "id": hex_encode(id) }),
+        CustomIconTarget::Folder(id) => json!({ "type": "folder", "id": hex_encode(id) }),
+        CustomIconTarget::NoteToSelf => json!({ "type": "note_to_self" }),
+    }
 }
 
 /// Render one folder without sealed bytes, nonces, or unrelated metadata.
@@ -1350,6 +1464,38 @@ mod tests {
         assert!(parse_request(r#"{"id":41,"op":"theme","extra":true}"#).is_err());
         assert!(parse_theme("system").is_ok());
         assert!(parse_theme("sepia").is_err());
+        let r = parse_request(
+            &json!({
+                "id": 42,
+                "op": "custom_icon_set_path",
+                "target": { "type": "folder", "id": "ab".repeat(16) },
+                "path": "/tmp/local.png",
+                "crop": { "x": 2, "y": 3, "width": 10, "height": 10 },
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(matches!(r.op, Op::CustomIconSetPath { .. }));
+        assert!(parse_request(
+            &json!({
+                "id": 43,
+                "op": "custom_icon",
+                "target": { "type": "note_to_self", "id": "ambiguous" },
+            })
+            .to_string(),
+        )
+        .is_err());
+        assert!(parse_request(r#"{"id":44,"op":"custom_icon_usage","extra":true}"#).is_err());
+        assert_eq!(
+            parse_custom_icon_target(&CustomIconTargetInput::Contact {
+                id: "01".repeat(32),
+            })
+            .unwrap(),
+            CustomIconTarget::Contact([1; 32])
+        );
+        let icon_event: Value =
+            serde_json::from_str(&event_line(&Event::CustomIconsChanged)).unwrap();
+        assert_eq!(icon_event["event"]["type"], "custom_icons_changed");
 
         let r = parse_request(
             &json!({
