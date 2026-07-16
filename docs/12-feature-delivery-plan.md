@@ -44,7 +44,7 @@ accepted designs before individual shells implement UI.
 | Dark mode | Shipped | Sealed system/light/dark preference, shared semantic roles, and native live switching in every shell. |
 | Custom icons | Shipped | Preserve exact typed targets, strict local image canonicalization, sealed quotas, initials fallback, `KKR4` portability, and zero-network behavior. |
 | Screen security | Shipped | Always-on shared policy, native shell protections, rapid desktop lock, and explicit platform limitations. |
-| Incognito keyboard | Planned | Android control; best available behavior and honest limits elsewhere. |
+| Incognito keyboard | Shipped | Always-on field inventory, Android no-learning request, secure secret fields, and honest iOS/desktop limits. |
 | Local still-image editing | Shipped | Keep shared deterministic semantics, cleanup, exact-review, and metadata-removal gates stable; video remains out of scope. |
 | Mentions | Shipped | ADR-0016 canonical peer targets, current-roster composers, conservative group capability gating, and local navigation/notification. |
 | Labels | Shipped (contact/conversation) | Private pairwise, group, and note-to-self labels with fixed limits, stale cleanup, and accessible any/all filtering; message labels remain deferred. |
@@ -503,13 +503,31 @@ and remains a release-evidence task rather than an inflated cross-platform claim
 
 ### B15. Incognito keyboard
 
-On Android, request the no-personalized-learning/incognito input flags on every
-sensitive field. On iOS and desktop, disable autocorrection/prediction where APIs
-permit, but document that third-party keyboards or the OS may ignore hints. Never
-put secrets such as mnemonics in normal predictive fields.
+**State:** shipped across `kult-node`, strict RPC/CLI, UniFFI, desktop, Android,
+and iOS as an immutable always-on policy plus exhaustive native field controls.
 
-Acceptance checks all message, search, passphrase, mnemonic, and naming fields;
-automated UI assertions cover the flags where platforms expose them.
+The shared contract distinguishes `platform_enforced`, `platform_requested`,
+`best_effort`, and `unavailable` rather than implying that a keyboard hint is a
+guarantee. It is available before unlock, has no disable preference or stored
+record, and creates no envelope, capability, notification, queue, or transport
+work. Required semantic classes are message, future search, passphrase,
+mnemonic, and name.
+
+Android routes every XML and programmatic text editor through one class that
+sets `IME_FLAG_NO_PERSONALIZED_LEARNING` and no-suggestions metadata on the final
+input connection. iOS applies one audited no-correction modifier to every
+SwiftUI editor. Desktop classifies every editable textual HTML control and
+applies autocomplete, autocorrect, autocapitalization, and spellcheck hints at
+startup and after modal cloning. Passphrases and recovery mnemonics use masked
+secret entry on every shell.
+
+Automated acceptance inventories 21 Android construction paths, 20 iOS SwiftUI
+editors, and 24 desktop editable textual controls, and checks shared fixture,
+FFI, strict RPC/CLI, pre-unlock, and zero-delivery parity. No shipped search box
+exists yet; its required class prevents a future search surface from bypassing
+the policy. Android explicitly states that its documented flag is a request;
+iOS and desktop expose no per-field personalized-learning guarantee. Manual
+keyboard qualification follows [14: Incognito Keyboard](14-incognito-keyboard.md).
 
 ### B16. Local media editing
 
@@ -834,7 +852,7 @@ honest. Parallel work is safe only where rows do not share a foundation.
 |---|---|---|
 | **0: Shared foundations** | Complete | F1–F5 are implemented; ADR-0015 remains formally Proposed despite the shipped attachment pipeline. |
 | **Parallel: mobile reachability** | Design-only | Accept ADR-0017–0019, then implement C8 behind reversible feature gates. |
-| **1: Local-first product polish** | In progress | B7, B8, B10–B14, and B18 are shipped; B5, B9, and B15 remain. |
+| **1: Local-first product polish** | In progress | B7, B8, B10–B15, and B18 are shipped; B5 and B9 remain. |
 | **2: Typed content and asynchronous media** | Substantially complete | F2/F3, B2, B16, and B17 are shipped; C1 is usable across all shells with richer media polish remaining. |
 | **3: Replicated conversation features** | Planned | C3, C4, C5, and C6. |
 | **4: Multi-device** | Planned | C2, followed by cross-device hardening of Wave 3. |
@@ -906,18 +924,20 @@ reviewable PR:
 3. completed: build the per-peer carrier capability API and pin mesh-only
    decisions in node, scheduler, and FFI tests;
 4. completed through B10 folders, B11 conversation pins, B12 appearance,
-   B13 custom icons, B14 screen security, and B18 labels: add the
+   B13 custom icons, B14 screen security, B15 incognito keyboard, and B18 labels: add the
    sealed local metadata foundation, note-to-self, private single-membership
    conversation folders, exact typed conversation pins, and private
    contact/conversation labels plus a sealed local theme choice; message pins and
    message labels remain deferred; B14 adds the separate always-on pre-unlock
-   screen-security contract, and scheduled delivery completed separately in the
-   core queue/storage path;
+   screen-security contract; B15 adds the separate always-on pre-unlock input
+   privacy contract and exhaustive native field controls; scheduled delivery
+   completed separately in the core queue/storage path;
 5. completed: ship typed content, attachments, audio, image editing, and mentions
    through every front door and shell; ADR-0015's formal status remains Proposed.
 
-The next high-value local-first slice is B15 incognito keyboard behavior, with
-Android's native no-personalized-learning flag and honest best-effort limits on
-iOS, desktop, and third-party keyboards.
+The next high-value local-first slice is the local part of B5: contact rename UX
+through RPC/CLI, UniFFI, desktop, Android, and iOS while keeping petnames private,
+duplicate-capable, and authoritative. Optional signed self-display suggestions
+remain deferred behind their separate bundle-format ADR and compatibility work.
 Replicated edits/expiry/polls/roles, linked-device identity, real-time media, and
 optional hybrid services remain separate programs with their stated ADR gates.

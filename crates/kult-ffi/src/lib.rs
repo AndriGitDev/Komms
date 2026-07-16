@@ -693,6 +693,96 @@ pub fn screen_security_policy(platform: ScreenSecurityPlatform) -> ScreenSecurit
     }
 }
 
+/// Shipped platform whose native B15 input-privacy policy is requested.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum IncognitoKeyboardPlatform {
+    /// Android application input controls.
+    Android,
+    /// iOS application input controls.
+    Ios,
+    /// Tauri desktop webview input controls.
+    Desktop,
+}
+
+/// Strength of one platform input-privacy capability.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum IncognitoKeyboardLevel {
+    /// The platform enforces the narrowly named behavior.
+    PlatformEnforced,
+    /// Komms sets a documented control that an input method may ignore.
+    PlatformRequested,
+    /// Komms supplies the strongest available hint without enforcement.
+    BestEffort,
+    /// The platform exposes no honest per-field control.
+    Unavailable,
+}
+
+/// Immutable, render-safe B15 policy for one shipped shell.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct IncognitoKeyboardPolicy {
+    /// Platform this policy describes.
+    pub platform: IncognitoKeyboardPlatform,
+    /// Always true; input privacy cannot be disabled.
+    pub always_on: bool,
+    /// Always true; unlock and restore inputs are covered.
+    pub applies_before_unlock: bool,
+    /// Per-field personalized-learning control.
+    pub personalized_learning: IncognitoKeyboardLevel,
+    /// Per-field autocorrection and prediction control.
+    pub suggestions: IncognitoKeyboardLevel,
+    /// Per-field spelling-service control.
+    pub spellcheck: IncognitoKeyboardLevel,
+    /// Visual masking strength for passphrases and mnemonics.
+    pub secret_text_masking: IncognitoKeyboardLevel,
+    /// Required semantic field classes, including future search inputs.
+    pub protected_fields: Vec<String>,
+    /// Short native-mechanism description.
+    pub mechanism: String,
+    /// Honest platform limitations shown beside the claims.
+    pub limitations: Vec<String>,
+}
+
+/// Return the shared always-on B15 policy without opening a node or store.
+#[uniffi::export]
+pub fn incognito_keyboard_policy(platform: IncognitoKeyboardPlatform) -> IncognitoKeyboardPolicy {
+    let node_platform = match platform {
+        IncognitoKeyboardPlatform::Android => kult_node::IncognitoKeyboardPlatform::Android,
+        IncognitoKeyboardPlatform::Ios => kult_node::IncognitoKeyboardPlatform::Ios,
+        IncognitoKeyboardPlatform::Desktop => kult_node::IncognitoKeyboardPlatform::Desktop,
+    };
+    let policy = kult_node::incognito_keyboard_policy(node_platform);
+    let level = |value| match value {
+        kult_node::IncognitoKeyboardLevel::PlatformEnforced => {
+            IncognitoKeyboardLevel::PlatformEnforced
+        }
+        kult_node::IncognitoKeyboardLevel::PlatformRequested => {
+            IncognitoKeyboardLevel::PlatformRequested
+        }
+        kult_node::IncognitoKeyboardLevel::BestEffort => IncognitoKeyboardLevel::BestEffort,
+        kult_node::IncognitoKeyboardLevel::Unavailable => IncognitoKeyboardLevel::Unavailable,
+    };
+    IncognitoKeyboardPolicy {
+        platform,
+        always_on: policy.always_on,
+        applies_before_unlock: policy.applies_before_unlock,
+        personalized_learning: level(policy.personalized_learning),
+        suggestions: level(policy.suggestions),
+        spellcheck: level(policy.spellcheck),
+        secret_text_masking: level(policy.secret_text_masking),
+        protected_fields: policy
+            .protected_fields
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect(),
+        mechanism: policy.mechanism.to_owned(),
+        limitations: policy
+            .limitations
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect(),
+    }
+}
+
 /// Exact typed target kind for one private local custom icon.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum CustomIconTargetKind {

@@ -47,6 +47,45 @@ fn screen_security_parity_fixture() -> Value {
     .expect("valid shared B14 screen-security fixture")
 }
 
+fn incognito_keyboard_parity_fixture() -> Value {
+    serde_json::from_str(include_str!(
+        "../../../fixtures/b15-incognito-keyboard-parity.json"
+    ))
+    .expect("valid shared B15 incognito-keyboard fixture")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn incognito_keyboard_policy_via_strict_rpc_matches_platforms_without_delivery_work() {
+    let fixture = incognito_keyboard_parity_fixture();
+    let directory = tempfile::tempdir().unwrap();
+    let daemon = Daemon::start(test_config(directory.path(), "incognito-keyboard-rpc"))
+        .await
+        .unwrap();
+    let mut client = Client::connect(&daemon.socket_path).await;
+    let queued = client.ok(json!({ "op": "status" })).await["queued"].clone();
+
+    for platform in ["android", "ios", "desktop"] {
+        let policy = client
+            .ok(json!({ "op": "incognito_keyboard_policy", "platform": platform }))
+            .await;
+        assert_eq!(policy["platform"], platform);
+        assert_eq!(policy["always_on"], true);
+        assert_eq!(policy["applies_before_unlock"], true);
+        assert_eq!(
+            policy["personalized_learning"],
+            fixture["platforms"][platform]["personalized_learning"]
+        );
+        assert_eq!(policy["protected_fields"], fixture["protected_fields"]);
+        assert!(!policy["limitations"].as_array().unwrap().is_empty());
+    }
+    assert!(client
+        .call(json!({ "op": "incognito_keyboard_policy", "platform": "web" }))
+        .await
+        .is_err());
+    assert_eq!(client.ok(json!({ "op": "status" })).await["queued"], queued);
+    daemon.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn screen_security_policy_via_strict_rpc_matches_all_platforms_without_delivery_work() {
     let fixture = screen_security_parity_fixture();

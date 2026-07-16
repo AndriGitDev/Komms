@@ -280,6 +280,15 @@ gates are in; the remaining M5 hands-on qualification records real device,
 OS, window-server, and compositor results per
 [13: Screen Security](13-screen-security.md).
 
+B15 incognito keyboard behavior is shipped across the shared capability
+contract and every textual input. Android applies the documented
+no-personalized-learning request to every editor; iOS disables correction on all
+SwiftUI editors and uses secure passphrase/mnemonic entry; desktop applies the
+full webview input-hint set to every classified editable text control. Automated
+field inventories and native build gates are in. Manual first-/third-party
+keyboard evidence follows [14: Incognito Keyboard](14-incognito-keyboard.md)
+without treating absence of later suggestions as proof of non-retention.
+
 **Acceptance**: a non-technical user can install desktop + mobile builds, exchange QR
 verification with a friend, and message over internet, LAN, and mesh with truthful
 delivery/security indicators. Backup/restore round-trips.

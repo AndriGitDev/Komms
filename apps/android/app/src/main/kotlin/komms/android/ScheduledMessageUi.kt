@@ -30,7 +30,7 @@ fun AppCompatActivity.showScheduledEditor(
         set(Calendar.SECOND, 0)
         set(Calendar.MILLISECOND, 0)
     }
-    val body = EditText(this).apply {
+    val body = IncognitoEditText(this).apply {
         setText(message?.body ?: initialBody)
         minLines = 2
         maxLines = 8

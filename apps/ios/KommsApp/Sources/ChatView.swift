@@ -88,6 +88,7 @@ struct ChatView: View {
                 TextField("Message", text: $draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...4)
+                    .incognitoKeyboard(capitalization: .sentences)
                 Button {
                     scheduleEditor = ScheduleEditor(body: draft)
                 } label: {

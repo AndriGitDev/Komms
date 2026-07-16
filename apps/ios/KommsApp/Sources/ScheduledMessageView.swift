@@ -44,6 +44,7 @@ struct ScheduledMessageEditor: View {
                 Section("Message") {
                     TextField("Message", text: $messageBody, axis: .vertical)
                         .lineLimit(2...8)
+                        .incognitoKeyboard(capitalization: .sentences)
                 }
                 Section("Send at") {
                     DatePicker(

@@ -5,7 +5,7 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content">
 
-    <EditText
+    <komms.android.IncognitoEditText
         android:id="@+id/create_group_name"
         android:hint="@string/group_name_hint"
         android:inputType="textCapSentences"

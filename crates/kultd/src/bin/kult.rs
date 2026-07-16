@@ -52,6 +52,7 @@ COMMANDS:
     note TEXT...                    append to the local note-to-self conversation
     note-messages                   local note-to-self history
     screen-security PLATFORM        show always-on android/ios/desktop protection and limits
+    incognito-keyboard PLATFORM     show always-on android/ios/desktop input privacy and limits
     theme                          show system/light/dark appearance choice
     theme-set system|light|dark    persist the private local appearance choice
     icon TARGET                    show one sealed icon or generated-initials fallback
@@ -447,6 +448,13 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
                 return Err("screen-security: expected android, ios, or desktop".to_owned());
             }
             json!({ "op": "screen_security_policy", "platform": args[0] })
+        }
+        "incognito-keyboard" => {
+            need(1)?;
+            if args.len() != 1 || !matches!(args[0].as_str(), "android" | "ios" | "desktop") {
+                return Err("incognito-keyboard: expected android, ios, or desktop".to_owned());
+            }
+            json!({ "op": "incognito_keyboard_policy", "platform": args[0] })
         }
         "theme" => {
             if !args.is_empty() {
@@ -1182,6 +1190,11 @@ mod tests {
             json!({ "op": "screen_security_policy", "platform": "desktop" })
         );
         assert!(build_request("screen-security", &["web".to_owned()]).is_err());
+        assert_eq!(
+            build_request("incognito-keyboard", &["ios".to_owned()]).unwrap(),
+            json!({ "op": "incognito_keyboard_policy", "platform": "ios" })
+        );
+        assert!(build_request("incognito-keyboard", &["web".to_owned()]).is_err());
         assert_eq!(
             build_request("theme-set", &["dark".to_owned()]).unwrap(),
             json!({ "op": "theme_set", "preference": "dark" })

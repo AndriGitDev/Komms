@@ -14,6 +14,12 @@ security indicators are the node's own, verbatim.
   lock path. Capture protection remains honestly best effort because desktop OS,
   window-server, compositor, privileged-software, and external-camera behavior
   cannot be controlled universally.
+- **Reduce input retention on every editable text control.** All 24 controls are
+  semantically classified and receive disabled autocomplete, autocorrect,
+  autocapitalization, and spellcheck at startup and after modal cloning.
+  Passphrases and recovery mnemonics are password inputs. The unlock screen
+  states honestly that the webview, OS, input method, or writing tools may ignore
+  hints.
 - **Create / unlock / restore** an encrypted store at the gate; restoring
   takes a `.kkr` backup file plus its 24-word mnemonic.
 - **Pair out-of-band**: share your prekey bundle as a QR code or pasteable

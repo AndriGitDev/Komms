@@ -103,6 +103,20 @@ compromised OS/compositor, accessibility or overlay abuse, or an external camera
 iOS still screenshots cannot be universally blocked. Exact guarantees and the
 qualification matrix are in [13: Screen Security](13-screen-security.md).
 
+### A9: Local input retention (opportunistic)
+
+A keyboard, spelling service, writing tool, autofill system, or webview retains
+or later suggests sensitive text typed into Komms.
+
+**Defense (bounded):** B15 marks every textual field with the strongest native
+non-learning, correction, prediction, spelling, and autofill controls available.
+Passphrases and recovery mnemonics use masked secret entry. Android's explicit
+no-personalized-learning flag remains a request an IME may ignore; iOS and
+desktop expose no per-field learning guarantee. This does not defeat A7, a
+malicious input method, accessibility or overlay abuse, privileged writing
+tools, hardware with its own storage, or external observation. Exact behavior
+and qualification are in [14: Incognito Keyboard](14-incognito-keyboard.md).
+
 ## 3. Security goals
 
 | Goal | Meaning | Mechanism |
@@ -117,6 +131,7 @@ qualification matrix are in [13: Screen Security](13-screen-security.md).
 | **No mandatory identifiers** | No phone number, email, or real name, ever. | Keypair-as-identity ([06: Identity & Trust](06-identity-trust.md)). |
 | **Availability off-grid** | Communication survives infrastructure loss. | Transport abstraction with LoRa mesh + sneakernet fallbacks. |
 | **Local display minimization** | Reduce accidental disclosure from capture and task/app-switcher previews where native APIs permit. | Always-on B14 shell protections and explicit unsupported states; not an endpoint-compromise defense. |
+| **Local input minimization** | Reduce keyboard learning, correction, spellcheck, autofill, and secret-field exposure where native APIs permit. | Always-on B15 field controls and explicit best-effort/unavailable states; not an endpoint-compromise defense. |
 | **Sovereignty** | Users hold their own keys and data; anyone can run every component. | Local-first storage, AGPLv3, no privileged nodes. |
 
 Optional Hybrid Infrastructure Layer modes do not change the confidentiality,

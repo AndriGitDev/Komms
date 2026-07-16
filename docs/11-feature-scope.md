@@ -96,9 +96,15 @@ status and prerequisites are tracked in the delivery plan.
   content protection, obscures on focus loss, and provides `Ctrl/Cmd+Shift+L`
   rapid lock. It is not stored, backed up, synchronized, notified, or sent and
   creates zero transport work. See [13: Screen Security](13-screen-security.md).
-- **Incognito keyboard.** Planned platform input behavior: Android can request
-  no personalized learning; iOS/desktop hints and third-party keyboards have
-  honest best-effort limits. No protocol involvement.
+- **Incognito keyboard.** Shipped as an always-on pre-unlock policy across the
+  shared node/RPC/CLI/UniFFI contract and every shell text editor. Android sets
+  the documented no-personalized-learning request on all editors; iOS disables
+  correction and uses secure passphrase/mnemonic fields; desktop applies
+  autocomplete, correction, capitalization, and spellcheck hints. Automated
+  inventories cover message, future search, passphrase, mnemonic, and naming
+  classes. It is not stored, synchronized, notified, or sent and creates zero
+  transport work. Keyboard/OS/webview compliance remains explicitly best effort.
+  See [14: Incognito Keyboard](14-incognito-keyboard.md).
 - **Local still-image editing.** Shipped across desktop, Android, and iOS through
   one bounded Rust helper: JPEG/PNG orientation normalization, free/preset crop,
   90-degree rotation, and manual blur/pixelation are applied *before* encryption.

@@ -41,6 +41,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::probe,
             commands::screen_security_policy,
+            commands::incognito_keyboard_policy,
             commands::unlock,
             commands::restore,
             commands::lock,

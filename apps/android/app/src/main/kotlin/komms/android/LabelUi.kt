@@ -135,7 +135,7 @@ class LabelManagerActivity : SecureActivity() {
     }
 
     private fun editLabel(existing: Label?) {
-        val name = EditText(this).apply {
+        val name = IncognitoEditText(this).apply {
             setText(existing?.name.orEmpty())
             hint = getString(R.string.label_name)
             textDirection = View.TEXT_DIRECTION_FIRST_STRONG

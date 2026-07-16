@@ -126,6 +126,8 @@ pub struct Node { /* composes store + transports + sessions */ }
 //             → CustomIconsChanged (local only; no delivery-engine work)
 // screen security: screen_security_policy(platform)
 //             → immutable pre-unlock capability/limitation contract; no store
+// input privacy: incognito_keyboard_policy(platform)
+//             → immutable pre-unlock field/control/limitation contract; no store
 ```
 
 `kult-ffi` exposes exactly `Node`'s command/event API via UniFFI, nothing more.
@@ -150,6 +152,18 @@ behavior and render the returned mechanism and limitations; they must not add a
 disable toggle, persist the policy, or upgrade best-effort/unsupported claims.
 The native implementation and qualification contract is
 [13: Screen Security](13-screen-security.md).
+
+B15 follows the same free-function shape because input protection must cover
+passphrase and restore fields before a store exists. UniFFI exports
+`incognito_keyboard_policy(platform)`; strict RPC uses
+`incognito_keyboard_policy`, and the CLI spells it
+`kult incognito-keyboard android|ios|desktop`. Capability levels add
+`platform_requested` to distinguish a documented but non-binding native request
+from generic `best_effort`. Shells must render the limitations, keep the policy
+always on, mask passphrases and mnemonics, and maintain an automated inventory
+of every textual field. New search or naming inputs are incomplete until they
+join that inventory. The native contract is
+[14: Incognito Keyboard](14-incognito-keyboard.md).
 
 ## 4. Testing strategy (beyond per-milestone acceptance)
 

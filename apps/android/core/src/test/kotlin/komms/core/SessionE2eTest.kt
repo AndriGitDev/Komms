@@ -124,6 +124,53 @@ class SessionE2eTest {
         val root = File(checkNotNull(System.getProperty("komms.repo.root")))
         Json.parseToJsonElement(File(root, "fixtures/b14-screen-security-parity.json").readText()).jsonObject
     }
+    private val incognitoKeyboardFixture by lazy {
+        val root = File(checkNotNull(System.getProperty("komms.repo.root")))
+        Json.parseToJsonElement(File(root, "fixtures/b15-incognito-keyboard-parity.json").readText()).jsonObject
+    }
+
+    @Test
+    fun `incognito keyboard policy is always on before a node opens`() {
+        val policy = androidIncognitoKeyboardPolicy()
+        val expected = incognitoKeyboardFixture["platforms"]!!.jsonObject["android"]!!.jsonObject
+        assertTrue(policy.alwaysOn)
+        assertTrue(policy.appliesBeforeUnlock)
+        assertEquals(
+            expected["personalized_learning"]!!.jsonPrimitive.content,
+            policy.personalizedLearning.name.lowercase(),
+        )
+        assertEquals(
+            incognitoKeyboardFixture["protected_fields"]!!.jsonArray.map { it.jsonPrimitive.content },
+            policy.protectedFields,
+        )
+        assertTrue(policy.mechanism.contains("no-personalized-learning"))
+        assertTrue(policy.limitations.any { it.contains("request") })
+    }
+
+    @Test
+    fun `every Android textual editor uses the incognito class and secrets are masked`() {
+        val root = File(checkNotNull(System.getProperty("komms.repo.root")))
+        val app = File(root, "apps/android/app/src/main")
+        val layouts = File(app, "res/layout").walkTopDown()
+            .filter { it.isFile && it.extension == "xml" }
+            .joinToString("\n") { it.readText() }
+        assertFalse(Regex("<\\s*EditText\\b").containsMatchIn(layouts))
+        assertEquals(16, Regex("<komms\\.android\\.IncognitoEditText\\b").findAll(layouts).count())
+
+        val kotlin = File(app, "kotlin/komms/android").walkTopDown()
+            .filter { it.isFile && it.extension == "kt" && it.name != "IncognitoEditText.kt" }
+            .joinToString("\n") { it.readText() }
+        assertFalse(Regex("\\bEditText\\s*\\(").containsMatchIn(kotlin))
+
+        val editor = File(app, "kotlin/komms/android/IncognitoEditText.kt").readText()
+        assertTrue(editor.contains("IME_FLAG_NO_PERSONALIZED_LEARNING"))
+        assertTrue(editor.contains("TYPE_TEXT_FLAG_NO_SUGGESTIONS"))
+        val gate = File(app, "res/layout/activity_gate.xml").readText()
+        assertTrue(
+            Regex("gate_mnemonic[\\s\\S]*textPassword\\|textNoSuggestions")
+                .containsMatchIn(gate),
+        )
+    }
 
     @Test
     fun `screen security policy is always on before a node opens`() {

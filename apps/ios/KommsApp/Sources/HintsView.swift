@@ -34,8 +34,7 @@ struct HintsView: View {
                                 row.kind == "mesh" ? "node number or broadcast" : "value",
                                 text: $row.value)
                                 .font(.caption.monospaced())
-                                .autocorrectionDisabled()
-                                .textInputAutocapitalization(.never)
+                                .incognitoKeyboard()
                         }
                     }
                     .onDelete { rows.remove(atOffsets: $0) }

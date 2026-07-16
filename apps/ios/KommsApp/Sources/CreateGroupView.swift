@@ -25,7 +25,7 @@ struct CreateGroupView: View {
             Form {
                 Section("Group") {
                     TextField("Group name", text: $name)
-                        .textInputAutocapitalization(.sentences)
+                        .incognitoKeyboard(capitalization: .words)
                 }
 
                 Section("Members") {
