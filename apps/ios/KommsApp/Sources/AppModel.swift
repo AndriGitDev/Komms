@@ -65,6 +65,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var pinRows: [PinConversation] = []
     @Published private(set) var stalePinRecords: [Pin] = []
     @Published private(set) var themePreference: ThemePreference = ThemePreferenceStore.load()
+    @Published private(set) var customIcons: [CustomIconTarget: CustomIcon] = [:]
+    @Published private(set) var customIconUsage = CustomIconQuotaUsage(records: 0, bytes: 0)
     /// Surfaced node happenings: key changes, held-for-faster-link verdicts.
     @Published var notices: [String] = []
 
@@ -180,6 +182,8 @@ final class AppModel: ObservableObject {
         pins = []
         pinRows = []
         stalePinRecords = []
+        customIcons = [:]
+        customIconUsage = CustomIconQuotaUsage(records: 0, bytes: 0)
     }
 
     private func adopt(_ session: Session) async {
@@ -213,6 +217,8 @@ final class AppModel: ObservableObject {
         switch event {
         case .themeChanged:
             Task { await refreshTheme() }
+        case .customIconsChanged:
+            Task { await refresh() }
         case .scheduledMessageUpdated, .scheduledMessageCancelled,
              .scheduledMessageActivated, .deliveryUpdated, .messageReceived,
              .noteToSelfMessageAdded,
@@ -296,6 +302,23 @@ final class AppModel: ObservableObject {
                 let note = LabelTarget(kind: .noteToSelf, id: nil)
                 memberships[AppModel.labelTargetKey(note)] =
                     try session.labelsForConversation(target: note)
+                var icons: [CustomIconTarget: CustomIcon] = [:]
+                let noteIconTarget = CustomIconTarget(kind: .noteToSelf, id: nil)
+                if let icon = try session.customIcon(target: noteIconTarget) {
+                    icons[noteIconTarget] = icon
+                }
+                for contact in liveContacts {
+                    let target = CustomIconTarget(kind: .contact, id: contact.peer)
+                    if let icon = try session.customIcon(target: target) { icons[target] = icon }
+                }
+                for group in liveGroups {
+                    let target = CustomIconTarget(kind: .group, id: group.id)
+                    if let icon = try session.customIcon(target: target) { icons[target] = icon }
+                }
+                for folder in folders {
+                    let target = CustomIconTarget(kind: .folder, id: folder.id)
+                    if let icon = try session.customIcon(target: target) { icons[target] = icon }
+                }
                 return AppRefreshSnapshot(
                     status: try session.status(), contacts: liveContacts, histories: fresh,
                     groups: liveGroups, groupHistories: freshGroups,
@@ -304,7 +327,8 @@ final class AppModel: ObservableObject {
                     staleFolders: try session.staleFolders(), folderWasMissing: missingFolder,
                     labels: try session.labels(), stale: try session.staleLabels(),
                     filter: filter, memberships: memberships,
-                    pins: try session.pins(), stalePins: try session.stalePins())
+                    pins: try session.pins(), stalePins: try session.stalePins(),
+                    customIcons: icons, customIconUsage: try session.customIconUsage())
             }
             status = snapshot.status
             contacts = snapshot.contacts
@@ -324,6 +348,8 @@ final class AppModel: ObservableObject {
             pins = snapshot.pins
             pinRows = snapshot.filter.conversations
             stalePinRecords = snapshot.stalePins
+            customIcons = snapshot.customIcons
+            customIconUsage = snapshot.customIconUsage
             if snapshot.folderWasMissing {
                 notices.append("The selected private folder is unavailable; showing All conversations.")
             }
@@ -353,6 +379,26 @@ final class AppModel: ObservableObject {
 
     /// Stable identity used by the local note-to-self route in every shell.
     func noteToSelfId() -> String { session?.noteToSelfId() ?? "" }
+
+    func customIcon(for target: CustomIconTarget) -> CustomIcon? { customIcons[target] }
+
+    func setCustomIcon(target: CustomIconTarget, glyph: String) async throws {
+        guard let session else { throw InputError("node is locked") }
+        _ = try await run { try session.setCustomIcon(target: target, glyph: glyph) }
+        await refresh()
+    }
+
+    func setCustomIcon(target: CustomIconTarget, source: URL) async throws {
+        guard let session else { throw InputError("node is locked") }
+        _ = try await run { try session.setCustomIcon(target: target, source: source) }
+        await refresh()
+    }
+
+    func clearCustomIcon(target: CustomIconTarget) async throws {
+        guard let session else { throw InputError("node is locked") }
+        _ = try await run { try session.clearCustomIcon(target: target) }
+        await refresh()
+    }
 
     nonisolated static func labelTargetKey(_ target: LabelTarget) -> String {
         switch target.kind {
@@ -1013,6 +1059,8 @@ private struct AppRefreshSnapshot: Sendable {
     let memberships: [String: [KommsCore.Label]]
     let pins: [Pin]
     let stalePins: [Pin]
+    let customIcons: [CustomIconTarget: CustomIcon]
+    let customIconUsage: CustomIconQuotaUsage
 }
 
 private let attachmentLimit = 512 * 1024 * 1024

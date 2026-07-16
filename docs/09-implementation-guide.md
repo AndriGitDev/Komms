@@ -121,12 +121,22 @@ pub struct Node { /* composes store + transports + sessions */ }
 // dedup by message id, retry with per-transport backoff
 // local appearance: theme_preference / set_theme_preference
 //             → ThemeChanged (local only; no delivery-engine work)
+// local icons: custom_icon / set_custom_icon_from_path / set_bundled_custom_icon
+//              / clear_custom_icon / custom_icon_usage
+//             → CustomIconsChanged (local only; no delivery-engine work)
 ```
 
 `kult-ffi` exposes exactly `Node`'s command/event API via UniFFI, nothing more.
 The daemon mirrors B12 as strict `theme` and `theme_set` RPC operations; the CLI
 spells them `kult theme` and `kult theme-set system|light|dark`. Shells resolve
 System from native platform signals rather than introducing a core display mode.
+The daemon mirrors B13 with strict `custom_icon`, `custom_icon_set_path`,
+`custom_icon_set_bundled`, `custom_icon_clear`, and `custom_icon_usage` operations.
+The CLI spells these `icon`, `icon-set-image`, `icon-set-glyph`, `icon-clear`, and
+`icon-usage` with exact `contact:HEX`, `group:HEX`, `folder:HEX`, or
+`note-to-self` targets. Binary PNG bytes use the RPC's existing lowercase-hex
+rule; shells receive bounded bytes through UniFFI and never infer targets from
+display names.
 
 ## 4. Testing strategy (beyond per-milestone acceptance)
 

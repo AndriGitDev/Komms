@@ -36,10 +36,12 @@ pub use local_metadata::{
     LabelFilterResult, LabelRecord, LocalMetadataKey, LocalMetadataRecord, PinConversationRecord,
     PinConversationResult, PinRecord, PinStatusRecord, StaleFolderAssignment, StaleFolderReason,
     StaleLabelAssignment, StaleLabelReason, ThemePreference, UiPreferenceRecord,
-    FOLDER_ID_RETRY_LIMIT, LABEL_COLORS, LABEL_ID_RETRY_LIMIT, MAX_CUSTOM_ICON_BYTES,
-    MAX_DRAFT_BYTES, MAX_FOLDERS, MAX_FOLDER_ASSIGNMENTS, MAX_LABELS, MAX_LABELS_PER_CONVERSATION,
-    MAX_LABEL_ASSIGNMENTS, MAX_LOCAL_METADATA_STRING_BYTES, MAX_PINS,
-    MAX_UI_PREFERENCE_VALUE_BYTES, THEME_PREFERENCES, THEME_PREFERENCE_KEY, THEME_SEMANTIC_ROLES,
+    CUSTOM_ICON_BUNDLED_GLYPHS, CUSTOM_ICON_DIMENSION, CUSTOM_ICON_MEDIA_TYPE,
+    FOLDER_ID_RETRY_LIMIT, LABEL_COLORS, LABEL_ID_RETRY_LIMIT, MAX_CUSTOM_ICONS,
+    MAX_CUSTOM_ICON_BYTES, MAX_CUSTOM_ICON_TOTAL_BYTES, MAX_DRAFT_BYTES, MAX_FOLDERS,
+    MAX_FOLDER_ASSIGNMENTS, MAX_LABELS, MAX_LABELS_PER_CONVERSATION, MAX_LABEL_ASSIGNMENTS,
+    MAX_LOCAL_METADATA_STRING_BYTES, MAX_PINS, MAX_UI_PREFERENCE_VALUE_BYTES, THEME_PREFERENCES,
+    THEME_PREFERENCE_KEY, THEME_SEMANTIC_ROLES,
 };
 pub use media::{
     MediaDirection, MediaLimits, MediaObjectRecord, MediaReconciliation, MediaRecord, MediaScope,
@@ -77,6 +79,10 @@ pub enum StoreError {
     MediaState,
     /// A local metadata record exceeds its documented resource bound.
     LocalMetadataBounds,
+    /// The durable custom-icon record limit is exhausted.
+    CustomIconLimit,
+    /// The durable aggregate custom-icon byte quota would be exceeded.
+    CustomIconQuota,
     /// A new folder name is empty, fixed-Pattern_White_Space-only, or too long.
     InvalidFolderName,
     /// The stable folder id has no durable definition.
@@ -133,6 +139,8 @@ impl std::fmt::Display for StoreError {
             Self::LowStorage => f.write_str("insufficient reserved filesystem space"),
             Self::MediaState => f.write_str("invalid media transfer state"),
             Self::LocalMetadataBounds => f.write_str("local metadata bounds exceeded"),
+            Self::CustomIconLimit => f.write_str("custom icon record limit exhausted"),
+            Self::CustomIconQuota => f.write_str("custom icon byte quota exceeded"),
             Self::InvalidFolderName => f.write_str("invalid folder name"),
             Self::UnknownFolder => f.write_str("folder id does not exist"),
             Self::FolderLimit => f.write_str("folder definition limit exhausted"),

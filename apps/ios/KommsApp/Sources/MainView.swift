@@ -15,6 +15,7 @@ struct MainView: View {
     @State private var showFolders = false
     @State private var showLabels = false
     @State private var showPins = false
+    @State private var showIcons = false
     @State private var navigation = NavigationPath()
 
     var body: some View {
@@ -41,7 +42,13 @@ struct MainView: View {
                         Text("All").tag(FolderSelection(kind: .all, id: nil))
                         Text("Unfiled").tag(FolderSelection(kind: .unfiled, id: nil))
                         ForEach(model.folders, id: \.id) { folder in
-                            Text(verbatim: folder.name)
+                            HStack {
+                                CustomIconAvatar(
+                                    target: CustomIconTarget(kind: .folder, id: folder.id),
+                                    label: folder.name,
+                                    size: 28)
+                                Text(verbatim: folder.name)
+                            }
                                 .tag(FolderSelection(kind: .folder, id: folder.id))
                                 .accessibilityLabel(Text(verbatim: folderSummary(folder)))
                         }
@@ -86,12 +93,15 @@ struct MainView: View {
                     if model.targetMatchesLabelFilter(LabelTarget(kind: .noteToSelf, id: nil)) &&
                         !model.isPinned(PinTarget(kind: .noteToSelf, id: nil)) {
                       NavigationLink(value: NoteRoute(id: model.noteToSelfId())) {
-                        VStack(alignment: .leading) {
-                            Text("Note to self")
-                            Text("Local only")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            LabelBadgeRow(labels: model.labelsForTarget(LabelTarget(kind: .noteToSelf, id: nil)))
+                        HStack {
+                            CustomIconAvatar(target: .init(kind: .noteToSelf, id: nil), label: "Note to self")
+                            VStack(alignment: .leading) {
+                                Text("Note to self")
+                                Text("Local only")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                LabelBadgeRow(labels: model.labelsForTarget(LabelTarget(kind: .noteToSelf, id: nil)))
+                            }
                         }
                       }
                     }
@@ -104,16 +114,19 @@ struct MainView: View {
                     }
                     ForEach(model.contacts.filter { model.targetMatchesLabelFilter(LabelTarget(kind: .peer, id: $0.peer)) && !model.isPinned(PinTarget(kind: .peer, id: $0.peer)) }, id: \.peer) { contact in
                         NavigationLink(value: contact.peer) {
-                            VStack(alignment: .leading) {
-                                HStack {
-                                    Text(verbatim: contact.name)
-                                    if contact.verified {
-                                        Image(systemName: "checkmark.seal.fill")
-                                            .foregroundStyle(.green)
-                                            .accessibilityLabel("verified")
+                            HStack {
+                                CustomIconAvatar(target: .init(kind: .contact, id: contact.peer), label: contact.name)
+                                VStack(alignment: .leading) {
+                                    HStack {
+                                        Text(verbatim: contact.name)
+                                        if contact.verified {
+                                            Image(systemName: "checkmark.seal.fill")
+                                                .foregroundStyle(.green)
+                                                .accessibilityLabel("verified")
+                                        }
                                     }
+                                    LabelBadgeRow(labels: model.labelsForTarget(LabelTarget(kind: .peer, id: contact.peer)))
                                 }
-                                LabelBadgeRow(labels: model.labelsForTarget(LabelTarget(kind: .peer, id: contact.peer)))
                             }
                         }
                     }
@@ -126,13 +139,16 @@ struct MainView: View {
                     }
                     ForEach(model.groups.filter { model.targetMatchesLabelFilter(LabelTarget(kind: .group, id: $0.id)) && !model.isPinned(PinTarget(kind: .group, id: $0.id)) }, id: \.id) { group in
                         NavigationLink(value: GroupRoute(id: group.id)) {
-                            VStack(alignment: .leading) {
-                                Text(group.name)
-                                Text("\(group.members.count) "
-                                     + (group.members.count == 1 ? "member" : "members"))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                LabelBadgeRow(labels: model.labelsForTarget(LabelTarget(kind: .group, id: group.id)))
+                            HStack {
+                                CustomIconAvatar(target: .init(kind: .group, id: group.id), label: group.name)
+                                VStack(alignment: .leading) {
+                                    Text(group.name)
+                                    Text("\(group.members.count) "
+                                         + (group.members.count == 1 ? "member" : "members"))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    LabelBadgeRow(labels: model.labelsForTarget(LabelTarget(kind: .group, id: group.id)))
+                                }
                             }
                         }
                     }
@@ -158,6 +174,7 @@ struct MainView: View {
                     Menu {
                         Button("New group") { showCreateGroup = true }
                         Button("Manage pins") { showPins = true }
+                        Button("Manage private icons") { showIcons = true }
                         Button("My pairing QR") { showMyQr = true }
                         Button("Backup…") { showBackup = true }
                         Button("Network settings") { showSettings = true }
@@ -170,6 +187,7 @@ struct MainView: View {
                 }
             }
             .sheet(isPresented: $showPins) { PinsView() }
+            .sheet(isPresented: $showIcons) { CustomIconsView() }
             .sheet(isPresented: $showMyQr) { MyBundleView() }
             .sheet(isPresented: $showAdd) { AddContactView() }
             .sheet(isPresented: $showBackup) { BackupView() }
@@ -189,14 +207,31 @@ struct MainView: View {
         switch row.target.kind {
         case .peer:
             if let id = row.target.id {
-                NavigationLink(value: id) { Text(verbatim: row.displayName ?? String(id.prefix(12))) }
+                let name = row.displayName ?? String(id.prefix(12))
+                NavigationLink(value: id) {
+                    HStack {
+                        CustomIconAvatar(target: .init(kind: .contact, id: id), label: name)
+                        Text(verbatim: name)
+                    }
+                }
             }
         case .group:
             if let id = row.target.id {
-                NavigationLink(value: GroupRoute(id: id)) { Text(verbatim: row.displayName ?? "Group") }
+                let name = row.displayName ?? "Group"
+                NavigationLink(value: GroupRoute(id: id)) {
+                    HStack {
+                        CustomIconAvatar(target: .init(kind: .group, id: id), label: name)
+                        Text(verbatim: name)
+                    }
+                }
             }
         case .noteToSelf:
-            NavigationLink(value: NoteRoute(id: model.noteToSelfId())) { Text("Note to self") }
+            NavigationLink(value: NoteRoute(id: model.noteToSelfId())) {
+                HStack {
+                    CustomIconAvatar(target: .init(kind: .noteToSelf, id: nil), label: "Note to self")
+                    Text("Note to self")
+                }
+            }
         }
     }
 }

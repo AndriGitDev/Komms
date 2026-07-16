@@ -2,8 +2,46 @@
 //! Render-safe attachment state lands here before the planned RPC/UniFFI and
 //! shell adapters; protocol secrets and storage internals never cross it.
 
-use kult_store::{ConversationId, DeliveryState, MediaTransferState};
+use kult_store::{ConversationId, CustomIconTarget, DeliveryState, MediaTransferState};
 use kult_transport::DeliveryHint;
+
+/// Optional exact crop in oriented source pixels for a custom icon.
+/// Absence requests the deterministic centered-square crop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CustomIconCrop {
+    /// Left edge after orientation normalization.
+    pub x: u32,
+    /// Top edge after orientation normalization.
+    pub y: u32,
+    /// Non-zero crop width.
+    pub width: u32,
+    /// Non-zero crop height.
+    pub height: u32,
+}
+
+/// Render-safe canonical custom icon bytes for one exact local target.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CustomIconInfo {
+    /// Exact typed contact, group, folder, or note-to-self target.
+    pub target: CustomIconTarget,
+    /// Canonical `image/png` media type.
+    pub media_type: String,
+    /// Exact metadata-free 256×256 RGBA PNG bytes.
+    pub bytes: Vec<u8>,
+    /// Canonical width in pixels.
+    pub width: u32,
+    /// Canonical height in pixels.
+    pub height: u32,
+}
+
+/// Current sealed custom-icon quota usage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CustomIconUsage {
+    /// Number of durable icon records.
+    pub records: usize,
+    /// Aggregate encoded PNG bytes.
+    pub bytes: usize,
+}
 
 /// Render-safe private local folder definition.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -579,6 +617,9 @@ pub enum ContentStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event {
+    /// One or more private local custom icons changed; shells re-read visible targets.
+    /// This event never enters an envelope, capability, group state, or transport.
+    CustomIconsChanged,
     /// The private local appearance preference changed; shells re-read it.
     /// This event never enters an envelope, capability, group state, or transport.
     ThemeChanged,

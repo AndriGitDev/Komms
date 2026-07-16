@@ -275,6 +275,16 @@
     <!-- Settings -->
     <string name="settings_title">Settings</string>
     <string name="appearance_title">Appearance</string>
+    <string name="icons_manage">Manage private icons</string>
+    <string name="icons_title">Private custom icons</string>
+    <string name="icons_privacy">Icons stay sealed on this device. Selected JPEG/PNG files are cropped, resized, and re-encoded without metadata. Icons are never fetched from URLs or sent to peers.</string>
+    <string name="icons_target">Local target</string>
+    <string name="icons_bundled">Bundled glyphs</string>
+    <string name="icons_choose_image">Choose local image</string>
+    <string name="icons_clear">Use generated initials</string>
+    <string name="icons_usage">%1$d / 1,024 icons · %2$d / 67,108,864 bytes</string>
+    <string name="icons_saved">Private icon saved locally</string>
+    <string name="icons_cleared">Generated initials restored</string>
     <string name="theme_system">System</string>
     <string name="theme_light">Light</string>
     <string name="theme_dark">Dark</string>

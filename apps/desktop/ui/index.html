@@ -101,6 +101,7 @@
         <div class="me-actions">
           <button id="btn-copy-address" class="ghost" title="Copy address">Copy</button>
           <button id="btn-share" class="ghost" title="Show pairing QR / bundle">Share</button>
+          <button id="btn-icon-manager" class="ghost" title="Private custom icons">Icons</button>
           <button id="btn-theme" class="ghost" title="Appearance">Theme</button>
           <button id="btn-backup" class="ghost" title="Export encrypted backup">Backup</button>
         </div>
@@ -143,7 +144,7 @@
         <section class="conversation-section">
           <nav aria-label="Local conversations">
             <button id="note-to-self" class="contact" type="button">
-              <span class="avatar">N</span>
+              <span class="avatar" data-icon-kind="note_to_self" data-icon-id="" data-icon-fallback="N">N</span>
               <span class="c-name">Note to self</span><span class="label-badges" data-label-target="note_to_self"></span>
               <span class="c-detail">Local only</span>
             </button>
@@ -528,6 +529,29 @@
       <p class="modal-note">Cleanup removes only the selected stale local assignment.</p>
       <div data-f="stale"></div>
     </section>
+    <p class="sr-status" data-f="result" role="status" aria-live="polite"></p>
+  </template>
+
+  <template id="tpl-icon-manager">
+    <p class="modal-note">Icons stay sealed on this device. Selected JPEG/PNG files are cropped, resized to 256×256, re-encoded without metadata, and never sent to peers or fetched from URLs.</p>
+    <label>Local target
+      <select data-f="icon-target" aria-describedby="icon-target-help"></select>
+    </label>
+    <p id="icon-target-help" class="hint">Contacts, groups, folders, and note-to-self each have one independent icon.</p>
+    <div class="icon-preview-row">
+      <span class="avatar icon-preview" data-f="preview" aria-hidden="true">?</span>
+      <span data-f="preview-description">Generated initials fallback</span>
+    </div>
+    <fieldset class="icon-glyphs">
+      <legend>Bundled glyph</legend>
+      <div data-f="glyphs"></div>
+    </fieldset>
+    <div class="row split">
+      <button type="button" class="ghost" data-act="choose-icon-image">Choose local image…</button>
+      <button type="button" class="danger" data-act="clear-icon">Use generated initials</button>
+    </div>
+    <p class="hint" data-f="usage"></p>
+    <p class="error" data-f="error" role="alert" hidden></p>
     <p class="sr-status" data-f="result" role="status" aria-live="polite"></p>
   </template>
 

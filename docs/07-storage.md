@@ -155,6 +155,11 @@ trade for this project.)
 - **B11 pin backup behavior**: `KKR4` preserves exact typed targets, durable
   order, and stale/reactivation behavior. Pins have no independent cloud,
   server, or linked-device synchronization path.
+- **B13 custom-icon backup behavior**: `KKR4` preserves each canonical sealed
+  PNG under its exact typed contact/group/folder/note-to-self target. Restore
+  reuses the same strict read verification and generated-initials fallback.
+  Icons have no avatar URL, cloud, server, peer, or linked-device synchronization
+  path; the shared caps are 512 KiB per icon, 1,024 records, and 64 MiB total.
 - **Scheduled outbox state is not a backup payload.** Like the live encrypted
   delivery queue, it is device runtime state rather than conversation history;
   it survives ordinary process/app restarts on that device but is not resurrected

@@ -396,8 +396,17 @@ bounded conversation, folder, pin, label, draft, preference, and custom-icon
 records use an isolated storage key and reveal no local organization keys in a
 copied database. User-authored metadata and sealed note-to-self history are
 included in `KKR4`. Note-to-self text is shipped through every shell under one
-reserved identity; folders, conversation pins, labels, and appearance now ship
-as separate local experiences while custom icons remain work.
+reserved identity; folders, conversation pins, labels, appearance, and bounded
+metadata-free custom icons now ship as separate local experiences.
+
+B13 private custom icons are shipped end to end across the existing F5 record,
+`kult-node`, RPC/CLI, UniFFI, desktop, Android, and iOS. Exact contact, group,
+folder, and note-to-self targets render generated initials when absent or after a
+safe read failure. Eight bundled glyphs and selected local JPEG/PNG inputs become
+strict 256×256 RGBA PNGs after bounded orientation/crop/resize and metadata-free
+re-encoding. Per-record, count, and 64 MiB aggregate quotas are enforced at the
+sealed-store boundary; `KKR4` preserves canonical records. Icons create no remote
+lookup, peer sync, envelope, capability, queue, notification, or transport work.
 
 B10 private local conversation folders are shipped end to end across the
 unchanged F5 record contract, `kult-node`, RPC/CLI, UniFFI, desktop, Android,

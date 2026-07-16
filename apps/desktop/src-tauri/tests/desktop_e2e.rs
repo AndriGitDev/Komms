@@ -13,9 +13,9 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use komms_desktop::session::{
-    hex_decode, NetworkSettings, Session, UiEvent, UiFolderSelection, UiFolderTarget, UiHint,
-    UiImageCrop, UiImageEditRecipe, UiImageRegion, UiLabelTarget, UiMentionSpan, UiPinTarget,
-    UiThemePreference,
+    hex_decode, NetworkSettings, Session, UiCustomIconCrop, UiCustomIconTarget, UiEvent,
+    UiFolderSelection, UiFolderTarget, UiHint, UiImageCrop, UiImageEditRecipe, UiImageRegion,
+    UiLabelTarget, UiMentionSpan, UiPinTarget, UiThemePreference,
 };
 use kult_ffi::{
     edit_image, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, KdfChoice,
@@ -197,6 +197,80 @@ fn private_theme_defaults_persists_restarts_and_emits_one_local_event() {
         UiThemePreference::Dark
     );
     assert!(reopened.theme().unwrap().persisted);
+    reopened.stop();
+}
+
+#[test]
+fn desktop_custom_icons_render_from_local_data_urls_and_survive_restart() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/b13-custom-icon-parity.json"
+    ))
+    .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let events = Events::default();
+    let session = open(directory.path(), "icons", &events);
+    let queued = session.status().unwrap().queued;
+    let note = UiCustomIconTarget {
+        kind: "note_to_self".to_owned(),
+        id: None,
+    };
+    assert!(session.custom_icon(note.clone()).unwrap().is_none());
+    let note_icon = session
+        .set_bundled_custom_icon(note.clone(), "compass".to_owned())
+        .unwrap();
+    assert_eq!(note_icon.media_type, "image/png");
+    assert_eq!((note_icon.width, note_icon.height), (256, 256));
+    assert!(note_icon.data_url.starts_with("data:image/png;base64,"));
+    events.wait("custom icons changed", |event| {
+        matches!(event, UiEvent::CustomIconsChanged)
+    });
+
+    let folder = session.create_folder("Icon target".to_owned()).unwrap();
+    let folder_target = UiCustomIconTarget {
+        kind: "folder".to_owned(),
+        id: Some(folder.id),
+    };
+    let source = directory.path().join("desktop-icon.png");
+    let pixels = image::ImageBuffer::from_fn(8, 6, |x, y| {
+        image::Rgba([(x * 23) as u8, (y * 37) as u8, 120, 255])
+    });
+    image::DynamicImage::ImageRgba8(pixels)
+        .save(&source)
+        .unwrap();
+    let folder_icon = session
+        .set_custom_icon_from_path(
+            folder_target.clone(),
+            source.display().to_string(),
+            Some(UiCustomIconCrop {
+                x: 1,
+                y: 0,
+                width: 6,
+                height: 6,
+            }),
+        )
+        .unwrap();
+    assert_ne!(folder_icon.data_url, note_icon.data_url);
+    let usage = session.custom_icon_usage().unwrap();
+    assert_eq!(usage.records, 2);
+    assert_eq!(
+        usage.bytes,
+        note_icon.encoded_bytes + folder_icon.encoded_bytes
+    );
+    assert_eq!(session.status().unwrap().queued, queued);
+    assert_eq!(
+        fixture["network_behavior"]["transport_work"],
+        serde_json::json!(0)
+    );
+    assert!(session.clear_custom_icon(folder_target.clone()).unwrap());
+    assert!(!session.clear_custom_icon(folder_target.clone()).unwrap());
+    assert!(session.custom_icon(folder_target).unwrap().is_none());
+    session.stop();
+
+    let reopened = open(directory.path(), "icons", &Events::default());
+    assert_eq!(
+        reopened.custom_icon(note).unwrap().unwrap().data_url,
+        note_icon.data_url
+    );
     reopened.stop();
 }
 

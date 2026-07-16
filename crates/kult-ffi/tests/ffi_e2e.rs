@@ -12,11 +12,12 @@ use std::time::{Duration, Instant};
 
 use kult_ffi::{
     default_config, edit_image, probe_edited_image, probe_recorded_audio, AttachmentDirection,
-    AttachmentState, CarrierCapability, Config, ContentKind, DeliveryState, Event, EventListener,
-    FfiError, FolderErrorCode, FolderSelection, FolderSelectionKind, FolderTarget,
-    FolderTargetKind, Hint, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind,
-    KdfChoice, KultNode, LabelErrorCode, LabelMatchMode, LabelTarget, LabelTargetKind, MentionSpan,
-    PinErrorCode, PinTarget, PinTargetKind, ScheduledConversation, ThemePreference,
+    AttachmentState, CarrierCapability, Config, ContentKind, CustomIconCrop, CustomIconTarget,
+    CustomIconTargetKind, DeliveryState, Event, EventListener, FfiError, FolderErrorCode,
+    FolderSelection, FolderSelectionKind, FolderTarget, FolderTargetKind, Hint, ImageCrop,
+    ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, KdfChoice, KultNode, LabelErrorCode,
+    LabelMatchMode, LabelTarget, LabelTargetKind, MentionSpan, PinErrorCode, PinTarget,
+    PinTargetKind, ScheduledConversation, ThemePreference,
 };
 
 fn label_parity_fixture() -> serde_json::Value {
@@ -37,6 +38,13 @@ fn pin_parity_fixture() -> serde_json::Value {
 fn theme_parity_fixture() -> serde_json::Value {
     serde_json::from_str(include_str!("../../../fixtures/b12-theme-parity.json"))
         .expect("valid shared B12 theme fixture")
+}
+
+fn custom_icon_parity_fixture() -> serde_json::Value {
+    serde_json::from_str(include_str!(
+        "../../../fixtures/b13-custom-icon-parity.json"
+    ))
+    .expect("valid shared B13 custom-icon fixture")
 }
 
 #[test]
@@ -72,6 +80,96 @@ fn private_theme_via_ffi_defaults_is_idempotent_and_emits_local_event() {
     .unwrap();
     assert_eq!(reopened.theme().unwrap().preference, ThemePreference::Dark);
     assert!(reopened.theme().unwrap().persisted);
+    reopened.stop();
+}
+
+#[test]
+fn private_custom_icons_via_ffi_have_canonical_parity_and_safe_fallback() {
+    let fixture = custom_icon_parity_fixture();
+    let directory = tempfile::tempdir().unwrap();
+    let recorder = Recorder::default();
+    let node = KultNode::start(
+        test_config(directory.path(), "icons"),
+        Box::new(recorder.clone()),
+    )
+    .expect("node starts");
+    let queued = node.status().unwrap().queued;
+    let note = CustomIconTarget {
+        kind: CustomIconTargetKind::NoteToSelf,
+        id: None,
+    };
+    assert!(node.custom_icon(note.clone()).unwrap().is_none());
+
+    let glyph = fixture["bundled_glyphs"][7].as_str().unwrap();
+    let icon = node
+        .set_bundled_custom_icon(note.clone(), glyph.to_owned())
+        .unwrap();
+    assert_eq!(icon.target, note);
+    assert_eq!(icon.media_type, fixture["canonical_output"]["media_type"]);
+    assert_eq!(icon.width, fixture["canonical_output"]["width"]);
+    assert_eq!(icon.height, fixture["canonical_output"]["height"]);
+    assert!(icon.bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+    recorder.wait("custom icon event", |event| {
+        matches!(event, Event::CustomIconsChanged)
+    });
+
+    let folder = node.create_folder("Icon target".to_owned()).unwrap();
+    let folder_target = CustomIconTarget {
+        kind: CustomIconTargetKind::Folder,
+        id: Some(folder.id),
+    };
+    let source = directory.path().join("icon-source.png");
+    let pixels = image::ImageBuffer::from_fn(6, 4, |x, y| {
+        image::Rgba([(x * 31) as u8, (y * 47) as u8, 90, 255])
+    });
+    image::DynamicImage::ImageRgba8(pixels)
+        .save(&source)
+        .unwrap();
+    let folder_icon = node
+        .set_custom_icon_from_path(
+            folder_target.clone(),
+            source.display().to_string(),
+            Some(CustomIconCrop {
+                x: 1,
+                y: 0,
+                width: 4,
+                height: 4,
+            }),
+        )
+        .unwrap();
+    assert_eq!(folder_icon.target, folder_target);
+    assert_ne!(folder_icon.bytes, icon.bytes);
+
+    let usage = node.custom_icon_quota_usage().unwrap();
+    assert_eq!(usage.records, 2);
+    assert_eq!(
+        usage.bytes,
+        (icon.bytes.len() + folder_icon.bytes.len()) as u64
+    );
+    assert_eq!(node.status().unwrap().queued, queued);
+    assert!(node.clear_custom_icon(folder_target.clone()).unwrap());
+    assert!(!node.clear_custom_icon(folder_target.clone()).unwrap());
+    assert!(node.custom_icon(folder_target).unwrap().is_none());
+    assert!(node
+        .set_bundled_custom_icon(note.clone(), "not-a-glyph".to_owned())
+        .is_err());
+    assert!(node
+        .custom_icon(CustomIconTarget {
+            kind: CustomIconTargetKind::NoteToSelf,
+            id: Some("unexpected".to_owned()),
+        })
+        .is_err());
+    node.stop();
+
+    let reopened = KultNode::start(
+        test_config(directory.path(), "icons"),
+        Box::new(Recorder::default()),
+    )
+    .unwrap();
+    assert_eq!(
+        reopened.custom_icon(note).unwrap().unwrap().bytes,
+        icon.bytes
+    );
     reopened.stop();
 }
 
@@ -1228,6 +1326,13 @@ fn backup_and_restore_via_ffi_only() {
     let note_id = alice
         .send_note_to_self("survives the backup too".to_owned())
         .unwrap();
+    let note_icon_target = CustomIconTarget {
+        kind: CustomIconTargetKind::NoteToSelf,
+        id: None,
+    };
+    let note_icon = alice
+        .set_bundled_custom_icon(note_icon_target.clone(), "note".to_owned())
+        .unwrap();
 
     // Backup through the FFI: file appears, mnemonic comes back once, and
     // an existing file is never clobbered.
@@ -1273,6 +1378,14 @@ fn backup_and_restore_via_ffi_only() {
     assert_eq!(notes.len(), 1);
     assert_eq!(notes[0].id, note_id);
     assert_eq!(notes[0].conversation, "note_to_self");
+    assert_eq!(
+        alice
+            .custom_icon(note_icon_target)
+            .unwrap()
+            .expect("restored note icon")
+            .bytes,
+        note_icon.bytes
+    );
 
     // The tick loop re-handshakes Bob: a *second* session establishment
     // for the same contact (the first was the original pairing).

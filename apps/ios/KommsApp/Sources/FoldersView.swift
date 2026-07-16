@@ -35,21 +35,26 @@ struct FolderManagerView: View {
                 Section("Private folders") {
                     if model.folders.isEmpty { Text("No folders yet.").foregroundStyle(.secondary) }
                     ForEach(Array(model.folders.enumerated()), id: \.element.id) { index, folder in
-                        VStack(alignment: .leading) {
-                            Text(verbatim: folder.name)
-                                .accessibilityLabel(Text(verbatim: folderSummary(folder)))
-                            HStack {
-                                Button("Move up") { reorder(index, index - 1) }
-                                    .disabled(index == 0)
-                                    .accessibilityLabel("Move \(folderSummary(folder)) up")
-                                Button("Move down") { reorder(index, index + 1) }
-                                    .disabled(index + 1 == model.folders.count)
-                                    .accessibilityLabel("Move \(folderSummary(folder)) down")
-                                Spacer()
-                                Button("Rename") { beginEdit(folder) }
-                                    .accessibilityLabel("Rename \(folderSummary(folder))")
-                                Button("Delete", role: .destructive) { previewDelete(folder) }
-                                    .accessibilityLabel("Delete \(folderSummary(folder))")
+                        HStack(alignment: .top) {
+                            CustomIconAvatar(
+                                target: .init(kind: .folder, id: folder.id),
+                                label: folder.name)
+                            VStack(alignment: .leading) {
+                                Text(verbatim: folder.name)
+                                    .accessibilityLabel(Text(verbatim: folderSummary(folder)))
+                                HStack {
+                                    Button("Move up") { reorder(index, index - 1) }
+                                        .disabled(index == 0)
+                                        .accessibilityLabel("Move \(folderSummary(folder)) up")
+                                    Button("Move down") { reorder(index, index + 1) }
+                                        .disabled(index + 1 == model.folders.count)
+                                        .accessibilityLabel("Move \(folderSummary(folder)) down")
+                                    Spacer()
+                                    Button("Rename") { beginEdit(folder) }
+                                        .accessibilityLabel("Rename \(folderSummary(folder))")
+                                    Button("Delete", role: .destructive) { previewDelete(folder) }
+                                        .accessibilityLabel("Delete \(folderSummary(folder))")
+                                }
                             }
                         }
                     }

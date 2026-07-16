@@ -42,7 +42,7 @@ accepted designs before individual shells implement UI.
 | Folders | Shipped | Preserve single-folder membership, All/Unfiled views, deterministic order, stale cleanup, label composition, and zero-network behavior. |
 | Pins | Shipped (conversation) | Preserve exact typed targets, complete durable reorder, stale reactivation/cleanup, folder → label → pin composition, and zero-network behavior; message pins remain separate. |
 | Dark mode | Shipped | Sealed system/light/dark preference, shared semantic roles, and native live switching in every shell. |
-| Custom icons | Planned | Local-only contact/group/conversation artwork. |
+| Custom icons | Shipped | Preserve exact typed targets, strict local image canonicalization, sealed quotas, initials fallback, `KKR4` portability, and zero-network behavior. |
 | Screen security | Planned | Platform protections and documented limitations. |
 | Incognito keyboard | Planned | Android control; best available behavior and honest limits elsewhere. |
 | Local still-image editing | Shipped | Keep shared deterministic semantics, cleanup, exact-review, and metadata-removal gates stable; video remains out of scope. |
@@ -448,13 +448,32 @@ delivery states retain text, icons, or accessible labels and never rely on color
 
 **Depends on:** F5.
 
-Allow local contact, group, folder, and note-to-self icons from generated initials,
-bundled glyphs, or a user-selected local image. Crop and re-encode locally, strip
-metadata, cap dimensions/bytes, and store the result sealed. Never fetch avatar
-URLs or send custom icons to peers in the first version.
+**Shipped.** Contacts, sender-key groups, private folders, and note-to-self each
+have one exact typed private icon identity. No record renders deterministic
+generated initials. Users can instead choose one of eight bundled glyphs
+(`person`, `group`, `folder`, `note`, `star`, `heart`, `shield`, `compass`) or a
+content-verified local JPEG/PNG. The shared node normalizes EXIF orientation,
+rejects animated PNG and oversized/decompression-heavy inputs, applies a
+centered-square or explicit oriented-pixel square crop, resizes to 256×256, and
+emits a metadata-free non-interlaced RGBA8 PNG containing only IHDR/IDAT/IEND.
 
-Acceptance proves metadata removal, quota enforcement, backup behavior, and safe
-fallback after a missing/corrupt image.
+The existing F5 record is now enforced as one icon per exact target, at most
+512 KiB each, 1,024 records, and 64 MiB aggregate encoded bytes. Reads verify the
+canonical profile again; a missing, corrupt, or non-canonical sealed image falls
+back without rewriting or exposing it. Folder deletion removes its icon; other
+unavailable exact identities remain inaccessible and can safely reactivate only
+if that same technical identity returns. `KKR4` preserves icons as ordinary
+sealed user-authored local metadata.
+
+Node, strict RPC/CLI, UniFFI, desktop, Android, and iOS expose the same target,
+set-image, set-glyph, read, clear, usage, and local-change contract. Desktop,
+Android SAF, and iOS Files provide native selection and accessible management;
+all conversation/folder lists render the sealed icon or initials. No avatar URL,
+envelope, capability, notification, DHT record, peer synchronization, queue item,
+or transport work exists. The shared B13 fixture and layer acceptance tests prove
+metadata removal, input/output bounds, quota enforcement including the low-level
+store boundary, all four target types, restart, `KKR4`, idempotency, corrupt and
+missing fallback, and zero delivery work.
 
 ### B14. Screen security
 
@@ -803,7 +822,7 @@ honest. Parallel work is safe only where rows do not share a foundation.
 |---|---|---|
 | **0: Shared foundations** | Complete | F1–F5 are implemented; ADR-0015 remains formally Proposed despite the shipped attachment pipeline. |
 | **Parallel: mobile reachability** | Design-only | Accept ADR-0017–0019, then implement C8 behind reversible feature gates. |
-| **1: Local-first product polish** | In progress | B7, B8, B10–B12, and B18 are shipped; B5, B9, and B13–B15 remain. |
+| **1: Local-first product polish** | In progress | B7, B8, B10–B13, and B18 are shipped; B5, B9, B14, and B15 remain. |
 | **2: Typed content and asynchronous media** | Substantially complete | F2/F3, B2, B16, and B17 are shipped; C1 is usable across all shells with richer media polish remaining. |
 | **3: Replicated conversation features** | Planned | C3, C4, C5, and C6. |
 | **4: Multi-device** | Planned | C2, followed by cross-device hardening of Wave 3. |
@@ -874,7 +893,8 @@ reviewable PR:
 2. completed: add group list/history/create/send UI to desktop, Android, and iOS;
 3. completed: build the per-peer carrier capability API and pin mesh-only
    decisions in node, scheduler, and FFI tests;
-4. completed through B10 folders, B11 conversation pins, B12 appearance, and B18 labels: add the
+4. completed through B10 folders, B11 conversation pins, B12 appearance,
+   B13 custom icons, and B18 labels: add the
    sealed local metadata foundation, note-to-self, private single-membership
    conversation folders, exact typed conversation pins, and private
    contact/conversation labels plus a sealed local theme choice; message pins and
@@ -883,8 +903,8 @@ reviewable PR:
 5. completed: ship typed content, attachments, audio, image editing, and mentions
    through every front door and shell; ADR-0015's formal status remains Proposed.
 
-The next high-value local-first slice is B13 custom icons over the shipped F5
-record, with bounded local crop/re-encode, metadata stripping, quotas, safe
-fallbacks, and no remote avatar lookup or synchronization.
+The next high-value local-first slice is B14 screen security, with explicit
+platform guarantees and honest unsupported states where an OS cannot prevent
+capture.
 Replicated edits/expiry/polls/roles, linked-device identity, real-time media, and
 optional hybrid services remain separate programs with their stated ADR gates.

@@ -173,6 +173,14 @@ label.check input { width: auto; margin: 0; }
   font-weight: 600;
   flex: none;
 }
+.avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; display: block; }
+.folder-navigation .avatar, .icon-manager-row-avatar { width: 1.55rem; height: 1.55rem; border-radius: 50%; background: var(--accent-dim); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 0.72rem; font-weight: 600; flex: none; vertical-align: middle; }
+.folder-navigation .avatar { margin-right: 0.45rem; }
+.icon-preview-row { display: flex; align-items: center; gap: 0.8rem; margin: 1rem 0; }
+.icon-preview { width: 4rem; height: 4rem; border-radius: 50%; background: var(--accent-dim); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 1.25rem; font-weight: 600; flex: none; }
+.icon-glyphs { border: 1px solid var(--line); border-radius: 8px; margin: 1rem 0; padding: 0.7rem; }
+.icon-glyphs > div { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.45rem; }
+.icon-glyphs button { text-transform: capitalize; }
 .contact .c-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .label-filters { border: 0; margin: 0; padding: 0 1em 0.65em; }
 .label-filter-option, .label-filter-mode label, .label-assignment-option {

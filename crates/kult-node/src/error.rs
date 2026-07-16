@@ -47,6 +47,12 @@ pub enum NodeError {
     UnknownAttachment,
     /// Attachment input or a requested lifecycle transition is invalid.
     InvalidAttachment,
+    /// A custom-icon source, crop, glyph, or canonical encoded record is invalid.
+    InvalidCustomIcon,
+    /// A custom-icon target is not a current local contact, group, or folder.
+    UnavailableCustomIconTarget,
+    /// Reading the caller-selected custom-icon source failed.
+    CustomIconIo(std::io::Error),
     /// A scheduled message id no longer exists (it was cancelled or activated).
     UnknownScheduledMessage,
     /// The requested schedule is in the past or its body is invalid.
@@ -81,6 +87,9 @@ impl std::fmt::Display for NodeError {
             }
             Self::UnknownAttachment => f.write_str("attachment transfer does not exist"),
             Self::InvalidAttachment => f.write_str("invalid attachment state or metadata"),
+            Self::InvalidCustomIcon => f.write_str("invalid custom icon source, crop, or glyph"),
+            Self::UnavailableCustomIconTarget => f.write_str("custom icon target is unavailable"),
+            Self::CustomIconIo(e) => write!(f, "custom icon input error: {e}"),
             Self::UnknownScheduledMessage => {
                 f.write_str("scheduled message does not exist or already activated")
             }

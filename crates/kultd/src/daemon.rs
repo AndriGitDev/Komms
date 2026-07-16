@@ -733,6 +733,46 @@ async fn handle_op(
                 "changed": changed,
             }))
         }
+        Op::CustomIcon { target } => {
+            let target = wire::parse_custom_icon_target(&target)?;
+            Ok(json!({
+                "icon": node
+                    .custom_icon(&target)
+                    .map_err(fail)?
+                    .as_ref()
+                    .map(wire::custom_icon_json),
+            }))
+        }
+        Op::CustomIconSetPath { target, path, crop } => {
+            let target = wire::parse_custom_icon_target(&target)?;
+            let crop = crop.map(|crop| kult_node::CustomIconCrop {
+                x: crop.x,
+                y: crop.y,
+                width: crop.width,
+                height: crop.height,
+            });
+            let icon = node
+                .set_custom_icon_from_path(target, &PathBuf::from(path), crop, &mut OsRng)
+                .map_err(fail)?;
+            Ok(wire::custom_icon_json(&icon))
+        }
+        Op::CustomIconSetBundled { target, glyph } => {
+            let target = wire::parse_custom_icon_target(&target)?;
+            let icon = node
+                .set_bundled_custom_icon(target, &glyph, &mut OsRng)
+                .map_err(fail)?;
+            Ok(wire::custom_icon_json(&icon))
+        }
+        Op::CustomIconClear { target } => {
+            let target = wire::parse_custom_icon_target(&target)?;
+            Ok(json!({
+                "changed": node.clear_custom_icon(&target).map_err(fail)?,
+                "target": wire::custom_icon_target_json(&target),
+            }))
+        }
+        Op::CustomIconUsage => Ok(wire::custom_icon_usage_json(
+            node.custom_icon_usage().map_err(fail)?,
+        )),
         Op::FolderCreate { name } => {
             wire::validate_folder_write(&name)?;
             let folder = node.create_folder(&name, &mut OsRng).map_err(fail)?;

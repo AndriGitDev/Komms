@@ -83,6 +83,14 @@ are the node's own, verbatim.
   changes live; adaptive semantic colors preserve Increase Contrast,
   Differentiate Without Color, Dynamic Type, and Reduce Motion behavior, while
   delivery/security meaning always retains text, symbols, or accessible labels.
+- **Manage private custom icons** for contacts, groups, folders, and note-to-self.
+  SwiftUI rows and pins render the sealed icon or generated initials; the
+  VoiceOver/Dynamic-Type manager offers all eight bundled glyphs, security-
+  scoped Files JPEG/PNG selection, clear-to-fallback, and quota usage. The shared
+  core produces only metadata-free 256×256 RGBA PNGs and enforces the 512 KiB,
+  1,024-record, and 64 MiB caps with safe corrupt fallback. `KKR4` is the only
+  portability path; icons never enter iCloud sync, URLs, peers, envelopes,
+  capabilities, notifications, queues, or transports.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends (all platforms), compared aloud or by scanning each other's code,
   with a visible verified badge. Key changes are surfaced, never hidden.
@@ -159,6 +167,12 @@ covering the exact vocabulary/roles, first-run System, idempotency, restart,
 `KKR4`, one local change event, and zero queued or transport work. The ordinary
 non-synchronizing `UserDefaults` cache contains only the pre-unlock theme token;
 it is not a portability or backup channel.
+
+Custom-icon acceptance uses the same B13 fixture as Rust RPC, UniFFI, and
+Kotlin, covering all exact target kinds, canonical metadata-free PNG output,
+quota accounting, restart/`KKR4`, safe initials fallback, local events, and zero
+delivery work. Security-scoped Files access lasts only for the explicit blocking
+import call; no selected path or plaintext image becomes synchronized state.
 
 Generated bindings are never committed; `scripts/generate-bindings.sh`
 produces them fresh from the crate. The package is deliberately outside

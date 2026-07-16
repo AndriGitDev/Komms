@@ -1706,6 +1706,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "blake3",
+ "image",
  "kult-crypto",
  "kult-protocol",
  "kult-store",

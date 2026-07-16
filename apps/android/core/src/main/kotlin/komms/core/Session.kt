@@ -19,6 +19,10 @@ import uniffi.kult_ffi.AudioInfo
 import uniffi.kult_ffi.CarrierCapability
 import uniffi.kult_ffi.Config
 import uniffi.kult_ffi.Contact
+import uniffi.kult_ffi.CustomIcon
+import uniffi.kult_ffi.CustomIconCrop
+import uniffi.kult_ffi.CustomIconQuotaUsage
+import uniffi.kult_ffi.CustomIconTarget
 import uniffi.kult_ffi.Event
 import uniffi.kult_ffi.EventListener
 import uniffi.kult_ffi.FfiException
@@ -359,6 +363,26 @@ class Session private constructor(private val node: KultNode) {
 
     /** Idempotently persist one canonical private local appearance choice. */
     fun setTheme(preference: ThemePreference): Boolean = node.setTheme(preference)
+
+    /** One canonical private local icon, or null for generated initials. */
+    fun customIcon(target: CustomIconTarget): CustomIcon? = node.customIcon(target)
+
+    /** Crop, sanitize, and seal a selected local JPEG/PNG. */
+    fun setCustomIconFromPath(
+        target: CustomIconTarget,
+        source: File,
+        crop: CustomIconCrop? = null,
+    ): CustomIcon = node.setCustomIconFromPath(target, source.absolutePath, crop)
+
+    /** Render and seal one bundled glyph token. */
+    fun setBundledCustomIcon(target: CustomIconTarget, glyph: String): CustomIcon =
+        node.setBundledCustomIcon(target, glyph)
+
+    /** Remove one icon and return to generated initials. */
+    fun clearCustomIcon(target: CustomIconTarget): Boolean = node.clearCustomIcon(target)
+
+    /** Current sealed icon record and encoded-byte usage. */
+    fun customIconUsage(): CustomIconQuotaUsage = node.customIconQuotaUsage()
 
     /** Append one sealed local-only note; no transport work is created. */
     fun sendNoteToSelf(body: String): String = node.sendNoteToSelf(body)
