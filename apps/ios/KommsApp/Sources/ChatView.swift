@@ -185,6 +185,7 @@ struct ChatView: View {
 }
 
 private struct MessageBubble: View {
+    @EnvironmentObject private var model: AppModel
     let message: Message
 
     private var outbound: Bool { message.direction == .outbound }
@@ -204,7 +205,7 @@ private struct MessageBubble: View {
         HStack {
             if outbound { Spacer(minLength: 40) }
             VStack(alignment: outbound ? .trailing : .leading, spacing: 2) {
-                Text(message.body)
+                FormattedTextView(formatted: model.formattedText(source: message.body))
                     .padding(10)
                     .background(
                         outbound ? Color.accentColor.opacity(0.2) : Color.gray.opacity(0.15),

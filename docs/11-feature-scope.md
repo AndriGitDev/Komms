@@ -63,8 +63,13 @@ status and prerequisites are tracked in the delivery plan.
   so app exit or suspension cannot send early. Desktop, Android, and iOS now
   provide local-time composer controls plus distinct editable/cancellable
   scheduled rows before the ordinary queued, sent, and delivered states.
-- **Text formatting.** Planned as a small safe source-text subset rendered by
-  each shell, with no raw HTML, remote fetches, or scriptable links.
+- **Text formatting.** Shipped through every front door and shell as one bounded
+  CommonMark-style source subset: emphasis, strong, inline/fenced code, quotes,
+  and lists. Exact source remains the authenticated stored/transmitted value;
+  shells render only the shared inert block/run model and copy a readable plain-
+  text projection. Raw HTML, links, images, URL schemes, remote fetches, and
+  scriptable content are never interpreted. See
+  [16: Safe Text Formatting](16-safe-text-formatting.md).
 - **Conversation pins.** Shipped for pairwise contacts, groups, and note-to-self
   through the sealed F5 store and every wrapper and shell. Exact typed identity,
   manual order, idempotent append/unpin, complete-set reorder including stale

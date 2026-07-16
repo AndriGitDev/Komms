@@ -33,6 +33,11 @@ are the node's own, verbatim.
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted
   mesh links.
+- **Render safe source formatting** in pairwise, group, note-to-self, and
+  scheduled rows through the shared bounded formatter. SwiftUI builds only a
+  selectable native `AttributedString`, composes semantic mention highlights,
+  and copies the readable plain-text projection; it never linkifies, fetches,
+  or interprets HTML, image syntax, or URL schemes from message source.
 - **Schedule pairwise or group text** in local time: distinct scheduled rows
   stay editable/cancellable until the core activates them at the stored
   absolute UTC instant and they enter the ordinary delivery ladder.

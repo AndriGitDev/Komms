@@ -185,10 +185,12 @@ class ChatActivity : SecureActivity() {
         val list = findViewById<RecyclerView>(R.id.chat_messages)
         runNode(work = {
             ChatScreenState(
-                messages = session.messages(peer),
+                messages = session.messages(peer).map { message ->
+                    RenderedMessage(message, session.formatText(message.body))
+                },
                 scheduled = session.scheduledMessages().filter {
                     it.conversation == ScheduledConversation.PEER && it.destination == peer
-                },
+                }.map { message -> RenderedMessage(message, session.formatText(message.body)) },
                 attachments = session.attachments(),
             )
         }) { state ->
@@ -242,19 +244,19 @@ class ChatActivity : SecureActivity() {
 }
 
 private data class ChatScreenState(
-    val messages: List<Message>,
-    val scheduled: List<ScheduledMessage>,
+    val messages: List<RenderedMessage<Message>>,
+    val scheduled: List<RenderedMessage<ScheduledMessage>>,
     val attachments: List<Attachment>,
 )
 
 /** Message bubbles with the honest state caption. */
 private class MessagesAdapter : RecyclerView.Adapter<MessagesAdapter.Holder>() {
-    private var items = listOf<Message>()
+    private var items = listOf<RenderedMessage<Message>>()
 
     class Holder(view: android.view.View) : RecyclerView.ViewHolder(view)
 
-    fun submit(list: List<Message>) {
-        items = list.filter { it.contentKind != ContentKind.ATTACHMENT }
+    fun submit(list: List<RenderedMessage<Message>>) {
+        items = list.filter { it.value.contentKind != ContentKind.ATTACHMENT }
         notifyDataSetChanged()
     }
 
@@ -267,7 +269,8 @@ private class MessagesAdapter : RecyclerView.Adapter<MessagesAdapter.Holder>() {
     override fun getItemCount() = items.size
 
     override fun onBindViewHolder(holder: Holder, position: Int) {
-        val message = items[position]
+        val rendered = items[position]
+        val message = rendered.value
         val outbound = message.direction == Direction.OUTBOUND
         val row = holder.itemView as LinearLayout
         row.gravity = if (outbound) Gravity.END else Gravity.START
@@ -275,7 +278,8 @@ private class MessagesAdapter : RecyclerView.Adapter<MessagesAdapter.Holder>() {
         holder.itemView.findViewById<LinearLayout>(R.id.message_bubble).setBackgroundColor(
             context.getColor(if (outbound) R.color.bubble_out else R.color.bubble_in),
         )
-        holder.itemView.findViewById<TextView>(R.id.message_body).text = message.body
+        holder.itemView.findViewById<TextView>(R.id.message_body)
+            .showFormattedText(rendered.formatted)
 
         val state = when {
             message.id in NodeHolder.held -> context.getString(R.string.state_held)

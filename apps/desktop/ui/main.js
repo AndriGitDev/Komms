@@ -1358,29 +1358,62 @@ function insertMention(peer) {
   $("#mention-status").textContent = `Mention of ${memberLabel(peer)} inserted. Review the exact final text before Send.`;
 }
 
-function appendMentionBody(container, message) {
-  if (message.content_kind !== "mention" || !message.mention_spans?.length) {
-    container.append(document.createTextNode(message.body));
-    return;
-  }
-  let cursor = 0;
-  for (const span of message.mention_spans) {
-    const start = utf16Offset(message.body, span.start);
-    const end = utf16Offset(message.body, span.end);
-    if (start === null || end === null || start < cursor || end <= start) {
-      container.replaceChildren(document.createTextNode("Unsupported message — update Komms"));
-      return;
+function formattingHighlights(message) {
+  if (message.content_kind !== "mention" || !message.mention_spans?.length) return [];
+  return message.mention_spans.map(({ start, end }) => ({ start, end }));
+}
+
+function styledRun(run) {
+  let node = document.createTextNode(run.text);
+  for (const style of run.styles) {
+    const wrapper = document.createElement(
+      style === "strong" ? "strong"
+        : style === "emphasis" ? "em"
+        : style === "inline_code" ? "code"
+        : "mark"
+    );
+    if (style === "highlight") {
+      wrapper.className = "mention-highlight";
+      wrapper.tabIndex = 0;
+      wrapper.setAttribute("aria-label", "Highlighted mention");
     }
-    container.append(document.createTextNode(message.body.slice(cursor, start)));
-    const mark = document.createElement("mark");
-    mark.className = "mention-highlight";
-    mark.tabIndex = 0;
-    mark.textContent = message.body.slice(start, end);
-    mark.setAttribute("aria-label", `Mention of ${memberLabel(span.target)}`);
-    container.append(mark);
-    cursor = end;
+    wrapper.append(node);
+    node = wrapper;
   }
-  container.append(document.createTextNode(message.body.slice(cursor)));
+  return node;
+}
+
+function appendFormattedBody(container, formatted) {
+  const body = document.createElement("div");
+  body.className = "formatted-text";
+  body.dataset.formatFallback = formatted.used_fallback ? "true" : "false";
+  for (const block of formatted.blocks) {
+    const blockElement = document.createElement(
+      block.kind === "quote" ? "blockquote"
+        : block.kind === "code_block" ? "pre"
+        : "div"
+    );
+    blockElement.className = `format-block format-${block.kind}`;
+    if (block.kind.endsWith("list_item")) {
+      blockElement.setAttribute("role", "listitem");
+      blockElement.style.setProperty("--list-depth", String(block.depth));
+      const marker = document.createElement("span");
+      marker.className = "format-list-marker";
+      marker.setAttribute("aria-hidden", "true");
+      marker.textContent = block.kind === "ordered_list_item" ? `${block.ordinal}.` : "•";
+      blockElement.append(marker);
+    }
+    const runs = document.createElement(block.kind === "code_block" ? "code" : "span");
+    for (const run of block.runs) runs.append(styledRun(run));
+    blockElement.append(runs);
+    body.append(blockElement);
+  }
+  body.addEventListener("copy", (event) => {
+    if (!event.clipboardData) return;
+    event.clipboardData.setData("text/plain", formatted.plain_text);
+    event.preventDefault();
+  });
+  container.append(body);
 }
 
 async function refreshGroups() {
@@ -1590,10 +1623,10 @@ $("#mention-picker").addEventListener("keydown", (event) => {
   }
 });
 
-function bubble(m) {
+function bubble(m, formatted) {
   const el = document.createElement("div");
   el.className = "msg " + (m.outbound ? "out" : "in");
-  el.textContent = m.body;
+  appendFormattedBody(el, formatted);
   const meta = document.createElement("span");
   meta.className = "meta";
   meta.append(fmtTime(m.timestamp));
@@ -1608,10 +1641,10 @@ function bubble(m) {
   return el;
 }
 
-function noteBubble(m) {
+function noteBubble(m, formatted) {
   const el = document.createElement("div");
   el.className = "msg out";
-  el.textContent = m.body;
+  appendFormattedBody(el, formatted);
   const meta = document.createElement("span");
   meta.className = "meta";
   meta.textContent = `${fmtTime(m.timestamp)} · local only`;
@@ -1620,7 +1653,7 @@ function noteBubble(m) {
   return el;
 }
 
-function groupBubble(m) {
+function groupBubble(m, formatted) {
   const el = document.createElement("div");
   el.className = "msg " + (m.outbound ? "out" : "in");
   if (!m.outbound) {
@@ -1629,7 +1662,7 @@ function groupBubble(m) {
     sender.textContent = memberName(m.sender);
     el.append(sender);
   }
-  appendMentionBody(el, m);
+  appendFormattedBody(el, formatted);
   const meta = document.createElement("span");
   meta.className = "meta";
   meta.textContent = fmtTime(m.timestamp);
@@ -1650,10 +1683,10 @@ function groupBubble(m) {
   return el;
 }
 
-function scheduledBubble(message) {
+function scheduledBubble(message, formatted) {
   const el = document.createElement("div");
   el.className = "msg out scheduled";
-  el.append(message.body);
+  appendFormattedBody(el, formatted);
   const meta = document.createElement("span");
   meta.className = "meta scheduled-meta";
   meta.textContent = `scheduled for ${fmtTime(message.not_before)}`;
@@ -1857,14 +1890,26 @@ async function renderMessages() {
   const box = $("#messages");
   box.textContent = "";
   state.msgEls.clear();
-  for (const m of msgs.filter((message) => message.content_kind !== "attachment")) {
-    box.append(isNote ? noteBubble(m) : isGroup ? groupBubble(m) : bubble(m));
+  const visibleMessages = msgs.filter((message) => message.content_kind !== "attachment");
+  const formattedMessages = await Promise.all(visibleMessages.map((message) => call("format_text", {
+    source: message.body,
+    highlights: formattingHighlights(message),
+  })));
+  for (let index = 0; index < visibleMessages.length; index += 1) {
+    const m = visibleMessages[index];
+    const formatted = formattedMessages[index];
+    box.append(isNote ? noteBubble(m, formatted) : isGroup ? groupBubble(m, formatted) : bubble(m, formatted));
   }
-  for (const message of scheduled
+  const visibleScheduled = scheduled
     .filter((item) => item.destination === state.currentId
       && item.conversation === (isGroup ? "group" : "peer"))
-    .sort((a, b) => a.not_before - b.not_before)) {
-    box.append(scheduledBubble(message));
+    .sort((a, b) => a.not_before - b.not_before);
+  const formattedScheduled = await Promise.all(visibleScheduled.map((message) => call("format_text", {
+    source: message.body,
+    highlights: [],
+  })));
+  for (let index = 0; index < visibleScheduled.length; index += 1) {
+    box.append(scheduledBubble(visibleScheduled[index], formattedScheduled[index]));
   }
   renderAttachments(attachments);
   box.scrollTop = box.scrollHeight;

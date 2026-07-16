@@ -31,6 +31,7 @@ import uniffi.kult_ffi.FolderConversation
 import uniffi.kult_ffi.FolderConversationResult
 import uniffi.kult_ffi.FolderSelection
 import uniffi.kult_ffi.FolderTarget
+import uniffi.kult_ffi.FormattedText
 import uniffi.kult_ffi.Group
 import uniffi.kult_ffi.GroupMentionCapability
 import uniffi.kult_ffi.GroupMessage
@@ -56,6 +57,7 @@ import uniffi.kult_ffi.ScheduledMessage
 import uniffi.kult_ffi.Status
 import uniffi.kult_ffi.ThemeInfo
 import uniffi.kult_ffi.ThemePreference
+import uniffi.kult_ffi.TextFormatHighlight
 import uniffi.kult_ffi.defaultConfig
 import uniffi.kult_ffi.canonicalizeRecordedAudio
 import uniffi.kult_ffi.editImage as ffiEditImage
@@ -172,6 +174,12 @@ class Session private constructor(private val node: KultNode) {
 
     /** Status snapshot for the UI's transport indicators. */
     fun status(): Status = node.status()
+
+    /** Render exact source into the shared bounded and inert local text model. */
+    fun formatText(
+        source: String,
+        highlights: List<TextFormatHighlight> = emptyList(),
+    ): FormattedText = node.formatText(source, highlights)
 
     /**
      * Export a fresh prekey bundle as pasteable hex. Render

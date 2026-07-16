@@ -109,7 +109,7 @@ fun AppCompatActivity.showScheduledEditor(
 
 /** Render the conversation's still-editable scheduled rows below history. */
 fun AppCompatActivity.renderScheduledOutbox(
-    messages: List<ScheduledMessage>,
+    messages: List<RenderedMessage<ScheduledMessage>>,
     edit: (ScheduledMessage) -> Unit,
     cancel: (ScheduledMessage) -> Unit,
 ) {
@@ -117,10 +117,11 @@ fun AppCompatActivity.renderScheduledOutbox(
     val rows = findViewById<LinearLayout>(R.id.chat_scheduled)
     rows.removeAllViews()
     section.visibility = if (messages.isEmpty()) View.GONE else View.VISIBLE
-    for (message in messages.sortedBy { it.notBefore }) {
+    for (rendered in messages.sortedBy { it.value.notBefore }) {
+        val message = rendered.value
         val row = LayoutInflater.from(this)
             .inflate(R.layout.row_scheduled_message, rows, false)
-        row.findViewById<TextView>(R.id.scheduled_body).text = message.body
+        row.findViewById<TextView>(R.id.scheduled_body).showFormattedText(rendered.formatted)
         row.findViewById<TextView>(R.id.scheduled_time).text = getString(
             R.string.scheduled_send_at,
             DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)

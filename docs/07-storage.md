@@ -43,6 +43,12 @@ Every blob is individually AEAD-sealed (XChaCha20-Poly1305, random 24-byte nonce
 name + row purpose as associated data), a copied database file leaks only row counts and
 approximate sizes; rows can't be transplanted across tables or databases.
 
+B9 formatting creates no additional durable state. The `messages`,
+`scheduled_messages`, group history, and note-to-self rows retain exact source
+bytes under their existing seals; formatting markers are not rewritten and no
+rendered HTML/attributed text or cache is persisted. `KKR4` therefore carries
+the same source it already carried and needs no format or migration change.
+
 B12 stores only the canonical `system`, `light`, or `dark` bytes under the sealed
 UI-preference key `appearance.theme`. Missing or unknown legacy values render as
 System without a read-time rewrite. The small shell cache used before unlock is

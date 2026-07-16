@@ -57,6 +57,12 @@ Android behavior and APK assembly, iOS behavior, and the gated iOS simulator
 build. Hands-on device qualification, distribution, the physical radio bench,
 and the external audit remain before a stable release.
 
+Messages may use a small safe formatting subset for emphasis, strong text,
+quotes, lists, and code. The exact readable source stays encrypted in history
+and on the wire; each app renders it locally without HTML, clickable links,
+remote images, or background fetches. See
+[Safe Text Formatting](16-safe-text-formatting.md) for the exact promise.
+
 If you're comfortable with a terminal, the desktop shell is the quickest start:
 
 ```sh

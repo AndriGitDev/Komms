@@ -61,6 +61,55 @@ fn contact_rename_parity_fixture() -> Value {
     .expect("valid shared B5 contact-rename fixture")
 }
 
+fn text_formatting_parity_fixture() -> Value {
+    serde_json::from_str(include_str!(
+        "../../../fixtures/b9-text-formatting-parity.json"
+    ))
+    .expect("valid shared B9 text-formatting fixture")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn safe_text_formatting_via_strict_rpc_matches_shared_corpus_without_delivery_work() {
+    let fixture = text_formatting_parity_fixture();
+    let directory = tempfile::tempdir().unwrap();
+    let daemon = Daemon::start(test_config(directory.path(), "text-formatting-rpc"))
+        .await
+        .unwrap();
+    let mut client = Client::connect(&daemon.socket_path).await;
+    let queued = client.ok(json!({ "op": "status" })).await["queued"].clone();
+    for case in fixture["cases"].as_array().unwrap() {
+        let formatted = client
+            .ok(json!({
+                "op": "format_text",
+                "source": case["source"],
+                "highlights": case["highlights"],
+            }))
+            .await;
+        assert_eq!(formatted["source"], case["source"], "{}", case["name"]);
+        assert_eq!(
+            formatted["plain_text"], case["plain_text"],
+            "{}",
+            case["name"]
+        );
+        assert_eq!(
+            formatted["used_fallback"], case["used_fallback"],
+            "{}",
+            case["name"]
+        );
+        assert_eq!(
+            formatted["blocks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|block| block["kind"].clone())
+                .collect::<Vec<_>>(),
+            case["block_kinds"].as_array().unwrap().clone()
+        );
+    }
+    assert_eq!(client.ok(json!({ "op": "status" })).await["queued"], queued);
+    daemon.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn private_contact_rename_via_strict_rpc_is_normalized_warned_and_delivery_free() {
     let fixture = contact_rename_parity_fixture();

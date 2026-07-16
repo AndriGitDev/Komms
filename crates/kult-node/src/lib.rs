@@ -69,6 +69,7 @@ mod incognito_keyboard;
 mod labels;
 mod pins;
 mod screen_security;
+mod text_formatting;
 mod theme;
 mod vault;
 
@@ -99,6 +100,11 @@ pub use kult_store::{
 };
 pub use screen_security::{
     screen_security_policy, ScreenSecurityLevel, ScreenSecurityPlatform, ScreenSecurityPolicy,
+};
+pub use text_formatting::{
+    format_text, FormattedText, FormattedTextBlock, FormattedTextRun, TextFormatBlockKind,
+    TextFormatHighlight, TextFormatStyle, MAX_FORMAT_BLOCKS, MAX_FORMAT_HIGHLIGHTS,
+    MAX_FORMAT_INLINE_DEPTH, MAX_FORMAT_LIST_DEPTH, MAX_FORMAT_RUNS, MAX_FORMAT_SOURCE_BYTES,
 };
 
 use vault::PrekeyVault;

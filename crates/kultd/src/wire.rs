@@ -18,7 +18,7 @@ use kult_node::{
     LabelInfo, MentionCapabilityIssueReason, NodeStaleFolderReason, NodeStaleLabelReason,
     PinConversationInfo, PinConversationList, PinInfo, ScheduledConversation, ScheduledMessageInfo,
     ScreenSecurityPlatform, ScreenSecurityPolicy, StaleFolderInfo, StaleLabelInfo,
-    NOTE_TO_SELF_CONVERSATION_ID,
+    TextFormatBlockKind, TextFormatHighlight, TextFormatStyle, NOTE_TO_SELF_CONVERSATION_ID,
 };
 use kult_store::{
     valid_folder_name, valid_label_color, valid_label_name, ConversationId, DeliveryState,
@@ -35,6 +35,25 @@ pub struct Request {
     /// The operation.
     #[serde(flatten)]
     pub op: Op,
+}
+
+/// One exact UTF-8 source range supplied to the shared formatter.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextFormatHighlightInput {
+    /// Inclusive UTF-8 byte offset.
+    pub start: u32,
+    /// Exclusive UTF-8 byte offset.
+    pub end: u32,
+}
+
+impl From<TextFormatHighlightInput> for TextFormatHighlight {
+    fn from(highlight: TextFormatHighlightInput) -> Self {
+        Self {
+            start: highlight.start,
+            end: highlight.end,
+        }
+    }
 }
 
 /// Strictly parse one complete RPC request, rejecting unknown fields and
@@ -92,6 +111,7 @@ fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
         "pins" | "pin_stale" => Some(&["id", "op"]),
         "pin_reorder" => Some(&["id", "op", "targets"]),
         "pin_conversations" => Some(&["id", "op", "selection", "labels", "mode"]),
+        "format_text" => Some(&["id", "op", "source", "highlights"]),
         _ => None,
     }
 }
@@ -106,6 +126,14 @@ pub enum Op {
     Status,
     /// Export a fresh signed prekey bundle (hex) for out-of-band sharing.
     Bundle,
+    /// Render exact source into the bounded, inert shared display model.
+    FormatText {
+        /// Exact authenticated or composed UTF-8 source.
+        source: String,
+        /// Optional existing semantic ranges composed as inert highlights.
+        #[serde(default)]
+        highlights: Vec<TextFormatHighlightInput>,
+    },
     /// Add a contact from an out-of-band prekey bundle.
     AddContact {
         /// Local display name.
@@ -851,6 +879,35 @@ pub fn event_line(event: &Event) -> String {
     json!({ "event": body }).to_string()
 }
 
+/// Render the bounded text model using stable snake-case tokens.
+pub fn formatted_text_json(formatted: &kult_node::FormattedText) -> Value {
+    json!({
+        "source": formatted.source,
+        "plain_text": formatted.plain_text,
+        "blocks": formatted.blocks.iter().map(|block| json!({
+            "kind": match block.kind {
+                TextFormatBlockKind::Paragraph => "paragraph",
+                TextFormatBlockKind::Quote => "quote",
+                TextFormatBlockKind::UnorderedListItem => "unordered_list_item",
+                TextFormatBlockKind::OrderedListItem => "ordered_list_item",
+                TextFormatBlockKind::CodeBlock => "code_block",
+            },
+            "depth": block.depth,
+            "ordinal": block.ordinal,
+            "runs": block.runs.iter().map(|run| json!({
+                "text": run.text,
+                "styles": run.styles.iter().map(|style| match style {
+                    TextFormatStyle::Emphasis => "emphasis",
+                    TextFormatStyle::Strong => "strong",
+                    TextFormatStyle::InlineCode => "inline_code",
+                    TextFormatStyle::Highlight => "highlight",
+                }).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "used_fallback": formatted.used_fallback,
+    })
+}
+
 /// Render one contact-name review result without exposing sealed contact data.
 pub fn contact_name_assessment_json(assessment: &ContactNameAssessment) -> Value {
     json!({
@@ -1589,6 +1646,42 @@ mod tests {
             .to_string(),
         )
         .is_err());
+    }
+
+    #[test]
+    fn text_formatting_rpc_is_strict_and_render_safe() {
+        let request = parse_request(
+            r#"{"id":9,"op":"format_text","source":"**safe** <img src=x>","highlights":[]}"#,
+        )
+        .unwrap();
+        assert!(matches!(request.op, Op::FormatText { .. }));
+        assert!(parse_request(
+            r#"{"id":9,"op":"format_text","source":"safe","highlights":[],"html":true}"#
+        )
+        .is_err());
+        assert!(parse_request(
+            r#"{"id":9,"op":"format_text","source":"safe","highlights":[{"start":0,"end":1,"target":"peer"}]}"#
+        )
+        .is_err());
+
+        let formatted = kult_node::format_text("**safe** <img src=x>", &[]).unwrap();
+        assert_eq!(
+            formatted_text_json(&formatted),
+            json!({
+                "source": "**safe** <img src=x>",
+                "plain_text": "safe <img src=x>",
+                "blocks": [{
+                    "kind": "paragraph",
+                    "depth": 0,
+                    "ordinal": 0,
+                    "runs": [
+                        {"text": "safe", "styles": ["strong"]},
+                        {"text": " <img src=x>", "styles": []},
+                    ],
+                }],
+                "used_fallback": false,
+            })
+        );
     }
 
     #[test]

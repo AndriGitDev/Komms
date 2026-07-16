@@ -34,6 +34,11 @@ security indicators are the node's own, verbatim.
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted
   mesh links.
+- **Render safe source formatting** in pairwise, group, note-to-self, and
+  scheduled bubbles through the shared bounded formatter. The webview creates
+  only fixed inert DOM/text nodes, composes mention highlighting, and copies the
+  readable plain-text projection; message source can never create HTML, links,
+  images, URL navigation, or fetches.
 - **Schedule pairwise or group text** in local time: sealed scheduled rows
   remain visibly separate from ordinary history and can be edited or cancelled
   until the core activates them at the stored absolute UTC instant.

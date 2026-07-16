@@ -661,28 +661,16 @@ private func utf8Offset(_ text: String, utf16 offset: Int) throws -> UInt32 {
 }
 
 private struct GroupMessageBubble: View {
+    @EnvironmentObject private var model: AppModel
     let message: GroupMessage
     let memberName: (String) -> String
 
     private var outbound: Bool { message.direction == .outbound }
-    private var renderedBody: AttributedString {
-        var rendered = AttributedString(message.body)
-        guard message.contentKind == .mention else { return rendered }
-        var priorEnd = 0
-        for span in message.mentionSpans {
-            guard let start = stringIndex(message.body, utf8Offset: Int(span.start)),
-                  let end = stringIndex(message.body, utf8Offset: Int(span.end)),
-                  let attributedStart = AttributedString.Index(start, within: rendered),
-                  let attributedEnd = AttributedString.Index(end, within: rendered),
-                  Int(span.start) >= priorEnd,
-                  span.end > span.start
-            else { return AttributedString("Unsupported message — update Komms") }
-            rendered[attributedStart..<attributedEnd].backgroundColor = .yellow.opacity(0.28)
-            rendered[attributedStart..<attributedEnd].underlineStyle = .single
-            rendered[attributedStart..<attributedEnd].font = .body.bold()
-            priorEnd = Int(span.end)
-        }
-        return rendered
+    private var renderedBody: FormattedText {
+        let highlights = message.contentKind == .mention
+            ? message.mentionSpans.map { TextFormatHighlight(start: $0.start, end: $0.end) }
+            : []
+        return model.formattedText(source: message.body, highlights: highlights)
     }
 
     var body: some View {
@@ -694,7 +682,7 @@ private struct GroupMessageBubble: View {
                         .font(.caption.bold())
                         .foregroundStyle(.secondary)
                 }
-                Text(renderedBody)
+                FormattedTextView(formatted: renderedBody)
                     .padding(10)
                     .background(
                         outbound ? Color.accentColor.opacity(0.2) : Color.gray.opacity(0.15),
@@ -734,16 +722,6 @@ private struct GroupMessageBubble: View {
         case .received: return "received"
         }
     }
-}
-
-private func stringIndex(_ text: String, utf8Offset: Int) -> String.Index? {
-    guard utf8Offset >= 0,
-          let byteIndex = text.utf8.index(
-            text.utf8.startIndex,
-            offsetBy: utf8Offset,
-            limitedBy: text.utf8.endIndex)
-    else { return nil }
-    return String.Index(byteIndex, within: text)
 }
 
 private struct GroupMembersView: View {

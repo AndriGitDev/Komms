@@ -285,6 +285,10 @@ The implementation PR must include:
 
 - Existing clients and histories continue exchanging readable text; typed
   features fail closed until authenticated support is known.
+- B9 formatting remains a local interpretation of exact text source rather than
+  a content kind. Formatting-capable endpoints derive the bounded inert model;
+  older endpoints display readable markers. No capability or frame change is
+  permitted for this source subset.
 - A v1 frame costs 28 bytes before padding. Most short messages remain in the
   192-byte bucket, but text near a bucket edge can move to the next bucket.
 - One small encrypted capability control is added per pairwise session (and

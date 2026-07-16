@@ -1,0 +1,49 @@
+{
+  "cases": [
+    {
+      "name": "supported-subset",
+      "source": "*em* **strong** `code`\n> quote\n- item\n2. next\n```html\n<script src=https://evil.invalid></script>\n```",
+      "highlights": [],
+      "plain_text": "em strong code\n> quote\n• item\n2. next\n<script src=https://evil.invalid></script>",
+      "used_fallback": false,
+      "block_kinds": ["paragraph", "quote", "unordered_list_item", "ordered_list_item", "code_block"],
+      "required_styles": ["emphasis", "strong", "inline_code"]
+    },
+    {
+      "name": "active-content-is-literal",
+      "source": "<b>raw</b> [go](javascript:alert(1)) ![pixel](https://evil.invalid/p.png)",
+      "highlights": [],
+      "plain_text": "<b>raw</b> [go](javascript:alert(1)) ![pixel](https://evil.invalid/p.png)",
+      "used_fallback": false,
+      "block_kinds": ["paragraph"],
+      "required_styles": []
+    },
+    {
+      "name": "bidi-controls-remain-authenticated-text",
+      "source": "safe ‮gnp.exe‬ **bold**",
+      "highlights": [],
+      "plain_text": "safe ‮gnp.exe‬ bold",
+      "used_fallback": false,
+      "block_kinds": ["paragraph"],
+      "required_styles": ["strong"]
+    },
+    {
+      "name": "semantic-highlight-composes-with-strong",
+      "source": "Hi **@Renée**",
+      "highlights": [{"start": 5, "end": 12}],
+      "plain_text": "Hi @Renée",
+      "used_fallback": false,
+      "block_kinds": ["paragraph"],
+      "required_styles": ["strong", "highlight"]
+    },
+    {
+      "name": "bounded-list-depth",
+      "source": "- first\n  - nested",
+      "highlights": [],
+      "plain_text": "• first\n  • nested",
+      "used_fallback": false,
+      "block_kinds": ["unordered_list_item", "unordered_list_item"],
+      "required_styles": []
+    }
+  ]
+}

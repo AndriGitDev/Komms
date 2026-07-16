@@ -91,6 +91,7 @@ struct ScheduledMessageEditor: View {
 }
 
 struct ScheduledMessageBubble: View {
+    @EnvironmentObject private var model: AppModel
     let message: ScheduledMessage
     let edit: () -> Void
     let cancel: () -> Void
@@ -101,7 +102,7 @@ struct ScheduledMessageBubble: View {
         HStack {
             Spacer(minLength: 40)
             VStack(alignment: .trailing, spacing: 5) {
-                Text(message.body)
+                FormattedTextView(formatted: model.formattedText(source: message.body))
                     .padding(10)
                     .background(Color.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: 12))
                     .overlay {

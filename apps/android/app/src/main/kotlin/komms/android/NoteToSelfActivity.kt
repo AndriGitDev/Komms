@@ -114,7 +114,11 @@ class NoteToSelfActivity : SecureActivity() {
     private fun refresh() {
         val session = NodeHolder.session ?: return
         val list = findViewById<RecyclerView>(R.id.chat_messages)
-        runNode(work = { session.noteToSelfMessages() }) { messages ->
+        runNode(work = {
+            session.noteToSelfMessages().map { message ->
+                RenderedMessage(message, session.formatText(message.body))
+            }
+        }) { messages ->
             adapter.submit(messages)
             if (messages.isNotEmpty()) list.scrollToPosition(messages.size - 1)
         }
@@ -123,11 +127,11 @@ class NoteToSelfActivity : SecureActivity() {
 
 /** Local-only note bubbles, intentionally without delivery-state captions. */
 private class NoteMessagesAdapter : RecyclerView.Adapter<NoteMessagesAdapter.Holder>() {
-    private var items = listOf<NoteMessage>()
+    private var items = listOf<RenderedMessage<NoteMessage>>()
 
     class Holder(view: android.view.View) : RecyclerView.ViewHolder(view)
 
-    fun submit(list: List<NoteMessage>) {
+    fun submit(list: List<RenderedMessage<NoteMessage>>) {
         items = list
         notifyDataSetChanged()
     }
@@ -138,12 +142,14 @@ private class NoteMessagesAdapter : RecyclerView.Adapter<NoteMessagesAdapter.Hol
     override fun getItemCount() = items.size
 
     override fun onBindViewHolder(holder: Holder, position: Int) {
-        val message = items[position]
+        val rendered = items[position]
+        val message = rendered.value
         val context = holder.itemView.context
         (holder.itemView as LinearLayout).gravity = Gravity.END
         holder.itemView.findViewById<LinearLayout>(R.id.message_bubble)
             .setBackgroundColor(context.getColor(R.color.bubble_out))
-        holder.itemView.findViewById<TextView>(R.id.message_body).text = message.body
+        holder.itemView.findViewById<TextView>(R.id.message_body)
+            .showFormattedText(rendered.formatted)
         val time = DateFormat.getTimeInstance(DateFormat.SHORT)
             .format(Date(message.timestamp.toLong() * 1000))
         holder.itemView.findViewById<TextView>(R.id.message_meta).text =

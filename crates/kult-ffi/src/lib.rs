@@ -197,6 +197,128 @@ pub enum KdfChoice {
     Mobile,
 }
 
+/// One inert inline presentation token produced by the shared formatter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum TextFormatStyle {
+    /// Emphasized text.
+    Emphasis,
+    /// Strongly emphasized text.
+    Strong,
+    /// Inline monospace code.
+    InlineCode,
+    /// Existing semantic content, such as an authenticated mention.
+    Highlight,
+}
+
+/// One render-safe block role produced by the shared formatter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum TextFormatBlockKind {
+    /// Ordinary text.
+    Paragraph,
+    /// Quoted text.
+    Quote,
+    /// One unordered list item.
+    UnorderedListItem,
+    /// One ordered list item.
+    OrderedListItem,
+    /// A fenced, inert monospace code block.
+    CodeBlock,
+}
+
+/// Exact UTF-8 source range that receives an inert highlight style.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct TextFormatHighlight {
+    /// Inclusive UTF-8 byte offset in the exact source text.
+    pub start: u32,
+    /// Exclusive UTF-8 byte offset in the exact source text.
+    pub end: u32,
+}
+
+/// One text run with a deterministic set of inert styles.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct FormattedTextRun {
+    /// Exact display text; shells insert it only through native text APIs.
+    pub text: String,
+    /// Sorted, de-duplicated style tokens.
+    pub styles: Vec<TextFormatStyle>,
+}
+
+/// One local, render-safe display block.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct FormattedTextBlock {
+    /// Semantic block role.
+    pub kind: TextFormatBlockKind,
+    /// Zero-based list indentation; zero for non-list blocks.
+    pub depth: u8,
+    /// Ordered-list number, or zero for every other block kind.
+    pub ordinal: u32,
+    /// Display runs in exact order.
+    pub runs: Vec<FormattedTextRun>,
+}
+
+/// Complete local formatting result shared by Kotlin and Swift.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct FormattedText {
+    /// Exact authenticated and stored source, unchanged.
+    pub source: String,
+    /// Readable inert text used for copy-as-plain-text.
+    pub plain_text: String,
+    /// Bounded render-safe blocks.
+    pub blocks: Vec<FormattedTextBlock>,
+    /// Whether a complexity bound caused literal source rendering.
+    pub used_fallback: bool,
+}
+
+impl From<kult_node::TextFormatStyle> for TextFormatStyle {
+    fn from(style: kult_node::TextFormatStyle) -> Self {
+        match style {
+            kult_node::TextFormatStyle::Emphasis => Self::Emphasis,
+            kult_node::TextFormatStyle::Strong => Self::Strong,
+            kult_node::TextFormatStyle::InlineCode => Self::InlineCode,
+            kult_node::TextFormatStyle::Highlight => Self::Highlight,
+        }
+    }
+}
+
+impl From<kult_node::TextFormatBlockKind> for TextFormatBlockKind {
+    fn from(kind: kult_node::TextFormatBlockKind) -> Self {
+        match kind {
+            kult_node::TextFormatBlockKind::Paragraph => Self::Paragraph,
+            kult_node::TextFormatBlockKind::Quote => Self::Quote,
+            kult_node::TextFormatBlockKind::UnorderedListItem => Self::UnorderedListItem,
+            kult_node::TextFormatBlockKind::OrderedListItem => Self::OrderedListItem,
+            kult_node::TextFormatBlockKind::CodeBlock => Self::CodeBlock,
+        }
+    }
+}
+
+impl From<kult_node::FormattedText> for FormattedText {
+    fn from(formatted: kult_node::FormattedText) -> Self {
+        Self {
+            source: formatted.source,
+            plain_text: formatted.plain_text,
+            blocks: formatted
+                .blocks
+                .into_iter()
+                .map(|block| FormattedTextBlock {
+                    kind: block.kind.into(),
+                    depth: block.depth,
+                    ordinal: block.ordinal,
+                    runs: block
+                        .runs
+                        .into_iter()
+                        .map(|run| FormattedTextRun {
+                            text: run.text,
+                            styles: run.styles.into_iter().map(Into::into).collect(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+            used_fallback: formatted.used_fallback,
+        }
+    }
+}
+
 /// Everything a node needs to run. Get a sensible baseline from
 /// [`default_config`] and override what the platform knows better.
 #[derive(Clone, Debug, uniffi::Record)]
@@ -1574,6 +1696,29 @@ impl KultNode {
     /// This node's peer id (hex).
     pub fn peer(&self) -> String {
         self.peer.clone()
+    }
+
+    /// Render exact message source into the bounded, inert shared display model.
+    ///
+    /// The result never interprets HTML, URLs, images, or executable content.
+    /// Existing authenticated semantic ranges can be composed as highlights.
+    pub fn format_text(
+        &self,
+        source: String,
+        highlights: Vec<TextFormatHighlight>,
+    ) -> Result<FormattedText, FfiError> {
+        let highlights = highlights
+            .into_iter()
+            .map(|highlight| kult_node::TextFormatHighlight {
+                start: highlight.start,
+                end: highlight.end,
+            })
+            .collect::<Vec<_>>();
+        kult_node::format_text(&source, &highlights)
+            .map(Into::into)
+            .map_err(|error| FfiError::Node {
+                reason: error.to_string(),
+            })
     }
 
     /// A point-in-time snapshot: listen addresses, LAN peers, NAT verdict,
@@ -3559,5 +3704,22 @@ mod tests {
                     && attachment.state == AttachmentState::AwaitingConsent
                     && attachment.objects[0].filename.as_deref() == Some("private.png")
         ));
+    }
+
+    #[test]
+    fn shared_formatter_converts_without_active_content_capabilities() {
+        let core = kult_node::format_text("**safe** <img src=x>", &[]).unwrap();
+        let formatted = FormattedText::from(core);
+        assert_eq!(formatted.source, "**safe** <img src=x>");
+        assert_eq!(formatted.plain_text, "safe <img src=x>");
+        assert_eq!(formatted.blocks[0].kind, TextFormatBlockKind::Paragraph);
+        assert_eq!(
+            formatted.blocks[0].runs[0].styles,
+            vec![TextFormatStyle::Strong]
+        );
+        assert!(formatted.blocks.iter().all(|block| block
+            .runs
+            .iter()
+            .all(|run| { !run.text.contains("href=") && !run.text.contains("src=https://") })));
     }
 }

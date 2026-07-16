@@ -38,7 +38,7 @@ accepted designs before individual shells implement UI.
 | Note to self | Shipped (text) | Attachments follow F3 shell integration. |
 | Queued messages | Shipped | Already part of the honest delivery engine. |
 | Scheduled messages | Shipped | Preserve the sealed absolute-UTC gate, edit/cancel-before-activation semantics, and distinct cross-shell lifecycle. |
-| Text formatting | Planned | Safe common subset and consistent rendering. |
+| Text formatting | Shipped | Preserve exact source, bounded inert rendering, malicious-input parity, mention composition, and plain-text copy across every shell. |
 | Folders | Shipped | Preserve single-folder membership, All/Unfiled views, deterministic order, stale cleanup, label composition, and zero-network behavior. |
 | Pins | Shipped (conversation) | Preserve exact typed targets, complete durable reorder, stale reactivation/cleanup, folder → label → pin composition, and zero-network behavior; message pins remain separate. |
 | Dark mode | Shipped | Sealed system/light/dark preference, shared semantic roles, and native live switching in every shell. |
@@ -370,6 +370,10 @@ render the four states distinctly.
 
 ### B9. Text formatting
 
+**State:** shipped end to end across `kult-node`, strict RPC/CLI, UniFFI,
+desktop, Android, and iOS without a store, backup, content-kind, capability,
+envelope, or transport-format change.
+
 Use a deliberately small CommonMark-style subset: emphasis, strong, inline code,
 code blocks, quotes, and lists. Store/transmit source text and render locally.
 Disable raw HTML, remote images, automatic network fetches, scriptable links, and
@@ -379,6 +383,15 @@ plain source.
 Acceptance uses a shared conformance corpus across desktop, Android, and iOS,
 including malicious input, huge nesting, bidirectional text, and copy-as-plain-
 text behavior.
+
+The shipped shared formatter accepts at most 64 KiB source, 1,024 blocks, 4,096
+runs, inline/list depth 4, and 64 canonical UTF-8 semantic ranges. Complexity
+falls back to the whole exact source. RPC and UniFFI expose only text, block
+roles, and inert style tokens; desktop, Android, and iOS map them to native text
+primitives for pairwise, group, note-to-self, and scheduled rows. B17 mention
+ranges compose as highlights. The shared B9 fixture pins exact source and copy
+text, malicious HTML/link/image syntax, bidi, list depth, and highlight styles.
+See [16: Safe Text Formatting](16-safe-text-formatting.md).
 
 ### B10. Folders
 
@@ -860,7 +873,7 @@ honest. Parallel work is safe only where rows do not share a foundation.
 |---|---|---|
 | **0: Shared foundations** | Complete | F1–F5 are implemented; ADR-0015 remains formally Proposed despite the shipped attachment pipeline. |
 | **Parallel: mobile reachability** | Design-only | Accept ADR-0017–0019, then implement C8 behind reversible feature gates. |
-| **1: Local-first product polish** | In progress | B5, B7, B8, B10–B15, and B18 are shipped; B9 remains. |
+| **1: Local-first product polish** | Complete | B5, B7–B15, and B18 are shipped; optional signed self-display suggestions remain a separate format-gated extension to B5. |
 | **2: Typed content and asynchronous media** | Substantially complete | F2/F3, B2, B16, and B17 are shipped; C1 is usable across all shells with richer media polish remaining. |
 | **3: Replicated conversation features** | Planned | C3, C4, C5, and C6. |
 | **4: Multi-device** | Planned | C2, followed by cross-device hardening of Wave 3. |
@@ -940,15 +953,18 @@ reviewable PR:
    screen-security contract; B15 adds the separate always-on pre-unlock input
    privacy contract and exhaustive native field controls; scheduled delivery
    completed separately in the core queue/storage path;
-5. completed: ship typed content, attachments, audio, image editing, and mentions
-   through every front door and shell; ADR-0015's formal status remains Proposed.
+5. completed: ship typed content, attachments, audio, image editing, mentions,
+   and bounded safe text formatting through every front door and shell;
+   ADR-0015's formal status remains Proposed.
 
-The next high-value local-first slice is B9 safe text formatting: keep canonical
-source text in the existing encrypted content path and render a deliberately
-small, bounded CommonMark-style subset locally through RPC/CLI, UniFFI, desktop,
-Android, and iOS. A shared conformance and malicious-input corpus must pin exact
-plain-text fallback, copy-as-plain-text, huge-nesting limits, Unicode/bidi
-behavior, and consistent rendering without introducing active content.
+The next implementation-ready product slice is the remaining C1 non-image file
+presentation and qualification work over the already shipped F3/F4 pipeline.
+Keep the manifest/chunk/consent/carrier contract unchanged: add safe generic
+file rows and explicit open/export affordances for completed content, stronger
+filename/media-type mismatch handling, accessibility and lifecycle polish, and
+cross-shell malicious-file/large-file/resume qualification without auto-open,
+remote scanning, previews, or new mesh behavior. C3 edits, C4 expiry, C5 polls,
+C6 roles, C2 linked devices, and C7 calls remain behind their stated ADR gates.
 Optional signed self-display suggestions remain deferred behind their separate
 bundle-format ADR and compatibility work.
 Replicated edits/expiry/polls/roles, linked-device identity, real-time media, and

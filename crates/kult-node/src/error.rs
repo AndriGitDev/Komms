@@ -19,6 +19,8 @@ pub enum NodeError {
     InvalidContactName,
     /// The proposed petname has warnings that the caller has not acknowledged.
     ContactNameReviewRequired,
+    /// Local text-formatting source or highlight ranges violate shared bounds.
+    InvalidTextFormatting,
     /// No established session and no stored prekey bundle to start one —
     /// this contact was learned from an inbound handshake that hasn't
     /// completed, or their bundle was never imported.
@@ -77,6 +79,7 @@ impl std::fmt::Display for NodeError {
             Self::ContactNameReviewRequired => {
                 f.write_str("contact name warnings require explicit confirmation")
             }
+            Self::InvalidTextFormatting => f.write_str("invalid text formatting request"),
             Self::NoSession => f.write_str("no session and no prekey bundle for this peer"),
             Self::CorruptState => f.write_str("node state missing or corrupt"),
             Self::NoDiscovery => f.write_str("no usable discovery plane"),

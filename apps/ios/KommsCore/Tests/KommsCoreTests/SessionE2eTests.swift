@@ -30,6 +30,28 @@ private struct ContactRenameParityFixture: Decodable {
     }
 }
 
+private struct TextFormattingParityFixture: Decodable {
+    struct Highlight: Decodable { let start: UInt32; let end: UInt32 }
+    struct Case: Decodable {
+        let name: String
+        let source: String
+        let highlights: [Highlight]
+        let plainText: String
+        let usedFallback: Bool
+        let blockKinds: [String]
+    }
+    let cases: [Case]
+
+    static func load() throws -> Self {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let data = try Data(contentsOf: root.appendingPathComponent("fixtures/b9-text-formatting-parity.json"))
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(Self.self, from: data)
+    }
+}
+
 private struct LabelParityFixture: Decodable {
     let duplicateName: String
     let createColors: [String]
@@ -323,6 +345,31 @@ private func imageRecipe() -> ImageEditRecipe {
 }
 
 final class SessionE2eTests: XCTestCase {
+    func testTextFormattingMatchesSharedInertCorpus() throws {
+        let fixture = try TextFormattingParityFixture.load()
+        let session = try open(try tempDir(), "text-formatting", Events())
+        for record in fixture.cases {
+            let formatted = try session.formatText(
+                source: record.source,
+                highlights: record.highlights.map {
+                    TextFormatHighlight(start: $0.start, end: $0.end)
+                })
+            XCTAssertEqual(record.source, formatted.source, record.name)
+            XCTAssertEqual(record.plainText, formatted.plainText, record.name)
+            XCTAssertEqual(record.usedFallback, formatted.usedFallback, record.name)
+            XCTAssertEqual(record.blockKinds, formatted.blocks.map { block in
+                switch block.kind {
+                case .paragraph: "paragraph"
+                case .quote: "quote"
+                case .unorderedListItem: "unordered_list_item"
+                case .orderedListItem: "ordered_list_item"
+                case .codeBlock: "code_block"
+                }
+            }, record.name)
+        }
+        session.stop()
+    }
+
     func testPrivateContactRenameIsNormalizedWarnedDuplicateCapableAndRestartSafe() throws {
         let fixture = try ContactRenameParityFixture.load()
         let dir = try tempDir()
@@ -511,13 +558,14 @@ final class SessionE2eTests: XCTestCase {
         let alicePeer = try bob.addContact(name: "alice", bundleHex: aBundle, hints: multiaddrHint(aAddr))
 
         // Send → the event stream walks the honest ladder.
-        let msgId = try alice.send(peer: bobPeer, body: "hello from the phone")
+        let formattedSource = "**hello** from iOS ![pixel](https://invalid.test/p.png)"
+        let msgId = try alice.send(peer: bobPeer, body: formattedSource)
         let got = try bEv.wait("bob's message event") { event -> (peer: String, body: String)? in
             if case let .messageReceived(peer, _, _, body, _) = event { return (peer, body) }
             return nil
         }
         XCTAssertEqual(alicePeer, got.peer)
-        XCTAssertEqual("hello from the phone", got.body)
+        XCTAssertEqual(formattedSource, got.body)
         _ = try aEv.wait("alice's delivered event") { event -> Void? in
             if case let .deliveryUpdated(id, state) = event, id == msgId, state == .delivered {
                 return ()
@@ -533,10 +581,12 @@ final class SessionE2eTests: XCTestCase {
         XCTAssertEqual(1, history.count)
         XCTAssertEqual(.outbound, history[0].direction)
         XCTAssertEqual(.delivered, history[0].state)
+        XCTAssertEqual(formattedSource, history[0].body)
         let inbox = try bob.messages(peer: alicePeer)
         XCTAssertEqual(1, inbox.count)
         XCTAssertEqual(.inbound, inbox[0].direction)
         XCTAssertEqual(.received, inbox[0].state)
+        XCTAssertEqual(formattedSource, inbox[0].body)
 
         // The document picker grants a security-scoped URL; the app stages a
         // bounded app-private copy before Session imports it. The render-safe

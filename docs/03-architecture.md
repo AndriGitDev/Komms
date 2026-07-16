@@ -65,6 +65,13 @@ base small.
 | `kult-node` | Composition: session lifecycle, delivery engine, multipath scheduling, event bus. | Reimplement lower-layer logic. |
 | `kult-ffi` | UniFFI-exposed API and embedded runtime for Kotlin, Swift, and shell consumers. | Add behavior beyond `kult-node`. |
 
+B9 formatting is deliberately a pure `kult-node` projection rather than a
+protocol or storage layer. Apps pass exact authenticated source plus optional
+authenticated semantic ranges and receive bounded block roles and styled text
+runs. RPC and UniFFI mirror that model; shells create only inert native text
+primitives. Exact source continues through the ordinary lifecycle below, so old
+clients, backups, receipts, padding, and carrier selection are unchanged.
+
 ## 3. Message lifecycle
 
 ### Send path
