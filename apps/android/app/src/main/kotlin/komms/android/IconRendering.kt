@@ -23,7 +23,7 @@ internal fun customIconDrawable(
     }
     return if (bitmap != null) {
         BitmapDrawable(context.resources, bitmap).apply {
-            isAntiAlias = true
+            paint.isAntiAlias = true
             bounds = Rect(0, 0, size, size)
         }
     } else {
