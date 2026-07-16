@@ -41,8 +41,10 @@ use kult_ffi::{
     Pin as FfiPin, PinConversation as FfiPinConversation,
     PinConversationResult as FfiPinConversationResult, PinTarget as FfiPinTarget,
     PinTargetKind as FfiPinTargetKind, ScheduledConversation, StaleFolder as FfiStaleFolder,
-    StaleLabel as FfiStaleLabel, ThemePreference as FfiThemePreference, AUDIO_MAX_BYTES,
-    AUDIO_MEDIA_TYPE, IMAGE_MAX_INPUT_BYTES, IMAGE_MEDIA_TYPE,
+    StaleLabel as FfiStaleLabel, TextFormatBlockKind as FfiTextFormatBlockKind,
+    TextFormatHighlight as FfiTextFormatHighlight, TextFormatStyle as FfiTextFormatStyle,
+    ThemePreference as FfiThemePreference, AUDIO_MAX_BYTES, AUDIO_MEDIA_TYPE,
+    IMAGE_MAX_INPUT_BYTES, IMAGE_MEDIA_TYPE,
 };
 
 use crate::qr;
@@ -385,6 +387,94 @@ pub struct UiContact {
     pub name: String,
     /// Whether safety numbers were verified out-of-band.
     pub verified: bool,
+}
+
+/// One exact UTF-8 source range composed into local formatting.
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct UiTextFormatHighlight {
+    /// Inclusive UTF-8 byte offset.
+    pub start: u32,
+    /// Exclusive UTF-8 byte offset.
+    pub end: u32,
+}
+
+/// One inert formatted run for safe DOM construction.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UiFormattedTextRun {
+    /// Exact text inserted with `textContent`.
+    pub text: String,
+    /// Stable style tokens.
+    pub styles: Vec<String>,
+}
+
+/// One bounded formatted block.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UiFormattedTextBlock {
+    /// Stable semantic block token.
+    pub kind: String,
+    /// Zero-based list depth.
+    pub depth: u8,
+    /// Ordered-list ordinal, otherwise zero.
+    pub ordinal: u32,
+    /// Exact display runs.
+    pub runs: Vec<UiFormattedTextRun>,
+}
+
+/// Complete local formatting result for the desktop shell.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UiFormattedText {
+    /// Exact source, unchanged.
+    pub source: String,
+    /// Formatting-free readable copy text.
+    pub plain_text: String,
+    /// Bounded render-safe blocks.
+    pub blocks: Vec<UiFormattedTextBlock>,
+    /// Whether complexity forced literal rendering.
+    pub used_fallback: bool,
+}
+
+impl From<kult_ffi::FormattedText> for UiFormattedText {
+    fn from(formatted: kult_ffi::FormattedText) -> Self {
+        Self {
+            source: formatted.source,
+            plain_text: formatted.plain_text,
+            blocks: formatted
+                .blocks
+                .into_iter()
+                .map(|block| UiFormattedTextBlock {
+                    kind: match block.kind {
+                        FfiTextFormatBlockKind::Paragraph => "paragraph",
+                        FfiTextFormatBlockKind::Quote => "quote",
+                        FfiTextFormatBlockKind::UnorderedListItem => "unordered_list_item",
+                        FfiTextFormatBlockKind::OrderedListItem => "ordered_list_item",
+                        FfiTextFormatBlockKind::CodeBlock => "code_block",
+                    }
+                    .to_owned(),
+                    depth: block.depth,
+                    ordinal: block.ordinal,
+                    runs: block
+                        .runs
+                        .into_iter()
+                        .map(|run| UiFormattedTextRun {
+                            text: run.text,
+                            styles: run
+                                .styles
+                                .into_iter()
+                                .map(|style| match style {
+                                    FfiTextFormatStyle::Emphasis => "emphasis",
+                                    FfiTextFormatStyle::Strong => "strong",
+                                    FfiTextFormatStyle::InlineCode => "inline_code",
+                                    FfiTextFormatStyle::Highlight => "highlight",
+                                })
+                                .map(str::to_owned)
+                                .collect(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+            used_fallback: formatted.used_fallback,
+        }
+    }
 }
 
 /// Render-safe canonical petname and local warning review.
@@ -1615,6 +1705,25 @@ impl Session {
     /// This node's human-shareable kult address.
     pub fn address(&self) -> String {
         self.node.address()
+    }
+
+    /// Render exact source into the shared bounded and inert text model.
+    pub fn format_text(
+        &self,
+        source: String,
+        highlights: Vec<UiTextFormatHighlight>,
+    ) -> Result<UiFormattedText, String> {
+        let highlights = highlights
+            .into_iter()
+            .map(|highlight| FfiTextFormatHighlight {
+                start: highlight.start,
+                end: highlight.end,
+            })
+            .collect();
+        self.node
+            .format_text(source, highlights)
+            .map(Into::into)
+            .map_err(|error| error.to_string())
     }
 
     /// A QR of the kult address (for adding this node by address).

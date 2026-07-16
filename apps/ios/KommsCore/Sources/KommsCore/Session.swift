@@ -114,6 +114,13 @@ public final class Session: @unchecked Sendable {
     /// Status snapshot for the UI's transport indicators.
     public func status() throws -> Status { try node.status() }
 
+    /// Render exact source into the shared bounded and inert local text model.
+    public func formatText(
+        source: String, highlights: [TextFormatHighlight] = []
+    ) throws -> FormattedText {
+        try node.formatText(source: source, highlights: highlights)
+    }
+
     /// Export a fresh prekey bundle as pasteable hex. Render
     /// ``bundleQrText(_:)`` of it for the pairing QR.
     public func myBundleHex() throws -> String { hexEncode(try node.handshakeBundle()) }

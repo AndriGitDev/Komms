@@ -4,12 +4,9 @@ import android.app.AlertDialog
 import android.graphics.Typeface
 import android.os.Bundle
 import android.text.Editable
-import android.text.SpannableString
 import android.text.Spanned
 import android.text.TextPaint
 import android.text.TextWatcher
-import android.text.method.LinkMovementMethod
-import android.text.style.ClickableSpan
 import android.text.style.CharacterStyle
 import android.view.inputmethod.BaseInputConnection
 import android.view.Gravity
@@ -44,6 +41,7 @@ import uniffi.kult_ffi.LabelTargetKind
 import uniffi.kult_ffi.MentionSpan
 import uniffi.kult_ffi.ScheduledConversation
 import uniffi.kult_ffi.ScheduledMessage
+import uniffi.kult_ffi.TextFormatHighlight
 
 /**
  * A sender-key group conversation. The node store is authoritative: events
@@ -241,10 +239,20 @@ class GroupChatActivity : SecureActivity() {
                 GroupScreenState(
                     group = group,
                     contacts = session.contacts(),
-                    messages = if (group == null) emptyList() else session.groupMessages(groupId),
+                    messages = if (group == null) emptyList() else session.groupMessages(groupId)
+                        .map { message ->
+                            val highlights = if (message.contentKind == ContentKind.MENTION) {
+                                message.mentionSpans.map { span ->
+                                    TextFormatHighlight(span.start, span.end)
+                                }
+                            } else {
+                                emptyList()
+                            }
+                            RenderedMessage(message, session.formatText(message.body, highlights))
+                        },
                     scheduled = session.scheduledMessages().filter {
                         it.conversation == ScheduledConversation.GROUP && it.destination == groupId
-                    },
+                    }.map { message -> RenderedMessage(message, session.formatText(message.body)) },
                     attachments = session.attachments(),
                 )
             },
@@ -726,8 +734,8 @@ class GroupChatActivity : SecureActivity() {
 private data class GroupScreenState(
     val group: Group?,
     val contacts: List<Contact>,
-    val messages: List<GroupMessage>,
-    val scheduled: List<ScheduledMessage>,
+    val messages: List<RenderedMessage<GroupMessage>>,
+    val scheduled: List<RenderedMessage<ScheduledMessage>>,
     val attachments: List<Attachment>,
 )
 
@@ -741,68 +749,16 @@ private class MentionComposerSpan : CharacterStyle() {
     }
 }
 
-private class HistoryMentionSpan(private val label: String) : ClickableSpan() {
-    override fun onClick(widget: View) {
-        widget.announceForAccessibility(label)
-    }
-
-    override fun updateDrawState(paint: TextPaint) {
-        super.updateDrawState(paint)
-        paint.bgColor = 0x334CAF50
-        paint.isUnderlineText = true
-        paint.typeface = Typeface.create(paint.typeface, Typeface.BOLD)
-    }
-}
-
-private fun utf16OffsetForUtf8(text: String, requested: UInt): Int? {
-    val target = requested.toInt()
-    var bytes = 0
-    var index = 0
-    while (index < text.length) {
-        if (bytes == target) return index
-        val codePoint = Character.codePointAt(text, index)
-        val character = String(Character.toChars(codePoint))
-        bytes += character.toByteArray(Charsets.UTF_8).size
-        index += Character.charCount(codePoint)
-        if (bytes > target) return null
-    }
-    return index.takeIf { bytes == target }
-}
-
-private fun renderMentionText(
-    message: GroupMessage,
-    memberName: (String) -> String,
-): CharSequence {
-    if (message.contentKind != ContentKind.MENTION || message.mentionSpans.isEmpty()) {
-        return message.body
-    }
-    val styled = SpannableString(message.body)
-    var priorEnd = 0
-    for (span in message.mentionSpans) {
-        val start = utf16OffsetForUtf8(message.body, span.start) ?: return "Unsupported message — update Komms"
-        val end = utf16OffsetForUtf8(message.body, span.end) ?: return "Unsupported message — update Komms"
-        if (start < priorEnd || end <= start) return "Unsupported message — update Komms"
-        styled.setSpan(
-            HistoryMentionSpan("Mention of ${memberName(span.target)}"),
-            start,
-            end,
-            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-        )
-        priorEnd = end
-    }
-    return styled
-}
-
 /** Group bubbles with sender names inbound and per-recipient state outbound. */
 private class GroupMessagesAdapter(
     private val memberName: (String) -> String,
 ) : RecyclerView.Adapter<GroupMessagesAdapter.Holder>() {
-    private var items = listOf<GroupMessage>()
+    private var items = listOf<RenderedMessage<GroupMessage>>()
 
     class Holder(view: View) : RecyclerView.ViewHolder(view)
 
-    fun submit(list: List<GroupMessage>) {
-        items = list.filter { it.contentKind != ContentKind.ATTACHMENT }
+    fun submit(list: List<RenderedMessage<GroupMessage>>) {
+        items = list.filter { it.value.contentKind != ContentKind.ATTACHMENT }
         notifyDataSetChanged()
     }
 
@@ -813,7 +769,8 @@ private class GroupMessagesAdapter(
     override fun getItemCount() = items.size
 
     override fun onBindViewHolder(holder: Holder, position: Int) {
-        val message = items[position]
+        val rendered = items[position]
+        val message = rendered.value
         val outbound = message.direction == Direction.OUTBOUND
         val row = holder.itemView as LinearLayout
         val context = holder.itemView.context
@@ -826,12 +783,8 @@ private class GroupMessagesAdapter(
             text = memberName(message.sender)
         }
         holder.itemView.findViewById<TextView>(R.id.group_message_body).apply {
-            text = renderMentionText(message, memberName)
-            movementMethod = if (message.contentKind == ContentKind.MENTION) {
-                LinkMovementMethod.getInstance()
-            } else {
-                null
-            }
+            val labels = message.mentionSpans.map { span -> "Mention of ${memberName(span.target)}" }
+            showFormattedText(rendered.formatted, labels)
         }
         holder.itemView.findViewById<TextView>(R.id.group_message_time).text =
             DateFormat.getTimeInstance(DateFormat.SHORT)

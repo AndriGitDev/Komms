@@ -46,6 +46,7 @@ pub fn run() {
             commands::restore,
             commands::lock,
             commands::status,
+            commands::format_text,
             commands::address_qr,
             commands::my_bundle,
             commands::add_contact,

@@ -309,6 +309,48 @@ label.check input { width: auto; margin: 0; }
   border: 1px dashed var(--warn);
   background: rgba(217, 164, 65, 0.09);
 }
+.formatted-text {
+  white-space: normal;
+  user-select: text;
+}
+.format-block {
+  white-space: pre-wrap;
+}
+.format-block + .format-block { margin-top: 0.35em; }
+.format-blockquote,
+.format-quote {
+  margin: 0;
+  padding-inline-start: 0.65em;
+  border-inline-start: 3px solid currentColor;
+  opacity: 0.88;
+}
+.format-code_block {
+  margin: 0;
+  padding: 0.5em;
+  overflow-x: auto;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.14);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre;
+}
+.formatted-text code {
+  padding: 0.08em 0.2em;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.13);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.format-code_block code { padding: 0; background: transparent; }
+.format-unordered_list_item,
+.format-ordered_list_item {
+  padding-inline-start: calc((var(--list-depth) + 1) * 1.1em);
+  text-indent: -1.1em;
+}
+.format-list-marker {
+  display: inline-block;
+  width: 1.1em;
+  text-align: end;
+  padding-inline-end: 0.35em;
+}
 .msg .scheduled-meta { color: var(--warn); }
 .scheduled-actions {
   display: flex;

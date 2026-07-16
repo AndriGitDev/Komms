@@ -16,7 +16,7 @@ use komms_desktop::commands;
 use komms_desktop::session::{
     hex_decode, NetworkSettings, Session, UiCustomIconCrop, UiCustomIconTarget, UiEvent,
     UiFolderSelection, UiFolderTarget, UiHint, UiImageCrop, UiImageEditRecipe, UiImageRegion,
-    UiLabelTarget, UiMentionSpan, UiPinTarget, UiThemePreference,
+    UiLabelTarget, UiMentionSpan, UiPinTarget, UiTextFormatHighlight, UiThemePreference,
 };
 use kult_ffi::{
     edit_image, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, KdfChoice,
@@ -165,6 +165,88 @@ fn open(dir: &Path, name: &str, events: &Events) -> Session {
         events.sink(),
     )
     .expect("session opens")
+}
+
+#[test]
+fn desktop_text_formatting_matches_shared_corpus_and_uses_inert_dom_only() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/b9-text-formatting-parity.json"
+    ))
+    .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let session = open(directory.path(), "text-formatting", &Events::default());
+    for case in fixture["cases"].as_array().unwrap() {
+        let highlights = case["highlights"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|highlight| UiTextFormatHighlight {
+                start: highlight["start"].as_u64().unwrap() as u32,
+                end: highlight["end"].as_u64().unwrap() as u32,
+            })
+            .collect();
+        let formatted = session
+            .format_text(case["source"].as_str().unwrap().to_owned(), highlights)
+            .unwrap();
+        assert_eq!(formatted.source, case["source"].as_str().unwrap());
+        assert_eq!(formatted.plain_text, case["plain_text"].as_str().unwrap());
+        assert_eq!(
+            formatted.used_fallback,
+            case["used_fallback"].as_bool().unwrap()
+        );
+        assert_eq!(
+            formatted
+                .blocks
+                .iter()
+                .map(|block| block.kind.as_str())
+                .collect::<Vec<_>>(),
+            case["block_kinds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|kind| kind.as_str().unwrap())
+                .collect::<Vec<_>>()
+        );
+    }
+    let frontend = include_str!("../../ui/main.js");
+    assert!(frontend.contains("appendFormattedBody"));
+    assert!(frontend.contains("document.createTextNode(run.text)"));
+    assert!(frontend.contains("formatted.plain_text"));
+    let formatter = frontend
+        .split("function styledRun")
+        .nth(1)
+        .unwrap()
+        .split("async function refreshGroups")
+        .next()
+        .unwrap();
+    assert!(!formatter.contains("innerHTML"));
+    assert!(!formatter.contains(".src ="));
+    assert!(!formatter.contains(".href ="));
+
+    let android =
+        include_str!("../../../android/app/src/main/kotlin/komms/android/TextFormatting.kt");
+    assert!(android.contains("output.toString() == formatted.plainText"));
+    assert!(!android.contains("URLSpan"));
+    for source in [
+        include_str!("../../../android/app/src/main/kotlin/komms/android/ChatActivity.kt"),
+        include_str!("../../../android/app/src/main/kotlin/komms/android/GroupChatActivity.kt"),
+        include_str!("../../../android/app/src/main/kotlin/komms/android/NoteToSelfActivity.kt"),
+        include_str!("../../../android/app/src/main/kotlin/komms/android/ScheduledMessageUi.kt"),
+    ] {
+        assert!(source.contains("showFormattedText"));
+    }
+    let swift_renderer = include_str!("../../../ios/KommsApp/Sources/FormattedTextView.swift");
+    assert!(swift_renderer.contains("formatted.plainText"));
+    assert!(!swift_renderer.contains("NSDataDetector"));
+    for source in [
+        include_str!("../../../ios/KommsApp/Sources/ChatView.swift"),
+        include_str!("../../../ios/KommsApp/Sources/GroupChatView.swift"),
+        include_str!("../../../ios/KommsApp/Sources/NoteToSelfView.swift"),
+        include_str!("../../../ios/KommsApp/Sources/ScheduledMessageView.swift"),
+    ] {
+        assert!(source.contains("FormattedTextView"));
+    }
+    session.stop();
 }
 
 #[test]
@@ -525,8 +607,9 @@ fn two_desktops_pair_by_bundle_hex_and_message() {
     assert!(alice.scheduled_messages().unwrap().is_empty());
 
     // Send → the webview's event stream walks the honest ladder.
+    let formatted_source = "**hello** from the desktop ![pixel](https://invalid.test/p.png)";
     let msg_id = alice
-        .send(bob_peer.clone(), "hello from the desktop".to_owned())
+        .send(bob_peer.clone(), formatted_source.to_owned())
         .unwrap();
     let got = b_ev.wait("bob's message event", |e| {
         matches!(e, UiEvent::MessageReceived { .. })
@@ -534,7 +617,7 @@ fn two_desktops_pair_by_bundle_hex_and_message() {
     match got {
         UiEvent::MessageReceived { peer, body, .. } => {
             assert_eq!(peer, alice_peer);
-            assert_eq!(body, "hello from the desktop");
+            assert_eq!(body, formatted_source);
         }
         other => panic!("wrong event: {other:?}"),
     }
@@ -548,10 +631,12 @@ fn two_desktops_pair_by_bundle_hex_and_message() {
     assert_eq!(history.len(), 1);
     assert!(history[0].outbound);
     assert_eq!(history[0].state, "delivered");
+    assert_eq!(history[0].body, formatted_source);
     let inbox = bob.messages(alice_peer.clone()).unwrap();
     assert_eq!(inbox.len(), 1);
     assert!(!inbox[0].outbound);
     assert_eq!(inbox[0].state, "received");
+    assert_eq!(inbox[0].body, formatted_source);
 
     // The verify screen: identical digits and QR on both ends, and the
     // "mark verified" button reflects into the contact list badge.

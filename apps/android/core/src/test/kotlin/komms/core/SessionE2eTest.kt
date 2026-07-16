@@ -55,6 +55,7 @@ import uniffi.kult_ffi.PinErrorCode
 import uniffi.kult_ffi.PinTarget
 import uniffi.kult_ffi.PinTargetKind
 import uniffi.kult_ffi.ThemePreference
+import uniffi.kult_ffi.TextFormatHighlight
 
 /** Collects node events exactly as an activity's sink would. */
 private class Events {
@@ -101,6 +102,10 @@ private fun listenAddr(session: Session): String {
 private fun multiaddrHint(addr: String) = listOf(HintSpec("multiaddr", addr))
 
 class SessionE2eTest {
+    private val textFormattingFixture by lazy {
+        val root = File(checkNotNull(System.getProperty("komms.repo.root")))
+        Json.parseToJsonElement(File(root, "fixtures/b9-text-formatting-parity.json").readText()).jsonObject
+    }
     private val contactRenameFixture by lazy {
         val root = File(checkNotNull(System.getProperty("komms.repo.root")))
         Json.parseToJsonElement(File(root, "fixtures/b5-contact-rename-parity.json").readText()).jsonObject
@@ -150,6 +155,37 @@ class SessionE2eTest {
         )
         assertTrue(policy.mechanism.contains("no-personalized-learning"))
         assertTrue(policy.limitations.any { it.contains("request") })
+    }
+
+    @Test
+    fun `text formatting matches the shared inert corpus`() {
+        val dir = tempDir()
+        val session = open(dir, "text-formatting", Events())
+        for (case in textFormattingFixture.getValue("cases").jsonArray) {
+            val record = case.jsonObject
+            val highlights = record.getValue("highlights").jsonArray.map { highlight ->
+                val range = highlight.jsonObject
+                TextFormatHighlight(
+                    range.getValue("start").jsonPrimitive.content.toUInt(),
+                    range.getValue("end").jsonPrimitive.content.toUInt(),
+                )
+            }
+            val formatted = session.formatText(
+                record.getValue("source").jsonPrimitive.content,
+                highlights,
+            )
+            assertEquals(record.getValue("source").jsonPrimitive.content, formatted.source)
+            assertEquals(record.getValue("plain_text").jsonPrimitive.content, formatted.plainText)
+            assertEquals(
+                record.getValue("used_fallback").jsonPrimitive.content.toBoolean(),
+                formatted.usedFallback,
+            )
+            assertEquals(
+                record.getValue("block_kinds").jsonArray.map { it.jsonPrimitive.content },
+                formatted.blocks.map { it.kind.name.lowercase() },
+            )
+        }
+        session.stop()
     }
 
     @Test
@@ -389,10 +425,11 @@ class SessionE2eTest {
         val alicePeer = bob.addContact("alice", aBundle, multiaddrHint(aAddr))
 
         // Send → the event stream walks the honest ladder.
-        val msgId = alice.send(bobPeer, "hello from the phone")
+        val formattedSource = "**hello** from Android ![pixel](https://invalid.test/p.png)"
+        val msgId = alice.send(bobPeer, formattedSource)
         val got = bEv.wait("bob's message event") { it as? Event.MessageReceived }
         assertEquals(alicePeer, got.peer)
-        assertEquals("hello from the phone", got.body)
+        assertEquals(formattedSource, got.body)
         aEv.wait("alice's delivered event") {
             (it as? Event.DeliveryUpdated)
                 ?.takeIf { e -> e.id == msgId && e.state == DeliveryState.DELIVERED }
@@ -404,10 +441,12 @@ class SessionE2eTest {
         assertEquals(1, history.size)
         assertEquals(Direction.OUTBOUND, history[0].direction)
         assertEquals(DeliveryState.DELIVERED, history[0].state)
+        assertEquals(formattedSource, history[0].body)
         val inbox = bob.messages(alicePeer)
         assertEquals(1, inbox.size)
         assertEquals(Direction.INBOUND, inbox[0].direction)
         assertEquals(DeliveryState.RECEIVED, inbox[0].state)
+        assertEquals(formattedSource, inbox[0].body)
 
         // The SAF layer stages a content:// stream in app-private storage;
         // Session sees only that bounded path and the provider's untrusted

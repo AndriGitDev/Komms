@@ -32,6 +32,11 @@ own, verbatim.
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted
   mesh links.
+- **Render safe source formatting** in pairwise, group, note-to-self, and
+  scheduled rows through the shared bounded formatter. Android builds only
+  selectable native text spans, composes semantic mention highlights, and
+  copies the readable plain-text projection; it never linkifies, fetches, or
+  interprets HTML, image syntax, or URL schemes from message source.
 - **Schedule pairwise or group text** in local time: the sealed scheduled
   outbox is shown separately with edit/cancel controls until the core moves an
   entry into the ordinary delivery ladder at its absolute UTC instant.

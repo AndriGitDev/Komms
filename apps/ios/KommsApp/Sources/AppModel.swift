@@ -107,6 +107,26 @@ final class AppModel: ObservableObject {
         FileManager.default.fileExists(atPath: dataDir.appendingPathComponent("node.db").path)
     }
 
+    /// Format authenticated source locally without ever interpreting active content.
+    func formattedText(
+        source: String, highlights: [TextFormatHighlight] = []
+    ) -> FormattedText {
+        guard let session,
+              let formatted = try? session.formatText(source: source, highlights: highlights)
+        else {
+            return FormattedText(
+                source: source,
+                plainText: source,
+                blocks: [FormattedTextBlock(
+                    kind: .paragraph,
+                    depth: 0,
+                    ordinal: 0,
+                    runs: [FormattedTextRun(text: source, styles: [])])],
+                usedFallback: true)
+        }
+        return formatted
+    }
+
     // MARK: session lifecycle
 
     /// Run a blocking node call off the main actor.

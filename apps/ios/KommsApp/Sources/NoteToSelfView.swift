@@ -23,7 +23,8 @@ struct NoteToSelfView: View {
                             HStack {
                                 Spacer(minLength: 40)
                                 VStack(alignment: .trailing, spacing: 2) {
-                                    Text(message.body)
+                                    FormattedTextView(
+                                        formatted: model.formattedText(source: message.body))
                                         .padding(10)
                                         .background(
                                             Color.accentColor.opacity(0.2),

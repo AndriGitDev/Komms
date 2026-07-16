@@ -14,10 +14,11 @@ use crate::session::{
     NetworkSettings, Session, UiAttachment, UiAudioMedia, UiBundle, UiContact,
     UiContactNameAssessment, UiCustomIcon, UiCustomIconCrop, UiCustomIconTarget, UiCustomIconUsage,
     UiFolder, UiFolderConversation, UiFolderConversationResult, UiFolderSelection, UiFolderTarget,
-    UiGroup, UiGroupMessage, UiHint, UiImageEditRecipe, UiImageReview, UiLabel,
+    UiFormattedText, UiGroup, UiGroupMessage, UiHint, UiImageEditRecipe, UiImageReview, UiLabel,
     UiLabelConversation, UiLabelFilterResult, UiLabelTarget, UiMentionCapability, UiMentionSpan,
     UiMessage, UiNoteMessage, UiPin, UiPinConversationResult, UiPinTarget, UiSafetyNumber,
-    UiScheduledMessage, UiStaleFolder, UiStaleLabel, UiStatus, UiThemeInfo, UiThemePreference,
+    UiScheduledMessage, UiStaleFolder, UiStaleLabel, UiStatus, UiTextFormatHighlight, UiThemeInfo,
+    UiThemePreference,
 };
 
 /// Render-safe shared B14 policy shown before unlock.
@@ -274,6 +275,11 @@ macro_rules! forward {
 forward!(
     /// Status snapshot for the transport indicators.
     status() -> UiStatus, |s| s.status()
+);
+forward!(
+    /// Render exact source into the bounded inert local text model.
+    format_text(source: String, highlights: Vec<UiTextFormatHighlight>) -> UiFormattedText,
+    |s| s.format_text(source, highlights)
 );
 forward!(
     /// Validate and send an explicitly confirmed pairwise audio recording.
