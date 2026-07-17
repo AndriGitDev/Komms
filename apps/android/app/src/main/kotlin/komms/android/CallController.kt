@@ -451,7 +451,10 @@ class CallController(
             }
 
         private fun nanos(value: Long): ByteBuffer =
-            ByteBuffer.allocate(java.lang.Long.BYTES).order(ByteOrder.nativeOrder()).putLong(value).flip()
+            ByteBuffer.allocate(java.lang.Long.BYTES).order(ByteOrder.nativeOrder()).apply {
+                putLong(value)
+                flip()
+            }
 
         private fun opusHead(): ByteArray = byteArrayOf(
             'O'.code.toByte(), 'p'.code.toByte(), 'u'.code.toByte(), 's'.code.toByte(),

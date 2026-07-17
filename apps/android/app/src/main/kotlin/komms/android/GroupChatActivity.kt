@@ -333,8 +333,9 @@ class GroupChatActivity : SecureActivity() {
                 setTypeface(typeface, Typeface.BOLD)
             })
             card.addView(TextView(this).apply {
-                text = if (poll.closed && poll.moderatedBy != null) {
-                    getString(R.string.poll_moderated_policy, memberLabel(poll.moderatedBy))
+                val moderatedBy = poll.moderatedBy
+                text = if (poll.closed && moderatedBy != null) {
+                    getString(R.string.poll_moderated_policy, memberLabel(moderatedBy))
                 } else {
                     getString(if (poll.closed) R.string.poll_closed_policy else R.string.poll_open_policy)
                 }
