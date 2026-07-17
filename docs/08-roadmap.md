@@ -558,13 +558,13 @@ for all release artifacts.
 ## Near horizon: real-time calls
 
 Live voice and video calls are in scope as a near-horizon capability, strictly
-confined to high-bandwidth carriers (internet libp2p and LAN/mDNS) and disabled
-over any airtime-budgeted mesh link. The transport core already negotiates the
-direct connections a call needs (QUIC, DCUtR hole punching), and identity keys
-authenticate the peer with no central coordinator. Because this adds a real-time
-media path to the transports, it is pinned by ADR-0013 (Proposed) (media
-transport, metadata-blind call setup, carrier-gating rule) ahead of
-implementation. Recorded
+confined to a fresh direct QUIC path reached through internet libp2p or LAN/mDNS
+and disabled over relay-only, TCP, store-and-forward, or airtime-budgeted links.
+The transport core can negotiate direct connections, including DCUtR hole
+punching, and identity keys authenticate the peer with no central coordinator.
+ADR-0013 is accepted for audio implementation after a pinned direct-QUIC
+reliable-substream spike; real NAT and mobile platform qualification remain
+release gates. Recorded
 audio/video clips are already in scope as ordinary asynchronous payloads. Details
 and constraints: [11: Feature Scope](11-feature-scope.md).
 

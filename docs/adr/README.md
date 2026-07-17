@@ -19,7 +19,7 @@ product promise merely because the file exists.
 | [0010](0010-ffi-embedded-runtime.md) | Accepted | UniFFI embedded runtime |
 | [0011](0011-mnemonic-sealed-backup.md) | Accepted | Mnemonic-sealed backup |
 | [0012](0012-sender-key-groups.md) | Accepted | Sender-key group messaging |
-| [0013](0013-real-time-calls.md) | Proposed | Real-time call transport and gating |
+| [0013](0013-real-time-calls.md) | Accepted for audio implementation | Direct-QUIC real-time call transport and gating |
 | [0014](0014-versioned-message-content.md) | Accepted | Versioned encrypted message content |
 | [0015](0015-encrypted-attachment-pipeline.md) | Proposed; implementation exists | Encrypted attachment pipeline and no-airtime policy |
 | [0016](0016-group-mention-content.md) | Accepted | Canonical group-mention content |

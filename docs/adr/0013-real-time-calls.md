@@ -1,7 +1,8 @@
 # ADR-0013: Real-time voice/video calls over high-bandwidth carriers only
 
-- **Status**: Proposed
+- **Status**: Accepted for audio implementation; platform qualification remains a release gate
 - **Date**: 2026-07-13
+- **Accepted**: 2026-07-16
 
 ## Context
 
@@ -36,31 +37,76 @@ mailbox path exists, offers no call and says why, mirroring the delivery ladder'
 honest "held, will send when a faster link exists" verdict. Asynchronous
 audio/video **clips** are unaffected and remain ordinary payloads on every carrier.
 
-**Signaling** (offer/answer and ICE-like candidate exchange) travels as ordinary
-sealed envelopes over the existing pairwise Double Ratchet session, as a new
-`EnvelopeKind::CallSignal`, so call setup is exactly as metadata-blind as
-messaging: no signaling server, no coordinator, sealed sender preserved. NAT
-traversal reuses the in-network trio already shipped (AutoNAT, Circuit Relay v2,
-DCUtR); candidates are restricted to host/peer-reflexive plus our own relay
-addresses, never a third-party STUN/TURN server.
+**Signaling** is a bounded content-v1 `CallControl` event encrypted as an
+ordinary pairwise ratchet message. It does not add a cleartext
+`EnvelopeKind::CallSignal`: envelope kind is relay-visible in the shipped wire
+format, so a dedicated kind would unnecessarily identify call attempts. The
+fixed operations are offer, answer, decline, busy, cancel, and hangup. They bind
+one random call id, the exact physical sender device, an expiry, and the
+operation-specific fields. They are transient control state, not chat history,
+search input, notification-preview text, or backup content. A call offer fans
+out to every currently authorized recipient device; the first valid answer wins
+deterministically and later answers become terminal no-ops.
 
-**Media encryption** is keyed from the session secret via HKDF (a dedicated
-call-media key), so the media stream is E2EE under the same identity keys that
-authenticate the peer. No new trust root.
+The offer carries a fresh random 32-byte **call master secret** inside the
+Double Ratchet ciphertext. Directional media and media-header keys are derived
+with HKDF from that secret, the call id, both stable account ids, and the exact
+answering device id. The Double Ratchet root or chain keys are never exported to
+the media layer. The first media-stream record proves possession of the derived
+key and binds the stream to the answered device before any audio is accepted.
+Per-frame sequence, timestamp, key phase, and payload are authenticated; replay,
+wrong-call, wrong-direction, and post-hangup frames fail closed. Call secrets and
+decoded audio are erased on every terminal transition and are never backed up or
+included in C2 sync.
 
-**Media transport** is the one open sub-decision, to be settled by a spike:
+**Media transport** for the audio alpha is one reliable ordered libp2p
+substream negotiated as `/komms/call/1` over an already direct QUIC connection.
+The pinned `libp2p-quic 0.13.1` transport explicitly disables QUIC datagrams, so
+the proposal's earlier “QUIC datagrams inside a libp2p substream” option does
+not exist. A bounded writer drops audio frames that have not entered the stream
+once they are older than the playout deadline; an endpoint jitter buffer skips
+late sequence numbers rather than growing latency without bound. Once bytes
+enter the reliable stream, packet loss can still cause head-of-line delay, which
+is an explicit alpha limitation and a measured release criterion.
 
-- *Option A (default):* media over a dedicated libp2p substream
-  (`/komms/call/1`, QUIC datagrams for the media path), with SRTP-style framing
-  keyed from the ratchet. Keeps the whole call inside the existing libp2p
-  connection and dependency surface.
-- *Option B (fallback):* a WebRTC media path (libwebrtc) for its mature
-  congestion control, jitter buffering, and codecs, DTLS-SRTP keyed out of band
-  via the ratchet-carried signaling, ICE restricted as above. Chosen only if
-  raw-QUIC media quality proves too costly to build well.
+The first implementation therefore requires a fresh direct `/quic-v1` route.
+TCP/Yamux, Circuit Relay, mailbox, sneakernet, and every airtime carrier do not
+qualify as `realtime`. AutoNAT, relay reservation, and DCUtR may establish and
+upgrade connectivity, but the call button remains unavailable until the
+ordinary transport layer observes the resulting direct QUIC path. This is more
+conservative than treating relay connectivity as media-ready and never emits a
+call offer merely because a store-and-forward route exists.
 
-Option A is preferred to keep the dependency and metadata surface minimal; the
-codec (Opus for audio; a low-complexity video codec for video) is common to both.
+Opus is the only audio wire codec. Capture, acoustic echo cancellation, route
+selection, and interruption integration use the native platform audio stack;
+the core owns canonical frame bounds, encryption, replay state, jitter policy,
+and transport. Video remains out of scope until the audio release matrix passes.
+WebRTC is not the automatic fallback: without third-party STUN/TURN it cannot
+reuse the shipped libp2p relay path, and adding it would create a second NAT and
+dependency surface without solving Komms' constrained-connectivity requirement.
+
+## Transport spike evidence
+
+The executable spike is
+`crates/kult-transport/tests/call_transport_spike.rs`. On 2026-07-16 it exercised
+the exact locked `libp2p 0.56.0`, `libp2p-quic 0.13.1`, and
+`libp2p-stream 0.4.0-alpha` stack with 100 160-byte frames at a 20 ms cadence:
+
+- direct Apple-silicon localhost QUIC: 0.258 ms p95 before an induced receiver
+  stall;
+- a UDP proxy adding 3 ms per datagram and deterministically dropping 5 % after
+  handshake: eight datagrams dropped, every frame recovered in order, 5.30 ms
+  p50, 33.7 ms p95, and 35.0 ms maximum; and
+- an induced 120 ms receiver stall delayed the ordered stream by 100.8 ms at
+  the measured frame, demonstrating that reliable delivery does not remove
+  head-of-line latency.
+
+Those measurements select an implementation path; they do not establish mobile
+release quality. Real distinct-NAT/DCUtR, Wi-Fi and cellular handoff, sustained
+loss/jitter, CPU, battery, Bluetooth, speaker/earpiece, background/lock, and
+Android/iOS device results remain mandatory qualification evidence. Failure of
+those gates keeps calls alpha-disabled or reopens this ADR; it never silently
+widens `realtime` to relay, TCP, or mesh.
 
 ## Alternatives considered
 
@@ -81,18 +127,21 @@ codec (Opus for audio; a low-complexity video codec for video) is common to both
 ## Consequences
 
 - **Easier:** reuses the transport core's connection establishment, NAT
-  traversal, and the ratchet's key material and authentication; adds no servers
-  and no new trust root; signaling rides machinery that already exists.
+  traversal, and the ratchet's authenticated confidential channel; adds no
+  servers and no new trust root; signaling rides machinery that already exists.
 - **Harder:** introduces real-time media handling (codecs, jitter buffering,
   congestion control, echo cancellation), a category the codebase currently has
-  none of, and a non-trivial dependency (Opus, possibly libwebrtc) that must
-  clear `cargo-deny` and the app workspaces' strict posture. The feature is
+  none of, and a non-trivial codec dependency that must clear `cargo-deny` and
+  the app workspaces' strict posture. Reliable ordered delivery also leaves
+  head-of-line latency to bound and qualify. The feature is
   internet/LAN only and must be presented that way everywhere: the UI and the
   marketing copy must never imply calls work off-grid, or they would contradict
   the project's central promise.
 - **Committing to maintain:** a carrier-gating rule in every shell (no call
-  offered when only mesh/mailbox reachability exists), and the CallSignal
-  envelope shape.
-- **Revisit if:** raw-QUIC media quality proves inadequate (switch to Option B),
-  or a bounded low-bitrate voice mode over a fast *local* mesh (not LoRa) becomes
-  worth its own ADR.
+  offered without a direct QUIC route), the bounded `CallControl` content shape,
+  transient linked-device arbitration, fresh per-call keys, and the
+  `/komms/call/1` stream contract.
+- **Revisit if:** the reliable substream cannot meet the platform qualification
+  gates, or a bounded low-bitrate voice mode over a fast *local* mesh (not LoRa)
+  becomes worth its own ADR. Any unreliable-media or WebRTC alternative needs a
+  new measured ADR rather than an implicit fallback.

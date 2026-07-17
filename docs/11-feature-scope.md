@@ -20,7 +20,8 @@ what it would take. Nothing here loosens a security or scope commitment in
 [01: Why](01-why.md) or the [roadmap](08-roadmap.md); where a feature touches the
 protocol, transports, or crypto, it lands only behind an ADR that shows it
 surviving the threat model and the mesh bandwidth floor (real-time calls, now in
-scope, are the current example: internet/LAN only, ADR-0013 (Proposed)).
+scope, are the current example: internet/LAN only, ADR-0013 (accepted for audio
+implementation with platform qualification still required)).
 
 ## Build (fits the architecture as-is)
 
@@ -207,21 +208,16 @@ and degrade honestly, exactly as the delivery ladder already does.
   [21: Group Roles, Ownership, and Moderation](21-group-roles.md) and
   [ADR-0023](adr/0023-group-roles-and-owner-authority.md).
 - **Live voice and video calls.** In scope and on the near horizon, strictly
-  confined to high-bandwidth carriers: internet libp2p tunnels and LAN (mDNS),
-  never a radio mesh. The core can already negotiate a direct connection (QUIC,
-  with DCUtR hole-punching to upgrade relayed paths), so a call sets up a media
-  stream over that connection with the identity keys authenticating the peer; no
-  central coordinator mints or routes anything. The app must gate the feature on
-  carrier: if a peer is reachable only over Meshtastic (or any airtime-budgeted
-  link), calling is disabled with an honest reason, the same way the delivery
-  ladder already reports "held, will send when a faster link exists." Recorded
-  audio/video *clips* remain asynchronous payloads; audio can be composed on
-  every platform but waits for a non-airtime link when F4 reports mesh-only.
-  This entry adds the synchronous case. This touches transports, so it is pinned
-  by ADR-0013 (Proposed): media transport choice (SRTP-style framing over a
-  libp2p path vs. a constrained WebRTC media path), call-setup signaling that
-  stays metadata-blind over the pairwise ratchet, and measured qualification of
-  any relayed path for the carrier-gating rule.
+  confined to a fresh direct QUIC path reached through internet libp2p or LAN
+  discovery, never a relay-only, TCP, mailbox, sneakernet, or radio-mesh route.
+  DCUtR may upgrade a relayed path before the call becomes available. Signaling
+  stays inside ordinary ratcheted message content and a fresh per-call secret
+  authenticates and encrypts one reliable `/komms/call/1` audio substream; no
+  central coordinator mints or routes anything. Recorded audio/video *clips*
+  remain asynchronous payloads and keep their existing F4 bulk-carrier rule.
+  ADR-0013 is accepted for audio implementation after a pinned localhost/loss
+  spike; real NAT, mobile network, battery, audio-route, background, and lock
+  qualification remains a release gate. Video starts only after audio passes.
 - **Optional hybrid reachability and native wake.** In scope only as a
   reversible convenience plane over the unchanged server-independent core.
   Established peers may use rotating provider-specific rendezvous slots for

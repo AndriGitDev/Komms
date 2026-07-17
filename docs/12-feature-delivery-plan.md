@@ -839,13 +839,12 @@ APK/device SDK gate remains deferred without weakening implementation parity.
 
 **Depends on:** F4 and accepted ADR-0013.
 
-Run the ADR-0013 spike before product implementation:
-
-1. prototype `/komms/call/1` audio over a dedicated libp2p path;
-2. measure NAT success, relay-to-direct upgrade, latency, loss, jitter, CPU,
-   battery, and dependency cost on desktop plus both mobile platforms;
-3. compare the raw-QUIC/libp2p approach with the constrained WebRTC fallback;
-4. accept ADR-0013 with the measured media-transport choice.
+**Decision:** ADR-0013 is accepted for audio implementation. The pinned
+localhost/loss spike selected one reliable ordered `/komms/call/1` substream on
+a fresh direct QUIC connection; the shipped libp2p QUIC transport disables
+datagrams. Relay-only and TCP paths do not qualify as realtime. Distinct-NAT,
+DCUtR, mobile network, CPU, battery, native audio-route, background, and lock
+measurements remain release gates rather than unmeasured design claims.
 
 Then deliver ratchet-carried call offer/answer/cancel/busy/hangup signaling,
 call-specific media keys derived inside the core, replay protection, key
@@ -853,11 +852,10 @@ rotation, Opus audio, echo cancellation, jitter buffering, and interruption
 handling. Add video only after audio acceptance passes. Never export ratchet
 secrets to the UI layer.
 
-The call button is enabled only for a fresh F4 `realtime` capability. Mailbox,
-sneakernet, and LoRa paths show a precise unavailable reason. The spike decides
-whether a circuit-relayed libp2p path can satisfy that capability; until ADR-0013
-is accepted, product code and copy must not assume that relay-only reachability
-qualifies. No project-operated STUN/TURN, SFU, or signaling service is introduced.
+The call button is enabled only for a fresh F4 `realtime` capability backed by
+an observed direct QUIC route. Mailbox, sneakernet, LoRa, TCP fallback, and
+relay-only paths show a precise unavailable reason. No project-operated
+STUN/TURN, SFU, or signaling service is introduced.
 
 Acceptance includes authenticated caller identity, declined/busy/racing calls,
 NAT and LAN matrices, path loss during a call, Bluetooth/headset transitions,
