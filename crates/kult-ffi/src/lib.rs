@@ -1334,6 +1334,174 @@ impl CarrierCapabilitySnapshot {
     }
 }
 
+/// Local direction of one transient pairwise call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum CallDirection {
+    /// This physical device created the offer.
+    Outgoing,
+    /// A peer device created the offer.
+    Incoming,
+}
+
+/// Current transient call phase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum CallPhase {
+    /// Waiting for one recipient device to answer.
+    Ringing,
+    /// Establishing the authenticated direct-QUIC media stream.
+    Connecting,
+    /// Both directions proved key possession and audio may flow.
+    Active,
+    /// Terminal; secret material is already erased.
+    Ended,
+}
+
+/// Exact terminal reason for a call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum CallEndReason {
+    /// A recipient explicitly declined.
+    Declined,
+    /// The peer was already occupied.
+    Busy,
+    /// The initiator cancelled before connection.
+    Cancelled,
+    /// Either selected device ended the call.
+    HungUp,
+    /// The unanswered offer reached its authenticated deadline.
+    Expired,
+    /// Another linked recipient device won the answer race.
+    AnsweredElsewhere,
+    /// The direct QUIC route disappeared.
+    RouteLost,
+}
+
+/// Why a new outgoing call cannot start now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum CallUnavailableReason {
+    /// No fresh reachable route is known.
+    OfflineOrUnknown,
+    /// Only a non-realtime bulk route is known.
+    BulkOnly,
+    /// Only an airtime-budgeted route is known.
+    MeshOnly,
+    /// One or more recipient devices lacks a live ratchet session.
+    MissingSession,
+    /// One or more recipient devices lacks call-control support.
+    Unsupported,
+    /// This installation already has a non-terminal call.
+    AlreadyInCall,
+}
+
+/// Honest current call-start verdict for one contact.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct CallAvailability {
+    /// Exact contact peer id (hex).
+    pub peer: String,
+    /// Whether a call may start immediately.
+    pub available: bool,
+    /// Exact unavailable reason, absent only when `available` is true.
+    pub unavailable: Option<CallUnavailableReason>,
+}
+
+impl CallAvailability {
+    fn from_node(availability: kult_node::CallAvailability) -> Self {
+        Self {
+            peer: hex_encode(&availability.peer),
+            available: availability.available(),
+            unavailable: availability.unavailable.map(|reason| match reason {
+                kult_node::CallUnavailableReason::OfflineOrUnknown => {
+                    CallUnavailableReason::OfflineOrUnknown
+                }
+                kult_node::CallUnavailableReason::BulkOnly => CallUnavailableReason::BulkOnly,
+                kult_node::CallUnavailableReason::MeshOnly => CallUnavailableReason::MeshOnly,
+                kult_node::CallUnavailableReason::MissingSession => {
+                    CallUnavailableReason::MissingSession
+                }
+                kult_node::CallUnavailableReason::Unsupported => CallUnavailableReason::Unsupported,
+                kult_node::CallUnavailableReason::AlreadyInCall => {
+                    CallUnavailableReason::AlreadyInCall
+                }
+            }),
+        }
+    }
+}
+
+/// Render-safe transient call snapshot. It contains no media or secret bytes.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct Call {
+    /// Random call id shared by its controls and media (hex).
+    pub id: String,
+    /// Stable peer account id (hex).
+    pub peer: String,
+    /// Incoming or outgoing on this installation.
+    pub direction: CallDirection,
+    /// Current phase.
+    pub phase: CallPhase,
+    /// Exact initiating physical-device id (hex).
+    pub initiator_device: String,
+    /// Winning answering physical-device id once selected (hex).
+    pub responder_device: Option<String>,
+    /// Absolute authenticated deadline for accepting the original offer.
+    pub expires_at: u64,
+    /// Present only after a terminal transition.
+    pub end_reason: Option<CallEndReason>,
+}
+
+impl Call {
+    fn from_node(call: kult_node::CallInfo) -> Self {
+        Self {
+            id: hex_encode(&call.id),
+            peer: hex_encode(&call.peer),
+            direction: match call.direction {
+                kult_node::CallDirection::Outgoing => CallDirection::Outgoing,
+                kult_node::CallDirection::Incoming => CallDirection::Incoming,
+            },
+            phase: match call.phase {
+                kult_node::CallPhase::Ringing => CallPhase::Ringing,
+                kult_node::CallPhase::Connecting => CallPhase::Connecting,
+                kult_node::CallPhase::Active => CallPhase::Active,
+                kult_node::CallPhase::Ended => CallPhase::Ended,
+            },
+            initiator_device: hex_encode(&call.initiator_device),
+            responder_device: call.responder_device.map(|device| hex_encode(&device)),
+            expires_at: call.expires_at,
+            end_reason: call.end_reason.map(|reason| match reason {
+                kult_node::CallEndReason::Declined => CallEndReason::Declined,
+                kult_node::CallEndReason::Busy => CallEndReason::Busy,
+                kult_node::CallEndReason::Cancelled => CallEndReason::Cancelled,
+                kult_node::CallEndReason::HungUp => CallEndReason::HungUp,
+                kult_node::CallEndReason::Expired => CallEndReason::Expired,
+                kult_node::CallEndReason::AnsweredElsewhere => CallEndReason::AnsweredElsewhere,
+                kult_node::CallEndReason::RouteLost => CallEndReason::RouteLost,
+            }),
+        }
+    }
+}
+
+/// One authenticated decoded Opus packet released for native playback.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct CallAudioFrame {
+    /// Exact call id whose media keys authenticated this packet (hex).
+    pub call: String,
+    /// Direction-local authenticated sequence.
+    pub sequence: u64,
+    /// Sender capture timestamp in milliseconds.
+    pub timestamp_ms: u64,
+    /// Exact bounded Opus packet for native decoding.
+    pub opus_packet: Vec<u8>,
+}
+
+impl CallAudioFrame {
+    fn from_node(frame: kult_node::CallAudioFrame) -> Self {
+        Self {
+            call: hex_encode(&frame.call_id),
+            sequence: frame.sequence,
+            timestamp_ms: frame.timestamp_ms,
+            opus_packet: frame.opus_packet.clone(),
+        }
+    }
+}
+
 /// One immutable original or edit version in deterministic resolution order.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct EditVersion {
@@ -1930,6 +2098,11 @@ pub enum Event {
         /// Current snapshot.
         snapshot: CarrierCapabilitySnapshot,
     },
+    /// Transient call state changed; refresh call presentation and controls.
+    CallUpdated {
+        /// Current render-safe call snapshot.
+        call: Call,
+    },
     /// A group was created, joined, re-keyed, re-rostered, or left.
     GroupUpdated {
         /// Group id (hex).
@@ -2112,6 +2285,9 @@ impl Event {
                     snapshot: CarrierCapabilitySnapshot::from_node(snapshot),
                 }
             }
+            kult_node::Event::CallUpdated { call } => Self::CallUpdated {
+                call: Call::from_node(call),
+            },
             kult_node::Event::GroupUpdated { group } => Self::GroupUpdated {
                 group: hex_encode(&group),
             },
@@ -3796,6 +3972,79 @@ impl KultNode {
             .collect())
     }
 
+    /// Every current and briefly retained terminal call on this installation.
+    pub fn calls(&self) -> Result<Vec<Call>, FfiError> {
+        Ok(self
+            .call(|resp| Msg::Calls { resp })?
+            .into_iter()
+            .map(Call::from_node)
+            .collect())
+    }
+
+    /// Return the honest current call-start verdict for one stored contact.
+    pub fn call_availability(&self, peer: String) -> Result<CallAvailability, FfiError> {
+        let peer = parse_peer(&peer)?;
+        self.call(|resp| Msg::CallAvailability { peer, resp })
+            .map(CallAvailability::from_node)
+    }
+
+    /// Start one capability-gated outgoing direct-QUIC audio call.
+    pub fn start_call(&self, peer: String) -> Result<String, FfiError> {
+        let peer = parse_peer(&peer)?;
+        self.call(|resp| Msg::CallStart { peer, resp })
+            .map(|call| hex_encode(&call))
+    }
+
+    /// Answer one unexpired incoming call on this exact physical device.
+    pub fn answer_call(&self, call: String) -> Result<(), FfiError> {
+        let call = parse_call(&call)?;
+        self.call(|resp| Msg::CallAnswer { call, resp })
+    }
+
+    /// Decline one unexpired incoming call on this exact physical device.
+    pub fn decline_call(&self, call: String) -> Result<(), FfiError> {
+        let call = parse_call(&call)?;
+        self.call(|resp| Msg::CallDecline { call, resp })
+    }
+
+    /// Cancel one locally initiated offer before an answer wins.
+    pub fn cancel_call(&self, call: String) -> Result<(), FfiError> {
+        let call = parse_call(&call)?;
+        self.call(|resp| Msg::CallCancel { call, resp })
+    }
+
+    /// End one connecting or active call from either local role.
+    pub fn hangup_call(&self, call: String) -> Result<(), FfiError> {
+        let call = parse_call(&call)?;
+        self.call(|resp| Msg::CallHangup { call, resp })
+    }
+
+    /// Queue one native-encoded Opus capture packet. `false` means the
+    /// bounded writer is full and the shell must drop this packet.
+    pub fn send_call_audio(
+        &self,
+        call: String,
+        timestamp_ms: u64,
+        opus_packet: Vec<u8>,
+    ) -> Result<bool, FfiError> {
+        let call = parse_call(&call)?;
+        self.call(|resp| Msg::CallAudioSend {
+            call,
+            timestamp_ms,
+            opus_packet,
+            resp,
+        })
+    }
+
+    /// Take at most one authenticated Opus packet from the bounded jitter
+    /// buffer. `None` means playout should wait or underrun without synthesis.
+    pub fn take_call_audio(&self, call: String) -> Result<Option<CallAudioFrame>, FfiError> {
+        let call = parse_call(&call)?;
+        Ok(self
+            .call(|resp| Msg::CallAudioTake { call, resp })?
+            .map(CallAudioFrame::from_node))
+    }
+
     /// Message history with a peer.
     pub fn messages_with(&self, peer: String) -> Result<Vec<Message>, FfiError> {
         let peer = parse_peer(&peer)?;
@@ -4625,6 +4874,12 @@ fn parse_message(s: &str) -> Result<[u8; 16], FfiError> {
         out[i] = ((pair[0] << 4) | pair[1]) as u8;
     }
     Ok(out)
+}
+
+fn parse_call(s: &str) -> Result<[u8; 16], FfiError> {
+    parse_message(s).map_err(|_| FfiError::Node {
+        reason: "call id must be 32 hex chars".to_owned(),
+    })
 }
 
 fn parse_review_token(s: &str) -> Result<[u8; 16], FfiError> {

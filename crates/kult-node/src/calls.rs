@@ -47,6 +47,10 @@ const MAX_MEDIA_READ_BUFFER: usize = MAX_CALL_MEDIA_FRAME_LEN * 2;
 /// A few invalid stream attempts may race an honest inbound stream, but an
 /// unbounded sequence must not keep transient state alive forever.
 const MAX_MEDIA_HANDSHAKE_FAILURES: u8 = 3;
+/// A closed active media stream may be the peer intentionally hanging up;
+/// leave one ordinary control heartbeat for its authenticated Hangup before
+/// classifying the same EOF as route loss.
+const MEDIA_ROUTE_LOSS_GRACE_SECS: u64 = 1;
 
 struct PendingMediaWrite {
     bytes: Vec<u8>,
@@ -76,6 +80,7 @@ pub(crate) struct ActiveCall {
     updated_at: u64,
     media: Option<CallMediaState>,
     media_failures: u8,
+    media_lost_at: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -355,6 +360,7 @@ impl Node {
                 updated_at: now,
                 media: None,
                 media_failures: 0,
+                media_lost_at: None,
             },
         );
         self.events.push_back(Event::CallUpdated { call: info });
@@ -527,6 +533,7 @@ impl Node {
         let mut activated = Vec::new();
         let mut retry = Vec::new();
         let mut ended = Vec::new();
+        let mut active_media_lost = Vec::new();
         for (call_id, call) in &mut self.calls {
             let Some(media) = &mut call.media else {
                 continue;
@@ -547,12 +554,20 @@ impl Node {
                     call.media_failures = call.media_failures.saturating_add(1);
                     retry.push((*call_id, failure));
                 }
+                Err(_) if call.info.phase == CallPhase::Active => active_media_lost.push(*call_id),
                 Err(_) => ended.push(*call_id),
             }
         }
         for (call_id, _) in retry {
             if let Some(call) = self.calls.get_mut(&call_id) {
                 call.media.take();
+            }
+        }
+        for call_id in active_media_lost {
+            if let Some(call) = self.calls.get_mut(&call_id) {
+                call.media.take();
+                call.media_lost_at = Some(now);
+                call.updated_at = now;
             }
         }
         for call in activated {
@@ -731,6 +746,7 @@ impl Node {
                         updated_at: now,
                         media: None,
                         media_failures: 0,
+                        media_lost_at: None,
                     },
                 );
                 self.events.push_back(Event::CallUpdated { call: info });
@@ -897,6 +913,20 @@ impl Node {
             .collect::<Vec<_>>();
         for id in expired {
             self.end_call(&id, CallEndReason::Expired, now)?;
+        }
+        let route_lost = self
+            .calls
+            .iter()
+            .filter(|(_, call)| {
+                call.info.phase == CallPhase::Active
+                    && call.media_lost_at.is_some_and(|lost_at| {
+                        now.saturating_sub(lost_at) >= MEDIA_ROUTE_LOSS_GRACE_SECS
+                    })
+            })
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        for id in route_lost {
+            self.end_call(&id, CallEndReason::RouteLost, now)?;
         }
         let expired_queue = self
             .call_queue_deadlines

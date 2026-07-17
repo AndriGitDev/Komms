@@ -19,12 +19,12 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use kult_crypto::{KdfProfile, SafetyNumber};
 use kult_node::{
-    AttachmentInfo, AttachmentMetadata, CarrierCapabilitySnapshot, DeviceLinkSelection, Event,
-    FolderConversationInfo, FolderConversationList, FolderInfo, FolderSelection,
-    GroupAuthorityInfo, GroupInfo, GroupMentionCapability, GroupRole, LabelConversationInfo,
-    LabelFilterInfo, LabelInfo, LabelMatchMode, LinkedDeviceInfo, MentionSpan,
-    MessageDeviceDeliveryInfo, Node, PinConversationList, PinInfo, ScheduledMessageInfo,
-    StaleFolderInfo, StaleLabelInfo,
+    AttachmentInfo, AttachmentMetadata, CallAudioFrame, CallAvailability, CallInfo,
+    CarrierCapabilitySnapshot, DeviceLinkSelection, Event, FolderConversationInfo,
+    FolderConversationList, FolderInfo, FolderSelection, GroupAuthorityInfo, GroupInfo,
+    GroupMentionCapability, GroupRole, LabelConversationInfo, LabelFilterInfo, LabelInfo,
+    LabelMatchMode, LinkedDeviceInfo, MentionSpan, MessageDeviceDeliveryInfo, Node,
+    PinConversationList, PinInfo, ScheduledMessageInfo, StaleFolderInfo, StaleLabelInfo,
 };
 use kult_store::{ContactRecord, ConversationId, NoteMessageRecord};
 use kult_transport::{
@@ -552,6 +552,43 @@ pub(crate) enum Msg {
     CarrierCapabilities {
         resp: Resp<Vec<CarrierCapabilitySnapshot>>,
     },
+    Calls {
+        resp: Resp<Vec<CallInfo>>,
+    },
+    CallAvailability {
+        peer: [u8; 32],
+        resp: Resp<CallAvailability>,
+    },
+    CallStart {
+        peer: [u8; 32],
+        resp: Resp<[u8; 16]>,
+    },
+    CallAnswer {
+        call: [u8; 16],
+        resp: Resp<()>,
+    },
+    CallDecline {
+        call: [u8; 16],
+        resp: Resp<()>,
+    },
+    CallCancel {
+        call: [u8; 16],
+        resp: Resp<()>,
+    },
+    CallHangup {
+        call: [u8; 16],
+        resp: Resp<()>,
+    },
+    CallAudioSend {
+        call: [u8; 16],
+        timestamp_ms: u64,
+        opus_packet: Vec<u8>,
+        resp: Resp<bool>,
+    },
+    CallAudioTake {
+        call: [u8; 16],
+        resp: Resp<Option<CallAudioFrame>>,
+    },
     Messages {
         peer: [u8; 32],
         resp: Resp<Vec<kult_node::ResolvedMessage>>,
@@ -855,6 +892,8 @@ async fn actor(
 ) {
     let mut tick = tokio::time::interval(cfg.tick_interval);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut media_tick = tokio::time::interval(Duration::from_millis(20));
+    media_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,
@@ -866,6 +905,14 @@ async fn actor(
                         }
                     }
                     Err(e) => eprintln!("kult-ffi: tick failed: {e}"),
+                }
+            }
+            _ = media_tick.tick() => {
+                if let Err(e) = node.pump_call_media(now()).await {
+                    eprintln!("kult-ffi: call media pump failed: {e}");
+                }
+                for event in node.drain_events() {
+                    let _ = events.send(event);
                 }
             }
             msg = rx.recv() => match msg {
@@ -1634,6 +1681,42 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         }
         Msg::CarrierCapabilities { resp } => {
             let _ = resp.send(node.carrier_capabilities(now).map_err(fail));
+        }
+        Msg::Calls { resp } => {
+            let _ = resp.send(Ok(node.calls()));
+        }
+        Msg::CallAvailability { peer, resp } => {
+            let _ = resp.send(node.call_availability(&peer, now).map_err(fail));
+        }
+        Msg::CallStart { peer, resp } => {
+            let _ = resp.send(node.start_call(&peer, now, &mut OsRng).map_err(fail));
+        }
+        Msg::CallAnswer { call, resp } => {
+            let _ = resp.send(node.answer_call(&call, now, &mut OsRng).map_err(fail));
+        }
+        Msg::CallDecline { call, resp } => {
+            let _ = resp.send(node.decline_call(&call, now, &mut OsRng).map_err(fail));
+        }
+        Msg::CallCancel { call, resp } => {
+            let _ = resp.send(node.cancel_call(&call, now, &mut OsRng).map_err(fail));
+        }
+        Msg::CallHangup { call, resp } => {
+            let _ = resp.send(node.hangup_call(&call, now, &mut OsRng).map_err(fail));
+        }
+        Msg::CallAudioSend {
+            call,
+            timestamp_ms,
+            mut opus_packet,
+            resp,
+        } => {
+            let result = node
+                .send_call_audio(&call, timestamp_ms, &opus_packet)
+                .map_err(fail);
+            opus_packet.fill(0);
+            let _ = resp.send(result);
+        }
+        Msg::CallAudioTake { call, resp } => {
+            let _ = resp.send(node.take_call_audio(&call).map_err(fail));
         }
         Msg::Messages { peer, resp } => {
             let _ = resp.send(node.resolved_messages_with(&peer).map_err(fail));

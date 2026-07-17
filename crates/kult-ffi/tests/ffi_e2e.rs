@@ -14,13 +14,13 @@ use kult_ffi::{
     attachment_file_presentation, default_config, edit_image, incognito_keyboard_policy,
     probe_edited_image, probe_recorded_audio, screen_security_policy, AttachmentDirection,
     AttachmentFileKind, AttachmentFileWarning, AttachmentOpenPolicy, AttachmentState,
-    CarrierCapability, Config, ContactNameWarning, ContentKind, CustomIconCrop, CustomIconTarget,
-    CustomIconTargetKind, DeliveryState, DeviceLinkSelection, Event, EventListener, FfiError,
-    FolderErrorCode, FolderSelection, FolderSelectionKind, FolderTarget, FolderTargetKind,
-    GroupRole, Hint, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind,
-    IncognitoKeyboardLevel, IncognitoKeyboardPlatform, KdfChoice, KultNode, LabelErrorCode,
-    LabelMatchMode, LabelTarget, LabelTargetKind, MentionSpan, PinErrorCode, PinTarget,
-    PinTargetKind, ScheduledConversation, ScreenSecurityLevel, ScreenSecurityPlatform,
+    CallEndReason, CallPhase, CarrierCapability, Config, ContactNameWarning, ContentKind,
+    CustomIconCrop, CustomIconTarget, CustomIconTargetKind, DeliveryState, DeviceLinkSelection,
+    Event, EventListener, FfiError, FolderErrorCode, FolderSelection, FolderSelectionKind,
+    FolderTarget, FolderTargetKind, GroupRole, Hint, ImageCrop, ImageEditRecipe, ImageEditRegion,
+    ImageEditRegionKind, IncognitoKeyboardLevel, IncognitoKeyboardPlatform, KdfChoice, KultNode,
+    LabelErrorCode, LabelMatchMode, LabelTarget, LabelTargetKind, MentionSpan, PinErrorCode,
+    PinTarget, PinTargetKind, ScheduledConversation, ScreenSecurityLevel, ScreenSecurityPlatform,
     TextFormatBlockKind, TextFormatHighlight, ThemePreference,
 };
 
@@ -620,6 +620,39 @@ fn listen_addr(node: &KultNode) -> String {
         }
         assert!(Instant::now() < deadline, "no listen address within 5s");
         std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn wait_call_available(node: &KultNode, peer: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let availability = node
+            .call_availability(peer.to_owned())
+            .expect("call availability");
+        if availability.available {
+            assert!(availability.unavailable.is_none());
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "call unavailable for {peer}: {:?}",
+            availability.unavailable
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn wait_call_audio(node: &KultNode, call: &str) -> kult_ffi::CallAudioFrame {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(frame) = node
+            .take_call_audio(call.to_owned())
+            .expect("take call audio")
+        {
+            return frame;
+        }
+        assert!(Instant::now() < deadline, "no call audio for {call}");
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -1400,20 +1433,20 @@ fn two_nodes_message_via_ffi_only() {
     assert_eq!(bob_peer, bob.peer());
     assert_eq!(alice_peer, alice.peer());
 
-    // The same carrier verdict that gates attachment activation crosses the
-    // bindings as an expiring snapshot and a change event.
-    a_rec.wait("alice's realtime carrier verdict", |event| {
+    // An untried direct-QUIC hint is honestly only bulk-capable until a live
+    // connection exists; the binding exposes that initial bounded verdict.
+    a_rec.wait("alice's initial carrier verdict", |event| {
         matches!(
             event,
             Event::CarrierCapabilityChanged { snapshot }
                 if snapshot.peer == bob_peer
-                    && snapshot.capability == CarrierCapability::Realtime
+                    && snapshot.capability == CarrierCapability::Bulk
         )
     });
     let carriers = alice.carrier_capabilities().unwrap();
     assert_eq!(carriers.len(), 1);
     assert_eq!(carriers[0].peer, bob_peer);
-    assert_eq!(carriers[0].capability, CarrierCapability::Realtime);
+    assert_eq!(carriers[0].capability, CarrierCapability::Bulk);
     assert!(carriers[0].expires_at > carriers[0].observed_at);
 
     // Send; the listener walks the honest ladder to `delivered` (an
@@ -1434,6 +1467,18 @@ fn two_nodes_message_via_ffi_only() {
     a_rec.wait("alice's delivered event", |e| {
         matches!(e, Event::DeliveryUpdated { id, state: DeliveryState::Delivered } if *id == msg_id)
     });
+    a_rec.wait("alice's proved realtime carrier verdict", |event| {
+        matches!(
+            event,
+            Event::CarrierCapabilityChanged { snapshot }
+                if snapshot.peer == bob_peer
+                    && snapshot.capability == CarrierCapability::Realtime
+        )
+    });
+    assert_eq!(
+        alice.carrier_capabilities().unwrap()[0].capability,
+        CarrierCapability::Realtime
+    );
 
     // History and state agree with the events.
     let history = alice.messages_with(bob_peer.clone()).unwrap();
@@ -1441,6 +1486,69 @@ fn two_nodes_message_via_ffi_only() {
     assert_eq!(history[0].id, msg_id);
     assert_eq!(history[0].state, DeliveryState::Delivered);
     assert_eq!(history[0].body, "hello through the bindings");
+
+    // The call surface carries only render-safe state and native Opus
+    // packets. Signaling and media never become message-history records.
+    wait_call_available(&alice, &bob_peer);
+    assert!(alice.calls().unwrap().is_empty());
+    let call = alice.start_call(bob_peer.clone()).unwrap();
+    b_rec.wait("bob's incoming call", |event| {
+        matches!(
+            event,
+            Event::CallUpdated { call: snapshot }
+                if snapshot.id == call && snapshot.phase == CallPhase::Ringing
+        )
+    });
+    bob.answer_call(call.clone()).unwrap();
+    a_rec.wait("alice's authenticated active call", |event| {
+        matches!(
+            event,
+            Event::CallUpdated { call: snapshot }
+                if snapshot.id == call && snapshot.phase == CallPhase::Active
+        )
+    });
+    b_rec.wait("bob's authenticated active call", |event| {
+        matches!(
+            event,
+            Event::CallUpdated { call: snapshot }
+                if snapshot.id == call && snapshot.phase == CallPhase::Active
+        )
+    });
+    for (index, packet) in [vec![0xf8, 0x01], vec![0xf8, 0x02], vec![0xf8, 0x03]]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(alice
+            .send_call_audio(call.clone(), 1_000 + index as u64 * 20, packet)
+            .unwrap());
+    }
+    for (index, packet) in [vec![0xf8, 0x11], vec![0xf8, 0x12], vec![0xf8, 0x13]]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(bob
+            .send_call_audio(call.clone(), 2_000 + index as u64 * 20, packet)
+            .unwrap());
+    }
+    let at_alice = wait_call_audio(&alice, &call);
+    let at_bob = wait_call_audio(&bob, &call);
+    assert_eq!(at_alice.call, call);
+    assert_eq!(at_alice.timestamp_ms, 2_000);
+    assert_eq!(at_alice.opus_packet, vec![0xf8, 0x11]);
+    assert_eq!(at_bob.timestamp_ms, 1_000);
+    assert_eq!(at_bob.opus_packet, vec![0xf8, 0x01]);
+    alice.hangup_call(call.clone()).unwrap();
+    b_rec.wait("bob's terminal call", |event| {
+        matches!(
+            event,
+            Event::CallUpdated { call: snapshot }
+                if snapshot.id == call
+                    && snapshot.phase == CallPhase::Ended
+                    && snapshot.end_reason == Some(CallEndReason::HungUp)
+        )
+    });
+    assert_eq!(alice.messages_with(bob_peer.clone()).unwrap().len(), 1);
+    assert_eq!(bob.messages_with(alice_peer.clone()).unwrap().len(), 1);
 
     let disappearing = alice
         .send_disappearing(
