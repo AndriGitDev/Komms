@@ -46,6 +46,48 @@ pub enum NodeError {
     /// Roster, local display mapping, or authenticated capability state changed
     /// since the user reviewed the composer.
     MentionReviewRequired,
+    /// The peer or one current group member has not authenticated Edit v1 support.
+    EditUnsupported,
+    /// The edit target, author, content kind, revision, or text is invalid.
+    InvalidEdit,
+    /// The target already has the maximum number of locally authored edits.
+    EditLimit,
+    /// One or more current co-members lack authenticated Poll v1 support.
+    PollUnsupported,
+    /// Poll shape, target, option, electorate, author, or transition is invalid.
+    InvalidPoll,
+    /// This identity has exhausted the bounded local vote-revision budget.
+    PollVoteLimit,
+    /// A creator-authored final snapshot has already closed this poll.
+    PollClosed,
+    /// Only the authenticated creator of this exact poll may close it.
+    NotPollCreator,
+    /// Call control, target, route, expiry, or transition is invalid.
+    InvalidCall,
+    /// No transient call with this id exists on this installation.
+    UnknownCall,
+    /// The peer does not advertise the canonical call-control contract.
+    CallUnsupported,
+    /// No fresh direct QUIC carrier is available for this call.
+    CallUnavailable,
+    /// This installation already has a non-terminal call.
+    CallBusy,
+    /// Signed group-authority content or transition is malformed or misplaced.
+    InvalidGroupAuthority,
+    /// One or more current members lack signed C6 role support.
+    GroupRolesUnsupported,
+    /// The operation requires the current group owner.
+    NotGroupOwner,
+    /// Role assignment or target violates the fixed C6 role table.
+    InvalidGroupRole,
+    /// The sole owner must transfer ownership before leaving/removal.
+    LastGroupOwner,
+    /// The peer/group lacks ephemeral v1 plus envelope-v2 support.
+    EphemeralUnsupported,
+    /// Lifetime, deadline, content, hint binding, or lifecycle is invalid.
+    InvalidEphemeral,
+    /// Ordinary preview/export is forbidden for a view-once attachment.
+    ViewOnceExportForbidden,
     /// The peer has not authenticated support for the complete attachment
     /// manifest and bulk-lane contract.
     AttachmentUnsupported,
@@ -65,6 +107,20 @@ pub enum NodeError {
     InvalidSchedule,
     /// Streaming import or export failed.
     MediaIo(std::io::Error),
+    /// A link ceremony payload, state transition, or confirmation is invalid.
+    InvalidDeviceLink,
+    /// Linking would replace non-empty state on the proposed target device.
+    DeviceLinkTargetNotEmpty,
+    /// No matching source/target ceremony is currently pending in memory.
+    NoPendingDeviceLink,
+    /// The exact physical-device id is unknown or already revoked.
+    UnknownLinkedDevice,
+    /// The current physical installation cannot revoke itself in place.
+    CannotRevokeCurrentDevice,
+    /// A device-sync bundle was replayed, rolled back, or addressed elsewhere.
+    InvalidDeviceSync,
+    /// A contact device manifest is stale, fork-losing, or rewrites authority.
+    InvalidDeviceManifest,
 }
 
 impl std::fmt::Display for NodeError {
@@ -93,6 +149,35 @@ impl std::fmt::Display for NodeError {
             Self::MentionReviewRequired => {
                 f.write_str("group mention state changed; review is required again")
             }
+            Self::EditUnsupported => {
+                f.write_str("peer or group member does not support message edits")
+            }
+            Self::InvalidEdit => f.write_str("invalid message edit target, author, or text"),
+            Self::EditLimit => f.write_str("message edit limit reached"),
+            Self::PollUnsupported => f.write_str("one or more group members do not support polls"),
+            Self::InvalidPoll => f.write_str("invalid group poll, option, voter, or target"),
+            Self::PollVoteLimit => f.write_str("poll vote revision limit reached"),
+            Self::PollClosed => f.write_str("poll is already closed"),
+            Self::NotPollCreator => f.write_str("only the poll creator may close it"),
+            Self::InvalidCall => f.write_str("invalid call control, route, expiry, or transition"),
+            Self::UnknownCall => f.write_str("call does not exist on this installation"),
+            Self::CallUnsupported => f.write_str("peer does not support live calls"),
+            Self::CallUnavailable => f.write_str("no fresh direct QUIC route is available"),
+            Self::CallBusy => f.write_str("this installation is already in a call"),
+            Self::InvalidGroupAuthority => f.write_str("invalid group authority transition"),
+            Self::GroupRolesUnsupported => {
+                f.write_str("one or more group members do not support signed roles")
+            }
+            Self::NotGroupOwner => f.write_str("only the current group owner may do that"),
+            Self::InvalidGroupRole => f.write_str("invalid group role or role target"),
+            Self::LastGroupOwner => f.write_str("transfer ownership before the owner can leave"),
+            Self::EphemeralUnsupported => {
+                f.write_str("peer or group member does not support ephemeral content")
+            }
+            Self::InvalidEphemeral => f.write_str("invalid ephemeral content or lifecycle"),
+            Self::ViewOnceExportForbidden => {
+                f.write_str("view-once attachment requires terminal consume")
+            }
             Self::AttachmentUnsupported => {
                 f.write_str("peer does not advertise attachment support")
             }
@@ -106,6 +191,19 @@ impl std::fmt::Display for NodeError {
             }
             Self::InvalidSchedule => f.write_str("invalid scheduled message or send instant"),
             Self::MediaIo(e) => write!(f, "attachment stream error: {e}"),
+            Self::InvalidDeviceLink => f.write_str("invalid or unconfirmed device link"),
+            Self::DeviceLinkTargetNotEmpty => {
+                f.write_str("device linking target contains existing account state")
+            }
+            Self::NoPendingDeviceLink => f.write_str("no matching device link is pending"),
+            Self::UnknownLinkedDevice => f.write_str("linked device is unknown or revoked"),
+            Self::CannotRevokeCurrentDevice => {
+                f.write_str("the current device cannot revoke itself")
+            }
+            Self::InvalidDeviceSync => f.write_str("invalid or replayed device sync bundle"),
+            Self::InvalidDeviceManifest => {
+                f.write_str("invalid or rolled-back contact device manifest")
+            }
         }
     }
 }

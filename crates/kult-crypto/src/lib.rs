@@ -22,6 +22,8 @@ extern crate alloc;
 
 mod anonbox;
 mod attachment;
+mod call;
+mod device;
 mod error;
 mod fingerprint;
 mod group;
@@ -41,6 +43,18 @@ pub use attachment::{
     AttachmentChunkContext, AttachmentChunkScope, ATTACHMENT_CHUNK_DATA_LEN,
     ATTACHMENT_CHUNK_PLAINTEXT_LEN, ATTACHMENT_SEALED_CHUNK_LEN,
 };
+pub use call::{
+    call_media_record_len, CallMediaContext, CallMediaFrame, CallMediaKind, CallMediaReceiver,
+    CallMediaSender, CallRole, CALL_MEDIA_HEADER_LEN, CALL_MEDIA_MAGIC,
+    CALL_MEDIA_RECORDS_PER_KEY_PHASE, CALL_MEDIA_REPLAY_WINDOW, CALL_MEDIA_TAG_LEN,
+    MAX_CALL_MEDIA_FRAME_LEN, MAX_CALL_MEDIA_PAYLOAD_LEN,
+};
+pub use device::{
+    ApprovedDeviceLink, CompletedDeviceLink, DeviceCertificate, DeviceLinkCode, DeviceLinkOffer,
+    DeviceLinkResponse, DeviceManifest, DeviceManifestEntry, DevicePrekeyBundle,
+    PendingDeviceLinkSource, PendingDeviceLinkTarget, MAX_DEVICE_MANIFEST_ENTRIES,
+    MAX_DEVICE_NAME_BYTES, MAX_LINKED_DEVICES, MAX_LINK_TRANSFER_BYTES,
+};
 pub use error::CryptoError;
 pub use fingerprint::{safety_number, SafetyNumber};
 pub use group::{
@@ -48,7 +62,11 @@ pub use group::{
     GROUP_MAX_STORED_SKIPPED, GROUP_SKIPPED_TTL_SECS,
 };
 pub use handshake::{initiate, respond, InitialMessage};
-pub use identity::{parse_address, Identity, IdentityPublic};
+pub use identity::{
+    parse_address, verify_group_admin_request_signature, verify_group_authority_state_signature,
+    verify_group_owner_transfer_signature, verify_group_poll_moderation_signature, Identity,
+    IdentityPublic,
+};
 pub use kdf::{derive_kek, KdfProfile, KDF_PROFILE_DESKTOP, KDF_PROFILE_MOBILE};
 pub use mnemonic::{mnemonic_from_entropy, mnemonic_to_entropy, MNEMONIC_WORDS};
 pub use prekeys::{

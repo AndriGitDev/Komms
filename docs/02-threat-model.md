@@ -117,6 +117,20 @@ malicious input method, accessibility or overlay abuse, privileged writing
 tools, hardware with its own storage, or external observation. Exact behavior
 and qualification are in [14: Incognito Keyboard](14-incognito-keyboard.md).
 
+### A10: Malicious received files (opportunistic or targeted)
+
+A peer sends active content, a disguised executable, or bytes whose authenticated
+filename and media-type hints are misleading, hoping the recipient or a local
+viewer executes them.
+
+**Defense (bounded):** C1 never auto-opens attachments, marks all names and types
+as untrusted sender claims, makes active/mismatched/unknown/nameless files
+export-only, and requires an unscanned warning plus explicit confirmation for
+the reviewed external-open set. Materialization is app-private and temporary.
+This does not prove content safe, replace malware scanning, sandbox a third-party
+viewer, or defeat A7. Exact behavior is in
+[17: Safe File Presentation](17-safe-file-presentation.md).
+
 ## 3. Security goals
 
 | Goal | Meaning | Mechanism |
@@ -134,6 +148,9 @@ and qualification are in [14: Incognito Keyboard](14-incognito-keyboard.md).
 | **Local input minimization** | Reduce keyboard learning, correction, spellcheck, autofill, and secret-field exposure where native APIs permit. | Always-on B15 field controls and explicit best-effort/unavailable states; not an endpoint-compromise defense. |
 | **Identity-text safety** | Keep mutable human labels from becoming identity or silently hiding spoofing risk. | Exact peer-key targeting, NFC normalization, duplicate/confusable/bidi/invisible warnings, and explicit review for warned B5 renames. |
 | **Active-content isolation** | Authenticated message text must not become executable or network-active content. | B9 keeps exact source, applies a bounded local parser, exports only inert block/run tokens, literal-falls back on complexity, and never interprets HTML, links, images, or URL schemes. |
+| **Edit provenance** | A peer must not rewrite another author's message or make offline endpoints disagree about the visible version. | C3 immutable edit events bind exact author/content ids inside authenticated content; wrong-author/wrong-scope events never apply, and maximum `(revision, edit id)` converges without clocks. |
+| **Poll convergence and honesty** | A peer must not cast another member's vote or make replicas tally the same received events differently. | C5 binds each vote to the authenticated group sender, fixes the creator-attested electorate, selects maximum `(revision, event id)`, and freezes a creator-authenticated close snapshot; the UI says votes are visible and never claims anonymity or election fairness. |
+| **Group authority convergence** | A stale admin or losing ownership fork must not regain authority or future group secrets. | C6 signs canonical full role state and transfer certificates, binds admin requests to one generation, serializes mutations at one owner, rejects non-extending transfer chains, and re-keys every accepted transition. |
 | **Sovereignty** | Users hold their own keys and data; anyone can run every component. | Local-first storage, AGPLv3, no privileged nodes. |
 
 Optional Hybrid Infrastructure Layer modes do not change the confidentiality,
@@ -141,11 +158,70 @@ authenticity, deniability, identity, or off-grid goals above. They add a bounded
 metadata surface documented in
 [ADR-0017](adr/0017-optional-hybrid-modes.md): direct Standard-mode requests may
 expose a client address, opaque target, timing, and volume; a native wake gateway
-must learn the provider token it wakes; APNs/FCM observe app-instance delivery.
 Private mode separates client address from target request through Tor or a
 non-colluding OHTTP relay, but it does not promise anonymity against collusion
 or a global passive observer. Service compromise can suppress convenience work
 but cannot decrypt or forge an accepted Komms message.
+
+Message editing does not erase evidence or extend sender authority. The original
+and accepted versions remain sealed locally and in backups; only the exact
+authenticated author can target canonical text in the same conversation.
+Display names, local timestamps, and arrival order cannot authorize or select a
+winner. A malicious peer can send many authenticated attempts and consume its
+own conversation storage, so local authors are capped at 64 edits per target;
+authenticated inbound events remain durable to preserve convergence. Recipients
+may retain, copy, capture, or export any prior version, and the UI never describes
+editing as remote deletion. Exact limits are in
+[18: Authenticated Message Editing](18-message-editing.md).
+
+C4 ephemeral content narrows local retention; it does not create remote
+deletion authority. Exact deadlines and first-open state are authenticated and
+sealed per installation, and terminal tombstones prevent delayed ciphertext or
+backup restore from rehydrating removed plaintext. KKR6 excludes live ephemeral
+history/manifests/media. Envelope carriers learn one hour-aligned deletion
+bucket and may delete early, ignore the hint, or retain copied ciphertext;
+recipients and compromised endpoints may capture plaintext. View once blocks
+Komms's ordinary preview/export/playback paths but is not DRM or universal
+screenshot prevention. See
+[19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
+
+C5 group polls protect content from intermediaries and authenticate which group
+identity authored each event; they do not provide secret ballots. Every holder
+of the poll can inspect current voter identities and choices. The creator
+attests the fixed electorate and final observed vote-head snapshot, so a
+malicious creator can close before an offline vote arrives or omit an observed
+head in a forged close event; deterministic convergence is not proof of fair or
+complete counting. A voter cannot impersonate another member, and outsider,
+unknown-option, duplicate, delayed, and reordered events do not change the
+defined result. Removed members retain what they already received. See
+[20: Group Polls](20-group-polls.md) and
+[ADR-0022](adr/0022-convergent-group-polls.md).
+
+C6 group authority is attributable rather than deniable durable state. This is
+an intentional exception to ordinary deniable message content: identity
+signatures cover only canonical role/owner state, owner-transfer certificates,
+generation-bound admin requests, and owner moderation snapshots. They do not
+sign ordinary chat text or votes. A compromised legitimate owner can still
+remove members, grant admin, rename, transfer ownership, or moderate a poll;
+signatures provide validation and convergence, not an appeal system or fairness
+guarantee. Admin work waits for the owner, and removed endpoints retain content
+already received. Higher generations rooted in a losing transfer fork and stale
+requests from removed/demoted admins fail closed. See
+[21: Group Roles, Ownership, and Moderation](21-group-roles.md) and
+[ADR-0023](adr/0023-group-roles-and-owner-authority.md).
+
+C2 prevents two installations from sharing live ratchet or sender-chain state,
+but it does not make an authorized device harmless. Every physical endpoint has
+an account-signed certificate and independent delivery cryptography; manifests,
+link transcripts, sync events, counters, and revocations are authenticated and
+rollback/replay checked. A compromised authorized device can retain plaintext,
+emit account-authorized events, or race a same-generation manifest fork until
+another surviving device permanently revokes it. Revocation protects future
+delivery and accepted sync, not content already seen. Explicit bounded sync has
+no server log and excludes live queues/ratchets, active ephemeral content,
+downloaded media, drafts, and scheduled outbox rows. See
+[22: Linked Devices](22-linked-devices.md) and
+[ADR-0024](adr/0024-account-authorized-linked-devices.md).
 
 Private folders, conversation pins, and labels are endpoint organization, never
 communications metadata. Their definitions, single-folder assignments,
@@ -155,14 +231,16 @@ folder/label view preferences remain device-local. An organization operation
 creates no envelope, mailbox, mesh, sneakernet,
 LAN, internet, DHT, capability, sender-key, ratchet, delivery-token, analytics,
 or remote-notification work. A copied SQLite database reveals only the already
-accepted row count and approximate sealed blob sizes. `KKR4` is the only folder,
-pin, or label portability mechanism: none has server or linked-device
-synchronization. Once rendered on an unlocked endpoint, organization text has
+accepted row count and approximate sealed blob sizes. `KKR7` is the current folder,
+pin, or label backup format. None has server, contact, or service
+synchronization; C2 may carry them only in authenticated encrypted bundles
+between account-authorized owned devices. Once rendered on an unlocked endpoint, organization text has
 the same bounded A7 exposure as the rest of the user's visible local data.
 
 Contact petnames have the same endpoint-only boundary. Rename rewrites only the
-sealed local contact record and emits a local event; it does not advertise,
-resolve, or synchronize a name. Names may duplicate, so every action targets the
+sealed local contact record and emits a local event; it does not advertise or
+resolve a name, and C2 syncs it only to authorized devices of the same account.
+Names may duplicate, so every action targets the
 peer key and interfaces retain disambiguating context. Warning heuristics reduce
 accidental Unicode spoofing but are not a complete UTS #39 implementation and
 cannot make two visually similar labels safe by themselves. A user may
@@ -175,6 +253,16 @@ export. These live only in protected app-private locations, are excluded from
 backup, are never the core database source of truth, and are cleaned on the
 documented success, discard, failure, lock/background, shutdown, and restart
 paths. Their exposure on a persistently compromised unlocked endpoint remains A7.
+
+C7 live audio is transient but not anonymous. Signaling remains inside the
+pairwise ratchet and media records use fresh call/device/direction-bound keys,
+so relays and transports receive no new plaintext call metadata field. The
+direct QUIC peers and a network observer can still see endpoint addresses,
+timing, duration, and traffic volume. Call secrets, Opus queues, and decoded PCM
+are memory-only and erased on terminal/background paths; a compromised endpoint,
+platform audio service, Bluetooth route, or external recorder remains A7. Calls
+never fall back to store-and-forward or radio merely to improve availability.
+See [23: Live Audio Calls](23-live-audio-calls.md).
 
 ## 4. Non-goals and accepted limitations
 
@@ -199,6 +287,10 @@ Honesty here is a security feature. Komms does **not** claim to provide:
 7. **Guaranteed mobile background execution.** APNs/FCM and the operating system
    may throttle, delay, coalesce, or discard a wake; force-quit, permissions,
    battery policy, and provider outage remain honest failure cases.
+8. **Network anonymity for live calls.** Direct peer-to-peer QUIC necessarily
+   exposes each endpoint's network address to the other endpoint and remains
+   traffic-analysis-visible. Komms adds no coordinator, TURN service, or relay
+   fallback to conceal that fact.
 
 ## 5. Residual-risk summary
 

@@ -90,6 +90,15 @@ class AudioMessageController(
         }
     }
 
+    /** Give an explicitly accepted live call exclusive use of foreground audio. */
+    fun prepareForLiveCall() {
+        if (recorder != null) {
+            discardCapture(activity.getString(R.string.audio_interrupted_discarded))
+        }
+        discardReview()
+        releasePlayer()
+    }
+
     private fun cleanupOrphans() {
         activity.cacheDir.listFiles()?.filter {
             it.name.startsWith("audio-recording-") || it.name.startsWith("audio-playback-")

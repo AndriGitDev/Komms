@@ -52,9 +52,9 @@ Our full, frank list is in the [threat model](02-threat-model.md).
 
 As an alpha built from source. There are no supported installers or app-store
 releases yet, but desktop, Android, and iOS shells all exist over the same Rust
-core. The repository's automated matrix exercises the core, desktop behavior,
-Android behavior and APK assembly, iOS behavior, and the gated iOS simulator
-build. Hands-on device qualification, distribution, the physical radio bench,
+core. The local verification matrix exercises the shared core, desktop behavior,
+the Android SDK-free bindings/core, and Swift parsing/host behavior. Android APK
+and iOS simulator builds require their full platform SDKs. Hands-on device qualification, distribution, the physical radio bench,
 and the external audit remain before a stable release.
 
 Messages may use a small safe formatting subset for emphasis, strong text,
@@ -62,6 +62,48 @@ quotes, lists, and code. The exact readable source stays encrypted in history
 and on the wire; each app renders it locally without HTML, clickable links,
 remote images, or background fetches. See
 [Safe Text Formatting](16-safe-text-formatting.md) for the exact promise.
+
+Received files never open automatically. Their displayed name and type are
+sender-provided hints, not a malware verdict. Unknown, mismatched, or active
+types remain export-only; a reviewed matching type still requires an explicit
+warning and user action before operating-system handoff. See
+[Safe File Presentation](17-safe-file-presentation.md).
+
+You can edit canonical text you authored in a pairwise or group conversation.
+Komms sends that change as a new encrypted event, keeps an **edited** marker and
+inspectable version history, and derives the same winner even when offline
+carriers deliver edits out of order. Editing does not erase what another device
+already received or copied. See
+[Authenticated Message Editing](18-message-editing.md).
+
+You can also choose disappearing text or a view-once attachment. Komms removes
+its local decryptable copy at the selected deadline, or after the first explicit
+view-once reveal, and prevents delayed delivery or backup restore from reviving
+that item. This does not delete a recipient's capture, control another device,
+or guarantee screenshot prevention. Relays see one coarse deletion bucket but
+not the exact deadline or content. See
+[Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
+
+Groups can also create encrypted single-choice polls. Votes and voter identities
+are visible to members—Komms does not call them anonymous—and the creator closes
+the exact vote snapshot they have received. Offline, duplicate, and reordered
+events still converge locally. See [Group Polls](20-group-polls.md).
+
+Groups can upgrade to signed owner, admin, and member roles. There is always one
+owner. Admins can request common work while the owner is offline, but the owner
+still commits one ordered change and refreshes the group's encryption keys.
+Ownership can be transferred; the owner must transfer before leaving. A signed
+owner moderation close is visibly different from the poll creator's ordinary
+close. There is no server account or hidden moderator behind these roles. See
+[Group Roles, Ownership, and Moderation](21-group-roles.md).
+
+Already paired contacts can also make alpha live-audio calls when both devices
+have a fresh direct QUIC connection. Call setup stays inside the ordinary
+end-to-end encrypted ratchet and the audio uses fresh call-specific keys; there
+is no Komms call server. Calls do not work through volunteer relays, TCP
+fallback, mailboxes, radio, or sneakernet and never become delayed work. Real
+phone/network/audio-route qualification remains before a stable release. See
+[Live Audio Calls](23-live-audio-calls.md).
 
 If you're comfortable with a terminal, the desktop shell is the quickest start:
 
@@ -92,6 +134,12 @@ Platform build instructions:
 | what is implemented versus remaining | [Roadmap](08-roadmap.md) |
 | which product features fit the model | [Feature Scope](11-feature-scope.md) |
 | the exact delivery status of each feature | [Feature Delivery Plan](12-feature-delivery-plan.md) |
+| how authored message edits work and what they cannot erase | [Authenticated Message Editing](18-message-editing.md) |
+| what disappearing/view-once means—and what it cannot erase | [Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md) |
+| how encrypted group polls converge and why votes are visible | [Group Polls](20-group-polls.md) |
+| how signed group roles, ownership transfer, and moderation work | [Group Roles, Ownership, and Moderation](21-group-roles.md) |
+| when live audio calls work—and when they deliberately do not | [Live Audio Calls](23-live-audio-calls.md) |
+| how a release is validated locally before any hosted run | [Local Release Gate](24-local-release-gate.md) |
 | why a technical decision was made | [ADR Index](adr/README.md) |
 
 ## How can I help?

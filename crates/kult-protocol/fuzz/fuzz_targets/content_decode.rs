@@ -17,4 +17,8 @@ fuzz_target!(|data: &[u8]| {
         let encoded = kult_protocol::encode_mention(id, mention.text, &spans).unwrap();
         assert_eq!(kult_protocol::decode_content(&encoded), decoded);
     }
+    if let kult_protocol::DecodedContent::Edit { id, edit } = decoded {
+        let encoded = kult_protocol::encode_edit(id, &edit).unwrap();
+        assert_eq!(kult_protocol::decode_content(&encoded), decoded);
+    }
 });

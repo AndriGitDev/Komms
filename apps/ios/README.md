@@ -13,7 +13,7 @@ are the node's own, verbatim.
   inactive/background transitions, and responds to UIKit capture notifications.
   Settings explicitly state that iOS cannot universally block still screenshots
   and that capture notification is not retroactive.
-- **Reduce keyboard retention on every SwiftUI editor.** All 21 text editors
+- **Reduce keyboard retention on every SwiftUI editor.** Every audited text editor
   disable autocorrection through one audited modifier; message/name fields keep
   only explicit capitalization semantics. Passphrases and recovery mnemonics use
   `SecureField`. Settings state that iOS has no per-field personalized-learning
@@ -24,15 +24,45 @@ are the node's own, verbatim.
   with the camera (or paste the hex, interoperable with the desktop and
   Android apps and `kult bundle` / `kult add`), or add a contact from
   their kult address alone via DHT lookup.
+- **Link and manage owned devices** without iCloud or another account service.
+  The VoiceOver/Dynamic-Type manager lists exact physical devices, supports
+  signed rename and permanently confirmed revoke, and drives both sides of the
+  time-bounded QR/paste ceremony with matching comparison codes and selective
+  transfer. Explicit encrypted sync export/import carries only the C2 allowlist;
+  physical-device cryptography and delivery state remain independent.
 - **Rename a contact's private local petname** through swipe or context-menu
   actions. SwiftUI targets the exact peer key, uses the shared incognito field,
   previews NFC normalization and duplicate/confusable/bidi/invisible warnings,
   and requires explicit acceptance for risk. Duplicate names remain distinct;
-  restart/`KKR4` preserves the local rename with zero delivery work.
+  restart/`KKR7` preserves the local rename with zero delivery work.
 - **Message** with honest delivery states: `queued` → `sent` (handed to a
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted
   mesh links.
+- **Make alpha live-audio calls** to paired contacts only while the shared core
+  observes a fresh direct QUIC route. AVFoundation voice processing and the
+  native Opus codec use 48 kHz mono, 20 ms frames at 24 kbit/s. The VoiceOver/
+  Dynamic-Type call bar provides ring/answer/decline/cancel/hangup state and an
+  explicit direct-QUIC/no-history explanation. Background, protected-data loss,
+  interruption, or media-service reset tears down the call and clears media
+  state. TCP, relay-only, mailbox, sneakernet, and mesh routes cannot start or
+  queue it.
+- **Manage signed group authority** with visible owner/admin/member roles,
+  capability-gated legacy upgrade, owner/admin rename and membership controls,
+  owner-only role grants and ownership transfer, and signed poll moderation.
+  The VoiceOver/Dynamic-Type member sheet shows generation and signed/legacy
+  state, prevents owner leave, and refreshes from typed authority/admin events.
+- **Send disappearing pairwise/group text and view-once attachments** with
+  explicit SwiftUI lifetime controls and honest device-local removal copy.
+  History shows relative expiry and refreshes on typed terminal events.
+  View-once rows disable ordinary preview, playback, open, and export; Reveal
+  once consumes into a unique protected app-private URL before Quick Look or a
+  share target can receive it, and a failed handoff remains terminal.
+- **Edit authored canonical Text** in pairwise and group history through an
+  incognito SwiftUI editor. The action is available only on exact outbound text,
+  uses shared capability/authorship checks, refreshes on typed target events,
+  shows an edited revision marker, and presents the original plus every valid
+  version for VoiceOver/Dynamic Type inspection. Editing is not erasure.
 - **Render safe source formatting** in pairwise, group, note-to-self, and
   scheduled rows through the shared bounded formatter. SwiftUI builds only a
   selectable native `AttributedString`, composes semantic mention highlights,
@@ -67,6 +97,10 @@ are the node's own, verbatim.
   as any member while local history remains stored. Inbound rows name the
   sender; outbound rows show every recipient's actual delivery state instead
   of a misleading group-level checkmark.
+- **Create and vote in encrypted group polls** through dedicated VoiceOver and
+  Dynamic Type-friendly cards. The bounded composer preserves exact Unicode;
+  the creation roster is fixed, votes and identities are visible rather than
+  anonymous, choices can change, and only the creator closes the final snapshot.
 - **Mention current group members** through an explicit accessible roster picker.
   The composer uses semantic ranges while preserving exact visible text, supports
   keyboard navigation where available, VoiceOver, Dynamic Type, Unicode/bidi,
@@ -95,11 +129,11 @@ are the node's own, verbatim.
   note-to-self. The leading VoiceOver/Dynamic-Type block follows folder and
   label eligibility; conversation actions pin/unpin exact typed targets and the
   manager provides button reorder plus unavailable-record cleanup. The shared
-  8,192-pin limit, restart/`KKR4` behavior, and zero-network contract live in
+  8,192-pin limit, restart/`KKR7` behavior, and zero-network contract live in
   `KommsCore`, with no new permission or synchronized state.
 - **Choose System, Light, or Dark appearance** in Settings, including at the
   gate. SwiftUI applies the cached choice immediately, then treats the sealed F5
-  value as authoritative after unlock or `KKR4` restore. System follows iOS
+  value as authoritative after unlock or `KKR7` restore. System follows iOS
   changes live; adaptive semantic colors preserve Increase Contrast,
   Differentiate Without Color, Dynamic Type, and Reduce Motion behavior, while
   delivery/security meaning always retains text, symbols, or accessible labels.
@@ -108,8 +142,9 @@ are the node's own, verbatim.
   VoiceOver/Dynamic-Type manager offers all eight bundled glyphs, security-
   scoped Files JPEG/PNG selection, clear-to-fallback, and quota usage. The shared
   core produces only metadata-free 256×256 RGBA PNGs and enforces the 512 KiB,
-  1,024-record, and 64 MiB caps with safe corrupt fallback. `KKR4` is the only
-  portability path; icons never enter iCloud sync, URLs, peers, envelopes,
+  1,024-record, and 64 MiB caps with safe corrupt fallback. Portability is limited
+  to `KKR7` and authenticated own-device C2 sync; icons never enter iCloud sync,
+  URLs, peers, envelopes,
   capabilities, notifications, queues, or transports.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends (all platforms), compared aloud or by scanning each other's code,
@@ -127,6 +162,11 @@ are the node's own, verbatim.
 QR rendering is CoreImage, scanning is AVFoundation metadata; no
 third-party dependencies anywhere in the app: the only library it links
 is the workspace's own Rust core.
+
+C4 deadline calculation, capability checks, deletion, terminal tombstones, and
+KKR6 exclusion are shared-core behavior. A full app type-check/simulator gate
+requires Xcode; Swift parse plus the host UniFFI suite remain the local fallback.
+See [C4 semantics and qualification](../../docs/19-ephemeral-messages.md).
 
 ## Layout
 
@@ -166,31 +206,33 @@ Kotlin, covering exact Unicode, stable ids/order, duplicate names, typed targets
 any/all results, restart, and errors. Labels request no Contacts, Photos,
 notification, local-network, or other permission and never enter notification
 categories, Spotlight, widgets, Siri/App Intents, pasteboard, previews, logs,
-crash/analytics payloads, or ordinary scene restoration. `KKR4` preserves exact
-definitions and memberships; message labels and linked-device synchronization
-remain deferred.
+crash/analytics payloads, or ordinary scene restoration. `KKR7` preserves exact
+definitions and memberships; C2 can converge them only between authorized owned
+devices, while message labels remain deferred.
 
 Folder acceptance uses the same B10 fixture as Rust RPC, UniFFI, and Kotlin,
 covering exact Unicode, duplicate names, stable manual order, typed
 peer/group/note targets, single membership, label composition, restart,
 deletion, and structured errors. Folder state requests no additional permission,
-never leaves sealed local storage, and `KKR4` is its only portability path.
+never leaves sealed owned-device storage. Portability is limited to `KKR7` and
+authenticated own-device C2 sync.
 
 Pin acceptance uses the same B11 fixture as Rust RPC, UniFFI, and Kotlin,
 covering exact typed peer/group/note targets, append and exact complete-set
 reorder, folder/label composition, activity order, stale cleanup/reactivation,
-restart, structured errors, and zero delivery work. `KKR4` is the only
-portability path; message pins and linked-device pin sync remain deferred.
+restart, structured errors, and zero delivery work. `KKR7` together with
+authenticated own-device C2 sync are the only portability paths; message pins
+remain deferred.
 
 Theme acceptance uses the same B12 fixture as Rust RPC, UniFFI, and Kotlin,
 covering the exact vocabulary/roles, first-run System, idempotency, restart,
-`KKR4`, one local change event, and zero queued or transport work. The ordinary
+`KKR7`, one local change event, and zero queued or transport work. The ordinary
 non-synchronizing `UserDefaults` cache contains only the pre-unlock theme token;
 it is not a portability or backup channel.
 
 Custom-icon acceptance uses the same B13 fixture as Rust RPC, UniFFI, and
 Kotlin, covering all exact target kinds, canonical metadata-free PNG output,
-quota accounting, restart/`KKR4`, safe initials fallback, local events, and zero
+quota accounting, restart/`KKR7`, safe initials fallback, local events, and zero
 delivery work. Security-scoped Files access lasts only for the explicit blocking
 import call; no selected path or plaintext image becomes synchronized state.
 
@@ -223,10 +265,10 @@ Meshtastic radio support is feature-gated off, mirroring `kult-ffi`'s
 default (an iPhone has no serial port; a radio's network API can be
 attached from a `meshtastic`-featured build).
 
-CI runs the `KommsCore` e2e on every push (Linux, official Swift
-container). The simulator app build is a macOS job gated behind the
-`IOS_APP_CI` repository variable; set it to `1` to arm (macOS runners
-are billed 10× on private repos).
+The local release matrix runs the `KommsCore` host e2e and, on a full Xcode
+host, assembles the XCFramework and unsigned simulator app. Hosted repetitions
+remain explicitly gated because private-repository macOS runners are billed at
+a much higher multiplier.
 
 ## Not yet
 

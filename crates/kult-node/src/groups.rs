@@ -9,26 +9,31 @@
 use std::collections::HashSet;
 
 use rand_core::CryptoRngCore;
+use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
 use kult_crypto::{
     GroupHeaderKey, GroupMessage, GroupReceiverChain, GroupSenderChain, IdentityPublic,
 };
 use kult_protocol::{
-    decode_content, delivery_token, encode_mention, encode_text, epoch_day, pad, unpad,
-    DecodedContent, Envelope, EnvelopeKind, GroupAnnounce, GroupControlPayload, GroupMemberInfo,
-    MailboxKey, CONTENT_FORMAT_V1, CONTENT_KIND_MENTION,
+    decode_content, decode_group_authority, delivery_token, encode_disappearing_text_payload,
+    encode_edit, encode_ephemeral, encode_mention, encode_text, epoch_day, pad, retention_bucket,
+    unpad, DecodedContent, DecodedGroupAuthority, Edit, Envelope, EnvelopeKind, Ephemeral,
+    GroupAnnounce, GroupAuthorityAnnounce, GroupControlPayload, GroupMemberInfo, MailboxKey, Poll,
+    CONTENT_FORMAT_V1, CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL, CONTENT_KIND_MENTION,
+    MAX_EDIT_TEXT_LEN, MAX_EPHEMERAL_LIFETIME_SECS, MIN_EPHEMERAL_LIFETIME_SECS,
 };
 use kult_store::{
-    ContactRecord, DeliveryState, Direction, GroupDelivery, GroupMember, GroupMessageRecord,
-    GroupRecord, PendingAnnounce, QueueClass, QueueItem,
+    ContactDeviceRecord, ContactRecord, DeliveryState, Direction, EphemeralConversation,
+    EphemeralMode, EphemeralRecord, EphemeralState, GroupDelivery, GroupMember, GroupMessageRecord,
+    GroupRecord, MessageDeviceDeliveryRecord, PendingAnnounce, QueueClass, QueueItem,
 };
 
 use crate::api::{
     GroupInfo, GroupMentionCapability, MentionCapabilityIssue, MentionCapabilityIssueReason,
-    MentionSpan,
+    MentionSpan, ResolvedGroupMessage,
 };
-use crate::{Consumed, ContentStatus, Event, Node, NodeError, Result};
+use crate::{Consumed, ContentStatus, Event, Node, NodeError, Result, MAX_MESSAGE_EDITS};
 
 /// Rotate the sending chain after this many messages (PCS via periodic
 /// rotation, spec §6).
@@ -38,6 +43,52 @@ const GROUP_ROTATE_MSGS: u32 = 1000;
 /// retries handle a flaky link; this covers an envelope lost in transit
 /// outright (a member missing one announce is deaf to its sender).
 const GROUP_ANNOUNCE_RETRY_SECS: u64 = 900;
+const DEVICE_GROUP_CHAINS_MAGIC: &[u8; 4] = b"KGC2";
+const MAX_DEVICE_GROUP_CHAINS: usize = 64;
+
+#[derive(Serialize, Deserialize)]
+struct DeviceGroupReceiverChain {
+    device: [u8; 32],
+    chain: GroupReceiverChain,
+}
+
+fn decode_device_group_chains(
+    bytes: &[u8],
+    legacy_device: [u8; 32],
+) -> Result<Vec<DeviceGroupReceiverChain>> {
+    if let Some(body) = bytes.strip_prefix(DEVICE_GROUP_CHAINS_MAGIC) {
+        let (chains, remainder): (Vec<DeviceGroupReceiverChain>, &[u8]) =
+            postcard::take_from_bytes(body).map_err(|_| NodeError::CorruptState)?;
+        if !remainder.is_empty()
+            || chains.is_empty()
+            || chains.len() > MAX_DEVICE_GROUP_CHAINS
+            || chains
+                .windows(2)
+                .any(|pair| pair[0].device >= pair[1].device)
+        {
+            return Err(NodeError::CorruptState);
+        }
+        return Ok(chains);
+    }
+    let chain = postcard::from_bytes(bytes).map_err(|_| NodeError::CorruptState)?;
+    Ok(vec![DeviceGroupReceiverChain {
+        device: legacy_device,
+        chain,
+    }])
+}
+
+fn encode_device_group_chains(chains: &mut Vec<DeviceGroupReceiverChain>) -> Result<Vec<u8>> {
+    chains.sort_by_key(|entry| entry.device);
+    chains.dedup_by_key(|entry| entry.device);
+    if chains.is_empty() || chains.len() > MAX_DEVICE_GROUP_CHAINS {
+        return Err(NodeError::CorruptState);
+    }
+    let body = postcard::to_allocvec(chains).map_err(|_| NodeError::CorruptState)?;
+    let mut encoded = Vec::with_capacity(DEVICE_GROUP_CHAINS_MAGIC.len() + body.len());
+    encoded.extend_from_slice(DEVICE_GROUP_CHAINS_MAGIC);
+    encoded.extend_from_slice(&body);
+    Ok(encoded)
+}
 
 impl Node {
     // ---- commands -----------------------------------------------------------
@@ -118,6 +169,14 @@ impl Node {
         Ok(self.store.group_messages(group)?)
     }
 
+    /// Group read model with immutable Edit events resolved and hidden from
+    /// the ordinary row sequence.
+    pub fn resolved_group_messages(&self, group: &[u8; 32]) -> Result<Vec<ResolvedGroupMessage>> {
+        Ok(crate::edits::resolve_group(
+            self.store.group_messages(group)?,
+        ))
+    }
+
     /// Queue a message to a group: persisted `Queued` per member before any
     /// crypto runs, encrypted **once** on this node's sending chain, fanned
     /// out to every member with a live session; members whose session is
@@ -133,8 +192,14 @@ impl Node {
         // The generic group API is the permanent text/legacy path. A caller
         // must not smuggle an already-encoded Mention around the exact-roster
         // capability and review-token gate below.
-        if matches!(decode_content(body), DecodedContent::Mention { .. }) {
-            return Err(NodeError::InvalidMention);
+        match decode_content(body) {
+            DecodedContent::Mention { .. } => return Err(NodeError::InvalidMention),
+            DecodedContent::Edit { .. } => return Err(NodeError::InvalidEdit),
+            DecodedContent::Ephemeral { .. } => return Err(NodeError::InvalidEphemeral),
+            DecodedContent::Poll { .. } => return Err(NodeError::InvalidPoll),
+            DecodedContent::GroupAuthority { .. } => return Err(NodeError::InvalidGroupAuthority),
+            DecodedContent::CallControl { .. } => return Err(NodeError::InvalidCall),
+            _ => {}
         }
         let mut id = [0u8; 16];
         rng.fill_bytes(&mut id);
@@ -271,13 +336,171 @@ impl Node {
         self.group_send_content_with_id(group, wire_content, id, now, now, rng)
     }
 
-    fn group_send_content_with_id(
+    /// Queue an immutable edit for this identity's exact canonical group Text.
+    pub fn group_edit_message(
+        &mut self,
+        group: &[u8; 32],
+        target_author: [u8; 32],
+        target_content_id: [u8; 16],
+        text: &str,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        let rec = self
+            .store
+            .get_group(group)?
+            .ok_or(NodeError::UnknownGroup)?;
+        let me = self.identity.public().ed;
+        if target_author != me
+            || text.is_empty()
+            || text.len() > MAX_EDIT_TEXT_LEN
+            || !rec.members.iter().any(|member| member.peer == me)
+        {
+            return Err(NodeError::InvalidEdit);
+        }
+        for member in rec.members.iter().filter(|member| member.peer != me) {
+            if !self.peer_supports_kind(&member.peer, CONTENT_KIND_EDIT)? {
+                return Err(NodeError::EditUnsupported);
+            }
+        }
+        let records = self.store.group_messages(group)?;
+        if !records.iter().any(|record| {
+            record.sender == me
+                && record.direction == Direction::Outbound
+                && matches!(
+                    decode_content(&record.body),
+                    DecodedContent::Text { id, .. } if id == target_content_id
+                )
+        }) {
+            return Err(NodeError::InvalidEdit);
+        }
+        let revisions = records.iter().filter_map(|record| {
+            if record.sender != me || record.direction != Direction::Outbound {
+                return None;
+            }
+            match decode_content(&record.body) {
+                DecodedContent::Edit { edit, .. }
+                    if edit.target_author == me && edit.target_content_id == target_content_id =>
+                {
+                    Some(edit.revision)
+                }
+                _ => None,
+            }
+        });
+        let mut count = 0usize;
+        let mut revision = 0u64;
+        for value in revisions {
+            count += 1;
+            revision = revision.max(value);
+        }
+        if count >= MAX_MESSAGE_EDITS {
+            return Err(NodeError::EditLimit);
+        }
+        revision = revision.checked_add(1).ok_or(NodeError::EditLimit)?;
+        let mut id = [0u8; 16];
+        rng.fill_bytes(&mut id);
+        let wire_content = encode_edit(
+            id,
+            &Edit {
+                target_author: me,
+                target_content_id,
+                revision,
+                text,
+            },
+        )?;
+        self.group_send_content_with_id(group, wire_content, id, now, now, rng)
+    }
+
+    /// Queue disappearing UTF-8 only after every current co-member has
+    /// authenticated exact ephemeral support.
+    pub fn group_send_disappearing_message(
+        &mut self,
+        group: &[u8; 32],
+        text: &str,
+        lifetime_secs: u64,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        if text.is_empty()
+            || !(MIN_EPHEMERAL_LIFETIME_SECS..=MAX_EPHEMERAL_LIFETIME_SECS).contains(&lifetime_secs)
+        {
+            return Err(NodeError::InvalidEphemeral);
+        }
+        let rec = self
+            .store
+            .get_group(group)?
+            .ok_or(NodeError::UnknownGroup)?;
+        let me = self.identity.public().ed;
+        if !rec.members.iter().any(|member| member.peer == me) {
+            return Err(NodeError::InvalidEphemeral);
+        }
+        for member in rec.members.iter().filter(|member| member.peer != me) {
+            if !self.peer_has_live_device_sessions(&member.peer)?
+                || !self.peer_supports_kind(&member.peer, CONTENT_KIND_EPHEMERAL)?
+            {
+                return Err(NodeError::EphemeralUnsupported);
+            }
+        }
+        let expires_at = now
+            .checked_add(lifetime_secs)
+            .ok_or(NodeError::InvalidEphemeral)?;
+        let retention_until = retention_bucket(expires_at)?;
+        let mut id = [0u8; 16];
+        rng.fill_bytes(&mut id);
+        let payload = encode_disappearing_text_payload(expires_at, text)?;
+        let wire_content = encode_ephemeral(id, &payload)?;
+        self.store.put_ephemeral_record(
+            &EphemeralRecord {
+                conversation: EphemeralConversation::Group(*group),
+                author: me,
+                content_id: id,
+                expires_at,
+                mode: EphemeralMode::DisappearingText,
+                state: EphemeralState::Active,
+                transfer_ids: Vec::new(),
+            },
+            rng,
+        )?;
+        self.group_send_content_with_id_retention(
+            group,
+            wire_content,
+            id,
+            now,
+            now,
+            Some(retention_until),
+            rng,
+        )
+    }
+
+    pub(crate) fn group_send_content_with_id(
         &mut self,
         group: &[u8; 32],
         wire_content: Vec<u8>,
         id: [u8; 16],
         timestamp: u64,
         now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        self.group_send_content_with_id_retention(
+            group,
+            wire_content,
+            id,
+            timestamp,
+            now,
+            None,
+            rng,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // canonical group send plus optional relay hint
+    fn group_send_content_with_id_retention(
+        &mut self,
+        group: &[u8; 32],
+        wire_content: Vec<u8>,
+        id: [u8; 16],
+        timestamp: u64,
+        now: u64,
+        retention_until: Option<u64>,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 16]> {
         let mut rec = self
@@ -326,7 +549,15 @@ impl Node {
 
         let mut unserved = false;
         for d in record.deliveries.iter_mut() {
-            match self.queue_group_copy(&d.peer, &wire, id, QueueClass::Normal, now, rng)? {
+            match self.queue_group_copy(
+                &d.peer,
+                &wire,
+                id,
+                QueueClass::Normal,
+                retention_until,
+                now,
+                rng,
+            )? {
                 Some(cid) => d.wire_id = Some(cid),
                 None => unserved = true,
             }
@@ -344,6 +575,7 @@ impl Node {
         &mut self,
         group: &[u8; 32],
         peer: &[u8; 32],
+        now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
         let mut rec = self
@@ -351,6 +583,25 @@ impl Node {
             .get_group(group)?
             .ok_or(NodeError::UnknownGroup)?;
         let me = self.identity.public().ed;
+        if self.store.get_group_authority(group)?.is_some() {
+            if rec.members.iter().any(|member| &member.peer == peer) {
+                return Ok(());
+            }
+            let contact = self
+                .store
+                .get_contact(peer)?
+                .ok_or(NodeError::UnknownPeer)?;
+            self.group_authority_add_member(
+                group,
+                GroupMember {
+                    peer: *peer,
+                    identity: contact.identity,
+                },
+                now,
+                rng,
+            )?;
+            return Ok(());
+        }
         if rec.creator != me {
             return Err(NodeError::NotGroupCreator);
         }
@@ -404,6 +655,10 @@ impl Node {
         if peer == &me {
             return self.group_leave(group, now, rng);
         }
+        if self.store.get_group_authority(group)?.is_some() {
+            self.group_authority_remove_member(group, *peer, now, rng)?;
+            return Ok(());
+        }
         let mut rec = self
             .store
             .get_group(group)?
@@ -446,6 +701,11 @@ impl Node {
             .get_group(group)?
             .ok_or(NodeError::UnknownGroup)?;
         let me = self.identity.public().ed;
+        if self.store.get_group_authority(group)?.is_some()
+            && self.group_authority(group)?.my_role == Some(kult_protocol::GroupRole::Owner)
+        {
+            return Err(NodeError::LastGroupOwner);
+        }
         for member in &rec.members {
             if member.peer == me {
                 continue;
@@ -497,29 +757,42 @@ impl Node {
                 }
                 self.resolve_group_peer_bundle(&entry.peer, now, rng)
                     .await?;
-                let announce = GroupControlPayload::Announce(GroupAnnounce {
-                    group: rec.id,
-                    name: rec.name.clone(),
-                    creator: rec.creator,
-                    // Roster authority is the creator's alone; anyone else
-                    // sends it empty (ignored on receipt either way).
-                    members: if rec.creator == me {
-                        rec.members
-                            .iter()
-                            .map(|m| GroupMemberInfo {
-                                peer: m.peer,
-                                identity: m.identity.clone(),
-                            })
-                            .collect()
-                    } else {
-                        Vec::new()
-                    },
-                    secret: rec.secret,
-                    generation: rec.generation,
-                    key_id: entry.key_id,
-                    chain_key: entry.chain_key,
-                    iteration: entry.iteration,
-                });
+                let announce = match self.store.get_group_authority(&rec.id)? {
+                    Some(authority) => {
+                        GroupControlPayload::AuthorityAnnounce(GroupAuthorityAnnounce {
+                            group: rec.id,
+                            state_id: authority.state_id,
+                            state_payload: authority.state_payload,
+                            secret: rec.secret,
+                            key_id: entry.key_id,
+                            chain_key: entry.chain_key,
+                            iteration: entry.iteration,
+                        })
+                    }
+                    None => GroupControlPayload::Announce(GroupAnnounce {
+                        group: rec.id,
+                        name: rec.name.clone(),
+                        creator: rec.creator,
+                        // Roster authority is the creator's alone; anyone else
+                        // sends it empty (ignored on receipt either way).
+                        members: if rec.creator == me {
+                            rec.members
+                                .iter()
+                                .map(|m| GroupMemberInfo {
+                                    peer: m.peer,
+                                    identity: m.identity.clone(),
+                                })
+                                .collect()
+                        } else {
+                            Vec::new()
+                        },
+                        secret: rec.secret,
+                        generation: rec.generation,
+                        key_id: entry.key_id,
+                        chain_key: entry.chain_key,
+                        iteration: entry.iteration,
+                    }),
+                };
                 entry.wire_id = self.queue_group_control(&entry.peer, &announce, now, rng)?;
                 entry.last_sent = now; // paces the next attempt either way
                 dirty = true;
@@ -546,6 +819,7 @@ impl Node {
                     &wire,
                     record.id,
                     QueueClass::Normal,
+                    ephemeral_retention(&record.body),
                     now,
                     rng,
                 )? {
@@ -608,6 +882,36 @@ impl Node {
         Ok(())
     }
 
+    /// Bind a pre-C2 account-key receiving chain to the certified physical
+    /// endpoint that inherited that compatibility session.
+    pub(crate) fn groups_retarget_legacy_device_chain(
+        &mut self,
+        account: &[u8; 32],
+        old_device: &[u8; 32],
+        new_device: &[u8; 32],
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        for group in self.store.groups()? {
+            let Some(blob) = self.store.get_group_chain(&group.id, account)? else {
+                continue;
+            };
+            let mut chains = decode_device_group_chains(&blob, *old_device)?;
+            let mut changed = false;
+            for entry in &mut chains {
+                if &entry.device == old_device {
+                    entry.device = *new_device;
+                    changed = true;
+                }
+            }
+            if changed {
+                let encoded = encode_device_group_chains(&mut chains)?;
+                self.store
+                    .put_group_chain(&group.id, account, &encoded, rng)?;
+            }
+        }
+        Ok(())
+    }
+
     // ---- receive path --------------------------------------------------------
 
     /// Consume a `GroupMessage` envelope. The delivery token names the
@@ -622,9 +926,10 @@ impl Node {
         rng: &mut impl CryptoRngCore,
         acks: &mut Vec<([u8; 32], [u8; 16])>,
     ) -> Result<Consumed> {
-        let Some(peer) = self.match_session(&env.token, now) else {
+        let Some(peer_device) = self.match_session(&env.token, now) else {
             return Ok(Consumed::Later);
         };
+        let peer = self.account_for_device(&peer_device)?;
         let me = self.identity.public().ed;
         let done = |node: &mut Self| -> Result<Consumed> {
             node.store.mark_seen(&env.content_id())?;
@@ -654,26 +959,57 @@ impl Node {
             let Some(blob) = self.store.get_group_chain(&rec.id, &peer)? else {
                 return Ok(Consumed::Later); // sender's announce still in flight
             };
-            let mut chain: GroupReceiverChain =
-                postcard::from_bytes(&blob).map_err(|_| NodeError::CorruptState)?;
-            if chain.key_id() != key_id {
+            let mut chains = decode_device_group_chains(&blob, peer)?;
+            let Some(chain) = chains
+                .iter_mut()
+                .find(|entry| entry.device == peer_device && entry.chain.key_id() == key_id)
+                .map(|entry| &mut entry.chain)
+            else {
                 return Ok(Consumed::Later); // rotation announce still in flight
-            }
+            };
             let Ok(padded) = chain.open(&rec.id, &msg, iteration, now) else {
                 // Tampered or replayed — permanent, honest failure.
                 return done(self);
             };
-            let encoded = postcard::to_allocvec(&chain).map_err(|_| NodeError::CorruptState)?;
+            let encoded = encode_device_group_chains(&mut chains)?;
             self.store.put_group_chain(&rec.id, &peer, &encoded, rng)?;
             let Ok(body) = unpad(&padded) else {
                 return done(self);
             };
 
             let decoded = decode_content(&body);
+            let authenticated_retention = match decoded {
+                DecodedContent::Ephemeral { ephemeral, .. } => Some(match ephemeral {
+                    Ephemeral::DisappearingText {
+                        retention_until, ..
+                    }
+                    | Ephemeral::ViewOnceAttachment {
+                        retention_until, ..
+                    } => retention_until,
+                }),
+                _ => None,
+            };
+            if env.retention_until != authenticated_retention {
+                return done(self);
+            }
+            let decoded_is_edit = matches!(decoded, DecodedContent::Edit { .. });
             if let DecodedContent::Text { id, .. }
             | DecodedContent::Attachment { id, .. }
-            | DecodedContent::Mention { id, .. } = decoded
+            | DecodedContent::Mention { id, .. }
+            | DecodedContent::Edit { id, .. }
+            | DecodedContent::Ephemeral { id, .. }
+            | DecodedContent::Poll { id, .. }
+            | DecodedContent::GroupAuthority { id, .. } = decoded
             {
+                let conversation = EphemeralConversation::Group(rec.id);
+                if self
+                    .store
+                    .get_ephemeral_record(&conversation, &peer, &id)?
+                    .is_some()
+                {
+                    acks.push((peer_device, env.content_id()));
+                    return done(self);
+                }
                 let duplicate = self.store.group_messages(&rec.id)?.iter().any(|record| {
                     record.direction == Direction::Inbound
                         && record.sender == peer
@@ -682,11 +1018,15 @@ impl Node {
                             DecodedContent::Text { id: stored_id, .. }
                                 | DecodedContent::Attachment { id: stored_id, .. }
                                 | DecodedContent::Mention { id: stored_id, .. }
+                                | DecodedContent::Edit { id: stored_id, .. }
+                                | DecodedContent::Ephemeral { id: stored_id, .. }
+                                | DecodedContent::Poll { id: stored_id, .. }
+                                | DecodedContent::GroupAuthority { id: stored_id, .. }
                                 if stored_id == id
                         )
                 });
                 if duplicate {
-                    acks.push((peer, env.content_id()));
+                    acks.push((peer_device, env.content_id()));
                     return done(self);
                 }
             }
@@ -713,6 +1053,7 @@ impl Node {
                         now,
                         rng,
                     )?;
+                    self.emit_attachment_update(&transfer)?;
                     (id, Vec::new(), ContentStatus::Attachment { id, transfer })
                 }
                 DecodedContent::Mention { id, mention } => {
@@ -722,6 +1063,198 @@ impl Node {
                         id,
                         mention.text.as_bytes().to_vec(),
                         ContentStatus::Mention { id, spans },
+                    )
+                }
+                DecodedContent::Edit { id, edit } if edit.target_author == peer => (
+                    id,
+                    Vec::new(),
+                    ContentStatus::Edit {
+                        id,
+                        target_author: edit.target_author,
+                        target_content_id: edit.target_content_id,
+                        revision: edit.revision,
+                    },
+                ),
+                DecodedContent::Edit { id, .. } => (id, Vec::new(), ContentStatus::Malformed),
+                DecodedContent::Ephemeral {
+                    id,
+                    ephemeral:
+                        Ephemeral::DisappearingText {
+                            expires_at, text, ..
+                        },
+                } => {
+                    let state = if now >= expires_at {
+                        EphemeralState::Expired
+                    } else {
+                        EphemeralState::Active
+                    };
+                    self.store.put_ephemeral_record(
+                        &EphemeralRecord {
+                            conversation: EphemeralConversation::Group(rec.id),
+                            author: peer,
+                            content_id: id,
+                            expires_at,
+                            mode: EphemeralMode::DisappearingText,
+                            state,
+                            transfer_ids: Vec::new(),
+                        },
+                        rng,
+                    )?;
+                    if state == EphemeralState::Expired {
+                        self.events.push_back(Event::EphemeralRemoved {
+                            conversation: EphemeralConversation::Group(rec.id),
+                            author: peer,
+                            content_id: id,
+                            reason: state,
+                        });
+                        acks.push((peer_device, env.content_id()));
+                        return done(self);
+                    }
+                    (
+                        id,
+                        text.as_bytes().to_vec(),
+                        ContentStatus::DisappearingText { id, expires_at },
+                    )
+                }
+                DecodedContent::Poll {
+                    id,
+                    poll: Poll::Create(create),
+                } if create.voters().any(|voter| voter == peer) => (
+                    id,
+                    Vec::new(),
+                    ContentStatus::Poll {
+                        id,
+                        poll_author: peer,
+                        poll_id: id,
+                    },
+                ),
+                DecodedContent::Poll {
+                    id,
+                    poll: Poll::Vote(vote),
+                } => (
+                    id,
+                    Vec::new(),
+                    ContentStatus::Poll {
+                        id,
+                        poll_author: vote.poll_author,
+                        poll_id: vote.poll_id,
+                    },
+                ),
+                DecodedContent::Poll {
+                    id,
+                    poll: Poll::Close(close),
+                } if close.poll_author == peer => (
+                    id,
+                    Vec::new(),
+                    ContentStatus::Poll {
+                        id,
+                        poll_author: close.poll_author,
+                        poll_id: close.poll_id,
+                    },
+                ),
+                DecodedContent::Poll {
+                    id,
+                    poll: Poll::ModeratedClose(close),
+                } => (
+                    id,
+                    Vec::new(),
+                    ContentStatus::Poll {
+                        id,
+                        poll_author: close.poll_author,
+                        poll_id: close.poll_id,
+                    },
+                ),
+                DecodedContent::Poll { id, .. } => (id, Vec::new(), ContentStatus::Malformed),
+                DecodedContent::GroupAuthority { id, payload } => {
+                    match decode_group_authority(payload) {
+                        DecodedGroupAuthority::State(state)
+                            if state.group == rec.id
+                                && state.signer == peer
+                                && crate::authority::verify_authority_state(&state, None)
+                                    .is_ok() =>
+                        {
+                            (
+                                id,
+                                Vec::new(),
+                                ContentStatus::GroupAuthority {
+                                    id,
+                                    generation: state.generation,
+                                    owner: state.owner,
+                                },
+                            )
+                        }
+                        _ => (id, Vec::new(), ContentStatus::Malformed),
+                    }
+                }
+                // Call controls are pairwise-only; group delivery retains the
+                // authenticated bytes as malformed history without acting.
+                DecodedContent::CallControl { id, .. } => {
+                    (id, Vec::new(), ContentStatus::Malformed)
+                }
+                DecodedContent::Ephemeral {
+                    id,
+                    ephemeral:
+                        Ephemeral::ViewOnceAttachment {
+                            expires_at,
+                            manifest,
+                            ..
+                        },
+                } => {
+                    if now >= expires_at {
+                        self.store.put_ephemeral_record(
+                            &EphemeralRecord {
+                                conversation: EphemeralConversation::Group(rec.id),
+                                author: peer,
+                                content_id: id,
+                                expires_at,
+                                mode: EphemeralMode::ViewOnceAttachment,
+                                state: EphemeralState::Expired,
+                                transfer_ids: Vec::new(),
+                            },
+                            rng,
+                        )?;
+                        self.events.push_back(Event::EphemeralRemoved {
+                            conversation: EphemeralConversation::Group(rec.id),
+                            author: peer,
+                            content_id: id,
+                            reason: EphemeralState::Expired,
+                        });
+                        acks.push((peer_device, env.content_id()));
+                        return done(self);
+                    }
+                    let entitled_peers = rec.members.iter().map(|member| member.peer).collect();
+                    let transfer = self.record_group_attachment_offer(
+                        crate::attachment::GroupAttachmentOffer {
+                            group: rec.id,
+                            author: peer,
+                            entitled_peers,
+                        },
+                        id,
+                        &manifest,
+                        now,
+                        rng,
+                    )?;
+                    self.store.put_ephemeral_record(
+                        &EphemeralRecord {
+                            conversation: EphemeralConversation::Group(rec.id),
+                            author: peer,
+                            content_id: id,
+                            expires_at,
+                            mode: EphemeralMode::ViewOnceAttachment,
+                            state: EphemeralState::Active,
+                            transfer_ids: vec![transfer],
+                        },
+                        rng,
+                    )?;
+                    self.emit_attachment_update(&transfer)?;
+                    (
+                        id,
+                        Vec::new(),
+                        ContentStatus::ViewOnceAttachment {
+                            id,
+                            transfer,
+                            expires_at,
+                        },
                     )
                 }
                 DecodedContent::Unsupported {
@@ -758,18 +1291,44 @@ impl Node {
                 },
                 rng,
             )?;
-            self.events.push_back(Event::GroupMessageReceived {
-                group: rec.id,
-                sender: peer,
-                id,
-                timestamp: now,
-                body: event_body,
-                content,
-            });
+            match content {
+                ContentStatus::Edit {
+                    target_content_id, ..
+                } => self.events.push_back(Event::GroupMessageEdited {
+                    group: rec.id,
+                    sender: peer,
+                    target_content_id,
+                }),
+                ContentStatus::Poll {
+                    poll_author,
+                    poll_id,
+                    ..
+                } => self.events.push_back(Event::PollUpdated {
+                    group: rec.id,
+                    poll_author,
+                    poll_id,
+                }),
+                ContentStatus::GroupAuthority {
+                    generation, owner, ..
+                } => self.events.push_back(Event::GroupAuthorityUpdated {
+                    group: rec.id,
+                    generation,
+                    owner,
+                }),
+                ContentStatus::Malformed if decoded_is_edit => {}
+                _ => self.events.push_back(Event::GroupMessageReceived {
+                    group: rec.id,
+                    sender: peer,
+                    id,
+                    timestamp: now,
+                    body: event_body,
+                    content,
+                }),
+            }
             if mentions_local_peer {
                 self.events.push_back(Event::MentionReceived { id });
             }
-            acks.push((peer, env.content_id()));
+            acks.push((peer_device, env.content_id()));
             return done(self);
         }
         // No group of this sender opened the header: the invite may still
@@ -784,6 +1343,7 @@ impl Node {
     pub(crate) fn apply_group_control(
         &mut self,
         peer: [u8; 32],
+        peer_device: [u8; 32],
         body: &[u8],
         now: u64,
         rng: &mut impl CryptoRngCore,
@@ -795,18 +1355,31 @@ impl Node {
         let _ = now;
         match &payload {
             GroupControlPayload::Announce(a) => {
-                self.apply_group_announce(peer, a, rng, established)
+                self.apply_group_announce(peer, peer_device, a, rng, established)
             }
             GroupControlPayload::Leave { group } => self.apply_group_leave(peer, group, rng),
             GroupControlPayload::Remove { group } => {
                 self.apply_group_remove_notice(peer, group, rng)
             }
+            GroupControlPayload::AuthorityAnnounce(announce) => {
+                self.apply_authority_announce(peer, announce, rng, established)
+            }
+            GroupControlPayload::AdminRequest(request) => {
+                self.apply_group_admin_request(peer, request, now, rng)
+            }
+            GroupControlPayload::AdminResult(result) => self.apply_group_admin_result(peer, result),
+            GroupControlPayload::AuthorityRemove {
+                group,
+                state_id,
+                state_payload,
+            } => self.apply_authority_remove(peer, group, state_id, state_payload),
         }
     }
 
     fn apply_group_announce(
         &mut self,
         peer: [u8; 32],
+        peer_device: [u8; 32],
         a: &GroupAnnounce,
         rng: &mut impl CryptoRngCore,
         established: &mut bool,
@@ -912,17 +1485,27 @@ impl Node {
         if !rec.members.iter().any(|m| m.peer == peer) {
             return Ok(false);
         }
-        let replace = match self.store.get_group_chain(&rec.id, &peer)? {
+        let mut chains = match self.store.get_group_chain(&rec.id, &peer)? {
+            Some(blob) => decode_device_group_chains(&blob, peer)?,
+            None => Vec::new(),
+        };
+        let replace = chains
+            .iter()
+            .find(|entry| entry.device == peer_device)
             // Same chain id: the stored state reads from an earlier (or
             // equal) iteration — strictly more capable, keep it.
-            Some(blob) => postcard::from_bytes::<GroupReceiverChain>(&blob)
-                .map(|c| c.key_id() != a.key_id)
-                .unwrap_or(true),
-            None => true,
-        };
+            .is_none_or(|entry| entry.chain.key_id() != a.key_id);
         if replace {
             let chain = GroupReceiverChain::new(a.key_id, &a.chain_key, a.iteration);
-            let encoded = postcard::to_allocvec(&chain).map_err(|_| NodeError::CorruptState)?;
+            if let Some(entry) = chains.iter_mut().find(|entry| entry.device == peer_device) {
+                entry.chain = chain;
+            } else {
+                chains.push(DeviceGroupReceiverChain {
+                    device: peer_device,
+                    chain,
+                });
+            }
+            let encoded = encode_device_group_chains(&mut chains)?;
             self.store.put_group_chain(&rec.id, &peer, &encoded, rng)?;
             // Stashed group messages on this chain may decrypt now.
             *established = true;
@@ -985,6 +1568,7 @@ impl Node {
     pub(crate) fn apply_group_receipt(
         &mut self,
         peer: &[u8; 32],
+        peer_device: &[u8; 32],
         acks: &[[u8; 16]],
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
@@ -1002,10 +1586,21 @@ impl Node {
         }
         for mut record in self.store.all_group_messages()? {
             let mut changed = false;
+            let mut device_acked = false;
+            for mut delivery in self.store.message_device_deliveries(&record.id)? {
+                if delivery.account == *peer
+                    && delivery.device == *peer_device
+                    && delivery.wire_id.as_ref().is_some_and(&acked)
+                {
+                    delivery.state = DeliveryState::Delivered;
+                    self.store.put_message_device_delivery(&delivery, rng)?;
+                    device_acked = true;
+                }
+            }
             for d in record.deliveries.iter_mut() {
                 if &d.peer == peer
                     && d.state != DeliveryState::Delivered
-                    && d.wire_id.as_ref().is_some_and(&acked)
+                    && (device_acked || d.wire_id.as_ref().is_some_and(&acked))
                 {
                     d.state = DeliveryState::Delivered;
                     changed = true;
@@ -1027,9 +1622,19 @@ impl Node {
     pub(crate) fn group_mark_sent(
         &mut self,
         peer: &[u8; 32],
+        peer_device: &[u8; 32],
         group_msg_id: &[u8; 16],
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
+        for mut delivery in self.store.message_device_deliveries(group_msg_id)? {
+            if delivery.account == *peer
+                && delivery.device == *peer_device
+                && delivery.state == DeliveryState::Queued
+            {
+                delivery.state = DeliveryState::Sent;
+                self.store.put_message_device_delivery(&delivery, rng)?;
+            }
+        }
         for mut record in self.store.all_group_messages()? {
             if &record.id != group_msg_id {
                 continue;
@@ -1054,7 +1659,11 @@ impl Node {
 
     /// Fresh sending chain, everything reset: announces owed to the whole
     /// roster with the new snapshot.
-    fn rotate_group(&mut self, rec: &mut GroupRecord, rng: &mut impl CryptoRngCore) -> Result<()> {
+    pub(crate) fn rotate_group(
+        &mut self,
+        rec: &mut GroupRecord,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
         let me = self.identity.public().ed;
         let chain = GroupSenderChain::generate(rng);
         rec.pending = pending_for(&chain, rec.members.iter().map(|m| m.peer), &me);
@@ -1067,7 +1676,7 @@ impl Node {
     /// no bundle, no hints — the DHT (or a later out-of-band exchange)
     /// fills those in, exactly like a contact learned from an inbound
     /// handshake.
-    fn adopt_roster_stubs(
+    pub(crate) fn adopt_roster_stubs(
         &mut self,
         members: &[GroupMemberInfo],
         rng: &mut impl CryptoRngCore,
@@ -1104,36 +1713,83 @@ impl Node {
     /// One member's copy of a group ciphertext, if their pairwise session
     /// exists (the delivery token needs it). `None` means "not yet" — the
     /// tick retries once the session appears.
+    #[allow(clippy::too_many_arguments)] // exact fan-out identity, timing, and retention inputs
     fn queue_group_copy(
         &mut self,
         peer: &[u8; 32],
         wire: &[u8],
         group_msg_id: [u8; 16],
         class: QueueClass,
+        retention_until: Option<u64>,
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Option<[u8; 16]>> {
-        let Some(session) = self.sessions.get(peer) else {
-            return Ok(None);
-        };
-        let token = delivery_token(
-            &MailboxKey::from_bytes(*session.mailbox_key()),
-            epoch_day(now),
-            peer,
-        );
-        let envelope = Envelope::new(EnvelopeKind::GroupMessage, token, wire.to_vec());
-        let cid = envelope.content_id();
-        self.store.queue_push(
-            &QueueItem {
-                peer: *peer,
-                msg_id: None,
-                group_msg_id: Some(group_msg_id),
-                class,
-                envelope,
-            },
-            rng,
-        )?;
-        Ok(Some(cid))
+        let mut routes: Vec<[u8; 32]> = self
+            .store
+            .contact_devices_for(peer)?
+            .into_iter()
+            .map(|endpoint| endpoint.device)
+            .collect();
+        if routes.is_empty() {
+            routes.push(*peer);
+        }
+        routes.sort_unstable();
+        routes.dedup();
+
+        let existing = self.store.message_device_deliveries(&group_msg_id)?;
+        let mut first_wire = None;
+        let mut all_served = true;
+        for route in routes {
+            if let Some(wire_id) = existing
+                .iter()
+                .find(|delivery| delivery.account == *peer && delivery.device == route)
+                .and_then(|delivery| delivery.wire_id)
+            {
+                first_wire.get_or_insert(wire_id);
+                continue;
+            }
+            let Some(session) = self.sessions.get(&route) else {
+                all_served = false;
+                continue;
+            };
+            let token = delivery_token(
+                &MailboxKey::from_bytes(*session.mailbox_key()),
+                epoch_day(now),
+                &route,
+            );
+            let envelope = match retention_until {
+                Some(deadline) => Envelope::new_retained(
+                    EnvelopeKind::GroupMessage,
+                    token,
+                    deadline,
+                    wire.to_vec(),
+                )?,
+                None => Envelope::new(EnvelopeKind::GroupMessage, token, wire.to_vec()),
+            };
+            let wire_id = envelope.content_id();
+            first_wire.get_or_insert(wire_id);
+            self.store.put_message_device_delivery(
+                &MessageDeviceDeliveryRecord {
+                    message: group_msg_id,
+                    account: *peer,
+                    device: route,
+                    wire_id: Some(wire_id),
+                    state: DeliveryState::Queued,
+                },
+                rng,
+            )?;
+            self.store.queue_push(
+                &QueueItem {
+                    peer: route,
+                    msg_id: None,
+                    group_msg_id: Some(group_msg_id),
+                    class,
+                    envelope,
+                },
+                rng,
+            )?;
+        }
+        Ok(all_served.then_some(first_wire).flatten())
     }
 
     /// Encrypt one already-persisted Attachment manifest exactly once on the
@@ -1164,12 +1820,10 @@ impl Node {
         {
             return Ok(false);
         }
-        if record
-            .deliveries
-            .iter()
-            .any(|delivery| !self.sessions.contains_key(&delivery.peer))
-        {
-            return Ok(false);
+        for delivery in &record.deliveries {
+            if !self.peer_has_live_device_sessions(&delivery.peer)? {
+                return Ok(false);
+            }
         }
         if rec.sent_since_rotation >= GROUP_ROTATE_MSGS {
             self.rotate_group(&mut rec, rng)?;
@@ -1185,6 +1839,7 @@ impl Node {
                 &wire,
                 record.id,
                 QueueClass::Bulk,
+                ephemeral_retention(&record.body),
                 now,
                 rng,
             )?;
@@ -1203,61 +1858,91 @@ impl Node {
     /// (announces to strangers ride right behind the handshake, like a
     /// first message does). `None` means the peer is unreachable *for now* —
     /// no bundle and no session; the announce plane's pacing retries.
-    fn queue_group_control(
+    pub(crate) fn queue_group_control(
         &mut self,
         peer: &[u8; 32],
         payload: &GroupControlPayload,
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Option<[u8; 16]>> {
-        if !self.sessions.contains_key(peer) {
-            let Some(contact) = self.store.get_contact(peer)? else {
-                return Ok(None);
-            };
-            if contact.bundle.is_empty() {
-                return Ok(None);
+        let Some(contact) = self.store.get_contact(peer)? else {
+            return Ok(None);
+        };
+        let mut routes = self.store.contact_devices_for(peer)?;
+        if routes.is_empty() {
+            routes.push(ContactDeviceRecord {
+                account: *peer,
+                device: *peer,
+                name: None,
+                certificate: Vec::new(),
+                bundle: contact.bundle,
+                hints: contact.hints,
+                manifest_generation: 0,
+                manifest_state_id: [0u8; 32],
+                last_seen: 0,
+                revoked_at: None,
+                revoked_after_counter: None,
+            });
+        }
+        routes.sort_by(|left, right| {
+            right
+                .last_seen
+                .cmp(&left.last_seen)
+                .then_with(|| left.device.cmp(&right.device))
+        });
+        routes.dedup_by_key(|route| route.device);
+
+        let bytes = zeroize::Zeroizing::new(payload.encode());
+        let padded = pad(&bytes)?;
+        let mut preferred_wire = None;
+        for route in routes {
+            let device = route.device;
+            if !self.sessions.contains_key(&device) {
+                if route.bundle.is_empty() {
+                    continue;
+                }
+                // An empty first flight; the control message rides behind it.
+                let Ok(flight) =
+                    self.initiate_session(peer, &device, &route.bundle, &pad(&[])?, now, rng)
+                else {
+                    continue; // e.g. the bundle expired — paced retry
+                };
+                self.store.queue_push(
+                    &QueueItem {
+                        peer: device,
+                        msg_id: None,
+                        group_msg_id: None,
+                        class: QueueClass::Normal,
+                        envelope: flight,
+                    },
+                    rng,
+                )?;
             }
-            // An empty first flight; the control message rides behind it.
-            let Ok(flight) = self.initiate_session(peer, &contact.bundle, &pad(&[])?, now, rng)
-            else {
-                return Ok(None); // e.g. the bundle expired — paced retry
-            };
+            let session = self
+                .sessions
+                .get_mut(&device)
+                .expect("route session just ensured above");
+            let msg = session.encrypt(rng, now, &padded, &[]);
+            let token = delivery_token(
+                &MailboxKey::from_bytes(*session.mailbox_key()),
+                epoch_day(now),
+                &device,
+            );
+            self.store.put_session(&device, session, rng)?;
+            let envelope = Envelope::new(EnvelopeKind::GroupControl, token, msg.encode());
+            preferred_wire.get_or_insert_with(|| envelope.content_id());
             self.store.queue_push(
                 &QueueItem {
-                    peer: *peer,
+                    peer: device,
                     msg_id: None,
                     group_msg_id: None,
                     class: QueueClass::Normal,
-                    envelope: flight,
+                    envelope,
                 },
                 rng,
             )?;
         }
-        let session = self
-            .sessions
-            .get_mut(peer)
-            .expect("session just ensured above");
-        let bytes = zeroize::Zeroizing::new(payload.encode());
-        let msg = session.encrypt(rng, now, &pad(&bytes)?, &[]);
-        let token = delivery_token(
-            &MailboxKey::from_bytes(*session.mailbox_key()),
-            epoch_day(now),
-            peer,
-        );
-        self.store.put_session(peer, session, rng)?;
-        let envelope = Envelope::new(EnvelopeKind::GroupControl, token, msg.encode());
-        let cid = envelope.content_id();
-        self.store.queue_push(
-            &QueueItem {
-                peer: *peer,
-                msg_id: None,
-                group_msg_id: None,
-                class: QueueClass::Normal,
-                envelope,
-            },
-            rng,
-        )?;
-        Ok(Some(cid))
+        Ok(preferred_wire)
     }
 
     /// Roster members met only through an announce have identity but no
@@ -1269,7 +1954,7 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
-        if self.sessions.contains_key(peer) || self.discoveries.is_empty() {
+        if self.peer_has_session_or_bundle(peer)? || self.discoveries.is_empty() {
             return Ok(());
         }
         let Some(mut contact) = self.store.get_contact(peer)? else {
@@ -1291,7 +1976,7 @@ impl Node {
     }
 }
 
-fn encode_chain(chain: &GroupSenderChain) -> Result<Vec<u8>> {
+pub(crate) fn encode_chain(chain: &GroupSenderChain) -> Result<Vec<u8>> {
     postcard::to_allocvec(chain).map_err(|_| NodeError::CorruptState)
 }
 
@@ -1299,9 +1984,25 @@ fn decode_chain(blob: &[u8]) -> Result<GroupSenderChain> {
     postcard::from_bytes(blob).map_err(|_| NodeError::CorruptState)
 }
 
+fn ephemeral_retention(body: &[u8]) -> Option<u64> {
+    match decode_content(body) {
+        DecodedContent::Ephemeral {
+            ephemeral:
+                Ephemeral::DisappearingText {
+                    retention_until, ..
+                }
+                | Ephemeral::ViewOnceAttachment {
+                    retention_until, ..
+                },
+            ..
+        } => Some(retention_until),
+        _ => None,
+    }
+}
+
 /// Announce entries for every roster member but `me`, snapshotting `chain`
 /// at its current state (the entitlement point).
-fn pending_for(
+pub(crate) fn pending_for(
     chain: &GroupSenderChain,
     members: impl Iterator<Item = [u8; 32]>,
     me: &[u8; 32],
@@ -1325,7 +2026,9 @@ mod tests {
     use rand::{rngs::StdRng, SeedableRng};
 
     use kult_crypto::KdfProfile;
-    use kult_protocol::{CapabilityControl, FormatCapabilities, CONTENT_KIND_TEXT};
+    use kult_protocol::{
+        CapabilityControl, FormatCapabilities, CONTENT_KIND_EDIT, CONTENT_KIND_TEXT,
+    };
 
     use super::*;
 
@@ -1334,6 +2037,83 @@ mod tests {
         t_cost: 1,
         p_cost: 1,
     };
+
+    #[test]
+    fn group_edit_requires_every_current_member_capability() {
+        let mut rng = StdRng::seed_from_u64(0x00c3_0004);
+        let directory = tempfile::tempdir().unwrap();
+        let mut alice =
+            Node::create(&directory.path().join("alice.db"), b"a", TEST_KDF, &mut rng).unwrap();
+        let mut bob =
+            Node::create(&directory.path().join("bob.db"), b"b", TEST_KDF, &mut rng).unwrap();
+        let bob_bundle = bob.handshake_bundle(1_800_000_000, &mut rng).unwrap();
+        let bob_peer = alice
+            .add_contact("bob", &bob_bundle, &[], 1_800_000_000, &mut rng)
+            .unwrap();
+        alice
+            .send_message(&bob_peer, b"establish session", 1_800_000_000, &mut rng)
+            .unwrap();
+        let group = alice
+            .create_group("old client", &[bob_peer], &mut rng)
+            .unwrap();
+        let alice_peer = alice.identity.public().ed;
+
+        assert!(matches!(
+            alice.group_edit_message(
+                &group,
+                alice_peer,
+                [9; 16],
+                "unsupported",
+                1_800_000_001,
+                &mut rng,
+            ),
+            Err(NodeError::EditUnsupported)
+        ));
+
+        let text_only = CapabilityControl {
+            formats: vec![FormatCapabilities {
+                format_version: CONTENT_FORMAT_V1,
+                kinds: vec![CONTENT_KIND_TEXT],
+            }],
+        };
+        alice
+            .store
+            .put_capabilities(&bob_peer, &text_only, &mut rng)
+            .unwrap();
+        assert!(matches!(
+            alice.group_edit_message(
+                &group,
+                alice_peer,
+                [9; 16],
+                "old client",
+                1_800_000_001,
+                &mut rng,
+            ),
+            Err(NodeError::EditUnsupported)
+        ));
+
+        let edit_capable = CapabilityControl {
+            formats: vec![FormatCapabilities {
+                format_version: CONTENT_FORMAT_V1,
+                kinds: vec![CONTENT_KIND_TEXT, CONTENT_KIND_EDIT],
+            }],
+        };
+        alice
+            .store
+            .put_capabilities(&bob_peer, &edit_capable, &mut rng)
+            .unwrap();
+        assert!(matches!(
+            alice.group_edit_message(
+                &group,
+                alice_peer,
+                [9; 16],
+                "missing target",
+                1_800_000_001,
+                &mut rng,
+            ),
+            Err(NodeError::InvalidEdit)
+        ));
+    }
 
     #[test]
     fn mention_intersection_fails_closed_on_downgrade_and_missing_snapshot() {

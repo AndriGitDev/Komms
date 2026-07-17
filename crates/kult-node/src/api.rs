@@ -2,7 +2,10 @@
 //! Render-safe attachment state lands here before the planned RPC/UniFFI and
 //! shell adapters; protocol secrets and storage internals never cross it.
 
-use kult_store::{ConversationId, CustomIconTarget, DeliveryState, MediaTransferState};
+use kult_store::{
+    ConversationId, CustomIconTarget, DeliveryState, GroupMessageRecord, MediaTransferState,
+    MessageRecord,
+};
 use kult_transport::DeliveryHint;
 
 /// Optional exact crop in oriented source pixels for a custom icon.
@@ -41,6 +44,47 @@ pub struct CustomIconUsage {
     pub records: usize,
     /// Aggregate encoded PNG bytes.
     pub bytes: usize,
+}
+
+/// One immutable original/edit version retained for local inspection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditVersionInfo {
+    /// Original content id for revision zero, otherwise the edit-event id.
+    pub id: [u8; 16],
+    /// Zero for the original; positive for an Edit event.
+    pub revision: u64,
+    /// Local send/receive time for presentation only.
+    pub timestamp: u64,
+    /// Exact authenticated UTF-8 for this version.
+    pub body: String,
+}
+
+/// Pairwise history row with ADR-0020 edits deterministically resolved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedMessage {
+    /// Original immutable record with only its returned read-model body
+    /// replaced by the winning canonical Text frame when edited.
+    pub record: MessageRecord,
+    /// Whether a valid edit wins over the original.
+    pub edited: bool,
+    /// Winning positive revision, or zero for the original.
+    pub winning_revision: u64,
+    /// Original plus every valid edit, ordered by convergence tuple.
+    pub versions: Vec<EditVersionInfo>,
+}
+
+/// Group history row with ADR-0020 edits deterministically resolved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedGroupMessage {
+    /// Original immutable group record with only its returned read-model body
+    /// replaced by the winning canonical Text frame when edited.
+    pub record: GroupMessageRecord,
+    /// Whether a valid edit wins over the original.
+    pub edited: bool,
+    /// Winning positive revision, or zero for the original.
+    pub winning_revision: u64,
+    /// Original plus every valid edit, ordered by convergence tuple.
+    pub versions: Vec<EditVersionInfo>,
 }
 
 /// Render-safe private local folder definition.
@@ -247,6 +291,169 @@ pub struct CarrierCapabilitySnapshot {
     pub expires_at: u64,
 }
 
+/// Local direction of one transient pairwise call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallDirection {
+    /// This physical device created the call offer.
+    Outgoing,
+    /// A peer device created the call offer.
+    Incoming,
+}
+
+/// Current transient call phase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallPhase {
+    /// Offer is waiting for one recipient device to answer.
+    Ringing,
+    /// One exact device pair is establishing the authenticated media stream.
+    Connecting,
+    /// Both directions proved key possession and audio may flow.
+    Active,
+    /// Terminal; secret material has already been erased.
+    Ended,
+}
+
+/// Exact terminal reason for a call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallEndReason {
+    /// A recipient device explicitly declined.
+    Declined,
+    /// The peer was already occupied.
+    Busy,
+    /// The initiator cancelled before connection.
+    Cancelled,
+    /// Either selected device ended the call.
+    HungUp,
+    /// The unanswered offer reached its authenticated deadline.
+    Expired,
+    /// Another linked recipient device won the answer race.
+    AnsweredElsewhere,
+    /// The direct QUIC route disappeared before or during setup.
+    RouteLost,
+}
+
+/// Why a new outgoing call cannot start now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallUnavailableReason {
+    /// No fresh reachable route is known.
+    OfflineOrUnknown,
+    /// Only a non-realtime bulk/store-and-forward route is known.
+    BulkOnly,
+    /// Only an airtime-budgeted route is known.
+    MeshOnly,
+    /// One or more authorized recipient devices lacks a live ratchet session.
+    MissingSession,
+    /// One or more authorized recipient devices lacks CallControl v1 support.
+    Unsupported,
+    /// This installation already has a non-terminal call.
+    AlreadyInCall,
+}
+
+/// Current honest call-start verdict for one contact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CallAvailability {
+    /// Exact stable contact identity.
+    pub peer: [u8; 32],
+    /// Absent only when an outgoing call may start immediately.
+    pub unavailable: Option<CallUnavailableReason>,
+}
+
+impl CallAvailability {
+    /// Whether an outgoing call may start immediately.
+    pub fn available(&self) -> bool {
+        self.unavailable.is_none()
+    }
+}
+
+/// Render-safe transient call state. It contains no media or secret bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallInfo {
+    /// Random id shared by every control and media record for this call.
+    pub id: [u8; 16],
+    /// Stable peer account identity.
+    pub peer: [u8; 32],
+    /// Incoming or outgoing on this installation.
+    pub direction: CallDirection,
+    /// Current phase.
+    pub phase: CallPhase,
+    /// Exact initiating physical device.
+    pub initiator_device: [u8; 32],
+    /// Winning answering physical device once selected.
+    pub responder_device: Option<[u8; 32]>,
+    /// Absolute deadline for accepting the original offer.
+    pub expires_at: u64,
+    /// Present only after a terminal transition.
+    pub end_reason: Option<CallEndReason>,
+}
+
+/// One authenticated decrypted Opus packet released by the core jitter
+/// buffer for native platform playback.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CallAudioFrame {
+    /// Call whose exact media keys authenticated this packet.
+    pub call_id: [u8; 16],
+    /// Direction-local authenticated media sequence.
+    pub sequence: u64,
+    /// Sender capture timestamp in milliseconds.
+    pub timestamp_ms: u64,
+    /// Exact bounded Opus packet. Erased when this value is dropped.
+    pub opus_packet: Vec<u8>,
+}
+
+impl Drop for CallAudioFrame {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.opus_packet.zeroize();
+    }
+}
+
+/// Render-safe account-authorized physical-device row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkedDeviceInfo {
+    /// Exact stable physical-device id.
+    pub id: [u8; 32],
+    /// User-visible exact UTF-8 device name.
+    pub name: String,
+    /// Coarse authenticated observation time; not a presence promise.
+    pub last_seen: u64,
+    /// Revocation time, if this credential is permanently excluded.
+    pub revoked_at: Option<u64>,
+    /// Whether this row is the current physical installation.
+    pub current: bool,
+}
+
+/// Honest delivery state for one exact recipient physical device.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MessageDeviceDeliveryInfo {
+    /// Exact recipient physical-device id.
+    pub device: [u8; 32],
+    /// Current account-authorized user-visible name, if known.
+    pub name: Option<String>,
+    /// Honest queued/sent/delivered state for this copy.
+    pub state: DeliveryState,
+}
+
+/// User-controlled state selection for a confirmed initial device transfer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeviceLinkSelection {
+    /// Transfer contacts and verification state.
+    pub contacts: bool,
+    /// Transfer folders, labels, pins, icons, and appearance choice.
+    pub organization: bool,
+    /// Transfer pairwise/group/note history without downloaded media.
+    pub history: bool,
+}
+
+impl Default for DeviceLinkSelection {
+    fn default() -> Self {
+        Self {
+            contacts: true,
+            organization: true,
+            history: true,
+        }
+    }
+}
+
 /// Instructions the application layer gives the node. Every command is also
 /// available as a typed method on [`crate::Node`]; this enum is the single
 /// serializable entry point the FFI layer wraps.
@@ -259,6 +466,15 @@ pub enum Command {
         peer: [u8; 32],
         /// Message body (will be padded and encrypted).
         body: Vec<u8>,
+    },
+    /// Queue pairwise text with an authenticated exact local deadline.
+    SendDisappearing {
+        /// Recipient identity.
+        peer: [u8; 32],
+        /// Exact UTF-8 text.
+        body: String,
+        /// Relative lifetime in seconds, from 60 seconds through 30 days.
+        lifetime_secs: u64,
     },
     /// Persist pairwise text until an absolute UTC send instant.
     Schedule {
@@ -342,6 +558,15 @@ pub enum Command {
         group: [u8; 32],
         /// Message body (will be padded and encrypted).
         body: Vec<u8>,
+    },
+    /// Queue group text with an authenticated exact local deadline.
+    GroupSendDisappearing {
+        /// Group id.
+        group: [u8; 32],
+        /// Exact UTF-8 text.
+        body: String,
+        /// Relative lifetime in seconds, from 60 seconds through 30 days.
+        lifetime_secs: u64,
     },
     /// Queue canonical semantic Mention content to a sender-key group after
     /// exact roster/capability review revalidation (ADR-0016).
@@ -436,6 +661,8 @@ pub struct AttachmentObjectInfo {
     pub media_type: String,
     /// Optional sanitized filename display hint.
     pub filename: Option<String>,
+    /// Conservative local classification of the authenticated display hints.
+    pub presentation: crate::AttachmentFilePresentation,
     /// Durable lifecycle state.
     pub state: MediaTransferState,
 }
@@ -460,6 +687,12 @@ pub struct AttachmentInfo {
     pub content_id: [u8; 16],
     /// Transfer-level lifecycle state.
     pub state: MediaTransferState,
+    /// Whether this transfer is governed by first-open consumption.
+    pub view_once: bool,
+    /// Exact fallback deadline for view-once media.
+    pub expires_at: Option<u64>,
+    /// Whether first-open or expiry has made the source permanently unavailable.
+    pub consumed: bool,
     /// Primary object followed by an optional preview.
     pub objects: Vec<AttachmentObjectInfo>,
 }
@@ -484,6 +717,94 @@ pub struct GroupInfo {
     pub creator: [u8; 32],
     /// Full roster, this node included.
     pub members: Vec<[u8; 32]>,
+}
+
+/// One exact member role in signed C6 authority state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GroupMemberRoleInfo {
+    /// Exact peer identity.
+    pub peer: [u8; 32],
+    /// Fixed owner/admin/member role.
+    pub role: kult_protocol::GroupRole,
+}
+
+/// Render-safe group authority snapshot without secrets or signatures.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupAuthorityInfo {
+    /// Exact group id.
+    pub group: [u8; 32],
+    /// Whether the legacy group has entered signed C6 mode.
+    pub signed: bool,
+    /// Immutable original creator.
+    pub original_owner: [u8; 32],
+    /// Current single owner.
+    pub owner: [u8; 32],
+    /// Owner-transfer epoch.
+    pub owner_epoch: u64,
+    /// Current authority/roster generation.
+    pub generation: u64,
+    /// Sorted exact roles.
+    pub members: Vec<GroupMemberRoleInfo>,
+    /// Local identity's role, when still a member.
+    pub my_role: Option<kult_protocol::GroupRole>,
+}
+
+/// One stable choice and its locally derived tally in a group poll.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PollOptionInfo {
+    /// Author-minted option id, scoped to the poll.
+    pub id: [u8; 16],
+    /// Exact authenticated UTF-8 label.
+    pub text: String,
+    /// Number of accepted vote heads selecting this option.
+    pub votes: u32,
+    /// Whether this installation's identity selected the option.
+    pub selected_by_me: bool,
+}
+
+/// One visible authenticated vote head used by a poll tally.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PollVoteInfo {
+    /// Authenticated voting member.
+    pub voter: [u8; 32],
+    /// Exact vote event id, or the creator-attested reference after closure.
+    pub event_id: [u8; 16],
+    /// Stable selected option id.
+    pub option_id: [u8; 16],
+    /// Positive voter-local monotonic revision.
+    pub revision: u64,
+}
+
+/// Render-safe, locally derived single-choice group poll.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PollInfo {
+    /// Exact group conversation.
+    pub group: [u8; 32],
+    /// Authenticated poll creator.
+    pub author: [u8; 32],
+    /// Stable creator-minted poll id.
+    pub id: [u8; 16],
+    /// Creation-time group roster generation.
+    pub generation: u64,
+    /// Exact authenticated UTF-8 question.
+    pub question: String,
+    /// Sorted fixed creation-time electorate.
+    pub eligible_voters: Vec<[u8; 32]>,
+    /// Stable choices in creator presentation order with derived tallies.
+    pub options: Vec<PollOptionInfo>,
+    /// Visible accepted vote heads, sorted by voter.
+    pub votes: Vec<PollVoteInfo>,
+    /// Whether a creator- or owner-authored final snapshot irreversibly closed the poll.
+    pub closed: bool,
+    /// Winning close event under the deterministic conflict rule.
+    pub close_event_id: Option<[u8; 16]>,
+    /// Authenticated group owner when the winning closure was moderation;
+    /// absent when the poll creator closed their own poll.
+    pub moderated_by: Option<[u8; 32]>,
+    /// Whether the local identity belongs to the fixed electorate.
+    pub eligible: bool,
+    /// Whether the local identity may close this still-open poll.
+    pub can_close: bool,
 }
 
 /// One render-safe semantic mention span. Offsets address the exact UTF-8
@@ -608,6 +929,53 @@ pub enum ContentStatus {
         /// Sorted non-overlapping semantic spans.
         spans: Vec<MentionSpan>,
     },
+    /// Canonical immutable message edit. It refreshes the exact target and is
+    /// never rendered as a standalone chat row.
+    Edit {
+        /// Edit-event content id.
+        id: [u8; 16],
+        /// Exact authenticated original author.
+        target_author: [u8; 32],
+        /// Exact canonical Text content id being edited.
+        target_content_id: [u8; 16],
+        /// Positive author-local revision.
+        revision: u64,
+    },
+    /// Canonical disappearing UTF-8 removed locally at the exact deadline.
+    DisappearingText {
+        /// Content id scoped to the conversation and author.
+        id: [u8; 16],
+        /// Exact authenticated Unix-seconds local deadline.
+        expires_at: u64,
+    },
+    /// Canonical view-once attachment offer.
+    ViewOnceAttachment {
+        /// Content id scoped to the conversation and author.
+        id: [u8; 16],
+        /// Random local transfer id used by consent/open state APIs.
+        transfer: [u8; 16],
+        /// Exact authenticated fallback deadline.
+        expires_at: u64,
+    },
+    /// Canonical group-only poll event. It refreshes a derived poll card and
+    /// is never rendered as an ordinary chat row.
+    Poll {
+        /// Exact event content id.
+        id: [u8; 16],
+        /// Authenticated creator of the target poll.
+        poll_author: [u8; 32],
+        /// Stable creator-minted poll id.
+        poll_id: [u8; 16],
+    },
+    /// Canonical owner-signed C6 public authority commit.
+    GroupAuthority {
+        /// Exact event id.
+        id: [u8; 16],
+        /// Committed generation.
+        generation: u64,
+        /// Resulting current owner.
+        owner: [u8; 32],
+    },
     /// Authenticated content this client version cannot interpret.
     Unsupported {
         /// Typed framing version, when known.
@@ -626,6 +994,15 @@ pub enum ContentStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event {
+    /// Account-authorized physical-device list, name, or revocation changed.
+    DevicesChanged,
+    /// This installation completed a confirmed proximate account link.
+    DeviceLinkCompleted {
+        /// Stable account identity now active on this installation.
+        account: [u8; 32],
+        /// Exact new physical-device id.
+        device: [u8; 32],
+    },
     /// One or more private local custom icons changed; shells re-read visible targets.
     /// This event never enters an envelope, capability, group state, or transport.
     CustomIconsChanged,
@@ -680,6 +1057,14 @@ pub enum Event {
         /// Explicit content interpretation.
         content: ContentStatus,
     },
+    /// A canonical inbound edit was stored; shells refresh the exact pairwise
+    /// target rather than append a row.
+    MessageEdited {
+        /// Pairwise peer that authored the edit and original.
+        peer: [u8; 32],
+        /// Original canonical Text content id.
+        target_content_id: [u8; 16],
+    },
     /// Text was appended to the reserved local note-to-self conversation.
     NoteToSelfMessageAdded {
         /// Local note record id.
@@ -726,6 +1111,11 @@ pub enum Event {
         /// Current authoritative snapshot.
         snapshot: CarrierCapabilitySnapshot,
     },
+    /// Transient call state changed. No secret or media bytes cross this event.
+    CallUpdated {
+        /// Current render-safe state.
+        call: CallInfo,
+    },
     /// A group was created, joined, re-keyed, re-rostered, or left
     /// (ADR-0012) — re-read it via [`crate::Node::groups`].
     GroupUpdated {
@@ -747,6 +1137,60 @@ pub enum Event {
         body: Vec<u8>,
         /// Explicit content interpretation.
         content: ContentStatus,
+    },
+    /// A canonical inbound group edit was stored; shells refresh the target.
+    GroupMessageEdited {
+        /// Exact group conversation.
+        group: [u8; 32],
+        /// Authenticated edit/original author.
+        sender: [u8; 32],
+        /// Original canonical Text content id.
+        target_content_id: [u8; 16],
+    },
+    /// A poll creation, vote, or closure event changed one derived group poll.
+    /// Applications re-read [`crate::Node::group_polls`] for the tally.
+    PollUpdated {
+        /// Exact group conversation.
+        group: [u8; 32],
+        /// Authenticated poll creator.
+        poll_author: [u8; 32],
+        /// Stable poll id.
+        poll_id: [u8; 16],
+    },
+    /// Signed group roles/owner state changed or was observed.
+    GroupAuthorityUpdated {
+        /// Exact group.
+        group: [u8; 32],
+        /// Committed generation.
+        generation: u64,
+        /// Resulting current owner.
+        owner: [u8; 32],
+    },
+    /// The current owner accepted or rejected one local admin request.
+    GroupAdminRequestResolved {
+        /// Exact group.
+        group: [u8; 32],
+        /// Stable locally minted request id.
+        request_id: [u8; 16],
+        /// Whether the owner committed the requested action.
+        accepted: bool,
+        /// Owner-observed authority generation after processing.
+        generation: u64,
+        /// Resulting authority event when accepted.
+        state_id: Option<[u8; 16]>,
+        /// Stable rejection reason code; zero on acceptance.
+        reason: u8,
+    },
+    /// Ephemeral plaintext or decryptable media was durably removed locally.
+    EphemeralRemoved {
+        /// Exact pairwise or group scope.
+        conversation: kult_store::EphemeralConversation,
+        /// Authenticated author identity.
+        author: [u8; 32],
+        /// Author-minted content id.
+        content_id: [u8; 16],
+        /// Whether a deadline or first open caused removal.
+        reason: kult_store::EphemeralState,
     },
     /// A durably stored canonical group Mention targets this exact local peer.
     /// Applications re-read the record by id; no text or target list is copied

@@ -9,6 +9,7 @@
 import Foundation
 import KommsCore
 import SwiftUI
+import UIKit
 
 private enum ThemePreferenceStore {
     static let key = "komms.appearance.theme"
@@ -48,6 +49,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var histories: [String: [Message]] = [:] // peer → history
     @Published private(set) var groups: [KommsCore.Group] = []
     @Published private(set) var groupHistories: [String: [GroupMessage]] = [:]
+    @Published private(set) var groupPolls: [String: [GroupPoll]] = [:]
+    @Published private(set) var groupAuthorities: [String: GroupAuthority] = [:]
     @Published private(set) var scheduledMessages: [ScheduledMessage] = []
     @Published private(set) var attachments: [Attachment] = []
     @Published private(set) var noteHistory: [NoteMessage] = []
@@ -67,6 +70,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var themePreference: ThemePreference = ThemePreferenceStore.load()
     @Published private(set) var customIcons: [CustomIconTarget: CustomIcon] = [:]
     @Published private(set) var customIconUsage = CustomIconQuotaUsage(records: 0, bytes: 0)
+    @Published private(set) var linkedDevices: [LinkedDevice] = []
+    @Published private(set) var calls: [KommsCore.Call] = []
+    @Published private(set) var callAvailability: [String: CallAvailability] = [:]
     /// Surfaced node happenings: key changes, held-for-faster-link verdicts.
     @Published var notices: [String] = []
 
@@ -79,8 +85,32 @@ final class AppModel: ObservableObject {
     }()
 
     private var refreshTimer: Timer?
+    private var lifecycleObservers: [NSObjectProtocol] = []
+    private var callAudio: CallAudioController?
+    private var callAudioAllowed = true
 
     init() {
+        callAudioAllowed = UIApplication.shared.applicationState == .active
+        callAudio = CallAudioController { [weak self] call, reason in
+            Task { @MainActor in self?.callAudioFailed(call: call, reason: reason) }
+        }
+        let center = NotificationCenter.default
+        for name in [
+            UIApplication.didEnterBackgroundNotification,
+            UIApplication.protectedDataWillBecomeUnavailableNotification,
+        ] {
+            lifecycleObservers.append(center.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in await self?.endCallsForForegroundExit() }
+            })
+        }
+        lifecycleObservers.append(center.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.callAudioAllowed = true }
+        })
         let filter = LabelFilterStore.load()
         selectedLabelIds = filter.ids
         labelFilterMode = filter.mode == "all" ? .all : .any
@@ -100,6 +130,11 @@ final class AppModel: ObservableObject {
         entries?.filter { url in
             plaintextPrefixes.contains { url.lastPathComponent.hasPrefix($0) }
         }.forEach { try? FileManager.default.removeItem(at: $0) }
+    }
+
+    deinit {
+        lifecycleObservers.forEach(NotificationCenter.default.removeObserver)
+        callAudio?.stop()
     }
 
     /// True on first run: no store yet, so the gate offers create/restore.
@@ -182,6 +217,7 @@ final class AppModel: ObservableObject {
     func lock() {
         refreshTimer?.invalidate()
         refreshTimer = nil
+        callAudio?.stop()
         session?.stop()
         session = nil
         contacts = []
@@ -204,6 +240,9 @@ final class AppModel: ObservableObject {
         stalePinRecords = []
         customIcons = [:]
         customIconUsage = CustomIconQuotaUsage(records: 0, bytes: 0)
+        linkedDevices = []
+        calls = []
+        callAvailability = [:]
     }
 
     private func adopt(_ session: Session) async {
@@ -235,19 +274,36 @@ final class AppModel: ObservableObject {
 
     private func handle(_ event: Event) {
         switch event {
+        case .callUpdated(let call):
+            receive(call)
+        case .devicesChanged:
+            Task { await refreshDevices() }
+        case .deviceLinkCompleted:
+            Task {
+                await refreshDevices()
+                await refresh()
+            }
         case .themeChanged:
             Task { await refreshTheme() }
         case .customIconsChanged:
             Task { await refresh() }
         case .scheduledMessageUpdated, .scheduledMessageCancelled,
              .scheduledMessageActivated, .deliveryUpdated, .messageReceived,
+             .messageEdited,
              .noteToSelfMessageAdded,
              .carrierCapabilityChanged,
-             .groupUpdated, .groupMessageReceived, .groupDeliveryUpdated,
-             .attachmentUpdated, .foldersChanged, .labelsChanged, .pinsChanged:
+             .groupUpdated, .groupMessageReceived, .groupMessageEdited, .groupDeliveryUpdated,
+             .pollUpdated, .groupAuthorityUpdated,
+             .attachmentUpdated, .ephemeralRemoved,
+             .foldersChanged, .labelsChanged, .pinsChanged:
             Task { await refresh() }
         case .mentionReceived:
             notices.append("You were mentioned in a group.")
+            Task { await refresh() }
+        case .groupAdminRequestResolved(_, _, let accepted, _, _, let reason):
+            notices.append(accepted
+                ? "The owner accepted your group administration request."
+                : "The owner rejected your group administration request (reason \(reason)).")
             Task { await refresh() }
         case .contactAdded, .contactRenamed:
             Task { await refresh() }
@@ -263,6 +319,189 @@ final class AppModel: ObservableObject {
         case .awaitingFasterLink:
             notices.append("A message is held — will send when a faster link exists.")
         }
+    }
+
+    // MARK: authenticated direct-QUIC calls
+
+    func call(peer: String) -> KommsCore.Call? {
+        calls.last(where: { $0.peer == peer && $0.phase != .ended })
+            ?? calls.last(where: { $0.peer == peer })
+    }
+
+    func refreshCall(peer: String) async {
+        guard let session else { return }
+        do {
+            let snapshot = try await run {
+                (try session.calls(), try session.callAvailability(peer: peer))
+            }
+            calls = snapshot.0
+            callAvailability[peer] = snapshot.1
+            for call in snapshot.0 where call.phase == .active { activateAudio(call) }
+        } catch {
+            // A stopped handle or changing route is reflected by the next event/tick.
+        }
+    }
+
+    func startCall(peer: String) async throws {
+        guard let session else { throw InputError("node is locked") }
+        guard callAudioAllowed else { throw InputError("live calls require the foreground") }
+        guard await callAudio?.requestPermission() == true else {
+            throw InputError("microphone permission is required to place a live call")
+        }
+        _ = try await run { try session.startCall(peer: peer) }
+        await refreshCall(peer: peer)
+    }
+
+    func answerCall(_ call: KommsCore.Call) async throws {
+        guard let session else { throw InputError("node is locked") }
+        guard callAudioAllowed else { throw InputError("live calls require the foreground") }
+        guard await callAudio?.requestPermission() == true else {
+            throw InputError("microphone permission is required to answer a live call")
+        }
+        try await run { try session.answerCall(call: call.id) }
+    }
+
+    func declineCall(_ call: KommsCore.Call) async throws {
+        guard let session else { throw InputError("node is locked") }
+        try await run { try session.declineCall(call: call.id) }
+    }
+
+    func cancelCall(_ call: KommsCore.Call) async throws {
+        guard let session else { throw InputError("node is locked") }
+        try await run { try session.cancelCall(call: call.id) }
+    }
+
+    func hangupCall(_ call: KommsCore.Call) async throws {
+        guard let session else { throw InputError("node is locked") }
+        callAudio?.stop(call: call.id)
+        try await run { try session.hangupCall(call: call.id) }
+    }
+
+    private func receive(_ call: KommsCore.Call) {
+        calls.removeAll { $0.id == call.id }
+        calls.append(call)
+        if calls.count > 32 { calls.removeFirst(calls.count - 32) }
+        switch call.phase {
+        case .active:
+            activateAudio(call)
+        case .ended:
+            callAudio?.stop(call: call.id)
+        case .ringing, .connecting:
+            break
+        }
+        Task { await refreshCall(peer: call.peer) }
+    }
+
+    private func activateAudio(_ call: KommsCore.Call) {
+        guard let session else { return }
+        guard callAudioAllowed else {
+            callAudioFailed(call: call.id, reason: "Komms left the foreground")
+            return
+        }
+        do {
+            try callAudio?.start(call: call.id, session: session)
+        } catch {
+            callAudioFailed(call: call.id, reason: errorText(error))
+        }
+    }
+
+    private func callAudioFailed(call: String, reason: String) {
+        notices.append("Live call audio stopped: \(reason)")
+        callAudio?.stop(call: call)
+        guard let session else { return }
+        Task { try? await run { try session.hangupCall(call: call) } }
+    }
+
+    private func endCallsForForegroundExit() async {
+        callAudioAllowed = false
+        callAudio?.stop()
+        guard let session else { return }
+        for call in calls where call.phase != .ended {
+            try? await run {
+                if call.phase == .ringing {
+                    if call.direction == .outgoing {
+                        try session.cancelCall(call: call.id)
+                    } else {
+                        try session.declineCall(call: call.id)
+                    }
+                } else {
+                    try session.hangupCall(call: call.id)
+                }
+            }
+        }
+    }
+
+    // MARK: linked devices
+
+    func refreshDevices() async {
+        guard let session,
+              let devices = try? await run({ try session.linkedDevices() }) else { return }
+        linkedDevices = devices
+    }
+
+    func beginDeviceLink() async throws -> String {
+        guard let session else { throw InputError("locked") }
+        return try await run { try session.beginDeviceLink() }
+    }
+
+    func acceptDeviceLink(offerHex: String, name: String) async throws -> (String, String) {
+        guard let session else { throw InputError("locked") }
+        return try await run {
+            let accepted = try session.acceptDeviceLink(offerHex: offerHex, deviceName: name)
+            return (hexEncode(accepted.response), accepted.confirmationCode)
+        }
+    }
+
+    func deviceLinkConfirmationCode(responseHex: String) async throws -> String {
+        guard let session else { throw InputError("locked") }
+        return try await run { try session.deviceLinkConfirmationCode(responseHex: responseHex) }
+    }
+
+    func approveDeviceLink(
+        responseHex: String,
+        contacts: Bool,
+        organization: Bool,
+        history: Bool,
+        confirmed: Bool
+    ) async throws -> String {
+        guard let session else { throw InputError("locked") }
+        return try await run {
+            try session.approveDeviceLink(
+                responseHex: responseHex, contacts: contacts,
+                organization: organization, history: history, confirmed: confirmed)
+        }
+    }
+
+    func completeDeviceLink(packageHex: String, confirmed: Bool) async throws {
+        guard let session else { throw InputError("locked") }
+        try await run { try session.completeDeviceLink(packageHex: packageHex, confirmed: confirmed) }
+        await refreshDevices()
+        await refresh()
+    }
+
+    func renameLinkedDevice(device: String, name: String) async throws {
+        guard let session else { throw InputError("locked") }
+        try await run { try session.renameLinkedDevice(device: device, name: name) }
+        await refreshDevices()
+    }
+
+    func revokeLinkedDevice(device: String, confirmed: Bool) async throws {
+        guard let session else { throw InputError("locked") }
+        try await run { try session.revokeLinkedDevice(device: device, confirmed: confirmed) }
+        await refreshDevices()
+    }
+
+    func exportDeviceSync(device: String) async throws -> String {
+        guard let session else { throw InputError("locked") }
+        return try await run { try session.exportDeviceSync(device: device) }
+    }
+
+    func importDeviceSync(bundleHex: String) async throws -> UInt64 {
+        guard let session else { throw InputError("locked") }
+        let inserted = try await run { try session.importDeviceSync(bundleHex: bundleHex) }
+        await refreshDevices()
+        await refresh()
+        return inserted
     }
 
     func setTheme(_ preference: ThemePreference) async {
@@ -297,8 +536,14 @@ final class AppModel: ObservableObject {
                 let liveGroups = try session.groups()
                 let liveIds = Set(liveGroups.map(\.id))
                 var freshGroups: [String: [GroupMessage]] = [:]
+                var freshPolls: [String: [GroupPoll]] = [:]
+                var freshAuthorities: [String: GroupAuthority] = [:]
+                for group in liveGroups {
+                    freshAuthorities[group.id] = try session.groupAuthority(group: group.id)
+                }
                 for group in followedGroups where liveIds.contains(group) {
                     freshGroups[group] = try session.groupMessages(group: group)
+                    freshPolls[group] = try session.groupPolls(group: group)
                 }
                 let liveContacts = try session.contacts()
                 let folders = try session.folders()
@@ -342,6 +587,8 @@ final class AppModel: ObservableObject {
                 return AppRefreshSnapshot(
                     status: try session.status(), contacts: liveContacts, histories: fresh,
                     groups: liveGroups, groupHistories: freshGroups,
+                    groupPolls: freshPolls,
+                    groupAuthorities: freshAuthorities,
                     scheduled: try session.scheduledMessages(), attachments: try session.attachments(),
                     notes: try session.noteToSelfMessages(), folders: folders,
                     staleFolders: try session.staleFolders(), folderWasMissing: missingFolder,
@@ -355,6 +602,8 @@ final class AppModel: ObservableObject {
             histories.merge(snapshot.histories) { _, new in new }
             groups = snapshot.groups
             groupHistories.merge(snapshot.groupHistories) { _, new in new }
+            groupPolls.merge(snapshot.groupPolls) { _, new in new }
+            groupAuthorities = snapshot.groupAuthorities
             scheduledMessages = snapshot.scheduled
             attachments = snapshot.attachments
             noteHistory = snapshot.notes
@@ -394,7 +643,9 @@ final class AppModel: ObservableObject {
     func followGroup(group: String) async throws {
         guard let session else { return }
         let history = try await run { try session.groupMessages(group: group) }
+        let polls = try await run { try session.groupPolls(group: group) }
         groupHistories[group] = history
+        groupPolls[group] = polls
     }
 
     /// Stable identity used by the local note-to-self route in every shell.
@@ -536,6 +787,27 @@ final class AppModel: ObservableObject {
         await refresh()
     }
 
+    func sendDisappearing(peer: String, body: String, lifetimeSeconds: UInt64) async throws {
+        guard let session else { return }
+        _ = try await run {
+            try session.sendDisappearing(
+                peer: peer, body: body, lifetimeSeconds: lifetimeSeconds)
+        }
+        await refresh()
+    }
+
+    func editMessage(peer: String, targetContentId: String, text: String) async throws {
+        guard let session, let targetAuthor = status?.peer else {
+            throw InputError("node is locked")
+        }
+        _ = try await run {
+            try session.editMessage(
+                peer: peer, targetAuthor: targetAuthor,
+                targetContentId: targetContentId, text: text)
+        }
+        await refresh()
+    }
+
     /// Stage a security-scoped document privately. Content-verified JPEG/PNG
     /// enters the shared editor; every other file enters explicit F4 review.
     func prepareAttachment(
@@ -620,7 +892,9 @@ final class AppModel: ObservableObject {
     func sendPreparedAttachment(
         destination: AttachmentDestination,
         prepared: PreparedAttachment,
-        expectedCarrier: String
+        expectedCarrier: String,
+        viewOnce: Bool = false,
+        lifetimeSeconds: UInt64 = 86_400
     ) async throws {
         guard let session else { throw InputError("node is locked") }
         _ = try await run {
@@ -635,20 +909,40 @@ final class AppModel: ObservableObject {
             }
             switch (destination, prepared.kind) {
             case (.peer(let peer), .generic(let file)):
+                if viewOnce {
+                    return try session.sendViewOnceAttachment(
+                        peer: peer, path: file.staged, mediaType: file.mediaType,
+                        filename: file.filename, lifetimeSeconds: lifetimeSeconds)
+                }
                 return try session.sendAttachment(
                     peer: peer, path: file.staged, mediaType: file.mediaType,
                     filename: file.filename)
             case (.group(let group), .generic(let file)):
+                if viewOnce {
+                    return try session.sendGroupViewOnceAttachment(
+                        group: group, path: file.staged, mediaType: file.mediaType,
+                        filename: file.filename, lifetimeSeconds: lifetimeSeconds)
+                }
                 return try session.sendGroupAttachment(
                     group: group, path: file.staged, mediaType: file.mediaType,
                     filename: file.filename)
             case (.peer(let peer), .image(let image)):
                 _ = try session.probeImage(image.finalAsset)
+                if viewOnce {
+                    return try session.sendViewOnceAttachment(
+                        peer: peer, path: image.finalAsset, mediaType: "image/png",
+                        filename: image.filename, lifetimeSeconds: lifetimeSeconds)
+                }
                 return try session.sendAttachment(
                     peer: peer, path: image.finalAsset, mediaType: "image/png",
                     filename: image.filename)
             case (.group(let group), .image(let image)):
                 _ = try session.probeImage(image.finalAsset)
+                if viewOnce {
+                    return try session.sendGroupViewOnceAttachment(
+                        group: group, path: image.finalAsset, mediaType: "image/png",
+                        filename: image.filename, lifetimeSeconds: lifetimeSeconds)
+                }
                 return try session.sendGroupAttachment(
                     group: group, path: image.finalAsset, mediaType: "image/png",
                     filename: image.filename)
@@ -694,6 +988,29 @@ final class AppModel: ObservableObject {
                 try session.exportAttachment(transfer: transfer, to: destination)
                 try protectTransient(destination)
             }
+            return destination
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw error
+        }
+    }
+
+    /// Terminally consume view-once media into a protected app-private URL.
+    func prepareViewOnceReveal(transfer: String, filename: String?) async throws -> URL {
+        guard let session else { throw InputError("node is locked") }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("komms-view-once-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try protectTransient(directory)
+        let basename = URL(fileURLWithPath: filename ?? "view-once-attachment").lastPathComponent
+        let destination = directory.appendingPathComponent(
+            basename.isEmpty ? "view-once-attachment" : basename, isDirectory: false)
+        do {
+            try await run {
+                try session.consumeViewOnceAttachment(transfer: transfer, to: destination)
+                try protectTransient(destination)
+            }
+            await refresh()
             return destination
         } catch {
             try? FileManager.default.removeItem(at: directory)
@@ -885,6 +1202,67 @@ final class AppModel: ObservableObject {
         await refresh()
     }
 
+    func sendGroupDisappearing(
+        group: String, body: String, lifetimeSeconds: UInt64
+    ) async throws {
+        guard let session else { return }
+        _ = try await run {
+            try session.sendGroupDisappearing(
+                group: group, body: body, lifetimeSeconds: lifetimeSeconds)
+        }
+        await refresh()
+    }
+
+    func createGroupPoll(group: String, question: String, options: [String]) async throws {
+        guard let session else { throw InputError("node is locked") }
+        _ = try await run {
+            try session.createGroupPoll(group: group, question: question, options: options)
+        }
+        await refresh()
+    }
+
+    func voteGroupPoll(
+        group: String, pollAuthor: String, pollId: String, optionId: String
+    ) async throws {
+        guard let session else { throw InputError("node is locked") }
+        _ = try await run {
+            try session.voteGroupPoll(
+                group: group, pollAuthor: pollAuthor, pollId: pollId, optionId: optionId)
+        }
+        await refresh()
+    }
+
+    func closeGroupPoll(group: String, pollAuthor: String, pollId: String) async throws {
+        guard let session else { throw InputError("node is locked") }
+        _ = try await run {
+            try session.closeGroupPoll(group: group, pollAuthor: pollAuthor, pollId: pollId)
+        }
+        await refresh()
+    }
+
+    func moderateGroupPollClose(
+        group: String, pollAuthor: String, pollId: String
+    ) async throws {
+        guard let session else { throw InputError("node is locked") }
+        _ = try await run {
+            try session.moderateGroupPollClose(
+                group: group, pollAuthor: pollAuthor, pollId: pollId)
+        }
+        await refresh()
+    }
+
+    func editGroupMessage(group: String, targetContentId: String, text: String) async throws {
+        guard let session, let targetAuthor = status?.peer else {
+            throw InputError("node is locked")
+        }
+        _ = try await run {
+            try session.editGroupMessage(
+                group: group, targetAuthor: targetAuthor,
+                targetContentId: targetContentId, text: text)
+        }
+        await refresh()
+    }
+
     func groupMentionCapability(group: String) async throws -> GroupMentionCapability {
         guard let session else { throw InputError("node is locked") }
         return try await run { try session.groupMentionCapability(group: group) }
@@ -907,6 +1285,24 @@ final class AppModel: ObservableObject {
     func addGroupMember(group: String, peer: String) async throws {
         guard let session else { return }
         try await run { try session.addGroupMember(group: group, peer: peer) }
+        await refresh()
+    }
+
+    func renameGroup(group: String, name: String) async throws {
+        guard let session else { return }
+        _ = try await run { try session.renameGroup(group: group, name: name) }
+        await refresh()
+    }
+
+    func setGroupRole(group: String, peer: String, role: GroupRole) async throws {
+        guard let session else { return }
+        _ = try await run { try session.setGroupRole(group: group, peer: peer, role: role) }
+        await refresh()
+    }
+
+    func transferGroupOwner(group: String, peer: String) async throws {
+        guard let session else { return }
+        _ = try await run { try session.transferGroupOwner(group: group, peer: peer) }
         await refresh()
     }
 
@@ -1084,6 +1480,8 @@ private struct AppRefreshSnapshot: Sendable {
     let histories: [String: [Message]]
     let groups: [KommsCore.Group]
     let groupHistories: [String: [GroupMessage]]
+    let groupPolls: [String: [GroupPoll]]
+    let groupAuthorities: [String: GroupAuthority]
     let scheduled: [ScheduledMessage]
     let attachments: [Attachment]
     let notes: [NoteMessage]

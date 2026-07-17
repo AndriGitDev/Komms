@@ -363,9 +363,10 @@ references transactionally, then garbage-collect unreferenced files. Completed
 media remains until explicit local deletion or quota policy evicts it. Remote
 deletion and expiry remain later ADRs.
 
-The mnemonic backup (`KKR2` when this ADR was accepted; current `KKR4`)
-continues carrying message and group-message bodies, therefore it carries
-Attachment manifests and their keys, but it excludes media files,
+The mnemonic backup (`KKR2` when this ADR was accepted; current `KKR7`)
+continues carrying ordinary message and group-message bodies, therefore it carries
+ordinary Attachment manifests and their keys, but it excludes media files and
+C4 ephemeral manifests,
 incomplete-transfer state, bitmaps, and bulk queues. No backup-format bump is
 needed for F3. After restore, manifests render as `Unavailable`; once sessions
 and capabilities recover, the user may request the bytes again if the original
@@ -421,7 +422,7 @@ Implementation is not accepted until it includes:
   never handed to whole-envelope reassembly;
 - copied-database/media-directory inspection proving plaintext names, types,
   hashes, keys, bytes, transfer ranges, and conversation links are absent;
-- KKR4 backup/restore tests proving manifests survive while media and transfer
+- KKR1–KKR7 backup/restore tests proving ordinary manifests survive while media and transfer
   state are intentionally absent; and
 - cross-surface tests proving identical states and safe errors in RPC/CLI,
   UniFFI, desktop, Android, and iOS, including background interruption and

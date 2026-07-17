@@ -74,6 +74,11 @@ const state = {
   audioDraft: null,
   imageDraft: null,
   mentionDraft: { group: null, spans: [], capability: null, lastText: "", suppressInput: false },
+  currentAuthority: null,
+  call: null,
+  callPrompted: new Set(),
+  callMedia: null,
+  pendingCallStream: null,
   statusTimer: null,
 };
 
@@ -118,6 +123,12 @@ function fmtTime(unixSecs) {
   return today
     ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     : d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function fmtExpiry(unixSecs) {
+  return new Date(unixSecs * 1000).toLocaleString([], {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+  });
 }
 
 const LABEL_COLORS = ["neutral", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink"];
@@ -733,11 +744,14 @@ async function syncThemeAfterUnlock() {
 
 async function leaveApp() {
   abortRecording("Recording stopped and discarded because Komms was locked.");
+  stopCallMedia();
   closeModal();
   clearInterval(state.statusTimer);
   state.statusTimer = null;
   state.currentKind = null;
   state.currentId = null;
+  state.call = null;
+  state.callPrompted.clear();
   state.contacts = [];
   state.groups = [];
   state.folders = [];
@@ -821,6 +835,8 @@ async function refreshStatus() {
     return; // locked or shutting down — the poll just goes quiet
   }
   state.peer = s.peer;
+  state.address = s.address;
+  $("#my-address").textContent = s.address;
   const nat = $("#stat-nat");
   nat.textContent = `NAT: ${s.nat}`;
   nat.className = "stat " + (s.nat === "public" ? "good" : s.nat === "private" ? "warn" : "");
@@ -1467,11 +1483,15 @@ function updateChatHead() {
   $("#btn-verify").hidden = isGroup || isNote;
   $("#btn-rename-contact").hidden = isGroup || isNote;
   $("#btn-hints").hidden = isGroup || isNote;
+  $("#btn-call").hidden = isGroup || isNote;
   $("#btn-group-details").hidden = !isGroup;
   $("#btn-mention").hidden = !isGroup;
+  $("#btn-poll").hidden = !isGroup;
   $("#btn-attach").hidden = isNote;
   $("#btn-record").hidden = isNote;
   $("#btn-schedule").hidden = isNote;
+  $("#expiry-control").hidden = isNote;
+  $("#expiry-honesty").hidden = isNote || $("#composer-expiry").value === "0";
   $("#note-to-self").classList.toggle("active", isNote);
   const target = labelTarget();
   const isPinned = target && state.pins.some((pin) => labelTargetKey(pin.target) === labelTargetKey(target));
@@ -1479,7 +1499,280 @@ function updateChatHead() {
   $("#btn-conversation-pin").setAttribute("aria-pressed", isPinned ? "true" : "false");
   if (target) renderTargetBadges($("#chat-label-badges"), target);
   else $("#chat-label-badges").replaceChildren();
+  updateCallButton().catch((error) => toast(String(error), true));
 }
+
+function callMediaSupported() {
+  return Boolean(
+    navigator.mediaDevices?.getUserMedia
+      && globalThis.AudioEncoder
+      && globalThis.AudioDecoder
+      && globalThis.AudioData
+      && globalThis.EncodedAudioChunk
+      && globalThis.MediaStreamTrackProcessor,
+  );
+}
+
+function callEndText(reason) {
+  return {
+    declined: "Call declined",
+    busy: "Contact is already in a call",
+    cancelled: "Call cancelled",
+    hung_up: "Call ended",
+    expired: "Call was not answered",
+    answered_elsewhere: "Answered on another linked device",
+    route_lost: "Direct QUIC route lost",
+  }[reason] ?? "Call ended";
+}
+
+function callUnavailableText(reason) {
+  return {
+    offline_or_unknown: "No fresh direct QUIC route",
+    bulk_only: "Direct QUIC connection is not ready",
+    mesh_only: "Calls never use radio mesh",
+    missing_session: "Send a message first to establish encryption",
+    unsupported: "A linked device does not support calls",
+    already_in_call: "Another call is already active",
+  }[reason] ?? "Call unavailable";
+}
+
+function showCallStatus(text, className = "") {
+  const status = $("#call-status");
+  status.hidden = !text;
+  status.textContent = text;
+  status.className = `call-status ${className}`.trim();
+}
+
+async function updateCallButton() {
+  const button = $("#btn-call");
+  if (state.currentKind !== "contact" || !state.currentId) {
+    button.hidden = true;
+    showCallStatus("");
+    return;
+  }
+  button.hidden = false;
+  const current = state.call && state.call.peer === state.currentId && state.call.phase !== "ended"
+    ? state.call : null;
+  if (current) {
+    button.disabled = false;
+    button.textContent = current.phase === "ringing" && current.direction === "outgoing"
+      ? "Cancel call" : "End call";
+    button.title = "Call media uses only the authenticated direct QUIC stream";
+    showCallStatus(
+      current.phase === "ringing" ? "Calling… direct QUIC only"
+        : current.phase === "connecting" ? "Authenticating direct QUIC media…"
+          : "Live audio · direct QUIC · end-to-end encrypted",
+      current.phase === "active" ? "active" : "",
+    );
+    return;
+  }
+  button.textContent = "Call";
+  if (!callMediaSupported()) {
+    button.disabled = true;
+    button.title = "This webview lacks WebCodecs Opus or microphone stream support";
+    showCallStatus("Live calls need WebCodecs Opus and microphone support in this webview.");
+    return;
+  }
+  const availability = await invoke("call_availability", { peer: state.currentId });
+  button.disabled = !availability.available;
+  button.title = availability.available
+    ? "Start end-to-end encrypted audio over direct QUIC"
+    : callUnavailableText(availability.unavailable);
+  showCallStatus(availability.available ? "" : callUnavailableText(availability.unavailable));
+}
+
+async function acquireCallStream() {
+  return navigator.mediaDevices.getUserMedia({
+    video: false,
+    audio: {
+      channelCount: 1,
+      sampleRate: 48_000,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    },
+  });
+}
+
+function stopCallMedia() {
+  const media = state.callMedia;
+  state.callMedia = null;
+  if (media) {
+    media.stopped = true;
+    clearInterval(media.pollTimer);
+    media.reader?.cancel().catch(() => {});
+    try { media.encoder?.close(); } catch {}
+    try { media.decoder?.close(); } catch {}
+    media.stream?.getTracks().forEach((track) => track.stop());
+    media.context?.close().catch(() => {});
+  }
+  if (state.pendingCallStream) {
+    state.pendingCallStream.getTracks().forEach((track) => track.stop());
+    state.pendingCallStream = null;
+  }
+}
+
+async function startCallMedia(snapshot) {
+  if (state.callMedia?.call === snapshot.id) return;
+  if (!callMediaSupported()) {
+    await invoke("hangup_call", { call: snapshot.id }).catch(() => {});
+    toast("This webview cannot encode and decode Opus call audio.", true);
+    return;
+  }
+  const stream = state.pendingCallStream ?? await acquireCallStream();
+  state.pendingCallStream = null;
+  const context = new AudioContext({ sampleRate: 48_000, latencyHint: "interactive" });
+  await context.resume();
+  const media = {
+    call: snapshot.id,
+    stream,
+    context,
+    encoder: null,
+    decoder: null,
+    reader: null,
+    pollTimer: null,
+    nextPlayback: context.currentTime + 0.06,
+    polling: false,
+    stopped: false,
+  };
+  state.callMedia = media;
+
+  media.decoder = new AudioDecoder({
+    error: (error) => toast(`Call decoder: ${error}`, true),
+    output: (audio) => {
+      if (media.stopped) { audio.close(); return; }
+      const buffer = context.createBuffer(audio.numberOfChannels, audio.numberOfFrames, audio.sampleRate);
+      for (let channel = 0; channel < audio.numberOfChannels; channel += 1) {
+        const samples = new Float32Array(audio.numberOfFrames);
+        audio.copyTo(samples, { planeIndex: channel, format: "f32-planar" });
+        buffer.copyToChannel(samples, channel);
+        samples.fill(0);
+      }
+      audio.close();
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      source.connect(context.destination);
+      const startsAt = Math.max(context.currentTime + 0.02, media.nextPlayback);
+      source.start(startsAt);
+      media.nextPlayback = startsAt + buffer.duration;
+    },
+  });
+  media.decoder.configure({ codec: "opus", sampleRate: 48_000, numberOfChannels: 1 });
+
+  media.encoder = new AudioEncoder({
+    error: (error) => toast(`Call encoder: ${error}`, true),
+    output: async (chunk) => {
+      if (media.stopped || chunk.byteLength > 1_275) return;
+      const packet = new Uint8Array(chunk.byteLength);
+      chunk.copyTo(packet);
+      try {
+        await invoke("send_call_audio", {
+          call: snapshot.id,
+          timestampMs: Math.max(0, Math.floor(chunk.timestamp / 1_000)),
+          opusPacket: [...packet],
+        });
+      } catch (error) {
+        if (!media.stopped) toast(String(error), true);
+      } finally {
+        packet.fill(0);
+      }
+    },
+  });
+  media.encoder.configure({
+    codec: "opus",
+    sampleRate: 48_000,
+    numberOfChannels: 1,
+    bitrate: 24_000,
+    opus: { frameDuration: 20_000 },
+  });
+  const processor = new MediaStreamTrackProcessor({ track: stream.getAudioTracks()[0] });
+  media.reader = processor.readable.getReader();
+  (async () => {
+    while (!media.stopped) {
+      const { done, value } = await media.reader.read();
+      if (done || media.stopped) break;
+      media.encoder.encode(value);
+      value.close();
+    }
+  })().catch((error) => {
+    if (!media.stopped) toast(`Microphone stream: ${error}`, true);
+  });
+
+  media.pollTimer = setInterval(async () => {
+    if (media.stopped || media.polling) return;
+    media.polling = true;
+    try {
+      for (let count = 0; count < 3; count += 1) {
+        const frame = await invoke("take_call_audio", { call: snapshot.id });
+        if (!frame) break;
+        const packet = new Uint8Array(frame.opus_packet);
+        media.decoder.decode(new EncodedAudioChunk({
+          type: "key",
+          timestamp: frame.timestamp_ms * 1_000,
+          data: packet,
+        }));
+        packet.fill(0);
+      }
+    } catch (error) {
+      if (!media.stopped && !String(error).includes("invalid call")) toast(String(error), true);
+    } finally {
+      media.polling = false;
+    }
+  }, 10);
+}
+
+async function handleCallUpdate(snapshot) {
+  state.call = snapshot;
+  if (snapshot.phase === "ringing" && snapshot.direction === "incoming"
+      && !state.callPrompted.has(snapshot.id)) {
+    state.callPrompted.add(snapshot.id);
+    const answer = window.confirm(`${contactName(snapshot.peer)} is calling over direct QUIC. Answer audio call?`);
+    if (answer) {
+      try {
+        state.pendingCallStream = await acquireCallStream();
+        await invoke("answer_call", { call: snapshot.id });
+      } catch (error) {
+        stopCallMedia();
+        await invoke("decline_call", { call: snapshot.id }).catch(() => {});
+        toast(String(error), true);
+      }
+    } else {
+      await invoke("decline_call", { call: snapshot.id });
+    }
+  } else if (snapshot.phase === "active") {
+    await startCallMedia(snapshot);
+  } else if (snapshot.phase === "ended") {
+    stopCallMedia();
+    showCallStatus(callEndText(snapshot.end_reason), "ended");
+    setTimeout(() => {
+      if (state.call?.id === snapshot.id) updateCallButton().catch(() => {});
+    }, 3_000);
+  }
+  await updateCallButton();
+}
+
+$("#btn-call").addEventListener("click", async () => {
+  const snapshot = state.call?.phase !== "ended" ? state.call : null;
+  try {
+    if (snapshot?.phase === "ringing" && snapshot.direction === "outgoing") {
+      stopCallMedia();
+      await invoke("cancel_call", { call: snapshot.id });
+    } else if (snapshot && ["connecting", "active"].includes(snapshot.phase)) {
+      stopCallMedia();
+      await invoke("hangup_call", { call: snapshot.id });
+    } else {
+      state.pendingCallStream = await acquireCallStream();
+      const callId = await invoke("start_call", { peer: state.currentId });
+      state.call = (await invoke("calls")).find((call) => call.id === callId) ?? {
+        id: callId, peer: state.currentId, direction: "outgoing", phase: "ringing",
+      };
+      await updateCallButton();
+    }
+  } catch (error) {
+    stopCallMedia();
+    toast(String(error), true);
+  }
+});
 
 function contactNameWarningText(assessment) {
   const messages = [];
@@ -1630,6 +1923,7 @@ function bubble(m, formatted) {
   const meta = document.createElement("span");
   meta.className = "meta";
   meta.append(fmtTime(m.timestamp));
+  appendExpiryMetadata(meta, m);
   if (m.outbound) {
     const st = document.createElement("span");
     st.className = "state" + (m.state === "delivered" ? " state-delivered" : "");
@@ -1637,6 +1931,7 @@ function bubble(m, formatted) {
     meta.append(st);
   }
   el.append(meta);
+  appendEditMetadata(el, meta, m, false);
   state.msgEls.set(m.id, el);
   return el;
 }
@@ -1666,7 +1961,9 @@ function groupBubble(m, formatted) {
   const meta = document.createElement("span");
   meta.className = "meta";
   meta.textContent = fmtTime(m.timestamp);
+  appendExpiryMetadata(meta, m);
   el.append(meta);
+  appendEditMetadata(el, meta, m, true);
   if (m.outbound) {
     const deliveries = document.createElement("span");
     deliveries.className = "deliveries";
@@ -1681,6 +1978,86 @@ function groupBubble(m, formatted) {
   }
   state.msgEls.set(m.id, el);
   return el;
+}
+
+function appendExpiryMetadata(meta, message) {
+  if (message.content_kind !== "disappearing_text" || !message.expires_at) return;
+  const marker = document.createElement("span");
+  marker.className = "expiry-marker";
+  marker.textContent = ` · removes ${fmtExpiry(message.expires_at)}`;
+  marker.title = "Removed locally at this time. Other devices may retain copies.";
+  meta.append(marker);
+}
+
+function appendEditMetadata(container, meta, message, group) {
+  if (message.edited) {
+    const marker = document.createElement("span");
+    marker.className = "edited-marker";
+    marker.textContent = ` · edited r${message.edit_revision}`;
+    meta.append(marker);
+  }
+  if (message.outbound && message.content_kind === "text") {
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "message-edit ghost";
+    edit.textContent = "Edit";
+    edit.setAttribute("aria-label", "Edit this message");
+    edit.addEventListener("click", () => openMessageEdit(message, group));
+    meta.append(" · ", edit);
+  }
+  if (!message.edited || !message.versions?.length) return;
+  const history = document.createElement("details");
+  history.className = "edit-history";
+  const summary = document.createElement("summary");
+  summary.textContent = `Version history (${message.versions.length})`;
+  history.append(summary);
+  const list = document.createElement("ol");
+  for (const version of [...message.versions].reverse()) {
+    const item = document.createElement("li");
+    const label = document.createElement("strong");
+    label.textContent = version.revision === 0 ? "Original" : `Revision ${version.revision}`;
+    const time = document.createElement("span");
+    time.className = "version-time";
+    time.textContent = ` · ${fmtTime(version.timestamp)}`;
+    const body = document.createElement("div");
+    body.className = "version-body";
+    body.textContent = version.body;
+    item.append(label, time, body);
+    list.append(item);
+  }
+  history.append(list);
+  container.append(history);
+}
+
+function openMessageEdit(message, group) {
+  if (!message.outbound || message.content_kind !== "text") return;
+  const conversation = state.currentId;
+  const root = openModal("Edit message", "tpl-message-edit");
+  const body = root.querySelector('[data-f="body"]');
+  body.value = message.body;
+  root.addEventListener("click", async (event) => {
+    if (!event.target.matches('[data-act="save"]')) return;
+    event.preventDefault();
+    try {
+      if (body.value.length === 0) throw "write replacement text first";
+      const exact = {
+        targetAuthor: state.peer,
+        targetContentId: message.id,
+        text: body.value,
+      };
+      if (group) {
+        await invoke("edit_group_message", { group: conversation, ...exact });
+      } else {
+        await invoke("edit_message", { peer: conversation, ...exact });
+      }
+      closeModal();
+      await renderMessages();
+    } catch (error) {
+      showError(root, error);
+    }
+  });
+  body.focus();
+  body.select();
 }
 
 function scheduledBubble(message, formatted) {
@@ -1747,6 +2124,35 @@ async function exportAttachment(attachment) {
   toast(`Exported ${primary?.filename ?? "attachment"}`);
 }
 
+async function consumeViewOnceAttachment(attachment) {
+  const primary = attachment.objects.find((object) => !object.preview) ?? attachment.objects[0];
+  const name = primary?.filename ?? "view-once-attachment";
+  if (!window.confirm(`Reveal “${name}” once? Komms records consumption and removes its local message and media before writing the file. Other devices and applications may retain copies.`)) return;
+  const path = await savePath({ title: "Reveal view-once attachment once", defaultPath: name });
+  if (!path) return;
+  await call("consume_view_once_attachment", { transfer: attachment.transfer_id, path });
+  toast(`Revealed ${name} once and removed it from Komms on this device`);
+  await renderMessages();
+}
+
+async function openAttachment(attachment) {
+  const primary = attachment.objects.find((object) => !object.preview) ?? attachment.objects[0];
+  const name = primary?.filename ?? "attachment";
+  if (!window.confirm(`Open “${name}” with another application? The file was not scanned for malware.`)) return;
+  await call("open_attachment", { transfer: attachment.transfer_id });
+  toast(`Opened ${name}`);
+}
+
+function attachmentWarningText(warning) {
+  switch (warning) {
+    case "media_type_mismatch": return "The filename extension and claimed media type disagree.";
+    case "dangerous_type": return "This name or type can contain executable or active content.";
+    case "unrecognized_type": return "Komms does not recognize this file type.";
+    case "missing_filename": return "No filename was supplied, so its extension cannot be checked.";
+    default: return "This file has an unknown presentation warning.";
+  }
+}
+
 function attachmentRow(attachment) {
   const primary = attachment.objects.find((object) => !object.preview) ?? attachment.objects[0];
   const row = document.createElement("article");
@@ -1757,15 +2163,30 @@ function attachmentRow(attachment) {
   const title = document.createElement("span");
   title.className = "attachment-title";
   const isAudio = primary?.media_type === "audio/wav";
-  title.textContent = isAudio ? "Audio message" : (primary?.filename ?? "Attachment");
+  title.textContent = attachment.view_once ? `View once · ${primary?.filename ?? "Attachment"}` : isAudio ? "Audio message" : (primary?.filename ?? "Attachment");
   const transferState = document.createElement("span");
   transferState.className = `attachment-state ${attachment.state}`;
   transferState.textContent = `${attachment.direction} · ${attachment.state.replaceAll("_", " ")}`;
   head.append(title, transferState);
   row.append(head);
 
+  const safety = document.createElement("div");
+  safety.className = "attachment-safety";
+  const noScan = document.createElement("p");
+  noScan.textContent = attachment.view_once
+    ? `Sender-provided name and type. Not scanned. Opening is terminal here${attachment.expires_at ? `; unopened copy removes ${fmtExpiry(attachment.expires_at)}` : ""}. Other devices may retain copies.`
+    : "Sender-provided name and type. Not scanned for malware; completed files never open automatically.";
+  safety.append(noScan);
+  for (const warning of primary?.presentation?.warnings ?? []) {
+    const message = document.createElement("p");
+    message.className = "attachment-warning";
+    message.textContent = attachmentWarningText(warning);
+    safety.append(message);
+  }
+  row.append(safety);
+
   const preview = attachment.objects.find((object) => object.preview && object.state === "complete");
-  if (preview) {
+  if (preview && !attachment.view_once) {
     const image = document.createElement("img");
     image.className = "attachment-preview";
     image.alt = `Local preview of ${primary?.filename ?? "attachment"}`;
@@ -1779,7 +2200,7 @@ function attachmentRow(attachment) {
       })
       .catch(() => image.remove());
   }
-  if (!preview && primary?.media_type === "image/png" && attachment.state === "complete") {
+  if (!attachment.view_once && !preview && primary?.media_type === "image/png" && attachment.state === "complete") {
     const image = document.createElement("img");
     image.className = "attachment-preview";
     image.alt = `Protected exact image from ${attachment.direction === "inbound" ? "sender" : "you"}`;
@@ -1789,7 +2210,7 @@ function attachmentRow(attachment) {
       .catch(() => image.remove());
   }
 
-  if (isAudio && attachment.state === "complete") {
+  if (!attachment.view_once && isAudio && attachment.state === "complete") {
     const audioCard = document.createElement("div");
     audioCard.className = "audio-card";
     audioCard.setAttribute("aria-busy", "true");
@@ -1855,7 +2276,12 @@ function attachmentRow(attachment) {
     }
   }
   if (inbound && attachment.state === "complete") {
-    actions.append(attachmentButton("Export…", "primary", () => exportAttachment(attachment)));
+    if (attachment.view_once) {
+      actions.append(attachmentButton("Reveal once…", "primary", () => consumeViewOnceAttachment(attachment)));
+    } else if (primary?.presentation?.open_policy === "external_open") {
+      actions.append(attachmentButton("Open…", "ghost", () => openAttachment(attachment)));
+    }
+    if (!attachment.view_once) actions.append(attachmentButton("Export…", "primary", () => exportAttachment(attachment)));
   }
   if (actions.childElementCount > 0) row.append(actions);
   return row;
@@ -1875,10 +2301,108 @@ function renderAttachments(attachments) {
   for (const attachment of matching) panel.append(attachmentRow(attachment));
 }
 
+function renderPolls(polls, authority) {
+  const panel = $("#group-polls");
+  panel.replaceChildren();
+  panel.hidden = state.currentKind !== "group" || polls.length === 0;
+  for (const poll of polls) {
+    const card = document.createElement("article");
+    card.className = "poll-card";
+    card.setAttribute("aria-label", `Poll: ${poll.question}`);
+    const question = document.createElement("h3");
+    question.textContent = poll.question;
+    const policy = document.createElement("p");
+    policy.className = "poll-policy";
+    policy.textContent = poll.closed
+      ? (poll.moderated_by
+        ? `Closed by owner ${memberLabel(poll.moderated_by)} · signed moderation snapshot · votes visible to all members`
+        : "Closed · final creator snapshot · votes visible to all members")
+      : "Open · single choice · votes visible to all members · not anonymous";
+    const choices = document.createElement("div");
+    choices.className = "poll-options";
+    choices.setAttribute("role", "group");
+    choices.setAttribute("aria-label", poll.question);
+    for (const option of poll.options) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "poll-option";
+      button.disabled = poll.closed || !poll.eligible;
+      button.setAttribute("aria-pressed", option.selected_by_me ? "true" : "false");
+      button.setAttribute("aria-label", `${option.text}, ${option.votes} vote${option.votes === 1 ? "" : "s"}${option.selected_by_me ? ", your choice" : ""}`);
+      const label = document.createElement("span");
+      label.textContent = option.text;
+      const count = document.createElement("strong");
+      count.textContent = String(option.votes);
+      button.append(label, count);
+      button.addEventListener("click", async () => {
+        try {
+          await call("vote_group_poll", {
+            group: poll.group,
+            pollAuthor: poll.author,
+            pollId: poll.id,
+            optionId: option.id,
+          });
+          await renderMessages();
+          toast(`Vote recorded for “${option.text}”. Votes are visible to group members.`);
+        } catch (error) { toast(String(error), true); }
+      });
+      choices.append(button);
+    }
+    const voters = document.createElement("p");
+    voters.className = "poll-voters";
+    voters.textContent = poll.votes.length === 0
+      ? "No votes yet."
+      : `Visible votes: ${poll.votes.map((vote) => {
+        const choice = poll.options.find((option) => option.id === vote.option_id)?.text ?? "unavailable choice";
+        return `${memberLabel(vote.voter)} → ${choice}`;
+      }).join(", ")}.`;
+    card.append(question, policy, choices, voters);
+    if (poll.can_close) {
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "ghost";
+      close.textContent = "Close poll…";
+      close.addEventListener("click", async () => {
+        if (!confirm(`Close “${poll.question}” with the visible vote heads shown now? This cannot be undone.`)) return;
+        try {
+          await call("close_group_poll", {
+            group: poll.group,
+            pollAuthor: poll.author,
+            pollId: poll.id,
+          });
+          await renderMessages();
+          toast("Poll closed with a final visible-vote snapshot.");
+        } catch (error) { toast(String(error), true); }
+      });
+      card.append(close);
+    }
+    if (!poll.closed && ["owner", "admin"].includes(authority?.my_role)) {
+      const moderate = document.createElement("button");
+      moderate.type = "button";
+      moderate.className = "ghost";
+      moderate.textContent = authority.my_role === "owner" ? "Moderate close…" : "Request moderation close…";
+      moderate.addEventListener("click", async () => {
+        if (!confirm(`Close “${poll.question}” through signed group authority? The owner sequences the exact final snapshot.`)) return;
+        try {
+          await call("moderate_group_poll_close", {
+            group: poll.group,
+            pollAuthor: poll.author,
+            pollId: poll.id,
+          });
+          await renderMessages();
+          toast(authority.my_role === "owner" ? "Poll closed by signed owner authority." : "Moderation request sent to the owner.");
+        } catch (error) { toast(String(error), true); }
+      });
+      card.append(moderate);
+    }
+    panel.append(card);
+  }
+}
+
 async function renderMessages() {
   const isNote = state.currentKind === "note";
   const isGroup = state.currentKind === "group";
-  const [msgs, scheduled, attachments] = await Promise.all([
+  const [msgs, scheduled, attachments, polls, authority] = await Promise.all([
     isNote
       ? call("note_to_self_messages")
       : isGroup
@@ -1886,11 +2410,14 @@ async function renderMessages() {
       : call("messages", { peer: state.currentId }),
     isNote ? Promise.resolve([]) : call("scheduled_messages"),
     isNote ? Promise.resolve([]) : call("attachments"),
+    isGroup ? call("group_polls", { group: state.currentId }) : Promise.resolve([]),
+    isGroup ? call("group_authority", { group: state.currentId }) : Promise.resolve(null),
   ]);
+  state.currentAuthority = authority;
   const box = $("#messages");
   box.textContent = "";
   state.msgEls.clear();
-  const visibleMessages = msgs.filter((message) => message.content_kind !== "attachment");
+  const visibleMessages = msgs.filter((message) => !["attachment", "view_once_attachment"].includes(message.content_kind));
   const formattedMessages = await Promise.all(visibleMessages.map((message) => call("format_text", {
     source: message.body,
     highlights: formattingHighlights(message),
@@ -1912,6 +2439,7 @@ async function renderMessages() {
     box.append(scheduledBubble(visibleScheduled[index], formattedScheduled[index]));
   }
   renderAttachments(attachments);
+  renderPolls(polls, authority);
   box.scrollTop = box.scrollHeight;
 }
 
@@ -1920,7 +2448,16 @@ $("#composer").addEventListener("submit", async (e) => {
   const input = $("#composer-input");
   const visibleText = input.value;
   if (!visibleText.trim() || !state.currentId) return;
-  if (state.currentKind === "group" && state.mentionDraft.spans.length > 0) {
+  const lifetimeSecs = Number($("#composer-expiry").value);
+  if (lifetimeSecs > 0) {
+    if (state.currentKind === "group") {
+      await call("send_group_disappearing", { group: state.currentId, body: visibleText.trim(), lifetimeSecs });
+    } else if (state.currentKind === "contact") {
+      await call("send_disappearing", { peer: state.currentId, body: visibleText.trim(), lifetimeSecs });
+    } else {
+      await call("send_note_to_self", { body: visibleText.trim() });
+    }
+  } else if (state.currentKind === "group" && state.mentionDraft.spans.length > 0) {
     if (hasUnpairedSurrogate(visibleText)) {
       toast("The draft contains invalid Unicode and cannot be sent.", true);
       return;
@@ -1967,6 +2504,16 @@ $("#composer").addEventListener("submit", async (e) => {
   input.value = "";
   resetMentionDraft(state.currentKind === "group" ? "Use Mention member to choose an exact current roster identity." : "");
   await renderMessages();
+});
+
+$("#composer-expiry").addEventListener("change", (event) => {
+  const active = event.currentTarget.value !== "0";
+  $("#expiry-honesty").hidden = !active || state.currentKind === "note";
+  if (active && state.mentionDraft.spans.length > 0) {
+    state.mentionDraft.spans = [];
+    renderMentionTokens();
+    $("#mention-status").textContent = "Semantic mentions were removed from this draft because disappearing text is a distinct authenticated content type.";
+  }
 });
 
 function openScheduleModal(message = null) {
@@ -2137,6 +2684,14 @@ async function openImageEditor(selectedName, initial) {
   root.querySelector('[data-f="filename"]').value =
     (selectedName.includes(".") ? selectedName.replace(/\.[^.]+$/, "") : selectedName) + ".png";
   const carrierText = root.querySelector('[data-f="carrier"]');
+  const viewOnce = root.querySelector('[data-f="view-once"]');
+  const lifetime = root.querySelector('[data-f="lifetime"]');
+  const lifetimeRow = root.querySelector('[data-f="view-once-lifetime"]');
+  const viewOnceWarning = root.querySelector('[data-f="view-once-warning"]');
+  viewOnce.addEventListener("change", () => {
+    lifetimeRow.hidden = !viewOnce.checked;
+    viewOnceWarning.hidden = !viewOnce.checked;
+  });
   carrierText.textContent = carrier;
   carrierText.dataset.snapshot = carrier;
   setCropFields(root, null);
@@ -2213,6 +2768,8 @@ async function openImageEditor(selectedName, initial) {
           destination: draft.destination,
           filename: root.querySelector('[data-f="filename"]').value.trim() || null,
           expectedCarrier: carrierText.dataset.snapshot,
+          viewOnce: viewOnce.checked,
+          lifetimeSecs: Number(lifetime.value),
         });
         state.imageDraft = null;
         closeModal();
@@ -2244,6 +2801,14 @@ async function openGenericAttachment(path, selectedName) {
   root.querySelector('[data-f="filename"]').value = selectedName;
   root.querySelector('[data-f="media-type"]').value = guessedMime(selectedName);
   const carrierText = root.querySelector('[data-f="carrier"]');
+  const viewOnce = root.querySelector('[data-f="view-once"]');
+  const lifetime = root.querySelector('[data-f="lifetime"]');
+  const lifetimeRow = root.querySelector('[data-f="view-once-lifetime"]');
+  const viewOnceWarning = root.querySelector('[data-f="view-once-warning"]');
+  viewOnce.addEventListener("change", () => {
+    lifetimeRow.hidden = !viewOnce.checked;
+    viewOnceWarning.hidden = !viewOnce.checked;
+  });
   carrierText.textContent = carrier;
   carrierText.dataset.snapshot = carrier;
   root.addEventListener("click", async (event) => {
@@ -2267,14 +2832,26 @@ async function openGenericAttachment(path, selectedName) {
         return;
       }
       try {
-        await invoke("send_confirmed_attachment", {
-          conversation,
-          destination,
-          path,
-          mediaType,
-          filename: filename || null,
-          expectedCarrier: latest,
-        });
+        if (viewOnce.checked) {
+          const command = conversation === "group" ? "send_group_view_once_attachment" : "send_view_once_attachment";
+          const destinationArgs = conversation === "group" ? { group: destination } : { peer: destination };
+          await invoke(command, {
+            ...destinationArgs,
+            path,
+            mediaType,
+            filename: filename || null,
+            lifetimeSecs: Number(lifetime.value),
+          });
+        } else {
+          await invoke("send_confirmed_attachment", {
+            conversation,
+            destination,
+            path,
+            mediaType,
+            filename: filename || null,
+            expectedCarrier: latest,
+          });
+        }
       } catch (error) {
         const changed = carrierChangedText(error);
         if (changed === null) throw error;
@@ -2319,6 +2896,16 @@ $("#btn-attach").addEventListener("click", async () => {
 
 listen("node-event", async ({ payload: ev }) => {
   switch (ev.type) {
+    case "devices_changed": {
+      if (!$("#modal-backdrop").hidden && $("#modal-title").textContent === "Linked devices") {
+        await renderLinkedDevices($("#modal-body"));
+      }
+      break;
+    }
+    case "device_link_completed": {
+      await refreshStatus();
+      break;
+    }
     case "theme_changed": {
       const theme = await invoke("theme");
       applyTheme(theme.preference);
@@ -2339,6 +2926,10 @@ listen("node-event", async ({ payload: ev }) => {
     case "pins_changed": {
       await runLabelFilter(true);
       updateChatHead();
+      break;
+    }
+    case "call_updated": {
+      await handleCallUpdate(ev.call);
       break;
     }
     case "scheduled_message_updated":
@@ -2366,7 +2957,7 @@ listen("node-event", async ({ payload: ev }) => {
       break;
     }
     case "message_received": {
-      if (ev.content_kind === "attachment") {
+      if (["attachment", "view_once_attachment"].includes(ev.content_kind)) {
         if (state.currentKind === "contact" && ev.peer === state.currentId) await renderMessages();
         break;
       }
@@ -2377,6 +2968,10 @@ listen("node-event", async ({ payload: ev }) => {
         toast(`${contactName(ev.peer)}: ${ev.body.slice(0, 80)}`);
         refreshContacts();
       }
+      break;
+    }
+    case "message_edited": {
+      if (state.currentKind === "contact" && ev.peer === state.currentId) await renderMessages();
       break;
     }
     case "attachment_updated": {
@@ -2414,7 +3009,7 @@ listen("node-event", async ({ payload: ev }) => {
       break;
     }
     case "group_message_received": {
-      if (ev.content_kind === "attachment") {
+      if (["attachment", "view_once_attachment"].includes(ev.content_kind)) {
         if (state.currentKind === "group" && ev.group === state.currentId) await renderMessages();
         break;
       }
@@ -2426,6 +3021,39 @@ listen("node-event", async ({ payload: ev }) => {
         toast(`${group?.name ?? "Group"} · ${memberName(ev.sender)}: ${ev.body.slice(0, 80)}`);
         await refreshGroups();
       }
+      break;
+    }
+    case "group_message_edited": {
+      if (state.currentKind === "group" && ev.group === state.currentId) await renderMessages();
+      break;
+    }
+    case "poll_updated": {
+      if (state.currentKind === "group" && ev.group === state.currentId) {
+        await renderMessages();
+      } else {
+        const group = state.groups.find((item) => item.id === ev.group);
+        toast(`${group?.name ?? "Group"} poll updated. Votes are visible to members.`);
+      }
+      break;
+    }
+    case "group_authority_updated": {
+      await refreshGroups();
+      if (state.currentKind === "group" && ev.group === state.currentId) {
+        updateChatHead();
+        await renderMessages();
+      }
+      break;
+    }
+    case "group_admin_request_resolved": {
+      if (state.currentKind === "group" && ev.group === state.currentId) await renderMessages();
+      toast(ev.accepted ? "The owner accepted your group administration request." : `The owner rejected your group administration request (reason ${ev.reason}).`, !ev.accepted);
+      break;
+    }
+    case "ephemeral_removed": {
+      const matches = (ev.conversation_kind === "pairwise" && state.currentKind === "contact" && ev.conversation_id === state.currentId)
+        || (ev.conversation_kind === "group" && state.currentKind === "group" && ev.conversation_id === state.currentId);
+      if (matches) await renderMessages();
+      toast(ev.reason === "consumed" ? "View-once item removed from this device." : "Expired item removed from this device.");
       break;
     }
     case "group_delivery_updated": {
@@ -3140,13 +3768,20 @@ async function openGroupDetails() {
   const group = currentGroup();
   if (!group) return;
   if (!state.peer) state.peer = (await call("status")).peer;
-  const isCreator = group.creator === state.peer;
+  const authority = await call("group_authority", { group: group.id });
+  const isOwner = authority.my_role === "owner";
+  const isAdmin = authority.my_role === "admin";
   const root = openModal(`Members of ${group.name}`, "tpl-group-details");
-  root.querySelector(".group-summary").textContent = isCreator
-    ? `${group.members.length} members · You manage this group.`
-    : `${group.members.length} members · ${memberName(group.creator)} manages this group.`;
+  root.querySelector(".group-summary").textContent = `${group.members.length} members · ${memberName(authority.owner)} owns this group · generation ${authority.generation}${authority.signed ? " · signed authority" : " · legacy authority"}.`;
+  const manage = root.querySelector('[data-f="manage"]');
+  if (isOwner || isAdmin) {
+    manage.hidden = false;
+    root.querySelector('[data-f="rename"]').value = group.name;
+    root.querySelector('[data-act="rename"]').textContent = isOwner ? "Rename" : "Request rename";
+  }
   const roster = root.querySelector('[data-f="roster"]');
-  for (const peer of group.members) {
+  for (const member of authority.members) {
+    const peer = member.peer;
     const row = document.createElement("div");
     row.className = "member-row";
     row.dataset.peer = peer;
@@ -3155,9 +3790,24 @@ async function openGroupDetails() {
     name.textContent = memberName(peer);
     const role = document.createElement("span");
     role.className = "member-role";
-    role.textContent = peer === group.creator ? "creator" : "member";
+    role.textContent = member.role;
     row.append(name, role);
-    if (isCreator && peer !== state.peer) {
+    if (isOwner && member.role !== "owner") {
+      const roleButton = document.createElement("button");
+      roleButton.className = "ghost";
+      roleButton.dataset.act = "set-role";
+      roleButton.dataset.peer = peer;
+      roleButton.dataset.role = member.role === "admin" ? "member" : "admin";
+      roleButton.textContent = member.role === "admin" ? "Make member" : "Make admin";
+      row.append(roleButton);
+      const transfer = document.createElement("button");
+      transfer.className = "ghost";
+      transfer.dataset.act = "transfer-owner";
+      transfer.dataset.peer = peer;
+      transfer.textContent = "Make owner";
+      row.append(transfer);
+    }
+    if ((isOwner && member.role !== "owner") || (isAdmin && member.role === "member")) {
       const remove = document.createElement("button");
       remove.className = "danger";
       remove.dataset.act = "remove-member";
@@ -3170,7 +3820,7 @@ async function openGroupDetails() {
 
   const candidates = state.contacts.filter((contact) => !group.members.includes(contact.peer));
   const addWrap = root.querySelector('[data-f="add-wrap"]');
-  if (isCreator && candidates.length > 0) {
+  if ((isOwner || isAdmin) && candidates.length > 0) {
     addWrap.hidden = false;
     const select = root.querySelector('[data-f="add-peer"]');
     for (const contact of candidates) {
@@ -3184,6 +3834,38 @@ async function openGroupDetails() {
   root.addEventListener("click", async (event) => {
     const action = event.target.dataset.act;
     if (action === "close") closeModal();
+    if (action === "rename") {
+      try {
+        const name = root.querySelector('[data-f="rename"]').value.trim();
+        if (!name) throw "give this group a name";
+        await invoke("rename_group", { group: group.id, name });
+        closeModal();
+        await refreshGroups();
+        toast(isOwner ? "Group renamed." : "Rename request sent to the owner.");
+      } catch (err) { showError(root, err); }
+    }
+    if (action === "set-role") {
+      try {
+        await invoke("set_group_role", {
+          group: group.id,
+          peer: event.target.dataset.peer,
+          role: event.target.dataset.role,
+        });
+        closeModal();
+        await refreshGroups();
+        await openGroupDetails();
+      } catch (err) { showError(root, err); }
+    }
+    if (action === "transfer-owner") {
+      const peer = event.target.dataset.peer;
+      if (!confirm(`Transfer sole ownership to ${memberName(peer)}? You will become an admin.`)) return;
+      try {
+        await invoke("transfer_group_owner", { group: group.id, peer });
+        closeModal();
+        await refreshGroups();
+        await openGroupDetails();
+      } catch (err) { showError(root, err); }
+    }
     if (action === "add-member") {
       try {
         await invoke("add_group_member", {
@@ -3210,6 +3892,7 @@ async function openGroupDetails() {
       }
     }
     if (action === "leave") {
+      if (isOwner) { showError(root, "Transfer ownership before leaving this group."); return; }
       if (!window.confirm(`Leave ${group.name}? Its history stays on this device.`)) return;
       try {
         await invoke("leave_group", { group: group.id });
@@ -3227,6 +3910,85 @@ async function openGroupDetails() {
 }
 
 $("#btn-group-details").addEventListener("click", openGroupDetails);
+
+function openCreatePoll() {
+  const group = currentGroup();
+  if (!group) return;
+  const root = openModal(`Create poll in ${group.name}`, "tpl-create-poll");
+  const options = root.querySelector('[data-f="poll-options"]');
+  const add = root.querySelector('[data-act="add-option"]');
+
+  const refreshOptionControls = () => {
+    const rows = $$(".poll-option-edit-row", options);
+    for (const remove of $$('[data-act="remove-option"]', options)) {
+      remove.disabled = rows.length <= 2;
+    }
+    add.disabled = rows.length >= 12;
+  };
+
+  const addOption = (value = "") => {
+    if ($$(".poll-option-edit-row", options).length >= 12) return;
+    const row = document.createElement("div");
+    row.className = "poll-option-edit-row";
+    const label = document.createElement("label");
+    const number = $$(".poll-option-edit-row", options).length + 1;
+    label.textContent = `Choice ${number}`;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = value;
+    input.autocomplete = "off";
+    input.dataset.incognitoInput = "message";
+    input.setAttribute("aria-label", `Poll choice ${number}`);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "ghost";
+    remove.dataset.act = "remove-option";
+    remove.textContent = "Remove";
+    remove.setAttribute("aria-label", `Remove choice ${number}`);
+    remove.addEventListener("click", () => {
+      row.remove();
+      $$(".poll-option-edit-row", options).forEach((item, index) => {
+        item.querySelector("label").firstChild.textContent = `Choice ${index + 1}`;
+        item.querySelector("input").setAttribute("aria-label", `Poll choice ${index + 1}`);
+        item.querySelector("button").setAttribute("aria-label", `Remove choice ${index + 1}`);
+      });
+      refreshOptionControls();
+    });
+    label.append(input);
+    row.append(label, remove);
+    options.append(row);
+    refreshOptionControls();
+    return input;
+  };
+
+  addOption();
+  addOption();
+  add.addEventListener("click", () => addOption()?.focus());
+  root.querySelector('[data-act="create-poll"]').addEventListener("click", async () => {
+    const error = root.querySelector('[data-f="error"]');
+    error.hidden = true;
+    const question = root.querySelector('[data-f="poll-question"]').value;
+    const choices = $$("input", options).map((input) => input.value);
+    const bytes = (value) => new TextEncoder().encode(value).length;
+    try {
+      if (!question.trim()) throw "enter a poll question";
+      if (bytes(question) > 1024) throw "the poll question is longer than 1,024 UTF-8 bytes";
+      if (choices.length < 2) throw "add at least two choices";
+      if (choices.some((choice) => !choice.trim())) throw "every poll choice needs text";
+      if (choices.some((choice) => bytes(choice) > 256)) throw "each poll choice must be at most 256 UTF-8 bytes";
+      await call("create_group_poll", { group: group.id, question, options: choices });
+      closeModal();
+      await renderMessages();
+      toast("Visible-vote poll created for the current roster.");
+    } catch (err) {
+      error.textContent = String(err);
+      error.hidden = false;
+    }
+  });
+  root.querySelector('[data-f="poll-question"]').focus();
+}
+
+$("#btn-poll").addEventListener("click", openCreatePoll);
 
 // verify (safety number) modal
 $("#btn-verify").addEventListener("click", async () => {
@@ -3278,6 +4040,164 @@ $("#btn-theme").addEventListener("click", async () => {
   });
   root.addEventListener("click", (event) => {
     if (event.target.matches('[data-act="close"]')) closeModal();
+  });
+});
+
+async function renderLinkedDevices(root) {
+  const list = root.querySelector('[data-f="device-list"]');
+  const devices = await invoke("linked_devices");
+  list.replaceChildren();
+  for (const device of devices) {
+    const row = document.createElement("div");
+    row.className = "member-row";
+    const summary = document.createElement("div");
+    const name = document.createElement("strong");
+    name.textContent = device.name;
+    const detail = document.createElement("small");
+    const stateText = device.revoked_at
+      ? "revoked " + fmtTime(device.revoked_at)
+      : device.current ? "this device" : "active · seen " + fmtTime(device.last_seen);
+    detail.textContent = stateText + " · " + device.id;
+    summary.append(name, document.createElement("br"), detail);
+    const actions = document.createElement("div");
+    if (!device.revoked_at) {
+      const rename = document.createElement("button");
+      rename.className = "ghost";
+      rename.type = "button";
+      rename.textContent = "Rename";
+      rename.addEventListener("click", async () => {
+        const next = window.prompt("Signed device name", device.name);
+        if (next === null) return;
+        try {
+          await invoke("rename_linked_device", { device: device.id, name: next });
+          await renderLinkedDevices(root);
+        } catch (error) { showError(root, error); }
+      });
+      actions.append(rename);
+      if (!device.current) {
+        const sync = document.createElement("button");
+        sync.className = "ghost";
+        sync.type = "button";
+        sync.textContent = "Export sync";
+        sync.addEventListener("click", async () => {
+          try {
+            const bundle = await invoke("export_device_sync", { device: device.id });
+            await copyText(bundle);
+            toast("Encrypted sync for " + device.name + " copied");
+          } catch (error) { showError(root, error); }
+        });
+        const revoke = document.createElement("button");
+        revoke.className = "danger";
+        revoke.type = "button";
+        revoke.textContent = "Revoke";
+        revoke.addEventListener("click", async () => {
+          const confirmed = window.confirm("Permanently revoke “" + device.name + "”? This cannot be undone.");
+          if (!confirmed) return;
+          try {
+            await invoke("revoke_linked_device", { device: device.id, confirmed: true });
+            await renderLinkedDevices(root);
+          } catch (error) { showError(root, error); }
+        });
+        actions.append(sync, revoke);
+      }
+    }
+    row.append(summary, actions);
+    list.append(row);
+  }
+}
+
+async function openDeviceLinkSource() {
+  const root = openModal("Link another device", "tpl-device-link-source");
+  try {
+    const offer = await invoke("begin_device_link");
+    root.querySelector('[data-f="offer-qr"]').innerHTML = offer.qr_svg;
+    root.querySelector('[data-f="offer"]').value = offer.hex;
+  } catch (error) { showError(root, error); }
+  root.addEventListener("click", async (event) => {
+    try {
+      if (event.target.matches('[data-act="copy-offer"]')) {
+        await copyText(root.querySelector('[data-f="offer"]').value);
+      }
+      if (event.target.matches('[data-act="compare"]')) {
+        const responseHex = root.querySelector('[data-f="response"]').value.trim();
+        const code = await invoke("device_link_confirmation_code", { responseHex });
+        root.querySelector('[data-f="code"]').textContent = code;
+        root.querySelector('[data-f="approval"]').hidden = false;
+      }
+      if (event.target.matches('[data-act="approve"]')) {
+        const confirmed = root.querySelector('[data-f="confirmed"]').checked;
+        if (!confirmed) throw "compare the six digits on both devices first";
+        const responseHex = root.querySelector('[data-f="response"]').value.trim();
+        const selection = {
+          contacts: root.querySelector('[data-f="contacts"]').checked,
+          organization: root.querySelector('[data-f="organization"]').checked,
+          history: root.querySelector('[data-f="history"]').checked,
+        };
+        const packageHex = await invoke("approve_device_link", { responseHex, selection, confirmed: true });
+        root.querySelector('[data-f="package"]').value = packageHex;
+        root.querySelector('[data-f="package-wrap"]').hidden = false;
+      }
+      if (event.target.matches('[data-act="copy-package"]')) {
+        await copyText(root.querySelector('[data-f="package"]').value);
+      }
+    } catch (error) { showError(root, error); }
+  });
+}
+
+function openDeviceLinkTarget() {
+  const root = openModal("Link this new device", "tpl-device-link-target");
+  root.addEventListener("click", async (event) => {
+    try {
+      if (event.target.matches('[data-act="accept"]')) {
+        const accepted = await invoke("accept_device_link", {
+          offerHex: root.querySelector('[data-f="offer"]').value.trim(),
+          deviceName: root.querySelector('[data-f="name"]').value.trim(),
+        });
+        root.querySelector('[data-f="code"]').textContent = accepted.confirmation_code;
+        root.querySelector('[data-f="response"]').value = accepted.response_hex;
+        root.querySelector('[data-f="accepted"]').hidden = false;
+      }
+      if (event.target.matches('[data-act="copy-response"]')) {
+        await copyText(root.querySelector('[data-f="response"]').value);
+      }
+      if (event.target.matches('[data-act="complete"]')) {
+        const confirmed = root.querySelector('[data-f="confirmed"]').checked;
+        if (!confirmed) throw "compare the six digits on both devices first";
+        await invoke("complete_device_link", {
+          packageHex: root.querySelector('[data-f="package"]').value.trim(),
+          confirmed: true,
+        });
+        closeModal();
+        await refreshStatus();
+        await Promise.all([refreshContacts(), refreshGroups(), refreshFolders(), refreshLabels()]);
+        toast("Device linked with independent keys");
+      }
+    } catch (error) { showError(root, error); }
+  });
+}
+
+function openDeviceSyncImport() {
+  const root = openModal("Import linked-device sync", "tpl-device-sync");
+  root.addEventListener("click", async (event) => {
+    if (!event.target.matches('[data-act="import"]')) return;
+    try {
+      const inserted = await invoke("import_device_sync", {
+        bundleHex: root.querySelector('[data-f="bundle"]').value.trim(),
+      });
+      closeModal();
+      await Promise.all([refreshContacts(), refreshGroups(), refreshFolders(), refreshLabels()]);
+      toast("Device sync imported · " + inserted + " new events");
+    } catch (error) { showError(root, error); }
+  });
+}
+
+$("#btn-devices").addEventListener("click", async () => {
+  const root = openModal("Linked devices", "tpl-devices");
+  try { await renderLinkedDevices(root); } catch (error) { showError(root, error); }
+  root.addEventListener("click", (event) => {
+    if (event.target.matches('[data-act="begin-link"]')) openDeviceLinkSource();
+    if (event.target.matches('[data-act="join-link"]')) openDeviceLinkTarget();
+    if (event.target.matches('[data-act="import-sync"]')) openDeviceSyncImport();
   });
 });
 

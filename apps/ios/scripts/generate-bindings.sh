@@ -16,7 +16,7 @@ cargo build --manifest-path "$root/Cargo.toml" -p kult-ffi --release
 
 out="$core/.bindings"
 rm -rf "$out"
-cargo run --manifest-path "$root/Cargo.toml" -p kult-ffi --features bindgen \
+cargo run --release --manifest-path "$root/Cargo.toml" -p kult-ffi --features bindgen \
     --bin uniffi-bindgen -- \
     generate --library "$root/target/release/$lib" \
     --language swift --out-dir "$out" --no-format

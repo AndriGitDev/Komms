@@ -16,6 +16,7 @@ struct MainView: View {
     @State private var showLabels = false
     @State private var showPins = false
     @State private var showIcons = false
+    @State private var showDevices = false
     @State private var renameContact: Contact?
     @State private var navigation = NavigationPath()
 
@@ -182,6 +183,7 @@ struct MainView: View {
                         Button("New group") { showCreateGroup = true }
                         Button("Manage pins") { showPins = true }
                         Button("Manage private icons") { showIcons = true }
+                        Button("Linked devices") { showDevices = true }
                         Button("My pairing QR") { showMyQr = true }
                         Button("Backup…") { showBackup = true }
                         Button("Network settings") { showSettings = true }
@@ -195,6 +197,7 @@ struct MainView: View {
             }
             .sheet(isPresented: $showPins) { PinsView() }
             .sheet(isPresented: $showIcons) { CustomIconsView() }
+            .sheet(isPresented: $showDevices) { DevicesView() }
             .sheet(isPresented: $showMyQr) { MyBundleView() }
             .sheet(isPresented: $showAdd) { AddContactView() }
             .sheet(isPresented: Binding(

@@ -11,6 +11,30 @@
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize" />
 
+    <LinearLayout
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingHorizontal="12dp"
+        android:paddingVertical="4dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <Button
+            android:id="@+id/chat_call"
+            android:text="@string/call_start"
+            android:contentDescription="@string/call_start_description"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+
+        <TextView
+            android:id="@+id/chat_call_status"
+            android:accessibilityLiveRegion="polite"
+            android:paddingStart="12dp"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content" />
+    </LinearLayout>
+
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/chat_messages"
         android:paddingHorizontal="8dp"
@@ -18,6 +42,21 @@
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1" />
+
+    <ScrollView
+        android:id="@+id/chat_poll_section"
+        android:visibility="gone"
+        android:fillViewport="true"
+        android:paddingHorizontal="8dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <LinearLayout
+            android:id="@+id/chat_polls"
+            android:orientation="vertical"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+    </ScrollView>
 
     <LinearLayout
         android:id="@+id/chat_attachment_section"
@@ -92,6 +131,14 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content" />
 
+        <Button
+            android:id="@+id/chat_poll"
+            android:text="@string/poll_create_action"
+            android:contentDescription="@string/poll_create_description"
+            android:visibility="gone"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+
         <komms.android.IncognitoEditText
             android:id="@+id/chat_input"
             android:hint="@string/chat_hint"
@@ -112,6 +159,35 @@
             android:id="@+id/chat_send"
             android:text="@string/chat_send"
             android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingHorizontal="12dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <TextView
+            android:text="@string/ephemeral_remove_after"
+            android:labelFor="@id/chat_ephemeral_lifetime"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+
+        <Spinner
+            android:id="@+id/chat_ephemeral_lifetime"
+            android:contentDescription="@string/ephemeral_remove_after"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+
+        <TextView
+            android:id="@+id/chat_ephemeral_honesty"
+            android:text="@string/ephemeral_honesty"
+            android:textSize="11sp"
+            android:visibility="gone"
+            android:layout_width="0dp"
+            android:layout_weight="1"
             android:layout_height="wrap_content" />
     </LinearLayout>
 

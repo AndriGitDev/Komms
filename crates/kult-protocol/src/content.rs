@@ -7,9 +7,12 @@
 use alloc::vec::Vec;
 
 use crate::{
-    decode_attachment_manifest, decode_mention_payload, encode_attachment_manifest,
-    encode_mention_payload, AttachmentManifest, DecodedAttachmentManifest, DecodedMention, Mention,
-    MentionSpan, ProtocolError, Result,
+    decode_attachment_manifest, decode_call_control_payload, decode_edit_payload,
+    decode_ephemeral_payload, decode_group_authority, decode_mention_payload, decode_poll_payload,
+    encode_attachment_manifest, encode_edit_payload, encode_mention_payload, AttachmentManifest,
+    CallControl, DecodedAttachmentManifest, DecodedCallControl, DecodedEdit, DecodedEphemeral,
+    DecodedGroupAuthority, DecodedMention, DecodedPoll, Edit, Ephemeral, Mention, MentionSpan,
+    Poll, ProtocolError, Result,
 };
 
 /// Prefix that unambiguously distinguishes typed content from valid UTF-8.
@@ -22,6 +25,16 @@ pub const CONTENT_KIND_TEXT: u16 = 1;
 pub const CONTENT_KIND_ATTACHMENT: u16 = 2;
 /// The v1 kind assigned to canonical group mentions.
 pub const CONTENT_KIND_MENTION: u16 = 3;
+/// The v1 kind assigned to immutable authenticated message edits.
+pub const CONTENT_KIND_EDIT: u16 = 4;
+/// The v1 kind assigned to disappearing text and view-once attachments.
+pub const CONTENT_KIND_EPHEMERAL: u16 = 5;
+/// The v1 kind assigned to authenticated group poll events.
+pub const CONTENT_KIND_POLL: u16 = 6;
+/// The v1 kind assigned to owner-signed group authority state.
+pub const CONTENT_KIND_GROUP_AUTHORITY: u16 = 7;
+/// The v1 kind assigned to transient pairwise call controls.
+pub const CONTENT_KIND_CALL_CONTROL: u16 = 8;
 /// Size of the fixed v1 content header.
 pub const CONTENT_HEADER_LEN: usize = 28;
 /// Maximum unpadded content frame size.
@@ -63,6 +76,41 @@ pub enum DecodedContent<'a> {
         id: [u8; 16],
         /// Exact fallback text plus stable semantic peer spans.
         mention: Mention<'a>,
+    },
+    /// A canonical v1 immutable message edit.
+    Edit {
+        /// Random author-minted id for this edit event.
+        id: [u8; 16],
+        /// Exact target, revision, and replacement text.
+        edit: Edit<'a>,
+    },
+    /// Canonical v1 content with authenticated local/network retention semantics.
+    Ephemeral {
+        /// Random author-minted id, scoped to the conversation and author.
+        id: [u8; 16],
+        /// Exact supported ephemeral mode and payload.
+        ephemeral: Ephemeral<'a>,
+    },
+    /// Canonical group-only poll creation, vote, or closure event.
+    Poll {
+        /// Random author-minted id for this exact poll event.
+        id: [u8; 16],
+        /// Exact supported poll event.
+        poll: Poll<'a>,
+    },
+    /// Canonical group-only owner-signed role/authority state.
+    GroupAuthority {
+        /// Random event id for this exact committed state.
+        id: [u8; 16],
+        /// Exact canonical authority payload for authority-aware callers.
+        payload: &'a [u8],
+    },
+    /// Canonical transient pairwise call state; never chat history.
+    CallControl {
+        /// Random event id for this exact transition.
+        id: [u8; 16],
+        /// Exact supported call transition.
+        control: CallControl,
     },
     /// Authenticated bytes the current client cannot interpret.
     Unsupported {
@@ -114,6 +162,82 @@ pub fn encode_mention(id: [u8; 16], text: &str, spans: &[MentionSpan]) -> Result
     frame.extend_from_slice(&CONTENT_MAGIC);
     frame.push(CONTENT_FORMAT_V1);
     frame.extend_from_slice(&CONTENT_KIND_MENTION.to_le_bytes());
+    frame.push(0);
+    frame.extend_from_slice(&id);
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    frame.extend_from_slice(&payload);
+    Ok(frame)
+}
+
+/// Encode a canonical immutable Edit as a v1 content frame.
+pub fn encode_edit(id: [u8; 16], edit: &Edit<'_>) -> Result<Vec<u8>> {
+    let payload = encode_edit_payload(edit)?;
+    let mut frame = Vec::with_capacity(CONTENT_HEADER_LEN + payload.len());
+    frame.extend_from_slice(&CONTENT_MAGIC);
+    frame.push(CONTENT_FORMAT_V1);
+    frame.extend_from_slice(&CONTENT_KIND_EDIT.to_le_bytes());
+    frame.push(0);
+    frame.extend_from_slice(&id);
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    frame.extend_from_slice(&payload);
+    Ok(frame)
+}
+
+/// Wrap one canonical ephemeral payload in the common v1 content frame.
+pub fn encode_ephemeral(id: [u8; 16], payload: &[u8]) -> Result<Vec<u8>> {
+    if payload.len() > MAX_CONTENT_PAYLOAD_LEN {
+        return Err(ProtocolError::TooLarge);
+    }
+    let mut frame = Vec::with_capacity(CONTENT_HEADER_LEN + payload.len());
+    frame.extend_from_slice(&CONTENT_MAGIC);
+    frame.push(CONTENT_FORMAT_V1);
+    frame.extend_from_slice(&CONTENT_KIND_EPHEMERAL.to_le_bytes());
+    frame.push(0);
+    frame.extend_from_slice(&id);
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    frame.extend_from_slice(payload);
+    Ok(frame)
+}
+
+/// Wrap one canonical poll payload in the common v1 content frame.
+pub fn encode_poll(id: [u8; 16], payload: &[u8]) -> Result<Vec<u8>> {
+    if payload.len() > MAX_CONTENT_PAYLOAD_LEN {
+        return Err(ProtocolError::TooLarge);
+    }
+    let mut frame = Vec::with_capacity(CONTENT_HEADER_LEN + payload.len());
+    frame.extend_from_slice(&CONTENT_MAGIC);
+    frame.push(CONTENT_FORMAT_V1);
+    frame.extend_from_slice(&CONTENT_KIND_POLL.to_le_bytes());
+    frame.push(0);
+    frame.extend_from_slice(&id);
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    frame.extend_from_slice(payload);
+    Ok(frame)
+}
+
+/// Wrap one canonical group-authority payload in the common v1 content frame.
+pub fn encode_group_authority(id: [u8; 16], payload: &[u8]) -> Result<Vec<u8>> {
+    if payload.len() > MAX_CONTENT_PAYLOAD_LEN {
+        return Err(ProtocolError::TooLarge);
+    }
+    let mut frame = Vec::with_capacity(CONTENT_HEADER_LEN + payload.len());
+    frame.extend_from_slice(&CONTENT_MAGIC);
+    frame.push(CONTENT_FORMAT_V1);
+    frame.extend_from_slice(&CONTENT_KIND_GROUP_AUTHORITY.to_le_bytes());
+    frame.push(0);
+    frame.extend_from_slice(&id);
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    frame.extend_from_slice(payload);
+    Ok(frame)
+}
+
+/// Wrap one canonical transient call control in the common v1 content frame.
+pub fn encode_call_control(id: [u8; 16], control: &CallControl) -> Result<Vec<u8>> {
+    let payload = crate::encode_call_control_payload(control)?;
+    let mut frame = Vec::with_capacity(CONTENT_HEADER_LEN + payload.len());
+    frame.extend_from_slice(&CONTENT_MAGIC);
+    frame.push(CONTENT_FORMAT_V1);
+    frame.extend_from_slice(&CONTENT_KIND_CALL_CONTROL.to_le_bytes());
     frame.push(0);
     frame.extend_from_slice(&id);
     frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
@@ -197,6 +321,42 @@ pub fn decode_content(bytes: &[u8]) -> DecodedContent<'_> {
             },
             DecodedMention::Malformed => DecodedContent::Malformed,
         },
+        CONTENT_KIND_EDIT => match decode_edit_payload(payload) {
+            DecodedEdit::Edit(edit) => DecodedContent::Edit { id, edit },
+            DecodedEdit::Malformed => DecodedContent::Malformed,
+        },
+        CONTENT_KIND_EPHEMERAL => match decode_ephemeral_payload(payload) {
+            DecodedEphemeral::Ephemeral(ephemeral) => DecodedContent::Ephemeral { id, ephemeral },
+            DecodedEphemeral::Unsupported => DecodedContent::Unsupported {
+                format_version: Some(format_version),
+                kind: Some(kind),
+            },
+            DecodedEphemeral::Malformed => DecodedContent::Malformed,
+        },
+        CONTENT_KIND_POLL => match decode_poll_payload(payload) {
+            DecodedPoll::Poll(poll) => DecodedContent::Poll { id, poll },
+            DecodedPoll::Unsupported => DecodedContent::Unsupported {
+                format_version: Some(format_version),
+                kind: Some(kind),
+            },
+            DecodedPoll::Malformed => DecodedContent::Malformed,
+        },
+        CONTENT_KIND_GROUP_AUTHORITY => match decode_group_authority(payload) {
+            DecodedGroupAuthority::State(_) => DecodedContent::GroupAuthority { id, payload },
+            DecodedGroupAuthority::Unsupported => DecodedContent::Unsupported {
+                format_version: Some(format_version),
+                kind: Some(kind),
+            },
+            DecodedGroupAuthority::Malformed => DecodedContent::Malformed,
+        },
+        CONTENT_KIND_CALL_CONTROL => match decode_call_control_payload(payload) {
+            DecodedCallControl::Control(control) => DecodedContent::CallControl { id, control },
+            DecodedCallControl::Unsupported => DecodedContent::Unsupported {
+                format_version: Some(format_version),
+                kind: Some(kind),
+            },
+            DecodedCallControl::Malformed => DecodedContent::Malformed,
+        },
         _ => DecodedContent::Unsupported {
             format_version: Some(format_version),
             kind: Some(kind),
@@ -207,6 +367,7 @@ pub fn decode_content(bytes: &[u8]) -> DecodedContent<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{encode_poll_vote_payload, PollVote};
     use proptest::prelude::*;
 
     #[test]
@@ -258,6 +419,56 @@ mod tests {
     }
 
     #[test]
+    fn edit_content_golden_vector() {
+        let id = [0x11; 16];
+        let edit = Edit {
+            target_author: [0x22; 32],
+            target_content_id: [0x33; 16],
+            revision: 7,
+            text: "new",
+        };
+        let frame = encode_edit(id, &edit).unwrap();
+        let mut expected = vec![0xff, b'K', b'M', b'C', 1, 4, 0, 0];
+        expected.extend_from_slice(&id);
+        expected.extend_from_slice(&63u32.to_le_bytes());
+        expected.extend_from_slice(&edit.target_author);
+        expected.extend_from_slice(&edit.target_content_id);
+        expected.extend_from_slice(&edit.revision.to_le_bytes());
+        expected.extend_from_slice(&3u32.to_le_bytes());
+        expected.extend_from_slice(b"new");
+        assert_eq!(frame, expected);
+        assert_eq!(decode_content(&frame), DecodedContent::Edit { id, edit });
+    }
+
+    #[test]
+    fn poll_content_round_trips_through_common_frame() {
+        let id = [0x66; 16];
+        let vote = PollVote {
+            poll_author: [0x11; 32],
+            poll_id: [0x22; 16],
+            option_id: [0x33; 16],
+            revision: 4,
+        };
+        let frame = encode_poll(id, &encode_poll_vote_payload(&vote).unwrap()).unwrap();
+        assert!(matches!(
+            decode_content(&frame),
+            DecodedContent::Poll {
+                id: decoded_id,
+                poll: Poll::Vote(decoded_vote),
+            } if decoded_id == id && decoded_vote == vote
+        ));
+        let mut future = frame;
+        future[CONTENT_HEADER_LEN] = 2;
+        assert_eq!(
+            decode_content(&future),
+            DecodedContent::Unsupported {
+                format_version: Some(CONTENT_FORMAT_V1),
+                kind: Some(CONTENT_KIND_POLL),
+            }
+        );
+    }
+
+    #[test]
     fn legacy_and_typed_paths_never_confuse_each_other() {
         assert_eq!(
             decode_content(b"hello"),
@@ -287,12 +498,12 @@ mod tests {
         );
 
         frame = encode_text([7; 16], "x").unwrap();
-        frame[5..7].copy_from_slice(&4u16.to_le_bytes());
+        frame[5..7].copy_from_slice(&0x7fffu16.to_le_bytes());
         assert_eq!(
             decode_content(&frame),
             DecodedContent::Unsupported {
                 format_version: Some(1),
-                kind: Some(4)
+                kind: Some(0x7fff)
             }
         );
 

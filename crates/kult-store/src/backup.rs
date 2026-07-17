@@ -25,13 +25,12 @@
 //! File layout (strict, all-or-nothing, like the sneakernet bundle format):
 //!
 //! ```text
-//! magic "KKR4" (4) ‖ m_cost_kib u32 LE ‖ t_cost u32 LE ‖ p_cost u32 LE
+//! magic "KKR7" (4) ‖ m_cost_kib u32 LE ‖ t_cost u32 LE ‖ p_cost u32 LE
 //!   ‖ salt (16) ‖ sealed( postcard(BackupPayload) )
 //! ```
 //!
-//! Files with the older `KKR1` (pre-groups), `KKR2` (pre-local-metadata),
-//! and `KKR3` (pre-note-to-self) magic still restore with the same header
-//! layout.
+//! Files with the older `KKR1` through `KKR6` magic still restore with the
+//! same header layout.
 //!
 //! The Argon2id cost parameters ride in the header so a backup written on
 //! one device class (mobile profile) restores on any other; the sealed
@@ -46,17 +45,26 @@ use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
 use kult_crypto::{
-    derive_kek, mnemonic_from_entropy, mnemonic_to_entropy, GroupSenderChain, Identity, KdfProfile,
-    StorageKey,
+    derive_kek, mnemonic_from_entropy, mnemonic_to_entropy, DeviceCertificate, DeviceManifest,
+    DeviceManifestEntry, GroupSenderChain, Identity, KdfProfile, StorageKey, MAX_LINKED_DEVICES,
 };
+use kult_protocol::DeviceSyncEvent;
 
 use crate::{
-    ContactRecord, GroupMember, GroupMessageRecord, GroupRecord, LocalMetadataRecord,
-    MessageRecord, NoteMessageRecord, PendingAnnounce, Result, Store, StoreError,
+    ContactDeviceRecord, ContactRecord, DeviceStateRecord, EphemeralConversation, EphemeralRecord,
+    EphemeralState, GroupAuthorityRecord, GroupMember, GroupMessageRecord, GroupRecord,
+    LocalMetadataRecord, MessageRecord, NoteMessageRecord, PendingAnnounce, Result, Store,
+    StoreError,
 };
 
-/// Backup file magic: Komms recovery file, format 4 (note-to-self included).
-pub const BACKUP_MAGIC: [u8; 4] = *b"KKR4";
+/// Backup file magic: Komms recovery file, format 7 (linked-device authority).
+pub const BACKUP_MAGIC: [u8; 4] = *b"KKR7";
+/// The pre-linked-device format 6 magic — still restorable.
+pub const BACKUP_MAGIC_V6: [u8; 4] = *b"KKR6";
+/// The pre-group-authority format 5 magic — still restorable.
+pub const BACKUP_MAGIC_V5: [u8; 4] = *b"KKR5";
+/// The pre-ephemeral-tombstone format 4 magic — still restorable.
+pub const BACKUP_MAGIC_V4: [u8; 4] = *b"KKR4";
 /// The pre-note-to-self format 3 magic — still restorable.
 pub const BACKUP_MAGIC_V3: [u8; 4] = *b"KKR3";
 /// The pre-local-metadata format 2 magic — still restorable.
@@ -97,9 +105,66 @@ struct BackupPayload {
     /// Group message history (wire bodies stripped: any unserved fan-out
     /// belonged to the dead chains).
     group_messages: Vec<GroupMessageRecord>,
+    /// Signed C6 authority state and consumed admin request ids.
+    group_authorities: Vec<GroupAuthorityRecord>,
     /// User-authored local organization, drafts, preferences, and icons.
     local_metadata: Vec<LocalMetadataRecord>,
     /// First-class local note-to-self text history.
+    note_messages: Vec<NoteMessageRecord>,
+    /// Tombstones only: ephemeral plaintext/media is never backed up.
+    ephemeral: Vec<EphemeralRecord>,
+    /// Latest signed device authority, but never local device/channel secrets.
+    device_manifest: Option<DeviceManifest>,
+    /// Exporting physical device, revoked during recovery.
+    local_device: Option<[u8; 32]>,
+    /// Authenticated convergence events used for revocation cutoffs and sync.
+    device_sync_events: Vec<Vec<u8>>,
+    /// Contact physical endpoints; ratchet session state remains excluded.
+    contact_devices: Vec<ContactDeviceRecord>,
+}
+
+/// The `KKR6` payload shape, before linked-device authority existed.
+#[derive(Serialize, Deserialize)]
+struct BackupPayloadV6 {
+    created_at: u64,
+    identity: Vec<u8>,
+    contacts: Vec<ContactRecord>,
+    messages: Vec<MessageRecord>,
+    reset_peers: Vec<[u8; 32]>,
+    groups: Vec<BackupGroup>,
+    group_messages: Vec<GroupMessageRecord>,
+    group_authorities: Vec<GroupAuthorityRecord>,
+    local_metadata: Vec<LocalMetadataRecord>,
+    note_messages: Vec<NoteMessageRecord>,
+    ephemeral: Vec<EphemeralRecord>,
+}
+
+/// The `KKR5` payload shape, before C6 signed group authority existed.
+#[derive(Serialize, Deserialize)]
+struct BackupPayloadV5 {
+    created_at: u64,
+    identity: Vec<u8>,
+    contacts: Vec<ContactRecord>,
+    messages: Vec<MessageRecord>,
+    reset_peers: Vec<[u8; 32]>,
+    groups: Vec<BackupGroup>,
+    group_messages: Vec<GroupMessageRecord>,
+    local_metadata: Vec<LocalMetadataRecord>,
+    note_messages: Vec<NoteMessageRecord>,
+    ephemeral: Vec<EphemeralRecord>,
+}
+
+/// The `KKR4` payload shape, before ephemeral tombstones existed.
+#[derive(Serialize, Deserialize)]
+struct BackupPayloadV4 {
+    created_at: u64,
+    identity: Vec<u8>,
+    contacts: Vec<ContactRecord>,
+    messages: Vec<MessageRecord>,
+    reset_peers: Vec<[u8; 32]>,
+    groups: Vec<BackupGroup>,
+    group_messages: Vec<GroupMessageRecord>,
+    local_metadata: Vec<LocalMetadataRecord>,
     note_messages: Vec<NoteMessageRecord>,
 }
 
@@ -163,11 +228,37 @@ impl Store {
         rng: &mut impl CryptoRngCore,
     ) -> Result<(Vec<u8>, Zeroizing<String>)> {
         let identity = self.get_identity()?.ok_or(StoreError::NotAStore)?;
+        let mut ephemeral = self.ephemeral_records()?;
+        // Recovery never resurrects content carrying an erasure promise.
+        // Convert even currently-live markers into terminal tombstones and
+        // omit all associated plaintext and media (media is excluded from
+        // every backup generation already).
+        for record in &mut ephemeral {
+            record.state = EphemeralState::Expired;
+            record.transfer_ids.clear();
+        }
+        let me = identity.public().ed;
+        let device_state = self.get_device_state()?;
         let payload = BackupPayload {
             created_at: now,
             identity: identity.to_bytes().to_vec(),
             contacts: self.contacts()?,
-            messages: self.all_messages()?,
+            messages: self
+                .all_messages()?
+                .into_iter()
+                .filter(|message| {
+                    let author = if message.direction == crate::Direction::Outbound {
+                        me
+                    } else {
+                        message.peer
+                    };
+                    !ephemeral.iter().any(|record| {
+                        record.conversation == EphemeralConversation::Pairwise(message.peer)
+                            && record.author == author
+                            && record.content_id == message.id
+                    })
+                })
+                .collect(),
             reset_peers: self.session_peers()?,
             groups: self
                 .groups()?
@@ -184,13 +275,28 @@ impl Store {
             group_messages: self
                 .all_group_messages()?
                 .into_iter()
+                .filter(|message| {
+                    !ephemeral.iter().any(|record| {
+                        record.conversation == EphemeralConversation::Group(message.group)
+                            && record.author == message.sender
+                            && record.content_id == message.id
+                    })
+                })
                 .map(|mut m| {
                     m.wire_body = None;
                     m
                 })
                 .collect(),
+            group_authorities: self.group_authorities()?,
             local_metadata: self.local_metadata()?,
             note_messages: self.note_messages()?,
+            ephemeral,
+            device_manifest: device_state.as_ref().map(|state| state.manifest.clone()),
+            local_device: device_state
+                .as_ref()
+                .map(|state| state.local_certificate.device_id()),
+            device_sync_events: self.device_sync_events()?,
+            contact_devices: self.contact_devices()?,
         };
         let plain =
             Zeroizing::new(postcard::to_allocvec(&payload).map_err(|_| StoreError::Serialization)?);
@@ -235,7 +341,10 @@ impl Store {
             return Err(StoreError::NotABackup);
         }
         let version = match <[u8; 4]>::try_from(&backup[..4]).expect("length checked") {
-            BACKUP_MAGIC => 4,
+            BACKUP_MAGIC => 7,
+            BACKUP_MAGIC_V6 => 6,
+            BACKUP_MAGIC_V5 => 5,
+            BACKUP_MAGIC_V4 => 4,
             BACKUP_MAGIC_V3 => 3,
             BACKUP_MAGIC_V2 => 2,
             BACKUP_MAGIC_V1 => 1,
@@ -266,8 +375,14 @@ impl Store {
                     reset_peers: v1.reset_peers,
                     groups: Vec::new(),
                     group_messages: Vec::new(),
+                    group_authorities: Vec::new(),
                     local_metadata: Vec::new(),
                     note_messages: Vec::new(),
+                    ephemeral: Vec::new(),
+                    device_manifest: None,
+                    local_device: None,
+                    device_sync_events: Vec::new(),
+                    contact_devices: Vec::new(),
                 }
             }
             2 => {
@@ -280,8 +395,14 @@ impl Store {
                     reset_peers: v2.reset_peers,
                     groups: v2.groups,
                     group_messages: v2.group_messages,
+                    group_authorities: Vec::new(),
                     local_metadata: Vec::new(),
                     note_messages: Vec::new(),
+                    ephemeral: Vec::new(),
+                    device_manifest: None,
+                    local_device: None,
+                    device_sync_events: Vec::new(),
+                    contact_devices: Vec::new(),
                 }
             }
             3 => {
@@ -294,11 +415,77 @@ impl Store {
                     reset_peers: v3.reset_peers,
                     groups: v3.groups,
                     group_messages: v3.group_messages,
+                    group_authorities: Vec::new(),
                     local_metadata: v3.local_metadata,
                     note_messages: Vec::new(),
+                    ephemeral: Vec::new(),
+                    device_manifest: None,
+                    local_device: None,
+                    device_sync_events: Vec::new(),
+                    contact_devices: Vec::new(),
                 }
             }
-            4 => decode_exact(&plain)?,
+            4 => {
+                let v4: BackupPayloadV4 = decode_exact(&plain)?;
+                BackupPayload {
+                    created_at: v4.created_at,
+                    identity: v4.identity,
+                    contacts: v4.contacts,
+                    messages: v4.messages,
+                    reset_peers: v4.reset_peers,
+                    groups: v4.groups,
+                    group_messages: v4.group_messages,
+                    group_authorities: Vec::new(),
+                    local_metadata: v4.local_metadata,
+                    note_messages: v4.note_messages,
+                    ephemeral: Vec::new(),
+                    device_manifest: None,
+                    local_device: None,
+                    device_sync_events: Vec::new(),
+                    contact_devices: Vec::new(),
+                }
+            }
+            5 => {
+                let v5: BackupPayloadV5 = decode_exact(&plain)?;
+                BackupPayload {
+                    created_at: v5.created_at,
+                    identity: v5.identity,
+                    contacts: v5.contacts,
+                    messages: v5.messages,
+                    reset_peers: v5.reset_peers,
+                    groups: v5.groups,
+                    group_messages: v5.group_messages,
+                    group_authorities: Vec::new(),
+                    local_metadata: v5.local_metadata,
+                    note_messages: v5.note_messages,
+                    ephemeral: v5.ephemeral,
+                    device_manifest: None,
+                    local_device: None,
+                    device_sync_events: Vec::new(),
+                    contact_devices: Vec::new(),
+                }
+            }
+            6 => {
+                let v6: BackupPayloadV6 = decode_exact(&plain)?;
+                BackupPayload {
+                    created_at: v6.created_at,
+                    identity: v6.identity,
+                    contacts: v6.contacts,
+                    messages: v6.messages,
+                    reset_peers: v6.reset_peers,
+                    groups: v6.groups,
+                    group_messages: v6.group_messages,
+                    group_authorities: v6.group_authorities,
+                    local_metadata: v6.local_metadata,
+                    note_messages: v6.note_messages,
+                    ephemeral: v6.ephemeral,
+                    device_manifest: None,
+                    local_device: None,
+                    device_sync_events: Vec::new(),
+                    contact_devices: Vec::new(),
+                }
+            }
+            7 => decode_exact(&plain)?,
             _ => unreachable!("version matched above"),
         };
         let identity_bytes: Zeroizing<[u8; 64]> = Zeroizing::new(
@@ -314,6 +501,9 @@ impl Store {
         store.put_identity(&identity, rng)?;
         for contact in &payload.contacts {
             store.put_contact(contact, rng)?;
+        }
+        for endpoint in &payload.contact_devices {
+            store.put_contact_device(endpoint, rng)?;
         }
         for message in &payload.messages {
             store.put_message(message, rng)?;
@@ -360,12 +550,36 @@ impl Store {
         for message in &payload.group_messages {
             store.put_group_message(message, rng)?;
         }
+        for authority in &payload.group_authorities {
+            store.put_group_authority(authority, rng)?;
+        }
         for record in &payload.local_metadata {
             store.put_local_metadata(record, rng)?;
         }
         for message in &payload.note_messages {
             store.put_note_message(message, rng)?;
         }
+        for record in &payload.ephemeral {
+            store.put_ephemeral_record(record, rng)?;
+        }
+        for event in &payload.device_sync_events {
+            let decoded = DeviceSyncEvent::decode(event)?;
+            if let Some(manifest) = &payload.device_manifest {
+                decoded.verify(manifest)?;
+            } else {
+                return Err(StoreError::NotABackup);
+            }
+            store.put_device_sync_event(event, rng)?;
+        }
+        restore_device_state(
+            &store,
+            &identity,
+            payload.device_manifest,
+            payload.local_device,
+            &payload.device_sync_events,
+            payload.created_at,
+            rng,
+        )?;
         Ok(store)
     }
 
@@ -444,4 +658,92 @@ impl Store {
         )?;
         Ok(())
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn restore_device_state(
+    store: &Store,
+    account: &Identity,
+    prior_manifest: Option<DeviceManifest>,
+    prior_local_device: Option<[u8; 32]>,
+    sync_events: &[Vec<u8>],
+    created_at: u64,
+    rng: &mut impl CryptoRngCore,
+) -> Result<()> {
+    let device = Identity::generate(rng);
+    let certificate = DeviceCertificate::issue(account, &device, created_at, rng);
+    let manifest =
+        if let Some(mut manifest) = prior_manifest {
+            manifest.verify()?;
+            if manifest.account != account.public() {
+                return Err(StoreError::NotABackup);
+            }
+            let prior_local = prior_local_device.ok_or(StoreError::NotABackup)?;
+            if !manifest.devices.iter().any(|entry| {
+                entry.certificate.device_id() == prior_local && entry.revoked_at.is_none()
+            }) {
+                return Err(StoreError::NotABackup);
+            }
+            let counter_for = |device_id: &[u8; 32]| -> Result<u64> {
+                let mut counter = 0u64;
+                for encoded in sync_events {
+                    let event = DeviceSyncEvent::decode(encoded)?;
+                    if &event.author_device == device_id {
+                        counter = counter.max(event.counter);
+                    }
+                }
+                Ok(counter)
+            };
+            let active = manifest
+                .devices
+                .iter()
+                .filter(|entry| entry.revoked_at.is_none())
+                .count();
+            if active >= MAX_LINKED_DEVICES {
+                let cutoff = counter_for(&prior_local)?;
+                manifest.revoke_device(account, &prior_local, created_at, cutoff)?;
+            }
+            manifest.add_device(
+                account,
+                DeviceManifestEntry {
+                    certificate: certificate.clone(),
+                    name: "Recovered device".into(),
+                    last_seen: created_at,
+                    revoked_at: None,
+                    revoked_after_counter: None,
+                },
+            )?;
+            let old_active: Vec<[u8; 32]> = manifest
+                .devices
+                .iter()
+                .filter(|entry| {
+                    entry.revoked_at.is_none()
+                        && entry.certificate.device_id() != certificate.device_id()
+                })
+                .map(|entry| entry.certificate.device_id())
+                .collect();
+            for old in old_active {
+                let cutoff = counter_for(&old)?;
+                manifest.revoke_device(account, &old, created_at, cutoff)?;
+            }
+            manifest
+        } else {
+            DeviceManifest::initial(
+                account,
+                certificate.clone(),
+                "Recovered device".into(),
+                created_at,
+            )?
+        };
+    store.put_device_state(
+        &DeviceStateRecord {
+            local_device_secret: device.to_bytes().to_vec(),
+            local_certificate: certificate,
+            manifest,
+            sync_counter: 0,
+            channels: Vec::new(),
+        },
+        rng,
+    )?;
+    Ok(())
 }

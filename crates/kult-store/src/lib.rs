@@ -23,12 +23,20 @@ use kult_crypto::{derive_kek, CryptoError, Identity, KdfProfile, Session, Storag
 use kult_protocol::{CapabilityControl, Envelope};
 
 mod backup;
+mod devices;
+mod ephemeral;
 mod local_metadata;
 mod media;
 mod note;
 mod scheduled;
 
 pub use backup::BACKUP_MAGIC;
+pub use devices::{
+    ContactDeviceRecord, DeviceChannelRecord, DeviceStateRecord, DeviceTransferGroup,
+    DeviceTransferSelection, DeviceTransferSnapshot, MessageDeviceDeliveryRecord,
+    MAX_DEVICE_SYNC_EVENTS, MAX_DEVICE_SYNC_EVENT_BYTES,
+};
+pub use ephemeral::{EphemeralConversation, EphemeralMode, EphemeralRecord, EphemeralState};
 pub use local_metadata::{
     render_label_color, valid_folder_name, valid_label_color, valid_label_name, ConversationId,
     ConversationMetadata, CustomIconRecord, CustomIconTarget, DraftRecord, FolderAssignment,
@@ -283,6 +291,9 @@ pub enum QueueClass {
     Normal,
     /// Attachment manifests and bulk-lane records; never eligible for airtime.
     Bulk,
+    /// Transient call control; eligible only for an immediate direct QUIC
+    /// route and discarded rather than resumed after process restart.
+    Realtime,
 }
 
 /// A group member as stored: peer id plus their encoded public identity
@@ -339,6 +350,20 @@ pub struct GroupRecord {
     pub sent_since_rotation: u32,
     /// Announces owed to members (see [`PendingAnnounce`]).
     pub pending: Vec<PendingAnnounce>,
+}
+
+/// Sealed C6 authority state kept separate from the ADR-0012 group blob so
+/// legacy postcard records remain byte-compatible.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupAuthorityRecord {
+    /// Exact group id and table key.
+    pub group: [u8; 32],
+    /// Winning immutable authority content event id.
+    pub state_id: [u8; 16],
+    /// Canonical signed authority payload (content frame payload only).
+    pub state_payload: Vec<u8>,
+    /// Bounded signed admin request ids already terminally processed.
+    pub consumed_requests: Vec<[u8; 16]>,
 }
 
 /// Per-member delivery state of one outbound group message.
@@ -404,6 +429,7 @@ CREATE TABLE IF NOT EXISTS prekeys  (id INTEGER PRIMARY KEY CHECK (id = 1), blob
 CREATE TABLE IF NOT EXISTS pending  (seq INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS resets   (peer BLOB PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS groups       (gid BLOB PRIMARY KEY, blob BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS group_authority (gid BLOB PRIMARY KEY, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS group_chains (gid BLOB NOT NULL, peer BLOB NOT NULL, blob BLOB NOT NULL, PRIMARY KEY (gid, peer));
 CREATE TABLE IF NOT EXISTS group_msgs   (rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS media_transfers (id BLOB PRIMARY KEY, blob BLOB NOT NULL);
@@ -411,6 +437,11 @@ CREATE TABLE IF NOT EXISTS media_objects   (id BLOB PRIMARY KEY, blob BLOB NOT N
 CREATE TABLE IF NOT EXISTS local_metadata  (rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS note_messages   (rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS scheduled_messages (rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS ephemeral (rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS device_state (id INTEGER PRIMARY KEY CHECK (id = 1), blob BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS device_sync (rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS contact_devices (rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS message_device_delivery (rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
 ";
 
 /// An open, unlocked Komms store.
@@ -431,6 +462,8 @@ pub struct Store {
     k_local_metadata: StorageKey,
     k_notes: StorageKey,
     k_scheduled: StorageKey,
+    k_ephemeral: StorageKey,
+    k_devices: StorageKey,
     media_dir: PathBuf,
     media_limits: MediaLimits,
 }
@@ -525,6 +558,8 @@ impl Store {
             k_local_metadata: master.derive(b"KK-store-local-metadata"),
             k_notes: master.derive(b"KK-store-notes"),
             k_scheduled: master.derive(b"KK-store-scheduled"),
+            k_ephemeral: master.derive(b"KK-store-ephemeral"),
+            k_devices: master.derive(b"KK-store-devices"),
             media_dir,
             media_limits: MediaLimits::default(),
             conn,
@@ -592,6 +627,15 @@ impl Store {
             Some(s) => Ok(Some(Session::unseal(&s, &self.k_sessions)?)),
             None => Ok(None),
         }
+    }
+
+    /// Delete one exact physical-endpoint ratchet session.
+    pub fn delete_session(&self, peer: &[u8; 32]) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM sessions WHERE peer = ?1",
+            params![peer.as_slice()],
+        )?;
+        Ok(())
     }
 
     // ---- authenticated peer capabilities ---------------------------------
@@ -693,6 +737,33 @@ impl Store {
         Ok(false)
     }
 
+    /// Delete one exact pairwise history row after an expiry tombstone is durable.
+    pub fn delete_message_record(
+        &self,
+        peer: &[u8; 32],
+        direction: Direction,
+        id: &[u8; 16],
+    ) -> Result<bool> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT rowid_, blob FROM messages ORDER BY rowid_")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        for row in rows {
+            let (rowid, sealed) = row?;
+            let plain = self.k_messages.open(b"message", &sealed)?;
+            let record: MessageRecord =
+                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
+            if &record.peer == peer && record.direction == direction && &record.id == id {
+                self.conn
+                    .execute("DELETE FROM messages WHERE rowid_ = ?1", params![rowid])?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     // ---- contacts ----------------------------------------------------------
 
     /// Insert or replace a contact (sealed).
@@ -737,6 +808,14 @@ impl Store {
             out.push(postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?);
         }
         Ok(out)
+    }
+
+    /// Delete one exact sealed contact. Missing peers are an honest no-op.
+    pub fn delete_contact(&self, peer: &[u8; 32]) -> Result<bool> {
+        Ok(self.conn.execute(
+            "DELETE FROM contacts WHERE peer = ?1",
+            params![peer.as_slice()],
+        )? == 1)
     }
 
     // ---- own prekey secrets -------------------------------------------------
@@ -838,6 +917,66 @@ impl Store {
         Ok(())
     }
 
+    /// Remove every queued envelope addressed to one revoked physical endpoint.
+    pub fn queue_remove_peer(&self, peer: &[u8; 32]) -> Result<usize> {
+        let sequences: Vec<i64> = self
+            .queue_all()?
+            .into_iter()
+            .filter_map(|(seq, item)| (&item.peer == peer).then_some(seq))
+            .collect();
+        for sequence in &sequences {
+            self.queue_ack(*sequence)?;
+        }
+        Ok(sequences.len())
+    }
+
+    /// Retarget durable queue ownership after a legacy endpoint is bound to
+    /// its certified physical id. Envelope bytes remain end-to-end identical.
+    pub fn queue_retarget_peer(
+        &self,
+        old_peer: &[u8; 32],
+        new_peer: &[u8; 32],
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<usize> {
+        let rows: Vec<(i64, QueueItem)> = self
+            .queue_all()?
+            .into_iter()
+            .filter(|(_, item)| &item.peer == old_peer)
+            .collect();
+        for (sequence, mut item) in rows.iter().cloned() {
+            self.queue_ack(sequence)?;
+            item.peer = *new_peer;
+            self.queue_push(&item, rng)?;
+        }
+        Ok(rows.len())
+    }
+
+    /// Remove every queued envelope associated with one expired pairwise message.
+    pub fn queue_remove_message(&self, id: &[u8; 16]) -> Result<usize> {
+        let sequences: Vec<i64> = self
+            .queue_all()?
+            .into_iter()
+            .filter_map(|(seq, item)| (item.msg_id.as_ref() == Some(id)).then_some(seq))
+            .collect();
+        for sequence in &sequences {
+            self.queue_ack(*sequence)?;
+        }
+        Ok(sequences.len())
+    }
+
+    /// Remove every queued member copy associated with one expired group message.
+    pub fn queue_remove_group_message(&self, id: &[u8; 16]) -> Result<usize> {
+        let sequences: Vec<i64> = self
+            .queue_all()?
+            .into_iter()
+            .filter_map(|(seq, item)| (item.group_msg_id.as_ref() == Some(id)).then_some(seq))
+            .collect();
+        for sequence in &sequences {
+            self.queue_ack(*sequence)?;
+        }
+        Ok(sequences.len())
+    }
+
     // ---- inbound pending (envelopes that cannot be processed yet) ---------
 
     /// Stash an inbound envelope that cannot be consumed yet (e.g. it arrived
@@ -930,7 +1069,60 @@ impl Store {
             "DELETE FROM group_chains WHERE gid = ?1",
             params![id.as_slice()],
         )?;
+        self.conn.execute(
+            "DELETE FROM group_authority WHERE gid = ?1",
+            params![id.as_slice()],
+        )?;
         Ok(())
+    }
+
+    /// Persist or replace one sealed signed authority state.
+    pub fn put_group_authority(
+        &self,
+        rec: &GroupAuthorityRecord,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let plain =
+            Zeroizing::new(postcard::to_allocvec(rec).map_err(|_| StoreError::Serialization)?);
+        let sealed = self.k_groups.seal(b"group-authority", &plain, rng);
+        self.conn.execute(
+            "INSERT OR REPLACE INTO group_authority (gid, blob) VALUES (?1, ?2)",
+            params![rec.group.as_slice(), sealed],
+        )?;
+        Ok(())
+    }
+
+    /// Load one group's sealed signed authority state.
+    pub fn get_group_authority(&self, group: &[u8; 32]) -> Result<Option<GroupAuthorityRecord>> {
+        let sealed: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT blob FROM group_authority WHERE gid = ?1",
+                params![group.as_slice()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match sealed {
+            Some(sealed) => {
+                let plain = Zeroizing::new(self.k_groups.open(b"group-authority", &sealed)?);
+                Ok(Some(
+                    postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?,
+                ))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// All sealed C6 authority records for backup and audit.
+    pub fn group_authorities(&self) -> Result<Vec<GroupAuthorityRecord>> {
+        let mut stmt = self.conn.prepare("SELECT blob FROM group_authority")?;
+        let rows = stmt.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let plain = Zeroizing::new(self.k_groups.open(b"group-authority", &row?)?);
+            out.push(postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?);
+        }
+        Ok(out)
     }
 
     /// Persist (or replace) a co-member's receiving chain for a group. The
@@ -1038,6 +1230,33 @@ impl Store {
                     "UPDATE group_msgs SET blob = ?2 WHERE rowid_ = ?1",
                     params![rowid, sealed],
                 )?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Delete one exact group history row after an expiry tombstone is durable.
+    pub fn delete_group_message_record(
+        &self,
+        group: &[u8; 32],
+        sender: &[u8; 32],
+        id: &[u8; 16],
+    ) -> Result<bool> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT rowid_, blob FROM group_msgs ORDER BY rowid_")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        for row in rows {
+            let (rowid, sealed) = row?;
+            let plain = self.k_groups.open(b"group-msg", &sealed)?;
+            let record: GroupMessageRecord =
+                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
+            if &record.group == group && &record.sender == sender && &record.id == id {
+                self.conn
+                    .execute("DELETE FROM group_msgs WHERE rowid_ = ?1", params![rowid])?;
                 return Ok(true);
             }
         }

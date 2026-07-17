@@ -42,6 +42,11 @@ libp2p = { version = "0.56", features = [
     "macros",
     "ed25519",
 ] }
+# Generic negotiated substreams for the direct-QUIC-only call media protocol.
+# Pinned to the alpha measured and accepted in ADR-0013; the production
+# wrapper below adds path gating because this crate otherwise chooses an
+# arbitrary live connection to the peer.
+libp2p-stream = "0.4.0-alpha"
 serde = { version = "1", features = ["derive"] }
 # socket2 for the mDNS socket only: port 5353 must be shared (SO_REUSEADDR
 # and SO_REUSEPORT) and multicast-joined — tokio's plain bind can do neither.

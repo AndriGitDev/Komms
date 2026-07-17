@@ -52,6 +52,100 @@ private struct TextFormattingParityFixture: Decodable {
     }
 }
 
+private struct FilePresentationParityFixture: Decodable {
+    struct Case: Decodable {
+        let mediaType: String
+        let filename: String?
+        let kind: String
+        let openPolicy: String
+        let warnings: [String]
+    }
+    let cases: [Case]
+
+    static func load() throws -> Self {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let data = try Data(contentsOf: root.appendingPathComponent("fixtures/c1-file-presentation-parity.json"))
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(Self.self, from: data)
+    }
+}
+
+private struct MessageEditParityFixture: Decodable {
+    struct Version: Decodable {
+        let id: String
+        let revision: UInt64
+        let text: String
+    }
+    struct Case: Decodable {
+        let targetAuthor: String
+        let targetContentId: String
+        let expectedVersions: [Version]
+        let winningRevision: UInt64
+        let winningText: String
+    }
+    let schema: String
+    let contentFormat: UInt8
+    let contentKind: UInt8
+    let maximumTextBytes: UInt64
+    let maximumLocalEdits: UInt64
+    let `case`: Case
+
+    static func load() throws -> Self {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let data = try Data(contentsOf: root.appendingPathComponent("fixtures/c3-message-edit-parity.json"))
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(Self.self, from: data)
+    }
+}
+
+private struct EphemeralParityFixture: Decodable {
+    let schema: String
+    let contentKind: UInt8
+    let textLifetimes: [UInt64]
+
+    static func load() throws -> Self {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let data = try Data(contentsOf: root.appendingPathComponent("fixtures/c4-ephemeral-parity.json"))
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(Self.self, from: data)
+    }
+}
+
+private func fileKindName(_ kind: AttachmentFileKind) -> String {
+    switch kind {
+    case .image: "image"
+    case .audio: "audio"
+    case .video: "video"
+    case .document: "document"
+    case .archive: "archive"
+    case .executable: "executable"
+    case .other: "other"
+    }
+}
+
+private func openPolicyName(_ policy: AttachmentOpenPolicy) -> String {
+    switch policy {
+    case .protectedMedia: "protected_media"
+    case .externalOpen: "external_open"
+    case .exportOnly: "export_only"
+    }
+}
+
+private func fileWarningName(_ warning: AttachmentFileWarning) -> String {
+    switch warning {
+    case .mediaTypeMismatch: "media_type_mismatch"
+    case .dangerousType: "dangerous_type"
+    case .unrecognizedType: "unrecognized_type"
+    case .missingFilename: "missing_filename"
+    }
+}
+
 private struct LabelParityFixture: Decodable {
     let duplicateName: String
     let createColors: [String]
@@ -345,6 +439,85 @@ private func imageRecipe() -> ImageEditRecipe {
 }
 
 final class SessionE2eTests: XCTestCase {
+    func testLinkedDeviceCeremonyAndSyncUseOnlyIOSSession() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceEvents = Events()
+        let targetEvents = Events()
+        let source = try open(directory, "source", sourceEvents)
+        let target = try open(directory, "target", targetEvents)
+        _ = try source.sendNoteToSelf(body: "source-only history")
+
+        let sourceDevice = try source.deviceId()
+        let targetDevice = try target.deviceId()
+        let offer = try source.beginDeviceLink()
+        XCTAssertEqual(offer.uppercased(), deviceLinkQrText(offer))
+        let accepted = try target.acceptDeviceLink(
+            offerHex: offer, deviceName: "iPad")
+        XCTAssertEqual(6, accepted.confirmationCode.count)
+        let responseHex = hexEncode(accepted.response)
+        XCTAssertEqual(
+            accepted.confirmationCode,
+            try source.deviceLinkConfirmationCode(responseHex: responseHex))
+        let package = try source.approveDeviceLink(
+            responseHex: responseHex,
+            contacts: false,
+            organization: false,
+            history: false,
+            confirmed: true)
+        try target.completeDeviceLink(packageHex: package, confirmed: true)
+        XCTAssertEqual(source.peer, target.peer)
+        XCTAssertNotEqual(sourceDevice, targetDevice)
+        XCTAssertTrue(try target.noteToSelfMessages().isEmpty)
+        XCTAssertEqual(2, try source.linkedDevices().count)
+        _ = try targetEvents.wait("device link completion") { event -> String? in
+            if case .deviceLinkCompleted(_, let device) = event, device == targetDevice {
+                return device
+            }
+            return nil
+        }
+
+        try source.renameLinkedDevice(device: targetDevice, name: "Travel iPad")
+        _ = try target.importDeviceSync(
+            bundleHex: source.exportDeviceSync(device: targetDevice))
+        XCTAssertTrue(try target.linkedDevices().contains {
+            $0.id == targetDevice && $0.name == "Travel iPad"
+        })
+
+        source.stop()
+        target.stop()
+    }
+
+    func testMessageEditSharedFixtureHasCanonicalWireAndWinner() throws {
+        let fixture = try MessageEditParityFixture.load()
+        XCTAssertEqual("komms-message-edit-parity-v1", fixture.schema)
+        XCTAssertEqual(1, fixture.contentFormat)
+        XCTAssertEqual(4, fixture.contentKind)
+        XCTAssertEqual(16_384, fixture.maximumTextBytes)
+        XCTAssertEqual(64, fixture.maximumLocalEdits)
+        XCTAssertEqual(64, fixture.case.targetAuthor.count)
+        XCTAssertEqual(32, fixture.case.targetContentId.count)
+        XCTAssertEqual([0, 1, 2, 2], fixture.case.expectedVersions.map(\.revision))
+        XCTAssertEqual(2, fixture.case.winningRevision)
+        XCTAssertEqual("deterministic winner", fixture.case.winningText)
+        XCTAssertEqual(fixture.case.winningText, fixture.case.expectedVersions.last?.text)
+        XCTAssertTrue(fixture.case.expectedVersions.allSatisfy { $0.id.count == 32 })
+    }
+
+    func testFilePresentationMatchesSharedFailClosedFixture() throws {
+        let fixture = try FilePresentationParityFixture.load()
+        for record in fixture.cases {
+            let result = attachmentFilePresentation(
+                mediaType: record.mediaType,
+                filename: record.filename)
+            XCTAssertEqual(record.kind, fileKindName(result.kind))
+            XCTAssertEqual(record.openPolicy, openPolicyName(result.openPolicy))
+            XCTAssertEqual(record.warnings, result.warnings.map(fileWarningName))
+        }
+    }
+
     func testTextFormattingMatchesSharedInertCorpus() throws {
         let fixture = try TextFormattingParityFixture.load()
         let session = try open(try tempDir(), "text-formatting", Events())
@@ -430,7 +603,7 @@ final class SessionE2eTests: XCTestCase {
         let text = try files.map { try String(contentsOf: $0, encoding: .utf8) }.joined(separator: "\n")
         let occurrences = { (needle: String) in text.components(separatedBy: needle).count - 1 }
         let editors = occurrences("TextField(") + occurrences("SecureField(") + occurrences("TextEditor(")
-        XCTAssertEqual(21, editors)
+        XCTAssertEqual(31, editors)
         XCTAssertEqual(editors, occurrences(".incognitoKeyboard("))
         let gate = try String(contentsOf: source.appendingPathComponent("GateView.swift"), encoding: .utf8)
         XCTAssertTrue(gate.contains("SecureField(\"24-word mnemonic\""))
@@ -458,6 +631,24 @@ final class SessionE2eTests: XCTestCase {
             .appendingPathComponent("komms-e2e-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
+    }
+
+    func testIOSEphemeralControlsMatchSharedContract() throws {
+        let fixture = try EphemeralParityFixture.load()
+        XCTAssertEqual("komms-c4-ephemeral-parity-v1", fixture.schema)
+        XCTAssertEqual(5, fixture.contentKind)
+        XCTAssertEqual([60, 3_600, 86_400, 604_800, 2_592_000], fixture.textLifetimes)
+
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let app = root.appendingPathComponent("apps/ios/KommsApp/Sources")
+        let source = try ["AppModel.swift", "ChatView.swift", "GroupChatView.swift", "AttachmentView.swift"]
+            .map { try String(contentsOf: app.appendingPathComponent($0), encoding: .utf8) }
+            .joined(separator: "\n")
+        XCTAssertTrue(source.contains("sendDisappearing"))
+        XCTAssertTrue(source.contains("sendGroupDisappearing"))
+        XCTAssertTrue(source.contains("consumeViewOnceAttachment"))
+        XCTAssertTrue(source.contains("!attachment.viewOnce"))
     }
 
     func testPrivateThemeDefaultsPersistsRestartsAndEmitsOneLocalEvent() throws {
@@ -561,7 +752,7 @@ final class SessionE2eTests: XCTestCase {
         let formattedSource = "**hello** from iOS ![pixel](https://invalid.test/p.png)"
         let msgId = try alice.send(peer: bobPeer, body: formattedSource)
         let got = try bEv.wait("bob's message event") { event -> (peer: String, body: String)? in
-            if case let .messageReceived(peer, _, _, body, _) = event { return (peer, body) }
+            if case let .messageReceived(peer, _, _, body, _, _) = event { return (peer, body) }
             return nil
         }
         XCTAssertEqual(alicePeer, got.peer)
@@ -587,6 +778,95 @@ final class SessionE2eTests: XCTestCase {
         XCTAssertEqual(.inbound, inbox[0].direction)
         XCTAssertEqual(.received, inbox[0].state)
         XCTAssertEqual(formattedSource, inbox[0].body)
+
+        // iOS's Session surface carries authenticated direct-QUIC call
+        // control and already encoded Opus without creating history rows.
+        let callDeadline = Date().addingTimeInterval(10)
+        while try !alice.callAvailability(peer: bobPeer).available {
+            guard Date() < callDeadline else { throw Timeout(what: "iOS call availability") }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        XCTAssertTrue(try alice.calls().isEmpty)
+        let call = try alice.startCall(peer: bobPeer)
+        _ = try bEv.wait("iOS incoming call") { event -> Void? in
+            if case .callUpdated(let snapshot) = event,
+               snapshot.id == call, snapshot.phase == .ringing { return () }
+            return nil
+        }
+        try bob.answerCall(call: call)
+        _ = try aEv.wait("iOS outgoing call active") { event -> Void? in
+            if case .callUpdated(let snapshot) = event,
+               snapshot.id == call, snapshot.phase == .active { return () }
+            return nil
+        }
+        _ = try bEv.wait("iOS incoming call active") { event -> Void? in
+            if case .callUpdated(let snapshot) = event,
+               snapshot.id == call, snapshot.phase == .active { return () }
+            return nil
+        }
+        for (index, packet) in [Data([0xf8, 1]), Data([0xf8, 2]), Data([0xf8, 3])].enumerated() {
+            XCTAssertTrue(try alice.sendCallAudio(
+                call: call, timestampMs: UInt64(1_000 + index * 20), opusPacket: packet))
+        }
+        for (index, packet) in [Data([0xf9, 1]), Data([0xf9, 2]), Data([0xf9, 3])].enumerated() {
+            XCTAssertTrue(try bob.sendCallAudio(
+                call: call, timestampMs: UInt64(2_000 + index * 20), opusPacket: packet))
+        }
+        func takeAudio(_ session: Session) throws -> Data {
+            let deadline = Date().addingTimeInterval(5)
+            while Date() < deadline {
+                if let frame = try session.takeCallAudio(call: call) { return frame.opusPacket }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            throw Timeout(what: "authenticated iOS call audio")
+        }
+        XCTAssertEqual(Data([0xf9, 1]), try takeAudio(alice))
+        XCTAssertEqual(Data([0xf8, 1]), try takeAudio(bob))
+        try alice.hangupCall(call: call)
+        _ = try bEv.wait("iOS authenticated hangup") { event -> Void? in
+            if case .callUpdated(let snapshot) = event,
+               snapshot.id == call, snapshot.phase == .ended,
+               snapshot.endReason == .hungUp { return () }
+            return nil
+        }
+        XCTAssertEqual(1, try alice.messages(peer: bobPeer).count)
+        XCTAssertEqual(1, try bob.messages(peer: alicePeer).count)
+
+        Thread.sleep(forTimeInterval: 0.3)
+        let editable = try alice.send(peer: bobPeer, body: "iOS edit original")
+        _ = try bEv.wait("Bob's canonical iOS Text") { event -> Void? in
+            if case let .messageReceived(_, id, _, _, kind, _) = event,
+               id == editable, kind == .text { return () }
+            return nil
+        }
+        _ = try aEv.wait("iOS editable delivery") { event -> Void? in
+            if case let .deliveryUpdated(id, state) = event,
+               id == editable, state == .delivered { return () }
+            return nil
+        }
+        let edit = try alice.editMessage(
+            peer: bobPeer,
+            targetAuthor: alicePeer,
+            targetContentId: editable,
+            text: "iOS edit revised")
+        _ = try bEv.wait("iOS pairwise edit refresh") { event -> Void? in
+            if case let .messageEdited(peer, targetContentId) = event,
+               peer == alicePeer, targetContentId == editable { return () }
+            return nil
+        }
+        _ = try aEv.wait("iOS edit delivery") { event -> Void? in
+            if case let .deliveryUpdated(id, state) = event,
+               id == edit, state == .delivered { return () }
+            return nil
+        }
+        for messages in [try alice.messages(peer: bobPeer), try bob.messages(peer: alicePeer)] {
+            XCTAssertEqual(2, messages.count, "Edit events are not standalone rows")
+            let message = try XCTUnwrap(messages.first(where: { $0.id == editable }))
+            XCTAssertEqual("iOS edit revised", message.body)
+            XCTAssertTrue(message.edited)
+            XCTAssertEqual(1, message.editRevision)
+            XCTAssertEqual(["iOS edit original", "iOS edit revised"], message.versions.map(\.body))
+        }
 
         // The document picker grants a security-scoped URL; the app stages a
         // bounded app-private copy before Session imports it. The render-safe
@@ -856,7 +1136,7 @@ final class SessionE2eTests: XCTestCase {
         let capabilityProbe = try alice.send(
             peer: bobPeer, body: "attachment capability handshake")
         _ = try bEv.wait("attachment capability handshake") { event -> Void? in
-            if case let .messageReceived(peer, _, _, body, _) = event,
+            if case let .messageReceived(peer, _, _, body, _, _) = event,
                peer == aliceAtBob, body == "attachment capability handshake" {
                 return ()
             }
@@ -908,6 +1188,60 @@ final class SessionE2eTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: groupSource), try Data(contentsOf: groupExport))
         XCTAssertEqual(groupImageInfo, try bob.probeImage(groupExport))
 
+        // The Swift Session exposes the exact native poll contract. Polls
+        // refresh dedicated cards and never become chat-message rows.
+        let messageRowsBeforePoll = try alice.groupMessages(group: group).count
+        let pollId = try alice.createGroupPoll(
+            group: group,
+            question: "Which route? 🗻",
+            options: ["North ridge", "River path"])
+        _ = try bEv.wait("Bob's iOS poll") { event -> Void? in
+            if case let .pollUpdated(updatedGroup, _, updatedPoll) = event,
+               updatedGroup == group, updatedPoll == pollId { return () }
+            return nil
+        }
+        let bobPoll = try XCTUnwrap(bob.groupPolls(group: group).first)
+        XCTAssertEqual("Which route? 🗻", bobPoll.question)
+        XCTAssertTrue(bobPoll.votesVisible)
+        XCTAssertFalse(bobPoll.anonymous)
+        XCTAssertEqual("manual_creator_snapshot", bobPoll.closePolicy)
+        XCTAssertFalse(bobPoll.canClose)
+        _ = try bob.voteGroupPoll(
+            group: group, pollAuthor: bobPoll.author, pollId: pollId,
+            optionId: bobPoll.options[0].id)
+        _ = try aEv.wait("Bob's first iOS poll vote") { event -> Void? in
+            if case let .pollUpdated(_, _, updatedPoll) = event,
+               updatedPoll == pollId { return () }
+            return nil
+        }
+        let changedOption = bobPoll.options[1].id
+        _ = try bob.voteGroupPoll(
+            group: group, pollAuthor: bobPoll.author, pollId: pollId,
+            optionId: changedOption)
+        let pollChangeDeadline = Date().addingTimeInterval(30)
+        while try alice.groupPolls(group: group).first?.votes.first?.optionId != changedOption {
+            guard Date() < pollChangeDeadline else {
+                throw Timeout(what: "changed iOS poll vote")
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        let changedPoll = try XCTUnwrap(alice.groupPolls(group: group).first)
+        XCTAssertEqual(1, changedPoll.votes.count)
+        XCTAssertEqual(changedOption, changedPoll.votes[0].optionId)
+        XCTAssertTrue(changedPoll.canClose)
+        _ = try alice.closeGroupPoll(
+            group: group, pollAuthor: changedPoll.author, pollId: pollId)
+        let pollCloseDeadline = Date().addingTimeInterval(30)
+        while try bob.groupPolls(group: group).first?.closed != true {
+            guard Date() < pollCloseDeadline else {
+                throw Timeout(what: "closed iOS poll")
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        XCTAssertTrue(try XCTUnwrap(bob.groupPolls(group: group).first).closed)
+        XCTAssertEqual(messageRowsBeforePoll, try alice.groupMessages(group: group).count)
+        XCTAssertEqual(messageRowsBeforePoll, try bob.groupMessages(group: group).count)
+
         try alice.addGroupMember(group: group, peer: carolPeer)
         listed = try alice.groups()
         XCTAssertEqual(3, listed[0].members.count)
@@ -925,7 +1259,7 @@ final class SessionE2eTests: XCTestCase {
         // history exposes one truthful state per recipient.
         let first = try alice.sendGroup(group: group, body: "Meet at the north trailhead")
         _ = try bEv.wait("Bob's group message") { event -> Void? in
-            if case let .groupMessageReceived(receivedGroup, _, _, _, body, _, _) = event,
+            if case let .groupMessageReceived(receivedGroup, _, _, _, body, _, _, _) = event,
                receivedGroup == group, body == "Meet at the north trailhead" {
                 return ()
             }
@@ -960,6 +1294,153 @@ final class SessionE2eTests: XCTestCase {
         // their live group disappears locally and the creator converges too.
         try alice.removeGroupMember(group: group, peer: carolPeer)
         XCTAssertEqual(2, try alice.groups()[0].members.count)
+        Thread.sleep(forTimeInterval: 0.3)
+
+        // C6 remains fully typed through the Swift wrapper: upgrade, roles,
+        // admin results, signed owner moderation, and ownership transfer.
+        let legacy = try alice.groupAuthority(group: group)
+        XCTAssertFalse(legacy.signed)
+        XCTAssertEqual(aliceAtBob, legacy.owner)
+        XCTAssertEqual(.owner, legacy.myRole)
+        let upgradeGeneration = legacy.generation + 1
+        _ = try alice.upgradeGroupAuthority(group: group)
+        func authorityAt(_ session: Session, _ generation: UInt64) throws -> GroupAuthority {
+            let deadline = Date().addingTimeInterval(30)
+            while true {
+                let authority = try session.groupAuthority(group: group)
+                if authority.signed, authority.generation >= generation { return authority }
+                guard Date() < deadline else {
+                    throw Timeout(what: "authority generation \(generation)")
+                }
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+        }
+        let upgraded = try authorityAt(bob, upgradeGeneration)
+        XCTAssertEqual(aliceAtBob, upgraded.owner)
+        XCTAssertEqual(.member, upgraded.myRole)
+        XCTAssertEqual(2, upgraded.members.count)
+
+        _ = try alice.setGroupRole(group: group, peer: bobPeer, role: .admin)
+        let adminGeneration = upgradeGeneration + 1
+        XCTAssertEqual(.admin, try authorityAt(bob, adminGeneration).myRole)
+        XCTAssertThrowsError(
+            try bob.setGroupRole(group: group, peer: aliceAtBob, role: .member)
+        ) { error in
+            guard let ffi = error as? FfiError, case .Node = ffi else {
+                return XCTFail("expected FfiError.Node, got: \(error)")
+            }
+            XCTAssertTrue(ffi.reasonText.contains("owner"), "got: \(ffi.reasonText)")
+        }
+
+        let renameRequest = try bob.renameGroup(group: group, name: "Authority trail crew")
+        let renameGeneration = adminGeneration + 1
+        _ = try bEv.wait("iOS admin rename result") { event -> Void? in
+            if case let .groupAdminRequestResolved(
+                _, requestId, accepted, generation, stateId, reason) = event,
+               requestId == renameRequest, accepted,
+               generation == renameGeneration, stateId != nil, reason == 0 {
+                return ()
+            }
+            return nil
+        }
+        _ = try authorityAt(bob, renameGeneration)
+        let renameDeadline = Date().addingTimeInterval(30)
+        while try !bob.groups().contains(where: {
+            $0.id == group && $0.name == "Authority trail crew"
+        }) {
+            guard Date() < renameDeadline else { throw Timeout(what: "admin group rename") }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+
+        let moderatedPoll = try alice.createGroupPoll(
+            group: group,
+            question: "Close for weather?",
+            options: ["Keep open", "Close"])
+        _ = try bEv.wait("iOS moderated poll") { event -> Void? in
+            if case let .pollUpdated(_, _, pollId) = event, pollId == moderatedPoll { return () }
+            return nil
+        }
+        let moderationRequest = try bob.moderateGroupPollClose(
+            group: group, pollAuthor: aliceAtBob, pollId: moderatedPoll)
+        let moderationGeneration = renameGeneration + 1
+        _ = try bEv.wait("iOS moderation result") { event -> Void? in
+            if case let .groupAdminRequestResolved(
+                _, requestId, accepted, generation, _, reason) = event,
+               requestId == moderationRequest, accepted,
+               generation == moderationGeneration, reason == 0 {
+                return ()
+            }
+            return nil
+        }
+        let moderationDeadline = Date().addingTimeInterval(30)
+        var moderated = try XCTUnwrap(
+            bob.groupPolls(group: group).first(where: { $0.id == moderatedPoll }))
+        while !moderated.closed {
+            guard Date() < moderationDeadline else {
+                throw Timeout(what: "signed moderated poll closure")
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+            moderated = try XCTUnwrap(
+                bob.groupPolls(group: group).first(where: { $0.id == moderatedPoll }))
+        }
+        XCTAssertEqual(aliceAtBob, moderated.moderatedBy)
+        XCTAssertEqual("signed_owner_snapshot", moderated.closePolicy)
+
+        _ = try alice.transferGroupOwner(group: group, peer: bobPeer)
+        let bobOwnerGeneration = moderationGeneration + 1
+        let bobOwner = try authorityAt(bob, bobOwnerGeneration)
+        XCTAssertEqual(bobPeer, bobOwner.owner)
+        XCTAssertEqual(1, bobOwner.ownerEpoch)
+        XCTAssertEqual(.owner, bobOwner.myRole)
+        XCTAssertThrowsError(try bob.leaveGroup(group: group)) { error in
+            guard let ffi = error as? FfiError, case .Node = ffi else {
+                return XCTFail("expected FfiError.Node, got: \(error)")
+            }
+            XCTAssertTrue(ffi.reasonText.contains("owner"), "got: \(ffi.reasonText)")
+        }
+
+        _ = try bob.transferGroupOwner(group: group, peer: aliceAtBob)
+        let aliceOwnerGeneration = bobOwnerGeneration + 1
+        let aliceOwner = try authorityAt(alice, aliceOwnerGeneration)
+        XCTAssertEqual(aliceAtBob, aliceOwner.owner)
+        XCTAssertEqual(2, aliceOwner.ownerEpoch)
+        _ = try alice.setGroupRole(group: group, peer: bobPeer, role: .member)
+        _ = try authorityAt(bob, aliceOwnerGeneration + 1)
+
+        let editable = try alice.sendGroup(group: group, body: "iOS group edit original")
+        _ = try bEv.wait("Bob's editable iOS group Text") { event -> Void? in
+            if case let .groupMessageReceived(_, _, id, _, _, kind, _, _) = event,
+               id == editable, kind == .text { return () }
+            return nil
+        }
+        _ = try aEv.wait("iOS editable group delivery") { event -> Void? in
+            if case let .groupDeliveryUpdated(id, peer, state) = event,
+               id == editable, peer == bobPeer, state == .delivered { return () }
+            return nil
+        }
+        let edit = try alice.editGroupMessage(
+            group: group,
+            targetAuthor: aliceAtBob,
+            targetContentId: editable,
+            text: "iOS group edit revised")
+        _ = try bEv.wait("iOS group edit refresh") { event -> Void? in
+            if case let .groupMessageEdited(editedGroup, sender, targetContentId) = event,
+               editedGroup == group, sender == aliceAtBob,
+               targetContentId == editable { return () }
+            return nil
+        }
+        _ = try aEv.wait("iOS group edit delivery") { event -> Void? in
+            if case let .groupDeliveryUpdated(id, peer, state) = event,
+               id == edit, peer == bobPeer, state == .delivered { return () }
+            return nil
+        }
+        for messages in [try alice.groupMessages(group: group), try bob.groupMessages(group: group)] {
+            let message = try XCTUnwrap(messages.first(where: { $0.id == editable }))
+            XCTAssertEqual("iOS group edit revised", message.body)
+            XCTAssertTrue(message.edited)
+            XCTAssertEqual(1, message.editRevision)
+            XCTAssertEqual(2, message.versions.count)
+        }
         try bob.leaveGroup(group: group)
         XCTAssertTrue(try bob.groups().isEmpty)
         let deadline = Date().addingTimeInterval(30)
@@ -994,7 +1475,7 @@ final class SessionE2eTests: XCTestCase {
 
         let handshake = try alice.send(peer: bobPeer, body: "mention capability handshake")
         _ = try bEv.wait("mention capability handshake") { event -> Void? in
-            if case let .messageReceived(peer, _, _, body, _) = event,
+            if case let .messageReceived(peer, _, _, body, _, _) = event,
                peer == aliceAtBob, body == "mention capability handshake" { return () }
             return nil
         }
@@ -1040,7 +1521,7 @@ final class SessionE2eTests: XCTestCase {
             id: String, spans: [MentionSpan]
         )? in
             if case let .groupMessageReceived(
-                receivedGroup, _, id, _, body, kind, spans
+                receivedGroup, _, id, _, body, kind, _, spans
             ) = event,
                id == mentionId, receivedGroup == group, body == text, kind == .mention {
                 return (id, spans)
@@ -1061,7 +1542,7 @@ final class SessionE2eTests: XCTestCase {
 
         let plainId = try alice.sendGroup(group: group, body: text)
         _ = try bEv.wait("plain fallback") { event -> Void? in
-            if case let .groupMessageReceived(_, _, id, _, body, kind, spans) = event,
+            if case let .groupMessageReceived(_, _, id, _, body, kind, _, spans) = event,
                id == plainId, body == text, kind == .text, spans.isEmpty { return () }
             return nil
         }
@@ -1148,7 +1629,7 @@ final class SessionE2eTests: XCTestCase {
         try bob.setHints(peer: alicePeer, hints: multiaddrHint(try listenAddr(alice)))
         _ = try bob.send(peer: alicePeer, body: "glad you're back")
         let got = try aEv.wait("alice's message event") { event -> String? in
-            if case let .messageReceived(_, _, _, body, _) = event { return body }
+            if case let .messageReceived(_, _, _, body, _, _) = event { return body }
             return nil
         }
         XCTAssertEqual("glad you're back", got)

@@ -15,6 +15,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -24,6 +25,8 @@ import android.widget.Spinner
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
+import androidx.core.text.BidiFormatter
 import androidx.recyclerview.widget.RecyclerView
 import java.io.File
 import java.io.FileOutputStream
@@ -31,7 +34,9 @@ import java.util.UUID
 import komms.core.Session
 import uniffi.kult_ffi.Attachment
 import uniffi.kult_ffi.AttachmentDirection
+import uniffi.kult_ffi.AttachmentFileWarning
 import uniffi.kult_ffi.AttachmentObject
+import uniffi.kult_ffi.AttachmentOpenPolicy
 import uniffi.kult_ffi.AttachmentState
 import uniffi.kult_ffi.ImageCrop
 import uniffi.kult_ffi.ImageEditRecipe
@@ -95,15 +100,23 @@ private sealed interface PreparedSelection {
 class AttachmentController(
     private val activity: AppCompatActivity,
     private val belongsHere: (Attachment) -> Boolean,
-    private val send: (Session, File, String, String?, File?) -> String,
+    private val send: (Session, File, String, String?, File?, Boolean, ULong) -> String,
     private val carrierExplanation: (Session) -> String,
     private val bindAudio: (Attachment, LinearLayout) -> Unit,
     private val refresh: () -> Unit,
     savedState: Bundle?,
 ) {
-    private val adapter = AttachmentAdapter(::runAction, ::beginExport, ::bindPreview, bindAudio)
+    private val adapter = AttachmentAdapter(
+        ::runAction,
+        ::beginOpen,
+        ::beginExport,
+        ::beginRevealOnce,
+        ::bindPreview,
+        bindAudio,
+    )
     private val previewCache = mutableMapOf<String, Bitmap>()
     private val loadingPreviews = mutableSetOf<String>()
+    private val openedFiles = mutableListOf<File>()
     private var pendingExport = savedState?.getString(PENDING_EXPORT_KEY)
     private var activeDialog: AlertDialog? = null
     private var activeImage: PendingImage? = null
@@ -199,6 +212,8 @@ class AttachmentController(
         activeImage = null
         previewCache.values.forEach { it.recycle() }
         previewCache.clear()
+        openedFiles.forEach(File::delete)
+        openedFiles.clear()
     }
 
     fun onStop() {
@@ -215,6 +230,8 @@ class AttachmentController(
             "attachment-import-",
             "attachment-preview-",
             "attachment-export-",
+            "attachment-open-",
+            "view-once-open-",
             "komms-image-final-",
         )
         activity.cacheDir.listFiles()?.filter { file ->
@@ -256,10 +273,29 @@ class AttachmentController(
     private fun showGenericConfirmation(selected: SelectedDocument, carrier: String) {
         var snapshot = carrier
         val carrierText = text(carrier).apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
+        val viewOnce = CheckBox(activity).apply { text = activity.getString(R.string.ephemeral_view_once) }
+        val lifetime = Spinner(activity).apply {
+            adapter = ArrayAdapter(
+                activity, android.R.layout.simple_spinner_dropdown_item, lifetimeLabels(activity),
+            )
+            setSelection(1)
+            visibility = View.GONE
+            contentDescription = activity.getString(R.string.ephemeral_unopened_after)
+        }
+        val honesty = text(activity.getString(R.string.ephemeral_view_once_honesty)).apply {
+            visibility = View.GONE
+        }
+        viewOnce.setOnCheckedChangeListener { _, checked ->
+            lifetime.visibility = if (checked) View.VISIBLE else View.GONE
+            honesty.visibility = if (checked) View.VISIBLE else View.GONE
+        }
         val content = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             addView(text("Review ${selected.displayName ?: "attachment"} before explicitly sending it."))
             addView(text("Type: ${selected.mediaType}"))
+            addView(viewOnce)
+            addView(lifetime)
+            addView(honesty)
             addView(carrierText)
         }
         val dialog = AlertDialog.Builder(activity)
@@ -290,6 +326,8 @@ class AttachmentController(
                                     selected.mediaType,
                                     selected.displayName,
                                     null,
+                                    viewOnce.isChecked,
+                                    VIEW_ONCE_LIFETIMES[lifetime.selectedItemPosition],
                                 )
                                 ConfirmationResult.Sent
                             } finally {
@@ -395,10 +433,29 @@ class AttachmentController(
             hint = "Display filename"
             setText(draft.filename)
         }
+        val viewOnce = CheckBox(activity).apply { text = activity.getString(R.string.ephemeral_view_once) }
+        val lifetime = Spinner(activity).apply {
+            adapter = ArrayAdapter(
+                activity, android.R.layout.simple_spinner_dropdown_item, lifetimeLabels(activity),
+            )
+            setSelection(1)
+            visibility = View.GONE
+            contentDescription = activity.getString(R.string.ephemeral_unopened_after)
+        }
+        val honesty = text(activity.getString(R.string.ephemeral_view_once_honesty)).apply {
+            visibility = View.GONE
+        }
+        viewOnce.setOnCheckedChangeListener { _, checked ->
+            lifetime.visibility = if (checked) View.VISIBLE else View.GONE
+            honesty.visibility = if (checked) View.VISIBLE else View.GONE
+        }
         val carrierText = text(draft.carrierSnapshot).apply {
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
         column.addView(filename)
+        column.addView(viewOnce)
+        column.addView(lifetime)
+        column.addView(honesty)
         column.addView(carrierText)
         val scroll = ScrollView(activity).apply { addView(column) }
 
@@ -548,6 +605,8 @@ class AttachmentController(
                                     "image/png",
                                     filename.text.toString().ifBlank { "edited-image.png" },
                                     null,
+                                    viewOnce.isChecked,
+                                    VIEW_ONCE_LIFETIMES[lifetime.selectedItemPosition],
                                 )
                                 ConfirmationResult.Sent
                             } finally {
@@ -582,6 +641,10 @@ class AttachmentController(
     }
 
     private fun bindPreview(attachment: Attachment, image: ImageView) {
+        if (attachment.viewOnce) {
+            image.visibility = View.GONE
+            return
+        }
         val sealedPreview = attachment.objects.any {
             it.preview && it.state == AttachmentState.COMPLETE
         }
@@ -641,7 +704,7 @@ class AttachmentController(
         val maxBytes = if (selected.isClaimedImage()) IMAGE_SOURCE_LIMIT else MAX_PRIMARY_BYTES
         try {
             resolver.openInputStream(uri).use { input ->
-                requireNotNull(input) { activity.getString(R.string.attachment_open_failed) }
+                requireNotNull(input) { activity.getString(R.string.attachment_read_failed) }
                 FileOutputStream(staged).use { output ->
                     val buffer = ByteArray(COPY_BUFFER_BYTES)
                     var copied = 0L
@@ -699,6 +762,114 @@ class AttachmentController(
         createDocument.launch(primary.filename ?: activity.getString(R.string.attachment_default_name))
     }
 
+    private fun beginOpen(attachment: Attachment) {
+        val primary = attachment.objects.firstOrNull { !it.preview } ?: return
+        if (attachment.direction != AttachmentDirection.INBOUND ||
+            attachment.state != AttachmentState.COMPLETE ||
+            primary.presentation.openPolicy != AttachmentOpenPolicy.EXTERNAL_OPEN
+        ) {
+            activity.toast(activity.getString(R.string.attachment_export_only))
+            return
+        }
+        AlertDialog.Builder(activity)
+            .setTitle(R.string.attachment_open_title)
+            .setMessage(
+                activity.getString(
+                    R.string.attachment_open_confirmation,
+                    primary.filename ?: activity.getString(R.string.attachment_default_name),
+                ),
+            )
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.attachment_open) { _, _ -> open(attachment, primary) }
+            .show()
+    }
+
+    private fun beginRevealOnce(attachment: Attachment) {
+        val primary = attachment.objects.firstOrNull { !it.preview } ?: return
+        if (!attachment.viewOnce || attachment.direction != AttachmentDirection.INBOUND ||
+            attachment.state != AttachmentState.COMPLETE
+        ) return
+        AlertDialog.Builder(activity)
+            .setTitle(R.string.attachment_reveal_once_title)
+            .setMessage(R.string.attachment_reveal_once_confirmation)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.attachment_reveal_once) { _, _ ->
+                revealOnce(attachment, primary)
+            }
+            .show()
+    }
+
+    private fun revealOnce(attachment: Attachment, primary: AttachmentObject) {
+        val session = NodeHolder.session ?: return
+        activity.runNode(
+            work = {
+                val extension = primary.filename
+                    ?.substringAfterLast('.', "")
+                    ?.takeIf { it.isNotEmpty() && it.length <= 16 && it.all(Char::isLetterOrDigit) }
+                    ?: "bin"
+                val protected = File(
+                    activity.cacheDir,
+                    "view-once-open-${UUID.randomUUID()}.$extension",
+                )
+                session.consumeViewOnceAttachment(attachment.transferId, protected)
+                protected
+            },
+        ) { protected ->
+            try {
+                val uri = FileProvider.getUriForFile(
+                    activity, "${activity.packageName}.files", protected,
+                )
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, primary.mediaType)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                activity.startActivity(
+                    Intent.createChooser(intent, activity.getString(R.string.attachment_reveal_once)),
+                )
+                openedFiles += protected
+                refresh()
+            } catch (error: Throwable) {
+                protected.delete()
+                activity.toast(error.message ?: activity.getString(R.string.attachment_open_failed))
+            }
+        }
+    }
+
+    private fun open(attachment: Attachment, primary: AttachmentObject) {
+        val session = NodeHolder.session ?: return
+        activity.runNode(
+            work = {
+                val extension = primary.filename
+                    ?.substringAfterLast('.', "")
+                    ?.takeIf { it.isNotEmpty() && it.length <= 16 && it.all(Char::isLetterOrDigit) }
+                    ?: "bin"
+                val protected = File(
+                    activity.cacheDir,
+                    "attachment-open-${UUID.randomUUID()}.$extension",
+                )
+                session.exportAttachment(attachment.transferId, protected)
+                protected
+            },
+        ) { protected ->
+            try {
+                val uri = FileProvider.getUriForFile(
+                    activity,
+                    "${activity.packageName}.files",
+                    protected,
+                )
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, primary.mediaType)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                activity.startActivity(Intent.createChooser(intent, activity.getString(R.string.attachment_open_title)))
+                openedFiles += protected
+            } catch (error: Throwable) {
+                protected.delete()
+                activity.toast(error.message ?: activity.getString(R.string.attachment_open_failed))
+            }
+        }
+    }
+
     private fun export(transfer: String, uri: Uri) {
         val session = NodeHolder.session ?: return
         activity.runNode(
@@ -740,7 +911,9 @@ private enum class AttachmentAction { ACCEPT, REJECT, CANCEL, PAUSE, RESUME }
 
 private class AttachmentAdapter(
     private val action: (Attachment, AttachmentAction) -> Unit,
+    private val open: (Attachment) -> Unit,
     private val export: (Attachment) -> Unit,
+    private val revealOnce: (Attachment) -> Unit,
     private val preview: (Attachment, ImageView) -> Unit,
     private val audio: (Attachment, LinearLayout) -> Unit,
 ) : RecyclerView.Adapter<AttachmentAdapter.Holder>() {
@@ -765,8 +938,11 @@ private class AttachmentAdapter(
         val view = holder.itemView
         val context = view.context
         val primary = attachment.objects.firstOrNull { !it.preview } ?: attachment.objects.firstOrNull()
+        val displayName = BidiFormatter.getInstance().unicodeWrap(
+            primary?.filename ?: context.getString(R.string.attachment_default_name),
+        )
         view.findViewById<TextView>(R.id.attachment_title).text =
-            primary?.filename ?: context.getString(R.string.attachment_default_name)
+            if (attachment.viewOnce) "View once · $displayName" else displayName
         view.findViewById<TextView>(R.id.attachment_state).text = context.getString(
             R.string.attachment_direction_state,
             context.getString(
@@ -778,8 +954,26 @@ private class AttachmentAdapter(
             ),
             context.attachmentState(attachment.state),
         )
-        preview(attachment, view.findViewById(R.id.attachment_preview_image))
-        audio(attachment, view.findViewById(R.id.attachment_audio_container))
+        val previewView = view.findViewById<ImageView>(R.id.attachment_preview_image)
+        val audioView = view.findViewById<LinearLayout>(R.id.attachment_audio_container)
+        if (attachment.viewOnce) {
+            previewView.visibility = View.GONE
+            audioView.visibility = View.GONE
+        } else {
+            preview(attachment, previewView)
+            audio(attachment, audioView)
+        }
+
+        view.findViewById<TextView>(R.id.attachment_safety).text =
+            context.getString(
+                if (attachment.viewOnce) R.string.attachment_view_once_safety
+                else R.string.attachment_safety_notice,
+            )
+        view.findViewById<TextView>(R.id.attachment_warnings).apply {
+            val messages = primary?.presentation?.warnings.orEmpty().map { context.attachmentWarning(it) }
+            text = messages.joinToString("\n")
+            visibility = if (messages.isEmpty()) View.GONE else View.VISIBLE
+        }
 
         val objects = view.findViewById<LinearLayout>(R.id.attachment_objects)
         objects.removeAllViews()
@@ -820,8 +1014,17 @@ private class AttachmentAdapter(
         }
         bindButton(
             view,
+            R.id.attachment_open,
+            inbound && attachment.state == AttachmentState.COMPLETE &&
+                (attachment.viewOnce || primary?.presentation?.openPolicy == AttachmentOpenPolicy.EXTERNAL_OPEN),
+        ) { if (attachment.viewOnce) revealOnce(attachment) else open(attachment) }
+        view.findViewById<Button>(R.id.attachment_open).text = context.getString(
+            if (attachment.viewOnce) R.string.attachment_reveal_once else R.string.attachment_open,
+        )
+        bindButton(
+            view,
             R.id.attachment_export,
-            inbound && attachment.state == AttachmentState.COMPLETE,
+            inbound && attachment.state == AttachmentState.COMPLETE && !attachment.viewOnce,
         ) { export(attachment) }
     }
 
@@ -857,6 +1060,15 @@ private class AttachmentAdapter(
         }
     }
 }
+
+private fun Context.attachmentWarning(warning: AttachmentFileWarning): String = getString(
+    when (warning) {
+        AttachmentFileWarning.MEDIA_TYPE_MISMATCH -> R.string.attachment_warning_mismatch
+        AttachmentFileWarning.DANGEROUS_TYPE -> R.string.attachment_warning_dangerous
+        AttachmentFileWarning.UNRECOGNIZED_TYPE -> R.string.attachment_warning_unrecognized
+        AttachmentFileWarning.MISSING_FILENAME -> R.string.attachment_warning_missing_name
+    },
+)
 
 private fun Context.attachmentState(state: AttachmentState): String = getString(
     when (state) {

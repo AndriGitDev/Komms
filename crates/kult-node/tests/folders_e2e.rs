@@ -196,7 +196,7 @@ fn delete_cascade_exact_errors_and_recreate_isolation_are_honest() {
 }
 
 #[test]
-fn kkr4_restores_exact_ids_names_order_membership_and_stale_behavior() {
+fn kkr5_restores_exact_ids_names_order_membership_and_stale_behavior() {
     let mut rng = StdRng::seed_from_u64(0xb1003);
     let directory = tempfile::tempdir().unwrap();
     let (mut node, peer, group) = node_with_contact_and_group(directory.path(), &mut rng);
@@ -216,7 +216,7 @@ fn kkr4_restores_exact_ids_names_order_membership_and_stale_behavior() {
         .unwrap();
     let before = node.folders().unwrap();
     let (backup, mnemonic) = node.export_backup(NOW + 1, &mut rng).unwrap();
-    assert_eq!(&backup[..4], b"KKR4");
+    assert_eq!(&backup[..4], b"KKR7");
     let restored = Node::restore(
         &directory.path().join("restored.db"),
         &backup,

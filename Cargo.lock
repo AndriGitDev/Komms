@@ -1706,6 +1706,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "blake3",
+ "futures",
  "image",
  "kult-crypto",
  "kult-protocol",
@@ -1716,6 +1717,7 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "serde_json",
+ "sha2",
  "subtle",
  "tempfile",
  "tokio",
@@ -1733,6 +1735,7 @@ dependencies = [
  "postcard",
  "proptest",
  "rand 0.8.7",
+ "rand_core 0.6.4",
  "serde",
  "sha2",
  "zeroize",
@@ -1764,6 +1767,7 @@ dependencies = [
  "kult-crypto",
  "kult-protocol",
  "libp2p",
+ "libp2p-stream",
  "meshtastic",
  "rand 0.8.7",
  "serde",
@@ -2142,6 +2146,20 @@ dependencies = [
  "rand 0.8.7",
  "serde",
  "smallvec",
+ "tracing",
+]
+
+[[package]]
+name = "libp2p-stream"
+version = "0.4.0-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d6bd8025c80205ec2810cfb28b02f362ab48a01bee32c50ab5f12761e033464"
+dependencies = [
+ "futures",
+ "libp2p-core",
+ "libp2p-identity",
+ "libp2p-swarm",
+ "rand 0.8.7",
  "tracing",
 ]
 

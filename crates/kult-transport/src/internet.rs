@@ -47,24 +47,26 @@
 //! and the whole discovery plane (prekey publish/lookup) works with zero
 //! configured bootstrap peers and no internet at all.
 
-use std::collections::{HashMap, HashSet};
-use std::io;
+use std::collections::HashMap;
+use std::io::{self, IoSlice, IoSliceMut};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use futures::StreamExt;
+use futures::{AsyncRead, AsyncWrite, StreamExt};
 use libp2p::core::transport::ListenerId;
 use libp2p::kad::store::MemoryStore;
 use libp2p::kad::{self, GetRecordOk, Mode, QueryResult, Quorum, Record, RecordKey};
 use libp2p::multiaddr::Protocol;
 use libp2p::request_response::{self, ProtocolSupport};
 use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
-use libp2p::swarm::{DialError, NetworkBehaviour, SwarmEvent};
+use libp2p::swarm::{ConnectionId, DialError, NetworkBehaviour, SwarmEvent};
 use libp2p::{
     autonat, dcutr, identify, noise, relay, tcp, yamux, Multiaddr, PeerId, StreamProtocol,
 };
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch, Mutex as AsyncMutex};
 
 use kult_protocol::Envelope;
 
@@ -78,6 +80,19 @@ use crate::{
 /// How long a send waits for the next hop's acknowledgment before reporting
 /// failure to the delivery engine (which then retries with backoff).
 const SEND_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// A call may wait this long for its explicitly supplied direct QUIC path.
+/// Signaling has already established the usual case; this covers a direct
+/// re-dial after a TCP/relay path is discarded.
+const CALL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The only negotiated media protocol. Its records remain opaque to this
+/// transport; authentication and encryption live in `kult-crypto`.
+const CALL_PROTOCOL: StreamProtocol = StreamProtocol::new("/komms/call/1");
+
+/// Bound unauthenticated inbound media handshakes. A caller must consume and
+/// prove the call-media hello before accepting any audio.
+const CALL_INBOX_MAX: usize = 16;
 
 /// Idle connections linger briefly so a message burst reuses one connection.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -135,6 +150,7 @@ struct KultBehaviour {
     relay: relay::Behaviour,
     relay_client: relay::client::Behaviour,
     dcutr: dcutr::Behaviour,
+    streams: libp2p_stream::Behaviour,
 }
 
 /// A request aimed at a specific peer, parked while its connection dials.
@@ -191,6 +207,14 @@ enum Cmd {
     },
     NatStatus {
         done: oneshot::Sender<NatStatus>,
+    },
+    /// Establish an exclusively direct-QUIC connection for call media.
+    /// Existing TCP and relay connections to the same peer are closed first,
+    /// because `libp2p-stream` otherwise chooses an arbitrary live path.
+    PrepareCall {
+        peer: PeerId,
+        addr: Multiaddr,
+        done: oneshot::Sender<bool>,
     },
 }
 
@@ -258,7 +282,13 @@ impl BridgeBuffer {
         }
     }
 
-    fn push(&mut self, envelope: Envelope, encoded_len: usize) -> bool {
+    fn push(&mut self, envelope: Envelope, encoded_len: usize, now: u64) -> bool {
+        if envelope
+            .retention_until
+            .is_some_and(|deadline| deadline <= now)
+        {
+            return true;
+        }
         if encoded_len > BRIDGE_DEPOSIT_MAX_BYTES
             || self.queue.len() >= BRIDGE_BUFFER_MAX_ITEMS
             || self.bytes + encoded_len > BRIDGE_BUFFER_MAX_BYTES
@@ -279,9 +309,86 @@ impl BridgeBuffer {
 struct Shared {
     local_peer_id: PeerId,
     listen_addrs: Mutex<Vec<Multiaddr>>,
-    connected: Mutex<HashSet<PeerId>>,
+    /// Every live connection and whether it is a non-relayed QUIC-v1 path.
+    /// Call streams proceed only when a peer has at least one connection and
+    /// every entry is `true`.
+    connections: Mutex<HashMap<PeerId, HashMap<ConnectionId, bool>>>,
     /// LAN peers seen via mDNS: address → when its announcement expires.
     lan_peers: Mutex<HashMap<PeerId, HashMap<Multiaddr, Instant>>>,
+}
+
+impl Shared {
+    fn call_ready(&self, peer: &PeerId) -> bool {
+        self.connections
+            .lock()
+            .expect("lock")
+            .get(peer)
+            .is_some_and(|connections| {
+                !connections.is_empty() && connections.values().all(|direct| *direct)
+            })
+    }
+}
+
+/// A negotiated `/komms/call/1` stream on an exclusively direct QUIC path.
+///
+/// The peer id is a transport pseudonym, not a Komms account or device
+/// identity. Call media must still authenticate its proof-of-key hello before
+/// treating this stream as belonging to a call.
+#[derive(Debug)]
+pub struct CallStream {
+    peer: PeerId,
+    inner: libp2p::swarm::Stream,
+}
+
+impl CallStream {
+    /// The remote libp2p transport pseudonym.
+    pub fn peer_id(&self) -> String {
+        self.peer.to_string()
+    }
+}
+
+impl AsyncRead for CallStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
+    }
+
+    fn poll_read_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &mut [IoSliceMut<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_read_vectored(cx, bufs)
+    }
+}
+
+impl AsyncWrite for CallStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_write_vectored(cx, bufs)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_close(cx)
+    }
 }
 
 /// Internet carrier: QUIC (primary) and TCP (fallback) via rust-libp2p.
@@ -291,6 +398,8 @@ pub struct Libp2pTransport {
     shared: Arc<Shared>,
     mailbox: Option<Arc<Mutex<MailboxStore>>>,
     bridge: Option<Arc<Mutex<BridgeBuffer>>>,
+    call_control: AsyncMutex<libp2p_stream::Control>,
+    call_inbox: AsyncMutex<mpsc::Receiver<CallStream>>,
 }
 
 impl Libp2pTransport {
@@ -384,6 +493,7 @@ impl Libp2pTransport {
                 // short-lived — DCUtR is expected to punch a direct path.
                 let relay = relay::Behaviour::new(peer_id, relay::Config::default());
                 let dcutr = dcutr::Behaviour::new(peer_id);
+                let streams = libp2p_stream::Behaviour::new();
                 Ok(KultBehaviour {
                     envelopes,
                     mailbox,
@@ -393,6 +503,7 @@ impl Libp2pTransport {
                     relay,
                     relay_client,
                     dcutr,
+                    streams,
                 })
             })
             .map_err(io_other)?
@@ -406,6 +517,11 @@ impl Libp2pTransport {
         // address, and stale entries age out of peers' routing tables anyway.
         swarm.behaviour_mut().kad.set_mode(Some(Mode::Server));
 
+        let mut call_control = swarm.behaviour().streams.new_control();
+        let call_incoming = call_control
+            .accept(CALL_PROTOCOL)
+            .map_err(|_| io_other("call protocol was registered more than once"))?;
+
         for addr in listen {
             let addr: Multiaddr = addr.parse().map_err(io_other)?;
             swarm.listen_on(addr).map_err(io_other)?;
@@ -414,13 +530,19 @@ impl Libp2pTransport {
         let shared = Arc::new(Shared {
             local_peer_id: *swarm.local_peer_id(),
             listen_addrs: Mutex::new(Vec::new()),
-            connected: Mutex::new(HashSet::new()),
+            connections: Mutex::new(HashMap::new()),
             lan_peers: Mutex::new(HashMap::new()),
         });
         let inbox = Arc::new(Mutex::new(Vec::new()));
         let mailbox = mailbox.map(|config| Arc::new(Mutex::new(MailboxStore::new(config))));
         let bridge = bridge_deposits.then(|| Arc::new(Mutex::new(BridgeBuffer::new())));
         let (cmds, cmd_rx) = mpsc::unbounded_channel();
+        let (call_tx, call_rx) = mpsc::channel(CALL_INBOX_MAX);
+        tokio::spawn(run_call_incoming(
+            call_incoming,
+            call_tx,
+            Arc::clone(&shared),
+        ));
 
         // The mDNS task rides two channels: listen addresses flow out to it
         // (announce on change), discovered peers flow back into the swarm
@@ -465,6 +587,8 @@ impl Libp2pTransport {
             shared,
             mailbox,
             bridge,
+            call_control: AsyncMutex::new(call_control),
+            call_inbox: AsyncMutex::new(call_rx),
         })
     }
 
@@ -622,6 +746,83 @@ impl Libp2pTransport {
             Err(_) => Err(io_other("relay reservation timed out")),
         }
     }
+
+    /// Whether `peer` currently has an exclusively direct QUIC path suitable
+    /// for `/komms/call/1`. The address must include the target `/p2p` id and
+    /// must itself be direct QUIC; TCP and `/p2p-circuit` hints always return
+    /// `false` even if another connection to that peer happens to be ready.
+    pub fn call_ready(&self, peer: &str) -> bool {
+        parse_direct_quic_addr(peer).is_some_and(|(_, peer)| self.shared.call_ready(&peer))
+    }
+
+    /// Open an authenticated-call media stream to a direct QUIC multiaddr.
+    ///
+    /// The transport first closes every live TCP or relayed connection to the
+    /// target and, when needed, dials the exact supplied QUIC address. This is
+    /// a fail-closed guard around `libp2p-stream`, which otherwise selects an
+    /// arbitrary live connection. No TCP, relay, mailbox, mesh, or
+    /// store-and-forward fallback is attempted.
+    pub async fn open_call_stream(&self, address: &str) -> Result<CallStream> {
+        let (addr, peer) =
+            parse_direct_quic_addr(address).ok_or(TransportError::UnsupportedHint)?;
+        let (done, rx) = oneshot::channel();
+        self.cmds
+            .send(Cmd::PrepareCall { peer, addr, done })
+            .map_err(|_| io_other("transport task stopped"))?;
+        match tokio::time::timeout(CALL_CONNECT_TIMEOUT, rx).await {
+            Ok(Ok(true)) => {}
+            Ok(Ok(false)) => return Err(io_other("direct QUIC call path failed")),
+            Ok(Err(_)) => return Err(io_other("transport task stopped")),
+            Err(_) => return Err(io_other("direct QUIC call path timed out")),
+        }
+        if !self.shared.call_ready(&peer) {
+            return Err(io_other("direct QUIC call path changed before stream open"));
+        }
+        let stream = self
+            .call_control
+            .lock()
+            .await
+            .open_stream(peer, CALL_PROTOCOL)
+            .await
+            .map_err(io_other)?;
+        if !self.shared.call_ready(&peer) {
+            return Err(io_other("direct QUIC call path changed during stream open"));
+        }
+        Ok(CallStream {
+            peer,
+            inner: stream,
+        })
+    }
+
+    /// Wait for the next inbound direct-QUIC call stream.
+    ///
+    /// This is only transport admission. The consumer must parse and verify
+    /// the call-media proof-of-key hello before exposing any call state or
+    /// audio. Streams arriving while any connection to the peer is TCP or
+    /// relayed are discarded before reaching this queue.
+    pub async fn accept_call_stream(&self) -> Result<CallStream> {
+        self.call_inbox
+            .lock()
+            .await
+            .recv()
+            .await
+            .ok_or_else(|| io_other("transport task stopped"))
+    }
+
+    /// Take one already-negotiated inbound call stream without waiting.
+    /// Returns `None` when no stream is currently queued or another consumer
+    /// is polling the queue. This lets an application heartbeat service call
+    /// media without ever stalling ordinary message delivery.
+    pub fn try_accept_call_stream(&self) -> Result<Option<CallStream>> {
+        let Ok(mut inbox) = self.call_inbox.try_lock() else {
+            return Ok(None);
+        };
+        match inbox.try_recv() {
+            Ok(stream) => Ok(Some(stream)),
+            Err(mpsc::error::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::error::TryRecvError::Disconnected) => Err(io_other("transport task stopped")),
+        }
+    }
 }
 
 #[async_trait]
@@ -692,6 +893,52 @@ fn parse_addr(s: &str) -> Option<(Multiaddr, PeerId)> {
         })
         .last()?;
     Some((addr, peer))
+}
+
+/// Parse a direct QUIC-v1 address carrying an explicit target peer id.
+/// Circuit addresses are excluded even when their relay-facing segment is
+/// QUIC, because the call itself would still traverse the relay.
+fn parse_direct_quic_addr(s: &str) -> Option<(Multiaddr, PeerId)> {
+    let (addr, peer) = parse_addr(s)?;
+    is_direct_quic_addr(&addr).then_some((addr, peer))
+}
+
+fn is_direct_quic_addr(addr: &Multiaddr) -> bool {
+    let mut quic = false;
+    for protocol in addr.iter() {
+        match protocol {
+            Protocol::QuicV1 => quic = true,
+            Protocol::P2pCircuit => return false,
+            _ => {}
+        }
+    }
+    quic
+}
+
+fn endpoint_is_direct_quic(endpoint: &libp2p::core::ConnectedPoint) -> bool {
+    !endpoint.is_relayed() && is_direct_quic_addr(endpoint.get_remote_address())
+}
+
+async fn run_call_incoming(
+    mut incoming: libp2p_stream::IncomingStreams,
+    sender: mpsc::Sender<CallStream>,
+    shared: Arc<Shared>,
+) {
+    while let Some((peer, stream)) = incoming.next().await {
+        if !shared.call_ready(&peer) {
+            continue;
+        }
+        if sender
+            .send(CallStream {
+                peer,
+                inner: stream,
+            })
+            .await
+            .is_err()
+        {
+            break;
+        }
+    }
 }
 
 /// Current Unix time, for the mailbox service's TTL accounting. The mailbox
@@ -785,6 +1032,26 @@ impl Transport for Libp2pTransport {
             .map(|buffer| buffer.lock().expect("lock").drain())
             .unwrap_or_default())
     }
+
+    fn call_ready(&self, peer: &DeliveryHint) -> bool {
+        match peer {
+            DeliveryHint::Multiaddr(address) => Libp2pTransport::call_ready(self, address),
+            _ => false,
+        }
+    }
+
+    async fn open_call_stream(&self, peer: &DeliveryHint) -> Result<CallStream> {
+        match peer {
+            DeliveryHint::Multiaddr(address) => {
+                Libp2pTransport::open_call_stream(self, address).await
+            }
+            _ => Err(TransportError::UnsupportedHint),
+        }
+    }
+
+    fn try_accept_call_stream(&self) -> Result<Option<CallStream>> {
+        Libp2pTransport::try_accept_call_stream(self)
+    }
 }
 
 /// Requests parked per peer, then issued the moment its connection is up.
@@ -829,6 +1096,53 @@ fn issue_op(
     }
 }
 
+fn settle_call_waiters(
+    shared: &Shared,
+    peer: &PeerId,
+    waiters: &mut HashMap<PeerId, Vec<oneshot::Sender<bool>>>,
+    targets: &mut HashMap<PeerId, Multiaddr>,
+) {
+    if !shared.call_ready(peer) {
+        return;
+    }
+    for done in waiters.remove(peer).unwrap_or_default() {
+        let _ = done.send(true);
+    }
+    targets.remove(peer);
+}
+
+fn fail_call_waiters(
+    peer: &PeerId,
+    waiters: &mut HashMap<PeerId, Vec<oneshot::Sender<bool>>>,
+    targets: &mut HashMap<PeerId, Multiaddr>,
+) {
+    for done in waiters.remove(peer).unwrap_or_default() {
+        let _ = done.send(false);
+    }
+    targets.remove(peer);
+}
+
+fn dial_call(
+    swarm: &mut libp2p::Swarm<KultBehaviour>,
+    peer: PeerId,
+    addr: Multiaddr,
+    dials: &mut HashMap<ConnectionId, PeerId>,
+    waiters: &mut HashMap<PeerId, Vec<oneshot::Sender<bool>>>,
+    targets: &mut HashMap<PeerId, Multiaddr>,
+) {
+    let opts = DialOpts::peer_id(peer)
+        .addresses(vec![addr])
+        .condition(PeerCondition::Always)
+        .build();
+    let connection = opts.connection_id();
+    match swarm.dial(opts) {
+        Ok(()) => {
+            dials.insert(connection, peer);
+        }
+        Err(_) => fail_call_waiters(&peer, waiters, targets),
+    }
+}
+
 /// The swarm task: owns the libp2p swarm, executes send commands, buffers
 /// inbound envelopes, serves the mailbox (when configured), and mirrors
 /// connection state into [`Shared`].
@@ -857,6 +1171,11 @@ async fn run_swarm(
     let mut joining: HashMap<PeerId, Vec<oneshot::Sender<bool>>> = HashMap::new();
     // Relay reservations waiting for their circuit listener to come up.
     let mut reservations: HashMap<ListenerId, oneshot::Sender<Option<Multiaddr>>> = HashMap::new();
+    // Call preparation is separate from normal request dialing: it never
+    // falls back from the exact direct-QUIC address supplied by the caller.
+    let mut call_waiters: HashMap<PeerId, Vec<oneshot::Sender<bool>>> = HashMap::new();
+    let mut call_targets: HashMap<PeerId, Multiaddr> = HashMap::new();
+    let mut call_dials: HashMap<ConnectionId, PeerId> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -956,6 +1275,44 @@ async fn run_swarm(
                     };
                     let _ = done.send(status);
                 }
+                Some(Cmd::PrepareCall { peer, addr, done }) => {
+                    // Re-validate at the swarm boundary: callers cannot make
+                    // this command dial TCP or a circuit address.
+                    if !is_direct_quic_addr(&addr) {
+                        let _ = done.send(false);
+                        continue;
+                    }
+                    call_waiters.entry(peer).or_default().push(done);
+                    call_targets.insert(peer, addr);
+
+                    // `libp2p-stream` chooses a random live connection. Make
+                    // the candidate set exclusively direct QUIC before it is
+                    // allowed to open a media stream.
+                    let connections = shared
+                        .connections
+                        .lock()
+                        .expect("lock")
+                        .get(&peer)
+                        .cloned()
+                        .unwrap_or_default();
+                    for (connection, direct) in &connections {
+                        if !direct {
+                            let _ = swarm.close_connection(*connection);
+                        }
+                    }
+                    if connections.values().any(|direct| *direct) {
+                        settle_call_waiters(&shared, &peer, &mut call_waiters, &mut call_targets);
+                    } else if !call_dials.values().any(|dialing| dialing == &peer) {
+                        dial_call(
+                            &mut swarm,
+                            peer,
+                            call_targets.get(&peer).expect("inserted").clone(),
+                            &mut call_dials,
+                            &mut call_waiters,
+                            &mut call_targets,
+                        );
+                    }
+                }
                 Some(Cmd::Op { peer, addr, op }) => {
                     if swarm.is_connected(&peer) {
                         issue_op(&mut swarm, &mut inflight, &mut mb_inflight, &peer, op);
@@ -1004,8 +1361,34 @@ async fn run_swarm(
                         let _ = done.send(None);
                     }
                 }
-                SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                    shared.connected.lock().expect("lock").insert(peer_id);
+                SwarmEvent::ConnectionEstablished {
+                    peer_id,
+                    connection_id,
+                    endpoint,
+                    ..
+                } => {
+                    let direct = endpoint_is_direct_quic(&endpoint);
+                    shared
+                        .connections
+                        .lock()
+                        .expect("lock")
+                        .entry(peer_id)
+                        .or_default()
+                        .insert(connection_id, direct);
+                    call_dials.remove(&connection_id);
+                    if call_waiters.contains_key(&peer_id) {
+                        if !direct {
+                            // A fallback connection racing call preparation
+                            // is never admitted into the stream candidate set.
+                            let _ = swarm.close_connection(connection_id);
+                        }
+                        settle_call_waiters(
+                            &shared,
+                            &peer_id,
+                            &mut call_waiters,
+                            &mut call_targets,
+                        );
+                    }
                     for op in pending.remove(&peer_id).unwrap_or_default() {
                         issue_op(&mut swarm, &mut inflight, &mut mb_inflight, &peer_id, op);
                     }
@@ -1016,12 +1399,53 @@ async fn run_swarm(
                         }
                     }
                 }
-                SwarmEvent::ConnectionClosed { peer_id, num_established, .. } => {
-                    if num_established == 0 {
-                        shared.connected.lock().expect("lock").remove(&peer_id);
+                SwarmEvent::ConnectionClosed {
+                    peer_id,
+                    connection_id,
+                    ..
+                } => {
+                    {
+                        let mut all = shared.connections.lock().expect("lock");
+                        if let Some(connections) = all.get_mut(&peer_id) {
+                            connections.remove(&connection_id);
+                            if connections.is_empty() {
+                                all.remove(&peer_id);
+                            }
+                        }
+                    }
+                    if call_waiters.contains_key(&peer_id) {
+                        settle_call_waiters(
+                            &shared,
+                            &peer_id,
+                            &mut call_waiters,
+                            &mut call_targets,
+                        );
+                        if call_waiters.contains_key(&peer_id)
+                            && !call_dials.values().any(|dialing| dialing == &peer_id)
+                        {
+                            if let Some(addr) = call_targets.get(&peer_id).cloned() {
+                                dial_call(
+                                    &mut swarm,
+                                    peer_id,
+                                    addr,
+                                    &mut call_dials,
+                                    &mut call_waiters,
+                                    &mut call_targets,
+                                );
+                            }
+                        }
                     }
                 }
-                SwarmEvent::OutgoingConnectionError { peer_id: Some(peer), .. } => {
+                SwarmEvent::OutgoingConnectionError {
+                    peer_id: Some(peer),
+                    connection_id,
+                    ..
+                } => {
+                    if call_dials.remove(&connection_id).is_some()
+                        && !shared.call_ready(&peer)
+                    {
+                        fail_call_waiters(&peer, &mut call_waiters, &mut call_targets);
+                    }
                     for op in pending.remove(&peer).unwrap_or_default() {
                         op.fail();
                     }
@@ -1086,7 +1510,7 @@ async fn run_swarm(
                                                     buffer
                                                         .lock()
                                                         .expect("lock")
-                                                        .push(env, envelope.len())
+                                                        .push(env, envelope.len(), now)
                                                 })
                                             }
                                         }

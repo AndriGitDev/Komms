@@ -109,11 +109,19 @@ Compact binary, little-endian, fixed field order (no self-describing serializati
 hot path: every byte counts on LoRa). One envelope per message or fragment:
 
 ```
-byte    0      : version (0x01)
+byte    0      : version (0x01 ordinary | 0x02 retained)
 byte    1      : type (0x01 msg | 0x02 handshake | 0x03 receipt | 0x04 fragment)
 bytes   2..34  : delivery token (32 B, §7)
-bytes  34..N   : body (type-specific, always ciphertext)
+bytes  34..42  : v2 only: retention_until (u64 LE, hour-aligned Unix seconds)
+bytes  34/42..N: body (type-specific, always ciphertext)
 ```
+
+Envelope v2 is used only when sealed work carries an authenticated ephemeral
+retention bucket. The cleartext value lets an intermediary delete without keys;
+the recipient accepts it only when content-v1 kind `0x0005` contains the exact
+same canonical hour ceiling. A missing, extra, non-canonical, or mismatched hint
+is terminal and never enters history. The hint is advisory to a relay and does
+not weaken endpoint authentication.
 
 Bodies by type. `msg`/`receipt`: an encoded ratchet message
 (`version ‖ encrypted header(80) ‖ nonce(24) ‖ ciphertext+tag`); `handshake`: an
@@ -128,6 +136,56 @@ re-verifies the id hash over the assembled bytes. Fragmentation policy and MTU t
 {192 B, 512 B, 1 KiB, 4 KiB, 16 KiB, 64 KiB} before encryption; larger payloads (media)
 are chunked at 64 KiB. The 192 B bucket exists so a short text message plus overhead still
 fits typical LoRa payloads after fragmentation into ≤2 frames.
+
+### 5.1 Authenticated edit content
+
+C3 `Edit` is content-v1 kind `0x0004` inside the plaintext described above. Its
+exact author/content reference, revision, and replacement UTF-8 are protected by
+the same Double Ratchet or group sender-key AEAD as the original. Nothing in the
+outer envelope identifies an edit. Authorization uses the authenticated content
+sender and exact target bytes; visible names and local timestamps are excluded.
+Resolution by maximum `(revision, edit_content_id)` is application convergence,
+not a new cryptographic primitive or signature. The normative encoding and
+compatibility contract are [ADR-0020](adr/0020-authenticated-message-edits.md)
+and [18: Authenticated Message Editing](18-message-editing.md).
+
+### 5.2 Authenticated ephemeral content
+
+C4 uses content-v1 kind `0x0005`. Its payload is
+`version(1) ‖ mode(1) ‖ reserved(2) ‖ expires_at(8) ‖ retention_until(8) ‖
+body_len(4) ‖ body`. Mode 1 carries non-empty bounded UTF-8; mode 2 carries the
+existing canonical attachment manifest. `retention_until` must equal the
+one-hour ceiling of the exact `expires_at`; supported lifetimes are 60 seconds
+through 30 days. The whole payload remains inside pairwise Double Ratchet or
+group sender-key encryption.
+
+Exact local expiry and first-open consumption are lifecycle rules, not new
+cryptographic erasure primitives. Terminal sealed tombstones prevent duplicate
+or reordered ciphertext from restoring plaintext. Encoding, compatibility,
+metadata leakage, and backup behavior are normative in
+[ADR-0021](adr/0021-ephemeral-retention.md) and summarized in
+[19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
+
+### 5.3 Authenticated live-call control and media
+
+C7 signaling is content-v1 kind `0x0008` inside the pairwise Double Ratchet.
+The offer carries a fresh random 32-byte call master secret and binds a random
+16-byte call id, exact initiating physical device, and expiry. Answer/decline/
+busy/hangup bind the exact responding physical device. No outer envelope field
+identifies a call, and call control never becomes durable history or backup
+content.
+
+After one answer wins, the media context binds the call id, both stable account
+identities, and both exact physical-device ids. HKDF-SHA-256 derives separate
+initiator→responder and responder→initiator media/header bases. Each direction
+must authenticate an empty hello before audio; XChaCha20-Poly1305 protects the
+record kind, phase, sequence, timestamp, and at most 1,275 Opus bytes under the
+context hash. Keys rotate every 4,096 records and a 128-record replay window
+fails closed. Wrong context, role, direction, phase, call, replay, tamper, and
+post-terminal media are rejected without releasing plaintext. Master/derived
+keys and decoded packets zeroize on terminal/drop paths. The normative contract
+and limitations are [ADR-0013](adr/0013-real-time-calls.md) and
+[23: Live Audio Calls](23-live-audio-calls.md).
 
 ## 6. Group messaging (v1: sender keys)
 
@@ -152,10 +210,24 @@ keys LRU, 30-day TTL). The group message body is
 bytes) and the payload binds group id, protocol version, and sealed header as
 associated data. The single ciphertext fans out in per-member envelopes under the
 ordinary pairwise delivery tokens (§7), so relays and receipts need no group
-awareness. Distribution, membership (creator-managed, generation-counted), rotation
+awareness. Distribution, membership (legacy creator-managed or C6
+owner-serialized, generation-counted), rotation
 triggers, and the announce-until-acked reliability rule are specified in ADR-0012,
 along with the documented trade: authenticity is membership-level (any member could
-forge as another, no signatures, by design).
+forge ordinary sender-key content as another, no signatures, by design).
+
+C6 adds identity signatures only where durable authority requires third-party
+verification. Canonical full authority state uses
+`Komms-group-authority-state-v1`; ordered ownership certificates use
+`Komms-group-owner-transfer-v1`; generation-bound admin requests use
+`Komms-group-admin-request-v1`; and owner poll-moderation snapshots use
+`Komms-group-poll-moderation-v1`. Each domain signs its own bounded canonical
+bytes, never an ordinary chat message or vote. Moderation binds its exact group
+id, poll author/id, authority generation, and final vote heads. The prior owner signs the state
+that enacts transfer; the new owner signs later states. Every accepted authority
+transition also rotates the group secret and sender chains. Exact state, chain,
+fork, and verification rules are in
+[ADR-0023](adr/0023-group-roles-and-owner-authority.md).
 
 ## 7. Sealed sender & delivery tokens
 
@@ -223,5 +295,8 @@ digest is the QR comparison value. Rationale and UX:
    to the repo.
 3. Property tests: ratchet under arbitrary message loss/reorder within `MAX_SKIP` always
    decrypts; beyond bounds always fails closed.
-4. Fuzzing (cargo-fuzz) on envelope parsing and handshake message parsing.
+4. Fuzzing (cargo-fuzz) on envelope, handshake, backup/mnemonic, attachment,
+   device-prekey, and call-media parsing/opening.
 5. `cargo-deny` + pinned lockfile; no git dependencies in `kult-crypto`.
+6. Call media KAT/property coverage for both directions, mandatory hello,
+   tamper/replay/wrong-context failure, key-phase rotation, and exact bounds.

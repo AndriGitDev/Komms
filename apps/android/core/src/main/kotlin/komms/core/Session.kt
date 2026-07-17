@@ -16,6 +16,9 @@ package komms.core
 import java.io.File
 import uniffi.kult_ffi.Attachment
 import uniffi.kult_ffi.AudioInfo
+import uniffi.kult_ffi.Call
+import uniffi.kult_ffi.CallAudioFrame
+import uniffi.kult_ffi.CallAvailability
 import uniffi.kult_ffi.CarrierCapability
 import uniffi.kult_ffi.Config
 import uniffi.kult_ffi.Contact
@@ -23,6 +26,8 @@ import uniffi.kult_ffi.CustomIcon
 import uniffi.kult_ffi.CustomIconCrop
 import uniffi.kult_ffi.CustomIconQuotaUsage
 import uniffi.kult_ffi.CustomIconTarget
+import uniffi.kult_ffi.DeviceLinkAcceptance
+import uniffi.kult_ffi.DeviceLinkSelection
 import uniffi.kult_ffi.Event
 import uniffi.kult_ffi.EventListener
 import uniffi.kult_ffi.FfiException
@@ -33,8 +38,11 @@ import uniffi.kult_ffi.FolderSelection
 import uniffi.kult_ffi.FolderTarget
 import uniffi.kult_ffi.FormattedText
 import uniffi.kult_ffi.Group
+import uniffi.kult_ffi.GroupAuthority
 import uniffi.kult_ffi.GroupMentionCapability
 import uniffi.kult_ffi.GroupMessage
+import uniffi.kult_ffi.GroupPoll
+import uniffi.kult_ffi.GroupRole
 import uniffi.kult_ffi.KdfChoice
 import uniffi.kult_ffi.KultNode
 import uniffi.kult_ffi.Label
@@ -42,6 +50,8 @@ import uniffi.kult_ffi.LabelConversation
 import uniffi.kult_ffi.LabelFilterResult
 import uniffi.kult_ffi.LabelMatchMode
 import uniffi.kult_ffi.LabelTarget
+import uniffi.kult_ffi.LinkedDevice
+import uniffi.kult_ffi.MessageDeviceDelivery
 import uniffi.kult_ffi.Pin
 import uniffi.kult_ffi.PinConversationResult
 import uniffi.kult_ffi.PinTarget
@@ -143,6 +153,9 @@ private fun validateLabelWrite(name: String, color: String) {
  */
 fun bundleQrText(bundleHex: String): String = bundleHex.uppercase()
 
+/** Compact QR text for one opaque C2 link offer. */
+fun deviceLinkQrText(offerHex: String): String = offerHex.uppercase()
+
 /**
  * QR text for a safety number: uppercase hex of the raw 32-byte comparison
  * value — both parties render the identical code, on any platform.
@@ -167,13 +180,86 @@ private class Forwarder(private val sink: EventSink) : EventListener {
 class Session private constructor(private val node: KultNode) {
 
     /** This node's human-shareable kult address. */
-    val address: String by lazy { node.address() }
+    val address: String get() = node.address()
 
     /** This node's peer id (hex). */
-    val peer: String by lazy { node.peer() }
+    val peer: String get() = node.peer()
 
     /** Status snapshot for the UI's transport indicators. */
     fun status(): Status = node.status()
+
+    /** Exact public id for this physical installation. */
+    fun deviceId(): String = node.deviceId()
+
+    /** Complete account-authorized device list, including revoked rows. */
+    fun linkedDevices(): List<LinkedDevice> = node.linkedDevices()
+
+    /** Per-physical-device delivery states for one outbound message. */
+    fun messageDeviceDeliveries(message: String): List<MessageDeviceDelivery> =
+        node.messageDeviceDeliveries(message)
+
+    /** Rename one exact active linked device. */
+    fun renameLinkedDevice(device: String, name: String) =
+        node.renameLinkedDevice(device, name)
+
+    /** Permanently revoke another exact device after explicit review. */
+    fun revokeLinkedDevice(device: String, confirmed: Boolean) {
+        require(confirmed) { "permanent device revocation requires explicit confirmation" }
+        node.revokeLinkedDevice(device)
+    }
+
+    /** Begin one ten-minute proximate link offer as exact lowercase hex. */
+    fun beginDeviceLink(): String = hexEncode(node.beginDeviceLink())
+
+    /** Accept a scanned/pasted offer on a pristine target. */
+    fun acceptDeviceLink(offerHex: String, deviceName: String): DeviceLinkAcceptance {
+        val offer = hexDecode(offerHex)
+            ?: throw IllegalArgumentException("device link offer must be hex")
+        return node.acceptDeviceLink(offer, deviceName)
+    }
+
+    /** Source-side six-digit comparison code for one target response. */
+    fun deviceLinkConfirmationCode(responseHex: String): String {
+        val response = hexDecode(responseHex)
+            ?: throw IllegalArgumentException("device link response must be hex")
+        return node.deviceLinkConfirmationCode(response)
+    }
+
+    /** Confirm matching codes and create the encrypted selective transfer. */
+    fun approveDeviceLink(
+        responseHex: String,
+        contacts: Boolean,
+        organization: Boolean,
+        history: Boolean,
+        confirmed: Boolean,
+    ): String {
+        val response = hexDecode(responseHex)
+            ?: throw IllegalArgumentException("device link response must be hex")
+        return hexEncode(
+            node.approveDeviceLink(
+                response,
+                DeviceLinkSelection(contacts, organization, history),
+                confirmed,
+            ),
+        )
+    }
+
+    /** Confirm and import one source package on the pristine target. */
+    fun completeDeviceLink(packageHex: String, confirmed: Boolean) {
+        val packageBytes = hexDecode(packageHex)
+            ?: throw IllegalArgumentException("device link package must be hex")
+        node.completeDeviceLink(packageBytes, confirmed)
+    }
+
+    /** Export one encrypted convergence bundle for an active linked device. */
+    fun exportDeviceSync(device: String): String = hexEncode(node.exportDeviceSync(device))
+
+    /** Import one authenticated convergence bundle from another linked device. */
+    fun importDeviceSync(bundleHex: String): ULong {
+        val bundle = hexDecode(bundleHex)
+            ?: throw IllegalArgumentException("device sync bundle must be hex")
+        return node.importDeviceSync(bundle)
+    }
 
     /** Render exact source into the shared bounded and inert local text model. */
     fun formatText(
@@ -204,6 +290,34 @@ class Session private constructor(private val node: KultNode) {
     /** All stored contacts. */
     fun contacts(): List<Contact> = node.contacts()
 
+    /** Every current and briefly retained terminal direct-QUIC call. */
+    fun calls(): List<Call> = node.calls()
+
+    /** Honest current call-start verdict for one pairwise contact. */
+    fun callAvailability(peer: String): CallAvailability = node.callAvailability(peer)
+
+    /** Start one capability-gated direct-QUIC audio call. */
+    fun startCall(peer: String): String = node.startCall(peer)
+
+    /** Answer one ringing incoming call on this physical device. */
+    fun answerCall(call: String) = node.answerCall(call)
+
+    /** Decline one ringing incoming call. */
+    fun declineCall(call: String) = node.declineCall(call)
+
+    /** Cancel one outgoing ringing call. */
+    fun cancelCall(call: String) = node.cancelCall(call)
+
+    /** End one connecting or active call. */
+    fun hangupCall(call: String) = node.hangupCall(call)
+
+    /** Queue one Android MediaCodec Opus capture packet. */
+    fun sendCallAudio(call: String, timestampMs: ULong, opusPacket: ByteArray): Boolean =
+        node.sendCallAudio(call, timestampMs, opusPacket)
+
+    /** Take at most one authenticated Opus packet for native playback. */
+    fun takeCallAudio(call: String): CallAudioFrame? = node.takeCallAudio(call)
+
     /** Assess a proposed private local petname without mutation. */
     fun assessContactName(peer: String, name: String) = node.assessContactName(peer, name)
 
@@ -216,6 +330,18 @@ class Session private constructor(private val node: KultNode) {
 
     /** Queue a message; returns its id (progress arrives as events). */
     fun send(peer: String, body: String): String = node.send(peer, body)
+
+    /** Queue pairwise text with an authenticated exact local deadline. */
+    fun sendDisappearing(peer: String, body: String, lifetimeSeconds: ULong): String =
+        node.sendDisappearing(peer, body, lifetimeSeconds)
+
+    /** Queue an immutable edit for this identity's exact pairwise Text event. */
+    fun editMessage(
+        peer: String,
+        targetAuthor: String,
+        targetContentId: String,
+        text: String,
+    ): String = node.editMessage(peer, targetAuthor, targetContentId, text)
 
     /**
      * Import one app-private, caller-selected path as a pairwise attachment.
@@ -240,6 +366,19 @@ class Session private constructor(private val node: KultNode) {
         peer, path.absolutePath, mediaType, filename, preview.absolutePath, "image/jpeg",
     )
 
+    /** Import pairwise media whose first local reveal is terminal. */
+    fun sendViewOnceAttachment(
+        peer: String,
+        path: File,
+        mediaType: String,
+        filename: String?,
+        preview: File? = null,
+        lifetimeSeconds: ULong,
+    ): String = node.sendViewOnceAttachment(
+        peer, path.absolutePath, mediaType, filename,
+        preview?.absolutePath, preview?.let { "image/jpeg" }, lifetimeSeconds,
+    )
+
     /** Import one app-private path as an encrypt-once group attachment. */
     fun sendGroupAttachment(
         group: String,
@@ -257,6 +396,19 @@ class Session private constructor(private val node: KultNode) {
         preview: File,
     ): String = node.sendGroupAttachmentWithPreview(
         group, path.absolutePath, mediaType, filename, preview.absolutePath, "image/jpeg",
+    )
+
+    /** Import group media whose first local reveal is terminal. */
+    fun sendGroupViewOnceAttachment(
+        group: String,
+        path: File,
+        mediaType: String,
+        filename: String?,
+        preview: File? = null,
+        lifetimeSeconds: ULong,
+    ): String = node.sendGroupViewOnceAttachment(
+        group, path.absolutePath, mediaType, filename,
+        preview?.absolutePath, preview?.let { "image/jpeg" }, lifetimeSeconds,
     )
 
     /** Every supported transfer as render-safe state. */
@@ -283,6 +435,10 @@ class Session private constructor(private val node: KultNode) {
      */
     fun exportAttachment(transfer: String, path: File) =
         node.exportAttachment(transfer, path.absolutePath)
+
+    /** Terminally consume view-once media into a protected new path. */
+    fun consumeViewOnceAttachment(transfer: String, path: File) =
+        node.consumeViewOnceAttachment(transfer, path.absolutePath)
 
     /** Decrypt a sealed preview into a protected app-private path. */
     fun exportAttachmentPreview(transfer: String, path: File) =
@@ -557,6 +713,54 @@ class Session private constructor(private val node: KultNode) {
     /** Queue a group message; progress is reported independently per member. */
     fun sendGroup(group: String, body: String): String = node.sendGroup(group, body)
 
+    /** Queue group text with an authenticated exact local deadline. */
+    fun sendGroupDisappearing(group: String, body: String, lifetimeSeconds: ULong): String =
+        node.sendGroupDisappearing(group, body, lifetimeSeconds)
+
+    /** Create a visible-vote, single-choice poll for the exact current roster. */
+    fun createGroupPoll(group: String, question: String, options: List<String>): String =
+        node.createGroupPoll(group, question, options)
+
+    /** Render-safe poll cards with authenticated visible vote heads. */
+    fun groupPolls(group: String): List<GroupPoll> = node.groupPolls(group)
+
+    /** Cast or change this identity's vote using stable poll and option ids. */
+    fun voteGroupPoll(group: String, pollAuthor: String, pollId: String, optionId: String): String =
+        node.voteGroupPoll(group, pollAuthor, pollId, optionId)
+
+    /** Creator-only irreversible final snapshot of the currently visible vote heads. */
+    fun closeGroupPoll(group: String, pollAuthor: String, pollId: String): String =
+        node.closeGroupPoll(group, pollAuthor, pollId)
+
+    /** Signed owner closure; admins submit a generation-bound request. */
+    fun moderateGroupPollClose(group: String, pollAuthor: String, pollId: String): String =
+        node.moderateGroupPollClose(group, pollAuthor, pollId)
+
+    /** Current signed or legacy-compatible exact group roles. */
+    fun groupAuthority(group: String): GroupAuthority = node.groupAuthority(group)
+
+    /** Upgrade legacy creator authority to signed C6 roles. */
+    fun upgradeGroupAuthority(group: String): String = node.upgradeGroupAuthority(group)
+
+    /** Rename directly as owner or submit an admin request. */
+    fun renameGroup(group: String, name: String): String = node.renameGroup(group, name)
+
+    /** Owner-only admin grant/revoke. */
+    fun setGroupRole(group: String, peer: String, role: GroupRole): String =
+        node.setGroupRole(group, peer, role)
+
+    /** Transfer sole ownership to an existing member. */
+    fun transferGroupOwner(group: String, peer: String): String =
+        node.transferGroupOwner(group, peer)
+
+    /** Queue an immutable edit for this identity's exact group Text event. */
+    fun editGroupMessage(
+        group: String,
+        targetAuthor: String,
+        targetContentId: String,
+        text: String,
+    ): String = node.editGroupMessage(group, targetAuthor, targetContentId, text)
+
     /** Current exact-roster semantic Mention capability and review binding. */
     fun groupMentionCapability(group: String): GroupMentionCapability =
         node.groupMentionCapability(group)
@@ -569,7 +773,7 @@ class Session private constructor(private val node: KultNode) {
         reviewToken: String,
     ): String = node.sendGroupMention(group, text, spans, reviewToken)
 
-    /** Add a stored contact to a group (creator only). */
+    /** Add as owner or submit a signed admin request. */
     fun addGroupMember(group: String, peer: String) = node.addGroupMember(group, peer)
 
     /** Remove a member and rotate group keys (creator only). */

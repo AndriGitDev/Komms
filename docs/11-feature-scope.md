@@ -19,8 +19,9 @@ Each item notes where it lands: which crate or milestone already covers it, or
 what it would take. Nothing here loosens a security or scope commitment in
 [01: Why](01-why.md) or the [roadmap](08-roadmap.md); where a feature touches the
 protocol, transports, or crypto, it lands only behind an ADR that shows it
-surviving the threat model and the mesh bandwidth floor (real-time calls, now in
-scope, are the current example: internet/LAN only, ADR-0013 (Proposed)).
+surviving the threat model and the mesh bandwidth floor (the shipped C7 audio
+alpha is the current example: direct internet/LAN QUIC only under accepted
+ADR-0013, with physical-platform qualification still required).
 
 ## Build (fits the architecture as-is)
 
@@ -48,9 +49,10 @@ status and prerequisites are tracked in the delivery plan.
   work. An optional signed self-display name may later be advertised as a
   non-unique suggestion, but it is not implemented and could never silently
   override the recipient's petname.
-- **Secure backups.** Shipped: the `KKR4` mnemonic-sealed backup (Argon2id under a
+- **Secure backups.** Shipped: the `KKR7` mnemonic-sealed backup (Argon2id under a
   24-word BIP-39 phrase, ADR-0011/ADR-0012), including sealed local metadata and
-  note-to-self history; `KKR1`/`KKR2`/`KKR3` remain restorable. Stored locally or
+  note-to-self history, terminal ephemeral tombstones, and signed group
+  authority plus linked-device recovery state; `KKR1` through `KKR6` remain restorable. Stored locally or
   moved by sneakernet; no cloud.
 - **Note to self.** Shipped as a sealed local conversation in `kult-store`, with
   the reserved `note_to_self` identity across every shell and no peer, envelopes,
@@ -75,7 +77,8 @@ status and prerequisites are tracked in the delivery plan.
   manual order, idempotent append/unpin, complete-set reorder including stale
   targets, deterministic activity tie-breaking, cleanup, and reactivation stay
   local. Folder selection and label filtering precede one leading pinned block.
-  The limit is 8,192, `KKR4` is the only portability path, and every operation
+  The limit is 8,192; `KKR7` and authenticated own-device C2 sync are the only
+  portability paths, and every operation
   creates zero network, notification, crypto, or transport work. Message pins
   remain a separate design because they require stable message references.
 - **Dark mode.** Shipped as the exact `system` / `light` / `dark` preference
@@ -84,7 +87,7 @@ status and prerequisites are tracked in the delivery plan.
   changes live; desktop uses semantic CSS roles, Android uses DayNight resources,
   and iOS uses adaptive system colors. Reference palettes meet WCAG normal-text
   contrast, high-contrast and reduced-motion behavior remains native, and color
-  is never the only security or delivery signal. `KKR4` is the authoritative
+  is never the only security or delivery signal. `KKR7` is the authoritative
   portability path; a small non-sensitive device cache exists only to style the
   pre-unlock gate without a flash.
 - **Custom icons.** Shipped for contacts, groups, folders, and note-to-self over
@@ -93,7 +96,8 @@ status and prerequisites are tracked in the delivery plan.
   metadata-free 256×256 RGBA PNGs after orientation normalization and square
   crop. Animated/decompression-heavy inputs fail closed. Limits are 512 KiB per
   icon, 1,024 records, and 64 MiB aggregate; reads safely fall back after corrupt
-  or legacy non-canonical bytes. `KKR4` is the only portability path. Icons never
+  or legacy non-canonical bytes. Portability is limited to `KKR7` and authenticated
+  own-device C2 sync. Icons never
   enter avatar URLs, peer sync, envelopes, capabilities, queues, notifications,
   DHT state, or transport work.
 - **Screen security.** Shipped as an always-on pre-unlock policy. The shared
@@ -132,10 +136,11 @@ status and prerequisites are tracked in the delivery plan.
   managers, non-color badges, assignment actions, stale-record cleanup, and
   deterministic match-any/match-all filters are local presentation only. Limits
   are 128 live labels, 8,192 assignments, 32 labels per conversation, and 256
-  UTF-8 bytes per name. `KKR4` preserves exact identity, ordering, membership,
+  UTF-8 bytes per name. `KKR7` preserves exact identity, ordering, membership,
   and stale behavior. Labels do not affect messages, delivery, search, unread
-  truth, notifications, or transports and do not sync remotely. Message labels,
-  shared tags, and linked-device label sync remain separate work; B11
+  truth, notifications, or transports and do not sync to contacts or services.
+  C2 may converge them only between authorized devices of the same account.
+  Message labels and shared tags remain separate work; B11
   conversation pins compose independently after label filtering.
 - **Private conversation folders.** Shipped for pairwise contacts, groups, and
   note-to-self through F5 and every wrapper and shell. One stable typed
@@ -144,10 +149,11 @@ status and prerequisites are tracked in the delivery plan.
   never display-name inference. Create, rename, complete-set reorder, move,
   unfile, deletion review/cascade, and stale cleanup are atomic local operations.
   Folder selection runs before the independent B18 any/all label filter. Limits
-  are 128 folders, 8,192 assignments, and 256 UTF-8 bytes per name. `KKR4`
+  are 128 folders, 8,192 assignments, and 256 UTF-8 bytes per name. `KKR7`
   preserves exact identity, order, membership, and stale behavior. Folders do
   not affect messages, delivery, search, unread truth, notifications, transports,
-  or remote state and are not synchronized between devices.
+  or contact/service state; C2 may converge them only between authorized devices
+  of the same account.
 
 ## Build with constraints (needs transport-awareness or local-first sync)
 
@@ -158,43 +164,61 @@ and degrade honestly, exactly as the delivery ladder already does.
 - **File sharing.** The bounded F3 pipeline is shipped across desktop, Android,
   and iOS: independently sealed resumable chunks, explicit consent and lifecycle
   controls, protected export, exact progress, and pairwise/encrypt-once group
-  transfer. A hard no-airtime class holds every bulk object for a faster link;
-  richer non-image media presentation remains product polish rather than a new
-  transport design.
-- **Linked devices.** One account identity uses separately authenticated device
+  transfer. Safe generic rows now share a fail-closed filename/media-type policy,
+  explicit warned open for reviewed matches, and export-only handling for active,
+  mismatched, unknown, or nameless files. A hard no-airtime class still holds
+  every bulk object for a faster link; no scanner, remote preview, or new
+  transport behavior is implied.
+- **Linked devices.** Shipped across the core, strict RPC/CLI, UniFFI, and every
+  shell. One account identity uses separately authenticated device
   keys, per-device sessions, revocation, and deterministic sync. Linking happens
-  proximately through a confirmed QR or LAN ceremony, never by copying live
-  ratchet databases or depending on cloud sync.
-- **Message editing.** Requires authenticated revision events and deterministic
-  reconciliation across carriers where peers may be offline or delayed. The ADR
-  chooses ordering, tombstones, and old-client behavior before implementation.
-- **Disappearing messages / view-once media.** Client-side expiry is easy; the
-  hard part is enforcing deletion across mailbox stores and mesh relays that hold
-  sealed copies. Network retention needs a bounded relay-visible deletion hint,
-  cryptographically bound to the encrypted content, because an intermediary
-  cannot act on an expiry value visible only after decryption.
-- **Group polls.** Feasible as structured payload broadcast over the shipped
-  sender-key groups (ADR-0012), with authenticated idempotent vote events and a
-  deterministic tally that converges after delayed or reordered delivery.
-- **Admin / role controls.** Plausible via cryptographic role tokens embedded in
-  the group's signed state (creator-managed membership already exists, ADR-0012),
-  rather than a server dictating who is an admin.
-- **Live voice and video calls.** In scope and on the near horizon, strictly
-  confined to high-bandwidth carriers: internet libp2p tunnels and LAN (mDNS),
-  never a radio mesh. The core can already negotiate a direct connection (QUIC,
-  with DCUtR hole-punching to upgrade relayed paths), so a call sets up a media
-  stream over that connection with the identity keys authenticating the peer; no
-  central coordinator mints or routes anything. The app must gate the feature on
-  carrier: if a peer is reachable only over Meshtastic (or any airtime-budgeted
-  link), calling is disabled with an honest reason, the same way the delivery
-  ladder already reports "held, will send when a faster link exists." Recorded
-  audio/video *clips* remain asynchronous payloads; audio can be composed on
-  every platform but waits for a non-airtime link when F4 reports mesh-only.
-  This entry adds the synchronous case. This touches transports, so it is pinned
-  by ADR-0013 (Proposed): media transport choice (SRTP-style framing over a
-  libp2p path vs. a constrained WebRTC media path), call-setup signaling that
-  stays metadata-blind over the pairwise ratchet, and measured qualification of
-  any relayed path for the carrier-gating rule.
+  proximately through a mutually confirmed QR/paste ceremony, never by copying
+  live ratchet databases or depending on cloud sync. See
+  [22: Linked Devices](22-linked-devices.md) and
+  [ADR-0024](adr/0024-account-authorized-linked-devices.md).
+- **Message editing.** Shipped for canonical pairwise and group Text through
+  every front door and shell. Immutable authenticated events target exact
+  author/content ids, retain inspectable versions, and converge under offline
+  reorder by maximum `(revision, edit id)` without clocks. Pairwise capability
+  and complete current-group capability are required before send; legacy text,
+  attachments, mentions, and other edits remain non-editable. Editing is not
+  erasure. See [18: Authenticated Message Editing](18-message-editing.md).
+- **Disappearing messages / view-once media.** Shipped for pairwise and groups
+  through every front door and shell. Exact authenticated local deadlines,
+  terminal sealed tombstones, KKR6 plaintext/media exclusion, and first-output
+  view-once consumption compose with a coarse hour-aligned envelope-v2 deletion
+  hint for mailboxes/bridges. The promise is local to each installation: relays
+  and recipients may retain copies, and Komms does not promise remote erasure or
+  screenshot prevention. See
+  [19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
+- **Group polls.** Shipped through every front door and shell as content-v1
+  kind 6 over sender-key groups. Stable poll/option IDs, fixed creation-time
+  electorates, authenticated visible vote heads, creator-attested closure, and
+  local deterministic tallies converge after duplicate, delayed, reordered,
+  removed-member, restart, and restore paths. Votes are explicitly not
+  anonymous. See [20: Group Polls](20-group-polls.md) and
+  [ADR-0022](adr/0022-convergent-group-polls.md).
+- **Admin / role controls.** Shipped through every front door and shell as a
+  fixed owner/admin/member model. Canonical generation-bound full state,
+  ownership-transfer certificates, admin requests, and moderation snapshots are
+  identity-signed; the sole owner serializes transitions and every accepted
+  change re-keys. Stale/demoted requests and losing transfer forks fail closed;
+  `KKR6` introduced authority and `KKR7` carries it forward, while KKR1-KKR5
+  restore as legacy groups. See
+  [21: Group Roles, Ownership, and Moderation](21-group-roles.md) and
+  [ADR-0023](adr/0023-group-roles-and-owner-authority.md).
+- **Live voice and video calls.** The audio alpha is shipped across transport,
+  node, RPC/CLI, UniFFI, desktop, Android, and iOS. It is strictly confined to a
+  fresh direct QUIC path reached through internet libp2p or LAN discovery, never
+  a relay-only, TCP, mailbox, sneakernet, or radio-mesh route. DCUtR may upgrade
+  a relayed path before the call becomes available. Bounded signaling stays
+  inside ordinary ratcheted message content; a fresh per-call secret derives
+  directional authenticated keys for one reliable `/komms/call/1` Opus
+  substream. There is no coordinator, call history, backup state, or delayed
+  fallback. Recorded audio/video *clips* remain asynchronous F3 payloads. Real
+  NAT, sustained network, battery, native audio-route, background, and lock
+  qualification remains a release gate. Video starts only after audio passes.
+  See [23: Live Audio Calls](23-live-audio-calls.md).
 - **Optional hybrid reachability and native wake.** In scope only as a
   reversible convenience plane over the unchanged server-independent core.
   Established peers may use rotating provider-specific rendezvous slots for

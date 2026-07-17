@@ -52,8 +52,10 @@ Trust is established human-to-human, not by an authority:
 | **Sticker/print** | kult address printed on a poster/card/leaflet, pull-based: you contact the address you physically obtained. | Good against remote MITM; matches activist distribution reality. |
 | **TOFU** (default) | First contact pins the key; any later key change triggers a blocking warning. | Baseline: same model as SSH; honest about being unverified in the UI. |
 
-Verification state (`unverified` / `verified` / `key-changed!`) is stored locally,
-displayed persistently, and never synced anywhere.
+Verification state (`unverified` / `verified` / `key-changed!`) is stored sealed,
+displayed persistently, and never sent to the contact or a service. C2 can carry
+it only inside an authenticated encrypted sync bundle to another authorized
+device owned by the same account.
 
 ## 4. Petnames
 
@@ -63,7 +65,7 @@ user rename an exact peer in every shipped interface. Names are NFC-normalized a
 bounded; duplicates are valid because the peer key, never display text, is the
 identity. Duplicate, mixed-script/confusable, bidirectional-control, and invisible-
 character risks are shown for explicit review before a warned rename. The label is
-stored only in the sealed contact record, survives restart and `KKR4`, and creates no
+stored only in the sealed contact record, survives restart and `KKR7`, and creates no
 message, capability, lookup, notification, queue, or transport work.
 
 What the network sees remains keys and tokens, never the local petname. An optional
@@ -84,13 +86,21 @@ compatibility path. See [15: Private Contact Names](15-contact-petnames.md).
 - **Revocation**: a signed revocation statement propagates through sessions and DHT;
   contacts mark the identity dead and refuse new sessions to it.
 
-## 6. Multi-device (roadmap, M6)
+## 6. Linked devices (C2, shipped)
 
-Design direction for C2: each physical device holds its own device keypair; the
-identity key signs a device manifest; sessions are per-device (Sesame-style
-fan-out). The shipped contract remains one identity = one active device, with
-the encrypted-backup path for migration. No current shell silently synchronizes
-folders, labels, drafts, or other local organization.
+Each physical device holds its own certified device keypair. The stable account
+identity signs a bounded device manifest, while PQXDH/Double Ratchet sessions,
+capabilities, delivery rows, and group sender chains remain per physical device.
+Linking a pristine installation requires a time-bounded offer, explicit
+confirmation on both sides, and matching six-digit comparison codes. Permanent
+exact-device revocation excludes future delivery and sync.
+
+Authenticated explicit device-to-device bundles converge contacts and
+verification, private organization, ordinary history, edits, polls, group
+authority, and terminal expiry tombstones. Drafts, scheduled outbox rows, live
+queues/ratchets, active ephemeral content, downloaded media, and most shell
+preferences remain installation-local. See [22: Linked Devices](22-linked-devices.md)
+and [ADR-0024](adr/0024-account-authorized-linked-devices.md).
 
 ## 7. First-contact abuse controls
 

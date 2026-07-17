@@ -10,20 +10,22 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use kult_node::{
-    AttachmentConversation, AttachmentDirection, AttachmentInfo, CarrierCapability,
+    AttachmentConversation, AttachmentDirection, AttachmentFileKind, AttachmentFilePresentation,
+    AttachmentFileWarning, AttachmentInfo, AttachmentOpenPolicy, CallAudioFrame, CallAvailability,
+    CallDirection, CallEndReason, CallInfo, CallPhase, CallUnavailableReason, CarrierCapability,
     CarrierCapabilitySnapshot, ContactNameAssessment, ContactNameWarning, ContentStatus,
     CustomIconInfo, CustomIconTarget, CustomIconUsage, Event, FolderConversationInfo,
-    FolderConversationList, FolderInfo, FolderSelection, GroupInfo, GroupMentionCapability,
-    IncognitoKeyboardPlatform, IncognitoKeyboardPolicy, LabelConversationInfo, LabelFilterInfo,
-    LabelInfo, MentionCapabilityIssueReason, NodeStaleFolderReason, NodeStaleLabelReason,
-    PinConversationInfo, PinConversationList, PinInfo, ScheduledConversation, ScheduledMessageInfo,
+    FolderConversationList, FolderInfo, FolderSelection, GroupAuthorityInfo, GroupInfo,
+    GroupMentionCapability, GroupRole, IncognitoKeyboardPlatform, IncognitoKeyboardPolicy,
+    LabelConversationInfo, LabelFilterInfo, LabelInfo, MentionCapabilityIssueReason,
+    NodeStaleFolderReason, NodeStaleLabelReason, PinConversationInfo, PinConversationList, PinInfo,
+    PollInfo, ResolvedGroupMessage, ResolvedMessage, ScheduledConversation, ScheduledMessageInfo,
     ScreenSecurityPlatform, ScreenSecurityPolicy, StaleFolderInfo, StaleLabelInfo,
     TextFormatBlockKind, TextFormatHighlight, TextFormatStyle, NOTE_TO_SELF_CONVERSATION_ID,
 };
 use kult_store::{
     valid_folder_name, valid_label_color, valid_label_name, ConversationId, DeliveryState,
-    Direction, GroupMessageRecord, MediaTransferState, MessageRecord, NoteMessageRecord,
-    MAX_FOLDERS, MAX_LABELS, MAX_PINS,
+    Direction, MediaTransferState, NoteMessageRecord, MAX_FOLDERS, MAX_LABELS, MAX_PINS,
 };
 use kult_transport::DeliveryHint;
 
@@ -81,6 +83,15 @@ fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
         "rename_contact" => Some(&["id", "op", "peer", "name", "accept_warnings"]),
         "screen_security_policy" | "incognito_keyboard_policy" => Some(&["id", "op", "platform"]),
         "theme" => Some(&["id", "op"]),
+        "device_id" | "linked_devices" | "device_link_begin" => Some(&["id", "op"]),
+        "message_device_deliveries" => Some(&["id", "op", "message"]),
+        "device_rename" => Some(&["id", "op", "device", "name"]),
+        "device_revoke" | "device_sync_export" => Some(&["id", "op", "device"]),
+        "device_link_accept" => Some(&["id", "op", "offer", "name"]),
+        "device_link_code" => Some(&["id", "op", "response"]),
+        "device_link_approve" => Some(&["id", "op", "response", "selection", "confirmed"]),
+        "device_link_complete" => Some(&["id", "op", "package", "confirmed"]),
+        "device_sync_import" => Some(&["id", "op", "bundle"]),
         "theme_set" => Some(&["id", "op", "preference"]),
         "custom_icon" | "custom_icon_clear" => Some(&["id", "op", "target"]),
         "custom_icon_set_path" => Some(&["id", "op", "target", "path", "crop"]),
@@ -112,8 +123,77 @@ fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
         "pin_reorder" => Some(&["id", "op", "targets"]),
         "pin_conversations" => Some(&["id", "op", "selection", "labels", "mode"]),
         "format_text" => Some(&["id", "op", "source", "highlights"]),
+        "attachment_file_presentation" => Some(&["id", "op", "media_type", "filename"]),
+        "edit_message" => Some(&[
+            "id",
+            "op",
+            "peer",
+            "target_author",
+            "target_content_id",
+            "text",
+        ]),
+        "send_disappearing" => Some(&["id", "op", "peer", "body", "lifetime_secs"]),
+        "attachment_send_view_once" => Some(&[
+            "id",
+            "op",
+            "peer",
+            "path",
+            "media_type",
+            "filename",
+            "preview_path",
+            "preview_media_type",
+            "lifetime_secs",
+        ]),
+        "group_attachment_send_view_once" => Some(&[
+            "id",
+            "op",
+            "group",
+            "path",
+            "media_type",
+            "filename",
+            "preview_path",
+            "preview_media_type",
+            "lifetime_secs",
+        ]),
+        "attachment_consume_view_once" => Some(&["id", "op", "transfer", "path"]),
+        "group_edit_message" => Some(&[
+            "id",
+            "op",
+            "group",
+            "target_author",
+            "target_content_id",
+            "text",
+        ]),
+        "group_send_disappearing" => Some(&["id", "op", "group", "body", "lifetime_secs"]),
+        "group_poll_create" => Some(&["id", "op", "group", "question", "options"]),
+        "group_polls" => Some(&["id", "op", "group"]),
+        "group_poll_vote" => Some(&["id", "op", "group", "poll_author", "poll_id", "option_id"]),
+        "group_poll_close" => Some(&["id", "op", "group", "poll_author", "poll_id"]),
+        "group_poll_moderate_close" => Some(&["id", "op", "group", "poll_author", "poll_id"]),
+        "group_authority" | "group_upgrade_authority" => Some(&["id", "op", "group"]),
+        "group_rename" => Some(&["id", "op", "group", "name"]),
+        "group_set_role" => Some(&["id", "op", "group", "peer", "role"]),
+        "group_transfer_owner" => Some(&["id", "op", "group", "peer"]),
+        "calls" => Some(&["id", "op"]),
+        "call_availability" | "call_start" => Some(&["id", "op", "peer"]),
+        "call_answer" | "call_decline" | "call_cancel" | "call_hangup" | "call_audio_take" => {
+            Some(&["id", "op", "call"])
+        }
+        "call_audio_send" => Some(&["id", "op", "call", "timestamp_ms", "opus"]),
         _ => None,
     }
+}
+
+/// Explicit selective state imported during a confirmed device link.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceLinkSelectionInput {
+    /// Import contacts and verification.
+    pub contacts: bool,
+    /// Import private local organization.
+    pub organization: bool,
+    /// Import non-ephemeral history.
+    pub history: bool,
 }
 
 /// Every operation the daemon serves. Mirrors the node's command/event API
@@ -126,6 +206,67 @@ pub enum Op {
     Status,
     /// Export a fresh signed prekey bundle (hex) for out-of-band sharing.
     Bundle,
+    /// Exact separately authenticated physical-device id.
+    DeviceId,
+    /// Complete account-authorized local device list.
+    LinkedDevices,
+    /// Per-device delivery state for one account-level message.
+    MessageDeviceDeliveries {
+        /// Stable message id (hex).
+        message: String,
+    },
+    /// Rename one active linked physical device.
+    DeviceRename {
+        /// Exact device id (hex).
+        device: String,
+        /// Exact bounded UTF-8 display name.
+        name: String,
+    },
+    /// Permanently revoke another linked physical device.
+    DeviceRevoke {
+        /// Exact device id (hex).
+        device: String,
+    },
+    /// Begin a bounded account-authenticated proximate link offer.
+    DeviceLinkBegin,
+    /// Accept a link offer on a pristine target and return response/code.
+    DeviceLinkAccept {
+        /// Hex-encoded offer bytes.
+        offer: String,
+        /// Exact proposed device name.
+        name: String,
+    },
+    /// Derive the source-side comparison code for one target response.
+    DeviceLinkCode {
+        /// Hex-encoded response bytes.
+        response: String,
+    },
+    /// Confirm and produce the encrypted selective initial-transfer package.
+    DeviceLinkApprove {
+        /// Hex-encoded target response.
+        response: String,
+        /// Explicit initial-transfer selection.
+        selection: DeviceLinkSelectionInput,
+        /// Both users explicitly confirmed the comparison code.
+        confirmed: bool,
+    },
+    /// Confirm and import one encrypted link package on the pristine target.
+    DeviceLinkComplete {
+        /// Hex-encoded approved package.
+        package: String,
+        /// Both users explicitly confirmed the comparison code.
+        confirmed: bool,
+    },
+    /// Export one encrypted convergence bundle to an active linked device.
+    DeviceSyncExport {
+        /// Exact recipient device id (hex).
+        device: String,
+    },
+    /// Import one encrypted convergence bundle.
+    DeviceSyncImport {
+        /// Hex-encoded bundle bytes.
+        bundle: String,
+    },
     /// Render exact source into the bounded, inert shared display model.
     FormatText {
         /// Exact authenticated or composed UTF-8 source.
@@ -133,6 +274,13 @@ pub enum Op {
         /// Optional existing semantic ranges composed as inert highlights.
         #[serde(default)]
         highlights: Vec<TextFormatHighlightInput>,
+    },
+    /// Classify untrusted authenticated attachment hints for inert local UI.
+    AttachmentFilePresentation {
+        /// Exact lower-case media-type hint.
+        media_type: String,
+        /// Optional sanitized display basename.
+        filename: Option<String>,
     },
     /// Add a contact from an out-of-band prekey bundle.
     AddContact {
@@ -175,6 +323,26 @@ pub enum Op {
         /// Message body (UTF-8 text).
         body: String,
     },
+    /// Queue pairwise text with exact local expiry and coarse relay retention.
+    SendDisappearing {
+        /// Recipient peer id (hex).
+        peer: String,
+        /// Exact UTF-8 body.
+        body: String,
+        /// Lifetime in seconds (60 through 30 days).
+        lifetime_secs: u64,
+    },
+    /// Queue an immutable edit for an exact authored pairwise Text event.
+    EditMessage {
+        /// Pairwise conversation peer id (hex).
+        peer: String,
+        /// Original author peer id (hex); must be this node for local send.
+        target_author: String,
+        /// Original canonical Text content id (hex).
+        target_content_id: String,
+        /// Exact non-empty replacement UTF-8.
+        text: String,
+    },
     /// Import and queue a pairwise attachment from a caller-selected path.
     AttachmentSend {
         /// Recipient peer id (hex).
@@ -192,6 +360,25 @@ pub enum Op {
         #[serde(default)]
         preview_media_type: Option<String>,
     },
+    /// Import and queue a pairwise view-once attachment.
+    AttachmentSendViewOnce {
+        /// Recipient peer id (hex).
+        peer: String,
+        /// Plaintext input path selected by the local caller.
+        path: String,
+        /// Authenticated lowercase media-type hint.
+        media_type: String,
+        /// Optional authenticated display basename.
+        filename: Option<String>,
+        /// Optional locally generated preview input path.
+        #[serde(default)]
+        preview_path: Option<String>,
+        /// JPEG/PNG media type required with a preview.
+        #[serde(default)]
+        preview_media_type: Option<String>,
+        /// Fallback lifetime in seconds.
+        lifetime_secs: u64,
+    },
     /// Import and queue a sender-key group attachment.
     GroupAttachmentSend {
         /// Group id (hex).
@@ -208,6 +395,25 @@ pub enum Op {
         /// JPEG/PNG media type required when `preview_path` is present.
         #[serde(default)]
         preview_media_type: Option<String>,
+    },
+    /// Import and queue a sender-key group view-once attachment.
+    GroupAttachmentSendViewOnce {
+        /// Group id (hex).
+        group: String,
+        /// Plaintext input path selected by the local caller.
+        path: String,
+        /// Authenticated lowercase media-type hint.
+        media_type: String,
+        /// Optional authenticated display basename.
+        filename: Option<String>,
+        /// Optional locally generated preview input path.
+        #[serde(default)]
+        preview_path: Option<String>,
+        /// JPEG/PNG media type required with a preview.
+        #[serde(default)]
+        preview_media_type: Option<String>,
+        /// Fallback lifetime in seconds.
+        lifetime_secs: u64,
     },
     /// List render-safe attachment transfer state.
     Attachments,
@@ -245,6 +451,13 @@ pub enum Op {
         /// Export the optional preview instead of the primary object.
         #[serde(default)]
         preview: bool,
+    },
+    /// Consume a view-once primary into a new caller-selected protected file.
+    AttachmentConsumeViewOnce {
+        /// Local transfer id (hex).
+        transfer: String,
+        /// Destination path, created without overwriting.
+        path: String,
     },
     /// Schedule pairwise text for an absolute UTC Unix instant.
     Schedule {
@@ -536,6 +749,26 @@ pub enum Op {
         /// Message body (UTF-8 text).
         body: String,
     },
+    /// Queue group text with exact local expiry and coarse relay retention.
+    GroupSendDisappearing {
+        /// Group id (hex).
+        group: String,
+        /// Exact UTF-8 body.
+        body: String,
+        /// Lifetime in seconds (60 through 30 days).
+        lifetime_secs: u64,
+    },
+    /// Queue an immutable edit for an exact authored group Text event.
+    GroupEditMessage {
+        /// Group id (hex).
+        group: String,
+        /// Original author peer id (hex); must be this node for local send.
+        target_author: String,
+        /// Original canonical Text content id (hex).
+        target_content_id: String,
+        /// Exact non-empty replacement UTF-8.
+        text: String,
+    },
     /// Read the current all-member Mention support verdict and review token.
     GroupMentionCapability {
         /// Group id (hex).
@@ -551,6 +784,82 @@ pub enum Op {
         spans: Vec<MentionSpanInput>,
         /// Review token from `group_mention_capability` (hex).
         review_token: String,
+    },
+    /// Create a single-choice poll with explicit ordered UTF-8 options.
+    GroupPollCreate {
+        /// Group id (hex).
+        group: String,
+        /// Exact UTF-8 question.
+        question: String,
+        /// Ordered exact UTF-8 option labels.
+        options: Vec<String>,
+    },
+    /// List locally derived polls and visible vote heads for a group.
+    GroupPolls {
+        /// Group id (hex).
+        group: String,
+    },
+    /// Cast or change this identity's vote using stable ids only.
+    GroupPollVote {
+        /// Group id (hex).
+        group: String,
+        /// Poll creator peer id (hex).
+        poll_author: String,
+        /// Stable poll id (hex).
+        poll_id: String,
+        /// Stable selected option id (hex).
+        option_id: String,
+    },
+    /// Irreversibly close this identity's poll using stable ids only.
+    GroupPollClose {
+        /// Group id (hex).
+        group: String,
+        /// Poll creator peer id (hex).
+        poll_author: String,
+        /// Stable poll id (hex).
+        poll_id: String,
+    },
+    /// Owner/admin moderation closure bound to signed group authority.
+    GroupPollModerateClose {
+        /// Group id (hex).
+        group: String,
+        /// Poll creator peer id (hex).
+        poll_author: String,
+        /// Stable poll id (hex).
+        poll_id: String,
+    },
+    /// Read current signed or synthesized group roles and ownership.
+    GroupAuthority {
+        /// Group id (hex).
+        group: String,
+    },
+    /// Upgrade a legacy creator group to signed authority state.
+    GroupUpgradeAuthority {
+        /// Group id (hex).
+        group: String,
+    },
+    /// Rename a group directly as owner or by admin request.
+    GroupRename {
+        /// Group id (hex).
+        group: String,
+        /// Exact replacement name.
+        name: String,
+    },
+    /// Grant or revoke admin role as owner.
+    GroupSetRole {
+        /// Group id (hex).
+        group: String,
+        /// Existing member peer id (hex).
+        peer: String,
+        /// `admin` or `member`.
+        role: GroupRoleInput,
+    },
+    /// Transfer sole ownership to an existing member.
+    GroupTransferOwner {
+        /// Group id (hex).
+        group: String,
+        /// Existing member peer id (hex).
+        peer: String,
     },
     /// Add a stored contact to a group (creator only).
     GroupAdd {
@@ -582,6 +891,52 @@ pub enum Op {
     Contacts,
     /// List safe, time-bounded carrier snapshots for all contacts.
     CarrierCapabilities,
+    /// List transient render-safe call state retained by this installation.
+    Calls,
+    /// Return the honest current call-start verdict for one contact.
+    CallAvailability {
+        /// Exact contact peer id (hex).
+        peer: String,
+    },
+    /// Start one capability-gated outgoing audio call.
+    CallStart {
+        /// Exact contact peer id (hex).
+        peer: String,
+    },
+    /// Answer one ringing incoming call on this physical device.
+    CallAnswer {
+        /// Exact call id (hex).
+        call: String,
+    },
+    /// Decline one ringing incoming call on this physical device.
+    CallDecline {
+        /// Exact call id (hex).
+        call: String,
+    },
+    /// Cancel one locally initiated ringing call.
+    CallCancel {
+        /// Exact call id (hex).
+        call: String,
+    },
+    /// End one connecting or active call.
+    CallHangup {
+        /// Exact call id (hex).
+        call: String,
+    },
+    /// Queue one native-encoded Opus packet for authenticated transmission.
+    CallAudioSend {
+        /// Exact call id (hex).
+        call: String,
+        /// Sender capture timestamp in milliseconds.
+        timestamp_ms: u64,
+        /// Exact bounded Opus packet (hex).
+        opus: String,
+    },
+    /// Take at most one authenticated Opus packet from the bounded jitter buffer.
+    CallAudioTake {
+        /// Exact call id (hex).
+        call: String,
+    },
     /// Message history with a peer.
     Messages {
         /// The peer id (hex).
@@ -696,6 +1051,25 @@ pub enum LabelMatchInput {
     All,
 }
 
+/// Strict mutable C6 role input; ownership uses its dedicated operation.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupRoleInput {
+    /// Grant bounded administration capability.
+    Admin,
+    /// Revoke administration capability.
+    Member,
+}
+
+impl From<GroupRoleInput> for GroupRole {
+    fn from(value: GroupRoleInput) -> Self {
+        match value {
+            GroupRoleInput::Admin => GroupRole::Admin,
+            GroupRoleInput::Member => GroupRole::Member,
+        }
+    }
+}
+
 /// Explicit virtual or stable-folder navigation selection.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -760,6 +1134,14 @@ pub fn err(id: u64, message: &str) -> String {
 /// An event line for subscribed connections.
 pub fn event_line(event: &Event) -> String {
     let body = match event {
+        Event::DevicesChanged => json!({
+            "type": "devices_changed",
+        }),
+        Event::DeviceLinkCompleted { account, device } => json!({
+            "type": "device_link_completed",
+            "account": hex_encode(account),
+            "device": hex_encode(device),
+        }),
         Event::CustomIconsChanged => json!({
             "type": "custom_icons_changed",
         }),
@@ -805,7 +1187,16 @@ pub fn event_line(event: &Event) -> String {
             "timestamp": timestamp,
             "body": render_event_body(body, content),
             "content_kind": content_kind(content),
+            "expires_at": content_expiry(content),
             "mention_spans": mention_status_json(content),
+        }),
+        Event::MessageEdited {
+            peer,
+            target_content_id,
+        } => json!({
+            "type": "message_edited",
+            "peer": hex_encode(peer),
+            "target_content_id": hex_encode(target_content_id),
         }),
         Event::NoteToSelfMessageAdded {
             id,
@@ -839,6 +1230,10 @@ pub fn event_line(event: &Event) -> String {
             "type": "carrier_capability",
             "snapshot": carrier_json(snapshot),
         }),
+        Event::CallUpdated { call } => json!({
+            "type": "call_updated",
+            "call": call_json(call),
+        }),
         Event::GroupUpdated { group } => json!({
             "type": "group_updated",
             "group": hex_encode(group),
@@ -858,7 +1253,77 @@ pub fn event_line(event: &Event) -> String {
             "timestamp": timestamp,
             "body": render_event_body(body, content),
             "content_kind": content_kind(content),
+            "expires_at": content_expiry(content),
             "mention_spans": mention_status_json(content),
+        }),
+        Event::GroupMessageEdited {
+            group,
+            sender,
+            target_content_id,
+        } => json!({
+            "type": "group_message_edited",
+            "group": hex_encode(group),
+            "sender": hex_encode(sender),
+            "target_content_id": hex_encode(target_content_id),
+        }),
+        Event::PollUpdated {
+            group,
+            poll_author,
+            poll_id,
+        } => json!({
+            "type": "poll_updated",
+            "group": hex_encode(group),
+            "poll_author": hex_encode(poll_author),
+            "poll_id": hex_encode(poll_id),
+        }),
+        Event::GroupAuthorityUpdated {
+            group,
+            generation,
+            owner,
+        } => json!({
+            "type": "group_authority_updated",
+            "group": hex_encode(group),
+            "generation": generation,
+            "owner": hex_encode(owner),
+        }),
+        Event::GroupAdminRequestResolved {
+            group,
+            request_id,
+            accepted,
+            generation,
+            state_id,
+            reason,
+        } => json!({
+            "type": "group_admin_request_resolved",
+            "group": hex_encode(group),
+            "request_id": hex_encode(request_id),
+            "accepted": accepted,
+            "generation": generation,
+            "state_id": state_id.map(|id| hex_encode(&id)),
+            "reason": reason,
+        }),
+        Event::EphemeralRemoved {
+            conversation,
+            author,
+            content_id,
+            reason,
+        } => json!({
+            "type": "ephemeral_removed",
+            "conversation": match conversation {
+                kult_store::EphemeralConversation::Pairwise(peer) => {
+                    json!({ "type": "pairwise", "id": hex_encode(peer) })
+                }
+                kult_store::EphemeralConversation::Group(group) => {
+                    json!({ "type": "group", "id": hex_encode(group) })
+                }
+            },
+            "author": hex_encode(author),
+            "content_id": hex_encode(content_id),
+            "reason": match reason {
+                kult_store::EphemeralState::Consumed => "consumed",
+                kult_store::EphemeralState::Expired => "expired",
+                kult_store::EphemeralState::Active => "active",
+            },
         }),
         Event::MentionReceived { id } => json!({
             "type": "mention_received",
@@ -1273,6 +1738,12 @@ fn error_code(message: &str) -> &'static str {
         "store error: conversation pin limit exhausted" => "pin_limit",
         "store error: invalid complete pin order" => "invalid_pin_order",
         "store error: conversation pin is active or absent" => "stale_pin_active",
+        "call id must be hex" | "call id must be 16 bytes" => "invalid_call_id",
+        "invalid call control, route, expiry, or transition" => "invalid_call",
+        "call does not exist on this installation" => "unknown_call",
+        "peer does not support live calls" => "call_unsupported",
+        "no fresh direct QUIC route is available" => "call_unavailable",
+        "this installation is already in a call" => "call_busy",
         _ if message.starts_with("bad request:") => "bad_request",
         _ if message.starts_with("store error:") => "storage_failure",
         _ => "operation_failed",
@@ -1298,14 +1769,44 @@ pub fn attachment_json(attachment: &AttachmentInfo) -> Value {
         "author": hex_encode(&attachment.author),
         "content_id": hex_encode(&attachment.content_id),
         "state": attachment_state_str(attachment.state),
+        "view_once": attachment.view_once,
+        "expires_at": attachment.expires_at,
+        "consumed": attachment.consumed,
         "objects": attachment.objects.iter().map(|object| json!({
             "preview": object.preview,
             "total_bytes": object.total_bytes,
             "verified_bytes": object.verified_bytes,
             "media_type": object.media_type,
             "filename": object.filename,
+            "presentation": attachment_file_presentation_json(&object.presentation),
             "state": attachment_state_str(object.state),
         })).collect::<Vec<_>>(),
+    })
+}
+
+/// Stable snake-case JSON for the shared C1 file-presentation policy.
+pub fn attachment_file_presentation_json(presentation: &AttachmentFilePresentation) -> Value {
+    json!({
+        "kind": match presentation.kind {
+            AttachmentFileKind::Image => "image",
+            AttachmentFileKind::Audio => "audio",
+            AttachmentFileKind::Video => "video",
+            AttachmentFileKind::Document => "document",
+            AttachmentFileKind::Archive => "archive",
+            AttachmentFileKind::Executable => "executable",
+            AttachmentFileKind::Other => "other",
+        },
+        "open_policy": match presentation.open_policy {
+            AttachmentOpenPolicy::ProtectedMedia => "protected_media",
+            AttachmentOpenPolicy::ExternalOpen => "external_open",
+            AttachmentOpenPolicy::ExportOnly => "export_only",
+        },
+        "warnings": presentation.warnings.iter().map(|warning| match warning {
+            AttachmentFileWarning::MediaTypeMismatch => "media_type_mismatch",
+            AttachmentFileWarning::DangerousType => "dangerous_type",
+            AttachmentFileWarning::UnrecognizedType => "unrecognized_type",
+            AttachmentFileWarning::MissingFilename => "missing_filename",
+        }).collect::<Vec<_>>(),
     })
 }
 
@@ -1334,6 +1835,31 @@ pub fn group_json(group: &GroupInfo) -> Value {
     })
 }
 
+/// Current group authority without identities, secrets, signatures, or chains.
+pub fn group_authority_json(authority: &GroupAuthorityInfo) -> Value {
+    json!({
+        "group": hex_encode(&authority.group),
+        "signed": authority.signed,
+        "original_owner": hex_encode(&authority.original_owner),
+        "owner": hex_encode(&authority.owner),
+        "owner_epoch": authority.owner_epoch,
+        "generation": authority.generation,
+        "my_role": authority.my_role.map(group_role_str),
+        "members": authority.members.iter().map(|member| json!({
+            "peer": hex_encode(&member.peer),
+            "role": group_role_str(member.role),
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn group_role_str(role: GroupRole) -> &'static str {
+    match role {
+        GroupRole::Owner => "owner",
+        GroupRole::Admin => "admin",
+        GroupRole::Member => "member",
+    }
+}
+
 /// The current conservative semantic Mention capability verdict.
 pub fn group_mention_capability_json(capability: &GroupMentionCapability) -> Value {
     json!({
@@ -1350,6 +1876,42 @@ pub fn group_mention_capability_json(capability: &GroupMentionCapability) -> Val
     })
 }
 
+/// One render-safe derived poll, including visible voter identities and heads.
+pub fn poll_json(poll: &PollInfo) -> Value {
+    json!({
+        "group": hex_encode(&poll.group),
+        "author": hex_encode(&poll.author),
+        "id": hex_encode(&poll.id),
+        "generation": poll.generation,
+        "question": poll.question,
+        "eligible_voters": poll.eligible_voters.iter().map(|peer| hex_encode(peer)).collect::<Vec<_>>(),
+        "options": poll.options.iter().map(|option| json!({
+            "id": hex_encode(&option.id),
+            "text": option.text,
+            "votes": option.votes,
+            "selected_by_me": option.selected_by_me,
+        })).collect::<Vec<_>>(),
+        "votes": poll.votes.iter().map(|vote| json!({
+            "voter": hex_encode(&vote.voter),
+            "event_id": hex_encode(&vote.event_id),
+            "option_id": hex_encode(&vote.option_id),
+            "revision": vote.revision,
+        })).collect::<Vec<_>>(),
+        "closed": poll.closed,
+        "close_event_id": poll.close_event_id.map(|id| hex_encode(&id)),
+        "moderated_by": poll.moderated_by.map(|peer| hex_encode(&peer)),
+        "eligible": poll.eligible,
+        "can_close": poll.can_close,
+        "votes_visible": true,
+        "anonymous": false,
+        "close_policy": if poll.moderated_by.is_some() {
+            "signed_owner_snapshot"
+        } else {
+            "manual_creator_snapshot"
+        },
+    })
+}
+
 /// One render-safe, time-bounded carrier snapshot as JSON.
 pub fn carrier_json(snapshot: &CarrierCapabilitySnapshot) -> Value {
     json!({
@@ -1357,6 +1919,63 @@ pub fn carrier_json(snapshot: &CarrierCapabilitySnapshot) -> Value {
         "capability": carrier_str(snapshot.capability),
         "observed_at": snapshot.observed_at,
         "expires_at": snapshot.expires_at,
+    })
+}
+
+/// One render-safe transient call snapshot as JSON.
+pub fn call_json(call: &CallInfo) -> Value {
+    json!({
+        "id": hex_encode(&call.id),
+        "peer": hex_encode(&call.peer),
+        "direction": match call.direction {
+            CallDirection::Outgoing => "outgoing",
+            CallDirection::Incoming => "incoming",
+        },
+        "phase": match call.phase {
+            CallPhase::Ringing => "ringing",
+            CallPhase::Connecting => "connecting",
+            CallPhase::Active => "active",
+            CallPhase::Ended => "ended",
+        },
+        "initiator_device": hex_encode(&call.initiator_device),
+        "responder_device": call.responder_device.map(|device| hex_encode(&device)),
+        "expires_at": call.expires_at,
+        "end_reason": call.end_reason.map(|reason| match reason {
+            CallEndReason::Declined => "declined",
+            CallEndReason::Busy => "busy",
+            CallEndReason::Cancelled => "cancelled",
+            CallEndReason::HungUp => "hung_up",
+            CallEndReason::Expired => "expired",
+            CallEndReason::AnsweredElsewhere => "answered_elsewhere",
+            CallEndReason::RouteLost => "route_lost",
+        }),
+    })
+}
+
+/// One honest contact call-start verdict as JSON.
+pub fn call_availability_json(availability: &CallAvailability) -> Value {
+    json!({
+        "peer": hex_encode(&availability.peer),
+        "available": availability.available(),
+        "unavailable": availability.unavailable.map(|reason| match reason {
+            CallUnavailableReason::OfflineOrUnknown => "offline_or_unknown",
+            CallUnavailableReason::BulkOnly => "bulk_only",
+            CallUnavailableReason::MeshOnly => "mesh_only",
+            CallUnavailableReason::MissingSession => "missing_session",
+            CallUnavailableReason::Unsupported => "unsupported",
+            CallUnavailableReason::AlreadyInCall => "already_in_call",
+        }),
+    })
+}
+
+/// One authenticated decoded Opus packet as JSON. The frame owns and erases
+/// its packet bytes immediately after this short-lived serialization copy.
+pub fn call_audio_json(frame: &CallAudioFrame) -> Value {
+    json!({
+        "call": hex_encode(&frame.call_id),
+        "sequence": frame.sequence,
+        "timestamp_ms": frame.timestamp_ms,
+        "opus": hex_encode(&frame.opus_packet),
     })
 }
 
@@ -1370,8 +1989,9 @@ fn carrier_str(capability: CarrierCapability) -> &'static str {
 }
 
 /// A group message record as JSON, including honest per-member delivery.
-pub fn group_message_json(rec: &GroupMessageRecord) -> Value {
-    let (body, content_kind, mention_spans) = render_stored_content(&rec.body, true);
+pub fn group_message_json(message: &ResolvedGroupMessage) -> Value {
+    let rec = &message.record;
+    let (body, content_kind, expires_at, mention_spans) = render_stored_content(&rec.body, true);
     json!({
         "id": hex_encode(&rec.id),
         "group": hex_encode(&rec.group),
@@ -1383,7 +2003,11 @@ pub fn group_message_json(rec: &GroupMessageRecord) -> Value {
         "timestamp": rec.timestamp,
         "body": body,
         "content_kind": content_kind,
+        "expires_at": expires_at,
         "mention_spans": mention_spans,
+        "edited": message.edited,
+        "edit_revision": message.winning_revision,
+        "versions": edit_versions_json(&message.versions),
         "deliveries": rec.deliveries.iter().map(|delivery| json!({
             "peer": hex_encode(&delivery.peer),
             "state": state_str(delivery.state),
@@ -1392,8 +2016,9 @@ pub fn group_message_json(rec: &GroupMessageRecord) -> Value {
 }
 
 /// A message record as JSON.
-pub fn message_json(rec: &MessageRecord) -> Value {
-    let (body, content_kind, mention_spans) = render_stored_content(&rec.body, false);
+pub fn message_json(message: &ResolvedMessage) -> Value {
+    let rec = &message.record;
+    let (body, content_kind, expires_at, mention_spans) = render_stored_content(&rec.body, false);
     json!({
         "id": hex_encode(&rec.id),
         "peer": hex_encode(&rec.peer),
@@ -1405,8 +2030,28 @@ pub fn message_json(rec: &MessageRecord) -> Value {
         "timestamp": rec.timestamp,
         "body": body,
         "content_kind": content_kind,
+        "expires_at": expires_at,
         "mention_spans": mention_spans,
+        "edited": message.edited,
+        "edit_revision": message.winning_revision,
+        "versions": edit_versions_json(&message.versions),
     })
+}
+
+fn edit_versions_json(versions: &[kult_node::EditVersionInfo]) -> Value {
+    Value::Array(
+        versions
+            .iter()
+            .map(|version| {
+                json!({
+                    "id": hex_encode(&version.id),
+                    "revision": version.revision,
+                    "timestamp": version.timestamp,
+                    "body": version.body,
+                })
+            })
+            .collect(),
+    )
 }
 
 /// One note-to-self record as render-safe JSON.
@@ -1444,18 +2089,33 @@ fn content_kind(status: &ContentStatus) -> &'static str {
         ContentStatus::Text { .. } => "text",
         ContentStatus::Attachment { .. } => "attachment",
         ContentStatus::Mention { .. } => "mention",
+        ContentStatus::DisappearingText { .. } => "disappearing_text",
+        ContentStatus::ViewOnceAttachment { .. } => "view_once_attachment",
         ContentStatus::Unsupported { .. } => "unsupported",
         ContentStatus::Malformed => "malformed",
         _ => "unsupported",
     }
 }
 
+fn content_expiry(status: &ContentStatus) -> Option<u64> {
+    match status {
+        ContentStatus::DisappearingText { expires_at, .. }
+        | ContentStatus::ViewOnceAttachment { expires_at, .. } => Some(*expires_at),
+        _ => None,
+    }
+}
+
 fn render_event_body(body: &[u8], status: &ContentStatus) -> String {
     match status {
-        ContentStatus::LegacyText | ContentStatus::Text { .. } | ContentStatus::Mention { .. } => {
+        ContentStatus::LegacyText
+        | ContentStatus::Text { .. }
+        | ContentStatus::Mention { .. }
+        | ContentStatus::DisappearingText { .. } => {
             String::from_utf8(body.to_vec()).expect("node exposes only validated UTF-8 text")
         }
-        ContentStatus::Attachment { .. } => String::new(),
+        ContentStatus::Attachment { .. } | ContentStatus::ViewOnceAttachment { .. } => {
+            String::new()
+        }
         ContentStatus::Unsupported { .. } | ContentStatus::Malformed => {
             UNSUPPORTED_MESSAGE.to_owned()
         }
@@ -1485,14 +2145,19 @@ fn mention_spans_json(spans: &[kult_node::MentionSpan]) -> Value {
     )
 }
 
-fn render_stored_content(bytes: &[u8], allow_group_mention: bool) -> (String, &'static str, Value) {
+fn render_stored_content(
+    bytes: &[u8],
+    allow_group_mention: bool,
+) -> (String, &'static str, Option<u64>, Value) {
     match kult_protocol::decode_content(bytes) {
         kult_protocol::DecodedContent::LegacyText(text) => {
-            (text.to_owned(), "legacy_text", json!([]))
+            (text.to_owned(), "legacy_text", None, json!([]))
         }
-        kult_protocol::DecodedContent::Text { text, .. } => (text.to_owned(), "text", json!([])),
+        kult_protocol::DecodedContent::Text { text, .. } => {
+            (text.to_owned(), "text", None, json!([]))
+        }
         kult_protocol::DecodedContent::Attachment { .. } => {
-            (String::new(), "attachment", json!([]))
+            (String::new(), "attachment", None, json!([]))
         }
         kult_protocol::DecodedContent::Mention { mention, .. } if allow_group_mention => {
             let spans = mention
@@ -1502,17 +2167,53 @@ fn render_stored_content(bytes: &[u8], allow_group_mention: bool) -> (String, &'
             (
                 mention.text.to_owned(),
                 "mention",
+                None,
                 mention_spans_json(&spans),
             )
         }
         kult_protocol::DecodedContent::Mention { .. } => {
-            (UNSUPPORTED_MESSAGE.to_owned(), "malformed", json!([]))
+            (UNSUPPORTED_MESSAGE.to_owned(), "malformed", None, json!([]))
         }
-        kult_protocol::DecodedContent::Unsupported { .. } => {
-            (UNSUPPORTED_MESSAGE.to_owned(), "unsupported", json!([]))
+        kult_protocol::DecodedContent::Edit { .. } => (String::new(), "malformed", None, json!([])),
+        kult_protocol::DecodedContent::Ephemeral { ephemeral, .. } => match ephemeral {
+            kult_protocol::Ephemeral::DisappearingText {
+                text, expires_at, ..
+            } => (
+                text.to_owned(),
+                "disappearing_text",
+                Some(expires_at),
+                json!([]),
+            ),
+            kult_protocol::Ephemeral::ViewOnceAttachment { expires_at, .. } => (
+                String::new(),
+                "view_once_attachment",
+                Some(expires_at),
+                json!([]),
+            ),
+        },
+        kult_protocol::DecodedContent::Poll { .. } if allow_group_mention => {
+            (String::new(), "poll", None, json!([]))
         }
+        kult_protocol::DecodedContent::Poll { .. } => {
+            (UNSUPPORTED_MESSAGE.to_owned(), "malformed", None, json!([]))
+        }
+        kult_protocol::DecodedContent::GroupAuthority { .. } if allow_group_mention => {
+            (String::new(), "group_authority", None, json!([]))
+        }
+        kult_protocol::DecodedContent::GroupAuthority { .. } => {
+            (UNSUPPORTED_MESSAGE.to_owned(), "malformed", None, json!([]))
+        }
+        kult_protocol::DecodedContent::CallControl { .. } => {
+            (UNSUPPORTED_MESSAGE.to_owned(), "malformed", None, json!([]))
+        }
+        kult_protocol::DecodedContent::Unsupported { .. } => (
+            UNSUPPORTED_MESSAGE.to_owned(),
+            "unsupported",
+            None,
+            json!([]),
+        ),
         kult_protocol::DecodedContent::Malformed => {
-            (UNSUPPORTED_MESSAGE.to_owned(), "malformed", json!([]))
+            (UNSUPPORTED_MESSAGE.to_owned(), "malformed", None, json!([]))
         }
     }
 }
@@ -1570,6 +2271,14 @@ pub fn parse_message(s: &str) -> Result<[u8; 16], String> {
         .ok_or_else(|| "message id must be hex".to_owned())?
         .try_into()
         .map_err(|_| "message id must be 16 bytes".to_owned())
+}
+
+/// Parse a 16-byte transient call id from lowercase/uppercase hex.
+pub fn parse_call(s: &str) -> Result<[u8; 16], String> {
+    hex_decode(s)
+        .ok_or_else(|| "call id must be hex".to_owned())?
+        .try_into()
+        .map_err(|_| "call id must be 16 bytes".to_owned())
 }
 
 /// Parse a 16-byte local Mention review token.
@@ -1649,6 +2358,34 @@ mod tests {
     }
 
     #[test]
+    fn poll_ops_reject_ambiguous_or_trailing_fields() {
+        let request = parse_request(
+            &json!({
+                "id": 4,
+                "op": "group_poll_vote",
+                "group": "01".repeat(32),
+                "poll_author": "02".repeat(32),
+                "poll_id": "03".repeat(16),
+                "option_id": "04".repeat(16),
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(matches!(request.op, Op::GroupPollVote { .. }));
+        assert!(parse_request(
+            &json!({
+                "id": 5,
+                "op": "group_polls",
+                "group": "01".repeat(32),
+                "unexpected": true,
+            })
+            .to_string(),
+        )
+        .is_err());
+        assert!(parse_request(r#"{"id":6,"op":"group_polls","group":"00"} trailing"#).is_err());
+    }
+
+    #[test]
     fn text_formatting_rpc_is_strict_and_render_safe() {
         let request = parse_request(
             r#"{"id":9,"op":"format_text","source":"**safe** <img src=x>","highlights":[]}"#,
@@ -1685,6 +2422,129 @@ mod tests {
     }
 
     #[test]
+    fn file_presentation_rpc_is_strict_and_fail_closed() {
+        let request = parse_request(
+            r#"{"id":10,"op":"attachment_file_presentation","media_type":"application/pdf","filename":"invoice.pdf.exe"}"#,
+        )
+        .unwrap();
+        assert!(matches!(request.op, Op::AttachmentFilePresentation { .. }));
+        assert!(parse_request(
+            r#"{"id":10,"op":"attachment_file_presentation","media_type":"application/pdf","filename":"report.pdf","scan":true}"#,
+        )
+        .is_err());
+
+        let presentation =
+            kult_node::classify_attachment_file("application/pdf", Some("invoice.pdf.exe"));
+        assert_eq!(
+            attachment_file_presentation_json(&presentation),
+            json!({
+                "kind": "executable",
+                "open_policy": "export_only",
+                "warnings": ["media_type_mismatch", "dangerous_type"],
+            })
+        );
+    }
+
+    #[test]
+    fn edit_rpcs_require_exact_author_target_and_fields() {
+        let peer = "11".repeat(32);
+        let content = "22".repeat(16);
+        let pairwise = parse_request(
+            &json!({
+                "id": 20,
+                "op": "edit_message",
+                "peer": peer,
+                "target_author": peer,
+                "target_content_id": content,
+                "text": "replacement",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(matches!(pairwise.op, Op::EditMessage { .. }));
+        let group = parse_request(
+            &json!({
+                "id": 21,
+                "op": "group_edit_message",
+                "group": "33".repeat(32),
+                "target_author": peer,
+                "target_content_id": content,
+                "text": "replacement",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(matches!(group.op, Op::GroupEditMessage { .. }));
+        assert!(parse_request(
+            &json!({
+                "id": 22,
+                "op": "edit_message",
+                "peer": peer,
+                "target_author": peer,
+                "target_content_id": content,
+                "text": "replacement",
+                "display_name": "not authority",
+            })
+            .to_string(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn linked_device_rpcs_are_explicit_bounded_and_strict() {
+        let device = "11".repeat(32);
+        let response = "22".repeat(64);
+        let approve = parse_request(
+            &json!({
+                "id": 30,
+                "op": "device_link_approve",
+                "response": response,
+                "selection": {
+                    "contacts": true,
+                    "organization": false,
+                    "history": true,
+                },
+                "confirmed": true,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(matches!(approve.op, Op::DeviceLinkApprove { .. }));
+        assert!(parse_request(
+            &json!({
+                "id": 31,
+                "op": "device_link_approve",
+                "response": "00",
+                "selection": {
+                    "contacts": true,
+                    "organization": true,
+                    "history": true,
+                    "drafts": true,
+                },
+                "confirmed": true,
+            })
+            .to_string(),
+        )
+        .is_err());
+        assert!(parse_request(
+            &json!({
+                "id": 32,
+                "op": "device_revoke",
+                "device": device,
+                "name": "ambiguous",
+            })
+            .to_string(),
+        )
+        .is_err());
+        assert!(matches!(
+            parse_request(r#"{"id":33,"op":"linked_devices"}"#)
+                .unwrap()
+                .op,
+            Op::LinkedDevices
+        ));
+    }
+
+    #[test]
     fn requests_parse() {
         let r: Request = serde_json::from_str(r#"{"id":1,"op":"status"}"#).unwrap();
         assert!(matches!(r.op, Op::Status));
@@ -1695,6 +2555,35 @@ mod tests {
         assert!(matches!(r.op, Op::AddContact { .. }));
         let r: Request = serde_json::from_str(r#"{"id":3,"op":"carrier_capabilities"}"#).unwrap();
         assert!(matches!(r.op, Op::CarrierCapabilities));
+        let call = "ab".repeat(16);
+        let r = parse_request(
+            &json!({
+                "id": 34,
+                "op": "call_audio_send",
+                "call": call,
+                "timestamp_ms": 42,
+                "opus": "f801",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(matches!(
+            r.op,
+            Op::CallAudioSend {
+                timestamp_ms: 42,
+                ..
+            }
+        ));
+        assert!(parse_request(
+            &json!({
+                "id": 35,
+                "op": "call_answer",
+                "call": "ab".repeat(16),
+                "peer": "ambiguous",
+            })
+            .to_string(),
+        )
+        .is_err());
         let r: Request =
             serde_json::from_str(r#"{"id":4,"op":"note_to_self_send","body":"remember this"}"#)
                 .unwrap();
@@ -1852,6 +2741,31 @@ mod tests {
     }
 
     #[test]
+    fn call_event_is_render_safe_and_exact() {
+        let line = event_line(&Event::CallUpdated {
+            call: CallInfo {
+                id: [0x21; 16],
+                peer: [0x22; 32],
+                direction: CallDirection::Incoming,
+                phase: CallPhase::Ended,
+                initiator_device: [0x23; 32],
+                responder_device: Some([0x24; 32]),
+                expires_at: 90,
+                end_reason: Some(CallEndReason::AnsweredElsewhere),
+            },
+        });
+        let value: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(value["event"]["type"], json!("call_updated"));
+        assert_eq!(value["event"]["call"]["direction"], json!("incoming"));
+        assert_eq!(
+            value["event"]["call"]["end_reason"],
+            json!("answered_elsewhere")
+        );
+        assert!(value.to_string().find("secret").is_none());
+        assert!(value.to_string().find("route").is_none());
+    }
+
+    #[test]
     fn attachment_foundation_never_exposes_manifest_metadata() {
         let manifest = kult_protocol::AttachmentManifest {
             attachment_key: [0x41; 32],
@@ -1868,9 +2782,10 @@ mod tests {
             preview: None,
         };
         let frame = kult_protocol::encode_attachment([0x44; 16], &manifest).unwrap();
-        let (body, kind, mention_spans) = render_stored_content(&frame, false);
+        let (body, kind, expires_at, mention_spans) = render_stored_content(&frame, false);
         assert!(body.is_empty());
         assert_eq!(kind, "attachment");
+        assert_eq!(expires_at, None);
         assert_eq!(mention_spans, json!([]));
         assert!(!body.contains("private.png"));
     }

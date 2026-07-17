@@ -11,17 +11,30 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use kult_ffi::{
-    default_config, edit_image, incognito_keyboard_policy, probe_edited_image,
-    probe_recorded_audio, screen_security_policy, AttachmentDirection, AttachmentState,
-    CarrierCapability, Config, ContactNameWarning, ContentKind, CustomIconCrop, CustomIconTarget,
-    CustomIconTargetKind, DeliveryState, Event, EventListener, FfiError, FolderErrorCode,
-    FolderSelection, FolderSelectionKind, FolderTarget, FolderTargetKind, Hint, ImageCrop,
-    ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, IncognitoKeyboardLevel,
-    IncognitoKeyboardPlatform, KdfChoice, KultNode, LabelErrorCode, LabelMatchMode, LabelTarget,
-    LabelTargetKind, MentionSpan, PinErrorCode, PinTarget, PinTargetKind, ScheduledConversation,
-    ScreenSecurityLevel, ScreenSecurityPlatform, TextFormatBlockKind, TextFormatHighlight,
-    ThemePreference,
+    attachment_file_presentation, default_config, edit_image, incognito_keyboard_policy,
+    probe_edited_image, probe_recorded_audio, screen_security_policy, AttachmentDirection,
+    AttachmentFileKind, AttachmentFileWarning, AttachmentOpenPolicy, AttachmentState,
+    CallEndReason, CallPhase, CarrierCapability, Config, ContactNameWarning, ContentKind,
+    CustomIconCrop, CustomIconTarget, CustomIconTargetKind, DeliveryState, DeviceLinkSelection,
+    Event, EventListener, FfiError, FolderErrorCode, FolderSelection, FolderSelectionKind,
+    FolderTarget, FolderTargetKind, GroupRole, Hint, ImageCrop, ImageEditRecipe, ImageEditRegion,
+    ImageEditRegionKind, IncognitoKeyboardLevel, IncognitoKeyboardPlatform, KdfChoice, KultNode,
+    LabelErrorCode, LabelMatchMode, LabelTarget, LabelTargetKind, MentionSpan, PinErrorCode,
+    PinTarget, PinTargetKind, ScheduledConversation, ScreenSecurityLevel, ScreenSecurityPlatform,
+    TextFormatBlockKind, TextFormatHighlight, ThemePreference,
 };
+
+fn file_presentation_parity_fixture() -> serde_json::Value {
+    serde_json::from_str(include_str!(
+        "../../../fixtures/c1-file-presentation-parity.json"
+    ))
+    .expect("valid shared C1 file-presentation fixture")
+}
+
+fn ephemeral_parity_fixture() -> serde_json::Value {
+    serde_json::from_str(include_str!("../../../fixtures/c4-ephemeral-parity.json"))
+        .expect("valid shared C4 ephemeral fixture")
+}
 
 fn label_parity_fixture() -> serde_json::Value {
     serde_json::from_str(include_str!("../../../fixtures/b18-label-parity.json"))
@@ -76,6 +89,52 @@ fn text_formatting_parity_fixture() -> serde_json::Value {
         "../../../fixtures/b9-text-formatting-parity.json"
     ))
     .expect("valid shared B9 text-formatting fixture")
+}
+
+#[test]
+fn file_presentation_via_ffi_matches_shared_fail_closed_policy() {
+    let fixture = file_presentation_parity_fixture();
+    for case in fixture["cases"].as_array().unwrap() {
+        let result = attachment_file_presentation(
+            case["media_type"].as_str().unwrap().to_owned(),
+            case["filename"].as_str().map(ToOwned::to_owned),
+        );
+        let kind = match result.kind {
+            AttachmentFileKind::Image => "image",
+            AttachmentFileKind::Audio => "audio",
+            AttachmentFileKind::Video => "video",
+            AttachmentFileKind::Document => "document",
+            AttachmentFileKind::Archive => "archive",
+            AttachmentFileKind::Executable => "executable",
+            AttachmentFileKind::Other => "other",
+        };
+        let policy = match result.open_policy {
+            AttachmentOpenPolicy::ProtectedMedia => "protected_media",
+            AttachmentOpenPolicy::ExternalOpen => "external_open",
+            AttachmentOpenPolicy::ExportOnly => "export_only",
+        };
+        let warnings = result
+            .warnings
+            .into_iter()
+            .map(|warning| match warning {
+                AttachmentFileWarning::MediaTypeMismatch => "media_type_mismatch",
+                AttachmentFileWarning::DangerousType => "dangerous_type",
+                AttachmentFileWarning::UnrecognizedType => "unrecognized_type",
+                AttachmentFileWarning::MissingFilename => "missing_filename",
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(kind, case["kind"].as_str().unwrap());
+        assert_eq!(policy, case["open_policy"].as_str().unwrap());
+        assert_eq!(
+            warnings,
+            case["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_str().unwrap())
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 #[test]
@@ -507,7 +566,11 @@ impl Recorder {
             if let Some(hit) = self.events.lock().unwrap().iter().find(|e| pred(e)) {
                 return hit.clone();
             }
-            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {what}; events: {:#?}",
+                self.events.lock().unwrap()
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
     }
@@ -560,6 +623,39 @@ fn listen_addr(node: &KultNode) -> String {
     }
 }
 
+fn wait_call_available(node: &KultNode, peer: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let availability = node
+            .call_availability(peer.to_owned())
+            .expect("call availability");
+        if availability.available {
+            assert!(availability.unavailable.is_none());
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "call unavailable for {peer}: {:?}",
+            availability.unavailable
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn wait_call_audio(node: &KultNode, call: &str) -> kult_ffi::CallAudioFrame {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(frame) = node
+            .take_call_audio(call.to_owned())
+            .expect("take call audio")
+        {
+            return frame;
+        }
+        assert!(Instant::now() < deadline, "no call audio for {call}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn mention_capability(node: &KultNode, group: &str) -> kult_ffi::GroupMentionCapability {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -574,6 +670,78 @@ fn mention_capability(node: &KultNode, group: &str) -> kult_ffi::GroupMentionCap
             "mention capability intersection stayed unsupported: {:?}",
             capability.issues
         );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn poll_revision(
+    node: &KultNode,
+    group: &str,
+    poll_id: &str,
+    revision: u64,
+) -> kult_ffi::GroupPoll {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(poll) = node
+            .group_polls(group.to_owned())
+            .expect("group polls")
+            .into_iter()
+            .find(|poll| {
+                poll.id == poll_id && poll.votes.iter().any(|vote| vote.revision == revision)
+            })
+        {
+            return poll;
+        }
+        assert!(Instant::now() < deadline, "poll revision did not converge");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn closed_poll(node: &KultNode, group: &str, poll_id: &str) -> kult_ffi::GroupPoll {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(poll) = node
+            .group_polls(group.to_owned())
+            .expect("group polls")
+            .into_iter()
+            .find(|poll| poll.id == poll_id && poll.closed)
+        {
+            return poll;
+        }
+        assert!(Instant::now() < deadline, "poll closure did not converge");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn authority_generation(node: &KultNode, group: &str, generation: u64) -> kult_ffi::GroupAuthority {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let authority = node
+            .group_authority(group.to_owned())
+            .expect("group authority");
+        if authority.signed && authority.generation >= generation {
+            return authority;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "authority generation did not converge"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn wait_group_presence(node: &KultNode, group: &str, present: bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let found = node
+            .groups()
+            .expect("groups")
+            .iter()
+            .any(|candidate| candidate.id == group);
+        if found == present {
+            return;
+        }
+        assert!(Instant::now() < deadline, "group presence did not converge");
         std::thread::sleep(Duration::from_millis(50));
     }
 }
@@ -1219,6 +1387,13 @@ fn private_pins_via_ffi_have_typed_parity_restart_and_zero_delivery_work() {
 
 #[test]
 fn two_nodes_message_via_ffi_only() {
+    let ephemeral = ephemeral_parity_fixture();
+    let hour = ephemeral["text_lifetimes"][1].as_u64().unwrap();
+    assert_eq!(ephemeral["content_kind"], serde_json::json!(5));
+    assert_eq!(
+        ephemeral["terminal_reasons"],
+        serde_json::json!(["expired", "consumed"])
+    );
     let dir = tempfile::tempdir().unwrap();
     let a_rec = Recorder::default();
     let b_rec = Recorder::default();
@@ -1258,20 +1433,20 @@ fn two_nodes_message_via_ffi_only() {
     assert_eq!(bob_peer, bob.peer());
     assert_eq!(alice_peer, alice.peer());
 
-    // The same carrier verdict that gates attachment activation crosses the
-    // bindings as an expiring snapshot and a change event.
-    a_rec.wait("alice's realtime carrier verdict", |event| {
+    // An untried direct-QUIC hint is honestly only bulk-capable until a live
+    // connection exists; the binding exposes that initial bounded verdict.
+    a_rec.wait("alice's initial carrier verdict", |event| {
         matches!(
             event,
             Event::CarrierCapabilityChanged { snapshot }
                 if snapshot.peer == bob_peer
-                    && snapshot.capability == CarrierCapability::Realtime
+                    && snapshot.capability == CarrierCapability::Bulk
         )
     });
     let carriers = alice.carrier_capabilities().unwrap();
     assert_eq!(carriers.len(), 1);
     assert_eq!(carriers[0].peer, bob_peer);
-    assert_eq!(carriers[0].capability, CarrierCapability::Realtime);
+    assert_eq!(carriers[0].capability, CarrierCapability::Bulk);
     assert!(carriers[0].expires_at > carriers[0].observed_at);
 
     // Send; the listener walks the honest ladder to `delivered` (an
@@ -1292,6 +1467,18 @@ fn two_nodes_message_via_ffi_only() {
     a_rec.wait("alice's delivered event", |e| {
         matches!(e, Event::DeliveryUpdated { id, state: DeliveryState::Delivered } if *id == msg_id)
     });
+    a_rec.wait("alice's proved realtime carrier verdict", |event| {
+        matches!(
+            event,
+            Event::CarrierCapabilityChanged { snapshot }
+                if snapshot.peer == bob_peer
+                    && snapshot.capability == CarrierCapability::Realtime
+        )
+    });
+    assert_eq!(
+        alice.carrier_capabilities().unwrap()[0].capability,
+        CarrierCapability::Realtime
+    );
 
     // History and state agree with the events.
     let history = alice.messages_with(bob_peer.clone()).unwrap();
@@ -1299,6 +1486,176 @@ fn two_nodes_message_via_ffi_only() {
     assert_eq!(history[0].id, msg_id);
     assert_eq!(history[0].state, DeliveryState::Delivered);
     assert_eq!(history[0].body, "hello through the bindings");
+
+    // The call surface carries only render-safe state and native Opus
+    // packets. Signaling and media never become message-history records.
+    wait_call_available(&alice, &bob_peer);
+    assert!(alice.calls().unwrap().is_empty());
+    let call = alice.start_call(bob_peer.clone()).unwrap();
+    b_rec.wait("bob's incoming call", |event| {
+        matches!(
+            event,
+            Event::CallUpdated { call: snapshot }
+                if snapshot.id == call && snapshot.phase == CallPhase::Ringing
+        )
+    });
+    bob.answer_call(call.clone()).unwrap();
+    a_rec.wait("alice's authenticated active call", |event| {
+        matches!(
+            event,
+            Event::CallUpdated { call: snapshot }
+                if snapshot.id == call && snapshot.phase == CallPhase::Active
+        )
+    });
+    b_rec.wait("bob's authenticated active call", |event| {
+        matches!(
+            event,
+            Event::CallUpdated { call: snapshot }
+                if snapshot.id == call && snapshot.phase == CallPhase::Active
+        )
+    });
+    for (index, packet) in [vec![0xf8, 0x01], vec![0xf8, 0x02], vec![0xf8, 0x03]]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(alice
+            .send_call_audio(call.clone(), 1_000 + index as u64 * 20, packet)
+            .unwrap());
+    }
+    for (index, packet) in [vec![0xf8, 0x11], vec![0xf8, 0x12], vec![0xf8, 0x13]]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(bob
+            .send_call_audio(call.clone(), 2_000 + index as u64 * 20, packet)
+            .unwrap());
+    }
+    let at_alice = wait_call_audio(&alice, &call);
+    let at_bob = wait_call_audio(&bob, &call);
+    assert_eq!(at_alice.call, call);
+    assert_eq!(at_alice.timestamp_ms, 2_000);
+    assert_eq!(at_alice.opus_packet, vec![0xf8, 0x11]);
+    assert_eq!(at_bob.timestamp_ms, 1_000);
+    assert_eq!(at_bob.opus_packet, vec![0xf8, 0x01]);
+    alice.hangup_call(call.clone()).unwrap();
+    b_rec.wait("bob's terminal call", |event| {
+        matches!(
+            event,
+            Event::CallUpdated { call: snapshot }
+                if snapshot.id == call
+                    && snapshot.phase == CallPhase::Ended
+                    && snapshot.end_reason == Some(CallEndReason::HungUp)
+        )
+    });
+    assert_eq!(alice.messages_with(bob_peer.clone()).unwrap().len(), 1);
+    assert_eq!(bob.messages_with(alice_peer.clone()).unwrap().len(), 1);
+
+    let disappearing = alice
+        .send_disappearing(
+            bob_peer.clone(),
+            "temporary through bindings".to_owned(),
+            hour,
+        )
+        .unwrap();
+    let temporary = b_rec.wait("bob's disappearing message", |event| {
+        matches!(
+            event,
+            Event::MessageReceived {
+                id,
+                content_kind: ContentKind::DisappearingText,
+                expires_at: Some(_),
+                ..
+            } if id == &disappearing
+        )
+    });
+    let event_expiry = match temporary {
+        Event::MessageReceived { expires_at, .. } => expires_at.unwrap(),
+        other => panic!("wrong event: {other:?}"),
+    };
+    let temporary_history = bob.messages_with(alice_peer.clone()).unwrap();
+    let temporary_row = temporary_history
+        .iter()
+        .find(|message| message.id == disappearing)
+        .unwrap();
+    assert_eq!(temporary_row.content_kind, ContentKind::DisappearingText);
+    assert_eq!(temporary_row.expires_at, Some(event_expiry));
+
+    // Authenticated capabilities have now crossed the same encrypted
+    // session, so a second Text event is editable through exact UniFFI ids.
+    std::thread::sleep(Duration::from_millis(300));
+    let editable = alice
+        .send(bob_peer.clone(), "original through bindings".to_owned())
+        .unwrap();
+    b_rec.wait("bob's canonical editable message", |event| {
+        matches!(
+            event,
+            Event::MessageReceived {
+                id,
+                content_kind: ContentKind::Text,
+                ..
+            } if *id == editable
+        )
+    });
+    a_rec.wait("editable message delivered", |event| {
+        matches!(
+            event,
+            Event::DeliveryUpdated {
+                id,
+                state: DeliveryState::Delivered,
+            } if *id == editable
+        )
+    });
+    let wrong_author = alice
+        .edit_message(
+            bob_peer.clone(),
+            bob_peer.clone(),
+            editable.clone(),
+            "forged".to_owned(),
+        )
+        .unwrap_err();
+    assert!(wrong_author.to_string().contains("edit"));
+    let edit = alice
+        .edit_message(
+            bob_peer.clone(),
+            alice_peer.clone(),
+            editable.clone(),
+            "revised through bindings".to_owned(),
+        )
+        .unwrap();
+    b_rec.wait("typed pairwise edit refresh", |event| {
+        matches!(
+            event,
+            Event::MessageEdited {
+                peer,
+                target_content_id,
+            } if peer == &alice_peer && target_content_id == &editable
+        )
+    });
+    a_rec.wait("edit delivered", |event| {
+        matches!(
+            event,
+            Event::DeliveryUpdated {
+                id,
+                state: DeliveryState::Delivered,
+            } if id == &edit
+        )
+    });
+    for history in [
+        alice.messages_with(bob_peer.clone()).unwrap(),
+        bob.messages_with(alice_peer.clone()).unwrap(),
+    ] {
+        assert_eq!(history.len(), 3, "edit events do not become chat rows");
+        let message = history
+            .iter()
+            .find(|message| message.id == editable)
+            .unwrap();
+        assert!(message.edited);
+        assert_eq!(message.edit_revision, 1);
+        assert_eq!(message.body, "revised through bindings");
+        assert_eq!(message.versions.len(), 2);
+        assert_eq!(message.versions[0].body, "original through bindings");
+        assert_eq!(message.versions[1].body, "revised through bindings");
+    }
 
     // Attachment calls are path-bounded, typed, and event-compatible across
     // Kotlin/Swift generation without exposing protocol or store internals.
@@ -1414,6 +1771,79 @@ fn two_nodes_message_via_ffi_only() {
         alice.attachments().unwrap()[0].state,
         AttachmentState::Cancelled
     );
+
+    let once_bytes = b"view-once through UniFFI";
+    let once_source = dir.path().join("ffi-view-once.bin");
+    std::fs::write(&once_source, once_bytes).unwrap();
+    let once_id = alice
+        .send_view_once_attachment(
+            bob_peer.clone(),
+            once_source.display().to_string(),
+            "application/octet-stream".to_owned(),
+            Some("reveal-once.bin".to_owned()),
+            None,
+            None,
+            hour,
+        )
+        .unwrap();
+    let once_offer = b_rec.wait("view-once offer", |event| {
+        matches!(
+            event,
+            Event::AttachmentUpdated { attachment }
+                if attachment.content_id == once_id
+                    && attachment.direction == AttachmentDirection::Inbound
+                    && attachment.view_once
+        )
+    });
+    let once_transfer = match once_offer {
+        Event::AttachmentUpdated { attachment } => {
+            assert!(attachment.expires_at.is_some());
+            attachment.transfer_id
+        }
+        other => panic!("wrong event: {other:?}"),
+    };
+    b_rec.wait("typed view-once message", |event| {
+        matches!(
+            event,
+            Event::MessageReceived {
+                id,
+                content_kind: ContentKind::ViewOnceAttachment,
+                expires_at: Some(_),
+                ..
+            } if id == &once_id
+        )
+    });
+    bob.accept_attachment(once_transfer.clone()).unwrap();
+    b_rec.wait("view-once completion", |event| {
+        matches!(
+            event,
+            Event::AttachmentUpdated { attachment }
+                if attachment.transfer_id == once_transfer
+                    && attachment.state == AttachmentState::Complete
+        )
+    });
+    assert!(bob
+        .export_attachment(
+            once_transfer.clone(),
+            dir.path()
+                .join("forbidden-view-once.bin")
+                .display()
+                .to_string(),
+        )
+        .is_err());
+    let once_output = dir.path().join("ffi-view-once-output.bin");
+    bob.consume_view_once_attachment(once_transfer.clone(), once_output.display().to_string())
+        .unwrap();
+    assert_eq!(std::fs::read(&once_output).unwrap(), once_bytes);
+    assert!(bob
+        .consume_view_once_attachment(
+            once_transfer,
+            dir.path()
+                .join("ffi-view-once-second.bin")
+                .display()
+                .to_string(),
+        )
+        .is_err());
 
     // The same deterministic canonical clip is imported, transferred, and
     // probed through the exact public surface every shell consumes.
@@ -1727,6 +2157,78 @@ fn restart_persists_history_and_refuses_wrong_passphrase() {
     bob.stop();
 }
 
+#[test]
+fn linked_device_ceremony_and_sync_via_ffi_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_events = Recorder::default();
+    let target_events = Recorder::default();
+    let source = KultNode::start(
+        test_config(dir.path(), "device-source"),
+        Box::new(source_events.clone()),
+    )
+    .unwrap();
+    let target = KultNode::start(
+        test_config(dir.path(), "device-target"),
+        Box::new(target_events.clone()),
+    )
+    .unwrap();
+    source
+        .send_note_to_self("source-only history".to_owned())
+        .unwrap();
+
+    let source_device = source.device_id().unwrap();
+    let target_device = target.device_id().unwrap();
+    let offer = source.begin_device_link().unwrap();
+    let accepted = target
+        .accept_device_link(offer, "Laptop".to_owned())
+        .unwrap();
+    assert_eq!(accepted.confirmation_code.len(), 6);
+    assert_eq!(
+        source
+            .device_link_confirmation_code(accepted.response.clone())
+            .unwrap(),
+        accepted.confirmation_code
+    );
+    let package = source
+        .approve_device_link(
+            accepted.response,
+            DeviceLinkSelection {
+                contacts: false,
+                organization: false,
+                history: false,
+            },
+            true,
+        )
+        .unwrap();
+    target.complete_device_link(package, true).unwrap();
+    assert_eq!(source.peer(), target.peer());
+    assert_ne!(source_device, target_device);
+    assert!(target.note_to_self_messages().unwrap().is_empty());
+    assert_eq!(source.linked_devices().unwrap().len(), 2);
+    assert_eq!(target.linked_devices().unwrap().len(), 2);
+    target_events.wait("device link completed", |event| {
+        matches!(event, Event::DeviceLinkCompleted { device, .. } if device == &target_device)
+    });
+
+    source
+        .rename_linked_device(target_device.clone(), "Travel laptop".to_owned())
+        .unwrap();
+    let sync = source.export_device_sync(target_device.clone()).unwrap();
+    target.import_device_sync(sync).unwrap();
+    assert!(target
+        .linked_devices()
+        .unwrap()
+        .iter()
+        .any(|device| device.id == target_device && device.name == "Travel laptop"));
+    assert!(source
+        .message_device_deliveries("00".repeat(16))
+        .unwrap()
+        .is_empty());
+
+    source.stop();
+    target.stop();
+}
+
 /// F1 group front-door acceptance through only the public UniFFI-shaped API.
 #[test]
 fn groups_via_ffi_only() {
@@ -1825,6 +2327,106 @@ fn groups_via_ffi_only() {
         .flat_map(|message| &message.deliveries)
         .all(|delivery| delivery.state == DeliveryState::Delivered));
 
+    let temporary_group = alice
+        .send_group_disappearing(
+            group.clone(),
+            "temporary group through bindings".to_owned(),
+            3_600,
+        )
+        .unwrap();
+    let temporary_group_event = b_rec.wait("bob's disappearing group message", |event| {
+        matches!(
+            event,
+            Event::GroupMessageReceived {
+                id,
+                content_kind: ContentKind::DisappearingText,
+                expires_at: Some(_),
+                ..
+            } if id == &temporary_group
+        )
+    });
+    let temporary_group_expiry = match temporary_group_event {
+        Event::GroupMessageReceived { expires_at, .. } => expires_at.unwrap(),
+        other => panic!("wrong event: {other:?}"),
+    };
+    let temporary_group_row = bob
+        .group_messages(group.clone())
+        .unwrap()
+        .into_iter()
+        .find(|message| message.id == temporary_group)
+        .unwrap();
+    assert_eq!(
+        temporary_group_row.content_kind,
+        ContentKind::DisappearingText
+    );
+    assert_eq!(temporary_group_row.expires_at, Some(temporary_group_expiry));
+
+    std::thread::sleep(Duration::from_millis(300));
+    let editable = alice
+        .send_group(group.clone(), "editable group original".to_owned())
+        .unwrap();
+    b_rec.wait("bob's editable group Text", |event| {
+        matches!(
+            event,
+            Event::GroupMessageReceived {
+                id,
+                content_kind: ContentKind::Text,
+                ..
+            } if id == &editable
+        )
+    });
+    a_rec.wait("editable group copy delivered", |event| {
+        matches!(
+            event,
+            Event::GroupDeliveryUpdated {
+                id,
+                peer,
+                state: DeliveryState::Delivered,
+            } if id == &editable && peer == &bob_peer
+        )
+    });
+    let group_edit = alice
+        .edit_group_message(
+            group.clone(),
+            alice_peer.clone(),
+            editable.clone(),
+            "editable group revised".to_owned(),
+        )
+        .unwrap();
+    b_rec.wait("typed group edit refresh", |event| {
+        matches!(
+            event,
+            Event::GroupMessageEdited {
+                group: event_group,
+                sender,
+                target_content_id,
+            } if event_group == &group && sender == &alice_peer && target_content_id == &editable
+        )
+    });
+    a_rec.wait("group edit delivered", |event| {
+        matches!(
+            event,
+            Event::GroupDeliveryUpdated {
+                id,
+                peer,
+                state: DeliveryState::Delivered,
+            } if id == &group_edit && peer == &bob_peer
+        )
+    });
+    for history in [
+        alice.group_messages(group.clone()).unwrap(),
+        bob.group_messages(group.clone()).unwrap(),
+    ] {
+        let message = history
+            .iter()
+            .find(|message| message.id == editable)
+            .unwrap();
+        assert_eq!(message.body, "editable group revised");
+        assert!(message.edited);
+        assert_eq!(message.edit_revision, 1);
+        assert_eq!(message.versions.len(), 2);
+    }
+
     let capability = mention_capability(&alice, &group);
     let history_before_invalid = alice.group_messages(group.clone()).unwrap().len();
     let error = alice
@@ -1906,6 +2508,204 @@ fn groups_via_ffi_only() {
         error.contains("peer") && error.contains("hex"),
         "got: {error}"
     );
+
+    // C5 poll creation, visible authenticated vote revisions, and creator
+    // closure use the same stable-id model through generated bindings.
+    let chat_rows_before_poll = alice.group_messages(group.clone()).unwrap().len();
+    let poll_id = alice
+        .create_group_poll(
+            group.clone(),
+            "Lunch? 👩🏽‍🚀".to_owned(),
+            vec!["Soup".to_owned(), "Salad".to_owned()],
+        )
+        .unwrap();
+    b_rec.wait("group poll creation", |event| {
+        matches!(
+            event,
+            Event::PollUpdated {
+                group: event_group,
+                poll_author,
+                poll_id: event_poll,
+            } if event_group == &group && poll_author == &alice_peer && event_poll == &poll_id
+        )
+    });
+    let poll = bob.group_polls(group.clone()).unwrap().remove(0);
+    assert_eq!(poll.question, "Lunch? 👩🏽‍🚀");
+    assert!(poll.votes_visible);
+    assert!(!poll.anonymous);
+    assert_eq!(poll.close_policy, "manual_creator_snapshot");
+    let soup = poll.options[0].id.clone();
+    let salad = poll.options[1].id.clone();
+    assert!(bob
+        .vote_group_poll(
+            group.clone(),
+            alice_peer.clone(),
+            "bad-id".to_owned(),
+            soup.clone(),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("hex"));
+
+    bob.vote_group_poll(group.clone(), alice_peer.clone(), poll_id.clone(), soup)
+        .unwrap();
+    a_rec.wait_count(
+        "first poll vote",
+        |event| matches!(event, Event::PollUpdated { poll_id: id, .. } if id == &poll_id),
+        1,
+    );
+    bob.vote_group_poll(
+        group.clone(),
+        alice_peer.clone(),
+        poll_id.clone(),
+        salad.clone(),
+    )
+    .unwrap();
+    a_rec.wait_count(
+        "changed poll vote",
+        |event| matches!(event, Event::PollUpdated { poll_id: id, .. } if id == &poll_id),
+        2,
+    );
+    for poll in [
+        poll_revision(&alice, &group, &poll_id, 2),
+        poll_revision(&bob, &group, &poll_id, 2),
+    ] {
+        assert_eq!(poll.votes.len(), 1);
+        assert_eq!(poll.votes[0].voter, bob_peer);
+        assert_eq!(poll.votes[0].option_id, salad);
+        assert_eq!(poll.options[1].votes, 1);
+    }
+    let close_id = alice
+        .close_group_poll(group.clone(), alice_peer.clone(), poll_id.clone())
+        .unwrap();
+    let final_poll = closed_poll(&bob, &group, &poll_id);
+    assert_eq!(final_poll.close_event_id, Some(close_id));
+    assert_eq!(final_poll.votes[0].option_id, salad);
+    assert!(bob
+        .vote_group_poll(
+            group.clone(),
+            alice_peer.clone(),
+            poll_id.clone(),
+            final_poll.options[0].id.clone(),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("closed"));
+    assert_eq!(
+        alice.group_messages(group.clone()).unwrap().len(),
+        chat_rows_before_poll,
+        "poll events never become empty group-message rows"
+    );
+
+    // C6 is exposed without raw protocol bytes: legacy upgrade, exact roles,
+    // admin request results, signed owner moderation, and ownership transfer.
+    let legacy_authority = alice.group_authority(group.clone()).unwrap();
+    assert!(!legacy_authority.signed);
+    assert_eq!(legacy_authority.owner, alice_peer);
+    assert_eq!(legacy_authority.my_role, Some(GroupRole::Owner));
+    let upgrade_generation = legacy_authority.generation + 1;
+    alice.upgrade_group_authority(group.clone()).unwrap();
+    let upgraded = authority_generation(&bob, &group, upgrade_generation);
+    assert_eq!(upgraded.owner, alice_peer);
+    assert_eq!(upgraded.my_role, Some(GroupRole::Member));
+    assert_eq!(upgraded.members.len(), 2);
+
+    alice
+        .set_group_role(group.clone(), bob_peer.clone(), GroupRole::Admin)
+        .unwrap();
+    let admin_generation = upgrade_generation + 1;
+    assert_eq!(
+        authority_generation(&bob, &group, admin_generation).my_role,
+        Some(GroupRole::Admin)
+    );
+    let error = bob
+        .set_group_role(group.clone(), alice_peer.clone(), GroupRole::Member)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("owner"), "got: {error}");
+
+    let rename_request = bob
+        .rename_group(group.clone(), "authority trail crew".to_owned())
+        .unwrap();
+    let rename_generation = admin_generation + 1;
+    let rename_result = b_rec.wait("admin rename result", |event| {
+        matches!(event, Event::GroupAdminRequestResolved {
+            request_id,
+            accepted: true,
+            generation,
+            state_id: Some(_),
+            reason: 0,
+            ..
+        } if request_id == &rename_request && *generation == rename_generation)
+    });
+    assert!(matches!(
+        rename_result,
+        Event::GroupAdminRequestResolved { accepted: true, .. }
+    ));
+    authority_generation(&bob, &group, rename_generation);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if bob
+            .groups()
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate.id == group && candidate.name == "authority trail crew")
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "group rename did not converge");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let moderated_poll = alice
+        .create_group_poll(
+            group.clone(),
+            "Close for weather?".to_owned(),
+            vec!["Keep open".to_owned(), "Close".to_owned()],
+        )
+        .unwrap();
+    b_rec.wait(
+        "moderated poll creation",
+        |event| matches!(event, Event::PollUpdated { poll_id, .. } if poll_id == &moderated_poll),
+    );
+    let moderation_request = bob
+        .moderate_group_poll_close(group.clone(), alice_peer.clone(), moderated_poll.clone())
+        .unwrap();
+    let moderation_generation = rename_generation + 1;
+    b_rec.wait("admin moderation result", |event| {
+        matches!(event, Event::GroupAdminRequestResolved {
+            request_id,
+            accepted: true,
+            generation,
+            reason: 0,
+            ..
+        } if request_id == &moderation_request && *generation == moderation_generation)
+    });
+    let moderated = closed_poll(&bob, &group, &moderated_poll);
+    assert_eq!(moderated.moderated_by, Some(alice_peer.clone()));
+    assert_eq!(moderated.close_policy, "signed_owner_snapshot");
+
+    alice
+        .transfer_group_owner(group.clone(), bob_peer.clone())
+        .unwrap();
+    let bob_owner_generation = moderation_generation + 1;
+    let bob_owner = authority_generation(&bob, &group, bob_owner_generation);
+    assert_eq!(bob_owner.owner, bob_peer);
+    assert_eq!(bob_owner.owner_epoch, 1);
+    assert_eq!(bob_owner.my_role, Some(GroupRole::Owner));
+    let error = bob.leave_group(group.clone()).unwrap_err().to_string();
+    assert!(error.contains("owner"), "got: {error}");
+
+    bob.transfer_group_owner(group.clone(), alice_peer.clone())
+        .unwrap();
+    let alice_owner_generation = bob_owner_generation + 1;
+    let alice_owner = authority_generation(&alice, &group, alice_owner_generation);
+    assert_eq!(alice_owner.owner, alice_peer);
+    assert_eq!(alice_owner.owner_epoch, 2);
+    alice
+        .set_group_role(group.clone(), bob_peer.clone(), GroupRole::Member)
+        .unwrap();
+    authority_generation(&bob, &group, alice_owner_generation + 1);
 
     let group_attachment_bytes = canonical_audio(1_600);
     let group_source = dir.path().join("ffi-group-source.bin");
@@ -1995,21 +2795,13 @@ fn groups_via_ffi_only() {
     alice
         .remove_group_member(group.clone(), bob_peer.clone())
         .unwrap();
-    b_rec.wait_count(
-        "bob's removal",
-        |event| matches!(event, Event::GroupUpdated { group: id } if *id == group),
-        2,
-    );
+    wait_group_presence(&bob, &group, false);
     assert!(bob.groups().unwrap().is_empty());
 
     let leave_group = alice
         .create_group("short trip".to_owned(), vec![bob_peer])
         .unwrap();
-    b_rec.wait_count(
-        "bob's second group invite",
-        |event| matches!(event, Event::GroupUpdated { .. }),
-        3,
-    );
+    wait_group_presence(&bob, &leave_group, true);
     bob.leave_group(leave_group).unwrap();
 
     alice.stop();

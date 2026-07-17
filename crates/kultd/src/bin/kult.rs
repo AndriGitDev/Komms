@@ -21,7 +21,23 @@ The socket defaults to the KULTD_SOCKET environment variable.
 COMMANDS:
     status                          daemon and node status
     bundle                          export a fresh prekey bundle (hex)
+    device-id                       show this exact certified physical-device id
+    devices                         list active and revoked account devices
+    message-devices MESSAGE_ID      show honest delivery state per recipient device
+    device-rename DEVICE_ID NAME... rename an active linked device
+    device-revoke DEVICE_ID --yes   permanently revoke another device
+    device-link-begin               create a ten-minute proximate QR offer
+    device-link-accept OFFER NAME... accept on a pristine target; show response/code
+    device-link-code RESPONSE       show the source-side comparison code
+    device-link-approve RESPONSE --confirm [--no-contacts] [--no-organization] [--no-history]
+                                    confirm and create the encrypted transfer package
+    device-link-complete PACKAGE --confirm
+                                    confirm and import on the pristine target
+    device-sync-export DEVICE_ID    export encrypted convergence bytes
+    device-sync-import BUNDLE       import encrypted convergence bytes
     format-text TEXT...             render the safe local text model as JSON
+    file-presentation MEDIA_TYPE [FILENAME]
+                                    classify untrusted file hints; never scans or opens content
     add-contact NAME BUNDLE_HEX [--hint MULTIADDR]... [--relay MULTIADDR]...
                                 [--mesh NODE|broadcast]...
                                     add a contact from an out-of-band bundle
@@ -31,14 +47,22 @@ COMMANDS:
     contact-rename PEER_HEX [--accept-warnings] NAME...
                                     rename one private local petname; warning review is explicit
     send PEER_HEX TEXT...           queue a message
+    send-disappearing PEER_HEX LIFETIME_SECS TEXT...
+                                    remove locally at deadline; relay hint is hourly
+    edit PEER_HEX AUTHOR_HEX CONTENT_ID TEXT...
+                                    immutably edit this identity's exact pairwise Text event
     attachment-send PEER_HEX PATH MEDIA_TYPE [FILENAME]
                                     import and queue a pairwise attachment
     attachment-send-preview PEER_HEX PATH MEDIA_TYPE PREVIEW_PATH PREVIEW_MEDIA_TYPE [FILENAME]
                                     import pairwise content plus a sealed preview
+    attachment-send-view-once PEER_HEX LIFETIME_SECS PATH MEDIA_TYPE [FILENAME]
+                                    consume local decryptable source on first open
     group-attachment-send GROUP_HEX PATH MEDIA_TYPE [FILENAME]
                                     import and queue a group attachment
     group-attachment-send-preview GROUP_HEX PATH MEDIA_TYPE PREVIEW_PATH PREVIEW_MEDIA_TYPE [FILENAME]
                                     import group content plus a sealed preview
+    group-attachment-send-view-once GROUP_HEX LIFETIME_SECS PATH MEDIA_TYPE [FILENAME]
+                                    group view-once attachment with fallback deadline
     attachments                     list render-safe attachment transfers
     attachment-accept TRANSFER_HEX  accept an inbound offer
     attachment-reject TRANSFER_HEX  reject an inbound offer
@@ -49,6 +73,8 @@ COMMANDS:
                                     stream a completed object to a new file
     attachment-preview-export TRANSFER_HEX PATH
                                     stream a sealed preview to a new file
+    attachment-consume-view-once TRANSFER_HEX PATH
+                                    terminal first open into a protected new file
     schedule PEER_HEX UNIX_SECS TEXT... schedule pairwise text at a UTC instant
     group-schedule GROUP_HEX UNIX_SECS TEXT... schedule group text
     scheduled                       list scheduled messages
@@ -112,17 +138,48 @@ COMMANDS:
                                     compose folder, label, then pin ordering
     group-create NAME [MEMBER_HEX]... create a sender-key group
     group-send GROUP_HEX TEXT...     queue a group message
+    group-send-disappearing GROUP_HEX LIFETIME_SECS TEXT...
+                                    queue group text with exact local expiry
+    group-edit GROUP_HEX AUTHOR_HEX CONTENT_ID TEXT...
+                                    immutably edit this identity's exact group Text event
     group-mention-capability GROUP_HEX
                                     review exact current member support
     group-mention-send GROUP_HEX REVIEW_TOKEN TEXT START:END:PEER_HEX...
                                     send quoted exact text with explicit UTF-8 byte spans
-    group-add GROUP_HEX PEER_HEX     add a member (creator only)
-    group-remove GROUP_HEX PEER_HEX  remove a member (creator only)
+    group-poll-create GROUP_HEX QUESTION OPTION OPTION...
+                                    create a visible-vote single-choice poll
+    group-polls GROUP_HEX           list polls, voter heads, and local tallies
+    group-poll-vote GROUP_HEX POLL_AUTHOR_HEX POLL_ID_HEX OPTION_ID_HEX
+                                    cast or change a vote using stable ids
+    group-poll-close GROUP_HEX POLL_AUTHOR_HEX POLL_ID_HEX
+                                    creator-only irreversible final snapshot
+    group-poll-moderate-close GROUP_HEX POLL_AUTHOR_HEX POLL_ID_HEX
+                                    owner/admin signed moderation snapshot
+    group-authority GROUP_HEX       show roles, owner, epoch, and generation
+    group-authority-upgrade GROUP_HEX
+                                    upgrade legacy creator authority
+    group-rename GROUP_HEX NAME...  rename directly as owner or request as admin
+    group-role GROUP_HEX PEER_HEX admin|member
+                                    owner-only role assignment
+    group-transfer-owner GROUP_HEX PEER_HEX
+                                    owner-only transfer to an existing member
+    group-add GROUP_HEX PEER_HEX     owner direct; admin request
+    group-remove GROUP_HEX PEER_HEX  owner direct; admin may remove members
     group-leave GROUP_HEX            leave a group
     groups                            list groups
     group-messages GROUP_HEX         group message history
     contacts                        list contacts
     carriers                        list per-peer carrier capability snapshots
+    calls                           list transient call state on this installation
+    call-availability PEER_HEX      show the exact current call-start verdict
+    call-start PEER_HEX             start one direct-QUIC audio call
+    call-answer CALL_ID             answer one ringing incoming call
+    call-decline CALL_ID            decline one ringing incoming call
+    call-cancel CALL_ID             cancel one outgoing ringing call
+    call-hangup CALL_ID             end one connecting or active call
+    call-audio-send CALL_ID TIMESTAMP_MS OPUS_HEX
+                                    diagnostic native-Opus capture adapter
+    call-audio-take CALL_ID         take one authenticated Opus playout packet
     messages PEER_HEX               message history with a peer
     safety PEER_HEX                 safety number for out-of-band verification
     verify PEER_HEX                 mark a contact verified
@@ -196,6 +253,50 @@ fn parse_folder_id(value: &str) -> Result<String, String> {
         Ok(value.to_ascii_lowercase())
     } else {
         Err("folder id must be 32 hexadecimal characters".to_owned())
+    }
+}
+
+fn parse_poll_id(value: &str) -> Result<String, String> {
+    if value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(value.to_ascii_lowercase())
+    } else {
+        Err("poll or option id must be 32 hexadecimal characters".to_owned())
+    }
+}
+
+fn parse_poll_peer(value: &str) -> Result<String, String> {
+    if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(value.to_ascii_lowercase())
+    } else {
+        Err("group or poll-author id must be 64 hexadecimal characters".to_owned())
+    }
+}
+
+fn parse_call_id(value: &str) -> Result<String, String> {
+    if value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(value.to_ascii_lowercase())
+    } else {
+        Err("call id must be 32 hexadecimal characters".to_owned())
+    }
+}
+
+fn parse_call_peer(value: &str) -> Result<String, String> {
+    if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(value.to_ascii_lowercase())
+    } else {
+        Err("call peer id must be 64 hexadecimal characters".to_owned())
+    }
+}
+
+fn parse_opus_packet(value: &str) -> Result<String, String> {
+    if !value.is_empty()
+        && value.len() <= 2_550
+        && value.len() % 2 == 0
+        && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        Ok(value.to_ascii_lowercase())
+    } else {
+        Err("Opus packet must be 1 through 1275 bytes of hexadecimal data".to_owned())
     }
 }
 
@@ -294,9 +395,98 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
     let request = match command {
         "status" => json!({ "op": "status" }),
         "bundle" => json!({ "op": "bundle" }),
+        "device-id" => json!({ "op": "device_id" }),
+        "devices" => json!({ "op": "linked_devices" }),
+        "message-devices" => {
+            if args.len() != 1 {
+                return Err("message-devices: expected MESSAGE_ID".to_owned());
+            }
+            json!({ "op": "message_device_deliveries", "message": args[0] })
+        }
+        "device-rename" => {
+            need(2)?;
+            json!({ "op": "device_rename", "device": args[0], "name": args[1..].join(" ") })
+        }
+        "device-revoke" => {
+            if args.len() != 2 || args[1] != "--yes" {
+                return Err(
+                    "device-revoke: permanent revocation requires DEVICE_ID --yes".to_owned(),
+                );
+            }
+            json!({ "op": "device_revoke", "device": args[0] })
+        }
+        "device-link-begin" => json!({ "op": "device_link_begin" }),
+        "device-link-accept" => {
+            need(2)?;
+            json!({ "op": "device_link_accept", "offer": args[0], "name": args[1..].join(" ") })
+        }
+        "device-link-code" => {
+            if args.len() != 1 {
+                return Err("device-link-code: expected RESPONSE".to_owned());
+            }
+            json!({ "op": "device_link_code", "response": args[0] })
+        }
+        "device-link-approve" => {
+            need(2)?;
+            if !args[1..].iter().any(|arg| arg == "--confirm") {
+                return Err(
+                    "device-link-approve: comparison-code confirmation requires --confirm"
+                        .to_owned(),
+                );
+            }
+            if args[1..].iter().any(|arg| {
+                !matches!(
+                    arg.as_str(),
+                    "--confirm" | "--no-contacts" | "--no-organization" | "--no-history"
+                )
+            }) {
+                return Err("device-link-approve: unknown selection flag".to_owned());
+            }
+            json!({
+                "op": "device_link_approve",
+                "response": args[0],
+                "selection": {
+                    "contacts": !args[1..].iter().any(|arg| arg == "--no-contacts"),
+                    "organization": !args[1..].iter().any(|arg| arg == "--no-organization"),
+                    "history": !args[1..].iter().any(|arg| arg == "--no-history"),
+                },
+                "confirmed": true,
+            })
+        }
+        "device-link-complete" => {
+            if args.len() != 2 || args[1] != "--confirm" {
+                return Err(
+                    "device-link-complete: comparison-code confirmation requires PACKAGE --confirm"
+                        .to_owned(),
+                );
+            }
+            json!({ "op": "device_link_complete", "package": args[0], "confirmed": true })
+        }
+        "device-sync-export" => {
+            if args.len() != 1 {
+                return Err("device-sync-export: expected DEVICE_ID".to_owned());
+            }
+            json!({ "op": "device_sync_export", "device": args[0] })
+        }
+        "device-sync-import" => {
+            if args.len() != 1 {
+                return Err("device-sync-import: expected BUNDLE".to_owned());
+            }
+            json!({ "op": "device_sync_import", "bundle": args[0] })
+        }
         "format-text" => {
             need(1)?;
             json!({ "op": "format_text", "source": args.join(" "), "highlights": [] })
+        }
+        "file-presentation" => {
+            if !(1..=2).contains(&args.len()) {
+                return Err("file-presentation: expected MEDIA_TYPE [FILENAME]".to_owned());
+            }
+            json!({
+                "op": "attachment_file_presentation",
+                "media_type": args[0],
+                "filename": args.get(1),
+            })
         }
         "add-contact" => {
             need(2)?;
@@ -339,6 +529,28 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
             need(2)?;
             json!({ "op": "send", "peer": args[0], "body": args[1..].join(" ") })
         }
+        "send-disappearing" => {
+            need(3)?;
+            let lifetime_secs: u64 = args[1]
+                .parse()
+                .map_err(|_| "send-disappearing: lifetime must be an unsigned integer")?;
+            json!({
+                "op": "send_disappearing",
+                "peer": args[0],
+                "lifetime_secs": lifetime_secs,
+                "body": args[2..].join(" "),
+            })
+        }
+        "edit" => {
+            need(4)?;
+            json!({
+                "op": "edit_message",
+                "peer": args[0],
+                "target_author": args[1],
+                "target_content_id": args[2],
+                "text": args[3..].join(" "),
+            })
+        }
         "attachment-send" => {
             need(3)?;
             if args.len() > 4 {
@@ -367,6 +579,23 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
                 "filename": args.get(5),
             })
         }
+        "attachment-send-view-once" => {
+            need(4)?;
+            if args.len() > 5 {
+                return Err("attachment-send-view-once: too many arguments".to_owned());
+            }
+            let lifetime_secs: u64 = args[1]
+                .parse()
+                .map_err(|_| "attachment-send-view-once: lifetime must be unsigned")?;
+            json!({
+                "op": "attachment_send_view_once",
+                "peer": args[0],
+                "lifetime_secs": lifetime_secs,
+                "path": args[2],
+                "media_type": args[3],
+                "filename": args.get(4),
+            })
+        }
         "group-attachment-send" => {
             need(3)?;
             if args.len() > 4 {
@@ -393,6 +622,23 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
                 "preview_path": args[3],
                 "preview_media_type": args[4],
                 "filename": args.get(5),
+            })
+        }
+        "group-attachment-send-view-once" => {
+            need(4)?;
+            if args.len() > 5 {
+                return Err("group-attachment-send-view-once: too many arguments".to_owned());
+            }
+            let lifetime_secs: u64 = args[1]
+                .parse()
+                .map_err(|_| "group-attachment-send-view-once: lifetime must be unsigned")?;
+            json!({
+                "op": "group_attachment_send_view_once",
+                "group": args[0],
+                "lifetime_secs": lifetime_secs,
+                "path": args[2],
+                "media_type": args[3],
+                "filename": args.get(4),
             })
         }
         "attachments" => json!({ "op": "attachments" }),
@@ -427,6 +673,17 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
                 "transfer": args[0],
                 "path": args[1],
                 "preview": true,
+            })
+        }
+        "attachment-consume-view-once" => {
+            need(2)?;
+            if args.len() != 2 {
+                return Err("attachment-consume-view-once: expected TRANSFER PATH".to_owned());
+            }
+            json!({
+                "op": "attachment_consume_view_once",
+                "transfer": args[0],
+                "path": args[1],
             })
         }
         "schedule" => {
@@ -835,6 +1092,28 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
             need(2)?;
             json!({ "op": "group_send", "group": args[0], "body": args[1..].join(" ") })
         }
+        "group-send-disappearing" => {
+            need(3)?;
+            let lifetime_secs: u64 = args[1]
+                .parse()
+                .map_err(|_| "group-send-disappearing: lifetime must be unsigned")?;
+            json!({
+                "op": "group_send_disappearing",
+                "group": args[0],
+                "lifetime_secs": lifetime_secs,
+                "body": args[2..].join(" "),
+            })
+        }
+        "group-edit" => {
+            need(4)?;
+            json!({
+                "op": "group_edit_message",
+                "group": args[0],
+                "target_author": args[1],
+                "target_content_id": args[2],
+                "text": args[3..].join(" "),
+            })
+        }
         "group-mention-capability" => {
             need(1)?;
             if args.len() != 1 {
@@ -856,6 +1135,100 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
                 "spans": spans,
             })
         }
+        "group-poll-create" => {
+            need(4)?;
+            json!({
+                "op": "group_poll_create",
+                "group": parse_poll_peer(&args[0])?,
+                "question": args[1],
+                "options": args[2..],
+            })
+        }
+        "group-polls" => {
+            need(1)?;
+            if args.len() != 1 {
+                return Err("group-polls: too many arguments".to_owned());
+            }
+            json!({ "op": "group_polls", "group": parse_poll_peer(&args[0])? })
+        }
+        "group-poll-vote" => {
+            need(4)?;
+            if args.len() != 4 {
+                return Err("group-poll-vote: expected four ids".to_owned());
+            }
+            json!({
+                "op": "group_poll_vote",
+                "group": parse_poll_peer(&args[0])?,
+                "poll_author": parse_poll_peer(&args[1])?,
+                "poll_id": parse_poll_id(&args[2])?,
+                "option_id": parse_poll_id(&args[3])?,
+            })
+        }
+        "group-poll-close" => {
+            need(3)?;
+            if args.len() != 3 {
+                return Err("group-poll-close: expected three ids".to_owned());
+            }
+            json!({
+                "op": "group_poll_close",
+                "group": parse_poll_peer(&args[0])?,
+                "poll_author": parse_poll_peer(&args[1])?,
+                "poll_id": parse_poll_id(&args[2])?,
+            })
+        }
+        "group-poll-moderate-close" => {
+            need(3)?;
+            if args.len() != 3 {
+                return Err("group-poll-moderate-close: expected three ids".to_owned());
+            }
+            json!({
+                "op": "group_poll_moderate_close",
+                "group": parse_poll_peer(&args[0])?,
+                "poll_author": parse_poll_peer(&args[1])?,
+                "poll_id": parse_poll_id(&args[2])?,
+            })
+        }
+        "group-authority" => {
+            need(1)?;
+            if args.len() != 1 {
+                return Err("group-authority: expected one group id".to_owned());
+            }
+            json!({ "op": "group_authority", "group": parse_poll_peer(&args[0])? })
+        }
+        "group-authority-upgrade" => {
+            need(1)?;
+            if args.len() != 1 {
+                return Err("group-authority-upgrade: expected one group id".to_owned());
+            }
+            json!({ "op": "group_upgrade_authority", "group": parse_poll_peer(&args[0])? })
+        }
+        "group-rename" => {
+            need(2)?;
+            json!({ "op": "group_rename", "group": parse_poll_peer(&args[0])?, "name": args[1..].join(" ") })
+        }
+        "group-role" => {
+            need(3)?;
+            if args.len() != 3 || !matches!(args[2].as_str(), "admin" | "member") {
+                return Err("group-role: expected GROUP PEER admin|member".to_owned());
+            }
+            json!({
+                "op": "group_set_role",
+                "group": parse_poll_peer(&args[0])?,
+                "peer": parse_poll_peer(&args[1])?,
+                "role": args[2],
+            })
+        }
+        "group-transfer-owner" => {
+            need(2)?;
+            if args.len() != 2 {
+                return Err("group-transfer-owner: expected two ids".to_owned());
+            }
+            json!({
+                "op": "group_transfer_owner",
+                "group": parse_poll_peer(&args[0])?,
+                "peer": parse_poll_peer(&args[1])?,
+            })
+        }
         "group-add" => {
             need(2)?;
             json!({ "op": "group_add", "group": args[0], "peer": args[1] })
@@ -875,6 +1248,52 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
         }
         "contacts" => json!({ "op": "contacts" }),
         "carriers" => json!({ "op": "carrier_capabilities" }),
+        "calls" => {
+            if !args.is_empty() {
+                return Err("calls: expected no arguments".to_owned());
+            }
+            json!({ "op": "calls" })
+        }
+        "call-availability" => {
+            if args.len() != 1 {
+                return Err("call-availability: expected PEER_HEX".to_owned());
+            }
+            json!({ "op": "call_availability", "peer": parse_call_peer(&args[0])? })
+        }
+        "call-start" => {
+            if args.len() != 1 {
+                return Err("call-start: expected PEER_HEX".to_owned());
+            }
+            json!({ "op": "call_start", "peer": parse_call_peer(&args[0])? })
+        }
+        "call-answer" | "call-decline" | "call-cancel" | "call-hangup" | "call-audio-take" => {
+            if args.len() != 1 {
+                return Err(format!("{command}: expected CALL_ID"));
+            }
+            let op = match command {
+                "call-answer" => "call_answer",
+                "call-decline" => "call_decline",
+                "call-cancel" => "call_cancel",
+                "call-hangup" => "call_hangup",
+                "call-audio-take" => "call_audio_take",
+                _ => unreachable!(),
+            };
+            json!({ "op": op, "call": parse_call_id(&args[0])? })
+        }
+        "call-audio-send" => {
+            if args.len() != 3 {
+                return Err("call-audio-send: expected CALL_ID TIMESTAMP_MS OPUS_HEX".to_owned());
+            }
+            let timestamp_ms = args[1]
+                .parse::<u64>()
+                .map_err(|_| "call-audio-send: timestamp must be an unsigned integer".to_owned())?;
+            json!({
+                "op": "call_audio_send",
+                "call": parse_call_id(&args[0])?,
+                "timestamp_ms": timestamp_ms,
+                "opus": parse_opus_packet(&args[2])?,
+            })
+        }
         "messages" => {
             need(1)?;
             json!({ "op": "messages", "peer": args[0] })
@@ -1085,6 +1504,47 @@ mod tests {
         assert_eq!(formatted["highlights"], json!([]));
         assert!(build_request("format-text", &[]).is_err());
 
+        let file = build_request(
+            "file-presentation",
+            &["application/pdf".to_owned(), "report.pdf".to_owned()],
+        )
+        .unwrap();
+        assert_eq!(file["op"], json!("attachment_file_presentation"));
+        assert_eq!(file["filename"], json!("report.pdf"));
+        assert!(build_request("file-presentation", &[]).is_err());
+        assert!(build_request(
+            "file-presentation",
+            &[
+                "text/plain".to_owned(),
+                "a.txt".to_owned(),
+                "extra".to_owned()
+            ]
+        )
+        .is_err());
+
+        assert_eq!(
+            build_request("devices", &[]).unwrap()["op"],
+            "linked_devices"
+        );
+        let approve = build_request(
+            "device-link-approve",
+            &[
+                "aa".repeat(64),
+                "--confirm".to_owned(),
+                "--no-history".to_owned(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(approve["confirmed"], true);
+        assert_eq!(approve["selection"]["history"], false);
+        assert_eq!(approve["selection"]["contacts"], true);
+        assert!(build_request(
+            "device-link-approve",
+            &["aa".repeat(64), "--no-history".to_owned()]
+        )
+        .is_err());
+        assert!(build_request("device-revoke", &["11".repeat(32)]).is_err());
+
         let request = build_request(
             "group-create",
             &["trail crew".to_owned(), "01".repeat(32), "02".repeat(32)],
@@ -1099,6 +1559,54 @@ mod tests {
         )
         .unwrap();
         assert_eq!(request["body"], json!("meet there"));
+        assert_eq!(
+            build_request(
+                "send-disappearing",
+                &["04".repeat(32), "3600".to_owned(), "temporary".to_owned()]
+            )
+            .unwrap(),
+            json!({
+                "op": "send_disappearing",
+                "peer": "04".repeat(32),
+                "body": "temporary",
+                "lifetime_secs": 3600,
+            })
+        );
+        assert_eq!(
+            build_request(
+                "group-send-disappearing",
+                &["05".repeat(32), "60".to_owned(), "brief".to_owned()]
+            )
+            .unwrap()["op"],
+            json!("group_send_disappearing")
+        );
+        assert_eq!(
+            build_request(
+                "attachment-send-view-once",
+                &[
+                    "06".repeat(32),
+                    "86400".to_owned(),
+                    "/tmp/once.bin".to_owned(),
+                    "application/octet-stream".to_owned(),
+                    "once.bin".to_owned(),
+                ]
+            )
+            .unwrap()["op"],
+            json!("attachment_send_view_once")
+        );
+        assert_eq!(
+            build_request(
+                "attachment-consume-view-once",
+                &["07".repeat(16), "/tmp/revealed.bin".to_owned()]
+            )
+            .unwrap()["op"],
+            json!("attachment_consume_view_once")
+        );
+        assert!(build_request(
+            "send-disappearing",
+            &["04".repeat(32), "never".to_owned(), "temporary".to_owned()]
+        )
+        .is_err());
         let request = build_request(
             "group-mention-send",
             &[
@@ -1123,6 +1631,101 @@ mod tests {
             ],
         )
         .is_err());
+        let poll = build_request(
+            "group-poll-create",
+            &[
+                "06".repeat(32),
+                "Lunch?".to_owned(),
+                "Soup".to_owned(),
+                "Salad".to_owned(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(poll["op"], json!("group_poll_create"));
+        assert_eq!(poll["options"], json!(["Soup", "Salad"]));
+        assert_eq!(
+            build_request("group-polls", &["06".repeat(32)]).unwrap()["op"],
+            json!("group_polls")
+        );
+        let vote = build_request(
+            "group-poll-vote",
+            &[
+                "06".repeat(32),
+                "07".repeat(32),
+                "08".repeat(16),
+                "09".repeat(16),
+            ],
+        )
+        .unwrap();
+        assert_eq!(vote["poll_id"], json!("08".repeat(16)));
+        assert_eq!(vote["option_id"], json!("09".repeat(16)));
+        assert!(build_request(
+            "group-poll-vote",
+            &[
+                "06".repeat(32),
+                "07".repeat(32),
+                "not-an-id".to_owned(),
+                "09".repeat(16),
+            ]
+        )
+        .is_err());
+        assert!(build_request("group-poll-close", &["06".repeat(32), "07".repeat(32)]).is_err());
+        let moderated_close = build_request(
+            "group-poll-moderate-close",
+            &["06".repeat(32), "07".repeat(32), "08".repeat(16)],
+        )
+        .unwrap();
+        assert_eq!(moderated_close["op"], json!("group_poll_moderate_close"));
+        assert_eq!(moderated_close["poll_author"], json!("07".repeat(32)));
+        assert_eq!(moderated_close["poll_id"], json!("08".repeat(16)));
+        assert!(build_request(
+            "group-poll-moderate-close",
+            &["06".repeat(32), "07".repeat(32)]
+        )
+        .is_err());
+
+        let group = "10".repeat(32);
+        let member = "11".repeat(32);
+        assert_eq!(
+            build_request("group-authority", std::slice::from_ref(&group)).unwrap(),
+            json!({ "op": "group_authority", "group": group })
+        );
+        assert_eq!(
+            build_request("group-authority-upgrade", std::slice::from_ref(&group)).unwrap(),
+            json!({ "op": "group_upgrade_authority", "group": group })
+        );
+        assert_eq!(
+            build_request(
+                "group-rename",
+                &[group.clone(), "Trail".to_owned(), "crew".to_owned()]
+            )
+            .unwrap(),
+            json!({ "op": "group_rename", "group": group, "name": "Trail crew" })
+        );
+        assert_eq!(
+            build_request(
+                "group-role",
+                &[group.clone(), member.clone(), "admin".to_owned()]
+            )
+            .unwrap(),
+            json!({
+                "op": "group_set_role",
+                "group": group,
+                "peer": member,
+                "role": "admin",
+            })
+        );
+        assert_eq!(
+            build_request("group-transfer-owner", &[group.clone(), member.clone()]).unwrap(),
+            json!({ "op": "group_transfer_owner", "group": group, "peer": member })
+        );
+        assert!(build_request(
+            "group-role",
+            &[group.clone(), member.clone(), "owner".to_owned()]
+        )
+        .is_err());
+        assert!(build_request("group-authority", &[group.clone(), member.clone()]).is_err());
+        assert!(build_request("group-transfer-owner", std::slice::from_ref(&group)).is_err());
         assert_eq!(
             build_request("groups", &[]).unwrap(),
             json!({ "op": "groups" })
@@ -1132,7 +1735,35 @@ mod tests {
             build_request("carriers", &[]).unwrap(),
             json!({ "op": "carrier_capabilities" })
         );
+        let call = "ab".repeat(16);
         let peer = "ca".repeat(32);
+        assert_eq!(
+            build_request("call-availability", std::slice::from_ref(&peer)).unwrap(),
+            json!({ "op": "call_availability", "peer": peer })
+        );
+        assert_eq!(
+            build_request("call-answer", std::slice::from_ref(&call)).unwrap(),
+            json!({ "op": "call_answer", "call": call })
+        );
+        assert_eq!(
+            build_request(
+                "call-audio-send",
+                &[call.clone(), "1234".to_owned(), "F801".to_owned()]
+            )
+            .unwrap(),
+            json!({
+                "op": "call_audio_send",
+                "call": call,
+                "timestamp_ms": 1234,
+                "opus": "f801",
+            })
+        );
+        assert!(build_request("call-start", &["not-a-peer".to_owned()]).is_err());
+        assert!(build_request(
+            "call-audio-send",
+            &["ab".repeat(16), "now".to_owned(), "f801".to_owned()]
+        )
+        .is_err());
         assert_eq!(
             build_request(
                 "contact-name-check",

@@ -14,9 +14,10 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 use komms_desktop::commands;
 use komms_desktop::session::{
-    hex_decode, NetworkSettings, Session, UiCustomIconCrop, UiCustomIconTarget, UiEvent,
-    UiFolderSelection, UiFolderTarget, UiHint, UiImageCrop, UiImageEditRecipe, UiImageRegion,
-    UiLabelTarget, UiMentionSpan, UiPinTarget, UiTextFormatHighlight, UiThemePreference,
+    hex_decode, NetworkSettings, Session, UiCustomIconCrop, UiCustomIconTarget,
+    UiDeviceLinkSelection, UiEvent, UiFolderSelection, UiFolderTarget, UiHint, UiImageCrop,
+    UiImageEditRecipe, UiImageRegion, UiLabelTarget, UiMentionSpan, UiPinTarget,
+    UiTextFormatHighlight, UiThemePreference,
 };
 use kult_ffi::{
     edit_image, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, KdfChoice,
@@ -165,6 +166,168 @@ fn open(dir: &Path, name: &str, events: &Events) -> Session {
         events.sink(),
     )
     .expect("session opens")
+}
+
+#[test]
+fn desktop_linked_device_ceremony_and_sync_use_only_session_surface() {
+    let directory = tempfile::tempdir().unwrap();
+    let source_events = Events::default();
+    let target_events = Events::default();
+    let source = open(directory.path(), "device-source", &source_events);
+    let target = open(directory.path(), "device-target", &target_events);
+    source
+        .send_note_to_self("source-only history".to_owned())
+        .unwrap();
+
+    let source_device = source.device_id().unwrap();
+    let target_device = target.device_id().unwrap();
+    let offer = source.begin_device_link().unwrap();
+    assert!(offer.qr_svg.contains("<svg"));
+    let accepted = target
+        .accept_device_link(offer.hex, "Laptop".to_owned())
+        .unwrap();
+    assert_eq!(accepted.confirmation_code.len(), 6);
+    assert_eq!(
+        source
+            .device_link_confirmation_code(accepted.response_hex.clone())
+            .unwrap(),
+        accepted.confirmation_code
+    );
+    let package = source
+        .approve_device_link(
+            accepted.response_hex,
+            UiDeviceLinkSelection {
+                contacts: false,
+                organization: false,
+                history: false,
+            },
+            true,
+        )
+        .unwrap();
+    target.complete_device_link(package, true).unwrap();
+    assert_eq!(source.status().unwrap().peer, target.status().unwrap().peer);
+    assert_ne!(source_device, target_device);
+    assert!(target.note_to_self_messages().unwrap().is_empty());
+    assert_eq!(source.linked_devices().unwrap().len(), 2);
+    target_events.wait("device link completion", |event| {
+        matches!(event, UiEvent::DeviceLinkCompleted { device, .. } if device == &target_device)
+    });
+
+    source
+        .rename_linked_device(target_device.clone(), "Travel laptop".to_owned())
+        .unwrap();
+    let sync = source.export_device_sync(target_device.clone()).unwrap();
+    target.import_device_sync(sync).unwrap();
+    assert!(target
+        .linked_devices()
+        .unwrap()
+        .iter()
+        .any(|device| device.id == target_device && device.name == "Travel laptop"));
+
+    source.stop();
+    target.stop();
+}
+
+fn wait_authority_generation(
+    session: &Session,
+    group: &str,
+    generation: u64,
+) -> komms_desktop::session::UiGroupAuthority {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let authority = session.group_authority(group.to_owned()).unwrap();
+        if authority.signed && authority.generation >= generation {
+            return authority;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "desktop authority generation did not converge"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn wait_closed_poll(
+    session: &Session,
+    group: &str,
+    poll_id: &str,
+) -> komms_desktop::session::UiGroupPoll {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(poll) = session
+            .group_polls(group.to_owned())
+            .unwrap()
+            .into_iter()
+            .find(|poll| poll.id == poll_id && poll.closed)
+        {
+            return poll;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "desktop poll closure did not converge"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn desktop_ephemeral_controls_match_shared_honesty_and_block_render_bypasses() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/c4-ephemeral-parity.json"
+    ))
+    .unwrap();
+    let html = include_str!("../../ui/index.html");
+    let frontend = include_str!("../../ui/main.js");
+    for lifetime in fixture["text_lifetimes"].as_array().unwrap() {
+        assert!(html.contains(&format!("value=\"{}\"", lifetime.as_u64().unwrap())));
+    }
+    assert!(html.contains("recipients and other devices may retain copies"));
+    assert!(frontend.contains("send_disappearing"));
+    assert!(frontend.contains("send_group_disappearing"));
+    assert!(frontend.contains("consume_view_once_attachment"));
+    assert!(frontend.contains("if (!attachment.view_once) actions.append"));
+    assert!(frontend.contains("preview && !attachment.view_once"));
+    assert!(frontend.contains("!attachment.view_once && isAudio"));
+}
+
+#[test]
+fn desktop_poll_ui_keeps_visibility_policy_and_uses_inert_exact_text() {
+    let html = include_str!("../../ui/index.html");
+    let frontend = include_str!("../../ui/main.js");
+    assert!(html.contains("Votes are visible to every member. This is not anonymous."));
+    assert!(html.contains("The poll creator can close it"));
+    assert!(html.contains("a group owner can also commit a signed moderation snapshot"));
+    assert!(frontend.contains("create_group_poll"));
+    assert!(frontend.contains("vote_group_poll"));
+    assert!(frontend.contains("close_group_poll"));
+    assert!(frontend.contains("moderate_group_poll_close"));
+    assert!(frontend.contains("new TextEncoder().encode(value).length"));
+    let renderer = frontend
+        .split("function renderPolls")
+        .nth(1)
+        .unwrap()
+        .split("async function renderMessages")
+        .next()
+        .unwrap();
+    assert!(renderer.contains("textContent = poll.question"));
+    assert!(renderer.contains("textContent = option.text"));
+    assert!(!renderer.contains("innerHTML"));
+
+    let android =
+        include_str!("../../../android/app/src/main/kotlin/komms/android/GroupChatActivity.kt");
+    let android_strings = include_str!("../../../android/app/src/main/res/values/strings.xml");
+    assert!(android.contains("is Event.PollUpdated -> event.group == groupId"));
+    assert!(android.contains("session.createGroupPoll(groupId, exactQuestion, exactChoices)"));
+    assert!(android.contains("session.voteGroupPoll(groupId, poll.author, poll.id, option.id)"));
+    assert!(android_strings.contains("This is not anonymous"));
+
+    let ios = include_str!("../../../ios/KommsApp/Sources/GroupChatView.swift");
+    let ios_model = include_str!("../../../ios/KommsApp/Sources/AppModel.swift");
+    assert!(ios.contains("private struct GroupPollCard"));
+    assert!(ios.contains("Create visible-vote poll"));
+    assert!(ios.contains("This is not anonymous"));
+    assert!(ios_model.contains(".pollUpdated"));
+    assert!(ios_model.contains("try session.createGroupPoll"));
 }
 
 #[test]
@@ -399,7 +562,7 @@ fn desktop_incognito_keyboard_covers_every_editable_text_field_before_unlock() {
         - html
             .matches("<textarea class=\"share-hex\" rows=\"4\" readonly")
             .count();
-    assert_eq!(25, editable_text_fields);
+    assert_eq!(36, editable_text_fields);
     assert_eq!(
         editable_text_fields,
         html.matches("data-incognito-input=").count()
@@ -638,6 +801,166 @@ fn two_desktops_pair_by_bundle_hex_and_message() {
     assert_eq!(inbox[0].state, "received");
     assert_eq!(inbox[0].body, formatted_source);
 
+    // Live calls use the same session surface as Tauri commands. The button
+    // gate is exact, media carries bounded Opus packets, and no call control
+    // or media record becomes a chat-history row.
+    let call_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let availability = alice.call_availability(bob_peer.clone()).unwrap();
+        if availability.available {
+            assert!(availability.unavailable.is_none());
+            break;
+        }
+        assert!(
+            Instant::now() < call_deadline,
+            "call never became available"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(alice.calls().unwrap().is_empty());
+    let call = alice.start_call(bob_peer.clone()).unwrap();
+    b_ev.wait("desktop incoming call", |event| {
+        matches!(event, UiEvent::CallUpdated { call: snapshot }
+            if snapshot.id == call && snapshot.phase == "ringing")
+    });
+    bob.answer_call(call.clone()).unwrap();
+    a_ev.wait("desktop outgoing call active", |event| {
+        matches!(event, UiEvent::CallUpdated { call: snapshot }
+            if snapshot.id == call && snapshot.phase == "active")
+    });
+    b_ev.wait("desktop incoming call active", |event| {
+        matches!(event, UiEvent::CallUpdated { call: snapshot }
+            if snapshot.id == call && snapshot.phase == "active")
+    });
+    for (index, packet) in [vec![0xf8, 1], vec![0xf8, 2], vec![0xf8, 3]]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(alice
+            .send_call_audio(call.clone(), 1_000 + index as u64 * 20, packet)
+            .unwrap());
+    }
+    for (index, packet) in [vec![0xf9, 1], vec![0xf9, 2], vec![0xf9, 3]]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(bob
+            .send_call_audio(call.clone(), 2_000 + index as u64 * 20, packet)
+            .unwrap());
+    }
+    let audio_deadline = Instant::now() + Duration::from_secs(5);
+    let at_alice = loop {
+        if let Some(frame) = alice.take_call_audio(call.clone()).unwrap() {
+            break frame;
+        }
+        assert!(Instant::now() < audio_deadline, "Alice heard no call audio");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let audio_deadline = Instant::now() + Duration::from_secs(5);
+    let at_bob = loop {
+        if let Some(frame) = bob.take_call_audio(call.clone()).unwrap() {
+            break frame;
+        }
+        assert!(Instant::now() < audio_deadline, "Bob heard no call audio");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(at_alice.opus_packet, vec![0xf9, 1]);
+    assert_eq!(at_bob.opus_packet, vec![0xf8, 1]);
+    alice.hangup_call(call.clone()).unwrap();
+    b_ev.wait("desktop remote hangup", |event| {
+        matches!(event, UiEvent::CallUpdated { call: snapshot }
+            if snapshot.id == call
+                && snapshot.phase == "ended"
+                && snapshot.end_reason == Some("hung_up"))
+    });
+    assert_eq!(alice.messages(bob_peer.clone()).unwrap().len(), 1);
+    assert_eq!(bob.messages(alice_peer.clone()).unwrap().len(), 1);
+
+    let temporary = alice
+        .send_disappearing(bob_peer.clone(), "temporary desktop text".to_owned(), 3_600)
+        .unwrap();
+    let temporary_event = b_ev.wait("desktop disappearing event", |event| {
+        matches!(
+            event,
+            UiEvent::MessageReceived {
+                id,
+                content_kind: "disappearing_text",
+                expires_at: Some(_),
+                ..
+            } if id == &temporary
+        )
+    });
+    let event_expiry = match temporary_event {
+        UiEvent::MessageReceived { expires_at, .. } => expires_at.unwrap(),
+        other => panic!("wrong event: {other:?}"),
+    };
+    let row = bob
+        .messages(alice_peer.clone())
+        .unwrap()
+        .into_iter()
+        .find(|message| message.id == temporary)
+        .unwrap();
+    assert_eq!(row.content_kind, "disappearing_text");
+    assert_eq!(row.expires_at, Some(event_expiry));
+
+    std::thread::sleep(Duration::from_millis(300));
+    let editable = alice
+        .send(bob_peer.clone(), "desktop edit original".to_owned())
+        .unwrap();
+    b_ev.wait("bob's canonical desktop Text", |event| {
+        matches!(
+            event,
+            UiEvent::MessageReceived {
+                id,
+                content_kind: "text",
+                ..
+            } if id == &editable
+        )
+    });
+    a_ev.wait("editable desktop delivery", |event| {
+        matches!(
+            event,
+            UiEvent::DeliveryUpdated { id, state: "delivered" } if id == &editable
+        )
+    });
+    let edit = alice
+        .edit_message(
+            bob_peer.clone(),
+            alice_peer.clone(),
+            editable.clone(),
+            "desktop edit revised".to_owned(),
+        )
+        .unwrap();
+    b_ev.wait("desktop pairwise edit refresh", |event| {
+        matches!(
+            event,
+            UiEvent::MessageEdited {
+                peer,
+                target_content_id,
+            } if peer == &alice_peer && target_content_id == &editable
+        )
+    });
+    a_ev.wait("desktop edit delivery", |event| {
+        matches!(
+            event,
+            UiEvent::DeliveryUpdated { id, state: "delivered" } if id == &edit
+        )
+    });
+    for history in [
+        alice.messages(bob_peer.clone()).unwrap(),
+        bob.messages(alice_peer.clone()).unwrap(),
+    ] {
+        assert_eq!(history.len(), 3, "edit events are not standalone bubbles");
+        let message = history
+            .iter()
+            .find(|message| message.id == editable)
+            .unwrap();
+        assert_eq!(message.body, "desktop edit revised");
+        assert!(message.edited);
+        assert_eq!(message.edit_revision, 1);
+        assert_eq!(message.versions.len(), 2);
+    }
+
     // The verify screen: identical digits and QR on both ends, and the
     // "mark verified" button reflects into the contact list badge.
     let sn_a = alice.safety_number(bob_peer.clone()).unwrap();
@@ -759,6 +1082,8 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
             bob_peer,
             Some("field-photo.png".to_owned()),
             carrier,
+            false,
+            86_400,
         )
         .unwrap();
     let outbound = alice.attachments().unwrap();
@@ -878,10 +1203,74 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
         matches!(event, UiEvent::AttachmentUpdated { attachment }
             if attachment.transfer_id == file_transfer && attachment.state == "complete")
     });
+    let generic = bob
+        .attachments()
+        .unwrap()
+        .into_iter()
+        .find(|attachment| attachment.transfer_id == file_transfer)
+        .unwrap();
+    assert_eq!(generic.objects[0].presentation.kind, "other");
+    assert_eq!(generic.objects[0].presentation.open_policy, "export_only");
+    assert_eq!(
+        generic.objects[0].presentation.warnings,
+        vec!["unrecognized_type"]
+    );
+    let err = bob.open_attachment(file_transfer.clone()).unwrap_err();
+    assert!(err.contains("export only"), "got: {err}");
     let file_export = dir.path().join("desktop-generic-received.bin");
     bob.export_attachment(file_transfer, file_export.display().to_string())
         .unwrap();
     assert_eq!(std::fs::read(file_export).unwrap(), file_bytes);
+
+    let once_content = alice
+        .send_view_once_attachment(
+            outbound[0].peer.clone(),
+            file_source.display().to_string(),
+            "application/octet-stream".to_owned(),
+            Some("reveal-once.bin".to_owned()),
+            3_600,
+        )
+        .unwrap();
+    let once_offer = b_ev.wait("desktop view-once offer", |event| {
+        matches!(event, UiEvent::AttachmentUpdated { attachment }
+            if attachment.content_id == once_content
+                && attachment.direction == "inbound"
+                && attachment.view_once)
+    });
+    let once_transfer = match once_offer {
+        UiEvent::AttachmentUpdated { attachment } => {
+            assert!(attachment.expires_at.is_some());
+            attachment.transfer_id
+        }
+        other => panic!("wrong event: {other:?}"),
+    };
+    bob.accept_attachment(once_transfer.clone()).unwrap();
+    b_ev.wait("desktop view-once completion", |event| {
+        matches!(event, UiEvent::AttachmentUpdated { attachment }
+            if attachment.transfer_id == once_transfer && attachment.state == "complete")
+    });
+    assert!(bob
+        .export_attachment(
+            once_transfer.clone(),
+            dir.path()
+                .join("desktop-view-once-forbidden.bin")
+                .display()
+                .to_string(),
+        )
+        .is_err());
+    let once_output = dir.path().join("desktop-view-once-output.bin");
+    bob.consume_view_once_attachment(once_transfer.clone(), once_output.display().to_string())
+        .unwrap();
+    assert_eq!(std::fs::read(&once_output).unwrap(), file_bytes);
+    assert!(bob
+        .consume_view_once_attachment(
+            once_transfer,
+            dir.path()
+                .join("desktop-view-once-second.bin")
+                .display()
+                .to_string(),
+        )
+        .is_err());
 
     let audio_bytes = canonical_audio(1_600);
     let encoded =
@@ -937,6 +1326,8 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
             group.clone(),
             Some("edited-image.png".to_owned()),
             group_carrier,
+            false,
+            86_400,
         )
         .unwrap();
     let group_offer = b_ev.wait("group attachment offer", |event| {
@@ -1203,12 +1594,250 @@ fn desktop_group_ux_create_roster_message_and_partial_delivery() {
     assert!(!bob_history[0].outbound);
     assert!(bob_history[0].deliveries.is_empty());
 
-    // Creator removal rotates the roster immediately. A member can leave;
-    // their live group disappears locally and the creator converges too.
+    // Remove the intentionally offline legacy member before exercising a
+    // capability-gated content type. The exact current roster must support
+    // polls; an unreachable member cannot honestly advertise that support.
     alice
         .remove_group_member(group.clone(), carol_peer)
         .unwrap();
     assert_eq!(alice.groups().unwrap()[0].members.len(), 2);
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Polls use the same authenticated encrypted group path, but render as
+    // dedicated visible-vote cards rather than misleading chat bubbles.
+    let poll_id = alice
+        .create_group_poll(
+            group.clone(),
+            "Which route? 🗻".to_owned(),
+            vec!["North ridge".to_owned(), "River path".to_owned()],
+        )
+        .unwrap();
+    b_ev.wait("Bob's desktop poll", |event| {
+        matches!(event, UiEvent::PollUpdated { group: event_group, poll_id: event_poll, .. }
+            if event_group == &group && event_poll == &poll_id)
+    });
+    let bob_poll = bob.group_polls(group.clone()).unwrap().remove(0);
+    assert_eq!(bob_poll.question, "Which route? 🗻");
+    assert!(bob_poll.votes_visible);
+    assert!(!bob_poll.anonymous);
+    assert_eq!(bob_poll.close_policy, "manual_creator_snapshot");
+    assert!(!bob_poll.can_close);
+    let poll_author = bob_poll.author.clone();
+    let north = bob_poll.options[0].id.clone();
+    let river = bob_poll.options[1].id.clone();
+    bob.vote_group_poll(group.clone(), poll_author.clone(), poll_id.clone(), north)
+        .unwrap();
+    a_ev.wait("Bob's first desktop poll vote", |event| {
+        matches!(event, UiEvent::PollUpdated { poll_id: event_poll, .. } if event_poll == &poll_id)
+    });
+    bob.vote_group_poll(
+        group.clone(),
+        poll_author.clone(),
+        poll_id.clone(),
+        river.clone(),
+    )
+    .unwrap();
+    let poll_change_deadline = Instant::now() + Duration::from_secs(30);
+    while alice.group_polls(group.clone()).unwrap()[0]
+        .votes
+        .first()
+        .map(|vote| vote.option_id.as_str())
+        != Some(river.as_str())
+    {
+        assert!(
+            Instant::now() < poll_change_deadline,
+            "timed out waiting for changed desktop poll vote"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let changed = alice.group_polls(group.clone()).unwrap().remove(0);
+    assert_eq!(changed.votes.len(), 1);
+    assert_eq!(changed.votes[0].option_id, river);
+    assert!(changed.can_close);
+    alice
+        .close_group_poll(group.clone(), poll_author, poll_id.clone())
+        .unwrap();
+    let poll_close_deadline = Instant::now() + Duration::from_secs(30);
+    while !bob.group_polls(group.clone()).unwrap()[0].closed {
+        assert!(
+            Instant::now() < poll_close_deadline,
+            "timed out waiting for closed desktop poll"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(bob.group_polls(group.clone()).unwrap()[0].closed);
+    assert_eq!(alice.group_messages(group.clone()).unwrap().len(), 1);
+    assert_eq!(bob.group_messages(group.clone()).unwrap().len(), 1);
+
+    // C6 authority stays typed through Session, exactly as Tauri commands
+    // and the members/poll dialogs consume it.
+    let legacy = alice.group_authority(group.clone()).unwrap();
+    assert!(!legacy.signed);
+    assert_eq!(legacy.owner, alice_at_bob);
+    assert_eq!(legacy.my_role, Some("owner"));
+    let upgrade_generation = legacy.generation + 1;
+    alice.upgrade_group_authority(group.clone()).unwrap();
+    let upgraded = wait_authority_generation(&bob, &group, upgrade_generation);
+    assert_eq!(upgraded.owner, alice_at_bob);
+    assert_eq!(upgraded.my_role, Some("member"));
+    assert_eq!(upgraded.members.len(), 2);
+
+    alice
+        .set_group_role(group.clone(), bob_peer.clone(), "admin".to_owned())
+        .unwrap();
+    let admin_generation = upgrade_generation + 1;
+    assert_eq!(
+        wait_authority_generation(&bob, &group, admin_generation).my_role,
+        Some("admin")
+    );
+    let err = bob
+        .set_group_role(group.clone(), alice_at_bob.clone(), "member".to_owned())
+        .unwrap_err();
+    assert!(err.contains("owner"), "got: {err}");
+
+    let rename_request = bob
+        .rename_group(group.clone(), "Authority trail crew".to_owned())
+        .unwrap();
+    let rename_generation = admin_generation + 1;
+    b_ev.wait("desktop admin rename result", |event| {
+        matches!(event, UiEvent::GroupAdminRequestResolved {
+            request_id,
+            accepted: true,
+            generation,
+            state_id: Some(_),
+            reason: 0,
+            ..
+        } if request_id == &rename_request && *generation == rename_generation)
+    });
+    wait_authority_generation(&bob, &group, rename_generation);
+    let rename_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if bob
+            .groups()
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate.id == group && candidate.name == "Authority trail crew")
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < rename_deadline,
+            "desktop admin rename did not converge"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let moderated_poll = alice
+        .create_group_poll(
+            group.clone(),
+            "Close for weather?".to_owned(),
+            vec!["Keep open".to_owned(), "Close".to_owned()],
+        )
+        .unwrap();
+    b_ev.wait(
+        "desktop moderated poll",
+        |event| matches!(event, UiEvent::PollUpdated { poll_id, .. } if poll_id == &moderated_poll),
+    );
+    let moderation_request = bob
+        .moderate_group_poll_close(group.clone(), alice_at_bob.clone(), moderated_poll.clone())
+        .unwrap();
+    let moderation_generation = rename_generation + 1;
+    b_ev.wait("desktop moderation result", |event| {
+        matches!(event, UiEvent::GroupAdminRequestResolved {
+            request_id,
+            accepted: true,
+            generation,
+            reason: 0,
+            ..
+        } if request_id == &moderation_request && *generation == moderation_generation)
+    });
+    let moderated = wait_closed_poll(&bob, &group, &moderated_poll);
+    assert_eq!(moderated.moderated_by, Some(alice_at_bob.clone()));
+    assert_eq!(moderated.close_policy, "signed_owner_snapshot");
+
+    alice
+        .transfer_group_owner(group.clone(), bob_peer.clone())
+        .unwrap();
+    let bob_owner_generation = moderation_generation + 1;
+    let bob_owner = wait_authority_generation(&bob, &group, bob_owner_generation);
+    assert_eq!(bob_owner.owner, bob_peer);
+    assert_eq!(bob_owner.owner_epoch, 1);
+    assert_eq!(bob_owner.my_role, Some("owner"));
+    let err = bob.leave_group(group.clone()).unwrap_err();
+    assert!(err.contains("owner"), "got: {err}");
+
+    bob.transfer_group_owner(group.clone(), alice_at_bob.clone())
+        .unwrap();
+    let alice_owner_generation = bob_owner_generation + 1;
+    let alice_owner = wait_authority_generation(&alice, &group, alice_owner_generation);
+    assert_eq!(alice_owner.owner, alice_at_bob);
+    assert_eq!(alice_owner.owner_epoch, 2);
+    alice
+        .set_group_role(group.clone(), bob_peer.clone(), "member".to_owned())
+        .unwrap();
+    wait_authority_generation(&bob, &group, alice_owner_generation + 1);
+
+    // A member can leave; their live group disappears locally and the
+    // creator converges too.
+    let editable = alice
+        .send_group(group.clone(), "desktop group edit original".to_owned())
+        .unwrap();
+    b_ev.wait("Bob's editable group Text", |event| {
+        matches!(
+            event,
+            UiEvent::GroupMessageReceived {
+                id,
+                content_kind: "text",
+                ..
+            } if id == &editable
+        )
+    });
+    a_ev.wait("editable group copy delivered", |event| {
+        matches!(
+            event,
+            UiEvent::GroupDeliveryUpdated { id, peer, state: "delivered" }
+                if id == &editable && peer == &bob_peer
+        )
+    });
+    let edit = alice
+        .edit_group_message(
+            group.clone(),
+            alice_at_bob.clone(),
+            editable.clone(),
+            "desktop group edit revised".to_owned(),
+        )
+        .unwrap();
+    b_ev.wait("desktop group edit refresh", |event| {
+        matches!(
+            event,
+            UiEvent::GroupMessageEdited {
+                group: event_group,
+                sender,
+                target_content_id,
+            } if event_group == &group && sender == &alice_at_bob
+                && target_content_id == &editable
+        )
+    });
+    a_ev.wait("desktop group edit delivery", |event| {
+        matches!(
+            event,
+            UiEvent::GroupDeliveryUpdated { id, peer, state: "delivered" }
+                if id == &edit && peer == &bob_peer
+        )
+    });
+    for history in [
+        alice.group_messages(group.clone()).unwrap(),
+        bob.group_messages(group.clone()).unwrap(),
+    ] {
+        let message = history
+            .iter()
+            .find(|message| message.id == editable)
+            .unwrap();
+        assert_eq!(message.body, "desktop group edit revised");
+        assert!(message.edited);
+        assert_eq!(message.edit_revision, 1);
+        assert_eq!(message.versions.len(), 2);
+    }
     bob.leave_group(group.clone()).unwrap();
     assert!(bob.groups().unwrap().is_empty());
     let deadline = Instant::now() + Duration::from_secs(30);

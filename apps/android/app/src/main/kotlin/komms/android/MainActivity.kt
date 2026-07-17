@@ -203,6 +203,7 @@ class MainActivity : SecureActivity() {
             R.id.menu_labels -> startActivity(Intent(this, LabelManagerActivity::class.java))
             R.id.menu_pins -> showPinManager()
             R.id.menu_icons -> startActivity(Intent(this, CustomIconActivity::class.java))
+            R.id.menu_devices -> startActivity(Intent(this, DeviceActivity::class.java))
             R.id.menu_my_qr -> showMyQr()
             R.id.menu_backup -> createBackup.launch("komms-backup.kkr")
             R.id.menu_settings -> startActivity(Intent(this, SettingsActivity::class.java))

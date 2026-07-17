@@ -24,10 +24,15 @@ struct GroupChatView: View {
     @State private var showPlainFallback = false
     @State private var showFolder = false
     @State private var showLabels = false
+    @State private var showCreatePoll = false
+    @State private var messageEditor: MessageEditDraft?
+    @State private var ephemeralLifetime: EphemeralLifetime?
 
     private var group: KommsCore.Group? { model.groups.first { $0.id == groupId } }
     private var history: [GroupMessage] {
-        (model.groupHistories[groupId] ?? []).filter { $0.contentKind != .attachment }
+        (model.groupHistories[groupId] ?? []).filter {
+            $0.contentKind != .attachment && $0.contentKind != .viewOnceAttachment
+        }
     }
     private var attachments: [Attachment] {
         model.attachments.filter {
@@ -42,6 +47,8 @@ struct GroupChatView: View {
             }
             .sorted { $0.notBefore < $1.notBefore }
     }
+    private var polls: [GroupPoll] { model.groupPolls[groupId] ?? [] }
+    private var authority: GroupAuthority? { model.groupAuthorities[groupId] }
 
     var body: some View {
         presentedContent
@@ -80,6 +87,8 @@ struct GroupChatView: View {
                     }
                     Button("Members") { showMembers = true }
                         .disabled(group == nil)
+                    Button("Poll") { showCreatePoll = true }
+                        .disabled(group == nil)
                 }
             }
             .sheet(isPresented: $showMembers) { GroupMembersView(groupId: groupId) }
@@ -92,6 +101,9 @@ struct GroupChatView: View {
                 LabelAssignmentView(
                     target: LabelTarget(kind: .group, id: groupId),
                     targetName: group?.name ?? "Group")
+            }
+            .sheet(isPresented: $showCreatePoll) {
+                CreateGroupPollView(groupId: groupId, groupName: group?.name ?? "Group")
             }
             .confirmationDialog(
                 "Mention a current member",
@@ -128,6 +140,14 @@ struct GroupChatView: View {
                         }
                     })
             }
+            .sheet(item: $messageEditor) { editor in
+                MessageEditEditor(editor: editor) { replacement in
+                    try await model.editGroupMessage(
+                        group: groupId,
+                        targetContentId: editor.contentId,
+                        text: replacement)
+                }
+            }
     }
 
     private var conversationContent: some View {
@@ -149,10 +169,51 @@ struct GroupChatView: View {
     private var historyContent: some View {
         ScrollView {
             LazyVStack(spacing: 8) {
+                ForEach(polls, id: \.id) { poll in
+                    GroupPollCard(
+                        poll: poll,
+                        authority: authority,
+                        memberName: memberLabel,
+                        vote: { option in
+                            do {
+                                try await model.voteGroupPoll(
+                                    group: groupId,
+                                    pollAuthor: poll.author,
+                                    pollId: poll.id,
+                                    optionId: option.id)
+                            } catch {
+                                self.error = errorText(error)
+                            }
+                        },
+                        close: {
+                            do {
+                                try await model.closeGroupPoll(
+                                    group: groupId,
+                                    pollAuthor: poll.author,
+                                    pollId: poll.id)
+                            } catch {
+                                self.error = errorText(error)
+                            }
+                        },
+                        moderate: {
+                            do {
+                                try await model.moderateGroupPollClose(
+                                    group: groupId,
+                                    pollAuthor: poll.author,
+                                    pollId: poll.id)
+                            } catch {
+                                self.error = errorText(error)
+                            }
+                        })
+                }
                 ForEach(history, id: \.id) { message in
                     GroupMessageBubble(
                         message: message,
-                        memberName: { peer in memberName(peer) })
+                        memberName: { peer in memberName(peer) },
+                        edit: {
+                            messageEditor = MessageEditDraft(
+                                contentId: message.id, body: message.body)
+                        })
                 }
                 ForEach(scheduled, id: \.id) { message in
                     ScheduledMessageBubble(
@@ -171,6 +232,13 @@ struct GroupChatView: View {
     private var composerContent: some View {
         VStack(alignment: .leading, spacing: 6) {
             composerActions
+            EphemeralTextControl(lifetime: $ephemeralLifetime)
+                .onChange(of: ephemeralLifetime) { value in
+                    if value != nil && !draftMentions.isEmpty {
+                        draftMentions = []
+                        setMentionStatus("Semantic mentions were removed because disappearing text is a distinct authenticated content type.")
+                    }
+                }
             if !draftMentions.isEmpty {
                 mentionTokens
             }
@@ -334,6 +402,14 @@ struct GroupChatView: View {
         error = nil
         Task {
             do {
+                if let lifetime = ephemeralLifetime {
+                    try await model.sendGroupDisappearing(
+                        group: groupId,
+                        body: body.trimmingCharacters(in: .whitespacesAndNewlines),
+                        lifetimeSeconds: lifetime.rawValue)
+                    clearDraft()
+                    return
+                }
                 if draftMentions.isEmpty {
                     try await model.sendGroup(
                         group: groupId,
@@ -418,6 +494,194 @@ struct GroupChatView: View {
                 try await model.cancelScheduled(message: message.id)
             } catch {
                 self.error = errorText(error)
+            }
+        }
+    }
+}
+
+private struct GroupPollCard: View {
+    let poll: GroupPoll
+    let authority: GroupAuthority?
+    let memberName: (String) -> String
+    let vote: (PollOption) async -> Void
+    let close: () async -> Void
+    let moderate: () async -> Void
+
+    @State private var pendingOption: PollOption?
+    @State private var showCloseConfirmation = false
+    @State private var showModerateConfirmation = false
+
+    private var canModerate: Bool {
+        !poll.closed && (authority?.myRole == .owner || authority?.myRole == .admin)
+    }
+
+    private var visibleVotes: String {
+        let rows = poll.votes.map { vote in
+            let choice = poll.options.first(where: { $0.id == vote.optionId })?.text
+                ?? "unavailable choice"
+            return "\(memberName(vote.voter)) → \(choice)"
+        }
+        return rows.isEmpty ? "No votes yet." : "Visible votes: \(rows.joined(separator: ", "))."
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(poll.question).font(.headline)
+            Text(poll.closed
+                 ? (poll.moderatedBy.map {
+                    "Closed by owner \(memberName($0)) · signed moderation snapshot · votes visible to all members"
+                 } ?? "Closed · final creator snapshot · votes visible to all members")
+                 : "Open · single choice · votes visible to all members · not anonymous")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ForEach(poll.options, id: \.id) { option in
+                Button {
+                    pendingOption = option
+                } label: {
+                    HStack {
+                        Text(option.text)
+                        Spacer()
+                        Text("\(option.votes)").bold()
+                    }
+                }
+                .buttonStyle(.bordered)
+                .tint(option.selectedByMe ? .accentColor : .secondary)
+                .disabled(poll.closed || !poll.eligible)
+                .accessibilityLabel(
+                    "\(option.text), \(option.votes) votes"
+                    + (option.selectedByMe ? ", your choice" : ""))
+            }
+            Text(visibleVotes)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if poll.canClose {
+                Button("Close poll…") { showCloseConfirmation = true }
+                    .buttonStyle(.bordered)
+            }
+            if canModerate {
+                Button(authority?.myRole == .owner
+                       ? "Moderate close…" : "Request moderation close…") {
+                    showModerateConfirmation = true
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Poll: \(poll.question)")
+        .alert("Cast visible vote?", isPresented: Binding(
+            get: { pendingOption != nil },
+            set: { if !$0 { pendingOption = nil } }
+        )) {
+            Button("Vote") {
+                guard let option = pendingOption else { return }
+                Task { await vote(option) }
+                pendingOption = nil
+            }
+            Button("Cancel", role: .cancel) { pendingOption = nil }
+        } message: {
+            Text("Choose “\(pendingOption?.text ?? "")”? Your identity and choice are visible to group members. You can change it until the poll closes.")
+        }
+        .alert("Close poll?", isPresented: $showCloseConfirmation) {
+            Button("Close poll", role: .destructive) { Task { await close() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Close “\(poll.question)” with the visible vote heads shown now? This cannot be undone.")
+        }
+        .alert("Close through group authority?", isPresented: $showModerateConfirmation) {
+            Button("Submit", role: .destructive) { Task { await moderate() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The owner sequences an exact signed final snapshot. Admin actions are generation-bound requests.")
+        }
+    }
+}
+
+private struct CreateGroupPollView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    let groupId: String
+    let groupName: String
+
+    @State private var question = ""
+    @State private var options = ["", ""]
+    @State private var error: String?
+    @State private var saving = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("Votes are visible to every member. This is not anonymous. The current roster is fixed as the electorate. The creator may close it; an owner can commit signed moderation, and an admin can request it.")
+                        .font(.footnote)
+                }
+                Section("Question") {
+                    TextField("Exact poll question", text: $question, axis: .vertical)
+                        .incognitoKeyboard(capitalization: .sentences)
+                }
+                Section("Choices") {
+                    ForEach(options.indices, id: \.self) { index in
+                        HStack {
+                            TextField("Choice \(index + 1)", text: $options[index], axis: .vertical)
+                                .incognitoKeyboard(capitalization: .sentences)
+                            if options.count > 2 {
+                                Button(role: .destructive) {
+                                    options.remove(at: index)
+                                } label: {
+                                    Image(systemName: "minus.circle")
+                                }
+                                .accessibilityLabel("Remove choice \(index + 1)")
+                            }
+                        }
+                    }
+                    Button("Add choice") { options.append("") }
+                        .disabled(options.count >= 12)
+                }
+                if let error {
+                    Text(error).foregroundStyle(.red).accessibilityLabel("Poll error: \(error)")
+                }
+            }
+            .navigationTitle("Create poll in \(groupName)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Create visible-vote poll") { create() }
+                        .disabled(saving)
+                }
+            }
+        }
+    }
+
+    private func create() {
+        let blank = CharacterSet.whitespacesAndNewlines
+        if question.trimmingCharacters(in: blank).isEmpty {
+            error = "Enter a poll question."
+        } else if question.utf8.count > 1_024 {
+            error = "The poll question is longer than 1,024 UTF-8 bytes."
+        } else if options.count < 2 || options.contains(where: {
+            $0.trimmingCharacters(in: blank).isEmpty
+        }) {
+            error = "Enter at least two non-empty choices."
+        } else if options.contains(where: { $0.utf8.count > 256 }) {
+            error = "Each poll choice must be at most 256 UTF-8 bytes."
+        } else {
+            saving = true
+            error = nil
+            Task {
+                do {
+                    try await model.createGroupPoll(
+                        group: groupId, question: question, options: options)
+                    dismiss()
+                } catch {
+                    self.error = errorText(error)
+                    saving = false
+                }
             }
         }
     }
@@ -664,6 +928,7 @@ private struct GroupMessageBubble: View {
     @EnvironmentObject private var model: AppModel
     let message: GroupMessage
     let memberName: (String) -> String
+    let edit: () -> Void
 
     private var outbound: Bool { message.direction == .outbound }
     private var renderedBody: FormattedText {
@@ -701,6 +966,26 @@ private struct GroupMessageBubble: View {
                 Text(Date(timeIntervalSince1970: TimeInterval(message.timestamp)), style: .time)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                if message.contentKind == .disappearingText, let expiresAt = message.expiresAt {
+                    Text("Removes \(Date(timeIntervalSince1970: TimeInterval(expiresAt)), style: .relative)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .accessibilityHint("Removed locally; other devices may retain copies")
+                }
+                HStack(spacing: 4) {
+                    if message.edited {
+                        Text("edited r\(message.editRevision)")
+                            .foregroundStyle(.secondary)
+                    }
+                    if outbound && message.contentKind == .text {
+                        Button("Edit", action: edit)
+                            .accessibilityLabel("Edit this group message")
+                    }
+                }
+                .font(.caption2)
+                if message.edited {
+                    EditVersionHistoryView(versions: message.versions)
+                }
                 if outbound {
                     ForEach(message.deliveries, id: \.peer) { delivery in
                         Text("\(memberName(delivery.peer)) · \(stateText(delivery.state))")
@@ -734,10 +1019,13 @@ private struct GroupMembersView: View {
     @State private var showLeave = false
     @State private var working = false
     @State private var error: String?
+    @State private var rename = ""
 
     private var group: KommsCore.Group? { model.groups.first { $0.id == groupId } }
     private var ownPeer: String? { model.status?.peer }
-    private var isCreator: Bool { group?.creator == ownPeer }
+    private var authority: GroupAuthority? { model.groupAuthorities[groupId] }
+    private var isOwner: Bool { authority?.myRole == .owner }
+    private var isAdmin: Bool { authority?.myRole == .admin }
     private var candidates: [Contact] {
         guard let group else { return [] }
         return model.contacts
@@ -755,19 +1043,42 @@ private struct GroupMembersView: View {
                             .foregroundStyle(.secondary)
                     }
 
+                    if isOwner || isAdmin {
+                        Section("Group name") {
+                            TextField("Group name", text: $rename)
+                                .textInputAutocapitalization(.sentences)
+                                .autocorrectionDisabled()
+                                .incognitoKeyboard(capitalization: .sentences)
+                            Button(isOwner ? "Rename" : "Request rename") { renameGroup() }
+                                .disabled(working || rename.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    }
+
                     Section("Members") {
-                        ForEach(group.members, id: \.self) { peer in
+                        ForEach(authority?.members ?? [], id: \.peer) { member in
                             HStack {
                                 VStack(alignment: .leading) {
-                                    Text(memberName(peer))
-                                    Text(peer == group.creator ? "creator" : "member")
+                                    Text(memberName(member.peer))
+                                    Text(roleName(member.role))
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                if isCreator && peer != ownPeer {
+                                if isOwner && member.role != .owner {
+                                    Menu("Role") {
+                                        Button(member.role == .admin ? "Make member" : "Make admin") {
+                                            setRole(
+                                                member.peer,
+                                                member.role == .admin ? .member : .admin)
+                                        }
+                                        Button("Make owner") { transferOwner(member.peer) }
+                                    }
+                                    .disabled(working)
+                                }
+                                if (isOwner && member.role != .owner)
+                                    || (isAdmin && member.role == .member) {
                                     Button("Remove", role: .destructive) {
-                                        removalPeer = peer
+                                        removalPeer = member.peer
                                     }
                                     .disabled(working)
                                 }
@@ -775,7 +1086,7 @@ private struct GroupMembersView: View {
                         }
                     }
 
-                    if isCreator && !candidates.isEmpty {
+                    if (isOwner || isAdmin) && !candidates.isEmpty {
                         Section {
                             Menu("Add member") {
                                 ForEach(candidates, id: \.peer) { contact in
@@ -788,9 +1099,11 @@ private struct GroupMembersView: View {
 
                     Section {
                         Button("Leave group", role: .destructive) { showLeave = true }
-                            .disabled(working)
+                            .disabled(working || isOwner)
                     } footer: {
-                        Text("Message history stays stored on this device after leaving.")
+                        Text(isOwner
+                             ? "Transfer ownership before leaving."
+                             : "Message history stays stored on this device after leaving.")
                     }
                 }
 
@@ -805,6 +1118,7 @@ private struct GroupMembersView: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .onAppear { rename = group?.name ?? "" }
             .alert(
                 "Remove member?",
                 isPresented: Binding(
@@ -845,9 +1159,48 @@ private struct GroupMembersView: View {
     private func summary(_ group: KommsCore.Group) -> String {
         let count = "\(group.members.count) "
             + (group.members.count == 1 ? "member" : "members")
-        return isCreator
-            ? "\(count) · You manage this group."
-            : "\(count) · \(memberName(group.creator)) manages this group."
+        guard let authority else { return count }
+        return "\(count) · \(memberName(authority.owner)) owns this group · generation \(authority.generation) · \(authority.signed ? "signed authority" : "legacy authority")."
+    }
+
+    private func roleName(_ role: GroupRole) -> String {
+        switch role {
+        case .owner: return "owner"
+        case .admin: return "admin"
+        case .member: return "member"
+        }
+    }
+
+    private func renameGroup() {
+        let exact = rename.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !exact.isEmpty else { return }
+        working = true
+        error = nil
+        Task {
+            do { try await model.renameGroup(group: groupId, name: exact) }
+            catch { self.error = errorText(error) }
+            working = false
+        }
+    }
+
+    private func setRole(_ peer: String, _ role: GroupRole) {
+        working = true
+        error = nil
+        Task {
+            do { try await model.setGroupRole(group: groupId, peer: peer, role: role) }
+            catch { self.error = errorText(error) }
+            working = false
+        }
+    }
+
+    private func transferOwner(_ peer: String) {
+        working = true
+        error = nil
+        Task {
+            do { try await model.transferGroupOwner(group: groupId, peer: peer) }
+            catch { self.error = errorText(error) }
+            working = false
+        }
     }
 
     private func add(_ contact: Contact) {

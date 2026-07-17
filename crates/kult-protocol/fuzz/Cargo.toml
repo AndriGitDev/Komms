@@ -75,5 +75,47 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "edit_decode"
+path = "fuzz_targets/edit_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ephemeral_decode"
+path = "fuzz_targets/ephemeral_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "poll_decode"
+path = "fuzz_targets/poll_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "group_authority_decode"
+path = "fuzz_targets/group_authority_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "device_sync_bundle_decode"
+path = "fuzz_targets/device_sync_bundle_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "call_control_decode"
+path = "fuzz_targets/call_control_decode.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

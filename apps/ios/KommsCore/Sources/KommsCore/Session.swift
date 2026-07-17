@@ -79,6 +79,9 @@ private func validateLabelWrite(name: String, color: String) throws {
 /// `kult bundle` / `kult add`.
 public func bundleQrText(_ bundleHex: String) -> String { bundleHex.uppercased() }
 
+/// Compact QR text for one opaque C2 device-link offer.
+public func deviceLinkQrText(_ offerHex: String) -> String { offerHex.uppercased() }
+
 /// QR text for a safety number: uppercase hex of the raw 32-byte comparison
 /// value — both parties render the identical code, on any platform.
 public func safetyQrText(_ sn: SafetyNumber) -> String { hexEncode(sn.qr).uppercased() }
@@ -114,6 +117,92 @@ public final class Session: @unchecked Sendable {
     /// Status snapshot for the UI's transport indicators.
     public func status() throws -> Status { try node.status() }
 
+    /// Exact public id for this physical installation.
+    public func deviceId() throws -> String { try node.deviceId() }
+
+    /// Complete account-authorized device list, including revoked rows.
+    public func linkedDevices() throws -> [LinkedDevice] { try node.linkedDevices() }
+
+    /// Per-physical-device delivery states for one outbound message.
+    public func messageDeviceDeliveries(message: String) throws -> [MessageDeviceDelivery] {
+        try node.messageDeviceDeliveries(message: message)
+    }
+
+    /// Rename one exact active linked device.
+    public func renameLinkedDevice(device: String, name: String) throws {
+        try node.renameLinkedDevice(device: device, name: name)
+    }
+
+    /// Permanently revoke another exact device after explicit review.
+    public func revokeLinkedDevice(device: String, confirmed: Bool) throws {
+        guard confirmed else {
+            throw InputError("permanent device revocation requires explicit confirmation")
+        }
+        try node.revokeLinkedDevice(device: device)
+    }
+
+    /// Begin a ten-minute proximate link offer as exact lowercase hex.
+    public func beginDeviceLink() throws -> String {
+        hexEncode(try node.beginDeviceLink())
+    }
+
+    /// Accept a scanned or pasted offer on a pristine target.
+    public func acceptDeviceLink(
+        offerHex: String, deviceName: String
+    ) throws -> DeviceLinkAcceptance {
+        guard let offer = hexDecode(offerHex) else {
+            throw InputError("device link offer must be hex")
+        }
+        return try node.acceptDeviceLink(offer: offer, deviceName: deviceName)
+    }
+
+    /// Derive the source-side six-digit comparison code.
+    public func deviceLinkConfirmationCode(responseHex: String) throws -> String {
+        guard let response = hexDecode(responseHex) else {
+            throw InputError("device link response must be hex")
+        }
+        return try node.deviceLinkConfirmationCode(response: response)
+    }
+
+    /// Confirm matching codes and create the encrypted selective transfer.
+    public func approveDeviceLink(
+        responseHex: String,
+        contacts: Bool,
+        organization: Bool,
+        history: Bool,
+        confirmed: Bool
+    ) throws -> String {
+        guard let response = hexDecode(responseHex) else {
+            throw InputError("device link response must be hex")
+        }
+        return hexEncode(try node.approveDeviceLink(
+            response: response,
+            selection: DeviceLinkSelection(
+                contacts: contacts, organization: organization, history: history),
+            confirmed: confirmed))
+    }
+
+    /// Confirm and import one source package on the pristine target.
+    public func completeDeviceLink(packageHex: String, confirmed: Bool) throws {
+        guard let package = hexDecode(packageHex) else {
+            throw InputError("device link package must be hex")
+        }
+        try node.completeDeviceLink(package: package, confirmed: confirmed)
+    }
+
+    /// Export one encrypted convergence bundle for an active linked device.
+    public func exportDeviceSync(device: String) throws -> String {
+        hexEncode(try node.exportDeviceSync(device: device))
+    }
+
+    /// Import one authenticated convergence bundle from another linked device.
+    public func importDeviceSync(bundleHex: String) throws -> UInt64 {
+        guard let bundle = hexDecode(bundleHex) else {
+            throw InputError("device sync bundle must be hex")
+        }
+        return try node.importDeviceSync(bundle: bundle)
+    }
+
     /// Render exact source into the shared bounded and inert local text model.
     public func formatText(
         source: String, highlights: [TextFormatHighlight] = []
@@ -144,6 +233,42 @@ public final class Session: @unchecked Sendable {
     /// All stored contacts.
     public func contacts() throws -> [Contact] { try node.contacts() }
 
+    /// Every current and briefly retained terminal direct-QUIC call.
+    public func calls() throws -> [Call] { try node.calls() }
+
+    /// Honest current call-start verdict for one pairwise contact.
+    public func callAvailability(peer: String) throws -> CallAvailability {
+        try node.callAvailability(peer: peer)
+    }
+
+    /// Start one capability-gated direct-QUIC audio call.
+    public func startCall(peer: String) throws -> String { try node.startCall(peer: peer) }
+
+    /// Answer one ringing incoming call on this physical device.
+    public func answerCall(call: String) throws { try node.answerCall(call: call) }
+
+    /// Decline one ringing incoming call.
+    public func declineCall(call: String) throws { try node.declineCall(call: call) }
+
+    /// Cancel one outgoing ringing call.
+    public func cancelCall(call: String) throws { try node.cancelCall(call: call) }
+
+    /// End one connecting or active call.
+    public func hangupCall(call: String) throws { try node.hangupCall(call: call) }
+
+    /// Queue one AVFoundation Opus capture packet.
+    public func sendCallAudio(
+        call: String, timestampMs: UInt64, opusPacket: Data
+    ) throws -> Bool {
+        try node.sendCallAudio(
+            call: call, timestampMs: timestampMs, opusPacket: opusPacket)
+    }
+
+    /// Take at most one authenticated Opus packet for native playback.
+    public func takeCallAudio(call: String) throws -> CallAudioFrame? {
+        try node.takeCallAudio(call: call)
+    }
+
     /// Assess a proposed private local petname without mutation.
     public func assessContactName(peer: String, name: String) throws -> ContactNameAssessment {
         try node.assessContactName(peer: peer, name: name)
@@ -162,6 +287,23 @@ public final class Session: @unchecked Sendable {
     /// Queue a message; returns its id (progress arrives as events).
     public func send(peer: String, body: String) throws -> String {
         try node.send(peer: peer, body: body)
+    }
+
+    /// Queue pairwise text with an authenticated exact local deadline.
+    public func sendDisappearing(peer: String, body: String, lifetimeSeconds: UInt64) throws -> String {
+        try node.sendDisappearing(peer: peer, body: body, lifetimeSecs: lifetimeSeconds)
+    }
+
+    /// Queue an immutable edit for this identity's exact pairwise Text event.
+    public func editMessage(
+        peer: String,
+        targetAuthor: String,
+        targetContentId: String,
+        text: String
+    ) throws -> String {
+        try node.editMessage(
+            peer: peer, targetAuthor: targetAuthor,
+            targetContentId: targetContentId, text: text)
     }
 
     /// Import one app-private, caller-selected path as a pairwise attachment.
@@ -190,6 +332,17 @@ public final class Session: @unchecked Sendable {
             previewPath: preview.path, previewMediaType: "image/jpeg")
     }
 
+    /// Import a pairwise attachment whose first local reveal is terminal.
+    public func sendViewOnceAttachment(
+        peer: String, path: URL, mediaType: String, filename: String?,
+        preview: URL? = nil, lifetimeSeconds: UInt64
+    ) throws -> String {
+        try node.sendViewOnceAttachment(
+            peer: peer, path: path.path, mediaType: mediaType, filename: filename,
+            previewPath: preview?.path, previewMediaType: preview == nil ? nil : "image/jpeg",
+            lifetimeSecs: lifetimeSeconds)
+    }
+
     /// Import one app-private path as an encrypt-once group attachment.
     public func sendGroupAttachment(
         group: String,
@@ -212,6 +365,17 @@ public final class Session: @unchecked Sendable {
         try node.sendGroupAttachmentWithPreview(
             group: group, path: path.path, mediaType: mediaType, filename: filename,
             previewPath: preview.path, previewMediaType: "image/jpeg")
+    }
+
+    /// Import a group attachment whose first local reveal is terminal.
+    public func sendGroupViewOnceAttachment(
+        group: String, path: URL, mediaType: String, filename: String?,
+        preview: URL? = nil, lifetimeSeconds: UInt64
+    ) throws -> String {
+        try node.sendGroupViewOnceAttachment(
+            group: group, path: path.path, mediaType: mediaType, filename: filename,
+            previewPath: preview?.path, previewMediaType: preview == nil ? nil : "image/jpeg",
+            lifetimeSecs: lifetimeSeconds)
     }
 
     /// Every supported transfer as render-safe state.
@@ -245,6 +409,11 @@ public final class Session: @unchecked Sendable {
     /// Stream a completed primary object to a protected, new app-private path.
     public func exportAttachment(transfer: String, to path: URL) throws {
         try node.exportAttachment(transfer: transfer, path: path.path)
+    }
+
+    /// Terminal first reveal of view-once media into a protected new path.
+    public func consumeViewOnceAttachment(transfer: String, to path: URL) throws {
+        try node.consumeViewOnceAttachment(transfer: transfer, path: path.path)
     }
 
     /// Decrypt a sealed preview into a protected app-private path.
@@ -593,6 +762,84 @@ public final class Session: @unchecked Sendable {
         try node.sendGroup(group: group, body: body)
     }
 
+    /// Queue group text with an authenticated exact local deadline.
+    public func sendGroupDisappearing(
+        group: String, body: String, lifetimeSeconds: UInt64
+    ) throws -> String {
+        try node.sendGroupDisappearing(group: group, body: body, lifetimeSecs: lifetimeSeconds)
+    }
+
+    /// Create a visible-vote, single-choice poll for the exact current roster.
+    public func createGroupPoll(
+        group: String, question: String, options: [String]
+    ) throws -> String {
+        try node.createGroupPoll(group: group, question: question, options: options)
+    }
+
+    /// Render-safe poll cards with authenticated visible vote heads.
+    public func groupPolls(group: String) throws -> [GroupPoll] {
+        try node.groupPolls(group: group)
+    }
+
+    /// Cast or change this identity's vote using stable ids only.
+    public func voteGroupPoll(
+        group: String, pollAuthor: String, pollId: String, optionId: String
+    ) throws -> String {
+        try node.voteGroupPoll(
+            group: group, pollAuthor: pollAuthor, pollId: pollId, optionId: optionId)
+    }
+
+    /// Creator-only irreversible final snapshot of the visible vote heads.
+    public func closeGroupPoll(
+        group: String, pollAuthor: String, pollId: String
+    ) throws -> String {
+        try node.closeGroupPoll(group: group, pollAuthor: pollAuthor, pollId: pollId)
+    }
+
+    /// Signed owner closure; admins submit a generation-bound request.
+    public func moderateGroupPollClose(
+        group: String, pollAuthor: String, pollId: String
+    ) throws -> String {
+        try node.moderateGroupPollClose(group: group, pollAuthor: pollAuthor, pollId: pollId)
+    }
+
+    /// Current signed or legacy-compatible exact group roles.
+    public func groupAuthority(group: String) throws -> GroupAuthority {
+        try node.groupAuthority(group: group)
+    }
+
+    /// Upgrade legacy creator authority to signed C6 roles.
+    public func upgradeGroupAuthority(group: String) throws -> String {
+        try node.upgradeGroupAuthority(group: group)
+    }
+
+    /// Rename directly as owner or submit a signed admin request.
+    public func renameGroup(group: String, name: String) throws -> String {
+        try node.renameGroup(group: group, name: name)
+    }
+
+    /// Owner-only admin grant/revoke.
+    public func setGroupRole(group: String, peer: String, role: GroupRole) throws -> String {
+        try node.setGroupRole(group: group, peer: peer, role: role)
+    }
+
+    /// Transfer sole ownership to an existing member.
+    public func transferGroupOwner(group: String, peer: String) throws -> String {
+        try node.transferGroupOwner(group: group, peer: peer)
+    }
+
+    /// Queue an immutable edit for this identity's exact group Text event.
+    public func editGroupMessage(
+        group: String,
+        targetAuthor: String,
+        targetContentId: String,
+        text: String
+    ) throws -> String {
+        try node.editGroupMessage(
+            group: group, targetAuthor: targetAuthor,
+            targetContentId: targetContentId, text: text)
+    }
+
     /// Current exact-roster semantic Mention capability and review binding.
     public func groupMentionCapability(group: String) throws -> GroupMentionCapability {
         try node.groupMentionCapability(group: group)
@@ -609,7 +856,7 @@ public final class Session: @unchecked Sendable {
             group: group, text: text, spans: spans, reviewToken: reviewToken)
     }
 
-    /// Add a stored contact to a group (creator only).
+    /// Add as owner or submit a signed admin request.
     public func addGroupMember(group: String, peer: String) throws {
         try node.addGroupMember(group: group, peer: peer)
     }

@@ -28,14 +28,20 @@ extern crate alloc;
 mod attachment;
 mod attachment_bulk;
 mod bundle;
+mod call;
 mod capability;
 mod content;
+mod device_sync;
+mod edit;
 mod envelope;
+mod ephemeral;
 mod error;
 mod fragmentation;
 mod group;
+mod group_authority;
 mod mention;
 mod padding;
+mod poll;
 mod receipt;
 mod token;
 
@@ -54,20 +60,55 @@ pub use attachment_bulk::{
     ATTACHMENT_SEALED_CHUNK_LEN, MAX_ATTACHMENT_BULK_LEN, MAX_MISSING_RANGES,
 };
 pub use bundle::{bundle_export, bundle_import, BUNDLE_MAGIC};
+pub use call::{
+    decode_call_control_payload, encode_call_control_payload, CallControl, CallHangupReason,
+    DecodedCallControl, CALL_CONTROL_BOUND_LEN, CALL_CONTROL_HANGUP_LEN, CALL_CONTROL_HEADER_LEN,
+    CALL_CONTROL_VERSION, MAX_CALL_CONTROL_LEN,
+};
 pub use capability::{
     is_capability_control, CapabilityControl, FormatCapabilities, CAPABILITY_CONTROL_VERSION,
     CAPABILITY_MAGIC, MAX_CAPABILITY_FORMATS, MAX_CAPABILITY_KINDS,
 };
 pub use content::{
-    decode_content, encode_attachment, encode_mention, encode_text, DecodedContent,
-    CONTENT_FORMAT_V1, CONTENT_HEADER_LEN, CONTENT_KIND_ATTACHMENT, CONTENT_KIND_MENTION,
-    CONTENT_KIND_TEXT, CONTENT_MAGIC, MAX_COLLECTION_ENTRIES, MAX_CONTENT_FRAME_LEN,
-    MAX_CONTENT_PAYLOAD_LEN, MAX_NESTING_DEPTH,
+    decode_content, encode_attachment, encode_call_control, encode_edit, encode_ephemeral,
+    encode_group_authority, encode_mention, encode_poll, encode_text, DecodedContent,
+    CONTENT_FORMAT_V1, CONTENT_HEADER_LEN, CONTENT_KIND_ATTACHMENT, CONTENT_KIND_CALL_CONTROL,
+    CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL, CONTENT_KIND_GROUP_AUTHORITY, CONTENT_KIND_MENTION,
+    CONTENT_KIND_POLL, CONTENT_KIND_TEXT, CONTENT_MAGIC, MAX_COLLECTION_ENTRIES,
+    MAX_CONTENT_FRAME_LEN, MAX_CONTENT_PAYLOAD_LEN, MAX_NESTING_DEPTH,
 };
-pub use envelope::{Envelope, EnvelopeKind, ENVELOPE_HEADER_LEN};
+pub use device_sync::{
+    resolve_device_sync_events, DeviceSyncBundle, DeviceSyncEvent, DeviceSyncNamespace,
+    OpenedDeviceSyncBundle, MAX_DEVICE_SYNC_BUNDLE_BYTES, MAX_DEVICE_SYNC_BUNDLE_EVENTS,
+    MAX_DEVICE_SYNC_KEY_BYTES, MAX_DEVICE_SYNC_VALUE_BYTES,
+};
+pub use edit::{
+    decode_edit_payload, encode_edit_payload, DecodedEdit, Edit, EDIT_HEADER_LEN,
+    MAX_EDIT_PAYLOAD_LEN, MAX_EDIT_TEXT_LEN,
+};
+pub use envelope::{
+    Envelope, EnvelopeKind, ENVELOPE_HEADER_LEN, ENVELOPE_V1_HEADER_LEN, ENVELOPE_V2_HEADER_LEN,
+    ENVELOPE_VERSION_V1, ENVELOPE_VERSION_V2,
+};
+pub use ephemeral::{
+    decode_ephemeral_payload, encode_disappearing_text_payload,
+    encode_view_once_attachment_payload, retention_bucket, DecodedEphemeral, Ephemeral,
+    EPHEMERAL_HEADER_LEN, MAX_EPHEMERAL_LIFETIME_SECS, MAX_EPHEMERAL_PAYLOAD_LEN,
+    MIN_EPHEMERAL_LIFETIME_SECS, RETENTION_BUCKET_SECS,
+};
 pub use error::ProtocolError;
 pub use fragmentation::{fragment, Reassembler, FRAG_HEADER_LEN, REASSEMBLY_WINDOW_SECS};
-pub use group::{GroupAnnounce, GroupControlPayload, GroupMemberInfo};
+pub use group::{
+    group_admin_request_signing_bytes, GroupAdminAction, GroupAdminRequest, GroupAdminResult,
+    GroupAnnounce, GroupAuthorityAnnounce, GroupControlPayload, GroupMemberInfo,
+    MAX_GROUP_ADMIN_REQUESTS,
+};
+pub use group_authority::{
+    decode_group_authority, encode_group_authority_state, group_authority_state_signing_bytes,
+    owner_transfer_signing_bytes, DecodedGroupAuthority, GroupAuthorityMember, GroupRole,
+    OwnerTransferCertificate, SignedGroupAuthorityState, GROUP_AUTHORITY_VERSION,
+    MAX_GROUP_AUTHORITY_MEMBERS, MAX_GROUP_MEMBER_IDENTITY_LEN, MAX_GROUP_NAME_LEN,
+};
 pub use mention::{
     decode_mention_payload, encode_mention_payload, DecodedMention, Mention, MentionSpan,
     MentionSpans, MentionTargets, MAX_MENTION_PAYLOAD_LEN, MAX_MENTION_SPANS, MAX_MENTION_TARGETS,
@@ -75,6 +116,13 @@ pub use mention::{
     MENTION_VERSION,
 };
 pub use padding::{pad, pad_to_minimum, unpad, PAD_BUCKETS};
+pub use poll::{
+    decode_poll_payload, encode_poll_close_payload, encode_poll_create_payload,
+    encode_poll_moderated_close_payload, encode_poll_vote_payload, poll_moderation_signing_bytes,
+    DecodedPoll, Poll, PollClose, PollCreate, PollModeratedClose, PollOption, PollOptions,
+    PollVote, PollVoteHead, PollVoteHeads, PollVoters, MAX_POLL_OPTIONS, MAX_POLL_OPTION_TEXT_LEN,
+    MAX_POLL_QUESTION_LEN, MAX_POLL_VOTERS, MIN_POLL_OPTIONS, POLL_CLOSE_MANUAL, POLL_VERSION,
+};
 pub use receipt::ReceiptPayload;
 pub use token::{delivery_token, epoch_day, intro_token, MailboxKey};
 

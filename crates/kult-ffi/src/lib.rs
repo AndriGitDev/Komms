@@ -475,6 +475,14 @@ pub enum ContentKind {
     Attachment,
     /// Canonical group Mention with stable peer-targeted UTF-8 byte spans.
     Mention,
+    /// Canonical disappearing UTF-8 with an exact local deadline.
+    DisappearingText,
+    /// Canonical view-once attachment offer.
+    ViewOnceAttachment,
+    /// Canonical group-only poll event (rendered through the poll model).
+    Poll,
+    /// Canonical group-only signed role/authority event.
+    GroupAuthority,
     /// Authenticated content this version cannot interpret.
     Unsupported,
     /// A typed frame that violated the canonical contract.
@@ -524,6 +532,114 @@ pub enum AttachmentState {
     Unavailable,
 }
 
+/// Inert local category derived from untrusted attachment display hints.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum AttachmentFileKind {
+    /// Still-image hint.
+    Image,
+    /// Audio hint.
+    Audio,
+    /// Video hint.
+    Video,
+    /// Document or textual-data hint.
+    Document,
+    /// Archive hint.
+    Archive,
+    /// Executable, script, installer, or active-document hint.
+    Executable,
+    /// Unrecognized or generic binary hint.
+    Other,
+}
+
+/// Strongest local action permitted for a completed attachment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum AttachmentOpenPolicy {
+    /// Existing bounded protected image/audio rendering may be offered.
+    ProtectedMedia,
+    /// An explicit user action may hand a protected materialization to the OS.
+    ExternalOpen,
+    /// Caller-selected export is the only permitted presentation action.
+    ExportOnly,
+}
+
+/// Stable caution derived from untrusted authenticated file hints.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum AttachmentFileWarning {
+    /// Filename extension and media type disagree.
+    MediaTypeMismatch,
+    /// A hint identifies executable or active content.
+    DangerousType,
+    /// A hint is outside the reviewed type set.
+    UnrecognizedType,
+    /// No filename was supplied for extension comparison.
+    MissingFilename,
+}
+
+/// Shared local presentation decision. It never claims that content is safe.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct AttachmentFilePresentation {
+    /// Inert icon/label category.
+    pub kind: AttachmentFileKind,
+    /// Strongest permitted local action.
+    pub open_policy: AttachmentOpenPolicy,
+    /// Canonically ordered warnings.
+    pub warnings: Vec<AttachmentFileWarning>,
+}
+
+impl AttachmentFilePresentation {
+    fn from_node(value: kult_node::AttachmentFilePresentation) -> Self {
+        Self {
+            kind: match value.kind {
+                kult_node::AttachmentFileKind::Image => AttachmentFileKind::Image,
+                kult_node::AttachmentFileKind::Audio => AttachmentFileKind::Audio,
+                kult_node::AttachmentFileKind::Video => AttachmentFileKind::Video,
+                kult_node::AttachmentFileKind::Document => AttachmentFileKind::Document,
+                kult_node::AttachmentFileKind::Archive => AttachmentFileKind::Archive,
+                kult_node::AttachmentFileKind::Executable => AttachmentFileKind::Executable,
+                kult_node::AttachmentFileKind::Other => AttachmentFileKind::Other,
+            },
+            open_policy: match value.open_policy {
+                kult_node::AttachmentOpenPolicy::ProtectedMedia => {
+                    AttachmentOpenPolicy::ProtectedMedia
+                }
+                kult_node::AttachmentOpenPolicy::ExternalOpen => AttachmentOpenPolicy::ExternalOpen,
+                kult_node::AttachmentOpenPolicy::ExportOnly => AttachmentOpenPolicy::ExportOnly,
+            },
+            warnings: value
+                .warnings
+                .into_iter()
+                .map(|warning| match warning {
+                    kult_node::AttachmentFileWarning::MediaTypeMismatch => {
+                        AttachmentFileWarning::MediaTypeMismatch
+                    }
+                    kult_node::AttachmentFileWarning::DangerousType => {
+                        AttachmentFileWarning::DangerousType
+                    }
+                    kult_node::AttachmentFileWarning::UnrecognizedType => {
+                        AttachmentFileWarning::UnrecognizedType
+                    }
+                    kult_node::AttachmentFileWarning::MissingFilename => {
+                        AttachmentFileWarning::MissingFilename
+                    }
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Apply the shared bounded C1 file-presentation policy without touching
+/// storage, transports, crypto, or the network.
+#[uniffi::export]
+pub fn attachment_file_presentation(
+    media_type: String,
+    filename: Option<String>,
+) -> AttachmentFilePresentation {
+    AttachmentFilePresentation::from_node(kult_node::classify_attachment_file(
+        &media_type,
+        filename.as_deref(),
+    ))
+}
+
 impl AttachmentState {
     fn from_store(state: kult_store::MediaTransferState) -> Self {
         match state {
@@ -554,6 +670,8 @@ pub struct AttachmentObject {
     pub media_type: String,
     /// Optional sanitized display basename.
     pub filename: Option<String>,
+    /// Shared conservative local presentation decision.
+    pub presentation: AttachmentFilePresentation,
     /// Object lifecycle state.
     pub state: AttachmentState,
 }
@@ -578,6 +696,12 @@ pub struct Attachment {
     pub content_id: String,
     /// Transfer lifecycle state.
     pub state: AttachmentState,
+    /// Whether first-open consumption governs this transfer.
+    pub view_once: bool,
+    /// Exact fallback deadline for view-once media.
+    pub expires_at: Option<u64>,
+    /// Whether it is permanently unavailable after open/expiry.
+    pub consumed: bool,
     /// Primary object followed by an optional preview.
     pub objects: Vec<AttachmentObject>,
 }
@@ -599,6 +723,9 @@ impl Attachment {
             author: hex_encode(&attachment.author),
             content_id: hex_encode(&attachment.content_id),
             state: AttachmentState::from_store(attachment.state),
+            view_once: attachment.view_once,
+            expires_at: attachment.expires_at,
+            consumed: attachment.consumed,
             objects: attachment
                 .objects
                 .into_iter()
@@ -608,6 +735,7 @@ impl Attachment {
                     verified_bytes: object.verified_bytes,
                     media_type: object.media_type,
                     filename: object.filename,
+                    presentation: AttachmentFilePresentation::from_node(object.presentation),
                     state: AttachmentState::from_store(object.state),
                 })
                 .collect(),
@@ -1206,6 +1334,187 @@ impl CarrierCapabilitySnapshot {
     }
 }
 
+/// Local direction of one transient pairwise call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum CallDirection {
+    /// This physical device created the offer.
+    Outgoing,
+    /// A peer device created the offer.
+    Incoming,
+}
+
+/// Current transient call phase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum CallPhase {
+    /// Waiting for one recipient device to answer.
+    Ringing,
+    /// Establishing the authenticated direct-QUIC media stream.
+    Connecting,
+    /// Both directions proved key possession and audio may flow.
+    Active,
+    /// Terminal; secret material is already erased.
+    Ended,
+}
+
+/// Exact terminal reason for a call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum CallEndReason {
+    /// A recipient explicitly declined.
+    Declined,
+    /// The peer was already occupied.
+    Busy,
+    /// The initiator cancelled before connection.
+    Cancelled,
+    /// Either selected device ended the call.
+    HungUp,
+    /// The unanswered offer reached its authenticated deadline.
+    Expired,
+    /// Another linked recipient device won the answer race.
+    AnsweredElsewhere,
+    /// The direct QUIC route disappeared.
+    RouteLost,
+}
+
+/// Why a new outgoing call cannot start now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum CallUnavailableReason {
+    /// No fresh reachable route is known.
+    OfflineOrUnknown,
+    /// Only a non-realtime bulk route is known.
+    BulkOnly,
+    /// Only an airtime-budgeted route is known.
+    MeshOnly,
+    /// One or more recipient devices lacks a live ratchet session.
+    MissingSession,
+    /// One or more recipient devices lacks call-control support.
+    Unsupported,
+    /// This installation already has a non-terminal call.
+    AlreadyInCall,
+}
+
+/// Honest current call-start verdict for one contact.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct CallAvailability {
+    /// Exact contact peer id (hex).
+    pub peer: String,
+    /// Whether a call may start immediately.
+    pub available: bool,
+    /// Exact unavailable reason, absent only when `available` is true.
+    pub unavailable: Option<CallUnavailableReason>,
+}
+
+impl CallAvailability {
+    fn from_node(availability: kult_node::CallAvailability) -> Self {
+        Self {
+            peer: hex_encode(&availability.peer),
+            available: availability.available(),
+            unavailable: availability.unavailable.map(|reason| match reason {
+                kult_node::CallUnavailableReason::OfflineOrUnknown => {
+                    CallUnavailableReason::OfflineOrUnknown
+                }
+                kult_node::CallUnavailableReason::BulkOnly => CallUnavailableReason::BulkOnly,
+                kult_node::CallUnavailableReason::MeshOnly => CallUnavailableReason::MeshOnly,
+                kult_node::CallUnavailableReason::MissingSession => {
+                    CallUnavailableReason::MissingSession
+                }
+                kult_node::CallUnavailableReason::Unsupported => CallUnavailableReason::Unsupported,
+                kult_node::CallUnavailableReason::AlreadyInCall => {
+                    CallUnavailableReason::AlreadyInCall
+                }
+            }),
+        }
+    }
+}
+
+/// Render-safe transient call snapshot. It contains no media or secret bytes.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct Call {
+    /// Random call id shared by its controls and media (hex).
+    pub id: String,
+    /// Stable peer account id (hex).
+    pub peer: String,
+    /// Incoming or outgoing on this installation.
+    pub direction: CallDirection,
+    /// Current phase.
+    pub phase: CallPhase,
+    /// Exact initiating physical-device id (hex).
+    pub initiator_device: String,
+    /// Winning answering physical-device id once selected (hex).
+    pub responder_device: Option<String>,
+    /// Absolute authenticated deadline for accepting the original offer.
+    pub expires_at: u64,
+    /// Present only after a terminal transition.
+    pub end_reason: Option<CallEndReason>,
+}
+
+impl Call {
+    fn from_node(call: kult_node::CallInfo) -> Self {
+        Self {
+            id: hex_encode(&call.id),
+            peer: hex_encode(&call.peer),
+            direction: match call.direction {
+                kult_node::CallDirection::Outgoing => CallDirection::Outgoing,
+                kult_node::CallDirection::Incoming => CallDirection::Incoming,
+            },
+            phase: match call.phase {
+                kult_node::CallPhase::Ringing => CallPhase::Ringing,
+                kult_node::CallPhase::Connecting => CallPhase::Connecting,
+                kult_node::CallPhase::Active => CallPhase::Active,
+                kult_node::CallPhase::Ended => CallPhase::Ended,
+            },
+            initiator_device: hex_encode(&call.initiator_device),
+            responder_device: call.responder_device.map(|device| hex_encode(&device)),
+            expires_at: call.expires_at,
+            end_reason: call.end_reason.map(|reason| match reason {
+                kult_node::CallEndReason::Declined => CallEndReason::Declined,
+                kult_node::CallEndReason::Busy => CallEndReason::Busy,
+                kult_node::CallEndReason::Cancelled => CallEndReason::Cancelled,
+                kult_node::CallEndReason::HungUp => CallEndReason::HungUp,
+                kult_node::CallEndReason::Expired => CallEndReason::Expired,
+                kult_node::CallEndReason::AnsweredElsewhere => CallEndReason::AnsweredElsewhere,
+                kult_node::CallEndReason::RouteLost => CallEndReason::RouteLost,
+            }),
+        }
+    }
+}
+
+/// One authenticated decoded Opus packet released for native playback.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct CallAudioFrame {
+    /// Exact call id whose media keys authenticated this packet (hex).
+    pub call: String,
+    /// Direction-local authenticated sequence.
+    pub sequence: u64,
+    /// Sender capture timestamp in milliseconds.
+    pub timestamp_ms: u64,
+    /// Exact bounded Opus packet for native decoding.
+    pub opus_packet: Vec<u8>,
+}
+
+impl CallAudioFrame {
+    fn from_node(frame: kult_node::CallAudioFrame) -> Self {
+        Self {
+            call: hex_encode(&frame.call_id),
+            sequence: frame.sequence,
+            timestamp_ms: frame.timestamp_ms,
+            opus_packet: frame.opus_packet.clone(),
+        }
+    }
+}
+
+/// One immutable original or edit version in deterministic resolution order.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct EditVersion {
+    /// Original content id for revision zero, otherwise edit-event id (hex).
+    pub id: String,
+    /// Zero for original, positive for an immutable edit.
+    pub revision: u64,
+    /// Local presentation timestamp.
+    pub timestamp: u64,
+    /// Exact authenticated text for this version.
+    pub body: String,
+}
+
 /// One message in a conversation's history.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct Message {
@@ -1223,6 +1532,14 @@ pub struct Message {
     pub body: String,
     /// Explicit content interpretation.
     pub content_kind: ContentKind,
+    /// Exact authenticated local expiry for ephemeral content.
+    pub expires_at: Option<u64>,
+    /// Whether a valid immutable edit wins over the original.
+    pub edited: bool,
+    /// Winning edit revision, or zero for the original.
+    pub edit_revision: u64,
+    /// Original plus valid immutable edits in deterministic order.
+    pub versions: Vec<EditVersion>,
 }
 
 /// One message in the reserved device-local note-to-self conversation.
@@ -1277,6 +1594,89 @@ pub struct Group {
     pub members: Vec<String>,
 }
 
+/// Fixed C6 group role.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum GroupRole {
+    /// Sole serialized authority root.
+    Owner,
+    /// May submit bounded generation-bound administration requests.
+    Admin,
+    /// Ordinary participant.
+    Member,
+}
+
+impl From<kult_node::GroupRole> for GroupRole {
+    fn from(role: kult_node::GroupRole) -> Self {
+        match role {
+            kult_node::GroupRole::Owner => Self::Owner,
+            kult_node::GroupRole::Admin => Self::Admin,
+            kult_node::GroupRole::Member => Self::Member,
+        }
+    }
+}
+
+impl From<GroupRole> for kult_node::GroupRole {
+    fn from(role: GroupRole) -> Self {
+        match role {
+            GroupRole::Owner => Self::Owner,
+            GroupRole::Admin => Self::Admin,
+            GroupRole::Member => Self::Member,
+        }
+    }
+}
+
+/// One member and exact current authority role.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct GroupMemberRole {
+    /// Stable peer id (hex).
+    pub peer: String,
+    /// Exact role.
+    pub role: GroupRole,
+}
+
+/// Render-safe signed or legacy-compatible group authority.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct GroupAuthority {
+    /// Group id (hex).
+    pub group: String,
+    /// Whether the group has upgraded to signed C6 authority.
+    pub signed: bool,
+    /// Immutable original owner (hex).
+    pub original_owner: String,
+    /// Current sole owner (hex).
+    pub owner: String,
+    /// Number of valid owner transfers.
+    pub owner_epoch: u64,
+    /// Current roster/authority generation.
+    pub generation: u64,
+    /// Local role when still a member.
+    pub my_role: Option<GroupRole>,
+    /// Sorted exact roster roles.
+    pub members: Vec<GroupMemberRole>,
+}
+
+impl GroupAuthority {
+    fn from_node(authority: kult_node::GroupAuthorityInfo) -> Self {
+        Self {
+            group: hex_encode(&authority.group),
+            signed: authority.signed,
+            original_owner: hex_encode(&authority.original_owner),
+            owner: hex_encode(&authority.owner),
+            owner_epoch: authority.owner_epoch,
+            generation: authority.generation,
+            my_role: authority.my_role.map(Into::into),
+            members: authority
+                .members
+                .into_iter()
+                .map(|member| GroupMemberRole {
+                    peer: hex_encode(&member.peer),
+                    role: member.role.into(),
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Honest delivery state for one member's copy of an outbound group message.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct GroupDelivery {
@@ -1329,6 +1729,119 @@ pub struct GroupMentionCapability {
     pub issues: Vec<MentionCapabilityIssue>,
 }
 
+/// One stable poll choice and its locally derived tally.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct PollOption {
+    /// Stable option id (hex).
+    pub id: String,
+    /// Exact authenticated UTF-8 label.
+    pub text: String,
+    /// Number of accepted visible vote heads.
+    pub votes: u32,
+    /// Whether this installation's identity selected the option.
+    pub selected_by_me: bool,
+}
+
+/// One visible authenticated vote head used by a poll tally.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct PollVote {
+    /// Authenticated voter peer id (hex).
+    pub voter: String,
+    /// Exact vote event id (hex).
+    pub event_id: String,
+    /// Stable selected option id (hex).
+    pub option_id: String,
+    /// Positive voter-local revision.
+    pub revision: u64,
+}
+
+/// Render-safe, locally derived single-choice group poll.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct GroupPoll {
+    /// Group id (hex).
+    pub group: String,
+    /// Authenticated creator peer id (hex).
+    pub author: String,
+    /// Stable poll id (hex).
+    pub id: String,
+    /// Creation-time group roster generation.
+    pub generation: u64,
+    /// Exact authenticated UTF-8 question.
+    pub question: String,
+    /// Sorted fixed creation-time electorate (hex peer ids).
+    pub eligible_voters: Vec<String>,
+    /// Stable choices in creator presentation order.
+    pub options: Vec<PollOption>,
+    /// Visible accepted vote heads sorted by voter.
+    pub votes: Vec<PollVote>,
+    /// Whether a creator snapshot irreversibly closed the poll.
+    pub closed: bool,
+    /// Winning close event id (hex), when closed.
+    pub close_event_id: Option<String>,
+    /// Group owner peer id (hex) when moderation won the close race.
+    pub moderated_by: Option<String>,
+    /// Whether the local identity belongs to the electorate.
+    pub eligible: bool,
+    /// Whether the local identity may close this still-open poll.
+    pub can_close: bool,
+    /// Always true in C5; votes are never anonymous.
+    pub votes_visible: bool,
+    /// Always false; no anonymous-voting claim is made.
+    pub anonymous: bool,
+    /// Exact close policy token for the winning closure.
+    pub close_policy: String,
+}
+
+impl GroupPoll {
+    fn from_node(poll: kult_node::PollInfo) -> Self {
+        Self {
+            group: hex_encode(&poll.group),
+            author: hex_encode(&poll.author),
+            id: hex_encode(&poll.id),
+            generation: poll.generation,
+            question: poll.question,
+            eligible_voters: poll
+                .eligible_voters
+                .iter()
+                .map(|peer| hex_encode(peer))
+                .collect(),
+            options: poll
+                .options
+                .into_iter()
+                .map(|option| PollOption {
+                    id: hex_encode(&option.id),
+                    text: option.text,
+                    votes: option.votes,
+                    selected_by_me: option.selected_by_me,
+                })
+                .collect(),
+            votes: poll
+                .votes
+                .into_iter()
+                .map(|vote| PollVote {
+                    voter: hex_encode(&vote.voter),
+                    event_id: hex_encode(&vote.event_id),
+                    option_id: hex_encode(&vote.option_id),
+                    revision: vote.revision,
+                })
+                .collect(),
+            closed: poll.closed,
+            close_event_id: poll.close_event_id.map(|id| hex_encode(&id)),
+            moderated_by: poll.moderated_by.map(|peer| hex_encode(&peer)),
+            eligible: poll.eligible,
+            can_close: poll.can_close,
+            votes_visible: true,
+            anonymous: false,
+            close_policy: if poll.moderated_by.is_some() {
+                "signed_owner_snapshot"
+            } else {
+                "manual_creator_snapshot"
+            }
+            .to_owned(),
+        }
+    }
+}
+
 /// One message in a group's history.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct GroupMessage {
@@ -1346,8 +1859,16 @@ pub struct GroupMessage {
     pub body: String,
     /// Explicit content interpretation.
     pub content_kind: ContentKind,
+    /// Exact authenticated local expiry for ephemeral content.
+    pub expires_at: Option<u64>,
     /// Stable semantic Mention spans; empty for every other content kind.
     pub mention_spans: Vec<MentionSpan>,
+    /// Whether a valid immutable edit wins over the original.
+    pub edited: bool,
+    /// Winning edit revision, or zero for the original.
+    pub edit_revision: u64,
+    /// Original plus valid immutable edits in deterministic order.
+    pub versions: Vec<EditVersion>,
     /// Per-member delivery states (outbound only).
     pub deliveries: Vec<GroupDelivery>,
 }
@@ -1398,10 +1919,87 @@ pub struct Status {
     pub contacts: u64,
 }
 
+/// Render-safe account-authorized physical-device row.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct LinkedDevice {
+    /// Exact physical-device id (hex).
+    pub id: String,
+    /// Exact bounded user-visible name.
+    pub name: String,
+    /// Coarse authenticated observation time; not a presence promise.
+    pub last_seen: u64,
+    /// Permanent revocation time, when excluded.
+    pub revoked_at: Option<u64>,
+    /// Whether this is the current installation.
+    pub current: bool,
+}
+
+impl From<kult_node::LinkedDeviceInfo> for LinkedDevice {
+    fn from(device: kult_node::LinkedDeviceInfo) -> Self {
+        Self {
+            id: hex_encode(&device.id),
+            name: device.name,
+            last_seen: device.last_seen,
+            revoked_at: device.revoked_at,
+            current: device.current,
+        }
+    }
+}
+
+/// Honest delivery state for one exact recipient physical device.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct MessageDeviceDelivery {
+    /// Exact recipient device id (hex).
+    pub device: String,
+    /// Account-authorized device name, if known.
+    pub name: Option<String>,
+    /// Queued/sent/delivered state for this copy.
+    pub state: DeliveryState,
+}
+
+impl From<kult_node::MessageDeviceDeliveryInfo> for MessageDeviceDelivery {
+    fn from(delivery: kult_node::MessageDeviceDeliveryInfo) -> Self {
+        Self {
+            device: hex_encode(&delivery.device),
+            name: delivery.name,
+            state: DeliveryState::from_store(delivery.state),
+        }
+    }
+}
+
+/// Explicit selective initial state for one confirmed proximate link.
+#[derive(Clone, Copy, Debug, uniffi::Record)]
+pub struct DeviceLinkSelection {
+    /// Transfer contacts and verification state.
+    pub contacts: bool,
+    /// Transfer folders, labels, pins, icons, and appearance.
+    pub organization: bool,
+    /// Transfer non-ephemeral pairwise/group/note history.
+    pub history: bool,
+}
+
+/// Target response plus the six-digit code both devices must compare.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct DeviceLinkAcceptance {
+    /// Opaque authenticated response bytes returned to the source.
+    pub response: Vec<u8>,
+    /// Fixed six ASCII digits for out-of-band comparison.
+    pub confirmation_code: String,
+}
+
 /// What the node reports back to the application
 /// (docs/09-implementation-guide.md §3.5).
 #[derive(Clone, Debug, uniffi::Enum)]
 pub enum Event {
+    /// Account-authorized device list, name, or revocation changed.
+    DevicesChanged,
+    /// This pristine installation completed a confirmed device link.
+    DeviceLinkCompleted {
+        /// Stable account id (hex).
+        account: String,
+        /// Exact new physical-device id (hex).
+        device: String,
+    },
     /// Private local custom icons changed; shells re-read visible targets.
     CustomIconsChanged,
     /// Private local appearance preference changed; shells re-read it.
@@ -1447,6 +2045,15 @@ pub enum Event {
         body: String,
         /// Explicit content interpretation.
         content_kind: ContentKind,
+        /// Exact deadline for ephemeral content.
+        expires_at: Option<u64>,
+    },
+    /// A canonical inbound edit was stored; refresh the exact pairwise target.
+    MessageEdited {
+        /// Pairwise peer that authored both the edit and original (hex).
+        peer: String,
+        /// Original canonical Text content id (hex).
+        target_content_id: String,
     },
     /// Text was appended to the reserved local note-to-self conversation.
     NoteToSelfMessageAdded {
@@ -1491,6 +2098,11 @@ pub enum Event {
         /// Current snapshot.
         snapshot: CarrierCapabilitySnapshot,
     },
+    /// Transient call state changed; refresh call presentation and controls.
+    CallUpdated {
+        /// Current render-safe call snapshot.
+        call: Call,
+    },
     /// A group was created, joined, re-keyed, re-rostered, or left.
     GroupUpdated {
         /// Group id (hex).
@@ -1510,8 +2122,65 @@ pub enum Event {
         body: String,
         /// Explicit content interpretation.
         content_kind: ContentKind,
+        /// Exact deadline for ephemeral content.
+        expires_at: Option<u64>,
         /// Stable semantic spans; empty for every other content kind.
         mention_spans: Vec<MentionSpan>,
+    },
+    /// A canonical inbound group edit was stored; refresh the exact target.
+    GroupMessageEdited {
+        /// Group id (hex).
+        group: String,
+        /// Authenticated edit and original author (hex).
+        sender: String,
+        /// Original canonical Text content id (hex).
+        target_content_id: String,
+    },
+    /// A poll creation, vote, or closure changed one derived group poll.
+    PollUpdated {
+        /// Group id (hex).
+        group: String,
+        /// Authenticated poll creator (hex).
+        poll_author: String,
+        /// Stable poll id (hex).
+        poll_id: String,
+    },
+    /// Signed group roles or ownership changed.
+    GroupAuthorityUpdated {
+        /// Group id (hex).
+        group: String,
+        /// Committed generation.
+        generation: u64,
+        /// Current owner (hex).
+        owner: String,
+    },
+    /// The owner accepted or rejected one local admin request.
+    GroupAdminRequestResolved {
+        /// Group id (hex).
+        group: String,
+        /// Stable request id (hex).
+        request_id: String,
+        /// Whether a state transition was committed.
+        accepted: bool,
+        /// Owner-observed generation after processing.
+        generation: u64,
+        /// Resulting state event id (hex), when accepted.
+        state_id: Option<String>,
+        /// Stable rejection reason code; zero on acceptance.
+        reason: u8,
+    },
+    /// Ephemeral plaintext/media became terminal on this installation.
+    EphemeralRemoved {
+        /// `pairwise` or `group`.
+        conversation_kind: String,
+        /// Peer or group id (hex).
+        conversation_id: String,
+        /// Authenticated author id (hex).
+        author: String,
+        /// Content id (hex).
+        content_id: String,
+        /// `expired` or `consumed`.
+        reason: String,
     },
     /// A stored canonical group Mention targets this exact local peer.
     MentionReceived {
@@ -1542,6 +2211,13 @@ impl Event {
     /// update, never silently mislabeled.
     fn from_node(event: kult_node::Event) -> Option<Self> {
         Some(match event {
+            kult_node::Event::DevicesChanged => Self::DevicesChanged,
+            kult_node::Event::DeviceLinkCompleted { account, device } => {
+                Self::DeviceLinkCompleted {
+                    account: hex_encode(&account),
+                    device: hex_encode(&device),
+                }
+            }
             kult_node::Event::CustomIconsChanged => Self::CustomIconsChanged,
             kult_node::Event::ThemeChanged => Self::ThemeChanged,
             kult_node::Event::FoldersChanged => Self::FoldersChanged,
@@ -1572,6 +2248,14 @@ impl Event {
                 timestamp,
                 body: render_event_body(&body, &content),
                 content_kind: content_kind(&content),
+                expires_at: content_expiry(&content),
+            },
+            kult_node::Event::MessageEdited {
+                peer,
+                target_content_id,
+            } => Self::MessageEdited {
+                peer: hex_encode(&peer),
+                target_content_id: hex_encode(&target_content_id),
             },
             kult_node::Event::NoteToSelfMessageAdded {
                 id,
@@ -1601,6 +2285,9 @@ impl Event {
                     snapshot: CarrierCapabilitySnapshot::from_node(snapshot),
                 }
             }
+            kult_node::Event::CallUpdated { call } => Self::CallUpdated {
+                call: Call::from_node(call),
+            },
             kult_node::Event::GroupUpdated { group } => Self::GroupUpdated {
                 group: hex_encode(&group),
             },
@@ -1618,8 +2305,78 @@ impl Event {
                 timestamp,
                 body: render_event_body(&body, &content),
                 content_kind: content_kind(&content),
+                expires_at: content_expiry(&content),
                 mention_spans: mention_status(&content),
             },
+            kult_node::Event::GroupMessageEdited {
+                group,
+                sender,
+                target_content_id,
+            } => Self::GroupMessageEdited {
+                group: hex_encode(&group),
+                sender: hex_encode(&sender),
+                target_content_id: hex_encode(&target_content_id),
+            },
+            kult_node::Event::PollUpdated {
+                group,
+                poll_author,
+                poll_id,
+            } => Self::PollUpdated {
+                group: hex_encode(&group),
+                poll_author: hex_encode(&poll_author),
+                poll_id: hex_encode(&poll_id),
+            },
+            kult_node::Event::GroupAuthorityUpdated {
+                group,
+                generation,
+                owner,
+            } => Self::GroupAuthorityUpdated {
+                group: hex_encode(&group),
+                generation,
+                owner: hex_encode(&owner),
+            },
+            kult_node::Event::GroupAdminRequestResolved {
+                group,
+                request_id,
+                accepted,
+                generation,
+                state_id,
+                reason,
+            } => Self::GroupAdminRequestResolved {
+                group: hex_encode(&group),
+                request_id: hex_encode(&request_id),
+                accepted,
+                generation,
+                state_id: state_id.map(|id| hex_encode(&id)),
+                reason,
+            },
+            kult_node::Event::EphemeralRemoved {
+                conversation,
+                author,
+                content_id,
+                reason,
+            } => {
+                let (conversation_kind, conversation_id) = match conversation {
+                    kult_store::EphemeralConversation::Pairwise(peer) => {
+                        ("pairwise".to_owned(), hex_encode(&peer))
+                    }
+                    kult_store::EphemeralConversation::Group(group) => {
+                        ("group".to_owned(), hex_encode(&group))
+                    }
+                };
+                Self::EphemeralRemoved {
+                    conversation_kind,
+                    conversation_id,
+                    author: hex_encode(&author),
+                    content_id: hex_encode(&content_id),
+                    reason: match reason {
+                        kult_store::EphemeralState::Expired => "expired",
+                        kult_store::EphemeralState::Consumed => "consumed",
+                        kult_store::EphemeralState::Active => "active",
+                    }
+                    .to_owned(),
+                }
+            }
             kult_node::Event::MentionReceived { id } => Self::MentionReceived {
                 id: hex_encode(&id),
             },
@@ -1652,8 +2409,7 @@ pub trait EventListener: Send + Sync {
 /// the [`EventListener`]. Call [`KultNode::stop`] when done.
 #[derive(uniffi::Object)]
 pub struct KultNode {
-    address: String,
-    peer: String,
+    identity: Mutex<(String, String)>,
     inner: Mutex<Option<Runtime>>,
 }
 
@@ -1690,12 +2446,12 @@ impl KultNode {
 
     /// This node's human-shareable kult address.
     pub fn address(&self) -> String {
-        self.address.clone()
+        self.identity.lock().expect("lock").0.clone()
     }
 
     /// This node's peer id (hex).
     pub fn peer(&self) -> String {
-        self.peer.clone()
+        self.identity.lock().expect("lock").1.clone()
     }
 
     /// Render exact message source into the bounded, inert shared display model.
@@ -1732,9 +2488,10 @@ impl KultNode {
             Ok(kult_transport::NatStatus::Private) => NatVerdict::Private,
             _ => NatVerdict::Unknown,
         };
+        let (address, peer) = self.identity.lock().expect("lock").clone();
         Ok(Status {
-            address: self.address.clone(),
-            peer: self.peer.clone(),
+            address,
+            peer,
             listen: rt.net.listen_addrs(),
             lan_peers: rt.net.lan_peers(),
             nat,
@@ -1749,6 +2506,109 @@ impl KultNode {
     /// (QR code, file, …).
     pub fn handshake_bundle(&self) -> Result<Vec<u8>, FfiError> {
         self.call(|resp| Msg::HandshakeBundle { resp })
+    }
+
+    /// Exact separately authenticated physical-device id (hex).
+    pub fn device_id(&self) -> Result<String, FfiError> {
+        self.call(|resp| Msg::DeviceId { resp })
+            .map(|device| hex_encode(&device))
+    }
+
+    /// Complete account-authorized device list, including revocation rows.
+    pub fn linked_devices(&self) -> Result<Vec<LinkedDevice>, FfiError> {
+        self.call(|resp| Msg::LinkedDevices { resp })
+            .map(|devices| devices.into_iter().map(Into::into).collect())
+    }
+
+    /// Honest per-recipient-device delivery state for one message id.
+    pub fn message_device_deliveries(
+        &self,
+        message: String,
+    ) -> Result<Vec<MessageDeviceDelivery>, FfiError> {
+        let message = parse_message(&message)?;
+        self.call(|resp| Msg::MessageDeviceDeliveries { message, resp })
+            .map(|deliveries| deliveries.into_iter().map(Into::into).collect())
+    }
+
+    /// Rename one active exact physical device.
+    pub fn rename_linked_device(&self, device: String, name: String) -> Result<(), FfiError> {
+        let device = parse_peer(&device)?;
+        self.call(|resp| Msg::DeviceRename { device, name, resp })
+    }
+
+    /// Permanently revoke another exact physical device.
+    pub fn revoke_linked_device(&self, device: String) -> Result<(), FfiError> {
+        let device = parse_peer(&device)?;
+        self.call(|resp| Msg::DeviceRevoke { device, resp })
+    }
+
+    /// Begin a ten-minute account-authenticated proximate link offer.
+    pub fn begin_device_link(&self) -> Result<Vec<u8>, FfiError> {
+        self.call(|resp| Msg::DeviceLinkBegin { resp })
+    }
+
+    /// Accept one offer on a pristine target and return response plus code.
+    pub fn accept_device_link(
+        &self,
+        offer: Vec<u8>,
+        device_name: String,
+    ) -> Result<DeviceLinkAcceptance, FfiError> {
+        self.call(|resp| Msg::DeviceLinkAccept {
+            offer,
+            name: device_name,
+            resp,
+        })
+        .map(|(response, confirmation_code)| DeviceLinkAcceptance {
+            response,
+            confirmation_code,
+        })
+    }
+
+    /// Derive the source-side six-digit comparison code.
+    pub fn device_link_confirmation_code(&self, response: Vec<u8>) -> Result<String, FfiError> {
+        self.call(|resp| Msg::DeviceLinkCode { response, resp })
+    }
+
+    /// Confirm and create the encrypted selective initial-transfer package.
+    pub fn approve_device_link(
+        &self,
+        response: Vec<u8>,
+        selection: DeviceLinkSelection,
+        confirmed: bool,
+    ) -> Result<Vec<u8>, FfiError> {
+        self.call(|resp| Msg::DeviceLinkApprove {
+            response,
+            selection: kult_node::DeviceLinkSelection {
+                contacts: selection.contacts,
+                organization: selection.organization,
+                history: selection.history,
+            },
+            confirmed,
+            resp,
+        })
+    }
+
+    /// Confirm and import one encrypted link package on the pristine target.
+    pub fn complete_device_link(&self, package: Vec<u8>, confirmed: bool) -> Result<(), FfiError> {
+        let (address, peer) = self.call(|resp| Msg::DeviceLinkComplete {
+            package,
+            confirmed,
+            resp,
+        })?;
+        *self.identity.lock().expect("lock") = (address, hex_encode(&peer));
+        Ok(())
+    }
+
+    /// Export one encrypted convergence bundle to an active linked device.
+    pub fn export_device_sync(&self, device: String) -> Result<Vec<u8>, FfiError> {
+        let device = parse_peer(&device)?;
+        self.call(|resp| Msg::DeviceSyncExport { device, resp })
+    }
+
+    /// Import one authenticated convergence bundle; returns new event rows.
+    pub fn import_device_sync(&self, bundle: Vec<u8>) -> Result<u64, FfiError> {
+        self.call(|resp| Msg::DeviceSyncImport { bundle, resp })
+            .map(|inserted| inserted as u64)
     }
 
     /// Add (or replace) a contact from their prekey bundle, with delivery
@@ -1824,6 +2684,44 @@ impl KultNode {
         .map(|id| hex_encode(&id))
     }
 
+    /// Queue pairwise UTF-8 with a 60-second through 30-day local lifetime.
+    pub fn send_disappearing(
+        &self,
+        peer: String,
+        body: String,
+        lifetime_secs: u64,
+    ) -> Result<String, FfiError> {
+        let peer = parse_peer(&peer)?;
+        self.call(|resp| Msg::SendDisappearing {
+            peer,
+            body,
+            lifetime_secs,
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
+    /// Send one immutable edit targeting this identity's exact canonical Text.
+    pub fn edit_message(
+        &self,
+        peer: String,
+        target_author: String,
+        target_content_id: String,
+        text: String,
+    ) -> Result<String, FfiError> {
+        let peer = parse_peer(&peer)?;
+        let target_author = parse_peer(&target_author)?;
+        let target_content_id = parse_message(&target_content_id)?;
+        self.call(|resp| Msg::EditMessage {
+            peer,
+            target_author,
+            target_content_id,
+            text,
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
     /// Import a caller-selected file as a pairwise attachment without
     /// buffering the complete object in memory. Returns its content id (hex).
     pub fn send_attachment(
@@ -1880,6 +2778,48 @@ impl KultNode {
         .map(|id| hex_encode(&id))
     }
 
+    /// Import a pairwise view-once attachment with an optional protected preview.
+    #[allow(clippy::too_many_arguments)] // stable UniFFI flat-value boundary
+    pub fn send_view_once_attachment(
+        &self,
+        peer: String,
+        path: String,
+        media_type: String,
+        filename: Option<String>,
+        preview_path: Option<String>,
+        preview_media_type: Option<String>,
+        lifetime_secs: u64,
+    ) -> Result<String, FfiError> {
+        let peer = parse_peer(&peer)?;
+        let preview = match (preview_path, preview_media_type) {
+            (None, None) => None,
+            (Some(path), Some(media_type)) => Some((
+                kult_node::AttachmentMetadata {
+                    media_type,
+                    filename: None,
+                },
+                PathBuf::from(path),
+            )),
+            _ => {
+                return Err(FfiError::Node {
+                    reason: "preview path/type must be paired".into(),
+                })
+            }
+        };
+        self.call(|resp| Msg::AttachmentSendViewOnce {
+            peer,
+            metadata: kult_node::AttachmentMetadata {
+                media_type,
+                filename,
+            },
+            path: PathBuf::from(path),
+            preview,
+            lifetime_secs,
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
     /// Import a caller-selected file as one encrypt-once sender-key group
     /// attachment. Returns its content id (hex).
     pub fn send_group_attachment(
@@ -1930,6 +2870,48 @@ impl KultNode {
                 },
                 PathBuf::from(preview_path),
             )),
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
+    /// Import a sender-key group view-once attachment.
+    #[allow(clippy::too_many_arguments)] // stable UniFFI flat-value boundary
+    pub fn send_group_view_once_attachment(
+        &self,
+        group: String,
+        path: String,
+        media_type: String,
+        filename: Option<String>,
+        preview_path: Option<String>,
+        preview_media_type: Option<String>,
+        lifetime_secs: u64,
+    ) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        let preview = match (preview_path, preview_media_type) {
+            (None, None) => None,
+            (Some(path), Some(media_type)) => Some((
+                kult_node::AttachmentMetadata {
+                    media_type,
+                    filename: None,
+                },
+                PathBuf::from(path),
+            )),
+            _ => {
+                return Err(FfiError::Node {
+                    reason: "preview path/type must be paired".into(),
+                })
+            }
+        };
+        self.call(|resp| Msg::GroupAttachmentSendViewOnce {
+            group,
+            metadata: kult_node::AttachmentMetadata {
+                media_type,
+                filename,
+            },
+            path: PathBuf::from(path),
+            preview,
+            lifetime_secs,
             resp,
         })
         .map(|id| hex_encode(&id))
@@ -1998,6 +2980,20 @@ impl KultNode {
             transfer,
             path: PathBuf::from(path),
             preview: true,
+            resp,
+        })
+    }
+
+    /// Terminal first open of a view-once primary into a protected new path.
+    pub fn consume_view_once_attachment(
+        &self,
+        transfer: String,
+        path: String,
+    ) -> Result<(), FfiError> {
+        let transfer = parse_transfer(&transfer)?;
+        self.call(|resp| Msg::AttachmentConsumeViewOnce {
+            transfer,
+            path: PathBuf::from(path),
             resp,
         })
     }
@@ -2637,6 +3633,44 @@ impl KultNode {
         .map(|id| hex_encode(&id))
     }
 
+    /// Queue group UTF-8 with an exact local lifetime on every installation.
+    pub fn send_group_disappearing(
+        &self,
+        group: String,
+        body: String,
+        lifetime_secs: u64,
+    ) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        self.call(|resp| Msg::GroupSendDisappearing {
+            group,
+            body,
+            lifetime_secs,
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
+    /// Send one immutable edit targeting this identity's exact group Text.
+    pub fn edit_group_message(
+        &self,
+        group: String,
+        target_author: String,
+        target_content_id: String,
+        text: String,
+    ) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        let target_author = parse_peer(&target_author)?;
+        let target_content_id = parse_message(&target_content_id)?;
+        self.call(|resp| Msg::GroupEditMessage {
+            group,
+            target_author,
+            target_content_id,
+            text,
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
     /// Conservative current-roster Mention support and review binding.
     pub fn group_mention_capability(
         &self,
@@ -2698,14 +3732,153 @@ impl KultNode {
         .map(|id| hex_encode(&id))
     }
 
-    /// Add a stored contact to a group (creator only).
+    /// Create a visible-vote single-choice poll over the exact current roster.
+    pub fn create_group_poll(
+        &self,
+        group: String,
+        question: String,
+        options: Vec<String>,
+    ) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        self.call(|resp| Msg::GroupPollCreate {
+            group,
+            question,
+            options,
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
+    /// List locally derived polls, visible vote heads, and convergent tallies.
+    pub fn group_polls(&self, group: String) -> Result<Vec<GroupPoll>, FfiError> {
+        let group = parse_group(&group)?;
+        Ok(self
+            .call(|resp| Msg::GroupPolls { group, resp })?
+            .into_iter()
+            .map(GroupPoll::from_node)
+            .collect())
+    }
+
+    /// Cast or change this identity's vote using stable ids only.
+    pub fn vote_group_poll(
+        &self,
+        group: String,
+        poll_author: String,
+        poll_id: String,
+        option_id: String,
+    ) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        let poll_author = parse_peer(&poll_author)?;
+        let poll_id = parse_message(&poll_id)?;
+        let option_id = parse_message(&option_id)?;
+        self.call(|resp| Msg::GroupPollVote {
+            group,
+            poll_author,
+            poll_id,
+            option_id,
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
+    /// Irreversibly close this identity's poll with the current vote heads.
+    pub fn close_group_poll(
+        &self,
+        group: String,
+        poll_author: String,
+        poll_id: String,
+    ) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        let poll_author = parse_peer(&poll_author)?;
+        let poll_id = parse_message(&poll_id)?;
+        self.call(|resp| Msg::GroupPollClose {
+            group,
+            poll_author,
+            poll_id,
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
+    /// Close any poll under signed owner authority; admins submit a request.
+    pub fn moderate_group_poll_close(
+        &self,
+        group: String,
+        poll_author: String,
+        poll_id: String,
+    ) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        let poll_author = parse_peer(&poll_author)?;
+        let poll_id = parse_message(&poll_id)?;
+        self.call(|resp| Msg::GroupPollModerateClose {
+            group,
+            poll_author,
+            poll_id,
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
+    /// Read current signed or legacy-compatible group roles.
+    pub fn group_authority(&self, group: String) -> Result<GroupAuthority, FfiError> {
+        let group = parse_group(&group)?;
+        self.call(|resp| Msg::GroupAuthority { group, resp })
+            .map(GroupAuthority::from_node)
+    }
+
+    /// Upgrade a legacy creator group to signed owner authority.
+    pub fn upgrade_group_authority(&self, group: String) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        self.call(|resp| Msg::GroupUpgradeAuthority { group, resp })
+            .map(|id| hex_encode(&id))
+    }
+
+    /// Rename directly as owner or submit a generation-bound admin request.
+    pub fn rename_group(&self, group: String, name: String) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        self.call(|resp| Msg::GroupRename { group, name, resp })
+            .map(|id| hex_encode(&id))
+    }
+
+    /// Grant or revoke admin role as the current owner.
+    pub fn set_group_role(
+        &self,
+        group: String,
+        peer: String,
+        role: GroupRole,
+    ) -> Result<String, FfiError> {
+        if role == GroupRole::Owner {
+            return Err(FfiError::Node {
+                reason: "ownership uses transfer_group_owner".to_owned(),
+            });
+        }
+        let group = parse_group(&group)?;
+        let peer = parse_peer(&peer)?;
+        self.call(|resp| Msg::GroupSetRole {
+            group,
+            peer,
+            role: role.into(),
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
+    /// Transfer sole ownership to an existing member.
+    pub fn transfer_group_owner(&self, group: String, peer: String) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        let peer = parse_peer(&peer)?;
+        self.call(|resp| Msg::GroupTransferOwner { group, peer, resp })
+            .map(|id| hex_encode(&id))
+    }
+
+    /// Add a stored contact as owner, or submit an admin request.
     pub fn add_group_member(&self, group: String, peer: String) -> Result<(), FfiError> {
         let group = parse_group(&group)?;
         let peer = parse_peer(&peer)?;
         self.call(|resp| Msg::GroupAdd { group, peer, resp })
     }
 
-    /// Remove a member from a group (creator only), rotating group keys.
+    /// Remove a member with role-aware authority, rotating group keys.
     pub fn remove_group_member(&self, group: String, peer: String) -> Result<(), FfiError> {
         let group = parse_group(&group)?;
         let peer = parse_peer(&peer)?;
@@ -2739,21 +3912,31 @@ impl KultNode {
             .call(|resp| Msg::GroupMessages { group, resp })?
             .iter()
             .map(|message| {
-                let (body, content_kind, mention_spans) =
-                    render_stored_content(&message.body, true);
+                let record = &message.record;
+                let decoded = kult_protocol::decode_content(&record.body);
+                let expires_at = decoded_content_expiry(&decoded);
+                let (body, content_kind, mention_spans) = render_stored_content(&record.body, true);
                 GroupMessage {
-                    id: hex_encode(&message.id),
-                    group: hex_encode(&message.group),
-                    sender: hex_encode(&message.sender),
-                    direction: match message.direction {
+                    id: hex_encode(&record.id),
+                    group: hex_encode(&record.group),
+                    sender: hex_encode(&record.sender),
+                    direction: match record.direction {
                         kult_store::Direction::Outbound => Direction::Outbound,
                         kult_store::Direction::Inbound => Direction::Inbound,
                     },
-                    timestamp: message.timestamp,
+                    timestamp: record.timestamp,
                     body,
                     content_kind,
+                    expires_at,
                     mention_spans,
-                    deliveries: message
+                    edited: message.edited,
+                    edit_revision: message.winning_revision,
+                    versions: message
+                        .versions
+                        .iter()
+                        .map(edit_version_from_node)
+                        .collect(),
+                    deliveries: record
                         .deliveries
                         .iter()
                         .map(|delivery| GroupDelivery {
@@ -2789,25 +3972,109 @@ impl KultNode {
             .collect())
     }
 
+    /// Every current and briefly retained terminal call on this installation.
+    pub fn calls(&self) -> Result<Vec<Call>, FfiError> {
+        Ok(self
+            .call(|resp| Msg::Calls { resp })?
+            .into_iter()
+            .map(Call::from_node)
+            .collect())
+    }
+
+    /// Return the honest current call-start verdict for one stored contact.
+    pub fn call_availability(&self, peer: String) -> Result<CallAvailability, FfiError> {
+        let peer = parse_peer(&peer)?;
+        self.call(|resp| Msg::CallAvailability { peer, resp })
+            .map(CallAvailability::from_node)
+    }
+
+    /// Start one capability-gated outgoing direct-QUIC audio call.
+    pub fn start_call(&self, peer: String) -> Result<String, FfiError> {
+        let peer = parse_peer(&peer)?;
+        self.call(|resp| Msg::CallStart { peer, resp })
+            .map(|call| hex_encode(&call))
+    }
+
+    /// Answer one unexpired incoming call on this exact physical device.
+    pub fn answer_call(&self, call: String) -> Result<(), FfiError> {
+        let call = parse_call(&call)?;
+        self.call(|resp| Msg::CallAnswer { call, resp })
+    }
+
+    /// Decline one unexpired incoming call on this exact physical device.
+    pub fn decline_call(&self, call: String) -> Result<(), FfiError> {
+        let call = parse_call(&call)?;
+        self.call(|resp| Msg::CallDecline { call, resp })
+    }
+
+    /// Cancel one locally initiated offer before an answer wins.
+    pub fn cancel_call(&self, call: String) -> Result<(), FfiError> {
+        let call = parse_call(&call)?;
+        self.call(|resp| Msg::CallCancel { call, resp })
+    }
+
+    /// End one connecting or active call from either local role.
+    pub fn hangup_call(&self, call: String) -> Result<(), FfiError> {
+        let call = parse_call(&call)?;
+        self.call(|resp| Msg::CallHangup { call, resp })
+    }
+
+    /// Queue one native-encoded Opus capture packet. `false` means the
+    /// bounded writer is full and the shell must drop this packet.
+    pub fn send_call_audio(
+        &self,
+        call: String,
+        timestamp_ms: u64,
+        opus_packet: Vec<u8>,
+    ) -> Result<bool, FfiError> {
+        let call = parse_call(&call)?;
+        self.call(|resp| Msg::CallAudioSend {
+            call,
+            timestamp_ms,
+            opus_packet,
+            resp,
+        })
+    }
+
+    /// Take at most one authenticated Opus packet from the bounded jitter
+    /// buffer. `None` means playout should wait or underrun without synthesis.
+    pub fn take_call_audio(&self, call: String) -> Result<Option<CallAudioFrame>, FfiError> {
+        let call = parse_call(&call)?;
+        Ok(self
+            .call(|resp| Msg::CallAudioTake { call, resp })?
+            .map(CallAudioFrame::from_node))
+    }
+
     /// Message history with a peer.
     pub fn messages_with(&self, peer: String) -> Result<Vec<Message>, FfiError> {
         let peer = parse_peer(&peer)?;
         let messages = self.call(|resp| Msg::Messages { peer, resp })?;
         Ok(messages
             .iter()
-            .map(|m| {
-                let (body, content_kind, _) = render_stored_content(&m.body, false);
+            .map(|message| {
+                let record = &message.record;
+                let decoded = kult_protocol::decode_content(&record.body);
+                let expires_at = decoded_content_expiry(&decoded);
+                let (body, content_kind, _) = render_stored_content(&record.body, false);
                 Message {
-                    id: hex_encode(&m.id),
-                    peer: hex_encode(&m.peer),
-                    direction: match m.direction {
+                    id: hex_encode(&record.id),
+                    peer: hex_encode(&record.peer),
+                    direction: match record.direction {
                         kult_store::Direction::Outbound => Direction::Outbound,
                         kult_store::Direction::Inbound => Direction::Inbound,
                     },
-                    state: DeliveryState::from_store(m.state),
-                    timestamp: m.timestamp,
+                    state: DeliveryState::from_store(record.state),
+                    timestamp: record.timestamp,
                     body,
                     content_kind,
+                    expires_at,
+                    edited: message.edited,
+                    edit_revision: message.winning_revision,
+                    versions: message
+                        .versions
+                        .iter()
+                        .map(edit_version_from_node)
+                        .collect(),
                 }
             })
             .collect())
@@ -2874,8 +4141,7 @@ impl KultNode {
         });
         let rt = Runtime::start(cfg, sink).map_err(|reason| FfiError::Startup { reason })?;
         Ok(Arc::new(Self {
-            address: rt.address.clone(),
-            peer: hex_encode(&rt.peer),
+            identity: Mutex::new((rt.address.clone(), hex_encode(&rt.peer))),
             inner: Mutex::new(Some(rt)),
         }))
     }
@@ -3423,9 +4689,33 @@ fn content_kind(status: &kult_node::ContentStatus) -> ContentKind {
         kult_node::ContentStatus::Text { .. } => ContentKind::Text,
         kult_node::ContentStatus::Attachment { .. } => ContentKind::Attachment,
         kult_node::ContentStatus::Mention { .. } => ContentKind::Mention,
+        kult_node::ContentStatus::DisappearingText { .. } => ContentKind::DisappearingText,
+        kult_node::ContentStatus::ViewOnceAttachment { .. } => ContentKind::ViewOnceAttachment,
+        kult_node::ContentStatus::Poll { .. } => ContentKind::Poll,
+        kult_node::ContentStatus::GroupAuthority { .. } => ContentKind::GroupAuthority,
         kult_node::ContentStatus::Unsupported { .. } => ContentKind::Unsupported,
         kult_node::ContentStatus::Malformed => ContentKind::Malformed,
         _ => ContentKind::Unsupported,
+    }
+}
+
+fn content_expiry(status: &kult_node::ContentStatus) -> Option<u64> {
+    match status {
+        kult_node::ContentStatus::DisappearingText { expires_at, .. }
+        | kult_node::ContentStatus::ViewOnceAttachment { expires_at, .. } => Some(*expires_at),
+        _ => None,
+    }
+}
+
+fn decoded_content_expiry(content: &kult_protocol::DecodedContent<'_>) -> Option<u64> {
+    match content {
+        kult_protocol::DecodedContent::Ephemeral {
+            ephemeral:
+                kult_protocol::Ephemeral::DisappearingText { expires_at, .. }
+                | kult_protocol::Ephemeral::ViewOnceAttachment { expires_at, .. },
+            ..
+        } => Some(*expires_at),
+        _ => None,
     }
 }
 
@@ -3433,10 +4723,13 @@ fn render_event_body(body: &[u8], status: &kult_node::ContentStatus) -> String {
     match status {
         kult_node::ContentStatus::LegacyText
         | kult_node::ContentStatus::Text { .. }
-        | kult_node::ContentStatus::Mention { .. } => {
+        | kult_node::ContentStatus::Mention { .. }
+        | kult_node::ContentStatus::DisappearingText { .. } => {
             String::from_utf8(body.to_vec()).expect("node exposes only validated UTF-8 text")
         }
-        kult_node::ContentStatus::Attachment { .. } => String::new(),
+        kult_node::ContentStatus::Attachment { .. }
+        | kult_node::ContentStatus::ViewOnceAttachment { .. }
+        | kult_node::ContentStatus::Poll { .. } => String::new(),
         kult_node::ContentStatus::Unsupported { .. } | kult_node::ContentStatus::Malformed => {
             UNSUPPORTED_MESSAGE.to_owned()
         }
@@ -3488,6 +4781,40 @@ fn render_stored_content(
             ContentKind::Malformed,
             Vec::new(),
         ),
+        kult_protocol::DecodedContent::Edit { .. } => (
+            UNSUPPORTED_MESSAGE.to_owned(),
+            ContentKind::Malformed,
+            Vec::new(),
+        ),
+        kult_protocol::DecodedContent::Ephemeral { ephemeral, .. } => match ephemeral {
+            kult_protocol::Ephemeral::DisappearingText { text, .. } => {
+                (text.to_owned(), ContentKind::DisappearingText, Vec::new())
+            }
+            kult_protocol::Ephemeral::ViewOnceAttachment { .. } => {
+                (String::new(), ContentKind::ViewOnceAttachment, Vec::new())
+            }
+        },
+        kult_protocol::DecodedContent::Poll { .. } if allow_group_mention => {
+            (String::new(), ContentKind::Poll, Vec::new())
+        }
+        kult_protocol::DecodedContent::Poll { .. } => (
+            UNSUPPORTED_MESSAGE.to_owned(),
+            ContentKind::Malformed,
+            Vec::new(),
+        ),
+        kult_protocol::DecodedContent::GroupAuthority { .. } if allow_group_mention => {
+            (String::new(), ContentKind::GroupAuthority, Vec::new())
+        }
+        kult_protocol::DecodedContent::GroupAuthority { .. } => (
+            UNSUPPORTED_MESSAGE.to_owned(),
+            ContentKind::Malformed,
+            Vec::new(),
+        ),
+        kult_protocol::DecodedContent::CallControl { .. } => (
+            UNSUPPORTED_MESSAGE.to_owned(),
+            ContentKind::Malformed,
+            Vec::new(),
+        ),
         kult_protocol::DecodedContent::Unsupported { .. } => (
             UNSUPPORTED_MESSAGE.to_owned(),
             ContentKind::Unsupported,
@@ -3498,6 +4825,15 @@ fn render_stored_content(
             ContentKind::Malformed,
             Vec::new(),
         ),
+    }
+}
+
+fn edit_version_from_node(version: &kult_node::EditVersionInfo) -> EditVersion {
+    EditVersion {
+        id: hex_encode(&version.id),
+        revision: version.revision,
+        timestamp: version.timestamp,
+        body: version.body.clone(),
     }
 }
 
@@ -3538,6 +4874,12 @@ fn parse_message(s: &str) -> Result<[u8; 16], FfiError> {
         out[i] = ((pair[0] << 4) | pair[1]) as u8;
     }
     Ok(out)
+}
+
+fn parse_call(s: &str) -> Result<[u8; 16], FfiError> {
+    parse_message(s).map_err(|_| FfiError::Node {
+        reason: "call id must be 32 hex chars".to_owned(),
+    })
 }
 
 fn parse_review_token(s: &str) -> Result<[u8; 16], FfiError> {
@@ -3629,12 +4971,14 @@ mod tests {
                 timestamp,
                 body,
                 content_kind,
+                expires_at,
             } => {
                 assert_eq!(peer, "01".repeat(32));
                 assert_eq!(id, "02".repeat(16));
                 assert_eq!(timestamp, 7);
                 assert_eq!(body, "hi");
                 assert_eq!(content_kind, ContentKind::LegacyText);
+                assert_eq!(expires_at, None);
             }
             other => panic!("wrong variant: {other:?}"),
         }
@@ -3686,12 +5030,19 @@ mod tests {
                 author: [0x12; 32],
                 content_id: [0x13; 16],
                 state: kult_store::MediaTransferState::AwaitingConsent,
+                view_once: false,
+                expires_at: None,
+                consumed: false,
                 objects: vec![kult_node::AttachmentObjectInfo {
                     preview: false,
                     total_bytes: 1,
                     verified_bytes: 0,
                     media_type: "image/png".to_owned(),
                     filename: Some("private.png".to_owned()),
+                    presentation: kult_node::classify_attachment_file(
+                        "image/png",
+                        Some("private.png"),
+                    ),
                     state: kult_store::MediaTransferState::AwaitingConsent,
                 }],
             },

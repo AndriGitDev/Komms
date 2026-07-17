@@ -19,14 +19,14 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use kult_crypto::{KdfProfile, SafetyNumber};
 use kult_node::{
-    AttachmentInfo, AttachmentMetadata, CarrierCapabilitySnapshot, Event, FolderConversationInfo,
-    FolderConversationList, FolderInfo, FolderSelection, GroupInfo, GroupMentionCapability,
-    LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode, MentionSpan, Node,
+    AttachmentInfo, AttachmentMetadata, CallAudioFrame, CallAvailability, CallInfo,
+    CarrierCapabilitySnapshot, DeviceLinkSelection, Event, FolderConversationInfo,
+    FolderConversationList, FolderInfo, FolderSelection, GroupAuthorityInfo, GroupInfo,
+    GroupMentionCapability, GroupRole, LabelConversationInfo, LabelFilterInfo, LabelInfo,
+    LabelMatchMode, LinkedDeviceInfo, MentionSpan, MessageDeviceDeliveryInfo, Node,
     PinConversationList, PinInfo, ScheduledMessageInfo, StaleFolderInfo, StaleLabelInfo,
 };
-use kult_store::{
-    ContactRecord, ConversationId, GroupMessageRecord, MessageRecord, NoteMessageRecord,
-};
+use kult_store::{ContactRecord, ConversationId, NoteMessageRecord};
 use kult_transport::{
     DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, Transport, TransportOptions,
 };
@@ -75,6 +75,56 @@ pub(crate) enum Msg {
     HandshakeBundle {
         resp: Resp<Vec<u8>>,
     },
+    DeviceId {
+        resp: Resp<[u8; 32]>,
+    },
+    LinkedDevices {
+        resp: Resp<Vec<LinkedDeviceInfo>>,
+    },
+    MessageDeviceDeliveries {
+        message: [u8; 16],
+        resp: Resp<Vec<MessageDeviceDeliveryInfo>>,
+    },
+    DeviceRename {
+        device: [u8; 32],
+        name: String,
+        resp: Resp<()>,
+    },
+    DeviceRevoke {
+        device: [u8; 32],
+        resp: Resp<()>,
+    },
+    DeviceLinkBegin {
+        resp: Resp<Vec<u8>>,
+    },
+    DeviceLinkAccept {
+        offer: Vec<u8>,
+        name: String,
+        resp: Resp<(Vec<u8>, String)>,
+    },
+    DeviceLinkCode {
+        response: Vec<u8>,
+        resp: Resp<String>,
+    },
+    DeviceLinkApprove {
+        response: Vec<u8>,
+        selection: DeviceLinkSelection,
+        confirmed: bool,
+        resp: Resp<Vec<u8>>,
+    },
+    DeviceLinkComplete {
+        package: Vec<u8>,
+        confirmed: bool,
+        resp: Resp<(String, [u8; 32])>,
+    },
+    DeviceSyncExport {
+        device: [u8; 32],
+        resp: Resp<Vec<u8>>,
+    },
+    DeviceSyncImport {
+        bundle: Vec<u8>,
+        resp: Resp<usize>,
+    },
     AddContact {
         name: String,
         bundle: Vec<u8>,
@@ -102,6 +152,19 @@ pub(crate) enum Msg {
         body: Vec<u8>,
         resp: Resp<[u8; 16]>,
     },
+    SendDisappearing {
+        peer: [u8; 32],
+        body: String,
+        lifetime_secs: u64,
+        resp: Resp<[u8; 16]>,
+    },
+    EditMessage {
+        peer: [u8; 32],
+        target_author: [u8; 32],
+        target_content_id: [u8; 16],
+        text: String,
+        resp: Resp<[u8; 16]>,
+    },
     AttachmentSend {
         peer: [u8; 32],
         metadata: AttachmentMetadata,
@@ -109,11 +172,27 @@ pub(crate) enum Msg {
         preview: Option<(AttachmentMetadata, PathBuf)>,
         resp: Resp<[u8; 16]>,
     },
+    AttachmentSendViewOnce {
+        peer: [u8; 32],
+        metadata: AttachmentMetadata,
+        path: PathBuf,
+        preview: Option<(AttachmentMetadata, PathBuf)>,
+        lifetime_secs: u64,
+        resp: Resp<[u8; 16]>,
+    },
     GroupAttachmentSend {
         group: [u8; 32],
         metadata: AttachmentMetadata,
         path: PathBuf,
         preview: Option<(AttachmentMetadata, PathBuf)>,
+        resp: Resp<[u8; 16]>,
+    },
+    GroupAttachmentSendViewOnce {
+        group: [u8; 32],
+        metadata: AttachmentMetadata,
+        path: PathBuf,
+        preview: Option<(AttachmentMetadata, PathBuf)>,
+        lifetime_secs: u64,
         resp: Resp<[u8; 16]>,
     },
     Attachments {
@@ -143,6 +222,11 @@ pub(crate) enum Msg {
         transfer: [u8; 16],
         path: PathBuf,
         preview: bool,
+        resp: Resp<()>,
+    },
+    AttachmentConsumeViewOnce {
+        transfer: [u8; 16],
+        path: PathBuf,
         resp: Resp<()>,
     },
     Schedule {
@@ -364,6 +448,19 @@ pub(crate) enum Msg {
         body: Vec<u8>,
         resp: Resp<[u8; 16]>,
     },
+    GroupSendDisappearing {
+        group: [u8; 32],
+        body: String,
+        lifetime_secs: u64,
+        resp: Resp<[u8; 16]>,
+    },
+    GroupEditMessage {
+        group: [u8; 32],
+        target_author: [u8; 32],
+        target_content_id: [u8; 16],
+        text: String,
+        resp: Resp<[u8; 16]>,
+    },
     GroupMentionCapability {
         group: [u8; 32],
         resp: Resp<GroupMentionCapability>,
@@ -373,6 +470,59 @@ pub(crate) enum Msg {
         text: String,
         spans: Vec<MentionSpan>,
         review_token: [u8; 16],
+        resp: Resp<[u8; 16]>,
+    },
+    GroupPollCreate {
+        group: [u8; 32],
+        question: String,
+        options: Vec<String>,
+        resp: Resp<[u8; 16]>,
+    },
+    GroupPolls {
+        group: [u8; 32],
+        resp: Resp<Vec<kult_node::PollInfo>>,
+    },
+    GroupPollVote {
+        group: [u8; 32],
+        poll_author: [u8; 32],
+        poll_id: [u8; 16],
+        option_id: [u8; 16],
+        resp: Resp<[u8; 16]>,
+    },
+    GroupPollClose {
+        group: [u8; 32],
+        poll_author: [u8; 32],
+        poll_id: [u8; 16],
+        resp: Resp<[u8; 16]>,
+    },
+    GroupPollModerateClose {
+        group: [u8; 32],
+        poll_author: [u8; 32],
+        poll_id: [u8; 16],
+        resp: Resp<[u8; 16]>,
+    },
+    GroupAuthority {
+        group: [u8; 32],
+        resp: Resp<GroupAuthorityInfo>,
+    },
+    GroupUpgradeAuthority {
+        group: [u8; 32],
+        resp: Resp<[u8; 16]>,
+    },
+    GroupRename {
+        group: [u8; 32],
+        name: String,
+        resp: Resp<[u8; 16]>,
+    },
+    GroupSetRole {
+        group: [u8; 32],
+        peer: [u8; 32],
+        role: GroupRole,
+        resp: Resp<[u8; 16]>,
+    },
+    GroupTransferOwner {
+        group: [u8; 32],
+        peer: [u8; 32],
         resp: Resp<[u8; 16]>,
     },
     GroupAdd {
@@ -394,7 +544,7 @@ pub(crate) enum Msg {
     },
     GroupMessages {
         group: [u8; 32],
-        resp: Resp<Vec<GroupMessageRecord>>,
+        resp: Resp<Vec<kult_node::ResolvedGroupMessage>>,
     },
     Contacts {
         resp: Resp<Vec<ContactRecord>>,
@@ -402,9 +552,46 @@ pub(crate) enum Msg {
     CarrierCapabilities {
         resp: Resp<Vec<CarrierCapabilitySnapshot>>,
     },
+    Calls {
+        resp: Resp<Vec<CallInfo>>,
+    },
+    CallAvailability {
+        peer: [u8; 32],
+        resp: Resp<CallAvailability>,
+    },
+    CallStart {
+        peer: [u8; 32],
+        resp: Resp<[u8; 16]>,
+    },
+    CallAnswer {
+        call: [u8; 16],
+        resp: Resp<()>,
+    },
+    CallDecline {
+        call: [u8; 16],
+        resp: Resp<()>,
+    },
+    CallCancel {
+        call: [u8; 16],
+        resp: Resp<()>,
+    },
+    CallHangup {
+        call: [u8; 16],
+        resp: Resp<()>,
+    },
+    CallAudioSend {
+        call: [u8; 16],
+        timestamp_ms: u64,
+        opus_packet: Vec<u8>,
+        resp: Resp<bool>,
+    },
+    CallAudioTake {
+        call: [u8; 16],
+        resp: Resp<Option<CallAudioFrame>>,
+    },
     Messages {
         peer: [u8; 32],
-        resp: Resp<Vec<MessageRecord>>,
+        resp: Resp<Vec<kult_node::ResolvedMessage>>,
     },
     SafetyNumber {
         peer: [u8; 32],
@@ -705,6 +892,8 @@ async fn actor(
 ) {
     let mut tick = tokio::time::interval(cfg.tick_interval);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut media_tick = tokio::time::interval(Duration::from_millis(20));
+    media_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,
@@ -716,6 +905,14 @@ async fn actor(
                         }
                     }
                     Err(e) => eprintln!("kult-ffi: tick failed: {e}"),
+                }
+            }
+            _ = media_tick.tick() => {
+                if let Err(e) = node.pump_call_media(now()).await {
+                    eprintln!("kult-ffi: call media pump failed: {e}");
+                }
+                for event in node.drain_events() {
+                    let _ = events.send(event);
                 }
             }
             msg = rx.recv() => match msg {
@@ -733,6 +930,67 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
     match msg {
         Msg::HandshakeBundle { resp } => {
             let _ = resp.send(node.handshake_bundle(now, &mut OsRng).map_err(fail));
+        }
+        Msg::DeviceId { resp } => {
+            let _ = resp.send(Ok(node.device_id()));
+        }
+        Msg::LinkedDevices { resp } => {
+            let _ = resp.send(Ok(node.linked_devices()));
+        }
+        Msg::MessageDeviceDeliveries { message, resp } => {
+            let _ = resp.send(node.message_device_deliveries(&message).map_err(fail));
+        }
+        Msg::DeviceRename { device, name, resp } => {
+            let _ = resp.send(
+                node.rename_linked_device(&device, &name, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::DeviceRevoke { device, resp } => {
+            let _ = resp.send(
+                node.revoke_linked_device(&device, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::DeviceLinkBegin { resp } => {
+            let _ = resp.send(node.begin_device_link(now, &mut OsRng).map_err(fail));
+        }
+        Msg::DeviceLinkAccept { offer, name, resp } => {
+            let _ = resp.send(
+                node.accept_device_link(&offer, &name, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::DeviceLinkCode { response, resp } => {
+            let _ = resp.send(node.device_link_confirmation_code(&response).map_err(fail));
+        }
+        Msg::DeviceLinkApprove {
+            response,
+            selection,
+            confirmed,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.approve_device_link(&response, selection, confirmed, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::DeviceLinkComplete {
+            package,
+            confirmed,
+            resp,
+        } => {
+            let result = node
+                .complete_device_link(&package, confirmed, now, &mut OsRng)
+                .map(|()| (node.address(), node.peer_id()))
+                .map_err(fail);
+            let _ = resp.send(result);
+        }
+        Msg::DeviceSyncExport { device, resp } => {
+            let _ = resp.send(node.export_device_sync(&device, &mut OsRng).map_err(fail));
+        }
+        Msg::DeviceSyncImport { bundle, resp } => {
+            let _ = resp.send(node.import_device_sync(&bundle, &mut OsRng).map_err(fail));
         }
         Msg::AddContact {
             name,
@@ -776,6 +1034,36 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
                     .map_err(fail),
             );
         }
+        Msg::SendDisappearing {
+            peer,
+            body,
+            lifetime_secs,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.send_disappearing_message(&peer, &body, lifetime_secs, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::EditMessage {
+            peer,
+            target_author,
+            target_content_id,
+            text,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.edit_message(
+                    &peer,
+                    target_author,
+                    target_content_id,
+                    &text,
+                    now,
+                    &mut OsRng,
+                )
+                .map_err(fail),
+            );
+        }
         Msg::AttachmentSend {
             peer,
             metadata,
@@ -809,6 +1097,41 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
                 });
             let _ = resp.send(result);
         }
+        Msg::AttachmentSendViewOnce {
+            peer,
+            metadata,
+            path,
+            preview,
+            lifetime_secs,
+            resp,
+        } => {
+            let result = std::fs::File::open(path)
+                .map_err(|e| format!("attachment source: {e}"))
+                .and_then(|mut source| {
+                    let mut opened_preview = match preview {
+                        Some((preview_metadata, path)) => Some((
+                            preview_metadata,
+                            std::fs::File::open(path)
+                                .map_err(|e| format!("attachment preview source: {e}"))?,
+                        )),
+                        None => None,
+                    };
+                    let preview = opened_preview
+                        .as_mut()
+                        .map(|(metadata, source)| (&*metadata, source));
+                    node.send_view_once_attachment_with_preview(
+                        &peer,
+                        &metadata,
+                        &mut source,
+                        preview,
+                        lifetime_secs,
+                        now,
+                        &mut OsRng,
+                    )
+                    .map_err(fail)
+                });
+            let _ = resp.send(result);
+        }
         Msg::GroupAttachmentSend {
             group,
             metadata,
@@ -835,6 +1158,41 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
                         &metadata,
                         &mut source,
                         preview,
+                        now,
+                        &mut OsRng,
+                    )
+                    .map_err(fail)
+                });
+            let _ = resp.send(result);
+        }
+        Msg::GroupAttachmentSendViewOnce {
+            group,
+            metadata,
+            path,
+            preview,
+            lifetime_secs,
+            resp,
+        } => {
+            let result = std::fs::File::open(path)
+                .map_err(|e| format!("attachment source: {e}"))
+                .and_then(|mut source| {
+                    let mut opened_preview = match preview {
+                        Some((preview_metadata, path)) => Some((
+                            preview_metadata,
+                            std::fs::File::open(path)
+                                .map_err(|e| format!("attachment preview source: {e}"))?,
+                        )),
+                        None => None,
+                    };
+                    let preview = opened_preview
+                        .as_mut()
+                        .map(|(metadata, source)| (&*metadata, source));
+                    node.send_group_view_once_attachment_with_preview(
+                        &group,
+                        &metadata,
+                        &mut source,
+                        preview,
+                        lifetime_secs,
                         now,
                         &mut OsRng,
                     )
@@ -893,6 +1251,26 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
                     result
                 }
                 Err(error) => Err(format!("attachment export: {error}")),
+            };
+            let _ = resp.send(result);
+        }
+        Msg::AttachmentConsumeViewOnce {
+            transfer,
+            path,
+            resp,
+        } => {
+            let result = match open_private(&path) {
+                Ok(mut destination) => {
+                    let result = node
+                        .consume_view_once_attachment(&transfer, &mut destination, now, &mut OsRng)
+                        .map_err(fail);
+                    drop(destination);
+                    if result.is_err() {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                    result
+                }
+                Err(error) => Err(format!("view-once open: {error}")),
             };
             let _ = resp.send(result);
         }
@@ -1155,6 +1533,36 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
                     .map_err(fail),
             );
         }
+        Msg::GroupSendDisappearing {
+            group,
+            body,
+            lifetime_secs,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.group_send_disappearing_message(&group, &body, lifetime_secs, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::GroupEditMessage {
+            group,
+            target_author,
+            target_content_id,
+            text,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.group_edit_message(
+                    &group,
+                    target_author,
+                    target_content_id,
+                    &text,
+                    now,
+                    &mut OsRng,
+                )
+                .map_err(fail),
+            );
+        }
         Msg::GroupMentionCapability { group, resp } => {
             let _ = resp.send(node.group_mention_capability(&group).map_err(fail));
         }
@@ -1170,8 +1578,88 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
                     .map_err(fail),
             );
         }
+        Msg::GroupPollCreate {
+            group,
+            question,
+            options,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.group_create_poll(&group, &question, &options, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::GroupPolls { group, resp } => {
+            let _ = resp.send(node.group_polls(&group).map_err(fail));
+        }
+        Msg::GroupPollVote {
+            group,
+            poll_author,
+            poll_id,
+            option_id,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.group_vote_poll(&group, poll_author, poll_id, option_id, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::GroupPollClose {
+            group,
+            poll_author,
+            poll_id,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.group_close_poll(&group, poll_author, poll_id, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::GroupPollModerateClose {
+            group,
+            poll_author,
+            poll_id,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.group_moderate_poll_close(&group, poll_author, poll_id, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::GroupAuthority { group, resp } => {
+            let _ = resp.send(node.group_authority(&group).map_err(fail));
+        }
+        Msg::GroupUpgradeAuthority { group, resp } => {
+            let _ = resp.send(
+                node.group_upgrade_authority(&group, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::GroupRename { group, name, resp } => {
+            let _ = resp.send(
+                node.group_rename(&group, &name, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::GroupSetRole {
+            group,
+            peer,
+            role,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.group_set_role(&group, peer, role, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::GroupTransferOwner { group, peer, resp } => {
+            let _ = resp.send(
+                node.group_transfer_owner(&group, peer, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
         Msg::GroupAdd { group, peer, resp } => {
-            let _ = resp.send(node.group_add(&group, &peer, &mut OsRng).map_err(fail));
+            let _ = resp.send(node.group_add(&group, &peer, now, &mut OsRng).map_err(fail));
         }
         Msg::GroupRemove { group, peer, resp } => {
             let _ = resp.send(
@@ -1186,7 +1674,7 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
             let _ = resp.send(node.groups().map_err(fail));
         }
         Msg::GroupMessages { group, resp } => {
-            let _ = resp.send(node.group_messages(&group).map_err(fail));
+            let _ = resp.send(node.resolved_group_messages(&group).map_err(fail));
         }
         Msg::Contacts { resp } => {
             let _ = resp.send(node.contacts().map_err(fail));
@@ -1194,8 +1682,44 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         Msg::CarrierCapabilities { resp } => {
             let _ = resp.send(node.carrier_capabilities(now).map_err(fail));
         }
+        Msg::Calls { resp } => {
+            let _ = resp.send(Ok(node.calls()));
+        }
+        Msg::CallAvailability { peer, resp } => {
+            let _ = resp.send(node.call_availability(&peer, now).map_err(fail));
+        }
+        Msg::CallStart { peer, resp } => {
+            let _ = resp.send(node.start_call(&peer, now, &mut OsRng).map_err(fail));
+        }
+        Msg::CallAnswer { call, resp } => {
+            let _ = resp.send(node.answer_call(&call, now, &mut OsRng).map_err(fail));
+        }
+        Msg::CallDecline { call, resp } => {
+            let _ = resp.send(node.decline_call(&call, now, &mut OsRng).map_err(fail));
+        }
+        Msg::CallCancel { call, resp } => {
+            let _ = resp.send(node.cancel_call(&call, now, &mut OsRng).map_err(fail));
+        }
+        Msg::CallHangup { call, resp } => {
+            let _ = resp.send(node.hangup_call(&call, now, &mut OsRng).map_err(fail));
+        }
+        Msg::CallAudioSend {
+            call,
+            timestamp_ms,
+            mut opus_packet,
+            resp,
+        } => {
+            let result = node
+                .send_call_audio(&call, timestamp_ms, &opus_packet)
+                .map_err(fail);
+            opus_packet.fill(0);
+            let _ = resp.send(result);
+        }
+        Msg::CallAudioTake { call, resp } => {
+            let _ = resp.send(node.take_call_audio(&call).map_err(fail));
+        }
         Msg::Messages { peer, resp } => {
-            let _ = resp.send(node.messages_with(&peer).map_err(fail));
+            let _ = resp.send(node.resolved_messages_with(&peer).map_err(fail));
         }
         Msg::SafetyNumber { peer, resp } => {
             let _ = resp.send(node.safety_number_with(&peer).map_err(fail));

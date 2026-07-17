@@ -184,7 +184,7 @@ fn exact_ids_errors_atomic_delete_and_delete_recreate_are_honest() {
 }
 
 #[test]
-fn kkr4_backup_restores_exact_ids_order_names_colors_and_memberships() {
+fn kkr5_backup_restores_exact_ids_order_names_colors_and_memberships() {
     let mut rng = StdRng::seed_from_u64(0xb1803);
     let directory = tempfile::tempdir().unwrap();
     let (mut node, peer, group) = node_with_contact_and_group(directory.path(), &mut rng);
@@ -202,7 +202,7 @@ fn kkr4_backup_restores_exact_ids_order_names_colors_and_memberships() {
         .unwrap();
     let before = node.labels().unwrap();
     let (backup, mnemonic) = node.export_backup(NOW + 1, &mut rng).unwrap();
-    assert_eq!(&backup[..4], b"KKR4");
+    assert_eq!(&backup[..4], b"KKR7");
 
     let restored = Node::restore(
         &directory.path().join("restored.db"),

@@ -16,13 +16,17 @@ struct ChatView: View {
     @State private var showFolder = false
     @State private var showLabels = false
     @State private var scheduleEditor: ScheduleEditor?
+    @State private var messageEditor: MessageEditDraft?
+    @State private var ephemeralLifetime: EphemeralLifetime?
 
     private var contact: Contact? {
         model.contacts.first { $0.peer == peer }
     }
 
     private var history: [Message] {
-        (model.histories[peer] ?? []).filter { $0.contentKind != .attachment }
+        (model.histories[peer] ?? []).filter {
+            $0.contentKind != .attachment && $0.contentKind != .viewOnceAttachment
+        }
     }
     private var attachments: [Attachment] {
         model.attachments.filter {
@@ -41,11 +45,17 @@ struct ChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             LabelBadgeRow(labels: model.labelsForTarget(LabelTarget(kind: .peer, id: peer)))
+            CallBar(peer: peer, contactName: contact?.name ?? String(peer.prefix(12)))
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 8) {
                         ForEach(history, id: \.id) { message in
-                            MessageBubble(message: message)
+                            MessageBubble(
+                                message: message,
+                                edit: {
+                                    messageEditor = MessageEditDraft(
+                                        contentId: message.id, body: message.body)
+                                })
                                 .id(message.id)
                         }
                         ForEach(scheduled, id: \.id) { message in
@@ -78,6 +88,8 @@ struct ChatView: View {
                     .padding(.horizontal)
             }
 
+            EphemeralTextControl(lifetime: $ephemeralLifetime)
+                .padding(.horizontal)
             HStack {
                 AttachmentPickerButton(destination: .peer(peer)) { error in
                     self.error = error
@@ -151,9 +163,16 @@ struct ChatView: View {
                     }
                 })
         }
+        .sheet(item: $messageEditor) { editor in
+            MessageEditEditor(editor: editor) { replacement in
+                try await model.editMessage(
+                    peer: peer, targetContentId: editor.contentId, text: replacement)
+            }
+        }
         .task {
             do {
                 try await model.follow(peer: peer)
+                await model.refreshCall(peer: peer)
             } catch {
                 self.error = errorText(error)
             }
@@ -166,7 +185,12 @@ struct ChatView: View {
         error = nil
         Task {
             do {
-                try await model.send(peer: peer, body: body)
+                if let lifetime = ephemeralLifetime {
+                    try await model.sendDisappearing(
+                        peer: peer, body: body, lifetimeSeconds: lifetime.rawValue)
+                } else {
+                    try await model.send(peer: peer, body: body)
+                }
             } catch {
                 self.error = errorText(error)
             }
@@ -184,9 +208,125 @@ struct ChatView: View {
     }
 }
 
+private struct CallBar: View {
+    @EnvironmentObject private var model: AppModel
+    let peer: String
+    let contactName: String
+    @State private var error: String?
+
+    private var call: KommsCore.Call? { model.call(peer: peer) }
+    private var activeCall: KommsCore.Call? { call?.phase == .ended ? nil : call }
+    private var availability: CallAvailability? { model.callAvailability[peer] }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Image(systemName: activeCall?.phase == .active ? "waveform" : "phone")
+                    .foregroundStyle(activeCall?.phase == .active ? .green : .secondary)
+                Text(statusText)
+                    .font(.footnote)
+                Spacer()
+                controls
+            }
+            Text("Authenticated end-to-end encrypted audio uses only a direct QUIC route and is never stored in message history.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            if let error {
+                Text(error).font(.caption2).foregroundStyle(.red)
+            }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 6)
+        .background(Color.secondary.opacity(0.08))
+    }
+
+    @ViewBuilder
+    private var controls: some View {
+        if let activeCall {
+            switch activeCall.phase {
+            case .ringing where activeCall.direction == .incoming:
+                Button("Decline", role: .destructive) {
+                    perform { try await model.declineCall(activeCall) }
+                }
+                Button("Answer") {
+                    perform { try await model.answerCall(activeCall) }
+                }
+                .buttonStyle(.borderedProminent)
+            case .ringing:
+                Button("Cancel", role: .destructive) {
+                    perform { try await model.cancelCall(activeCall) }
+                }
+            case .connecting, .active:
+                Button("Hang up", role: .destructive) {
+                    perform { try await model.hangupCall(activeCall) }
+                }
+            case .ended:
+                EmptyView()
+            }
+        } else {
+            Button {
+                perform { try await model.startCall(peer: peer) }
+            } label: {
+                Label("Call", systemImage: "phone.fill")
+            }
+            .buttonStyle(.bordered)
+            .disabled(availability?.available != true)
+            .accessibilityHint(unavailableText)
+        }
+    }
+
+    private var statusText: String {
+        guard let call else {
+            return availability?.available == true ? "Direct call available" : unavailableText
+        }
+        switch call.phase {
+        case .ringing:
+            return call.direction == .incoming
+                ? "Incoming authenticated call from \(contactName)" : "Ringing…"
+        case .connecting: return "Connecting direct audio…"
+        case .active: return "Authenticated direct audio call"
+        case .ended: return endText(call.endReason)
+        }
+    }
+
+    private var unavailableText: String {
+        switch availability?.unavailable {
+        case .offlineOrUnknown: return "Contact is offline or no direct route is known"
+        case .bulkOnly: return "The current route is not real-time"
+        case .meshOnly: return "Mesh routes do not carry live calls"
+        case .missingSession: return "Send a message first to establish an authenticated session"
+        case .unsupported: return "This contact does not advertise compatible calling support"
+        case .alreadyInCall: return "Another call is already in progress"
+        case nil: return "Checking direct call route…"
+        }
+    }
+
+    private func endText(_ reason: CallEndReason?) -> String {
+        switch reason {
+        case .declined: return "Call declined"
+        case .busy: return "Contact is busy"
+        case .cancelled: return "Call cancelled"
+        case .hungUp: return "Call ended"
+        case .expired: return "Call was not answered"
+        case .answeredElsewhere: return "Call answered on another linked device"
+        case .routeLost: return "Direct call route lost"
+        case nil: return "Call ended"
+        }
+    }
+
+    private func perform(_ action: @escaping () async throws -> Void) {
+        error = nil
+        Task {
+            do { try await action() }
+            catch { self.error = errorText(error) }
+        }
+    }
+}
+
 private struct MessageBubble: View {
     @EnvironmentObject private var model: AppModel
     let message: Message
+    let edit: () -> Void
 
     private var outbound: Bool { message.direction == .outbound }
 
@@ -211,13 +351,121 @@ private struct MessageBubble: View {
                         outbound ? Color.accentColor.opacity(0.2) : Color.gray.opacity(0.15),
                         in: RoundedRectangle(cornerRadius: 12))
                 if outbound {
-                    Text(stateText)
+                    HStack(spacing: 4) {
+                        Text(stateText)
+                            .foregroundStyle(
+                                message.state == .delivered ? .green : .secondary)
+                        if message.edited {
+                            Text("· edited r\(message.editRevision)")
+                                .foregroundStyle(.secondary)
+                        }
+                        if message.contentKind == .text {
+                            Button("Edit", action: edit)
+                                .accessibilityLabel("Edit this message")
+                        }
+                    }
+                    .font(.caption2)
+                } else if message.edited {
+                    Text("edited r\(message.editRevision)")
                         .font(.caption2)
-                        .foregroundStyle(
-                            message.state == .delivered ? .green : .secondary)
+                        .foregroundStyle(.secondary)
+                }
+                if message.contentKind == .disappearingText, let expiresAt = message.expiresAt {
+                    Text("Removes \(Date(timeIntervalSince1970: TimeInterval(expiresAt)), style: .relative)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .accessibilityHint("Removed locally; other devices may retain copies")
+                }
+                if message.edited {
+                    EditVersionHistoryView(versions: message.versions)
                 }
             }
             if !outbound { Spacer(minLength: 40) }
         }
+    }
+}
+
+struct MessageEditDraft: Identifiable {
+    let id = UUID()
+    let contentId: String
+    let body: String
+}
+
+struct MessageEditEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    let editor: MessageEditDraft
+    let save: (String) async throws -> Void
+
+    @State private var text: String
+    @State private var error: String?
+    @State private var working = false
+
+    init(editor: MessageEditDraft, save: @escaping (String) async throws -> Void) {
+        self.editor = editor
+        self.save = save
+        _text = State(initialValue: editor.body)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextEditor(text: $text)
+                        .frame(minHeight: 140)
+                        .incognitoKeyboard(capitalization: .sentences)
+                } footer: {
+                    Text("Saving creates a new authenticated edit event. The original and prior versions remain in this conversation.")
+                }
+                if let error {
+                    Text(error).foregroundStyle(.red)
+                }
+            }
+            .navigationTitle("Edit message")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        working = true
+                        error = nil
+                        Task {
+                            do {
+                                try await save(text)
+                                dismiss()
+                            } catch {
+                                self.error = errorText(error)
+                                working = false
+                            }
+                        }
+                    }
+                    .disabled(text.isEmpty || working)
+                }
+            }
+        }
+    }
+}
+
+struct EditVersionHistoryView: View {
+    let versions: [EditVersion]
+
+    var body: some View {
+        DisclosureGroup("Version history (\(versions.count))") {
+            ForEach(Array(versions.reversed().enumerated()), id: \.offset) { _, version in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(version.revision == 0 ? "Original" : "Revision \(version.revision)")
+                        .font(.caption.bold())
+                    Text(Date(timeIntervalSince1970: TimeInterval(version.timestamp)), style: .time)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(version.body)
+                        .font(.caption)
+                        .textSelection(.enabled)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 2)
+            }
+        }
+        .font(.caption)
     }
 }

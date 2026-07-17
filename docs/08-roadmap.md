@@ -183,12 +183,14 @@ surface alone: pairing by bundle exchange, verified `delivered` states via
 listener events, history, safety numbers, restart persistence, honest
 errors, and `cargo run -p kult-ffi --features bindgen --bin uniffi-bindgen`
 generates the Kotlin/Swift sources. Backup/restore is in (ADR-0011/ADR-0012):
-the current encrypted `KKR4` file carries identity, contacts, history, group
-state, user-authored sealed local metadata, note-to-self history, and
+the current encrypted `KKR7` file carries the stable account, contacts, ordinary
+history, group state and signed authority, user-authored sealed local metadata,
+note-to-self history, linked-device manifests/endpoints/convergence winners, and
 session-reset markers, sealed via Argon2id under a 24-word BIP-39 mnemonic (wordlist and
 codec in-tree in `kult-crypto`, KAT-tested against the reference vectors);
-ratchet sessions and prekey secrets are deliberately excluded, and a restored
-node (fresh store, fresh vault, resumed identity) turns each reset marker
+ratchet sessions, prekey secrets, and reusable physical-device credentials are
+deliberately excluded. Recovery revokes every device active in the backup,
+mints a fresh sole active device, and turns each reset marker
 into a proactive OPK-less re-handshake on its first tick, so messaging
 resumes in both directions without the user sending first. Exposed at every
 front door: `kult backup` / `Op::Backup` (file written 0600, mnemonic shown
@@ -214,7 +216,7 @@ mnemonic shown exactly once. Network settings persist as secret-free
 `settings.json` (the same knobs as `kultd` flags, radios included). The
 app is its own cargo workspace so the GUI dependency tree stays out of
 the core's lockfile and cargo-deny surface (it carries its own, equally
-strict deny config, and its own CI job); all shell behavior lives in a
+strict deny config and local release gates); all shell behavior lives in a
 webview-agnostic layer pinned by a two-node end-to-end test: pairing by
 scanned-style hex, events as the webview receives them, verification,
 and the backup → mnemonic → restore flow. The Android alpha is in
@@ -235,7 +237,8 @@ key-change surfacing, transport indicators, hint editing, secret-free
 `settings.json` (same file format as desktop), mnemonic-shown-once backup
 export with OS cloud backup disabled, and a foreground service keeping
 delivery alive in the background. Native libraries cross-compile via
-cargo-ndk; CI runs the `:core` e2e and assembles the debug APK. Android
+cargo-ndk; the local release matrix runs the `:core` e2e and assembles the
+debug APK when the SDK/NDK is installed. Android
 sender-key group UX is also shipped: a distinct group list/create flow,
 dedicated history/chat/member surface, truthful per-recipient outbound
 delivery rows, and a JVM acceptance scenario with a real offline member.
@@ -261,11 +264,11 @@ member-management surfaces, truthful per-recipient outbound delivery rows,
 and a host acceptance scenario with a real offline member. QR rendering is
 CoreImage and scanning is AVFoundation. The app has zero third-party dependencies;
 the only library it links is the workspace's own Rust core, built into
-`KultFFI.xcframework` by a script for device/simulator targets. CI runs the
-`KommsCore` e2e on every push. A macOS job gated by the `IOS_APP_CI`
-repository variable assembles the xcframework and builds the app for a generic
-iOS Simulator destination; full recent release-feature matrices have run that
-job successfully. The app target's earlier SwiftUI initializer and
+`KultFFI.xcframework` by a script for device/simulator targets. The local release
+matrix runs the `KommsCore` e2e, assembles the xcframework, and builds the app
+for an unsigned iOS Simulator destination on a full Xcode host. An explicitly
+gated hosted macOS repetition remains available for publication. The app
+target's earlier SwiftUI initializer and
 `SystemConfiguration.framework` linkage failures are fixed and guarded by that
 build. Remaining: a full hands-on SwiftUI messaging pass and an on-device run;
 background delivery and store distribution stay M6.
@@ -289,6 +292,22 @@ field inventories and native build gates are in. Manual first-/third-party
 keyboard evidence follows [14: Incognito Keyboard](14-incognito-keyboard.md)
 without treating absence of later suggestions as proof of non-retention.
 
+C7 live audio calls are shipped through the bounded content-v1 `CallControl`
+shape, transient account/device-aware node state, and one authenticated
+`/komms/call/1` substream on an observed fresh direct QUIC connection. The
+transport and every shell refuse TCP, relay-only, mailbox, sneakernet, and
+airtime-budgeted paths; no call attempt becomes queued delayed work. Fresh
+per-call secrets derive directional media keys without exporting ratchet keys,
+and authenticated sequence/timestamp/key-phase records bound replay, jitter,
+and unsent audio. Strict RPC/CLI, UniFFI, desktop, Android, and iOS expose the
+same ring/answer/decline/cancel/hangup and bidirectional Opus lifecycle. Controls
+and media are absent from chat history, search, backup, C2 sync, and remote
+notification previews. Real distinct-NAT/DCUtR, sustained network, battery,
+audio-route, background/lock, and physical Android/iOS device evidence remain
+M5 release qualification; video begins only after the audio matrix passes. See
+[23: Live Audio Calls](23-live-audio-calls.md) and
+[ADR-0013](adr/0013-real-time-calls.md).
+
 **Acceptance**: a non-technical user can install desktop + mobile builds, exchange QR
 verification with a friend, and message over internet, LAN, and mesh with truthful
 delivery/security indicators. Backup/restore round-trips.
@@ -296,9 +315,14 @@ delivery/security indicators. Backup/restore round-trips.
 ## M6: Hardening & reach *(in progress)*
 
 Sender-key groups polish → OpenMLS for large groups; censorship-resistant transports
-(obfuscation, arti/Tor); multi-device (Sesame-style); panic wipe; reproducible builds;
+(obfuscation, arti/Tor); panic wipe; reproducible builds;
 **external security audit** of `kult-crypto` + `kult-protocol`; F-Droid and store
 distribution.
+
+C2 multi-device is shipped: the stable account signs bounded device manifests,
+every physical endpoint keeps independent pairwise/group cryptographic state,
+and explicit authenticated bundles converge an allowlisted set of owned-device
+state without cloud infrastructure. See [22: Linked Devices](22-linked-devices.md).
 
 The optional Hybrid Infrastructure Layer is proposed as an independent M6
 adoption track under ADR-0017 through ADR-0019: explicit Sovereign/Private/
@@ -323,8 +347,8 @@ timer until the ordinary encrypted receipt acknowledges it, so an envelope lost
 on a lossy carrier never leaves a member permanently deaf to a sender. Removal
 re-keys the group secret and rotates every remaining chain (the removed member
 gets a notice that deliberately carries nothing else); rotation also triggers
-on leave, on a message-count threshold (PCS), and on restore. Backups (`KKR4`;
-older `KKR1`/`KKR2`/`KKR3` files still restore) carry group identities and history but
+on leave, on a message-count threshold (PCS), and on restore. Backups (`KKR7`;
+older `KKR1` through `KKR6` files still restore) carry group identities and history but
 never chains: a restored node announces a fresh chain, and co-members
 redistribute theirs on the re-handshake, both directions pinned by the
 `kult-node` e2e suite (`groups_e2e.rs`) alongside encrypt-once-on-the-wire,
@@ -347,7 +371,7 @@ The Attachment core proposed by
 [ADR-0015](adr/0015-encrypted-attachment-pipeline.md) is implemented: bounded
 manifests and bulk records, independently sealed resumable chunks, explicit
 consent/cancel/reject state, pairwise and encrypt-once group transfer,
-quota-bound sealed-file storage, KKR4 media exclusion, streamed export, and a
+quota-bound sealed-file storage, KKR6 media exclusion, streamed export, and a
 hard no-airtime bulk class. The F4 application-facing carrier verdict is now
 shared across the node scheduler, RPC/CLI, and UniFFI as an expiring snapshot
 with change events; attachment activation consumes that same verdict. Bounded
@@ -394,6 +418,16 @@ receiver rendering/export, and zero manifest/chunk/range or other bulk mesh
 airtime. Video, cloud/generative editing, filters, face recognition, project
 files, and protocol changes remain out of scope.
 
+C1 generic non-image presentation is now shipped without changing ADR-0015's
+wire or carrier contract. One shared Rust policy classifies untrusted filename
+and media-type hints, forces active, mismatched, unknown, or nameless objects to
+export-only, and permits only explicit warned OS handoff for reviewed matching
+types. RPC/CLI, UniFFI, desktop, Android, and iOS expose the same typed decision;
+cross-language fixtures and local two-node lifecycle tests cover exact export,
+resume, no auto-open, protected temporary cleanup, and zero new delivery work.
+Hands-on Android/iOS interaction remains an M5 qualification gate. See
+[17: Safe File Presentation](17-safe-file-presentation.md).
+
 B17 group mentions are shipped end to end under
 [ADR-0016](adr/0016-group-mention-content.md). The immutable kind `0x0003`
 preserves exact fallback UTF-8 plus canonical sorted, non-overlapping UTF-8 byte
@@ -425,7 +459,7 @@ The F5 sealed local-metadata foundation is shipped in `kult-store`: typed and
 bounded conversation, folder, pin, label, draft, preference, and custom-icon
 records use an isolated storage key and reveal no local organization keys in a
 copied database. User-authored metadata and sealed note-to-self history are
-included in `KKR4`. Note-to-self text is shipped through every shell under one
+included in current `KKR7` backups. Note-to-self text is shipped through every shell under one
 reserved identity; folders, conversation pins, labels, appearance, and bounded
 metadata-free custom icons now ship as separate local experiences.
 
@@ -436,7 +470,7 @@ NFC-normalized and bounded to 256 UTF-8 bytes; duplicate names are permitted.
 The shared assessment reports normalization plus duplicate,
 mixed-script/confusable, bidirectional-control, and invisible-character risks,
 and warned mutations require explicit acceptance. Rename emits one local event,
-survives restart and `KKR4`, and produces zero discovery, notification, queue,
+survives restart and `KKR7`, and produces zero discovery, notification, queue,
 envelope, capability, or transport work. Optional signed self-display
 suggestions remain a separate unimplemented bundle-format/compatibility program.
 
@@ -446,7 +480,7 @@ folder, and note-to-self targets render generated initials when absent or after 
 safe read failure. Eight bundled glyphs and selected local JPEG/PNG inputs become
 strict 256×256 RGBA PNGs after bounded orientation/crop/resize and metadata-free
 re-encoding. Per-record, count, and 64 MiB aggregate quotas are enforced at the
-sealed-store boundary; `KKR4` preserves canonical records. Icons create no remote
+sealed-store boundary; `KKR7` preserves canonical records. Icons create no remote
 lookup, peer sync, envelope, capability, queue, notification, or transport work.
 
 B10 private local conversation folders are shipped end to end across the
@@ -457,8 +491,9 @@ have at most one folder assignment; All and Unfiled are virtual views. Atomic
 create, rename, complete-set reorder, move/unfile, delete cascade, stale cleanup,
 and folder-first composition with independent B18 label filters create zero
 network or transport work. Limits are 128 folders, 8,192 assignments, and 256
-UTF-8 bytes per name. `KKR4` preserves exact identity, order, membership, and
-stale behavior; there is no remote or linked-device folder synchronization.
+UTF-8 bytes per name. `KKR7` preserves exact identity, order, membership, and
+stale behavior. Folders never synchronize to contacts or services; C2 can
+converge them only between authorized devices of the same account.
 
 B11 private local conversation pins are shipped end to end across the unchanged
 F5 record contract, `kult-node`, RPC/CLI, UniFFI, desktop, Android, and iOS.
@@ -469,14 +504,14 @@ stale cleanup, and same-identity reactivation preserve durable intent. Folder
 selection and B18 label filtering run before the leading pinned block; pinned
 and unpinned rows then use deterministic manual/activity/typed-ID ordering.
 Every operation creates zero network, transport, notification, or cryptographic
-work. `KKR4` is the only pin portability path; message pins and linked-device
-pin synchronization remain separate work.
+work. Portability is limited to `KKR7` and authenticated own-device C2 sync;
+message pins remain separate work.
 
 B12 private appearance is shipped end to end across the unchanged F5 UI
 preference record, `kult-node`, strict RPC/CLI, UniFFI, desktop, Android, and
 iOS. The exact `system`, `light`, and `dark` vocabulary defaults safely to System,
 persists at `appearance.theme`, emits one local change event only on mutation,
-and survives restart and `KKR4` restore with zero delivery or transport work.
+and survives restart and `KKR7` restore with zero delivery or transport work.
 All shells apply a non-sensitive pre-unlock cache and then treat the sealed value
 as authoritative; desktop uses semantic CSS roles, Android native DayNight
 resources, and iOS adaptive system colors. Native high-contrast/reduced-motion
@@ -493,8 +528,9 @@ live assignments, 32 labels per conversation, and 256 UTF-8 bytes per name.
 Duplicate names are disambiguated by color and deterministic local order.
 Atomic deletion, stale-record diagnostics, and deterministic match-any/match-all
 filters remain local presentation behavior and create zero network or transport
-work. `KKR4` preserves exact identity, ordering, and membership; there is no
-shared taxonomy, remote synchronization, or multi-device label sync.
+work. `KKR7` preserves exact identity, ordering, and membership. There is no
+shared taxonomy or contact/service synchronization; C2 can converge labels only
+between authorized devices of the same account.
 
 Durable scheduled pairwise and group text is shipped end to end. The sealed
 scheduled outbox does not advance a ratchet or create transport work early;
@@ -503,21 +539,47 @@ the activation lifecycle. Every shell renders scheduled rows separately from
 the ordinary queued, sent, and delivered ladder while converting only the
 display/editor to local time.
 
+C4 disappearing text and view-once attachments are shipped for pairwise and
+sender-key groups across protocol, sealed lifecycle storage, node, relay/bridge/
+queue/fragment retention, strict RPC/CLI, UniFFI, desktop, Android, and iOS.
+ADR-0021 binds an exact local deadline to an hour-aligned envelope-v2 relay
+deletion hint. Expiry and first reveal remove exact history/media and retain a
+sealed terminal tombstone; KKR6 excludes live ephemeral plaintext/manifests/
+media and includes those tombstones while KKR1–KKR6 remain restorable. The UI
+promises removal only from this device, never remote erasure or screenshot
+prevention. Android APK/device and iOS simulator qualification remain part of
+the hands-on M5 gate. See
+[19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
+
+C5 fixed-electorate group polls are shipped across protocol, node, RPC/CLI,
+UniFFI, desktop, Android, and iOS. Authenticated immutable creation, visible vote
+heads, and creator closure converge deterministically after delay, duplicates,
+reorder, membership change, restart, and KKR1–KKR7 restore. Poll events render as
+cards rather than empty chat rows and never claim anonymity. See
+[20: Group Polls](20-group-polls.md).
+
+C6 owner/admin/member authority is shipped across the same complete surface.
+Capability-gated legacy upgrade creates a canonical signed full state; one owner
+serializes direct actions and generation-bound signed admin requests. Ownership
+certificates form a verified chain, conflicting same-generation states use the
+smallest authenticated event id, and a losing transfer fork cannot advance an
+accepted replica. Upgrade, rename, roles, transfer, membership, and signed poll
+moderation advance the generation and re-key. KKR6 carries the authority record
+and consumed request ids while KKR1-KKR5 restore as legacy groups. See
+[21: Group Roles, Ownership, and Moderation](21-group-roles.md) and
+[ADR-0023](adr/0023-group-roles-and-owner-authority.md).
+
 **Acceptance**: audit findings triaged with public report; reproducible-build attestation
 for all release artifacts.
 
-## Near horizon: real-time calls
+## Shipped alpha: real-time audio calls
 
-Live voice and video calls are in scope as a near-horizon capability, strictly
-confined to high-bandwidth carriers (internet libp2p and LAN/mDNS) and disabled
-over any airtime-budgeted mesh link. The transport core already negotiates the
-direct connections a call needs (QUIC, DCUtR hole punching), and identity keys
-authenticate the peer with no central coordinator. Because this adds a real-time
-media path to the transports, it is pinned by ADR-0013 (Proposed) (media
-transport, metadata-blind call setup, carrier-gating rule) ahead of
-implementation. Recorded
-audio/video clips are already in scope as ordinary asynchronous payloads. Details
-and constraints: [11: Feature Scope](11-feature-scope.md).
+The C7 audio implementation is complete across the shared core and all shipped
+front doors under the strict direct-QUIC and transient-state contract above.
+Video remains unimplemented until real-network and physical-device audio
+qualification passes. Details and constraints:
+[11: Feature Scope](11-feature-scope.md) and
+[23: Live Audio Calls](23-live-audio-calls.md).
 
 ## Explicitly not scheduled
 

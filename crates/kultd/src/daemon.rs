@@ -27,7 +27,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use kult_crypto::KdfProfile;
-use kult_node::{FolderSelection, LabelMatchMode, Node, NodeError};
+use kult_node::{DeviceLinkSelection, FolderSelection, LabelMatchMode, Node, NodeError};
 use kult_transport::{
     DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, MeshtasticOptions,
     MeshtasticTransport, NatStatus, Transport, TransportOptions,
@@ -442,6 +442,8 @@ async fn actor(
 ) {
     let mut tick = tokio::time::interval(cfg.tick_interval);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut media_tick = tokio::time::interval(Duration::from_millis(20));
+    media_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,
@@ -453,6 +455,14 @@ async fn actor(
                         }
                     }
                     Err(e) => eprintln!("kultd: tick failed: {e}"),
+                }
+            }
+            _ = media_tick.tick() => {
+                if let Err(e) = node.pump_call_media(now()).await {
+                    eprintln!("kultd: call media pump failed: {e}");
+                }
+                for event in node.drain_events() {
+                    let _ = events.send(wire::event_line(&event));
                 }
             }
             msg = rx.recv() => match msg {
@@ -509,11 +519,118 @@ async fn handle_op(
             let bundle = node.handshake_bundle(now(), &mut OsRng).map_err(fail)?;
             Ok(json!({ "bundle": wire::hex_encode(&bundle) }))
         }
+        Op::DeviceId => Ok(json!({ "device": wire::hex_encode(&node.device_id()) })),
+        Op::LinkedDevices => Ok(json!({
+            "devices": node.linked_devices().into_iter().map(|device| json!({
+                "id": wire::hex_encode(&device.id),
+                "name": device.name,
+                "last_seen": device.last_seen,
+                "revoked_at": device.revoked_at,
+                "current": device.current,
+            })).collect::<Vec<_>>()
+        })),
+        Op::MessageDeviceDeliveries { message } => {
+            let message = wire::parse_message(&message)?;
+            let deliveries = node
+                .message_device_deliveries(&message)
+                .map_err(fail)?
+                .into_iter()
+                .map(|delivery| {
+                    json!({
+                        "device": wire::hex_encode(&delivery.device),
+                        "name": delivery.name,
+                        "state": match delivery.state {
+                            kult_store::DeliveryState::Queued => "queued",
+                        kult_store::DeliveryState::Sent => "sent",
+                        kult_store::DeliveryState::Delivered => "delivered",
+                        kult_store::DeliveryState::Received => "received",
+                        },
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok(json!({ "deliveries": deliveries }))
+        }
+        Op::DeviceRename { device, name } => {
+            let device = wire::parse_peer(&device)?;
+            node.rename_linked_device(&device, &name, &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "renamed": wire::hex_encode(&device) }))
+        }
+        Op::DeviceRevoke { device } => {
+            let device = wire::parse_peer(&device)?;
+            node.revoke_linked_device(&device, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "revoked": wire::hex_encode(&device) }))
+        }
+        Op::DeviceLinkBegin => {
+            let offer = node.begin_device_link(now(), &mut OsRng).map_err(fail)?;
+            Ok(json!({ "offer": wire::hex_encode(&offer) }))
+        }
+        Op::DeviceLinkAccept { offer, name } => {
+            let offer = wire::hex_decode(&offer).ok_or("offer must be hex")?;
+            let (response, code) = node
+                .accept_device_link(&offer, &name, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "response": wire::hex_encode(&response), "code": code }))
+        }
+        Op::DeviceLinkCode { response } => {
+            let response = wire::hex_decode(&response).ok_or("response must be hex")?;
+            let code = node
+                .device_link_confirmation_code(&response)
+                .map_err(fail)?;
+            Ok(json!({ "code": code }))
+        }
+        Op::DeviceLinkApprove {
+            response,
+            selection,
+            confirmed,
+        } => {
+            let response = wire::hex_decode(&response).ok_or("response must be hex")?;
+            let package = node
+                .approve_device_link(
+                    &response,
+                    DeviceLinkSelection {
+                        contacts: selection.contacts,
+                        organization: selection.organization,
+                        history: selection.history,
+                    },
+                    confirmed,
+                    now(),
+                    &mut OsRng,
+                )
+                .map_err(fail)?;
+            Ok(json!({ "package": wire::hex_encode(&package) }))
+        }
+        Op::DeviceLinkComplete { package, confirmed } => {
+            let package = wire::hex_decode(&package).ok_or("package must be hex")?;
+            node.complete_device_link(&package, confirmed, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({
+                "account": wire::hex_encode(&node.peer_id()),
+                "device": wire::hex_encode(&node.device_id()),
+            }))
+        }
+        Op::DeviceSyncExport { device } => {
+            let device = wire::parse_peer(&device)?;
+            let bundle = node.export_device_sync(&device, &mut OsRng).map_err(fail)?;
+            Ok(json!({ "bundle": wire::hex_encode(&bundle) }))
+        }
+        Op::DeviceSyncImport { bundle } => {
+            let bundle = wire::hex_decode(&bundle).ok_or("bundle must be hex")?;
+            let inserted = node.import_device_sync(&bundle, &mut OsRng).map_err(fail)?;
+            Ok(json!({ "inserted": inserted }))
+        }
         Op::FormatText { source, highlights } => {
             let highlights = highlights.into_iter().map(Into::into).collect::<Vec<_>>();
             let formatted = kult_node::format_text(&source, &highlights).map_err(fail)?;
             Ok(wire::formatted_text_json(&formatted))
         }
+        Op::AttachmentFilePresentation {
+            media_type,
+            filename,
+        } => Ok(wire::attachment_file_presentation_json(
+            &kult_node::classify_attachment_file(&media_type, filename.as_deref()),
+        )),
         Op::AddContact {
             name,
             bundle,
@@ -556,6 +673,38 @@ async fn handle_op(
                 .map_err(fail)?;
             Ok(json!({ "id": wire::hex_encode(&id) }))
         }
+        Op::SendDisappearing {
+            peer,
+            body,
+            lifetime_secs,
+        } => {
+            let peer = wire::parse_peer(&peer)?;
+            let id = node
+                .send_disappearing_message(&peer, &body, lifetime_secs, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::EditMessage {
+            peer,
+            target_author,
+            target_content_id,
+            text,
+        } => {
+            let peer = wire::parse_peer(&peer)?;
+            let target_author = wire::parse_peer(&target_author)?;
+            let target_content_id = wire::parse_message(&target_content_id)?;
+            let id = node
+                .edit_message(
+                    &peer,
+                    target_author,
+                    target_content_id,
+                    &text,
+                    now(),
+                    &mut OsRng,
+                )
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
         Op::AttachmentSend {
             peer,
             path,
@@ -587,6 +736,39 @@ async fn handle_op(
                 .map_err(fail)?;
             Ok(json!({ "id": wire::hex_encode(&id) }))
         }
+        Op::AttachmentSendViewOnce {
+            peer,
+            path,
+            media_type,
+            filename,
+            preview_path,
+            preview_media_type,
+            lifetime_secs,
+        } => {
+            let peer = wire::parse_peer(&peer)?;
+            let mut source =
+                std::fs::File::open(&path).map_err(|e| format!("attachment source: {e}"))?;
+            let metadata = kult_node::AttachmentMetadata {
+                media_type,
+                filename,
+            };
+            let mut preview = open_preview(preview_path, preview_media_type)?;
+            let preview = preview
+                .as_mut()
+                .map(|(metadata, source)| (&*metadata, source));
+            let id = node
+                .send_view_once_attachment_with_preview(
+                    &peer,
+                    &metadata,
+                    &mut source,
+                    preview,
+                    lifetime_secs,
+                    now(),
+                    &mut OsRng,
+                )
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
         Op::GroupAttachmentSend {
             group,
             path,
@@ -612,6 +794,39 @@ async fn handle_op(
                     &metadata,
                     &mut source,
                     preview,
+                    now(),
+                    &mut OsRng,
+                )
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::GroupAttachmentSendViewOnce {
+            group,
+            path,
+            media_type,
+            filename,
+            preview_path,
+            preview_media_type,
+            lifetime_secs,
+        } => {
+            let group = wire::parse_group(&group)?;
+            let mut source =
+                std::fs::File::open(&path).map_err(|e| format!("attachment source: {e}"))?;
+            let metadata = kult_node::AttachmentMetadata {
+                media_type,
+                filename,
+            };
+            let mut preview = open_preview(preview_path, preview_media_type)?;
+            let preview = preview
+                .as_mut()
+                .map(|(metadata, source)| (&*metadata, source));
+            let id = node
+                .send_group_view_once_attachment_with_preview(
+                    &group,
+                    &metadata,
+                    &mut source,
+                    preview,
+                    lifetime_secs,
                     now(),
                     &mut OsRng,
                 )
@@ -666,6 +881,20 @@ async fn handle_op(
             let mut destination =
                 open_private(destination_path).map_err(|e| format!("attachment export: {e}"))?;
             if let Err(error) = node.export_attachment_object(&transfer, preview, &mut destination)
+            {
+                drop(destination);
+                let _ = std::fs::remove_file(destination_path);
+                return Err(fail(error));
+            }
+            Ok(json!({ "path": path }))
+        }
+        Op::AttachmentConsumeViewOnce { transfer, path } => {
+            let transfer = wire::parse_transfer(&transfer)?;
+            let destination_path = std::path::Path::new(&path);
+            let mut destination =
+                open_private(destination_path).map_err(|e| format!("view-once open: {e}"))?;
+            if let Err(error) =
+                node.consume_view_once_attachment(&transfer, &mut destination, now(), &mut OsRng)
             {
                 drop(destination);
                 let _ = std::fs::remove_file(destination_path);
@@ -1150,6 +1379,38 @@ async fn handle_op(
                 .map_err(fail)?;
             Ok(json!({ "id": wire::hex_encode(&id) }))
         }
+        Op::GroupSendDisappearing {
+            group,
+            body,
+            lifetime_secs,
+        } => {
+            let group = wire::parse_group(&group)?;
+            let id = node
+                .group_send_disappearing_message(&group, &body, lifetime_secs, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::GroupEditMessage {
+            group,
+            target_author,
+            target_content_id,
+            text,
+        } => {
+            let group = wire::parse_group(&group)?;
+            let target_author = wire::parse_peer(&target_author)?;
+            let target_content_id = wire::parse_message(&target_content_id)?;
+            let id = node
+                .group_edit_message(
+                    &group,
+                    target_author,
+                    target_content_id,
+                    &text,
+                    now(),
+                    &mut OsRng,
+                )
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
         Op::GroupMentionCapability { group } => {
             let group = wire::parse_group(&group)?;
             let capability = node.group_mention_capability(&group).map_err(fail)?;
@@ -1178,10 +1439,110 @@ async fn handle_op(
                 .map_err(fail)?;
             Ok(json!({ "id": wire::hex_encode(&id) }))
         }
+        Op::GroupPollCreate {
+            group,
+            question,
+            options,
+        } => {
+            let group = wire::parse_group(&group)?;
+            let id = node
+                .group_create_poll(&group, &question, &options, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::GroupPolls { group } => {
+            let group = wire::parse_group(&group)?;
+            Ok(json!({
+                "polls": node
+                    .group_polls(&group)
+                    .map_err(fail)?
+                    .iter()
+                    .map(wire::poll_json)
+                    .collect::<Vec<_>>(),
+            }))
+        }
+        Op::GroupPollVote {
+            group,
+            poll_author,
+            poll_id,
+            option_id,
+        } => {
+            let group = wire::parse_group(&group)?;
+            let poll_author = wire::parse_peer(&poll_author)?;
+            let poll_id = wire::parse_message(&poll_id)?;
+            let option_id = wire::parse_message(&option_id)?;
+            let id = node
+                .group_vote_poll(&group, poll_author, poll_id, option_id, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::GroupPollClose {
+            group,
+            poll_author,
+            poll_id,
+        } => {
+            let group = wire::parse_group(&group)?;
+            let poll_author = wire::parse_peer(&poll_author)?;
+            let poll_id = wire::parse_message(&poll_id)?;
+            let id = node
+                .group_close_poll(&group, poll_author, poll_id, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::GroupPollModerateClose {
+            group,
+            poll_author,
+            poll_id,
+        } => {
+            let group = wire::parse_group(&group)?;
+            let poll_author = wire::parse_peer(&poll_author)?;
+            let poll_id = wire::parse_message(&poll_id)?;
+            let id = node
+                .group_moderate_poll_close(&group, poll_author, poll_id, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::GroupAuthority { group } => {
+            let group = wire::parse_group(&group)?;
+            Ok(wire::group_authority_json(
+                &node.group_authority(&group).map_err(fail)?,
+            ))
+        }
+        Op::GroupUpgradeAuthority { group } => {
+            let group = wire::parse_group(&group)?;
+            let id = node
+                .group_upgrade_authority(&group, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::GroupRename { group, name } => {
+            let group = wire::parse_group(&group)?;
+            let id = node
+                .group_rename(&group, &name, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::GroupSetRole { group, peer, role } => {
+            let group = wire::parse_group(&group)?;
+            let peer = wire::parse_peer(&peer)?;
+            let id = node
+                .group_set_role(&group, peer, role.into(), now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::GroupTransferOwner { group, peer } => {
+            let group = wire::parse_group(&group)?;
+            let peer = wire::parse_peer(&peer)?;
+            let id = node
+                .group_transfer_owner(&group, peer, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
         Op::GroupAdd { group, peer } => {
             let group = wire::parse_group(&group)?;
             let peer = wire::parse_peer(&peer)?;
-            node.group_add(&group, &peer, &mut OsRng).map_err(fail)?;
+            node.group_add(&group, &peer, now(), &mut OsRng)
+                .map_err(fail)?;
             Ok(json!({}))
         }
         Op::GroupRemove { group, peer } => {
@@ -1208,7 +1569,7 @@ async fn handle_op(
         Op::GroupMessages { group } => {
             let group = wire::parse_group(&group)?;
             let messages = node
-                .group_messages(&group)
+                .resolved_group_messages(&group)
                 .map_err(fail)?
                 .iter()
                 .map(wire::group_message_json)
@@ -1239,10 +1600,60 @@ async fn handle_op(
                 .collect::<Vec<_>>();
             Ok(json!({ "capabilities": snapshots }))
         }
+        Op::Calls => Ok(json!({
+            "calls": node.calls().iter().map(wire::call_json).collect::<Vec<_>>()
+        })),
+        Op::CallAvailability { peer } => {
+            let peer = wire::parse_peer(&peer)?;
+            let availability = node.call_availability(&peer, now()).map_err(fail)?;
+            Ok(wire::call_availability_json(&availability))
+        }
+        Op::CallStart { peer } => {
+            let peer = wire::parse_peer(&peer)?;
+            let call = node.start_call(&peer, now(), &mut OsRng).map_err(fail)?;
+            Ok(json!({ "call": wire::hex_encode(&call) }))
+        }
+        Op::CallAnswer { call } => {
+            let call = wire::parse_call(&call)?;
+            node.answer_call(&call, now(), &mut OsRng).map_err(fail)?;
+            Ok(call_state_json(node, &call)?)
+        }
+        Op::CallDecline { call } => {
+            let call = wire::parse_call(&call)?;
+            node.decline_call(&call, now(), &mut OsRng).map_err(fail)?;
+            Ok(call_state_json(node, &call)?)
+        }
+        Op::CallCancel { call } => {
+            let call = wire::parse_call(&call)?;
+            node.cancel_call(&call, now(), &mut OsRng).map_err(fail)?;
+            Ok(call_state_json(node, &call)?)
+        }
+        Op::CallHangup { call } => {
+            let call = wire::parse_call(&call)?;
+            node.hangup_call(&call, now(), &mut OsRng).map_err(fail)?;
+            Ok(call_state_json(node, &call)?)
+        }
+        Op::CallAudioSend {
+            call,
+            timestamp_ms,
+            opus,
+        } => {
+            let call = wire::parse_call(&call)?;
+            let opus = wire::hex_decode(&opus).ok_or("Opus packet must be hex")?;
+            let accepted = node
+                .send_call_audio(&call, timestamp_ms, &opus)
+                .map_err(fail)?;
+            Ok(json!({ "accepted": accepted }))
+        }
+        Op::CallAudioTake { call } => {
+            let call = wire::parse_call(&call)?;
+            let frame = node.take_call_audio(&call).map_err(fail)?;
+            Ok(json!({ "frame": frame.as_ref().map(wire::call_audio_json) }))
+        }
         Op::Messages { peer } => {
             let peer = wire::parse_peer(&peer)?;
             let messages: Vec<Value> = node
-                .messages_with(&peer)
+                .resolved_messages_with(&peer)
                 .map_err(fail)?
                 .iter()
                 .map(wire::message_json)
@@ -1279,6 +1690,15 @@ async fn handle_op(
         // Handled at the connection layer; reaching the actor is a bug.
         Op::Subscribe => Err("subscribe is connection-level".to_owned()),
     }
+}
+
+fn call_state_json(node: &Node, call_id: &[u8; 16]) -> Result<Value, String> {
+    let call = node
+        .calls()
+        .into_iter()
+        .find(|call| &call.id == call_id)
+        .ok_or_else(|| "call does not exist on this installation".to_owned())?;
+    Ok(json!({ "call": wire::call_json(&call) }))
 }
 
 /// Background lifecycle: bootstrap, publish, NAT probing + relay

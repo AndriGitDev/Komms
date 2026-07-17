@@ -68,6 +68,165 @@ fn text_formatting_parity_fixture() -> Value {
     .expect("valid shared B9 text-formatting fixture")
 }
 
+fn file_presentation_parity_fixture() -> Value {
+    serde_json::from_str(include_str!(
+        "../../../fixtures/c1-file-presentation-parity.json"
+    ))
+    .expect("valid shared C1 file-presentation fixture")
+}
+
+fn ephemeral_parity_fixture() -> Value {
+    serde_json::from_str(include_str!("../../../fixtures/c4-ephemeral-parity.json"))
+        .expect("valid shared C4 ephemeral fixture")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn linked_device_ceremony_and_sync_via_strict_rpc_only() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = Daemon::start(test_config(directory.path(), "device-rpc-source"))
+        .await
+        .unwrap();
+    let target = Daemon::start(test_config(directory.path(), "device-rpc-target"))
+        .await
+        .unwrap();
+    let mut source_client = Client::connect(&source.socket_path).await;
+    let mut target_client = Client::connect(&target.socket_path).await;
+    target_client.ok(json!({ "op": "subscribe" })).await;
+
+    source_client
+        .ok(json!({
+            "op": "note_to_self_send",
+            "body": "source-only history",
+        }))
+        .await;
+    let source_account = source_client.ok(json!({ "op": "status" })).await["peer"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let source_device = source_client.ok(json!({ "op": "device_id" })).await["device"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let target_device = target_client.ok(json!({ "op": "device_id" })).await["device"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let offer = source_client.ok(json!({ "op": "device_link_begin" })).await["offer"].clone();
+    let acceptance = target_client
+        .ok(json!({
+            "op": "device_link_accept",
+            "offer": offer,
+            "name": "Laptop",
+        }))
+        .await;
+    assert_eq!(acceptance["code"].as_str().unwrap().len(), 6);
+    let source_code = source_client
+        .ok(json!({
+            "op": "device_link_code",
+            "response": acceptance["response"],
+        }))
+        .await;
+    assert_eq!(source_code["code"], acceptance["code"]);
+    let approved = source_client
+        .ok(json!({
+            "op": "device_link_approve",
+            "response": acceptance["response"],
+            "selection": {
+                "contacts": false,
+                "organization": false,
+                "history": false,
+            },
+            "confirmed": true,
+        }))
+        .await;
+    let completed = target_client
+        .ok(json!({
+            "op": "device_link_complete",
+            "package": approved["package"],
+            "confirmed": true,
+        }))
+        .await;
+    assert_eq!(completed["account"], source_account);
+    assert_eq!(completed["device"], target_device);
+    assert_ne!(source_device, target_device);
+    assert!(target_client
+        .ok(json!({ "op": "note_to_self_messages" }))
+        .await["messages"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        source_client.ok(json!({ "op": "linked_devices" })).await["devices"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    target_client
+        .wait_event(|event| {
+            event["type"] == "device_link_completed" && event["device"] == target_device
+        })
+        .await;
+
+    source_client
+        .ok(json!({
+            "op": "device_rename",
+            "device": target_device,
+            "name": "Travel laptop",
+        }))
+        .await;
+    let sync = source_client
+        .ok(json!({
+            "op": "device_sync_export",
+            "device": target_device,
+        }))
+        .await;
+    target_client
+        .ok(json!({
+            "op": "device_sync_import",
+            "bundle": sync["bundle"],
+        }))
+        .await;
+    assert!(
+        target_client.ok(json!({ "op": "linked_devices" })).await["devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|device| device["id"] == target_device && device["name"] == "Travel laptop")
+    );
+
+    source.shutdown().await;
+    target.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn file_presentation_via_strict_rpc_matches_shared_fail_closed_policy() {
+    let fixture = file_presentation_parity_fixture();
+    let directory = tempfile::tempdir().unwrap();
+    let daemon = Daemon::start(test_config(directory.path(), "file-presentation-rpc"))
+        .await
+        .unwrap();
+    let mut client = Client::connect(&daemon.socket_path).await;
+    let queued = client.ok(json!({ "op": "status" })).await["queued"].clone();
+
+    for case in fixture["cases"].as_array().unwrap() {
+        let presentation = client
+            .ok(json!({
+                "op": "attachment_file_presentation",
+                "media_type": case["media_type"],
+                "filename": case["filename"],
+            }))
+            .await;
+        assert_eq!(presentation["kind"], case["kind"]);
+        assert_eq!(presentation["open_policy"], case["open_policy"]);
+        assert_eq!(presentation["warnings"], case["warnings"]);
+    }
+
+    assert_eq!(client.ok(json!({ "op": "status" })).await["queued"], queued);
+    daemon.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn safe_text_formatting_via_strict_rpc_matches_shared_corpus_without_delivery_work() {
     let fixture = text_formatting_parity_fixture();
@@ -184,6 +343,210 @@ async fn private_contact_rename_via_strict_rpc_is_normalized_warned_and_delivery
         2
     );
     assert_eq!(a.ok(json!({ "op": "status" })).await["queued"], queued);
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn direct_quic_call_lifecycle_and_opus_via_rpc_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let alice = Daemon::start(test_config(dir.path(), "alice"))
+        .await
+        .unwrap();
+    let bob = Daemon::start(test_config(dir.path(), "bob")).await.unwrap();
+
+    let mut a = Client::connect(&alice.socket_path).await;
+    let mut b = Client::connect(&bob.socket_path).await;
+    let a_addr = listen_addr(&mut a).await;
+    let b_addr = listen_addr(&mut b).await;
+    let a_bundle = a.ok(json!({ "op": "bundle" })).await["bundle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let b_bundle = b.ok(json!({ "op": "bundle" })).await["bundle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bob_peer = a
+        .ok(json!({
+            "op": "add_contact",
+            "name": "bob",
+            "bundle": b_bundle,
+            "hints": [{ "multiaddr": b_addr }],
+        }))
+        .await["peer"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let alice_peer = b
+        .ok(json!({
+            "op": "add_contact",
+            "name": "alice",
+            "bundle": a_bundle,
+            "hints": [{ "multiaddr": a_addr }],
+        }))
+        .await["peer"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let mut a_events = Client::connect(&alice.socket_path).await;
+    let mut b_events = Client::connect(&bob.socket_path).await;
+    a_events.ok(json!({ "op": "subscribe" })).await;
+    b_events.ok(json!({ "op": "subscribe" })).await;
+
+    wait_carrier(&mut a, &bob_peer, "realtime").await;
+    let session_message = a
+        .ok(json!({
+            "op": "send",
+            "peer": bob_peer,
+            "body": "establish call session",
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut session_settled = false;
+    let mut last_alice_history = Value::Null;
+    let mut last_bob_history = Value::Null;
+    for _ in 0..200 {
+        let alice_history = a.ok(json!({ "op": "messages", "peer": bob_peer })).await;
+        let bob_history = b.ok(json!({ "op": "messages", "peer": alice_peer })).await;
+        let alice_delivered = alice_history["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| {
+                message["id"] == json!(session_message) && message["state"] == json!("delivered")
+            });
+        let bob_received = bob_history["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| {
+                message["direction"] == json!("in")
+                    && message["body"] == json!("establish call session")
+            });
+        if alice_delivered && bob_received {
+            session_settled = true;
+            break;
+        }
+        last_alice_history = alice_history;
+        last_bob_history = bob_history;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    if !session_settled {
+        let alice_status = a.ok(json!({ "op": "status" })).await;
+        let bob_status = b.ok(json!({ "op": "status" })).await;
+        panic!(
+            "call prerequisite session did not settle: alice={alice_status}, bob={bob_status}, alice_history={last_alice_history}, bob_history={last_bob_history}"
+        );
+    }
+    wait_carrier(&mut b, &alice_peer, "realtime").await;
+    let availability = wait_call_available(&mut a, &bob_peer).await;
+    assert_eq!(availability["peer"], json!(bob_peer));
+    assert!(availability["unavailable"].is_null());
+    assert!(a.ok(json!({ "op": "calls" })).await["calls"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    let call = a.ok(json!({ "op": "call_start", "peer": bob_peer })).await["call"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(call.len(), 32);
+    let incoming = b_events
+        .wait_event(|event| {
+            event["type"] == json!("call_updated")
+                && event["call"]["id"] == json!(call)
+                && event["call"]["phase"] == json!("ringing")
+        })
+        .await;
+    assert_eq!(incoming["call"]["direction"], json!("incoming"));
+    assert_eq!(incoming["call"]["peer"], json!(alice_peer));
+
+    let answered = b.ok(json!({ "op": "call_answer", "call": call })).await;
+    assert_eq!(answered["call"]["phase"], json!("connecting"));
+    let active_a = a_events
+        .wait_event(|event| {
+            event["type"] == json!("call_updated")
+                && event["call"]["id"] == json!(call)
+                && event["call"]["phase"] == json!("active")
+        })
+        .await;
+    let active_b = b_events
+        .wait_event(|event| {
+            event["type"] == json!("call_updated")
+                && event["call"]["id"] == json!(call)
+                && event["call"]["phase"] == json!("active")
+        })
+        .await;
+    assert_eq!(
+        active_a["call"]["responder_device"],
+        active_b["call"]["responder_device"]
+    );
+
+    let alice_packets = ["f801", "f802", "f803"];
+    let bob_packets = ["f811", "f812", "f813"];
+    for (index, packet) in alice_packets.iter().enumerate() {
+        assert_eq!(
+            a.ok(json!({
+                "op": "call_audio_send",
+                "call": call,
+                "timestamp_ms": 1_000 + index as u64 * 20,
+                "opus": packet,
+            }))
+            .await["accepted"],
+            json!(true)
+        );
+    }
+    for (index, packet) in bob_packets.iter().enumerate() {
+        assert_eq!(
+            b.ok(json!({
+                "op": "call_audio_send",
+                "call": call,
+                "timestamp_ms": 2_000 + index as u64 * 20,
+                "opus": packet,
+            }))
+            .await["accepted"],
+            json!(true)
+        );
+    }
+    let at_alice = wait_call_audio(&mut a, &call).await;
+    let at_bob = wait_call_audio(&mut b, &call).await;
+    assert_eq!(at_alice["call"], json!(call));
+    assert_eq!(at_alice["opus"], json!(bob_packets[0]));
+    assert_eq!(at_alice["timestamp_ms"], json!(2_000));
+    assert_eq!(at_bob["opus"], json!(alice_packets[0]));
+    assert_eq!(at_bob["timestamp_ms"], json!(1_000));
+
+    for history in [
+        a.ok(json!({ "op": "messages", "peer": bob_peer })).await,
+        b.ok(json!({ "op": "messages", "peer": alice_peer })).await,
+    ] {
+        assert_eq!(history["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            history["messages"][0]["body"],
+            json!("establish call session")
+        );
+    }
+
+    let ended = a.ok(json!({ "op": "call_hangup", "call": call })).await;
+    assert_eq!(ended["call"]["phase"], json!("ended"));
+    assert_eq!(ended["call"]["end_reason"], json!("hung_up"));
+    b_events
+        .wait_event(|event| {
+            event["type"] == json!("call_updated")
+                && event["call"]["id"] == json!(call)
+                && event["call"]["phase"] == json!("ended")
+        })
+        .await;
+    assert!(b
+        .call(json!({ "op": "call_audio_send", "call": call, "timestamp_ms": 3_000, "opus": "f8" }))
+        .await
+        .is_err());
+
     alice.shutdown().await;
     bob.shutdown().await;
 }
@@ -564,6 +927,34 @@ async fn wait_carrier(client: &mut Client, peer: &str, expected: &str) -> Value 
     panic!("no {expected} carrier verdict for {peer} within 5s");
 }
 
+async fn wait_call_available(client: &mut Client, peer: &str) -> Value {
+    let mut last = Value::Null;
+    for _ in 0..200 {
+        let availability = client
+            .ok(json!({ "op": "call_availability", "peer": peer }))
+            .await;
+        if availability["available"] == json!(true) {
+            return availability;
+        }
+        last = availability;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("call did not become available for {peer} within 10s: {last}");
+}
+
+async fn wait_call_audio(client: &mut Client, call: &str) -> Value {
+    for _ in 0..200 {
+        let result = client
+            .ok(json!({ "op": "call_audio_take", "call": call }))
+            .await;
+        if !result["frame"].is_null() {
+            return result["frame"].clone();
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("no authenticated call audio for {call} within 2s");
+}
+
 async fn wait_mention_supported(client: &mut Client, group: &str) -> Value {
     for _ in 0..100 {
         let capability = client
@@ -575,6 +966,79 @@ async fn wait_mention_supported(client: &mut Client, group: &str) -> Value {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     panic!("mention capability intersection did not become supported");
+}
+
+async fn wait_poll_revision(
+    client: &mut Client,
+    group: &str,
+    poll_id: &str,
+    revision: u64,
+) -> Value {
+    for _ in 0..100 {
+        let listed = client
+            .ok(json!({ "op": "group_polls", "group": group }))
+            .await;
+        if let Some(poll) = listed["polls"].as_array().and_then(|polls| {
+            polls.iter().find(|poll| {
+                poll["id"] == json!(poll_id)
+                    && poll["votes"].as_array().is_some_and(|votes| {
+                        votes.iter().any(|vote| vote["revision"] == json!(revision))
+                    })
+            })
+        }) {
+            return poll.clone();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("poll {poll_id} did not reach vote revision {revision}");
+}
+
+async fn wait_poll_closed(client: &mut Client, group: &str, poll_id: &str) -> Value {
+    for _ in 0..100 {
+        let listed = client
+            .ok(json!({ "op": "group_polls", "group": group }))
+            .await;
+        if let Some(poll) = listed["polls"].as_array().and_then(|polls| {
+            polls
+                .iter()
+                .find(|poll| poll["id"] == json!(poll_id) && poll["closed"] == json!(true))
+        }) {
+            return poll.clone();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("poll {poll_id} did not close");
+}
+
+async fn wait_authority_generation(client: &mut Client, group: &str, generation: u64) -> Value {
+    for _ in 0..100 {
+        let authority = client
+            .ok(json!({ "op": "group_authority", "group": group }))
+            .await;
+        if authority["signed"] == json!(true)
+            && authority["generation"]
+                .as_u64()
+                .is_some_and(|seen| seen >= generation)
+        {
+            return authority;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("group authority did not reach generation {generation}");
+}
+
+async fn wait_group_presence(client: &mut Client, group: &str, present: bool) {
+    for _ in 0..100 {
+        let groups = client.ok(json!({ "op": "groups" })).await;
+        let found = groups["groups"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item["id"] == json!(group)));
+        if found == present {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("group {group} presence did not become {present}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -695,6 +1159,13 @@ async fn note_to_self_via_rpc_is_local_and_uses_the_reserved_identity() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn two_daemons_message_via_rpc_only() {
+    let ephemeral = ephemeral_parity_fixture();
+    let hour = ephemeral["text_lifetimes"][1].as_u64().unwrap();
+    assert_eq!(ephemeral["content_kind"], json!(5));
+    assert_eq!(
+        ephemeral["guarantees"]["remote_erasure_promised"],
+        json!(false)
+    );
     let dir = tempfile::tempdir().unwrap();
     let alice = Daemon::start(test_config(dir.path(), "alice"))
         .await
@@ -780,6 +1251,89 @@ async fn two_daemons_message_via_rpc_only() {
     assert_eq!(record["state"], json!("delivered"));
     assert_eq!(record["direction"], json!("out"));
     assert_eq!(record["body"], json!("hello over the daemon"));
+
+    let disappearing = a
+        .ok(json!({
+            "op": "send_disappearing",
+            "peer": bob_peer,
+            "body": "temporary over strict RPC",
+            "lifetime_secs": hour,
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let temporary = b_events
+        .wait_event(|event| event["type"] == json!("message") && event["id"] == json!(disappearing))
+        .await;
+    assert_eq!(temporary["content_kind"], json!("disappearing_text"));
+    assert!(temporary["expires_at"].as_u64().is_some());
+    let temporary_history = b.ok(json!({ "op": "messages", "peer": alice_peer })).await;
+    let temporary_row = temporary_history["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["id"] == json!(disappearing))
+        .unwrap();
+    assert_eq!(temporary_row["content_kind"], json!("disappearing_text"));
+    assert_eq!(temporary_row["expires_at"], temporary["expires_at"]);
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let editable = a
+        .ok(json!({
+            "op": "send",
+            "peer": bob_peer,
+            "body": "editable RPC original",
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    b_events
+        .wait_event(|event| {
+            event["type"] == json!("message")
+                && event["id"] == json!(editable)
+                && event["content_kind"] == json!("text")
+        })
+        .await;
+    a_events
+        .wait_event(|event| event["id"] == json!(editable) && event["state"] == json!("delivered"))
+        .await;
+    let edit = a
+        .ok(json!({
+            "op": "edit_message",
+            "peer": bob_peer,
+            "target_author": alice_peer,
+            "target_content_id": editable,
+            "text": "editable RPC revised",
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let refresh = b_events
+        .wait_event(|event| event["type"] == json!("message_edited"))
+        .await;
+    assert_eq!(refresh["peer"], json!(alice_peer));
+    assert_eq!(refresh["target_content_id"], json!(editable));
+    a_events
+        .wait_event(|event| event["id"] == json!(edit) && event["state"] == json!("delivered"))
+        .await;
+    for history in [
+        a.ok(json!({ "op": "messages", "peer": bob_peer })).await,
+        b.ok(json!({ "op": "messages", "peer": alice_peer })).await,
+    ] {
+        let messages = history["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 3, "Edit events remain hidden");
+        let message = messages
+            .iter()
+            .find(|message| message["id"] == json!(editable))
+            .unwrap();
+        assert_eq!(message["body"], json!("editable RPC revised"));
+        assert_eq!(message["edited"], json!(true));
+        assert_eq!(message["edit_revision"], json!(1));
+        assert_eq!(message["versions"].as_array().unwrap().len(), 2);
+    }
 
     // Attachment input/output stays path-bounded at the RPC edge while all
     // cryptography, consent, progress, and carrier policy remain in the node.
@@ -910,6 +1464,73 @@ async fn two_daemons_message_via_rpc_only() {
         a.ok(json!({ "op": "attachments" })).await["attachments"][0]["state"],
         json!("cancelled")
     );
+
+    let once_bytes = b"strict RPC view-once bytes";
+    let once_source = dir.path().join("rpc-view-once.bin");
+    std::fs::write(&once_source, once_bytes).unwrap();
+    let once_id = a
+        .ok(json!({
+            "op": "attachment_send_view_once",
+            "peer": bob_peer,
+            "path": once_source.display().to_string(),
+            "media_type": "application/octet-stream",
+            "filename": "reveal-once.bin",
+            "lifetime_secs": hour,
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let once_offer = b_events
+        .wait_event(|event| {
+            event["type"] == json!("attachment_updated")
+                && event["attachment"]["content_id"] == json!(once_id)
+        })
+        .await;
+    assert_eq!(once_offer["attachment"]["view_once"], json!(true));
+    assert!(once_offer["attachment"]["expires_at"].as_u64().is_some());
+    let once_transfer = once_offer["attachment"]["transfer_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let once_message = b_events
+        .wait_event(|event| event["type"] == json!("message") && event["id"] == json!(once_id))
+        .await;
+    assert_eq!(once_message["content_kind"], json!("view_once_attachment"));
+    b.ok(json!({ "op": "attachment_accept", "transfer": once_transfer }))
+        .await;
+    b_events
+        .wait_event(|event| {
+            event["type"] == json!("attachment_updated")
+                && event["attachment"]["transfer_id"] == json!(once_transfer)
+                && event["attachment"]["state"] == json!("complete")
+        })
+        .await;
+    assert!(b
+        .call(json!({
+            "op": "attachment_export",
+            "transfer": once_transfer,
+            "path": dir.path().join("forbidden-view-once.bin").display().to_string(),
+        }))
+        .await
+        .unwrap_err()
+        .contains("view-once"));
+    let once_output = dir.path().join("rpc-view-once-output.bin");
+    b.ok(json!({
+        "op": "attachment_consume_view_once",
+        "transfer": once_transfer,
+        "path": once_output.display().to_string(),
+    }))
+    .await;
+    assert_eq!(std::fs::read(&once_output).unwrap(), once_bytes);
+    assert!(b
+        .call(json!({
+            "op": "attachment_consume_view_once",
+            "transfer": once_transfer,
+            "path": dir.path().join("second-view-once.bin").display().to_string(),
+        }))
+        .await
+        .is_err());
 
     // Bob replies over the established session; Alice sees it.
     b.ok(json!({ "op": "send", "peer": alice_peer, "body": "loud and clear" }))
@@ -1249,6 +1870,74 @@ async fn groups_via_rpc_only() {
         .iter()
         .all(|delivery| delivery["state"] == json!("delivered")));
 
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let editable = a
+        .ok(json!({
+            "op": "group_send",
+            "group": group,
+            "body": "editable group RPC original",
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    b_events
+        .wait_event(|event| {
+            event["type"] == json!("group_message")
+                && event["id"] == json!(editable)
+                && event["content_kind"] == json!("text")
+        })
+        .await;
+    a_events
+        .wait_event(|event| {
+            event["type"] == json!("group_delivery")
+                && event["id"] == json!(editable)
+                && event["state"] == json!("delivered")
+        })
+        .await;
+    let edit = a
+        .ok(json!({
+            "op": "group_edit_message",
+            "group": group,
+            "target_author": alice_peer,
+            "target_content_id": editable,
+            "text": "editable group RPC revised",
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let refresh = b_events
+        .wait_event(|event| event["type"] == json!("group_message_edited"))
+        .await;
+    assert_eq!(refresh["group"], json!(group));
+    assert_eq!(refresh["sender"], json!(alice_peer));
+    assert_eq!(refresh["target_content_id"], json!(editable));
+    a_events
+        .wait_event(|event| {
+            event["type"] == json!("group_delivery")
+                && event["id"] == json!(edit)
+                && event["state"] == json!("delivered")
+        })
+        .await;
+    for history in [
+        a.ok(json!({ "op": "group_messages", "group": group }))
+            .await,
+        b.ok(json!({ "op": "group_messages", "group": group }))
+            .await,
+    ] {
+        let message = history["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["id"] == json!(editable))
+            .unwrap();
+        assert_eq!(message["body"], json!("editable group RPC revised"));
+        assert_eq!(message["edited"], json!(true));
+        assert_eq!(message["edit_revision"], json!(1));
+        assert_eq!(message["versions"].as_array().unwrap().len(), 2);
+    }
+
     // B17 stays structured through RPC: the client supplies exact UTF-8 byte
     // ranges and peer ids, then the daemon atomically revalidates the review
     // token before network send. No display-name inference or raw frame bytes
@@ -1337,6 +2026,254 @@ async fn groups_via_rpc_only() {
         .await
         .unwrap_err();
     assert!(err.contains("peer") && err.contains("hex"), "got: {err}");
+
+    // C5 uses only stable ids across RPC. Votes are explicitly visible, a
+    // member's last deterministic revision wins, and the creator's close
+    // snapshot makes the final tally independent of delivery order.
+    let chat_rows_before_poll = a
+        .ok(json!({ "op": "group_messages", "group": group }))
+        .await["messages"]
+        .as_array()
+        .unwrap()
+        .len();
+    let poll_id = a
+        .ok(json!({
+            "op": "group_poll_create",
+            "group": group,
+            "question": "Lunch? 👩🏽‍🚀",
+            "options": ["Soup", "Salad"],
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let poll_event = b_events
+        .wait_event(|event| {
+            event["type"] == json!("poll_updated") && event["poll_id"] == json!(poll_id)
+        })
+        .await;
+    assert_eq!(poll_event["poll_author"], json!(alice_peer));
+    let poll = b.ok(json!({ "op": "group_polls", "group": group })).await["polls"][0].clone();
+    assert_eq!(poll["question"], json!("Lunch? 👩🏽‍🚀"));
+    assert_eq!(poll["votes_visible"], json!(true));
+    assert_eq!(poll["anonymous"], json!(false));
+    assert_eq!(poll["close_policy"], json!("manual_creator_snapshot"));
+    let soup = poll["options"][0]["id"].as_str().unwrap().to_owned();
+    let salad = poll["options"][1]["id"].as_str().unwrap().to_owned();
+
+    for option_id in [&soup, &salad] {
+        b.ok(json!({
+            "op": "group_poll_vote",
+            "group": group,
+            "poll_author": alice_peer,
+            "poll_id": poll_id,
+            "option_id": option_id,
+        }))
+        .await;
+        a_events
+            .wait_event(|event| {
+                event["type"] == json!("poll_updated") && event["poll_id"] == json!(poll_id)
+            })
+            .await;
+    }
+    for poll in [
+        wait_poll_revision(&mut a, &group, &poll_id, 2).await,
+        wait_poll_revision(&mut b, &group, &poll_id, 2).await,
+    ] {
+        assert_eq!(poll["votes"].as_array().unwrap().len(), 1);
+        assert_eq!(poll["votes"][0]["voter"], json!(bob_peer));
+        assert_eq!(poll["votes"][0]["revision"], json!(2));
+        assert_eq!(poll["votes"][0]["option_id"], json!(salad));
+        assert_eq!(poll["options"][1]["votes"], json!(1));
+    }
+
+    let close_id = a
+        .ok(json!({
+            "op": "group_poll_close",
+            "group": group,
+            "poll_author": alice_peer,
+            "poll_id": poll_id,
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    b_events
+        .wait_event(|event| {
+            event["type"] == json!("poll_updated") && event["poll_id"] == json!(poll_id)
+        })
+        .await;
+    let final_poll = wait_poll_closed(&mut b, &group, &poll_id).await;
+    assert_eq!(final_poll["closed"], json!(true));
+    assert_eq!(final_poll["close_event_id"], json!(close_id));
+    assert_eq!(final_poll["votes"][0]["option_id"], json!(salad));
+    let err = b
+        .call(json!({
+            "op": "group_poll_vote",
+            "group": group,
+            "poll_author": alice_peer,
+            "poll_id": poll_id,
+            "option_id": soup,
+        }))
+        .await
+        .unwrap_err();
+    assert!(err.contains("closed"), "got: {err}");
+    assert_eq!(
+        a.ok(json!({ "op": "group_messages", "group": group }))
+            .await["messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        chat_rows_before_poll,
+        "poll events never become empty chat rows"
+    );
+
+    // C6 remains typed across RPC: capability-gated legacy upgrade, owner
+    // role changes, generation-bound admin requests, signed moderation, and
+    // ownership transfer all converge without exposing authority payloads.
+    let legacy_authority = a
+        .ok(json!({ "op": "group_authority", "group": group }))
+        .await;
+    assert_eq!(legacy_authority["signed"], json!(false));
+    assert_eq!(legacy_authority["owner"], json!(alice_peer));
+    assert_eq!(legacy_authority["my_role"], json!("owner"));
+    let upgrade_generation = legacy_authority["generation"].as_u64().unwrap() + 1;
+    a.ok(json!({ "op": "group_upgrade_authority", "group": group }))
+        .await;
+    let upgraded = wait_authority_generation(&mut b, &group, upgrade_generation).await;
+    assert_eq!(upgraded["owner"], json!(alice_peer));
+    assert_eq!(upgraded["my_role"], json!("member"));
+    assert_eq!(upgraded["members"].as_array().unwrap().len(), 2);
+
+    a.ok(json!({
+        "op": "group_set_role",
+        "group": group,
+        "peer": bob_peer,
+        "role": "admin",
+    }))
+    .await;
+    let admin_generation = upgrade_generation + 1;
+    let administered = wait_authority_generation(&mut b, &group, admin_generation).await;
+    assert_eq!(administered["my_role"], json!("admin"));
+    let err = b
+        .call(json!({
+            "op": "group_set_role",
+            "group": group,
+            "peer": alice_peer,
+            "role": "member",
+        }))
+        .await
+        .unwrap_err();
+    assert!(err.contains("owner"), "got: {err}");
+
+    let rename_request = b
+        .ok(json!({
+            "op": "group_rename",
+            "group": group,
+            "name": "authority trail crew",
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let rename_generation = admin_generation + 1;
+    let rename_result = b_events
+        .wait_event(|event| {
+            event["type"] == json!("group_admin_request_resolved")
+                && event["request_id"] == json!(rename_request)
+        })
+        .await;
+    assert_eq!(rename_result["accepted"], json!(true));
+    assert_eq!(rename_result["generation"], json!(rename_generation));
+    assert!(rename_result["state_id"].as_str().is_some());
+    wait_authority_generation(&mut b, &group, rename_generation).await;
+    let renamed_groups = b.ok(json!({ "op": "groups" })).await;
+    assert!(renamed_groups["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|listed| {
+            listed["id"] == json!(group) && listed["name"] == json!("authority trail crew")
+        }));
+
+    let moderated_poll = a
+        .ok(json!({
+            "op": "group_poll_create",
+            "group": group,
+            "question": "Close for weather?",
+            "options": ["Keep open", "Close"],
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    b_events
+        .wait_event(|event| {
+            event["type"] == json!("poll_updated") && event["poll_id"] == json!(moderated_poll)
+        })
+        .await;
+    let moderation_request = b
+        .ok(json!({
+            "op": "group_poll_moderate_close",
+            "group": group,
+            "poll_author": alice_peer,
+            "poll_id": moderated_poll,
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let moderation_generation = rename_generation + 1;
+    let moderation_result = b_events
+        .wait_event(|event| {
+            event["type"] == json!("group_admin_request_resolved")
+                && event["request_id"] == json!(moderation_request)
+        })
+        .await;
+    assert_eq!(moderation_result["accepted"], json!(true));
+    assert_eq!(
+        moderation_result["generation"],
+        json!(moderation_generation)
+    );
+    let moderated = wait_poll_closed(&mut b, &group, &moderated_poll).await;
+    assert_eq!(moderated["moderated_by"], json!(alice_peer));
+    assert_eq!(moderated["close_policy"], json!("signed_owner_snapshot"));
+
+    a.ok(json!({
+        "op": "group_transfer_owner",
+        "group": group,
+        "peer": bob_peer,
+    }))
+    .await;
+    let bob_owner_generation = moderation_generation + 1;
+    let bob_owner = wait_authority_generation(&mut b, &group, bob_owner_generation).await;
+    assert_eq!(bob_owner["owner"], json!(bob_peer));
+    assert_eq!(bob_owner["owner_epoch"], json!(1));
+    assert_eq!(bob_owner["my_role"], json!("owner"));
+    let err = b
+        .call(json!({ "op": "group_leave", "group": group }))
+        .await
+        .unwrap_err();
+    assert!(err.contains("owner"), "got: {err}");
+
+    b.ok(json!({
+        "op": "group_transfer_owner",
+        "group": group,
+        "peer": alice_peer,
+    }))
+    .await;
+    let alice_owner_generation = bob_owner_generation + 1;
+    let alice_owner = wait_authority_generation(&mut a, &group, alice_owner_generation).await;
+    assert_eq!(alice_owner["owner"], json!(alice_peer));
+    assert_eq!(alice_owner["owner_epoch"], json!(2));
+    a.ok(json!({
+        "op": "group_set_role",
+        "group": group,
+        "peer": bob_peer,
+        "role": "member",
+    }))
+    .await;
+    wait_authority_generation(&mut b, &group, alice_owner_generation + 1).await;
 
     // B10 stays local and structured through RPC: explicit random folder ids,
     // complete-set reorder, and exact typed targets without name inference.
@@ -1823,9 +2760,7 @@ async fn groups_via_rpc_only() {
 
     a.ok(json!({ "op": "group_remove", "group": group, "peer": bob_peer }))
         .await;
-    b_events
-        .wait_event_count(|event| event["type"] == json!("group_updated"), 2)
-        .await;
+    wait_group_presence(&mut b, &group, false).await;
     assert!(b.ok(json!({ "op": "groups" })).await["groups"]
         .as_array()
         .unwrap()
@@ -1837,9 +2772,7 @@ async fn groups_via_rpc_only() {
         .as_str()
         .unwrap()
         .to_owned();
-    b_events
-        .wait_event_count(|event| event["type"] == json!("group_updated"), 3)
-        .await;
+    wait_group_presence(&mut b, &leave_group, true).await;
     assert_eq!(
         b.ok(json!({ "op": "group_leave", "group": leave_group }))
             .await,

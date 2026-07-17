@@ -20,6 +20,23 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content" />
 
+    <TextView
+        android:id="@+id/attachment_safety"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:text="@string/attachment_safety_notice"
+        android:textSize="12sp" />
+
+    <TextView
+        android:id="@+id/attachment_warnings"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:textColor="@color/danger"
+        android:textSize="12sp"
+        android:visibility="gone" />
+
     <ImageView
         android:id="@+id/attachment_preview_image"
         android:contentDescription="@string/attachment_preview_description"
@@ -117,6 +134,13 @@
                 android:text="@string/attachment_cancel"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content" />
+
+            <Button
+                android:id="@+id/attachment_open"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/attachment_open"
+                android:visibility="gone" />
 
             <Button
                 android:id="@+id/attachment_export"

@@ -14,7 +14,7 @@ security indicators are the node's own, verbatim.
   lock path. Capture protection remains honestly best effort because desktop OS,
   window-server, compositor, privileged-software, and external-camera behavior
   cannot be controlled universally.
-- **Reduce input retention on every editable text control.** All 25 controls are
+- **Reduce input retention on every editable text control.** All audited controls are
   semantically classified and receive disabled autocomplete, autocorrect,
   autocapitalization, and spellcheck at startup and after modal cloning.
   Passphrases and recovery mnemonics are password inputs. The unlock screen
@@ -25,15 +25,44 @@ security indicators are the node's own, verbatim.
 - **Pair out-of-band**: share your prekey bundle as a QR code or pasteable
   hex (interoperable with `kult bundle` / `kult add`), or add a contact
   from their kult address alone via DHT lookup.
+- **Link and manage owned devices** without a cloud account. The keyboard and
+  screen-reader-accessible manager lists exact physical devices, supports signed
+  rename and permanently confirmed revoke, and drives both sides of the
+  time-bounded QR/paste ceremony with matching comparison codes and selective
+  transfer. Explicit encrypted sync export/import carries only the C2 allowlist;
+  per-device cryptography and delivery state remain independent.
 - **Rename a contact's private local petname** from the active chat. The shell
   targets the exact peer key, previews shared NFC normalization and duplicate/
   confusable/bidi/invisible warnings, and requires explicit confirmation before
   accepting a warned name. Duplicate names remain separate; rename survives
-  restart/`KKR4` and creates no network, notification, queue, or transport work.
+  restart/`KKR7` and creates no network, notification, queue, or transport work.
 - **Message** with honest delivery states: `queued` → `sent` (handed to a
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted
   mesh links.
+- **Make alpha live-audio calls** to paired contacts only while a fresh direct
+  QUIC route is observed. The accessible call bar provides ring, answer,
+  decline, cancel, and hangup state plus an explicit direct-QUIC/no-history
+  explanation. Capture and playback use bounded 48 kHz mono 20 ms Opus packets;
+  hiding or locking Komms tears the call down and clears media state. TCP,
+  relay-only, mailbox, sneakernet, and mesh routes never enable or queue a call.
+- **Manage signed group authority** with visible owner/admin/member roles,
+  capability-gated legacy upgrade, owner/admin rename and membership controls,
+  owner-only role grants and ownership transfer, and signed poll moderation.
+  The members dialog shows generation and signed/legacy state, prevents the
+  owner from leaving, and reports terminal admin-request results without
+  parsing protocol bytes in the webview.
+- **Send disappearing pairwise/group text and view-once attachments** through
+  explicit lifetime selectors. History shows the device-local deadline.
+  View-once rows never preview, autoplay, open, or export through ordinary
+  actions; Reveal once uses the terminal protected-output path and refreshes the
+  row after consumption. Copy states that recipients/other devices may retain
+  copies and never promises screenshot prevention or remote erasure.
+- **Edit authored canonical Text** in pairwise and group history through an
+  incognito modal. Edit is offered only on exact outbound text, uses the shared
+  capability/authorship checks, refreshes on typed target events, shows an
+  edited revision marker, and exposes the original plus every valid version in
+  an accessible disclosure. Editing never erases a prior version.
 - **Render safe source formatting** in pairwise, group, note-to-self, and
   scheduled bubbles through the shared bounded formatter. The webview creates
   only fixed inert DOM/text nodes, composes mention highlighting, and copies the
@@ -63,6 +92,11 @@ security indicators are the node's own, verbatim.
 - **Use sender-key groups**: create and list groups, read history, send,
   add/remove members, and leave. Outbound bubbles show a separate honest
   delivery state for every recipient, so partial delivery stays visible.
+- **Create and vote in encrypted group polls** using dedicated accessible
+  cards rather than chat bubbles. The current roster is fixed at creation,
+  votes and voter identities are visible to members (not anonymous), choices
+  can change before closure, and only the creator can freeze the final visible
+  snapshot. Exact Unicode and protocol byte limits are preserved.
 - **Mention current group members** through an explicit roster picker with
   Arrow/Enter/Escape keyboard operation, screen-reader announcements, duplicate-
   petname disambiguation, and non-color-only highlighted history. Mention tokens
@@ -87,11 +121,11 @@ security indicators are the node's own, verbatim.
   note-to-self in one leading accessible block. Keyboard buttons provide exact
   complete-set reorder and unpin; unavailable records remain visible for exact
   cleanup. Folder selection and label filtering run before pin/activity order.
-  The 8,192-pin bound, stable typed identity, restart/`KKR4` restoration, and
+  The 8,192-pin bound, stable typed identity, restart/`KKR7` restoration, and
   zero-network behavior come from the shared core rather than display names.
 - **Choose System, Light, or Dark appearance** at the gate or in the unlocked
   app. A non-sensitive local cache applies before first paint; after unlock the
-  sealed F5 `appearance.theme` value is authoritative and travels in `KKR4`.
+  sealed F5 `appearance.theme` value is authoritative and travels in `KKR7`.
   System follows live OS changes, semantic CSS roles meet the shared contrast
   targets, `prefers-contrast` and `prefers-reduced-motion` remain native, and
   delivery/security meaning always retains text, glyph, or accessible labels.
@@ -100,7 +134,8 @@ security indicators are the node's own, verbatim.
   offers eight bundled glyphs, local JPEG/PNG selection with centered-square crop,
   clear-to-fallback, and quota usage. The shared core emits only metadata-free
   256×256 RGBA PNGs, enforces 512 KiB/1,024-record/64 MiB limits, and safely falls
-  back after corrupt bytes. Icons travel only in `KKR4`, never URLs, peer sync,
+  back after corrupt bytes. Icons travel only in `KKR7` or authenticated
+  own-device C2 sync, never URLs, peer sync,
   envelopes, capabilities, queues, notifications, or transports.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends, compared out-of-band, with a visible verified badge.
@@ -133,7 +168,7 @@ path dependency on `kult-ffi`.
 Custom-icon acceptance consumes the shared B13 fixture through the same session
 surface the Tauri commands wrap: canonical metadata-free local data URLs, exact
 folder/note targets, bundled and selected-image paths, quota accounting,
-restart/`KKR4`, safe fallback, local events, and zero delivery work. Rust node
+restart/`KKR7`, safe fallback, local events, and zero delivery work. Rust node
 acceptance independently covers contact and group identities plus corrupt sealed
 legacy bytes.
 
@@ -173,10 +208,20 @@ directory.
 - Mention target ids, ranges, and text stay inside the encrypted content body.
   Desktop notification handling receives only an endpoint-local render-safe
   signal; it does not promise server push or online delivery.
+- Ephemeral exact deadlines, lifecycle state, deletion, and tombstones live in
+  the shared core. The webview receives only typed expiry/terminal events and
+  cannot bypass view-once through its ordinary preview/export/audio actions.
+  KKR6 excludes live ephemeral plaintext/media and includes terminal
+  tombstones. See [C4 semantics and qualification](../../docs/19-ephemeral-messages.md).
+- Call control and media are transient shared-core state. The webview receives
+  only render-safe status and bounded authenticated Opus packets; it never sees
+  ratchet or call keys. Calls create no history, backup, C2 sync, mailbox, or
+  mesh work. See [C7 semantics and qualification](../../docs/23-live-audio-calls.md).
 - Folder, pin, and label ids, names, order, membership, filters/selections, and stale
   diagnostics stay in the existing sealed local store or process-local UI
   state. They never enter envelopes, DHT records, capabilities, analytics,
   notifications, or logs; navigation/filtering changes presentation only.
   Custom icons are likewise exact typed sealed local records, rendered only from
-  verified bounded data URLs. `KKR4` preserves them exactly, while multi-device
-  synchronization, message pins, and message labels are not implemented.
+  verified bounded data URLs. `KKR7` preserves them exactly and C2 can converge
+  them only between authorized owned devices; message pins and message labels
+  are not implemented.

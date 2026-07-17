@@ -19,13 +19,18 @@ product promise merely because the file exists.
 | [0010](0010-ffi-embedded-runtime.md) | Accepted | UniFFI embedded runtime |
 | [0011](0011-mnemonic-sealed-backup.md) | Accepted | Mnemonic-sealed backup |
 | [0012](0012-sender-key-groups.md) | Accepted | Sender-key group messaging |
-| [0013](0013-real-time-calls.md) | Proposed | Real-time call transport and gating |
+| [0013](0013-real-time-calls.md) | Accepted; audio alpha implemented | Direct-QUIC real-time call transport and gating |
 | [0014](0014-versioned-message-content.md) | Accepted | Versioned encrypted message content |
 | [0015](0015-encrypted-attachment-pipeline.md) | Proposed; implementation exists | Encrypted attachment pipeline and no-airtime policy |
 | [0016](0016-group-mention-content.md) | Accepted | Canonical group-mention content |
 | [0017](0017-optional-hybrid-modes.md) | Proposed | Optional service modes and trust boundary |
 | [0018](0018-pairwise-rendezvous.md) | Proposed | Rotating pairwise rendezvous |
 | [0019](0019-native-wake-gateway.md) | Proposed | Capability-gated native wake |
+| [0020](0020-authenticated-message-edits.md) | Accepted | Immutable authenticated message-edit events and deterministic convergence |
+| [0021](0021-ephemeral-retention.md) | Accepted | Authenticated local expiry, view-once consumption, and coarse relay retention |
+| [0022](0022-convergent-group-polls.md) | Accepted | Visible-vote group polls, fixed electorates, deterministic vote heads, and creator closure |
+| [0023](0023-group-roles-and-owner-authority.md) | Accepted | Owner-serialized roles, signed generation-bound admin requests, and authority transfer |
+| [0024](0024-account-authorized-linked-devices.md) | Accepted | Account-authorized physical devices, confirmed linking, per-device cryptography, deterministic sync, revocation, and recovery |
 
 The attachment implementation follows ADR-0015 and its hard no-airtime rule,
 but the ADR file still carries Proposed status. This index reports that

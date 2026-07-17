@@ -26,6 +26,13 @@ reproduction steps or a proof-of-concept where applicable.
   [cryptography specification](docs/04-cryptography.md) for the intended
   guarantees and accepted limits.
 
+For C3 message editing, cross-author application, cross-conversation target
+confusion, raw-content authorization bypasses, arrival-order divergence,
+capability downgrade, hidden prior-version loss, and plaintext edit metadata are
+in scope. The intended immutable-event and retained-version contract is
+[18: Authenticated Message Editing](docs/18-message-editing.md) and
+[ADR-0020](docs/adr/0020-authenticated-message-edits.md).
+
 ## Scope notes
 
 Accepted limitations documented in

@@ -419,7 +419,7 @@ pub enum LocalMetadataRecord {
 }
 
 /// Stable logical key used for lookup, replacement, and deletion.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocalMetadataKey {
     /// Conversation registry key.
     Conversation(ConversationId),

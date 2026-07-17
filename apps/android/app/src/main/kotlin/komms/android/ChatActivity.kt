@@ -1,16 +1,22 @@
 package komms.android
 
+import android.Manifest
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.Menu
 import android.view.MenuItem
+import android.view.View
 import android.view.ViewGroup
+import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import java.text.DateFormat
@@ -38,14 +44,31 @@ import uniffi.kult_ffi.ScheduledMessage
 class ChatActivity : SecureActivity() {
     private lateinit var peer: String
     private lateinit var contactName: String
-    private val adapter = MessagesAdapter()
+    private val adapter = MessagesAdapter(
+        onEdit = ::editMessage,
+        onHistory = { showEditHistory(it.versions) },
+    )
     private lateinit var attachmentController: AttachmentController
     private lateinit var audioController: AudioMessageController
+    private lateinit var callController: CallController
+    private var pendingMicrophoneAction: (() -> Unit)? = null
+    private val microphonePermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val action = pendingMicrophoneAction
+        pendingMicrophoneAction = null
+        if (granted && action != null) {
+            prepareForLiveCall(action)
+        } else if (!granted) {
+            toast(getString(R.string.call_microphone_denied))
+        }
+    }
 
     private val listener: (Event) -> Unit = { event ->
         val relevant = when (event) {
             is Event.DeliveryUpdated -> true // ids are ours or cheap to refresh
             is Event.MessageReceived -> event.peer == peer
+            is Event.MessageEdited -> event.peer == peer
             is Event.AwaitingFasterLink -> true
             is Event.ScheduledMessageUpdated -> true
             is Event.ScheduledMessageCancelled -> true
@@ -53,9 +76,18 @@ class ChatActivity : SecureActivity() {
             is Event.AttachmentUpdated ->
                 ::attachmentController.isInitialized &&
                     attachmentController.isRelevant(event.attachment)
+            is Event.EphemeralRemoved ->
+                event.conversationKind == "pairwise" && event.conversationId == peer
+            is Event.CallUpdated -> event.call.peer == peer
             else -> false
         }
-        if (relevant) runOnUiThread { refresh() }
+        if (relevant) runOnUiThread {
+            if (event is Event.CallUpdated && ::callController.isInitialized) {
+                callController.onCallUpdated(event.call)
+            } else {
+                refresh()
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -81,13 +113,23 @@ class ChatActivity : SecureActivity() {
             carrierExplanation = { session -> session.audioCarrierExplanation(peer) },
             refresh = ::refresh,
         )
+        callController = CallController(
+            activity = this,
+            peer = peer,
+            contactName = contactName,
+            withMicrophonePermission = ::withMicrophonePermission,
+        )
         attachmentController = AttachmentController(
             activity = this,
             belongsHere = {
                 it.conversation == AttachmentConversation.PAIRWISE && it.peer == peer
             },
-            send = { session, path, mediaType, filename, preview ->
-                if (preview == null) {
+            send = { session, path, mediaType, filename, preview, viewOnce, lifetime ->
+                if (viewOnce) {
+                    session.sendViewOnceAttachment(
+                        peer, path, mediaType, filename, preview, lifetime,
+                    )
+                } else if (preview == null) {
                     session.sendAttachment(peer, path, mediaType, filename)
                 } else {
                     session.sendAttachmentWithPreview(peer, path, mediaType, filename, preview)
@@ -100,6 +142,7 @@ class ChatActivity : SecureActivity() {
         )
 
         val input = findViewById<EditText>(R.id.chat_input)
+        configureEphemeralComposer()
         findViewById<android.widget.Button>(R.id.chat_schedule).setOnClickListener {
             schedule(input, null)
         }
@@ -107,7 +150,11 @@ class ChatActivity : SecureActivity() {
             val body = input.text.toString()
             if (body.isEmpty()) return@setOnClickListener
             val session = NodeHolder.session ?: return@setOnClickListener
-            runNode(work = { session.send(peer, body) }) {
+            val lifetime = selectedEphemeralLifetime()
+            runNode(work = {
+                if (lifetime == null) session.send(peer, body)
+                else session.sendDisappearing(peer, body, lifetime)
+            }) {
                 input.text.clear()
                 refresh()
             }
@@ -120,10 +167,12 @@ class ChatActivity : SecureActivity() {
         NodeHolder.removeListener(listener)
         if (::attachmentController.isInitialized) attachmentController.close()
         if (::audioController.isInitialized) audioController.close()
+        if (::callController.isInitialized) callController.close()
         super.onDestroy()
     }
 
     override fun onStop() {
+        if (::callController.isInitialized) callController.onStop()
         if (::attachmentController.isInitialized) attachmentController.onStop()
         if (::audioController.isInitialized) audioController.onStop()
         super.onStop()
@@ -136,7 +185,24 @@ class ChatActivity : SecureActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (::callController.isInitialized) callController.onResume()
         refresh()
+    }
+
+    private fun withMicrophonePermission(action: () -> Unit) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            prepareForLiveCall(action)
+        } else {
+            pendingMicrophoneAction = action
+            microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    private fun prepareForLiveCall(action: () -> Unit) {
+        if (::audioController.isInitialized) audioController.prepareForLiveCall()
+        action()
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
@@ -225,6 +291,16 @@ class ChatActivity : SecureActivity() {
         runNode(work = { session.cancelScheduled(message.id) }) { refresh() }
     }
 
+    private fun editMessage(message: Message) {
+        val session = NodeHolder.session ?: return
+        if (message.direction != Direction.OUTBOUND || message.contentKind != ContentKind.TEXT) return
+        showMessageEdit(message.body) { replacement ->
+            runNode(
+                work = { session.editMessage(peer, session.peer, message.id, replacement) },
+            ) { refresh() }
+        }
+    }
+
     /** Replace this contact's delivery hints (one per line, `kind value`). */
     private fun editHints() {
         val view = LayoutInflater.from(this).inflate(R.layout.dialog_hints, null)
@@ -250,13 +326,19 @@ private data class ChatScreenState(
 )
 
 /** Message bubbles with the honest state caption. */
-private class MessagesAdapter : RecyclerView.Adapter<MessagesAdapter.Holder>() {
+private class MessagesAdapter(
+    private val onEdit: (Message) -> Unit,
+    private val onHistory: (Message) -> Unit,
+) : RecyclerView.Adapter<MessagesAdapter.Holder>() {
     private var items = listOf<RenderedMessage<Message>>()
 
     class Holder(view: android.view.View) : RecyclerView.ViewHolder(view)
 
     fun submit(list: List<RenderedMessage<Message>>) {
-        items = list.filter { it.value.contentKind != ContentKind.ATTACHMENT }
+        items = list.filter {
+            it.value.contentKind != ContentKind.ATTACHMENT &&
+                it.value.contentKind != ContentKind.VIEW_ONCE_ATTACHMENT
+        }
         notifyDataSetChanged()
     }
 
@@ -290,7 +372,35 @@ private class MessagesAdapter : RecyclerView.Adapter<MessagesAdapter.Holder>() {
         }
         val time = DateFormat.getTimeInstance(DateFormat.SHORT)
             .format(Date(message.timestamp.toLong() * 1000))
-        holder.itemView.findViewById<TextView>(R.id.message_meta).text =
-            if (state.isEmpty()) time else "$time · $state"
+        holder.itemView.findViewById<TextView>(R.id.message_meta).text = buildString {
+            append(if (state.isEmpty()) time else "$time · $state")
+            if (message.edited) {
+                append(" · ")
+                append(context.getString(R.string.message_edited_revision, message.editRevision.toString()))
+            }
+            if (message.contentKind == ContentKind.DISAPPEARING_TEXT && message.expiresAt != null) {
+                append(" · removes ")
+                append(
+                    DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+                        .format(Date(message.expiresAt!!.toLong() * 1000)),
+                )
+            }
+        }
+        holder.itemView.findViewById<Button>(R.id.message_edit).apply {
+            visibility = if (outbound && message.contentKind == ContentKind.TEXT) {
+                View.VISIBLE
+            } else {
+                View.GONE
+            }
+            setOnClickListener { onEdit(message) }
+        }
+        holder.itemView.findViewById<Button>(R.id.message_history).apply {
+            visibility = if (message.edited && message.versions.isNotEmpty()) {
+                View.VISIBLE
+            } else {
+                View.GONE
+            }
+            setOnClickListener { onHistory(message) }
+        }
     }
 }

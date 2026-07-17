@@ -3,6 +3,7 @@
 // storage, and completed objects leave through a caller-selected export picker.
 
 import KommsCore
+import QuickLook
 import SwiftUI
 import UniformTypeIdentifiers
 import UIKit
@@ -478,6 +479,8 @@ private struct AttachmentReviewSheet: View {
     @State private var regionHeight = "32"
     @State private var regionStrength = "8"
     @State private var filename: String
+    @State private var viewOnce = false
+    @State private var viewOnceLifetime = EphemeralLifetime.day
 
     init(
         destination: AttachmentDestination,
@@ -505,6 +508,18 @@ private struct AttachmentReviewSheet: View {
                 switch prepared.kind {
                 case .generic(let file): genericReview(file)
                 case .image(let image): imageEditor(image)
+                }
+                Section("Retention") {
+                    Toggle("View once", isOn: $viewOnce)
+                    if viewOnce {
+                        Picker("Remove unopened copy after", selection: $viewOnceLifetime) {
+                            ForEach(EphemeralLifetime.allCases.dropFirst()) { value in
+                                Text(value.label).tag(value)
+                            }
+                        }
+                        Text("Opening is terminal on this installation. The item is removed here before it is shown; recipients, other devices, screenshots, and external applications may retain copies.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                 }
                 Section("Current carrier policy") {
                     Text(carrier)
@@ -739,7 +754,9 @@ private struct AttachmentReviewSheet: View {
             do {
                 try await model.sendPreparedAttachment(
                     destination: destination, prepared: prepared,
-                    expectedCarrier: carrierSnapshot)
+                    expectedCarrier: carrierSnapshot,
+                    viewOnce: viewOnce,
+                    lifetimeSeconds: viewOnceLifetime.rawValue)
                 dismiss()
             } catch {
                 let message = errorText(error)
@@ -768,6 +785,10 @@ struct AttachmentTransferView: View {
     @State private var error: String?
     @State private var exportItem: AttachmentExport?
     @State private var exportDirectory: URL?
+    @State private var openItem: AttachmentOpen?
+    @State private var openDirectory: URL?
+    @State private var confirmingOpen = false
+    @State private var confirmingReveal = false
     @State private var previewImage: UIImage?
     @State private var protectedAudio: ProtectedAudio?
 
@@ -791,7 +812,9 @@ struct AttachmentTransferView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Image(systemName: mediaIcon)
-                Text(primary?.mediaType == "audio/wav" ? "Audio message" : (primary?.filename ?? "attachment"))
+                Text(attachment.viewOnce
+                    ? "View once · \(isolated(primary?.filename ?? "attachment"))"
+                    : primary?.mediaType == "audio/wav" ? "Audio message" : isolated(primary?.filename ?? "attachment"))
                     .font(.headline)
                 Spacer()
                 if working { ProgressView().controlSize(.small) }
@@ -801,7 +824,21 @@ struct AttachmentTransferView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            if let previewImage {
+            Text(attachment.viewOnce
+                ? "Sender-provided name and type. Not scanned. Opening is terminal here; other devices may retain copies."
+                : "Sender-provided name and type. Not scanned for malware; completed files never open automatically.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            if let primary {
+                ForEach(primary.presentation.warnings.indices, id: \.self) { index in
+                    Text(warningText(primary.presentation.warnings[index]))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.red)
+                }
+            }
+
+            if let previewImage, !attachment.viewOnce {
                 Image(uiImage: previewImage)
                     .resizable()
                     .scaledToFit()
@@ -810,9 +847,9 @@ struct AttachmentTransferView: View {
                     .accessibilityLabel("Local attachment preview")
             }
 
-            if let protectedAudio {
+            if let protectedAudio, !attachment.viewOnce {
                 ProtectedAudioView(audio: protectedAudio)
-            } else if primary?.mediaType == "audio/wav" && attachment.state == .complete {
+            } else if !attachment.viewOnce && primary?.mediaType == "audio/wav" && attachment.state == .complete {
                 ProgressView("Preparing protected audio playback…")
             }
 
@@ -856,8 +893,17 @@ struct AttachmentTransferView: View {
                         }
                     }
                     if attachment.direction == .inbound && attachment.state == .complete {
-                        Button("Export…") { prepareExport() }
-                            .disabled(working || primary == nil)
+                        if attachment.viewOnce {
+                            Button("Reveal once…") { confirmingReveal = true }
+                                .disabled(working || primary == nil)
+                        } else if primary?.presentation.openPolicy == .externalOpen {
+                            Button("Open…") { confirmingOpen = true }
+                                .disabled(working || primary == nil)
+                        }
+                        if !attachment.viewOnce {
+                            Button("Export…") { prepareExport() }
+                                .disabled(working || primary == nil)
+                        }
                     }
                 }
             }
@@ -867,10 +913,34 @@ struct AttachmentTransferView: View {
         .sheet(item: $exportItem, onDismiss: cleanupExport) { item in
             AttachmentExportPicker(file: item.file) { exportItem = nil }
         }
+        .sheet(item: $openItem, onDismiss: cleanupOpen) { item in
+            AttachmentOpenPreview(file: item.file)
+        }
+        .confirmationDialog(
+            "Open completed file?",
+            isPresented: $confirmingOpen,
+            titleVisibility: .visible
+        ) {
+            Button("Open with the system viewer") { prepareOpen() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The sender-provided file was not scanned for malware.")
+        }
+        .confirmationDialog(
+            "Reveal this item once?",
+            isPresented: $confirmingReveal,
+            titleVisibility: .visible
+        ) {
+            Button("Reveal once") { prepareViewOnceReveal() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Komms records consumption and removes the local message and media before showing the file. Other devices and applications may retain copies.")
+        }
         .task(id: previewTaskKey) { await loadPreview() }
         .task(id: audioTaskKey) { await loadAudio() }
         .onDisappear {
             cleanupExport()
+            cleanupOpen()
             protectedAudio?.remove()
             protectedAudio = nil
         }
@@ -899,7 +969,8 @@ struct AttachmentTransferView: View {
     }
 
     private func loadAudio() async {
-        guard primary?.mediaType == "audio/wav", attachment.state == .complete else {
+        guard !attachment.viewOnce,
+              primary?.mediaType == "audio/wav", attachment.state == .complete else {
             protectedAudio?.remove()
             protectedAudio = nil
             return
@@ -913,6 +984,10 @@ struct AttachmentTransferView: View {
     }
 
     private func loadPreview() async {
+        guard !attachment.viewOnce else {
+            previewImage = nil
+            return
+        }
         let sealed = attachment.objects.contains { $0.preview && $0.state == .complete }
         let canonical = primary?.mediaType == "image/png" && attachment.state == .complete
         guard sealed || canonical else {
@@ -984,10 +1059,55 @@ struct AttachmentTransferView: View {
         }
     }
 
+    private func prepareOpen() {
+        guard primary?.presentation.openPolicy == .externalOpen else {
+            error = "This file can only be exported because its name or type is unknown, mismatched, or potentially active."
+            return
+        }
+        working = true
+        error = nil
+        Task {
+            defer { working = false }
+            do {
+                let file = try await model.prepareAttachmentExport(
+                    transfer: attachment.transferId, filename: primary?.filename)
+                openDirectory = file.deletingLastPathComponent()
+                openItem = AttachmentOpen(file: file)
+            } catch {
+                self.error = errorText(error)
+            }
+        }
+    }
+
+    private func prepareViewOnceReveal() {
+        guard attachment.viewOnce else { return }
+        working = true
+        error = nil
+        Task {
+            defer { working = false }
+            do {
+                let file = try await model.prepareViewOnceReveal(
+                    transfer: attachment.transferId, filename: primary?.filename)
+                openDirectory = file.deletingLastPathComponent()
+                openItem = AttachmentOpen(file: file)
+            } catch {
+                self.error = errorText(error)
+            }
+        }
+    }
+
     private func cleanupExport() {
         if let exportDirectory {
             try? FileManager.default.removeItem(at: exportDirectory)
             self.exportDirectory = nil
+        }
+    }
+
+
+    private func cleanupOpen() {
+        if let openDirectory {
+            try? FileManager.default.removeItem(at: openDirectory)
+            self.openDirectory = nil
         }
     }
 }
@@ -995,6 +1115,40 @@ struct AttachmentTransferView: View {
 private struct AttachmentExport: Identifiable {
     let file: URL
     var id: String { file.path }
+}
+
+private struct AttachmentOpen: Identifiable {
+    let file: URL
+    var id: String { file.path }
+}
+
+private struct AttachmentOpenPreview: UIViewControllerRepresentable {
+    let file: URL
+
+    func makeCoordinator() -> Coordinator { Coordinator(file: file) }
+
+    func makeUIViewController(context: Context) -> QLPreviewController {
+        let controller = QLPreviewController()
+        controller.dataSource = context.coordinator
+        return controller
+    }
+
+    func updateUIViewController(_ controller: QLPreviewController, context: Context) {}
+
+    final class Coordinator: NSObject, QLPreviewControllerDataSource {
+        let file: URL
+
+        init(file: URL) { self.file = file }
+
+        func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
+
+        func previewController(
+            _ controller: QLPreviewController,
+            previewItemAt index: Int
+        ) -> QLPreviewItem {
+            file as NSURL
+        }
+    }
 }
 
 private struct AttachmentExportPicker: UIViewControllerRepresentable {
@@ -1041,5 +1195,20 @@ private func stateText(_ state: AttachmentState) -> String {
     case .cancelled: return "cancelled"
     case .corrupt: return "integrity check failed"
     case .unavailable: return "unavailable"
+    }
+}
+
+private func isolated(_ value: String) -> String { "\u{2068}\(value)\u{2069}" }
+
+private func warningText(_ warning: AttachmentFileWarning) -> String {
+    switch warning {
+    case .mediaTypeMismatch:
+        return "The filename extension and claimed media type disagree."
+    case .dangerousType:
+        return "This name or type can contain executable or active content."
+    case .unrecognizedType:
+        return "Komms does not recognize this file type."
+    case .missingFilename:
+        return "No filename was supplied, so its extension cannot be checked."
     }
 }

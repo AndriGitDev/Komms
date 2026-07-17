@@ -27,6 +27,9 @@ import kotlinx.serialization.json.jsonPrimitive
 import uniffi.kult_ffi.AttachmentConversation
 import uniffi.kult_ffi.AttachmentDirection
 import uniffi.kult_ffi.AttachmentState
+import uniffi.kult_ffi.CallEndReason
+import uniffi.kult_ffi.CallPhase
+import uniffi.kult_ffi.attachmentFilePresentation
 import uniffi.kult_ffi.ContentKind
 import uniffi.kult_ffi.ContactNameWarning
 import uniffi.kult_ffi.CustomIconCrop
@@ -41,6 +44,7 @@ import uniffi.kult_ffi.FolderSelection
 import uniffi.kult_ffi.FolderSelectionKind
 import uniffi.kult_ffi.FolderTarget
 import uniffi.kult_ffi.FolderTargetKind
+import uniffi.kult_ffi.GroupRole
 import uniffi.kult_ffi.KdfChoice
 import uniffi.kult_ffi.ImageCrop
 import uniffi.kult_ffi.ImageEditRecipe
@@ -102,6 +106,18 @@ private fun listenAddr(session: Session): String {
 private fun multiaddrHint(addr: String) = listOf(HintSpec("multiaddr", addr))
 
 class SessionE2eTest {
+    private val filePresentationFixture by lazy {
+        val root = File(checkNotNull(System.getProperty("komms.repo.root")))
+        Json.parseToJsonElement(
+            File(root, "fixtures/c1-file-presentation-parity.json").readText(),
+        ).jsonObject
+    }
+    private val messageEditFixture by lazy {
+        val root = File(checkNotNull(System.getProperty("komms.repo.root")))
+        Json.parseToJsonElement(
+            File(root, "fixtures/c3-message-edit-parity.json").readText(),
+        ).jsonObject
+    }
     private val textFormattingFixture by lazy {
         val root = File(checkNotNull(System.getProperty("komms.repo.root")))
         Json.parseToJsonElement(File(root, "fixtures/b9-text-formatting-parity.json").readText()).jsonObject
@@ -137,6 +153,122 @@ class SessionE2eTest {
     private val incognitoKeyboardFixture by lazy {
         val root = File(checkNotNull(System.getProperty("komms.repo.root")))
         Json.parseToJsonElement(File(root, "fixtures/b15-incognito-keyboard-parity.json").readText()).jsonObject
+    }
+    private val ephemeralFixture by lazy {
+        val root = File(checkNotNull(System.getProperty("komms.repo.root")))
+        Json.parseToJsonElement(File(root, "fixtures/c4-ephemeral-parity.json").readText()).jsonObject
+    }
+
+    @Test
+    fun `linked device ceremony and sync use only Android Session`() {
+        val directory = Files.createTempDirectory("komms-android-devices-").toFile()
+        val sourceEvents = Events()
+        val targetEvents = Events()
+        val source = open(directory, "source", sourceEvents)
+        val target = open(directory, "target", targetEvents)
+        source.sendNoteToSelf("source-only history")
+
+        val sourceDevice = source.deviceId()
+        val targetDevice = target.deviceId()
+        val offer = source.beginDeviceLink()
+        assertEquals(offer.uppercase(), deviceLinkQrText(offer))
+        val accepted = target.acceptDeviceLink(offer, "Android tablet")
+        assertEquals(6, accepted.confirmationCode.length)
+        val responseHex = hexEncode(accepted.response)
+        assertEquals(
+            accepted.confirmationCode,
+            source.deviceLinkConfirmationCode(responseHex),
+        )
+        val packageHex = source.approveDeviceLink(
+            responseHex,
+            contacts = false,
+            organization = false,
+            history = false,
+            confirmed = true,
+        )
+        target.completeDeviceLink(packageHex, confirmed = true)
+        assertEquals(source.peer, target.peer)
+        assertNotEquals(sourceDevice, targetDevice)
+        assertTrue(target.noteToSelfMessages().isEmpty())
+        assertEquals(2, source.linkedDevices().size)
+        targetEvents.wait("device link completed") { event ->
+            (event as? Event.DeviceLinkCompleted)?.takeIf { it.device == targetDevice }
+        }
+
+        source.renameLinkedDevice(targetDevice, "Travel tablet")
+        target.importDeviceSync(source.exportDeviceSync(targetDevice))
+        assertTrue(target.linkedDevices().any {
+            it.id == targetDevice && it.name == "Travel tablet"
+        })
+
+        source.stop()
+        target.stop()
+        directory.deleteRecursively()
+    }
+
+    @Test
+    fun `Android ephemeral controls match the shared contract`() {
+        val root = File(checkNotNull(System.getProperty("komms.repo.root")))
+        assertEquals("5", ephemeralFixture.getValue("content_kind").jsonPrimitive.content)
+        assertEquals(
+            listOf("60", "3600", "86400", "604800", "2592000"),
+            ephemeralFixture.getValue("text_lifetimes").jsonArray.map { it.jsonPrimitive.content },
+        )
+        val source = File(root, "apps/android/app/src/main/kotlin/komms/android").walkTopDown()
+            .filter { it.extension == "kt" }.joinToString("\n") { it.readText() }
+        assertTrue("sendDisappearing" in source)
+        assertTrue("sendGroupDisappearing" in source)
+        assertTrue("consumeViewOnceAttachment" in source)
+        assertTrue("!attachment.viewOnce" in source)
+    }
+
+    @Test
+    fun `message edit fixture has canonical wire and deterministic winner`() {
+        val fixture = messageEditFixture
+        val case = fixture.getValue("case").jsonObject
+        val versions = case.getValue("expected_versions").jsonArray.map { it.jsonObject }
+        assertEquals("komms-message-edit-parity-v1", fixture.getValue("schema").jsonPrimitive.content)
+        assertEquals("1", fixture.getValue("content_format").jsonPrimitive.content)
+        assertEquals("4", fixture.getValue("content_kind").jsonPrimitive.content)
+        assertEquals("16384", fixture.getValue("maximum_text_bytes").jsonPrimitive.content)
+        assertEquals("64", fixture.getValue("maximum_local_edits").jsonPrimitive.content)
+        assertEquals(64, case.getValue("target_author").jsonPrimitive.content.length)
+        assertEquals(32, case.getValue("target_content_id").jsonPrimitive.content.length)
+        assertEquals(
+            listOf("0", "1", "2", "2"),
+            versions.map { it.getValue("revision").jsonPrimitive.content },
+        )
+        assertEquals("2", case.getValue("winning_revision").jsonPrimitive.content)
+        assertEquals("deterministic winner", case.getValue("winning_text").jsonPrimitive.content)
+        assertEquals(
+            case.getValue("winning_text").jsonPrimitive.content,
+            versions.last().getValue("text").jsonPrimitive.content,
+        )
+        assertTrue(versions.all { it.getValue("id").jsonPrimitive.content.length == 32 })
+    }
+
+    @Test
+    fun `file presentation policy matches shared fail closed fixture`() {
+        for (case in filePresentationFixture["cases"]!!.jsonArray) {
+            val value = case.jsonObject
+            val filename = value["filename"]
+                ?.jsonPrimitive
+                ?.takeUnless { it.toString() == "null" }
+                ?.content
+            val result = attachmentFilePresentation(
+                value["media_type"]!!.jsonPrimitive.content,
+                filename,
+            )
+            assertEquals(value["kind"]!!.jsonPrimitive.content, result.kind.name.lowercase())
+            assertEquals(
+                value["open_policy"]!!.jsonPrimitive.content,
+                result.openPolicy.name.lowercase(),
+            )
+            assertEquals(
+                value["warnings"]!!.jsonArray.map { it.jsonPrimitive.content },
+                result.warnings.map { it.name.lowercase() },
+            )
+        }
     }
 
     @Test
@@ -261,7 +393,7 @@ class SessionE2eTest {
             .filter { it.isFile && it.extension == "xml" }
             .joinToString("\n") { it.readText() }
         assertFalse(Regex("<\\s*EditText\\b").containsMatchIn(layouts))
-        assertEquals(16, Regex("<komms\\.android\\.IncognitoEditText\\b").findAll(layouts).count())
+        assertEquals(17, Regex("<komms\\.android\\.IncognitoEditText\\b").findAll(layouts).count())
 
         val kotlin = File(app, "kotlin/komms/android").walkTopDown()
             .filter { it.isFile && it.extension == "kt" && it.name != "IncognitoEditText.kt" }
@@ -448,6 +580,109 @@ class SessionE2eTest {
         assertEquals(DeliveryState.RECEIVED, inbox[0].state)
         assertEquals(formattedSource, inbox[0].body)
 
+        // Android's testable Session surface carries the complete call
+        // lifecycle and already encoded Opus without creating history rows.
+        val callDeadline = System.nanoTime() + 10_000_000_000L
+        while (!alice.callAvailability(bobPeer).available) {
+            check(System.nanoTime() < callDeadline) { "call never became available" }
+            Thread.sleep(50)
+        }
+        assertTrue(alice.calls().isEmpty())
+        val call = alice.startCall(bobPeer)
+        bEv.wait("Android incoming call") {
+            (it as? Event.CallUpdated)?.takeIf { event ->
+                event.call.id == call && event.call.phase == CallPhase.RINGING
+            }
+        }
+        bob.answerCall(call)
+        aEv.wait("Android outgoing call active") {
+            (it as? Event.CallUpdated)?.takeIf { event ->
+                event.call.id == call && event.call.phase == CallPhase.ACTIVE
+            }
+        }
+        bEv.wait("Android incoming call active") {
+            (it as? Event.CallUpdated)?.takeIf { event ->
+                event.call.id == call && event.call.phase == CallPhase.ACTIVE
+            }
+        }
+        listOf(byteArrayOf(0xf8.toByte(), 1), byteArrayOf(0xf8.toByte(), 2), byteArrayOf(0xf8.toByte(), 3))
+            .forEachIndexed { index, packet ->
+                assertTrue(alice.sendCallAudio(call, (1_000 + index * 20).toULong(), packet))
+            }
+        listOf(byteArrayOf(0xf9.toByte(), 1), byteArrayOf(0xf9.toByte(), 2), byteArrayOf(0xf9.toByte(), 3))
+            .forEachIndexed { index, packet ->
+                assertTrue(bob.sendCallAudio(call, (2_000 + index * 20).toULong(), packet))
+            }
+        fun takeAudio(session: Session): ByteArray {
+            val deadline = System.nanoTime() + 5_000_000_000L
+            while (true) {
+                session.takeCallAudio(call)?.let { return it.opusPacket }
+                check(System.nanoTime() < deadline) { "no authenticated Android call audio" }
+                Thread.sleep(10)
+            }
+        }
+        assertContentEquals(byteArrayOf(0xf9.toByte(), 1), takeAudio(alice))
+        assertContentEquals(byteArrayOf(0xf8.toByte(), 1), takeAudio(bob))
+        alice.hangupCall(call)
+        bEv.wait("Android authenticated hangup") {
+            (it as? Event.CallUpdated)?.takeIf { event ->
+                event.call.id == call && event.call.phase == CallPhase.ENDED &&
+                    event.call.endReason == CallEndReason.HUNG_UP
+            }
+        }
+        assertEquals(1, alice.messages(bobPeer).size)
+        assertEquals(1, bob.messages(alicePeer).size)
+
+        val hour = ephemeralFixture.getValue("text_lifetimes").jsonArray[1]
+            .jsonPrimitive.content.toULong()
+        val temporary = alice.sendDisappearing(bobPeer, "temporary Android text", hour)
+        val temporaryEvent = bEv.wait("Android disappearing message") {
+            (it as? Event.MessageReceived)?.takeIf { event ->
+                event.id == temporary && event.contentKind == ContentKind.DISAPPEARING_TEXT &&
+                    event.expiresAt != null
+            }
+        }
+        val temporaryRow = bob.messages(alicePeer).single { it.id == temporary }
+        assertEquals(ContentKind.DISAPPEARING_TEXT, temporaryRow.contentKind)
+        assertEquals(temporaryEvent.expiresAt, temporaryRow.expiresAt)
+
+        Thread.sleep(300)
+        val editable = alice.send(bobPeer, "Android edit original")
+        bEv.wait("Bob's canonical Android Text") {
+            (it as? Event.MessageReceived)?.takeIf { event ->
+                event.id == editable && event.contentKind == ContentKind.TEXT
+            }
+        }
+        aEv.wait("Android editable delivery") {
+            (it as? Event.DeliveryUpdated)?.takeIf { event ->
+                event.id == editable && event.state == DeliveryState.DELIVERED
+            }
+        }
+        val edit = alice.editMessage(
+            bobPeer, alicePeer, editable, "Android edit revised",
+        )
+        bEv.wait("Android pairwise edit refresh") {
+            (it as? Event.MessageEdited)?.takeIf { event ->
+                event.peer == alicePeer && event.targetContentId == editable
+            }
+        }
+        aEv.wait("Android edit delivery") {
+            (it as? Event.DeliveryUpdated)?.takeIf { event ->
+                event.id == edit && event.state == DeliveryState.DELIVERED
+            }
+        }
+        listOf(alice.messages(bobPeer), bob.messages(alicePeer)).forEach { messages ->
+            assertEquals(3, messages.size, "Edit events are not standalone rows")
+            val message = messages.single { it.id == editable }
+            assertEquals("Android edit revised", message.body)
+            assertTrue(message.edited)
+            assertEquals(1uL, message.editRevision)
+            assertEquals(
+                listOf("Android edit original", "Android edit revised"),
+                message.versions.map { it.body },
+            )
+        }
+
         // The SAF layer stages a content:// stream in app-private storage;
         // Session sees only that bounded path and the provider's untrusted
         // display hints. The transfer surface remains render-safe.
@@ -519,6 +754,37 @@ class SessionE2eTest {
             AttachmentState.CANCELLED,
             alice.attachments().single { it.transferId == outbound.transferId }.state,
         )
+
+        val onceBytes = "Android view-once bytes".toByteArray()
+        val onceSource = File(dir, "android-view-once.bin").apply { writeBytes(onceBytes) }
+        val onceId = alice.sendViewOnceAttachment(
+            bobPeer, onceSource, "application/octet-stream", "reveal-once.bin",
+            lifetimeSeconds = hour,
+        )
+        val onceOffer = bEv.wait("Android view-once offer") {
+            (it as? Event.AttachmentUpdated)?.takeIf { event ->
+                event.attachment.contentId == onceId && event.attachment.viewOnce
+            }
+        }.attachment
+        assertNotNull(onceOffer.expiresAt)
+        bob.acceptAttachment(onceOffer.transferId)
+        bEv.wait("Android view-once completion") {
+            (it as? Event.AttachmentUpdated)?.takeIf { event ->
+                event.attachment.transferId == onceOffer.transferId &&
+                    event.attachment.state == AttachmentState.COMPLETE
+            }
+        }
+        assertFailsWith<FfiException> {
+            bob.exportAttachment(onceOffer.transferId, File(dir, "forbidden-view-once.bin"))
+        }
+        val onceOutput = File(dir, "android-view-once-output.bin")
+        bob.consumeViewOnceAttachment(onceOffer.transferId, onceOutput)
+        assertContentEquals(onceBytes, onceOutput.readBytes())
+        assertFailsWith<FfiException> {
+            bob.consumeViewOnceAttachment(
+                onceOffer.transferId, File(dir, "android-view-once-second.bin"),
+            )
+        }
 
         val audioBytes = canonicalAudio()
         val nativeAudio = File(dir, "android-native-audio.wav").apply {
@@ -738,6 +1004,50 @@ class SessionE2eTest {
         assertContentEquals(groupSource.readBytes(), groupExport.readBytes())
         assertEquals(groupImageInfo, bob.probeImage(groupExport))
 
+        // The Android Session exposes the exact native poll contract. Poll
+        // events refresh dedicated cards and never become chat-message rows.
+        val messageRowsBeforePoll = alice.groupMessages(group).size
+        val pollId = alice.createGroupPoll(
+            group,
+            "Which route? 🗻",
+            listOf("North ridge", "River path"),
+        )
+        bEv.wait("Bob's Android poll") {
+            (it as? Event.PollUpdated)?.takeIf { event ->
+                event.group == group && event.pollId == pollId
+            }
+        }
+        val bobPoll = bob.groupPolls(group).single()
+        assertEquals("Which route? 🗻", bobPoll.question)
+        assertTrue(bobPoll.votesVisible)
+        assertFalse(bobPoll.anonymous)
+        assertEquals("manual_creator_snapshot", bobPoll.closePolicy)
+        assertFalse(bobPoll.canClose)
+        bob.voteGroupPoll(group, bobPoll.author, pollId, bobPoll.options[0].id)
+        aEv.wait("Bob's first Android poll vote") {
+            (it as? Event.PollUpdated)?.takeIf { event -> event.pollId == pollId }
+        }
+        val changedOption = bobPoll.options[1].id
+        bob.voteGroupPoll(group, bobPoll.author, pollId, changedOption)
+        val pollChangeDeadline = System.nanoTime() + 30_000_000_000L
+        while (alice.groupPolls(group).single().votes.singleOrNull()?.optionId != changedOption) {
+            check(System.nanoTime() < pollChangeDeadline) { "timed out waiting for changed poll vote" }
+            Thread.sleep(50)
+        }
+        val changedPoll = alice.groupPolls(group).single()
+        assertEquals(1, changedPoll.votes.size)
+        assertEquals(changedOption, changedPoll.votes.single().optionId)
+        assertTrue(changedPoll.canClose)
+        alice.closeGroupPoll(group, changedPoll.author, pollId)
+        val pollCloseDeadline = System.nanoTime() + 30_000_000_000L
+        while (!bob.groupPolls(group).single().closed) {
+            check(System.nanoTime() < pollCloseDeadline) { "timed out waiting for closed poll" }
+            Thread.sleep(50)
+        }
+        assertTrue(bob.groupPolls(group).single().closed)
+        assertEquals(messageRowsBeforePoll, alice.groupMessages(group).size)
+        assertEquals(messageRowsBeforePoll, bob.groupMessages(group).size)
+
         alice.addGroupMember(group, carolPeer)
         listed = alice.groups()
         assertEquals(3, listed[0].members.size)
@@ -787,6 +1097,138 @@ class SessionE2eTest {
         // their live group disappears locally and the creator converges too.
         alice.removeGroupMember(group, carolPeer)
         assertEquals(2, alice.groups()[0].members.size)
+        Thread.sleep(300)
+
+        // C6 uses only generated typed bindings: upgrade, roles, admin
+        // result events, signed owner moderation, and ownership transfer.
+        val legacy = alice.groupAuthority(group)
+        assertFalse(legacy.signed)
+        assertEquals(aliceAtBob, legacy.owner)
+        assertEquals(GroupRole.OWNER, legacy.myRole)
+        val upgradeGeneration = legacy.generation + 1uL
+        alice.upgradeGroupAuthority(group)
+        val authorityDeadline = System.nanoTime() + 30_000_000_000L
+        fun authorityAt(session: Session, generation: ULong): uniffi.kult_ffi.GroupAuthority {
+            while (true) {
+                val authorityState = session.groupAuthority(group)
+                if (authorityState.signed && authorityState.generation >= generation) {
+                    return authorityState
+                }
+                check(System.nanoTime() < authorityDeadline) {
+                    "timed out waiting for authority generation $generation"
+                }
+                Thread.sleep(50)
+            }
+        }
+        val upgraded = authorityAt(bob, upgradeGeneration)
+        assertEquals(aliceAtBob, upgraded.owner)
+        assertEquals(GroupRole.MEMBER, upgraded.myRole)
+        assertEquals(2, upgraded.members.size)
+
+        alice.setGroupRole(group, bobPeer, GroupRole.ADMIN)
+        val adminGeneration = upgradeGeneration + 1uL
+        assertEquals(GroupRole.ADMIN, authorityAt(bob, adminGeneration).myRole)
+        val roleError = assertFailsWith<FfiException.Node> {
+            bob.setGroupRole(group, aliceAtBob, GroupRole.MEMBER)
+        }
+        assertTrue("owner" in roleError.reasonText(), "got: ${roleError.reasonText()}")
+
+        val renameRequest = bob.renameGroup(group, "Authority trail crew")
+        val renameGeneration = adminGeneration + 1uL
+        bEv.wait("Android admin rename result") {
+            (it as? Event.GroupAdminRequestResolved)?.takeIf { event ->
+                event.requestId == renameRequest && event.accepted &&
+                    event.generation == renameGeneration && event.stateId != null && event.reason == 0.toUByte()
+            }
+        }
+        authorityAt(bob, renameGeneration)
+        val renameDeadline = System.nanoTime() + 30_000_000_000L
+        while (bob.groups().none { it.id == group && it.name == "Authority trail crew" }) {
+            check(System.nanoTime() < renameDeadline) { "timed out waiting for admin rename" }
+            Thread.sleep(50)
+        }
+
+        val moderatedPoll = alice.createGroupPoll(
+            group,
+            "Close for weather?",
+            listOf("Keep open", "Close"),
+        )
+        bEv.wait("Android moderated poll") {
+            (it as? Event.PollUpdated)?.takeIf { event -> event.pollId == moderatedPoll }
+        }
+        val moderationRequest = bob.moderateGroupPollClose(
+            group,
+            aliceAtBob,
+            moderatedPoll,
+        )
+        val moderationGeneration = renameGeneration + 1uL
+        bEv.wait("Android moderation result") {
+            (it as? Event.GroupAdminRequestResolved)?.takeIf { event ->
+                event.requestId == moderationRequest && event.accepted &&
+                    event.generation == moderationGeneration && event.reason == 0.toUByte()
+            }
+        }
+        val moderationDeadline = System.nanoTime() + 30_000_000_000L
+        var moderated = bob.groupPolls(group).single { it.id == moderatedPoll }
+        while (!moderated.closed) {
+            check(System.nanoTime() < moderationDeadline) { "timed out waiting for moderated close" }
+            Thread.sleep(50)
+            moderated = bob.groupPolls(group).single { it.id == moderatedPoll }
+        }
+        assertEquals(aliceAtBob, moderated.moderatedBy)
+        assertEquals("signed_owner_snapshot", moderated.closePolicy)
+
+        alice.transferGroupOwner(group, bobPeer)
+        val bobOwnerGeneration = moderationGeneration + 1uL
+        val bobOwner = authorityAt(bob, bobOwnerGeneration)
+        assertEquals(bobPeer, bobOwner.owner)
+        assertEquals(1uL, bobOwner.ownerEpoch)
+        assertEquals(GroupRole.OWNER, bobOwner.myRole)
+        val leaveError = assertFailsWith<FfiException.Node> { bob.leaveGroup(group) }
+        assertTrue("owner" in leaveError.reasonText(), "got: ${leaveError.reasonText()}")
+
+        bob.transferGroupOwner(group, aliceAtBob)
+        val aliceOwnerGeneration = bobOwnerGeneration + 1uL
+        val aliceOwner = authorityAt(alice, aliceOwnerGeneration)
+        assertEquals(aliceAtBob, aliceOwner.owner)
+        assertEquals(2uL, aliceOwner.ownerEpoch)
+        alice.setGroupRole(group, bobPeer, GroupRole.MEMBER)
+        authorityAt(bob, aliceOwnerGeneration + 1uL)
+
+        val editable = alice.sendGroup(group, "Android group edit original")
+        bEv.wait("Bob's editable Android group Text") {
+            (it as? Event.GroupMessageReceived)?.takeIf { event ->
+                event.id == editable && event.contentKind == ContentKind.TEXT
+            }
+        }
+        aEv.wait("Android editable group delivery") {
+            (it as? Event.GroupDeliveryUpdated)?.takeIf { event ->
+                event.id == editable && event.peer == bobPeer &&
+                    event.state == DeliveryState.DELIVERED
+            }
+        }
+        val edit = alice.editGroupMessage(
+            group, aliceAtBob, editable, "Android group edit revised",
+        )
+        bEv.wait("Android group edit refresh") {
+            (it as? Event.GroupMessageEdited)?.takeIf { event ->
+                event.group == group && event.sender == aliceAtBob &&
+                    event.targetContentId == editable
+            }
+        }
+        aEv.wait("Android group edit delivery") {
+            (it as? Event.GroupDeliveryUpdated)?.takeIf { event ->
+                event.id == edit && event.peer == bobPeer &&
+                    event.state == DeliveryState.DELIVERED
+            }
+        }
+        listOf(alice.groupMessages(group), bob.groupMessages(group)).forEach { messages ->
+            val message = messages.single { it.id == editable }
+            assertEquals("Android group edit revised", message.body)
+            assertTrue(message.edited)
+            assertEquals(1uL, message.editRevision)
+            assertEquals(2, message.versions.size)
+        }
         bob.leaveGroup(group)
         assertTrue(bob.groups().isEmpty())
         val deadline = System.nanoTime() + 30_000_000_000L

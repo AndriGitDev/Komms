@@ -11,14 +11,16 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::session::{
-    NetworkSettings, Session, UiAttachment, UiAudioMedia, UiBundle, UiContact,
-    UiContactNameAssessment, UiCustomIcon, UiCustomIconCrop, UiCustomIconTarget, UiCustomIconUsage,
-    UiFolder, UiFolderConversation, UiFolderConversationResult, UiFolderSelection, UiFolderTarget,
-    UiFormattedText, UiGroup, UiGroupMessage, UiHint, UiImageEditRecipe, UiImageReview, UiLabel,
-    UiLabelConversation, UiLabelFilterResult, UiLabelTarget, UiMentionCapability, UiMentionSpan,
-    UiMessage, UiNoteMessage, UiPin, UiPinConversationResult, UiPinTarget, UiSafetyNumber,
-    UiScheduledMessage, UiStaleFolder, UiStaleLabel, UiStatus, UiTextFormatHighlight, UiThemeInfo,
-    UiThemePreference,
+    NetworkSettings, Session, UiAttachment, UiAudioMedia, UiBundle, UiCall, UiCallAudioFrame,
+    UiCallAvailability, UiContact, UiContactNameAssessment, UiCustomIcon, UiCustomIconCrop,
+    UiCustomIconTarget, UiCustomIconUsage, UiDeviceLinkAcceptance, UiDeviceLinkOffer,
+    UiDeviceLinkSelection, UiFolder, UiFolderConversation, UiFolderConversationResult,
+    UiFolderSelection, UiFolderTarget, UiFormattedText, UiGroup, UiGroupAuthority, UiGroupMessage,
+    UiGroupPoll, UiHint, UiImageEditRecipe, UiImageReview, UiLabel, UiLabelConversation,
+    UiLabelFilterResult, UiLabelTarget, UiLinkedDevice, UiMentionCapability, UiMentionSpan,
+    UiMessage, UiMessageDeviceDelivery, UiNoteMessage, UiPin, UiPinConversationResult, UiPinTarget,
+    UiSafetyNumber, UiScheduledMessage, UiStaleFolder, UiStaleLabel, UiStatus,
+    UiTextFormatHighlight, UiThemeInfo, UiThemePreference,
 };
 
 /// Render-safe shared B14 policy shown before unlock.
@@ -265,6 +267,7 @@ macro_rules! forward {
     ($(#[$doc:meta])* $name:ident($($arg:ident: $ty:ty),*) -> $ret:ty, |$s:ident| $body:expr) => {
         $(#[$doc])*
         #[tauri::command]
+        #[allow(clippy::too_many_arguments)] // flat Tauri IPC boundary
         pub async fn $name(state: State<'_, AppState>, $($arg: $ty),*) -> Result<$ret, String> {
             let $s = state.session()?;
             blocking(move || $body).await
@@ -275,6 +278,61 @@ macro_rules! forward {
 forward!(
     /// Status snapshot for the transport indicators.
     status() -> UiStatus, |s| s.status()
+);
+forward!(
+    /// Exact public id for this physical installation.
+    device_id() -> String, |s| s.device_id()
+);
+forward!(
+    /// Complete signed linked-device list, including revoked rows.
+    linked_devices() -> Vec<UiLinkedDevice>, |s| s.linked_devices()
+);
+forward!(
+    /// Per-device delivery states for one outbound message.
+    message_device_deliveries(message: String) -> Vec<UiMessageDeviceDelivery>,
+    |s| s.message_device_deliveries(message)
+);
+forward!(
+    /// Rename one exact active linked device.
+    rename_linked_device(device: String, name: String) -> (),
+    |s| s.rename_linked_device(device, name)
+);
+forward!(
+    /// Permanently revoke another exact linked device after confirmation.
+    revoke_linked_device(device: String, confirmed: bool) -> (),
+    |s| s.revoke_linked_device(device, confirmed)
+);
+forward!(
+    /// Begin a ten-minute link offer rendered as hex and QR.
+    begin_device_link() -> UiDeviceLinkOffer, |s| s.begin_device_link()
+);
+forward!(
+    /// Accept a pasted or scanned offer on a pristine target.
+    accept_device_link(offer_hex: String, device_name: String) -> UiDeviceLinkAcceptance,
+    |s| s.accept_device_link(offer_hex, device_name)
+);
+forward!(
+    /// Derive the source-side six-digit comparison code.
+    device_link_confirmation_code(response_hex: String) -> String,
+    |s| s.device_link_confirmation_code(response_hex)
+);
+forward!(
+    /// Confirm matching codes and build the encrypted selective transfer.
+    approve_device_link(response_hex: String, selection: UiDeviceLinkSelection, confirmed: bool) -> String,
+    |s| s.approve_device_link(response_hex, selection, confirmed)
+);
+forward!(
+    /// Confirm and import a link package on the pristine target.
+    complete_device_link(package_hex: String, confirmed: bool) -> (),
+    |s| s.complete_device_link(package_hex, confirmed)
+);
+forward!(
+    /// Export one encrypted convergence bundle to an active linked device.
+    export_device_sync(device: String) -> String, |s| s.export_device_sync(device)
+);
+forward!(
+    /// Import one authenticated linked-device convergence bundle.
+    import_device_sync(bundle_hex: String) -> u64, |s| s.import_device_sync(bundle_hex)
 );
 forward!(
     /// Render exact source into the bounded inert local text model.
@@ -323,9 +381,11 @@ forward!(
         conversation: String,
         destination: String,
         filename: Option<String>,
-        expected_carrier: String
+        expected_carrier: String,
+        view_once: bool,
+        lifetime_secs: u64
     ) -> String,
-    |s| s.send_image_edit(token, conversation, destination, filename, expected_carrier)
+    |s| s.send_image_edit(token, conversation, destination, filename, expected_carrier, view_once, lifetime_secs)
 );
 forward!(
     /// Stage and import one explicitly confirmed non-image file.
@@ -392,6 +452,43 @@ forward!(
     contacts() -> Vec<UiContact>, |s| s.contacts()
 );
 forward!(
+    /// Every current and briefly retained terminal call.
+    calls() -> Vec<UiCall>, |s| s.calls()
+);
+forward!(
+    /// Honest current direct-QUIC call-start verdict.
+    call_availability(peer: String) -> UiCallAvailability, |s| s.call_availability(peer)
+);
+forward!(
+    /// Start one capability-gated audio call.
+    start_call(peer: String) -> String, |s| s.start_call(peer)
+);
+forward!(
+    /// Answer one ringing incoming call.
+    answer_call(call: String) -> (), |s| s.answer_call(call)
+);
+forward!(
+    /// Decline one ringing incoming call.
+    decline_call(call: String) -> (), |s| s.decline_call(call)
+);
+forward!(
+    /// Cancel one outgoing ringing call.
+    cancel_call(call: String) -> (), |s| s.cancel_call(call)
+);
+forward!(
+    /// End one connecting or active call.
+    hangup_call(call: String) -> (), |s| s.hangup_call(call)
+);
+forward!(
+    /// Queue one WebCodecs-encoded Opus capture packet.
+    send_call_audio(call: String, timestamp_ms: u64, opus_packet: Vec<u8>) -> bool,
+    |s| s.send_call_audio(call, timestamp_ms, opus_packet)
+);
+forward!(
+    /// Take one authenticated Opus packet for WebCodecs playout.
+    take_call_audio(call: String) -> Option<UiCallAudioFrame>, |s| s.take_call_audio(call)
+);
+forward!(
     /// Assess a proposed private local petname without mutation.
     assess_contact_name(peer: String, name: String) -> UiContactNameAssessment,
     |s| s.assess_contact_name(peer, name)
@@ -410,8 +507,28 @@ forward!(
     send(peer: String, body: String) -> String, |s| s.send(peer, body)
 );
 forward!(
+    /// Queue pairwise text with exact local expiry.
+    send_disappearing(peer: String, body: String, lifetime_secs: u64) -> String,
+    |s| s.send_disappearing(peer, body, lifetime_secs)
+);
+forward!(
+    /// Queue an immutable edit for an exact pairwise Text event.
+    edit_message(peer: String, target_author: String, target_content_id: String, text: String) -> String,
+    |s| s.edit_message(peer, target_author, target_content_id, text)
+);
+forward!(
     /// Every attachment transfer as render-safe state.
     attachments() -> Vec<UiAttachment>, |s| s.attachments()
+);
+forward!(
+    /// Import a pairwise view-once attachment.
+    send_view_once_attachment(peer: String, path: String, media_type: String, filename: Option<String>, lifetime_secs: u64) -> String,
+    |s| s.send_view_once_attachment(peer, path, media_type, filename, lifetime_secs)
+);
+forward!(
+    /// Import a group view-once attachment.
+    send_group_view_once_attachment(group: String, path: String, media_type: String, filename: Option<String>, lifetime_secs: u64) -> String,
+    |s| s.send_group_view_once_attachment(group, path, media_type, filename, lifetime_secs)
 );
 forward!(
     /// Accept an inbound attachment offer.
@@ -436,6 +553,15 @@ forward!(
 forward!(
     /// Export a completed primary object to a protected new path.
     export_attachment(transfer: String, path: String) -> (), |s| s.export_attachment(transfer, path)
+);
+forward!(
+    /// Terminal first-open of view-once media into a protected new path.
+    consume_view_once_attachment(transfer: String, path: String) -> (),
+    |s| s.consume_view_once_attachment(transfer, path)
+);
+forward!(
+    /// Explicitly hand a recognized completed inbound file to the operating system.
+    open_attachment(transfer: String) -> (), |s| s.open_attachment(transfer)
 );
 forward!(
     /// Return a completed sealed preview as a bounded data URL.
@@ -660,6 +786,16 @@ forward!(
     send_group(group: String, body: String) -> String, |s| s.send_group(group, body)
 );
 forward!(
+    /// Queue group text with exact local expiry.
+    send_group_disappearing(group: String, body: String, lifetime_secs: u64) -> String,
+    |s| s.send_group_disappearing(group, body, lifetime_secs)
+);
+forward!(
+    /// Queue an immutable edit for an exact group Text event.
+    edit_group_message(group: String, target_author: String, target_content_id: String, text: String) -> String,
+    |s| s.edit_group_message(group, target_author, target_content_id, text)
+);
+forward!(
     /// Current all-member semantic Mention support and review binding.
     group_mention_capability(group: String) -> UiMentionCapability,
     |s| s.group_mention_capability(group)
@@ -675,7 +811,53 @@ forward!(
     |s| s.send_group_mention(group, text, spans, review_token)
 );
 forward!(
-    /// Add a stored contact to a group (creator only).
+    /// Create a visible-vote single-choice group poll.
+    create_group_poll(group: String, question: String, options: Vec<String>) -> String,
+    |s| s.create_group_poll(group, question, options)
+);
+forward!(
+    /// List render-safe group poll cards and visible tallies.
+    group_polls(group: String) -> Vec<UiGroupPoll>, |s| s.group_polls(group)
+);
+forward!(
+    /// Cast or change a vote using stable ids.
+    vote_group_poll(group: String, poll_author: String, poll_id: String, option_id: String) -> String,
+    |s| s.vote_group_poll(group, poll_author, poll_id, option_id)
+);
+forward!(
+    /// Creator-only irreversible poll closure.
+    close_group_poll(group: String, poll_author: String, poll_id: String) -> String,
+    |s| s.close_group_poll(group, poll_author, poll_id)
+);
+forward!(
+    /// Signed owner/admin poll moderation closure.
+    moderate_group_poll_close(group: String, poll_author: String, poll_id: String) -> String,
+    |s| s.moderate_group_poll_close(group, poll_author, poll_id)
+);
+forward!(
+    /// Current exact group roles and ownership.
+    group_authority(group: String) -> UiGroupAuthority, |s| s.group_authority(group)
+);
+forward!(
+    /// Upgrade legacy creator authority.
+    upgrade_group_authority(group: String) -> String, |s| s.upgrade_group_authority(group)
+);
+forward!(
+    /// Rename directly as owner or request as admin.
+    rename_group(group: String, name: String) -> String, |s| s.rename_group(group, name)
+);
+forward!(
+    /// Owner-only admin grant/revoke.
+    set_group_role(group: String, peer: String, role: String) -> String,
+    |s| s.set_group_role(group, peer, role)
+);
+forward!(
+    /// Owner-only ownership transfer.
+    transfer_group_owner(group: String, peer: String) -> String,
+    |s| s.transfer_group_owner(group, peer)
+);
+forward!(
+    /// Add a stored contact as owner or request as admin.
     add_group_member(group: String, peer: String) -> (), |s| s.add_group_member(group, peer)
 );
 forward!(

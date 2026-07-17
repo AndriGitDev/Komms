@@ -31,6 +31,11 @@ Rules every implementation must obey:
    plaintext link: the envelope is self-protecting.
 4. **Honest signals.** `SendReceipt` distinguishes *handed to link* from *acknowledged by
    next hop* from nothing; the delivery engine and UI depend on not lying.
+5. **Retention is deletion-only.** Envelope v2's hour-aligned
+   `retention_until` may shorten queue life but never authorizes a transport to
+   extend its configured maximum, infer an exact content deadline, or claim
+   physical erasure. Expired envelopes are refused on admission and removed on
+   load, check-in, forwarding, and periodic cleanup.
 
 The **transport scheduler** in `kult-node` ranks available transports per recipient by
 (reachability, latency class, cost class) and may send duplicates across rungs:
@@ -71,6 +76,34 @@ envelope or conversation data, and provider acknowledgement never changes
 delivery state. Sovereign mode registers with neither service. Private mode
 uses Tor or a non-colluding Oblivious HTTP ingress; Standard mode uses direct
 HTTPS. Complete failure falls back to the unchanged transports in this document.
+
+### 2.2 Ephemeral retention at intermediaries
+
+C4 mailbox, bridge, queue, and fragment records preserve envelope v2's coarse
+retention bucket end to end. Every store applies the earlier of its ordinary
+maximum TTL and that bucket. A restart re-evaluates absolute Unix time before
+returning or forwarding a row; a fragment may never outlive its parent
+envelope. The receiver verifies the same bucket inside the authenticated
+content, because relays can delete but cannot authenticate a sender or safely
+rewrite the hint. Exact endpoint semantics and limitations are in
+[19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
+
+### 2.3 Direct-QUIC live audio
+
+C7 calls use a separate `/komms/call/1` reliable ordered substream only after
+the transport has observed a fresh direct `/quic-v1` connection to the exact
+peer. TCP/Yamux and Circuit Relay connectivity remain valid for ordinary
+messages but do not qualify as `realtime`; DCUtR must complete a direct upgrade
+first. Mailbox, sneakernet, BLE, and Meshtastic carriers never receive call
+media or a queued call fallback.
+
+Call setup itself is bounded content-v1 data inside the ordinary pairwise
+ratchet, so no cleartext call protocol is visible to a relay. The media stream
+starts with an authenticated call/device hello and carries bounded
+sequence/timestamp/key-phase records under fresh directional keys. Unsent audio
+and jitter queues have fixed frame/age caps. See
+[23: Live Audio Calls](23-live-audio-calls.md) and
+[ADR-0013](adr/0013-real-time-calls.md).
 
 ## 3. Proximity transports
 
