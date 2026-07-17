@@ -704,7 +704,7 @@ class AttachmentController(
         val maxBytes = if (selected.isClaimedImage()) IMAGE_SOURCE_LIMIT else MAX_PRIMARY_BYTES
         try {
             resolver.openInputStream(uri).use { input ->
-                requireNotNull(input) { activity.getString(R.string.attachment_open_failed) }
+                requireNotNull(input) { activity.getString(R.string.attachment_read_failed) }
                 FileOutputStream(staged).use { output ->
                     val buffer = ByteArray(COPY_BUFFER_BYTES)
                     var copied = 0L

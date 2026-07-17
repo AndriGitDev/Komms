@@ -173,7 +173,7 @@
     <string name="attachment_default_name">attachment</string>
     <string name="attachment_queued">Attachment queued</string>
     <string name="attachment_exported">Attachment exported</string>
-    <string name="attachment_open_failed">The selected document could not be opened.</string>
+    <string name="attachment_read_failed">The selected document could not be opened.</string>
     <string name="attachment_export_open_failed">The export destination could not be opened.</string>
     <string name="attachment_too_large">This attachment exceeds the 512 MiB limit.</string>
     <string name="attachment_missing_primary">This attachment has no primary object to export.</string>
