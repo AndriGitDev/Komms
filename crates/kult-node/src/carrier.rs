@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use rand_core::CryptoRngCore;
 
-use kult_transport::{CostClass, DeliveryHint, LatencyClass, Reachability};
+use kult_transport::{CostClass, LatencyClass, Reachability};
 
 use crate::{
     CarrierCapability, CarrierCapabilitySnapshot, Event, Node, NodeError, Result, Transport,
@@ -110,12 +110,7 @@ async fn classify(
                 mesh = true;
             } else if profile.latency == LatencyClass::Millis
                 && reachability == Reachability::Now
-                && matches!(
-                    hint,
-                    DeliveryHint::Multiaddr(address)
-                        if address.contains("/quic-v1")
-                            && !address.contains("/p2p-circuit")
-                )
+                && transport.call_ready(hint)
             {
                 return CarrierCapability::Realtime;
             } else {

@@ -386,6 +386,27 @@ pub struct CallInfo {
     pub end_reason: Option<CallEndReason>,
 }
 
+/// One authenticated decrypted Opus packet released by the core jitter
+/// buffer for native platform playback.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CallAudioFrame {
+    /// Call whose exact media keys authenticated this packet.
+    pub call_id: [u8; 16],
+    /// Direction-local authenticated media sequence.
+    pub sequence: u64,
+    /// Sender capture timestamp in milliseconds.
+    pub timestamp_ms: u64,
+    /// Exact bounded Opus packet. Erased when this value is dropped.
+    pub opus_packet: Vec<u8>,
+}
+
+impl Drop for CallAudioFrame {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.opus_packet.zeroize();
+    }
+}
+
 /// Render-safe account-authorized physical-device row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkedDeviceInfo {

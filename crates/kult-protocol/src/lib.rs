@@ -61,8 +61,9 @@ pub use attachment_bulk::{
 };
 pub use bundle::{bundle_export, bundle_import, BUNDLE_MAGIC};
 pub use call::{
-    decode_call_control_payload, encode_call_control_payload, CallControl, DecodedCallControl,
-    CALL_CONTROL_BOUND_LEN, CALL_CONTROL_HEADER_LEN, CALL_CONTROL_VERSION, MAX_CALL_CONTROL_LEN,
+    decode_call_control_payload, encode_call_control_payload, CallControl, CallHangupReason,
+    DecodedCallControl, CALL_CONTROL_BOUND_LEN, CALL_CONTROL_HANGUP_LEN, CALL_CONTROL_HEADER_LEN,
+    CALL_CONTROL_VERSION, MAX_CALL_CONTROL_LEN,
 };
 pub use capability::{
     is_capability_control, CapabilityControl, FormatCapabilities, CAPABILITY_CONTROL_VERSION,

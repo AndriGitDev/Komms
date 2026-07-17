@@ -87,11 +87,11 @@ mod vault;
 
 pub use api::{
     AttachmentConversation, AttachmentDirection, AttachmentInfo, AttachmentMetadata,
-    AttachmentObjectInfo, CallAvailability, CallDirection, CallEndReason, CallInfo, CallPhase,
-    CallUnavailableReason, CarrierCapability, CarrierCapabilitySnapshot, Command, ContentStatus,
-    CustomIconCrop, CustomIconInfo, CustomIconUsage, DeviceLinkSelection, EditVersionInfo, Event,
-    FolderConversationInfo, FolderConversationList, FolderInfo, FolderSelection,
-    GroupAuthorityInfo, GroupInfo, GroupMemberRoleInfo, GroupMentionCapability,
+    AttachmentObjectInfo, CallAudioFrame, CallAvailability, CallDirection, CallEndReason, CallInfo,
+    CallPhase, CallUnavailableReason, CarrierCapability, CarrierCapabilitySnapshot, Command,
+    ContentStatus, CustomIconCrop, CustomIconInfo, CustomIconUsage, DeviceLinkSelection,
+    EditVersionInfo, Event, FolderConversationInfo, FolderConversationList, FolderInfo,
+    FolderSelection, GroupAuthorityInfo, GroupInfo, GroupMemberRoleInfo, GroupMentionCapability,
     LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode, LinkedDeviceInfo,
     MentionCapabilityIssue, MentionCapabilityIssueReason, MentionSpan, MessageDeviceDeliveryInfo,
     PinConversationInfo, PinConversationList, PinInfo, PollInfo, PollOptionInfo, PollVoteInfo,

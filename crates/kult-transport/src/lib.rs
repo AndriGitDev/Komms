@@ -225,4 +225,24 @@ pub trait Transport: Send + Sync {
     fn broadcast_hint(&self) -> Option<DeliveryHint> {
         None
     }
+
+    /// Whether this exact hint currently qualifies for live call media.
+    /// Most carriers return `false`; the libp2p carrier requires an
+    /// exclusively direct QUIC-v1 connection and never treats TCP, relay,
+    /// mailbox, mesh, or sneakernet as realtime.
+    fn call_ready(&self, _peer: &DeliveryHint) -> bool {
+        false
+    }
+
+    /// Open a `/komms/call/1` stream on this exact realtime hint.
+    /// Implementations must not fall back to a weaker carrier or route.
+    async fn open_call_stream(&self, _peer: &DeliveryHint) -> Result<CallStream> {
+        Err(TransportError::UnsupportedHint)
+    }
+
+    /// Take one already-negotiated inbound call stream without waiting.
+    /// Default carriers never accept call media.
+    fn try_accept_call_stream(&self) -> Result<Option<CallStream>> {
+        Ok(None)
+    }
 }

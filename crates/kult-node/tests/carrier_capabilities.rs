@@ -73,6 +73,12 @@ impl Transport for Link {
     async fn recv(&self) -> kult_transport::Result<Vec<Envelope>> {
         Ok(Vec::new())
     }
+
+    fn call_ready(&self, peer: &DeliveryHint) -> bool {
+        self.latency == LatencyClass::Millis
+            && decode_reachability(self.reachability.load(Ordering::SeqCst)) == Reachability::Now
+            && matches!(peer, DeliveryHint::Multiaddr(address) if address.contains("/quic-v1") && !address.contains("/p2p-circuit"))
+    }
 }
 
 #[tokio::test]

@@ -10,8 +10,10 @@ pub const CALL_CONTROL_VERSION: u8 = 1;
 pub const CALL_CONTROL_HEADER_LEN: usize = 1 + 1 + 16 + 32 + 8;
 /// Bytes in a control carrying a call master secret or responder device.
 pub const CALL_CONTROL_BOUND_LEN: usize = CALL_CONTROL_HEADER_LEN + 32;
+/// Hangup additionally authenticates why this exact device pair is ending.
+pub const CALL_CONTROL_HANGUP_LEN: usize = CALL_CONTROL_BOUND_LEN + 1;
 /// Maximum canonical call-control payload size.
-pub const MAX_CALL_CONTROL_LEN: usize = CALL_CONTROL_BOUND_LEN;
+pub const MAX_CALL_CONTROL_LEN: usize = CALL_CONTROL_HANGUP_LEN;
 
 const OP_OFFER: u8 = 1;
 const OP_ANSWER: u8 = 2;
@@ -19,6 +21,15 @@ const OP_DECLINE: u8 = 3;
 const OP_BUSY: u8 = 4;
 const OP_CANCEL: u8 = 5;
 const OP_HANGUP: u8 = 6;
+
+/// Authenticated reason carried by one `Hangup` operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallHangupReason {
+    /// The locally selected device pair ended before or during media.
+    Ended,
+    /// Another linked recipient device's earlier valid answer won.
+    AnsweredElsewhere,
+}
 
 /// One authenticated transient call-state transition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +97,8 @@ pub enum CallControl {
         responder_device: [u8; 32],
         /// Absolute UTC offer expiry copied unchanged.
         expires_at: u64,
+        /// Whether the selected pair ended or this device lost arbitration.
+        reason: CallHangupReason,
     },
 }
 
@@ -152,7 +165,7 @@ pub enum DecodedCallControl {
 
 /// Encode one canonical call-control payload.
 pub fn encode_call_control_payload(control: &CallControl) -> Result<Vec<u8>> {
-    let (op, call_id, initiator, expires_at, bound) = match control {
+    let (op, call_id, initiator, expires_at, bound, hangup_reason) = match control {
         CallControl::Offer {
             call_id,
             initiator_device,
@@ -164,6 +177,7 @@ pub fn encode_call_control_payload(control: &CallControl) -> Result<Vec<u8>> {
             initiator_device,
             expires_at,
             Some(master_secret),
+            None,
         ),
         CallControl::Answer {
             call_id,
@@ -176,6 +190,7 @@ pub fn encode_call_control_payload(control: &CallControl) -> Result<Vec<u8>> {
             initiator_device,
             expires_at,
             Some(responder_device),
+            None,
         ),
         CallControl::Decline {
             call_id,
@@ -188,6 +203,7 @@ pub fn encode_call_control_payload(control: &CallControl) -> Result<Vec<u8>> {
             initiator_device,
             expires_at,
             Some(responder_device),
+            None,
         ),
         CallControl::Busy {
             call_id,
@@ -200,23 +216,26 @@ pub fn encode_call_control_payload(control: &CallControl) -> Result<Vec<u8>> {
             initiator_device,
             expires_at,
             Some(responder_device),
+            None,
         ),
         CallControl::Cancel {
             call_id,
             initiator_device,
             expires_at,
-        } => (OP_CANCEL, call_id, initiator_device, expires_at, None),
+        } => (OP_CANCEL, call_id, initiator_device, expires_at, None, None),
         CallControl::Hangup {
             call_id,
             initiator_device,
             responder_device,
             expires_at,
+            reason,
         } => (
             OP_HANGUP,
             call_id,
             initiator_device,
             expires_at,
             Some(responder_device),
+            Some(reason),
         ),
     };
     if all_zero(call_id)
@@ -226,7 +245,9 @@ pub fn encode_call_control_payload(control: &CallControl) -> Result<Vec<u8>> {
     {
         return Err(ProtocolError::Malformed);
     }
-    let mut out = Vec::with_capacity(CALL_CONTROL_HEADER_LEN + bound.map_or(0, |_| 32));
+    let mut out = Vec::with_capacity(
+        CALL_CONTROL_HEADER_LEN + bound.map_or(0, |_| 32) + hangup_reason.map_or(0, |_| 1),
+    );
     out.push(CALL_CONTROL_VERSION);
     out.push(op);
     out.extend_from_slice(call_id);
@@ -234,6 +255,12 @@ pub fn encode_call_control_payload(control: &CallControl) -> Result<Vec<u8>> {
     out.extend_from_slice(&expires_at.to_le_bytes());
     if let Some(bound) = bound {
         out.extend_from_slice(bound);
+    }
+    if let Some(reason) = hangup_reason {
+        out.push(match reason {
+            CallHangupReason::Ended => 0,
+            CallHangupReason::AnsweredElsewhere => 1,
+        });
     }
     Ok(out)
 }
@@ -250,10 +277,10 @@ pub fn decode_call_control_payload(bytes: &[u8]) -> DecodedCallControl {
     if !matches!(op, OP_OFFER..=OP_HANGUP) {
         return DecodedCallControl::Unsupported;
     }
-    let expected_len = if op == OP_CANCEL {
-        CALL_CONTROL_HEADER_LEN
-    } else {
-        CALL_CONTROL_BOUND_LEN
+    let expected_len = match op {
+        OP_CANCEL => CALL_CONTROL_HEADER_LEN,
+        OP_HANGUP => CALL_CONTROL_HANGUP_LEN,
+        _ => CALL_CONTROL_BOUND_LEN,
     };
     if bytes.len() != expected_len {
         return DecodedCallControl::Malformed;
@@ -308,6 +335,11 @@ pub fn decode_call_control_payload(bytes: &[u8]) -> DecodedCallControl {
             initiator_device,
             responder_device: bound,
             expires_at,
+            reason: match bytes[90] {
+                0 => CallHangupReason::Ended,
+                1 => CallHangupReason::AnsweredElsewhere,
+                _ => return DecodedCallControl::Malformed,
+            },
         },
         _ => unreachable!("operation checked above"),
     };
@@ -359,6 +391,7 @@ mod tests {
                 initiator_device: [2; 32],
                 responder_device: [4; 32],
                 expires_at: 99,
+                reason: CallHangupReason::Ended,
             },
         ]
     }
@@ -400,6 +433,13 @@ mod tests {
         trailing.push(0);
         assert_eq!(
             decode_call_control_payload(&trailing),
+            DecodedCallControl::Malformed
+        );
+        let mut hangup = encode_call_control_payload(&controls()[5]).unwrap();
+        assert_eq!(hangup.len(), CALL_CONTROL_HANGUP_LEN);
+        *hangup.last_mut().expect("reason") = 2;
+        assert_eq!(
+            decode_call_control_payload(&hangup),
             DecodedCallControl::Malformed
         );
     }

@@ -9,7 +9,9 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 
 use kult_crypto::KdfProfile;
-use kult_node::{CallDirection, CallEndReason, CallPhase, Event, Node, NodeError};
+use kult_node::{
+    CallDirection, CallEndReason, CallPhase, DeviceLinkSelection, Event, Node, NodeError,
+};
 use kult_protocol::Envelope;
 use kult_transport::{
     CostClass, DeliveryHint, LatencyClass, LinkProfile, Reachability, SendReceipt, Transport,
@@ -19,6 +21,9 @@ use kult_transport::{
 const NOW: u64 = 1_800_000_000;
 const ALICE_ADDR: &str = "/ip4/127.0.0.1/udp/4101/quic-v1/p2p/alice";
 const BOB_ADDR: &str = "/ip4/127.0.0.1/udp/4102/quic-v1/p2p/bob";
+const PHONE_ADDR: &str = "/ip4/127.0.0.1/udp/4201/quic-v1/p2p/phone";
+const LAPTOP_ADDR: &str = "/ip4/127.0.0.1/udp/4202/quic-v1/p2p/laptop";
+const CAROL_ADDR: &str = "/ip4/127.0.0.1/udp/4203/quic-v1/p2p/carol";
 const TEST_KDF: KdfProfile = KdfProfile {
     m_cost_kib: 8,
     t_cost: 1,
@@ -81,6 +86,11 @@ impl Transport for DirectLink {
             .drain(..)
             .collect())
     }
+
+    fn call_ready(&self, hint: &DeliveryHint) -> bool {
+        self.reachable.load(Ordering::SeqCst)
+            && matches!(hint, DeliveryHint::Multiaddr(address) if address.contains("/quic-v1"))
+    }
 }
 
 struct MeshSpy {
@@ -125,6 +135,29 @@ async fn settle(alice: &mut Node, bob: &mut Node, rng: &mut StdRng, start: u64) 
         alice.tick(start + round * 2, rng).await.unwrap();
         bob.tick(start + round * 2 + 1, rng).await.unwrap();
     }
+}
+
+fn link_devices(source: &mut Node, target: &mut Node, now: u64, rng: &mut StdRng) {
+    let offer = source.begin_device_link(now, rng).unwrap();
+    let (response, target_code) = target
+        .accept_device_link(&offer, "Laptop", now + 1, rng)
+        .unwrap();
+    assert_eq!(
+        source.device_link_confirmation_code(&response).unwrap(),
+        target_code
+    );
+    let package = source
+        .approve_device_link(
+            &response,
+            DeviceLinkSelection::default(),
+            true,
+            now + 2,
+            rng,
+        )
+        .unwrap();
+    target
+        .complete_device_link(&package, true, now + 3, rng)
+        .unwrap();
 }
 
 fn call_update(events: &[Event], phase: CallPhase) -> bool {
@@ -303,4 +336,132 @@ async fn call_attempts_never_fall_back_to_mesh_and_expire_locally() {
         alice.start_call(&bob_id, NOW + 92, &mut rng),
         Err(NodeError::CallUnavailable)
     ));
+}
+
+#[tokio::test]
+async fn first_linked_device_answer_wins_and_later_answer_ends_elsewhere() {
+    let mut rng = StdRng::seed_from_u64(0xc700_0003);
+    let dir = tempfile::tempdir().unwrap();
+    let net = Arc::new(Mutex::new(HashMap::new()));
+    let reachable = Arc::new(AtomicBool::new(true));
+    let mut phone =
+        Node::create(&dir.path().join("phone.db"), b"phone", TEST_KDF, &mut rng).unwrap();
+    let mut laptop =
+        Node::create(&dir.path().join("laptop.db"), b"laptop", TEST_KDF, &mut rng).unwrap();
+    let mut carol =
+        Node::create(&dir.path().join("carol.db"), b"carol", TEST_KDF, &mut rng).unwrap();
+    link_devices(&mut phone, &mut laptop, NOW, &mut rng);
+    let phone_device = phone.device_id();
+    let laptop_device = laptop.device_id();
+
+    for (node, address) in [
+        (&mut phone, PHONE_ADDR),
+        (&mut laptop, LAPTOP_ADDR),
+        (&mut carol, CAROL_ADDR),
+    ] {
+        node.add_transport(Arc::new(DirectLink {
+            net: Arc::clone(&net),
+            me: address,
+            reachable: Arc::clone(&reachable),
+        }));
+    }
+
+    let phone_bundle = phone.handshake_bundle(NOW + 10, &mut rng).unwrap();
+    let laptop_bundle = laptop.handshake_bundle(NOW + 10, &mut rng).unwrap();
+    let carol_bundle = carol.handshake_bundle(NOW + 10, &mut rng).unwrap();
+    let carol_for_phone = phone
+        .add_contact(
+            "Carol",
+            &carol_bundle,
+            &[DeliveryHint::Multiaddr(CAROL_ADDR.to_owned())],
+            NOW + 10,
+            &mut rng,
+        )
+        .unwrap();
+    let carol_for_laptop = laptop
+        .add_contact(
+            "Carol",
+            &carol_bundle,
+            &[DeliveryHint::Multiaddr(CAROL_ADDR.to_owned())],
+            NOW + 10,
+            &mut rng,
+        )
+        .unwrap();
+    let account = carol
+        .add_contact(
+            "Shared account",
+            &phone_bundle,
+            &[DeliveryHint::Multiaddr(PHONE_ADDR.to_owned())],
+            NOW + 10,
+            &mut rng,
+        )
+        .unwrap();
+    assert_eq!(
+        carol
+            .add_contact(
+                "Shared account",
+                &laptop_bundle,
+                &[DeliveryHint::Multiaddr(LAPTOP_ADDR.to_owned())],
+                NOW + 10,
+                &mut rng,
+            )
+            .unwrap(),
+        account
+    );
+
+    phone
+        .send_message(&carol_for_phone, b"phone session", NOW + 11, &mut rng)
+        .unwrap();
+    laptop
+        .send_message(&carol_for_laptop, b"laptop session", NOW + 11, &mut rng)
+        .unwrap();
+    for round in 0..10 {
+        phone.tick(NOW + 12 + round * 3, &mut rng).await.unwrap();
+        laptop.tick(NOW + 13 + round * 3, &mut rng).await.unwrap();
+        carol.tick(NOW + 14 + round * 3, &mut rng).await.unwrap();
+    }
+
+    let call_id = carol.start_call(&account, NOW + 50, &mut rng).unwrap();
+    carol.tick(NOW + 51, &mut rng).await.unwrap();
+    phone.tick(NOW + 52, &mut rng).await.unwrap();
+    laptop.tick(NOW + 52, &mut rng).await.unwrap();
+    phone.answer_call(&call_id, NOW + 53, &mut rng).unwrap();
+    laptop.answer_call(&call_id, NOW + 53, &mut rng).unwrap();
+
+    // Phone flushes first, so its authenticated answer is the winner. The
+    // laptop answer arriving later is a terminal no-op plus an exact hangup.
+    phone.tick(NOW + 54, &mut rng).await.unwrap();
+    laptop.tick(NOW + 55, &mut rng).await.unwrap();
+    carol.tick(NOW + 56, &mut rng).await.unwrap();
+    let selected = carol
+        .calls()
+        .into_iter()
+        .find(|call| call.id == call_id)
+        .unwrap();
+    assert_eq!(selected.phase, CallPhase::Connecting);
+    assert_eq!(selected.responder_device, Some(phone_device));
+    assert_ne!(selected.responder_device, Some(laptop_device));
+
+    let laptop_events = laptop.tick(NOW + 57, &mut rng).await.unwrap();
+    assert!(
+        laptop_events.iter().any(|event| matches!(
+            event,
+            Event::CallUpdated { call }
+                if call.id == call_id
+                    && call.phase == CallPhase::Ended
+                    && call.end_reason == Some(CallEndReason::AnsweredElsewhere)
+        )),
+        "events={laptop_events:?} calls={:?} carol_queued={}",
+        laptop.calls(),
+        carol.queued().unwrap()
+    );
+    assert_eq!(
+        phone
+            .calls()
+            .into_iter()
+            .find(|call| call.id == call_id)
+            .unwrap()
+            .phase,
+        CallPhase::Connecting
+    );
 }

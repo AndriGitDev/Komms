@@ -808,6 +808,21 @@ impl Libp2pTransport {
             .await
             .ok_or_else(|| io_other("transport task stopped"))
     }
+
+    /// Take one already-negotiated inbound call stream without waiting.
+    /// Returns `None` when no stream is currently queued or another consumer
+    /// is polling the queue. This lets an application heartbeat service call
+    /// media without ever stalling ordinary message delivery.
+    pub fn try_accept_call_stream(&self) -> Result<Option<CallStream>> {
+        let Ok(mut inbox) = self.call_inbox.try_lock() else {
+            return Ok(None);
+        };
+        match inbox.try_recv() {
+            Ok(stream) => Ok(Some(stream)),
+            Err(mpsc::error::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::error::TryRecvError::Disconnected) => Err(io_other("transport task stopped")),
+        }
+    }
 }
 
 #[async_trait]
@@ -1016,6 +1031,26 @@ impl Transport for Libp2pTransport {
             .as_ref()
             .map(|buffer| buffer.lock().expect("lock").drain())
             .unwrap_or_default())
+    }
+
+    fn call_ready(&self, peer: &DeliveryHint) -> bool {
+        match peer {
+            DeliveryHint::Multiaddr(address) => Libp2pTransport::call_ready(self, address),
+            _ => false,
+        }
+    }
+
+    async fn open_call_stream(&self, peer: &DeliveryHint) -> Result<CallStream> {
+        match peer {
+            DeliveryHint::Multiaddr(address) => {
+                Libp2pTransport::open_call_stream(self, address).await
+            }
+            _ => Err(TransportError::UnsupportedHint),
+        }
+    }
+
+    fn try_accept_call_stream(&self) -> Result<Option<CallStream>> {
+        Libp2pTransport::try_accept_call_stream(self)
     }
 }
 

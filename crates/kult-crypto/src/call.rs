@@ -78,6 +78,40 @@ pub struct CallMediaFrame {
     pub payload: Vec<u8>,
 }
 
+impl Drop for CallMediaFrame {
+    fn drop(&mut self) {
+        self.payload.zeroize();
+    }
+}
+
+/// Return the complete record length named by one canonical media header.
+/// Stream consumers use this to split reliable byte streams before passing
+/// exact records to [`CallMediaReceiver::open`]. The header is rejected if it
+/// has the wrong magic, an unknown kind, or an impossible payload length.
+pub fn call_media_record_len(header: &[u8]) -> Result<usize> {
+    if header.len() < CALL_MEDIA_HEADER_LEN || header[..4] != CALL_MEDIA_MAGIC {
+        return Err(CryptoError::InvalidMessage);
+    }
+    let payload_len = u16::from_le_bytes(
+        header[25..27]
+            .try_into()
+            .map_err(|_| CryptoError::InvalidMessage)?,
+    ) as usize;
+    let valid_payload = match header[4] {
+        KIND_HELLO => payload_len == 0,
+        KIND_AUDIO => payload_len > 0 && payload_len <= MAX_CALL_MEDIA_PAYLOAD_LEN,
+        _ => false,
+    };
+    if !valid_payload {
+        return Err(CryptoError::InvalidMessage);
+    }
+    CALL_MEDIA_HEADER_LEN
+        .checked_add(payload_len)
+        .and_then(|length| length.checked_add(CALL_MEDIA_TAG_LEN))
+        .filter(|length| *length <= MAX_CALL_MEDIA_FRAME_LEN)
+        .ok_or(CryptoError::InvalidMessage)
+}
+
 /// Direction-local media sealer. Secret fields are erased on drop.
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct CallMediaSender {
@@ -318,9 +352,7 @@ fn parse_header(bytes: &[u8]) -> Result<ParsedHeader> {
     let sequence = u64::from_le_bytes(bytes[9..17].try_into().expect("fixed slice"));
     let timestamp_ms = u64::from_le_bytes(bytes[17..25].try_into().expect("fixed slice"));
     let payload_len = u16::from_le_bytes(bytes[25..27].try_into().expect("fixed slice")) as usize;
-    if payload_len > MAX_CALL_MEDIA_PAYLOAD_LEN
-        || bytes.len() != CALL_MEDIA_HEADER_LEN + payload_len + CALL_MEDIA_TAG_LEN
-    {
+    if bytes.len() != call_media_record_len(bytes)? {
         return Err(CryptoError::InvalidMessage);
     }
     Ok(ParsedHeader {
