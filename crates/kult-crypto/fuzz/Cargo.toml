@@ -54,5 +54,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "call_media_open"
+path = "fuzz_targets/call_media_open.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

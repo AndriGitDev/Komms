@@ -112,7 +112,9 @@ async fn classify(
                 && reachability == Reachability::Now
                 && matches!(
                     hint,
-                    DeliveryHint::Multiaddr(address) if !address.contains("/p2p-circuit")
+                    DeliveryHint::Multiaddr(address)
+                        if address.contains("/quic-v1")
+                            && !address.contains("/p2p-circuit")
                 )
             {
                 return CarrierCapability::Realtime;

@@ -62,6 +62,16 @@ pub enum NodeError {
     PollClosed,
     /// Only the authenticated creator of this exact poll may close it.
     NotPollCreator,
+    /// Call control, target, route, expiry, or transition is invalid.
+    InvalidCall,
+    /// No transient call with this id exists on this installation.
+    UnknownCall,
+    /// The peer does not advertise the canonical call-control contract.
+    CallUnsupported,
+    /// No fresh direct QUIC carrier is available for this call.
+    CallUnavailable,
+    /// This installation already has a non-terminal call.
+    CallBusy,
     /// Signed group-authority content or transition is malformed or misplaced.
     InvalidGroupAuthority,
     /// One or more current members lack signed C6 role support.
@@ -149,6 +159,11 @@ impl std::fmt::Display for NodeError {
             Self::PollVoteLimit => f.write_str("poll vote revision limit reached"),
             Self::PollClosed => f.write_str("poll is already closed"),
             Self::NotPollCreator => f.write_str("only the poll creator may close it"),
+            Self::InvalidCall => f.write_str("invalid call control, route, expiry, or transition"),
+            Self::UnknownCall => f.write_str("call does not exist on this installation"),
+            Self::CallUnsupported => f.write_str("peer does not support live calls"),
+            Self::CallUnavailable => f.write_str("no fresh direct QUIC route is available"),
+            Self::CallBusy => f.write_str("this installation is already in a call"),
             Self::InvalidGroupAuthority => f.write_str("invalid group authority transition"),
             Self::GroupRolesUnsupported => {
                 f.write_str("one or more group members do not support signed roles")

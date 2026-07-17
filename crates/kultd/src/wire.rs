@@ -2083,6 +2083,9 @@ fn render_stored_content(
         kult_protocol::DecodedContent::GroupAuthority { .. } => {
             (UNSUPPORTED_MESSAGE.to_owned(), "malformed", None, json!([]))
         }
+        kult_protocol::DecodedContent::CallControl { .. } => {
+            (UNSUPPORTED_MESSAGE.to_owned(), "malformed", None, json!([]))
+        }
         kult_protocol::DecodedContent::Unsupported { .. } => (
             UNSUPPORTED_MESSAGE.to_owned(),
             "unsupported",

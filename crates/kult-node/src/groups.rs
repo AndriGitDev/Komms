@@ -198,6 +198,7 @@ impl Node {
             DecodedContent::Ephemeral { .. } => return Err(NodeError::InvalidEphemeral),
             DecodedContent::Poll { .. } => return Err(NodeError::InvalidPoll),
             DecodedContent::GroupAuthority { .. } => return Err(NodeError::InvalidGroupAuthority),
+            DecodedContent::CallControl { .. } => return Err(NodeError::InvalidCall),
             _ => {}
         }
         let mut id = [0u8; 16];
@@ -1184,6 +1185,11 @@ impl Node {
                         }
                         _ => (id, Vec::new(), ContentStatus::Malformed),
                     }
+                }
+                // Call controls are pairwise-only; group delivery retains the
+                // authenticated bytes as malformed history without acting.
+                DecodedContent::CallControl { id, .. } => {
+                    (id, Vec::new(), ContentStatus::Malformed)
                 }
                 DecodedContent::Ephemeral {
                     id,

@@ -291,6 +291,101 @@ pub struct CarrierCapabilitySnapshot {
     pub expires_at: u64,
 }
 
+/// Local direction of one transient pairwise call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallDirection {
+    /// This physical device created the call offer.
+    Outgoing,
+    /// A peer device created the call offer.
+    Incoming,
+}
+
+/// Current transient call phase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallPhase {
+    /// Offer is waiting for one recipient device to answer.
+    Ringing,
+    /// One exact device pair is establishing the authenticated media stream.
+    Connecting,
+    /// Both directions proved key possession and audio may flow.
+    Active,
+    /// Terminal; secret material has already been erased.
+    Ended,
+}
+
+/// Exact terminal reason for a call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallEndReason {
+    /// A recipient device explicitly declined.
+    Declined,
+    /// The peer was already occupied.
+    Busy,
+    /// The initiator cancelled before connection.
+    Cancelled,
+    /// Either selected device ended the call.
+    HungUp,
+    /// The unanswered offer reached its authenticated deadline.
+    Expired,
+    /// Another linked recipient device won the answer race.
+    AnsweredElsewhere,
+    /// The direct QUIC route disappeared before or during setup.
+    RouteLost,
+}
+
+/// Why a new outgoing call cannot start now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallUnavailableReason {
+    /// No fresh reachable route is known.
+    OfflineOrUnknown,
+    /// Only a non-realtime bulk/store-and-forward route is known.
+    BulkOnly,
+    /// Only an airtime-budgeted route is known.
+    MeshOnly,
+    /// One or more authorized recipient devices lacks a live ratchet session.
+    MissingSession,
+    /// One or more authorized recipient devices lacks CallControl v1 support.
+    Unsupported,
+    /// This installation already has a non-terminal call.
+    AlreadyInCall,
+}
+
+/// Current honest call-start verdict for one contact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CallAvailability {
+    /// Exact stable contact identity.
+    pub peer: [u8; 32],
+    /// Absent only when an outgoing call may start immediately.
+    pub unavailable: Option<CallUnavailableReason>,
+}
+
+impl CallAvailability {
+    /// Whether an outgoing call may start immediately.
+    pub fn available(&self) -> bool {
+        self.unavailable.is_none()
+    }
+}
+
+/// Render-safe transient call state. It contains no media or secret bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallInfo {
+    /// Random id shared by every control and media record for this call.
+    pub id: [u8; 16],
+    /// Stable peer account identity.
+    pub peer: [u8; 32],
+    /// Incoming or outgoing on this installation.
+    pub direction: CallDirection,
+    /// Current phase.
+    pub phase: CallPhase,
+    /// Exact initiating physical device.
+    pub initiator_device: [u8; 32],
+    /// Winning answering physical device once selected.
+    pub responder_device: Option<[u8; 32]>,
+    /// Absolute deadline for accepting the original offer.
+    pub expires_at: u64,
+    /// Present only after a terminal transition.
+    pub end_reason: Option<CallEndReason>,
+}
+
 /// Render-safe account-authorized physical-device row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkedDeviceInfo {
@@ -994,6 +1089,11 @@ pub enum Event {
     CarrierCapabilityChanged {
         /// Current authoritative snapshot.
         snapshot: CarrierCapabilitySnapshot,
+    },
+    /// Transient call state changed. No secret or media bytes cross this event.
+    CallUpdated {
+        /// Current render-safe state.
+        call: CallInfo,
     },
     /// A group was created, joined, re-keyed, re-rostered, or left
     /// (ADR-0012) — re-read it via [`crate::Node::groups`].

@@ -291,6 +291,9 @@ pub enum QueueClass {
     Normal,
     /// Attachment manifests and bulk-lane records; never eligible for airtime.
     Bulk,
+    /// Transient call control; eligible only for an immediate direct QUIC
+    /// route and discarded rather than resumed after process restart.
+    Realtime,
 }
 
 /// A group member as stored: peer id plus their encoded public identity

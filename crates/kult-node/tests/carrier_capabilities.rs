@@ -86,7 +86,9 @@ async fn verdict_changes_are_evented_and_positive_snapshots_expire_safe() {
         .add_contact(
             "peer",
             &bundle,
-            &[DeliveryHint::Multiaddr("/mock/direct".to_owned())],
+            &[DeliveryHint::Multiaddr(
+                "/ip4/127.0.0.1/udp/4001/quic-v1/p2p/test".to_owned(),
+            )],
             NOW,
             &mut rng,
         )

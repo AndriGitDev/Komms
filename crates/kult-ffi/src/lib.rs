@@ -4561,6 +4561,11 @@ fn render_stored_content(
             ContentKind::Malformed,
             Vec::new(),
         ),
+        kult_protocol::DecodedContent::CallControl { .. } => (
+            UNSUPPORTED_MESSAGE.to_owned(),
+            ContentKind::Malformed,
+            Vec::new(),
+        ),
         kult_protocol::DecodedContent::Unsupported { .. } => (
             UNSUPPORTED_MESSAGE.to_owned(),
             ContentKind::Unsupported,

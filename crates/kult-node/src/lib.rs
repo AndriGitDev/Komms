@@ -49,7 +49,7 @@ use kult_protocol::{
     encode_ephemeral, encode_text, epoch_day, fragment, intro_token, is_capability_control, pad,
     retention_bucket, unpad, CapabilityControl, DecodedContent, Edit, Envelope, EnvelopeKind,
     Ephemeral, FormatCapabilities, MailboxKey, Reassembler, ReceiptPayload, CONTENT_FORMAT_V1,
-    CONTENT_KIND_ATTACHMENT, CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL,
+    CONTENT_KIND_ATTACHMENT, CONTENT_KIND_CALL_CONTROL, CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL,
     CONTENT_KIND_GROUP_AUTHORITY, CONTENT_KIND_MENTION, CONTENT_KIND_POLL, CONTENT_KIND_TEXT,
     ENVELOPE_HEADER_LEN, MAX_EDIT_TEXT_LEN, MAX_EPHEMERAL_LIFETIME_SECS,
     MIN_EPHEMERAL_LIFETIME_SECS, REASSEMBLY_WINDOW_SECS,
@@ -66,6 +66,7 @@ use kult_transport::{CostClass, DeliveryHint, Discovery, Reachability, Transport
 mod api;
 mod attachment;
 mod authority;
+mod calls;
 mod carrier;
 mod contact_names;
 mod devices;
@@ -86,7 +87,8 @@ mod vault;
 
 pub use api::{
     AttachmentConversation, AttachmentDirection, AttachmentInfo, AttachmentMetadata,
-    AttachmentObjectInfo, CarrierCapability, CarrierCapabilitySnapshot, Command, ContentStatus,
+    AttachmentObjectInfo, CallAvailability, CallDirection, CallEndReason, CallInfo, CallPhase,
+    CallUnavailableReason, CarrierCapability, CarrierCapabilitySnapshot, Command, ContentStatus,
     CustomIconCrop, CustomIconInfo, CustomIconUsage, DeviceLinkSelection, EditVersionInfo, Event,
     FolderConversationInfo, FolderConversationList, FolderInfo, FolderSelection,
     GroupAuthorityInfo, GroupInfo, GroupMemberRoleInfo, GroupMentionCapability,
@@ -97,6 +99,7 @@ pub use api::{
     StaleFolderInfo, StaleFolderReason as NodeStaleFolderReason, StaleLabelInfo,
     StaleLabelReason as NodeStaleLabelReason,
 };
+pub use calls::{CALL_OFFER_LIFETIME_SECS, MAX_CALL_OFFER_LIFETIME_SECS};
 pub use contact_names::{ContactNameAssessment, ContactNameWarning, MAX_CONTACT_NAME_BYTES};
 pub use edits::MAX_MESSAGE_EDITS;
 pub use error::NodeError;
@@ -377,6 +380,8 @@ pub struct Node {
     media_reconciled: bool,
     attachment_request_at: HashMap<[u8; 16], u64>,
     carrier_capabilities: HashMap<[u8; 32], CarrierCapabilitySnapshot>,
+    calls: HashMap<[u8; 16], calls::ActiveCall>,
+    call_queue_deadlines: HashMap<i64, u64>,
     reassembler: Reassembler,
     backoff: HashMap<i64, Backoff>,
     frag_meta: HashMap<[u8; 4], PartialMeta>,
@@ -453,6 +458,14 @@ impl Node {
     }
 
     fn assemble(store: Store, identity: Identity, vault: PrekeyVault) -> Result<Self> {
+        // Call controls are transient and their in-memory state and secrets
+        // deliberately do not survive a process restart. Drop any sealed
+        // realtime queue entries before normal delivery resumes.
+        for (seq, item) in store.queue_all()? {
+            if item.class == QueueClass::Realtime {
+                store.queue_ack(seq)?;
+            }
+        }
         let (device_identity, device_state, device_state_dirty) =
             devices::load_or_migrate_device(&store, &identity)?;
         let mut sessions = HashMap::new();
@@ -491,6 +504,8 @@ impl Node {
             media_reconciled: false,
             attachment_request_at: HashMap::new(),
             carrier_capabilities: HashMap::new(),
+            calls: HashMap::new(),
+            call_queue_deadlines: HashMap::new(),
             reassembler: Reassembler::new(),
             backoff: HashMap::new(),
             frag_meta: HashMap::new(),
@@ -1077,6 +1092,7 @@ impl Node {
             DecodedContent::Ephemeral { .. } => return Err(NodeError::InvalidEphemeral),
             DecodedContent::Poll { .. } => return Err(NodeError::InvalidPoll),
             DecodedContent::GroupAuthority { .. } => return Err(NodeError::InvalidGroupAuthority),
+            DecodedContent::CallControl { .. } => return Err(NodeError::InvalidCall),
             _ => {}
         }
         let mut id = [0u8; 16];
@@ -1225,6 +1241,7 @@ impl Node {
             DecodedContent::Mention { .. } => return Err(NodeError::InvalidMention),
             DecodedContent::Poll { .. } => return Err(NodeError::InvalidPoll),
             DecodedContent::GroupAuthority { .. } => return Err(NodeError::InvalidGroupAuthority),
+            DecodedContent::CallControl { .. } => return Err(NodeError::InvalidCall),
             _ => {}
         }
         let contact = self
@@ -1535,6 +1552,7 @@ impl Node {
         // attachment request, or transport flush. A restart and a clock jump
         // therefore cannot revive or transmit already-expired plaintext.
         self.sweep_ephemeral(now, rng)?;
+        self.sweep_calls(now)?;
         // 0. Session-reset markers (a restore happened): queue fresh
         //    handshakes so re-keyed traffic flows without waiting for the
         //    user to send first.
@@ -2292,8 +2310,13 @@ impl Node {
         // after restore), not a message — nothing to record or receipt.
         if let Ok(body) = unpad(&first_payload) {
             if !body.is_empty() {
-                self.record_inbound(peer, body, None, now, rng)?;
-                acks.push((peer_device, env.content_id()));
+                // A call requires an already authenticated live session and
+                // fresh capability/route checks. It can never ride an
+                // anonymous first flight or enter history.
+                if !matches!(decode_content(&body), DecodedContent::CallControl { .. }) {
+                    self.record_inbound(peer, body, None, now, rng)?;
+                    acks.push((peer_device, env.content_id()));
+                }
             }
         }
         self.store.mark_seen(&env.content_id())?;
@@ -2336,8 +2359,18 @@ impl Node {
 
         match env.kind {
             EnvelopeKind::Message => {
-                self.record_inbound(peer, body, env.retention_until, now, rng)?;
-                acks.push((peer_device, env.content_id()));
+                if let DecodedContent::CallControl { control, .. } = decode_content(&body) {
+                    // Transient signaling is already protected by the exact
+                    // physical-device ratchet. It is not history and is not
+                    // receipted, preventing a fallback receipt from emitting
+                    // mesh or store-and-forward traffic for a call attempt.
+                    if env.retention_until.is_none() {
+                        self.apply_call_control(peer, peer_device, control, now, rng)?;
+                    }
+                } else {
+                    self.record_inbound(peer, body, env.retention_until, now, rng)?;
+                    acks.push((peer_device, env.content_id()));
+                }
             }
             EnvelopeKind::Receipt => {
                 // Receipts are terminal: they are not themselves receipted.
@@ -2572,6 +2605,9 @@ impl Node {
                 rng.fill_bytes(&mut id);
                 (id, Vec::new(), ContentStatus::Malformed)
             }
+            // Call controls are transient and are applied before ordinary
+            // history insertion once the call state machine is attached.
+            DecodedContent::CallControl { .. } => return Ok(()),
             DecodedContent::Unsupported {
                 format_version,
                 kind,
@@ -2686,6 +2722,7 @@ impl Node {
                     CONTENT_KIND_EPHEMERAL,
                     CONTENT_KIND_POLL,
                     CONTENT_KIND_GROUP_AUTHORITY,
+                    CONTENT_KIND_CALL_CONTROL,
                 ],
             }],
         }
@@ -2939,6 +2976,17 @@ impl Node {
         let mut queue = self.store.queue_all()?;
         queue.sort_by_key(|(seq, item)| (flush_class(item.envelope.kind), *seq));
         for (seq, item) in queue {
+            if item.class == QueueClass::Realtime
+                && self
+                    .call_queue_deadlines
+                    .get(&seq)
+                    .is_none_or(|deadline| now >= *deadline)
+            {
+                self.store.queue_ack(seq)?;
+                self.call_queue_deadlines.remove(&seq);
+                self.backoff.remove(&seq);
+                continue;
+            }
             if item
                 .envelope
                 .retention_until
@@ -2971,10 +3019,27 @@ impl Node {
                     held_for_airtime = true;
                     continue;
                 }
+                if item.class == QueueClass::Realtime
+                    && (profile.cost == CostClass::Airtime
+                        || profile.latency != kult_transport::LatencyClass::Millis)
+                {
+                    continue;
+                }
                 for hint in &hints {
+                    if item.class == QueueClass::Realtime
+                        && !matches!(
+                            hint,
+                            DeliveryHint::Multiaddr(address)
+                                if address.contains("/quic-v1")
+                                    && !address.contains("/p2p-circuit")
+                        )
+                    {
+                        continue;
+                    }
                     let rank = match transport.reachable(hint).await {
                         Reachability::Now => 0u8,
-                        Reachability::StoreAndForward => 1,
+                        Reachability::StoreAndForward if item.class != QueueClass::Realtime => 1,
+                        Reachability::StoreAndForward => continue,
                         Reachability::Unreachable => continue,
                     };
                     candidates.push((
@@ -3007,6 +3072,7 @@ impl Node {
                 self.store.queue_ack(seq)?;
                 self.backoff.remove(&seq);
                 self.held_notified.remove(&seq);
+                self.call_queue_deadlines.remove(&seq);
                 if let Some(msg_id) = item.msg_id {
                     let account = self.account_for_device(&item.peer)?;
                     self.mark_sent(&account, &item.peer, &msg_id, rng)?;

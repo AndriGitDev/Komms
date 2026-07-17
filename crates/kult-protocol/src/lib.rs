@@ -28,6 +28,7 @@ extern crate alloc;
 mod attachment;
 mod attachment_bulk;
 mod bundle;
+mod call;
 mod capability;
 mod content;
 mod device_sync;
@@ -59,17 +60,21 @@ pub use attachment_bulk::{
     ATTACHMENT_SEALED_CHUNK_LEN, MAX_ATTACHMENT_BULK_LEN, MAX_MISSING_RANGES,
 };
 pub use bundle::{bundle_export, bundle_import, BUNDLE_MAGIC};
+pub use call::{
+    decode_call_control_payload, encode_call_control_payload, CallControl, DecodedCallControl,
+    CALL_CONTROL_BOUND_LEN, CALL_CONTROL_HEADER_LEN, CALL_CONTROL_VERSION, MAX_CALL_CONTROL_LEN,
+};
 pub use capability::{
     is_capability_control, CapabilityControl, FormatCapabilities, CAPABILITY_CONTROL_VERSION,
     CAPABILITY_MAGIC, MAX_CAPABILITY_FORMATS, MAX_CAPABILITY_KINDS,
 };
 pub use content::{
-    decode_content, encode_attachment, encode_edit, encode_ephemeral, encode_group_authority,
-    encode_mention, encode_poll, encode_text, DecodedContent, CONTENT_FORMAT_V1,
-    CONTENT_HEADER_LEN, CONTENT_KIND_ATTACHMENT, CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL,
-    CONTENT_KIND_GROUP_AUTHORITY, CONTENT_KIND_MENTION, CONTENT_KIND_POLL, CONTENT_KIND_TEXT,
-    CONTENT_MAGIC, MAX_COLLECTION_ENTRIES, MAX_CONTENT_FRAME_LEN, MAX_CONTENT_PAYLOAD_LEN,
-    MAX_NESTING_DEPTH,
+    decode_content, encode_attachment, encode_call_control, encode_edit, encode_ephemeral,
+    encode_group_authority, encode_mention, encode_poll, encode_text, DecodedContent,
+    CONTENT_FORMAT_V1, CONTENT_HEADER_LEN, CONTENT_KIND_ATTACHMENT, CONTENT_KIND_CALL_CONTROL,
+    CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL, CONTENT_KIND_GROUP_AUTHORITY, CONTENT_KIND_MENTION,
+    CONTENT_KIND_POLL, CONTENT_KIND_TEXT, CONTENT_MAGIC, MAX_COLLECTION_ENTRIES,
+    MAX_CONTENT_FRAME_LEN, MAX_CONTENT_PAYLOAD_LEN, MAX_NESTING_DEPTH,
 };
 pub use device_sync::{
     resolve_device_sync_events, DeviceSyncBundle, DeviceSyncEvent, DeviceSyncNamespace,

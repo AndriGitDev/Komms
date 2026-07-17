@@ -22,6 +22,7 @@ extern crate alloc;
 
 mod anonbox;
 mod attachment;
+mod call;
 mod device;
 mod error;
 mod fingerprint;
@@ -41,6 +42,12 @@ pub use attachment::{
     attachment_pairwise_scope_id, open_attachment_chunk, seal_attachment_chunk,
     AttachmentChunkContext, AttachmentChunkScope, ATTACHMENT_CHUNK_DATA_LEN,
     ATTACHMENT_CHUNK_PLAINTEXT_LEN, ATTACHMENT_SEALED_CHUNK_LEN,
+};
+pub use call::{
+    CallMediaContext, CallMediaFrame, CallMediaKind, CallMediaReceiver, CallMediaSender, CallRole,
+    CALL_MEDIA_HEADER_LEN, CALL_MEDIA_MAGIC, CALL_MEDIA_RECORDS_PER_KEY_PHASE,
+    CALL_MEDIA_REPLAY_WINDOW, CALL_MEDIA_TAG_LEN, MAX_CALL_MEDIA_FRAME_LEN,
+    MAX_CALL_MEDIA_PAYLOAD_LEN,
 };
 pub use device::{
     ApprovedDeviceLink, CompletedDeviceLink, DeviceCertificate, DeviceLinkCode, DeviceLinkOffer,
