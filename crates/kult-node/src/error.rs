@@ -97,6 +97,20 @@ pub enum NodeError {
     InvalidSchedule,
     /// Streaming import or export failed.
     MediaIo(std::io::Error),
+    /// A link ceremony payload, state transition, or confirmation is invalid.
+    InvalidDeviceLink,
+    /// Linking would replace non-empty state on the proposed target device.
+    DeviceLinkTargetNotEmpty,
+    /// No matching source/target ceremony is currently pending in memory.
+    NoPendingDeviceLink,
+    /// The exact physical-device id is unknown or already revoked.
+    UnknownLinkedDevice,
+    /// The current physical installation cannot revoke itself in place.
+    CannotRevokeCurrentDevice,
+    /// A device-sync bundle was replayed, rolled back, or addressed elsewhere.
+    InvalidDeviceSync,
+    /// A contact device manifest is stale, fork-losing, or rewrites authority.
+    InvalidDeviceManifest,
 }
 
 impl std::fmt::Display for NodeError {
@@ -162,6 +176,19 @@ impl std::fmt::Display for NodeError {
             }
             Self::InvalidSchedule => f.write_str("invalid scheduled message or send instant"),
             Self::MediaIo(e) => write!(f, "attachment stream error: {e}"),
+            Self::InvalidDeviceLink => f.write_str("invalid or unconfirmed device link"),
+            Self::DeviceLinkTargetNotEmpty => {
+                f.write_str("device linking target contains existing account state")
+            }
+            Self::NoPendingDeviceLink => f.write_str("no matching device link is pending"),
+            Self::UnknownLinkedDevice => f.write_str("linked device is unknown or revoked"),
+            Self::CannotRevokeCurrentDevice => {
+                f.write_str("the current device cannot revoke itself")
+            }
+            Self::InvalidDeviceSync => f.write_str("invalid or replayed device sync bundle"),
+            Self::InvalidDeviceManifest => {
+                f.write_str("invalid or rolled-back contact device manifest")
+            }
         }
     }
 }

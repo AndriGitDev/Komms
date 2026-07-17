@@ -22,6 +22,7 @@ extern crate alloc;
 
 mod anonbox;
 mod attachment;
+mod device;
 mod error;
 mod fingerprint;
 mod group;
@@ -40,6 +41,12 @@ pub use attachment::{
     attachment_pairwise_scope_id, open_attachment_chunk, seal_attachment_chunk,
     AttachmentChunkContext, AttachmentChunkScope, ATTACHMENT_CHUNK_DATA_LEN,
     ATTACHMENT_CHUNK_PLAINTEXT_LEN, ATTACHMENT_SEALED_CHUNK_LEN,
+};
+pub use device::{
+    ApprovedDeviceLink, CompletedDeviceLink, DeviceCertificate, DeviceLinkCode, DeviceLinkOffer,
+    DeviceLinkResponse, DeviceManifest, DeviceManifestEntry, DevicePrekeyBundle,
+    PendingDeviceLinkSource, PendingDeviceLinkTarget, MAX_DEVICE_MANIFEST_ENTRIES,
+    MAX_DEVICE_NAME_BYTES, MAX_LINKED_DEVICES, MAX_LINK_TRANSFER_BYTES,
 };
 pub use error::CryptoError;
 pub use fingerprint::{safety_number, SafetyNumber};

@@ -40,8 +40,9 @@ use rand_core::CryptoRngCore;
 use subtle::ConstantTimeEq;
 
 use kult_crypto::{
-    initiate, open_anonymous, respond, safety_number, seal_anonymous, Identity, IdentityPublic,
-    InitialMessage, KdfProfile, PrekeyBundle, RatchetMessage, SafetyNumber,
+    initiate, open_anonymous, respond, safety_number, seal_anonymous, DevicePrekeyBundle, Identity,
+    IdentityPublic, InitialMessage, KdfProfile, PendingDeviceLinkSource, PendingDeviceLinkTarget,
+    PrekeyBundle, RatchetMessage, SafetyNumber,
 };
 use kult_protocol::{
     decode_content, delivery_token, encode_disappearing_text_payload, encode_edit,
@@ -54,9 +55,10 @@ use kult_protocol::{
     MIN_EPHEMERAL_LIFETIME_SECS, REASSEMBLY_WINDOW_SECS,
 };
 use kult_store::{
-    ContactRecord, ConversationId, ConversationMetadata, DeliveryState, Direction,
-    EphemeralConversation, EphemeralMode, EphemeralRecord, EphemeralState, LocalMetadataKey,
-    LocalMetadataRecord, MessageRecord, NoteMessageRecord, QueueClass, QueueItem,
+    ContactDeviceRecord, ContactRecord, ConversationId, ConversationMetadata, DeliveryState,
+    DeviceStateRecord, Direction, EphemeralConversation, EphemeralMode, EphemeralRecord,
+    EphemeralState, LocalMetadataKey, LocalMetadataRecord, MessageDeviceDeliveryRecord,
+    MessageRecord, NoteMessageRecord, QueueClass, QueueItem,
     ScheduledConversation as StoreScheduledConversation, ScheduledMessageRecord, Store,
 };
 use kult_transport::{CostClass, DeliveryHint, Discovery, Reachability, Transport};
@@ -66,6 +68,7 @@ mod attachment;
 mod authority;
 mod carrier;
 mod contact_names;
+mod devices;
 mod edits;
 mod error;
 mod file_presentation;
@@ -84,14 +87,14 @@ mod vault;
 pub use api::{
     AttachmentConversation, AttachmentDirection, AttachmentInfo, AttachmentMetadata,
     AttachmentObjectInfo, CarrierCapability, CarrierCapabilitySnapshot, Command, ContentStatus,
-    CustomIconCrop, CustomIconInfo, CustomIconUsage, EditVersionInfo, Event,
+    CustomIconCrop, CustomIconInfo, CustomIconUsage, DeviceLinkSelection, EditVersionInfo, Event,
     FolderConversationInfo, FolderConversationList, FolderInfo, FolderSelection,
     GroupAuthorityInfo, GroupInfo, GroupMemberRoleInfo, GroupMentionCapability,
-    LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode, MentionCapabilityIssue,
-    MentionCapabilityIssueReason, MentionSpan, PinConversationInfo, PinConversationList, PinInfo,
-    PollInfo, PollOptionInfo, PollVoteInfo, ResolvedGroupMessage, ResolvedMessage,
-    ScheduledConversation, ScheduledMessageInfo, StaleFolderInfo,
-    StaleFolderReason as NodeStaleFolderReason, StaleLabelInfo,
+    LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode, LinkedDeviceInfo,
+    MentionCapabilityIssue, MentionCapabilityIssueReason, MentionSpan, MessageDeviceDeliveryInfo,
+    PinConversationInfo, PinConversationList, PinInfo, PollInfo, PollOptionInfo, PollVoteInfo,
+    ResolvedGroupMessage, ResolvedMessage, ScheduledConversation, ScheduledMessageInfo,
+    StaleFolderInfo, StaleFolderReason as NodeStaleFolderReason, StaleLabelInfo,
     StaleLabelReason as NodeStaleLabelReason,
 };
 pub use contact_names::{ContactNameAssessment, ContactNameWarning, MAX_CONTACT_NAME_BYTES};
@@ -132,9 +135,30 @@ pub type Result<T> = std::result::Result<T, NodeError>;
 /// Associated data for anonymous-boxed handshake flights (fixed across the
 /// protocol; also used by the M2 acceptance tests).
 const HS_AD: &[u8] = b"KK-handshake-v1";
+const DEVICE_INITIAL_MAGIC: &[u8; 4] = b"KDI1";
 
 /// Prekey bundles expire after 30 days (docs/06-identity-trust.md).
 const BUNDLE_TTL_SECS: u64 = 30 * 86_400;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DeviceInitialFlight {
+    initial: Vec<u8>,
+    return_bundle: Vec<u8>,
+}
+
+fn encode_device_initial(flight: &DeviceInitialFlight) -> Result<Vec<u8>> {
+    let body = postcard::to_allocvec(flight).map_err(|_| NodeError::CorruptState)?;
+    let mut out = Vec::with_capacity(DEVICE_INITIAL_MAGIC.len() + body.len());
+    out.extend_from_slice(DEVICE_INITIAL_MAGIC);
+    out.extend_from_slice(&body);
+    Ok(out)
+}
+
+fn decode_device_initial(bytes: &[u8]) -> Option<DeviceInitialFlight> {
+    let body = bytes.strip_prefix(DEVICE_INITIAL_MAGIC)?;
+    let (flight, remainder): (DeviceInitialFlight, &[u8]) = postcard::take_from_bytes(body).ok()?;
+    remainder.is_empty().then_some(flight)
+}
 
 /// How many past daily epochs of delivery tokens the receiver recognizes.
 /// Sneakernet latency is human-scale; a courier bundle a month old must
@@ -337,7 +361,14 @@ impl Bridge {
 /// The Komms runtime: one identity, one store, any number of transports.
 pub struct Node {
     store: Store,
+    /// Stable account identity used for conversation ids and existing wire compatibility.
     identity: Identity,
+    /// Separately authenticated key unique to this physical installation.
+    device_identity: Identity,
+    device_state: DeviceStateRecord,
+    device_state_dirty: bool,
+    pending_device_link_source: Option<PendingDeviceLinkSource>,
+    pending_device_link_target: Option<PendingDeviceLinkTarget>,
     vault: PrekeyVault,
     transports: Vec<Arc<dyn Transport>>,
     discoveries: Vec<Arc<dyn Discovery>>,
@@ -368,6 +399,7 @@ impl Node {
         let store = Store::create(path, passphrase, profile, rng)?;
         let identity = Identity::generate(rng);
         store.put_identity(&identity, rng)?;
+        devices::initialize_fresh_device(&store, &identity, rng)?;
         let vault = PrekeyVault::generate(rng);
         store.put_prekeys(&vault.encode(), rng)?;
         Self::assemble(store, identity, vault)
@@ -398,6 +430,9 @@ impl Node {
     ) -> Result<Self> {
         let store = Store::restore_backup(path, backup, mnemonic, passphrase, profile, rng)?;
         let identity = store.get_identity()?.ok_or(NodeError::CorruptState)?;
+        if store.get_device_state()?.is_none() {
+            devices::initialize_fresh_device(&store, &identity, rng)?;
+        }
         let vault = PrekeyVault::generate(rng);
         store.put_prekeys(&vault.encode(), rng)?;
         Self::assemble(store, identity, vault)
@@ -418,15 +453,36 @@ impl Node {
     }
 
     fn assemble(store: Store, identity: Identity, vault: PrekeyVault) -> Result<Self> {
+        let (device_identity, device_state, device_state_dirty) =
+            devices::load_or_migrate_device(&store, &identity)?;
         let mut sessions = HashMap::new();
+        let contact_devices = store.contact_devices()?;
+        for endpoint in &contact_devices {
+            if endpoint.revoked_at.is_none() {
+                if let Some(session) = store.get_session(&endpoint.device)? {
+                    sessions.insert(endpoint.device, session);
+                }
+            }
+        }
         for contact in store.contacts()? {
-            if let Some(s) = store.get_session(&contact.peer)? {
-                sessions.insert(contact.peer, s);
+            if !contact_devices
+                .iter()
+                .any(|endpoint| endpoint.device == contact.peer)
+                && !sessions.contains_key(&contact.peer)
+            {
+                if let Some(session) = store.get_session(&contact.peer)? {
+                    sessions.insert(contact.peer, session);
+                }
             }
         }
         Ok(Self {
             store,
             identity,
+            device_identity,
+            device_state,
+            device_state_dirty,
+            pending_device_link_source: None,
+            pending_device_link_target: None,
             vault,
             transports: Vec::new(),
             discoveries: Vec::new(),
@@ -520,15 +576,30 @@ impl Node {
     pub fn handshake_bundle(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<Vec<u8>> {
         let opk = self.vault.fresh_opk(rng);
         self.store.put_prekeys(&self.vault.encode(), rng)?;
+        let linked = self.device_state.manifest.devices.len() > 1;
+        let signing_identity = if linked {
+            &self.device_identity
+        } else {
+            &self.identity
+        };
         let bundle = PrekeyBundle::build(
-            &self.identity,
+            signing_identity,
             &self.vault.spk(),
             &self.vault.pqspk()?,
             Some(&opk),
             now + BUNDLE_TTL_SECS,
             vec![],
         );
-        Ok(bundle.encode())
+        if linked {
+            Ok(DevicePrekeyBundle::new(
+                self.device_state.local_certificate.clone(),
+                self.device_state.manifest.clone(),
+                bundle,
+            )?
+            .encode()?)
+        } else {
+            Ok(bundle.encode())
+        }
     }
 
     // ---- discovery (DHT prekey records, docs/05-transports.md §2) -----------
@@ -641,18 +712,29 @@ impl Node {
     /// (ADR-0007), so a check-in can only ever drain mail addressed to us.
     pub fn mailbox_tokens(&self, now: u64) -> Vec<[u8; 32]> {
         let me = self.identity.public().ed;
+        let device = self.device_id();
         let today = epoch_day(now);
         let lo = today.saturating_sub(TOKEN_LOOKBACK_EPOCHS);
         let hi = today + MAILBOX_AHEAD_EPOCHS;
         let mut tokens = Vec::new();
         for epoch in lo..=hi {
             tokens.push(intro_token(&me, epoch));
+            if device != me {
+                tokens.push(intro_token(&device, epoch));
+            }
             for session in self.sessions.values() {
                 tokens.push(delivery_token(
                     &MailboxKey::from_bytes(*session.mailbox_key()),
                     epoch,
                     &me,
                 ));
+                if device != me {
+                    tokens.push(delivery_token(
+                        &MailboxKey::from_bytes(*session.mailbox_key()),
+                        epoch,
+                        &device,
+                    ));
+                }
             }
         }
         tokens
@@ -672,21 +754,87 @@ impl Node {
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 32]> {
         let name = contact_names::normalize_contact_name(name)?;
-        let verified = PrekeyBundle::decode(bundle_bytes)?.verify(now)?;
-        let peer = verified.bundle().identity.ed;
-        let identity = postcard::to_allocvec(&verified.bundle().identity)
-            .map_err(|_| NodeError::CorruptState)?;
+        let (peer, identity, stored_bundle, endpoint, manifest) =
+            if DevicePrekeyBundle::is_encoded(bundle_bytes) {
+                let device_bundle = DevicePrekeyBundle::decode(bundle_bytes)?;
+                device_bundle.verify(now)?;
+                let peer = device_bundle.manifest.account.ed;
+                let identity = postcard::to_allocvec(&device_bundle.manifest.account)
+                    .map_err(|_| NodeError::CorruptState)?;
+                let endpoint = ContactDeviceRecord {
+                    account: peer,
+                    device: device_bundle.certificate.device_id(),
+                    name: device_bundle
+                        .manifest
+                        .devices
+                        .iter()
+                        .find(|entry| entry.certificate == device_bundle.certificate)
+                        .map(|entry| entry.name.clone()),
+                    certificate: postcard::to_allocvec(&device_bundle.certificate)
+                        .map_err(|_| NodeError::CorruptState)?,
+                    bundle: device_bundle.prekey.encode(),
+                    hints: encode_hints(hints),
+                    manifest_generation: device_bundle.manifest.generation,
+                    manifest_state_id: device_bundle.manifest.state_id(),
+                    last_seen: now,
+                    revoked_at: None,
+                    revoked_after_counter: None,
+                };
+                (
+                    peer,
+                    identity,
+                    Vec::new(),
+                    endpoint,
+                    Some(device_bundle.manifest),
+                )
+            } else {
+                let verified = PrekeyBundle::decode(bundle_bytes)?.verify(now)?;
+                let peer = verified.bundle().identity.ed;
+                let identity = postcard::to_allocvec(&verified.bundle().identity)
+                    .map_err(|_| NodeError::CorruptState)?;
+                let endpoint = ContactDeviceRecord {
+                    account: peer,
+                    device: peer,
+                    name: None,
+                    certificate: Vec::new(),
+                    bundle: bundle_bytes.to_vec(),
+                    hints: encode_hints(hints),
+                    manifest_generation: 0,
+                    manifest_state_id: [0u8; 32],
+                    last_seen: now,
+                    revoked_at: None,
+                    revoked_after_counter: None,
+                };
+                (peer, identity, bundle_bytes.to_vec(), endpoint, None)
+            };
+        if let Some(manifest) = manifest.as_ref() {
+            // A rollback/fork-losing manifest must not mutate even the
+            // account-level petname, verification bit, or delivery hints.
+            self.validate_contact_device_manifest(manifest)?;
+        }
         self.store.put_contact(
             &ContactRecord {
                 peer,
                 identity,
                 name,
-                bundle: bundle_bytes.to_vec(),
+                bundle: stored_bundle,
                 hints: encode_hints(hints),
                 verified: false,
             },
             rng,
         )?;
+        if let Some(manifest) = manifest {
+            self.apply_contact_device_manifest(
+                &manifest,
+                endpoint.device,
+                endpoint.bundle,
+                endpoint.hints,
+                now,
+                rng,
+            )?;
+        } else {
+            self.store.put_contact_device(&endpoint, rng)?;
+        }
         Ok(peer)
     }
 
@@ -747,6 +895,18 @@ impl Node {
             .ok_or(NodeError::UnknownPeer)?;
         contact.hints = encode_hints(hints);
         self.store.put_contact(&contact, rng)?;
+        // Preserve the original account-scoped API. A legacy alias and a sole
+        // active physical endpoint both unambiguously inherit the replacement;
+        // with several devices, fill only endpoints that have no exact route so
+        // one device's address never overwrites another's advertised address.
+        let endpoints = self.store.contact_devices_for(peer)?;
+        let sole_endpoint = endpoints.len() == 1;
+        for mut endpoint in endpoints {
+            if sole_endpoint || endpoint.device == *peer || endpoint.hints.is_empty() {
+                endpoint.hints.clone_from(&contact.hints);
+                self.store.put_contact_device(&endpoint, rng)?;
+            }
+        }
         Ok(())
     }
 
@@ -783,7 +943,9 @@ impl Node {
     /// Text history in the one reserved device-local note-to-self
     /// conversation, in insertion order.
     pub fn note_to_self_messages(&self) -> Result<Vec<NoteMessageRecord>> {
-        Ok(self.store.note_messages()?)
+        let mut messages = self.store.note_messages()?;
+        messages.sort_by_key(|message| (message.timestamp, message.id));
+        Ok(messages)
     }
 
     /// Number of envelopes waiting in the outbound queue.
@@ -937,7 +1099,9 @@ impl Node {
         if target_author != me || text.is_empty() || text.len() > MAX_EDIT_TEXT_LEN {
             return Err(NodeError::InvalidEdit);
         }
-        if !self.sessions.contains_key(peer) || !self.peer_supports_kind(peer, CONTENT_KIND_EDIT)? {
+        if !self.peer_has_live_device_sessions(peer)?
+            || !self.peer_supports_kind(peer, CONTENT_KIND_EDIT)?
+        {
             return Err(NodeError::EditUnsupported);
         }
         let records = self.store.messages_with(peer)?;
@@ -1003,7 +1167,7 @@ impl Node {
         {
             return Err(NodeError::InvalidEphemeral);
         }
-        if !self.sessions.contains_key(peer)
+        if !self.peer_has_live_device_sessions(peer)?
             || !self.peer_supports_kind(peer, CONTENT_KIND_EPHEMERAL)?
         {
             return Err(NodeError::EphemeralUnsupported);
@@ -1067,14 +1231,39 @@ impl Node {
             .store
             .get_contact(peer)?
             .ok_or(NodeError::UnknownPeer)?;
+        let endpoints = self.store.contact_devices_for(peer)?;
+        let mut routes = endpoints;
+        if routes.is_empty() {
+            routes.push(ContactDeviceRecord {
+                account: *peer,
+                device: *peer,
+                name: None,
+                certificate: Vec::new(),
+                bundle: contact.bundle.clone(),
+                hints: contact.hints.clone(),
+                manifest_generation: 0,
+                manifest_state_id: [0u8; 32],
+                last_seen: now,
+                revoked_at: None,
+                revoked_after_counter: None,
+            });
+        }
+        routes.sort_by_key(|endpoint| endpoint.device);
+        routes.dedup_by_key(|endpoint| endpoint.device);
+        if !routes.iter().any(|endpoint| {
+            self.sessions.contains_key(&endpoint.device)
+                || (!endpoint.bundle.is_empty()
+                    && PrekeyBundle::decode(&endpoint.bundle)
+                        .and_then(|bundle| bundle.verify(now))
+                        .is_ok())
+        }) {
+            return Err(NodeError::NoSession);
+        }
 
         // The anonymous first flight is always legacy text. Once a live
         // session has authenticated v1 Text support, reuse the record id as
         // the framed content id and retain those exact bytes in history.
-        let wire_body = if self.sessions.contains_key(peer)
-            && core::str::from_utf8(body).is_ok()
-            && self.peer_supports_text(peer)?
-        {
+        let wire_body = if core::str::from_utf8(body).is_ok() && self.peer_supports_text(peer)? {
             encode_text(id, core::str::from_utf8(body).expect("checked above"))?
         } else {
             body.to_vec()
@@ -1095,42 +1284,81 @@ impl Node {
         });
 
         let padded = pad(&wire_body)?;
-        let envelope = if let Some(session) = self.sessions.get_mut(peer) {
-            let msg = session.encrypt(rng, now, &padded, &[]);
-            let token = delivery_token(
-                &MailboxKey::from_bytes(*session.mailbox_key()),
-                epoch_day(now),
-                peer,
-            );
-            self.store.put_session(peer, session, rng)?;
-            match retention_until {
-                Some(deadline) => {
-                    Envelope::new_retained(EnvelopeKind::Message, token, deadline, msg.encode())?
+        let mut queued = 0usize;
+        for endpoint in routes {
+            let route = endpoint.device;
+            let envelope = if let Some(session) = self.sessions.get_mut(&route) {
+                let msg = session.encrypt(rng, now, &padded, &[]);
+                let token = delivery_token(
+                    &MailboxKey::from_bytes(*session.mailbox_key()),
+                    epoch_day(now),
+                    &route,
+                );
+                self.store.put_session(&route, session, rng)?;
+                match retention_until {
+                    Some(deadline) => Envelope::new_retained(
+                        EnvelopeKind::Message,
+                        token,
+                        deadline,
+                        msg.encode(),
+                    )?,
+                    None => Envelope::new(EnvelopeKind::Message, token, msg.encode()),
                 }
-                None => Envelope::new(EnvelopeKind::Message, token, msg.encode()),
+            } else {
+                if retention_until.is_some()
+                    || endpoint.bundle.is_empty()
+                    || PrekeyBundle::decode(&endpoint.bundle)
+                        .and_then(|bundle| bundle.verify(now))
+                        .is_err()
+                {
+                    self.store.put_message_device_delivery(
+                        &MessageDeviceDeliveryRecord {
+                            message: id,
+                            account: *peer,
+                            device: route,
+                            wire_id: None,
+                            state: DeliveryState::Queued,
+                        },
+                        rng,
+                    )?;
+                    continue;
+                }
+                self.initiate_session(peer, &route, &endpoint.bundle, &padded, now, rng)?
+            };
+            let wire_id = envelope.content_id();
+            if record.wire_id.is_none() {
+                record.wire_id = Some(wire_id);
             }
-        } else {
-            if retention_until.is_some() {
-                return Err(NodeError::EphemeralUnsupported);
-            }
-            if contact.bundle.is_empty() {
-                return Err(NodeError::NoSession);
-            }
-            self.initiate_session(peer, &contact.bundle, &padded, now, rng)?
-        };
-
-        record.wire_id = Some(envelope.content_id());
+            self.store.put_message_device_delivery(
+                &MessageDeviceDeliveryRecord {
+                    message: id,
+                    account: *peer,
+                    device: route,
+                    wire_id: Some(wire_id),
+                    state: DeliveryState::Queued,
+                },
+                rng,
+            )?;
+            self.store.queue_push(
+                &QueueItem {
+                    peer: route,
+                    msg_id: Some(id),
+                    group_msg_id: None,
+                    class: QueueClass::Normal,
+                    envelope,
+                },
+                rng,
+            )?;
+            queued += 1;
+        }
+        if queued == 0 {
+            return Err(if retention_until.is_some() {
+                NodeError::EphemeralUnsupported
+            } else {
+                NodeError::NoSession
+            });
+        }
         self.store.update_message(&record, rng)?;
-        self.store.queue_push(
-            &QueueItem {
-                peer: *peer,
-                msg_id: Some(id),
-                group_msg_id: None,
-                class: QueueClass::Normal,
-                envelope,
-            },
-            rng,
-        )?;
         Ok(id)
     }
 
@@ -1144,11 +1372,10 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 16]> {
-        let contact = self
-            .store
+        self.store
             .get_contact(peer)?
             .ok_or(NodeError::UnknownPeer)?;
-        if !self.sessions.contains_key(peer) && contact.bundle.is_empty() {
+        if !self.peer_has_session_or_bundle(peer)? {
             return Err(NodeError::NoSession);
         }
         self.schedule(
@@ -1296,6 +1523,10 @@ impl Node {
     /// receipts for consumed messages, then flush the outbound queue through
     /// the transport scheduler. Returns all events produced.
     pub async fn tick(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<Vec<Event>> {
+        if self.device_state_dirty {
+            self.store.put_device_state(&self.device_state, rng)?;
+            self.device_state_dirty = false;
+        }
         if !self.media_reconciled {
             self.store.reconcile_media(rng)?;
             self.media_reconciled = true;
@@ -1308,6 +1539,11 @@ impl Node {
         //    handshakes so re-keyed traffic flows without waiting for the
         //    user to send first.
         self.rekey_reset_peers(now, rng)?;
+        // A manifest can advertise an active endpoint before its prekey bundle
+        // or session arrives. Ordinary sends retain an honest per-device
+        // `Queued` row; once that route becomes usable, materialize the exact
+        // pending copy instead of leaving the placeholder stuck forever.
+        self.queue_pending_pairwise_device_deliveries(now, rng)?;
 
         // Absolute UTC scheduling is enforced in core before encryption:
         // clock rollback keeps entries held, clock advance activates them on
@@ -1450,25 +1686,57 @@ impl Node {
     /// dropped by the peer's vault.
     fn initiate_session(
         &mut self,
-        peer: &[u8; 32],
+        account: &[u8; 32],
+        device: &[u8; 32],
         bundle_bytes: &[u8],
         padded: &[u8],
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Envelope> {
         let mut bundle = PrekeyBundle::decode(bundle_bytes)?.verify(now)?;
-        if self.store.reset_markers()?.contains(peer) {
+        let reset_markers = self.store.reset_markers()?;
+        if (reset_markers.contains(account) || reset_markers.contains(device))
+            || self.device_state.manifest.devices.len() > 1
+        {
             bundle = bundle.without_opk();
         }
-        let (session, init) = initiate(&self.identity, &bundle, padded, now, rng)?;
-        let sealed = seal_anonymous(&bundle.bundle().identity, HS_AD, &init.encode(), rng);
-        self.store.delete_capabilities(peer)?;
-        self.capabilities_advertised.remove(peer);
-        self.store.put_session(peer, &session, rng)?;
-        self.sessions.insert(*peer, session);
+        let linked = self.device_state.manifest.devices.len() > 1;
+        let initiator = if linked {
+            &self.device_identity
+        } else {
+            &self.identity
+        };
+        let (session, init) = initiate(initiator, &bundle, padded, now, rng)?;
+        let initial_bytes = if linked {
+            let return_prekey = PrekeyBundle::build(
+                &self.device_identity,
+                &self.vault.spk(),
+                &self.vault.pqspk()?,
+                None,
+                now + BUNDLE_TTL_SECS,
+                Vec::new(),
+            );
+            let return_bundle = DevicePrekeyBundle::new(
+                self.device_state.local_certificate.clone(),
+                self.device_state.manifest.clone(),
+                return_prekey,
+            )?
+            .encode()?;
+            encode_device_initial(&DeviceInitialFlight {
+                initial: init.encode(),
+                return_bundle,
+            })?
+        } else {
+            init.encode()
+        };
+        let sealed = seal_anonymous(&bundle.bundle().identity, HS_AD, &initial_bytes, rng);
+        self.store.delete_capabilities(device)?;
+        self.capabilities_advertised.remove(device);
+        self.store.put_session(device, &session, rng)?;
+        self.sessions.insert(*device, session);
         Ok(Envelope::new(
             EnvelopeKind::Handshake,
-            intro_token(peer, epoch_day(now)),
+            intro_token(device, epoch_day(now)),
             sealed,
         ))
     }
@@ -1548,10 +1816,28 @@ impl Node {
                                 .store
                                 .get_contact(&peer)?
                                 .ok_or(NodeError::UnknownPeer)?;
-                            if contact.bundle.is_empty() {
-                                return Err(NodeError::NoSession);
+                            let endpoints = self.store.contact_devices_for(&peer)?;
+                            if endpoints.is_empty() {
+                                if contact.bundle.is_empty() {
+                                    return Err(NodeError::NoSession);
+                                }
+                                PrekeyBundle::decode(&contact.bundle)?.verify(now)?;
+                            } else {
+                                let mut usable = false;
+                                for endpoint in endpoints {
+                                    if self.sessions.contains_key(&endpoint.device)
+                                        || (!endpoint.bundle.is_empty()
+                                            && PrekeyBundle::decode(&endpoint.bundle)
+                                                .and_then(|bundle| bundle.verify(now))
+                                                .is_ok())
+                                    {
+                                        usable = true;
+                                    }
+                                }
+                                if !usable {
+                                    return Err(NodeError::NoSession);
+                                }
                             }
-                            PrekeyBundle::decode(&contact.bundle)?.verify(now)?;
                         }
                         self.send_message_with_id(
                             &peer,
@@ -1594,34 +1880,185 @@ impl Node {
     /// marker: peers whose bundle is missing or expired fall back to the
     /// send-path auto-handshake once the user has a fresh bundle for them.
     fn rekey_reset_peers(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<()> {
-        for peer in self.store.reset_markers()? {
-            if self.sessions.contains_key(&peer) {
-                // A send or an inbound handshake already re-keyed it.
-                self.store.clear_reset_marker(&peer)?;
-                continue;
+        for marker in self.store.reset_markers()? {
+            let all_endpoints = self.store.contact_devices()?;
+            let physical = all_endpoints
+                .iter()
+                .find(|endpoint| endpoint.device == marker && endpoint.revoked_at.is_none());
+            let account = physical.map_or(marker, |endpoint| endpoint.account);
+            let mut routes = if physical.is_some() {
+                physical.cloned().into_iter().collect::<Vec<_>>()
+            } else {
+                self.store.contact_devices_for(&account)?
+            };
+            if routes.is_empty() {
+                let contact = self.store.get_contact(&account)?;
+                if let Some(contact) = contact.filter(|contact| !contact.bundle.is_empty()) {
+                    routes.push(ContactDeviceRecord {
+                        account,
+                        device: account,
+                        name: None,
+                        certificate: Vec::new(),
+                        bundle: contact.bundle,
+                        hints: contact.hints,
+                        manifest_generation: 0,
+                        manifest_state_id: [0u8; 32],
+                        last_seen: now,
+                        revoked_at: None,
+                        revoked_after_counter: None,
+                    });
+                }
             }
-            let contact = self.store.get_contact(&peer)?;
-            let Some(contact) = contact.filter(|c| !c.bundle.is_empty()) else {
-                self.store.clear_reset_marker(&peer)?;
-                continue;
-            };
-            // The marker must still be set while initiating — it selects
-            // the OPK-less mode — and clears whatever the outcome.
-            let flight = self.initiate_session(&peer, &contact.bundle, &pad(&[])?, now, rng);
-            self.store.clear_reset_marker(&peer)?;
-            let Ok(envelope) = flight else {
-                continue; // e.g. the bundle expired since the backup
-            };
-            self.store.queue_push(
-                &QueueItem {
-                    peer,
-                    msg_id: None,
-                    group_msg_id: None,
-                    class: QueueClass::Normal,
-                    envelope,
-                },
-                rng,
-            )?;
+
+            // Keep the marker until every attempted first flight is built:
+            // it selects OPK-less restore mode for both legacy accounts and
+            // exact C2 physical endpoints.
+            for endpoint in routes {
+                if self.sessions.contains_key(&endpoint.device) || endpoint.bundle.is_empty() {
+                    continue;
+                }
+                let Ok(envelope) = self.initiate_session(
+                    &account,
+                    &endpoint.device,
+                    &endpoint.bundle,
+                    &pad(&[])?,
+                    now,
+                    rng,
+                ) else {
+                    continue; // e.g. the archived bundle has expired
+                };
+                self.store.queue_push(
+                    &QueueItem {
+                        peer: endpoint.device,
+                        msg_id: None,
+                        group_msg_id: None,
+                        class: QueueClass::Normal,
+                        envelope,
+                    },
+                    rng,
+                )?;
+            }
+            self.store.clear_reset_marker(&marker)?;
+        }
+        Ok(())
+    }
+
+    fn queue_pending_pairwise_device_deliveries(
+        &mut self,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let endpoints: HashMap<[u8; 32], ContactDeviceRecord> = self
+            .store
+            .contact_devices()?
+            .into_iter()
+            .filter(|endpoint| endpoint.revoked_at.is_none())
+            .map(|endpoint| (endpoint.device, endpoint))
+            .collect();
+        let mut queued: HashMap<([u8; 16], [u8; 32]), [u8; 16]> = self
+            .store
+            .queue_all()?
+            .into_iter()
+            .filter_map(|(_, item)| {
+                item.msg_id
+                    .map(|message| ((message, item.peer), item.envelope.content_id()))
+            })
+            .collect();
+        let active_ephemeral: HashSet<[u8; 16]> = self
+            .store
+            .ephemeral_records()?
+            .into_iter()
+            .filter(|record| record.state == EphemeralState::Active)
+            .map(|record| record.content_id)
+            .collect();
+
+        for contact in self.store.contacts()? {
+            for mut message in self.store.messages_with(&contact.peer)? {
+                if message.direction != Direction::Outbound
+                    || active_ephemeral.contains(&message.id)
+                {
+                    continue;
+                }
+                let mut message_changed = false;
+                for mut delivery in self.store.message_device_deliveries(&message.id)? {
+                    if delivery.account != contact.peer
+                        || delivery.state != DeliveryState::Queued
+                        || delivery.wire_id.is_some()
+                    {
+                        continue;
+                    }
+                    let route = delivery.device;
+                    if let Some(wire_id) = queued.get(&(message.id, route)).copied() {
+                        delivery.wire_id = Some(wire_id);
+                        self.store.put_message_device_delivery(&delivery, rng)?;
+                        if message.wire_id.is_none() {
+                            message.wire_id = Some(wire_id);
+                            message_changed = true;
+                        }
+                        continue;
+                    }
+
+                    let padded = pad(&message.body)?;
+                    let envelope = if let Some(session) = self.sessions.get_mut(&route) {
+                        let ratchet = session.encrypt(rng, now, &padded, &[]);
+                        let token = delivery_token(
+                            &MailboxKey::from_bytes(*session.mailbox_key()),
+                            epoch_day(now),
+                            &route,
+                        );
+                        self.store.put_session(&route, session, rng)?;
+                        Envelope::new(EnvelopeKind::Message, token, ratchet.encode())
+                    } else {
+                        let Some(endpoint) = endpoints.get(&route) else {
+                            continue;
+                        };
+                        if endpoint.bundle.is_empty()
+                            || PrekeyBundle::decode(&endpoint.bundle)
+                                .and_then(|bundle| bundle.verify(now))
+                                .is_err()
+                        {
+                            continue;
+                        }
+                        self.initiate_session(
+                            &contact.peer,
+                            &route,
+                            &endpoint.bundle,
+                            &padded,
+                            now,
+                            rng,
+                        )?
+                    };
+                    let wire_id = envelope.content_id();
+                    let class = if matches!(
+                        decode_content(&message.body),
+                        DecodedContent::Attachment { .. }
+                    ) {
+                        QueueClass::Bulk
+                    } else {
+                        QueueClass::Normal
+                    };
+                    self.store.queue_push(
+                        &QueueItem {
+                            peer: route,
+                            msg_id: Some(message.id),
+                            group_msg_id: None,
+                            class,
+                            envelope,
+                        },
+                        rng,
+                    )?;
+                    queued.insert((message.id, route), wire_id);
+                    delivery.wire_id = Some(wire_id);
+                    self.store.put_message_device_delivery(&delivery, rng)?;
+                    if message.wire_id.is_none() {
+                        message.wire_id = Some(wire_id);
+                        message_changed = true;
+                    }
+                }
+                if message_changed {
+                    self.store.update_message(&message, rng)?;
+                }
+            }
         }
         Ok(())
     }
@@ -1700,12 +2137,35 @@ impl Node {
             Ok(Consumed::Done)
         };
 
-        let Ok(init_bytes) = open_anonymous(&self.identity, HS_AD, &env.body) else {
-            return done(self); // not addressed to us
+        let (recipient, init_bytes) =
+            if let Ok(bytes) = open_anonymous(&self.device_identity, HS_AD, &env.body) {
+                (&self.device_identity, bytes)
+            } else if let Ok(bytes) = open_anonymous(&self.identity, HS_AD, &env.body) {
+                (&self.identity, bytes)
+            } else {
+                return done(self);
+            };
+        let (raw_initial, sender_bundle) = if let Some(flight) = decode_device_initial(&init_bytes)
+        {
+            let Ok(bundle) = DevicePrekeyBundle::decode(&flight.return_bundle) else {
+                return done(self);
+            };
+            if bundle.verify(now).is_err() {
+                return done(self);
+            }
+            (flight.initial, Some(bundle))
+        } else {
+            (init_bytes, None)
         };
-        let Ok(init) = InitialMessage::decode(&init_bytes) else {
+        let Ok(init) = InitialMessage::decode(&raw_initial) else {
             return done(self);
         };
+        if sender_bundle
+            .as_ref()
+            .is_some_and(|bundle| bundle.prekey.identity != init.initiator)
+        {
+            return done(self);
+        }
         if init.spk_id != self.vault.spk_id || init.pqspk_id != self.vault.pqspk_id {
             return done(self); // references prekeys we no longer hold
         }
@@ -1719,7 +2179,7 @@ impl Node {
         let spk = self.vault.spk();
         let pqspk = self.vault.pqspk()?;
         let Ok((session, first_payload)) =
-            respond(&self.identity, &spk, &pqspk, opk.as_ref(), &init, now, rng)
+            respond(recipient, &spk, &pqspk, opk.as_ref(), &init, now, rng)
         else {
             return done(self);
         };
@@ -1729,10 +2189,14 @@ impl Node {
             self.vault.remove_opk(id);
             self.store.put_prekeys(&self.vault.encode(), rng)?;
         }
-        let peer = init.initiator.ed;
+        let peer_device = init.initiator.ed;
+        let (peer, account_identity) = sender_bundle.as_ref().map_or_else(
+            || (peer_device, init.initiator.clone()),
+            |bundle| (bundle.manifest.account.ed, bundle.manifest.account.clone()),
+        );
         if self.store.get_contact(&peer)?.is_none() {
             let identity =
-                postcard::to_allocvec(&init.initiator).map_err(|_| NodeError::CorruptState)?;
+                postcard::to_allocvec(&account_identity).map_err(|_| NodeError::CorruptState)?;
             self.store.put_contact(
                 &ContactRecord {
                     peer,
@@ -1746,10 +2210,77 @@ impl Node {
             )?;
             self.events.push_back(Event::ContactAdded { peer });
         }
-        self.store.put_session(&peer, &session, rng)?;
-        self.store.delete_capabilities(&peer)?;
-        self.capabilities_advertised.remove(&peer);
-        self.sessions.insert(peer, session);
+        let prior_endpoint = self
+            .store
+            .contact_devices_for(&peer)?
+            .into_iter()
+            .find(|endpoint| endpoint.device == peer_device);
+        let mut endpoint = if let Some(bundle) = sender_bundle.as_ref() {
+            ContactDeviceRecord {
+                account: peer,
+                device: peer_device,
+                name: bundle
+                    .manifest
+                    .devices
+                    .iter()
+                    .find(|entry| entry.certificate == bundle.certificate)
+                    .map(|entry| entry.name.clone()),
+                certificate: postcard::to_allocvec(&bundle.certificate)
+                    .map_err(|_| NodeError::CorruptState)?,
+                bundle: bundle.prekey.encode(),
+                hints: bundle.prekey.relay_hints.clone(),
+                manifest_generation: bundle.manifest.generation,
+                manifest_state_id: bundle.manifest.state_id(),
+                last_seen: now,
+                revoked_at: None,
+                revoked_after_counter: None,
+            }
+        } else {
+            ContactDeviceRecord {
+                account: peer,
+                device: peer_device,
+                name: None,
+                certificate: Vec::new(),
+                bundle: Vec::new(),
+                hints: Vec::new(),
+                manifest_generation: 0,
+                manifest_state_id: [0u8; 32],
+                last_seen: now,
+                revoked_at: None,
+                revoked_after_counter: None,
+            }
+        };
+        if let Some(bundle) = sender_bundle {
+            self.apply_contact_device_manifest(
+                &bundle.manifest,
+                endpoint.device,
+                endpoint.bundle,
+                endpoint.hints,
+                now,
+                rng,
+            )?;
+        } else {
+            if let Some(prior) = prior_endpoint {
+                if endpoint.bundle.is_empty() {
+                    endpoint.bundle = prior.bundle;
+                }
+                if endpoint.hints.is_empty() {
+                    endpoint.hints = prior.hints;
+                }
+                if endpoint.certificate.is_empty() {
+                    endpoint.certificate = prior.certificate;
+                }
+                if endpoint.name.is_none() {
+                    endpoint.name = prior.name;
+                }
+                endpoint.last_seen = endpoint.last_seen.max(prior.last_seen);
+            }
+            self.store.put_contact_device(&endpoint, rng)?;
+        }
+        self.store.put_session(&peer_device, &session, rng)?;
+        self.store.delete_capabilities(&peer_device)?;
+        self.capabilities_advertised.remove(&peer_device);
+        self.sessions.insert(peer_device, session);
         *established = true;
         self.events.push_back(Event::SessionEstablished { peer });
         // A re-established session may mean the peer restored from backup
@@ -1762,7 +2293,7 @@ impl Node {
         if let Ok(body) = unpad(&first_payload) {
             if !body.is_empty() {
                 self.record_inbound(peer, body, None, now, rng)?;
-                acks.push((peer, env.content_id()));
+                acks.push((peer_device, env.content_id()));
             }
         }
         self.store.mark_seen(&env.content_id())?;
@@ -1779,9 +2310,10 @@ impl Node {
     ) -> Result<Consumed> {
         // No session recognizes this token yet → it may be for a session a
         // later handshake establishes. Stash, don't drop.
-        let Some(peer) = self.match_session(&env.token, now) else {
+        let Some(peer_device) = self.match_session(&env.token, now) else {
             return Ok(Consumed::Later);
         };
+        let peer = self.account_for_device(&peer_device)?;
         let done = |node: &mut Self| -> Result<Consumed> {
             node.store.mark_seen(&env.content_id())?;
             Ok(Consumed::Done)
@@ -1789,7 +2321,7 @@ impl Node {
         let Ok(msg) = RatchetMessage::decode(&env.body) else {
             return done(self);
         };
-        let Some(session) = self.sessions.get_mut(&peer) else {
+        let Some(session) = self.sessions.get_mut(&peer_device) else {
             return Ok(Consumed::Later);
         };
         let Ok(plaintext) = session.decrypt(rng, now, &msg, &[]) else {
@@ -1797,7 +2329,7 @@ impl Node {
             // honest failure per the ratchet contract.
             return done(self);
         };
-        self.store.put_session(&peer, session, rng)?;
+        self.store.put_session(&peer_device, session, rng)?;
         let Ok(body) = unpad(&plaintext) else {
             return done(self);
         };
@@ -1805,21 +2337,22 @@ impl Node {
         match env.kind {
             EnvelopeKind::Message => {
                 self.record_inbound(peer, body, env.retention_until, now, rng)?;
-                acks.push((peer, env.content_id()));
+                acks.push((peer_device, env.content_id()));
             }
             EnvelopeKind::Receipt => {
                 // Receipts are terminal: they are not themselves receipted.
                 if kult_protocol::is_attachment_bulk_record(&body) {
-                    self.apply_attachment_bulk(peer, &body, now, rng)?;
+                    self.apply_attachment_bulk(peer, peer_device, &body, now, rng)?;
                 } else if is_capability_control(&body) {
                     if let Ok(capabilities) = CapabilityControl::decode(&body) {
-                        self.store.put_capabilities(&peer, &capabilities, rng)?;
-                        if !self.capabilities_advertised.contains(&peer) {
-                            self.queue_capabilities(&peer, now, rng)?;
+                        self.store
+                            .put_capabilities(&peer_device, &capabilities, rng)?;
+                        if !self.capabilities_advertised.contains(&peer_device) {
+                            self.queue_capabilities(&peer_device, now, rng)?;
                         }
                     }
                 } else if let Ok(receipt) = ReceiptPayload::decode(&body) {
-                    self.apply_receipt(&peer, &receipt, now, rng)?;
+                    self.apply_receipt(&peer_device, &receipt, now, rng)?;
                 }
             }
             EnvelopeKind::GroupControl => {
@@ -1827,8 +2360,8 @@ impl Node {
                 // not-applicable-yet ones (a co-member's announce racing
                 // the creator's invite) are dropped *unacked* so the
                 // sender's paced resend arrives after the missing context.
-                if self.apply_group_control(peer, &body, now, rng, established)? {
-                    acks.push((peer, env.content_id()));
+                if self.apply_group_control(peer, peer_device, &body, now, rng, established)? {
+                    acks.push((peer_device, env.content_id()));
                 }
             }
             _ => unreachable!("consume() routes only Message/Receipt/GroupControl here"),
@@ -2092,10 +2625,49 @@ impl Node {
     }
 
     fn peer_supports_kind(&self, peer: &[u8; 32], kind: u16) -> Result<bool> {
-        Ok(self
-            .store
-            .get_capabilities(peer)?
-            .is_some_and(|capabilities| capabilities.supports(CONTENT_FORMAT_V1, kind)))
+        let endpoints = self.store.contact_devices_for(peer)?;
+        if endpoints.is_empty() {
+            return Ok(self.sessions.contains_key(peer)
+                && self
+                    .store
+                    .get_capabilities(peer)?
+                    .is_some_and(|capabilities| capabilities.supports(CONTENT_FORMAT_V1, kind)));
+        }
+        for endpoint in endpoints {
+            if !self.sessions.contains_key(&endpoint.device)
+                || !self
+                    .store
+                    .get_capabilities(&endpoint.device)?
+                    .is_some_and(|capabilities| capabilities.supports(CONTENT_FORMAT_V1, kind))
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    pub(crate) fn peer_has_live_device_sessions(&self, peer: &[u8; 32]) -> Result<bool> {
+        let endpoints = self.store.contact_devices_for(peer)?;
+        if endpoints.is_empty() {
+            return Ok(self.sessions.contains_key(peer));
+        }
+        Ok(endpoints
+            .iter()
+            .all(|endpoint| self.sessions.contains_key(&endpoint.device)))
+    }
+
+    fn peer_has_session_or_bundle(&self, peer: &[u8; 32]) -> Result<bool> {
+        let endpoints = self.store.contact_devices_for(peer)?;
+        if endpoints.is_empty() {
+            return Ok(self.sessions.contains_key(peer)
+                || self
+                    .store
+                    .get_contact(peer)?
+                    .is_some_and(|contact| !contact.bundle.is_empty()));
+        }
+        Ok(endpoints.iter().any(|endpoint| {
+            self.sessions.contains_key(&endpoint.device) || !endpoint.bundle.is_empty()
+        }))
     }
 
     fn peer_supports_text(&self, peer: &[u8; 32]) -> Result<bool> {
@@ -2165,11 +2737,12 @@ impl Node {
 
     fn apply_receipt(
         &mut self,
-        peer: &[u8; 32],
+        peer_device: &[u8; 32],
         receipt: &ReceiptPayload,
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
+        let peer = self.account_for_device(peer_device)?;
         // Selective retransmission (docs/05-transports.md §4.2 rule 2):
         // re-queue exactly the missing fragment indices, never the whole
         // message — and only if the NACK comes from the peer the fragments
@@ -2180,7 +2753,7 @@ impl Node {
             let Some(cached) = self.frag_cache.get(id) else {
                 continue; // expired or evicted — the full-message retry path remains
             };
-            if !bool::from(cached.peer.ct_eq(peer)) {
+            if !bool::from(cached.peer.ct_eq(peer_device)) {
                 continue;
             }
             for &i in indices {
@@ -2199,7 +2772,7 @@ impl Node {
                 };
                 self.store.queue_push(
                     &QueueItem {
-                        peer: *peer,
+                        peer: *peer_device,
                         msg_id: None,
                         group_msg_id: None,
                         class: QueueClass::Normal,
@@ -2210,12 +2783,29 @@ impl Node {
             }
         }
 
-        for record in self.store.messages_with(peer)? {
-            let Some(wire_id) = record.wire_id else {
-                continue;
-            };
-            let acked = receipt.acks.iter().any(|a| bool::from(a.ct_eq(&wire_id)));
-            if acked
+        let records = self.store.messages_with(&peer)?;
+        for record in records {
+            let mut device_acked = false;
+            for mut delivery in self.store.message_device_deliveries(&record.id)? {
+                let acked = delivery.wire_id.is_some_and(|wire_id| {
+                    receipt
+                        .acks
+                        .iter()
+                        .any(|ack| bool::from(ack.ct_eq(&wire_id)))
+                });
+                if acked && delivery.device == *peer_device {
+                    delivery.state = DeliveryState::Delivered;
+                    self.store.put_message_device_delivery(&delivery, rng)?;
+                    device_acked = true;
+                }
+            }
+            let legacy_acked = record.wire_id.is_some_and(|wire_id| {
+                receipt
+                    .acks
+                    .iter()
+                    .any(|ack| bool::from(ack.ct_eq(&wire_id)))
+            });
+            if (device_acked || legacy_acked)
                 && record.direction == Direction::Outbound
                 && record.state != DeliveryState::Delivered
             {
@@ -2231,7 +2821,7 @@ impl Node {
 
         // The same acks may retire pending group announces and advance
         // per-member group deliveries (ADR-0012).
-        self.apply_group_receipt(peer, &receipt.acks, rng)?;
+        self.apply_group_receipt(&peer, peer_device, &receipt.acks, rng)?;
         Ok(())
     }
 
@@ -2241,6 +2831,7 @@ impl Node {
     /// node match — never multipath echoes of our own outbound.
     fn match_session(&self, token: &[u8; 32], now: u64) -> Option<[u8; 32]> {
         let me = self.identity.public().ed;
+        let device = self.device_id();
         let today = epoch_day(now);
         let lo = today.saturating_sub(TOKEN_LOOKBACK_EPOCHS);
         let hi = today + TOKEN_LOOKAHEAD_EPOCHS;
@@ -2248,6 +2839,9 @@ impl Node {
             let key = MailboxKey::from_bytes(*session.mailbox_key());
             for epoch in lo..=hi {
                 if bool::from(delivery_token(&key, epoch, &me).ct_eq(token)) {
+                    return Some(*peer);
+                }
+                if device != me && bool::from(delivery_token(&key, epoch, &device).ct_eq(token)) {
                     return Some(*peer);
                 }
             }
@@ -2264,10 +2858,14 @@ impl Node {
             return true;
         }
         let me = self.identity.public().ed;
+        let device = self.device_id();
         let today = epoch_day(now);
         let lo = today.saturating_sub(TOKEN_LOOKBACK_EPOCHS);
         let hi = today + TOKEN_LOOKAHEAD_EPOCHS;
-        (lo..=hi).any(|epoch| bool::from(intro_token(&me, epoch).ct_eq(token)))
+        (lo..=hi).any(|epoch| {
+            bool::from(intro_token(&me, epoch).ct_eq(token))
+                || (device != me && bool::from(intro_token(&device, epoch).ct_eq(token)))
+        })
     }
 
     /// Partials incomplete for at least [`NACK_AFTER_SECS`] (and not NACKed
@@ -2410,10 +3008,12 @@ impl Node {
                 self.backoff.remove(&seq);
                 self.held_notified.remove(&seq);
                 if let Some(msg_id) = item.msg_id {
-                    self.mark_sent(&item.peer, &msg_id, rng)?;
+                    let account = self.account_for_device(&item.peer)?;
+                    self.mark_sent(&account, &item.peer, &msg_id, rng)?;
                 }
                 if let Some(group_msg_id) = item.group_msg_id {
-                    self.group_mark_sent(&item.peer, &group_msg_id, rng)?;
+                    let account = self.account_for_device(&item.peer)?;
+                    self.group_mark_sent(&account, &item.peer, &group_msg_id, rng)?;
                 }
             } else if candidates.is_empty() && held_for_airtime {
                 // Held, not failed: nothing was attempted, so no backoff —
@@ -2607,9 +3207,16 @@ impl Node {
     fn mark_sent(
         &mut self,
         peer: &[u8; 32],
+        device: &[u8; 32],
         msg_id: &[u8; 16],
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
+        for mut delivery in self.store.message_device_deliveries(msg_id)? {
+            if &delivery.device == device && delivery.state == DeliveryState::Queued {
+                delivery.state = DeliveryState::Sent;
+                self.store.put_message_device_delivery(&delivery, rng)?;
+            }
+        }
         for record in self.store.messages_with(peer)? {
             if &record.id == msg_id && record.state == DeliveryState::Queued {
                 let mut updated = record;
@@ -2625,8 +3232,23 @@ impl Node {
     }
 
     fn hints_for(&self, peer: &[u8; 32]) -> Result<Vec<DeliveryHint>> {
+        if let Some(endpoint) = self
+            .store
+            .contact_devices()?
+            .into_iter()
+            .find(|endpoint| endpoint.device == *peer && endpoint.revoked_at.is_none())
+        {
+            let hints = decode_hints(&endpoint.hints);
+            if !hints.is_empty() {
+                return Ok(hints);
+            }
+        }
         let Some(contact) = self.store.get_contact(peer)? else {
-            return Ok(Vec::new());
+            let account = self.account_for_device(peer)?;
+            let Some(contact) = self.store.get_contact(&account)? else {
+                return Ok(Vec::new());
+            };
+            return Ok(decode_hints(&contact.hints));
         };
         Ok(decode_hints(&contact.hints))
     }
@@ -2648,7 +3270,8 @@ impl Node {
         if !hints.is_empty() || self.discoveries.is_empty() {
             return Ok(hints);
         }
-        let Some(mut contact) = self.store.get_contact(peer)? else {
+        let account = self.account_for_device(peer)?;
+        let Some(mut contact) = self.store.get_contact(&account)? else {
             return Ok(hints);
         };
         let Ok(identity) = postcard::from_bytes::<IdentityPublic>(&contact.identity) else {

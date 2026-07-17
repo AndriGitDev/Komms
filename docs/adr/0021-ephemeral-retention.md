@@ -99,17 +99,17 @@ ephemeral text into permanent content.
 
 ### Backup and linked-device behavior
 
-`KKR5` added sealed ephemeral tombstones and current `KKR6` preserves that
+`KKR5` added sealed ephemeral tombstones and current `KKR7` preserves that
 contract. Backups exclude all ephemeral
 plaintext and media, including content still live at export time, and convert
 exported active markers to terminal tombstones with transfer ids removed.
-`KKR1` through `KKR5` remain restorable. A restore therefore never resurrects
+`KKR1` through `KKR6` remain restorable. A restore therefore never resurrects
 an erasure promise.
 
 Each linked installation applies the authenticated deadline and first-open rule
 to its own local copy. First open is per installation, not a synchronized claim
-that every device or recipient deleted. Future linked-device sync carries
-tombstones; an active copy may disappear earlier after receiving one, never
+that every device or recipient deleted. Shipped C2 linked-device sync carries
+tombstones but not active ephemeral content; an active copy may disappear earlier after receiving one, never
 later or by resurrecting plaintext.
 
 ### Capability and compatibility

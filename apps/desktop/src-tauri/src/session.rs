@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 
 use base64::Engine;
 use image::codecs::jpeg::JpegEncoder;
@@ -33,8 +33,9 @@ use kult_ffi::{
     Config, ContactNameAssessment as FfiContactNameAssessment,
     ContactNameWarning as FfiContactNameWarning, ContentKind, CustomIcon as FfiCustomIcon,
     CustomIconCrop as FfiCustomIconCrop, CustomIconTarget as FfiCustomIconTarget,
-    CustomIconTargetKind as FfiCustomIconTargetKind, DeliveryState, Direction, Event,
-    EventListener, Folder as FfiFolder, FolderConversation as FfiFolderConversation,
+    CustomIconTargetKind as FfiCustomIconTargetKind, DeliveryState,
+    DeviceLinkSelection as FfiDeviceLinkSelection, Direction, Event, EventListener,
+    Folder as FfiFolder, FolderConversation as FfiFolderConversation,
     FolderConversationResult as FfiFolderConversationResult, FolderSelection as FfiFolderSelection,
     FolderSelectionKind as FfiFolderSelectionKind, FolderTarget as FfiFolderTarget,
     FolderTargetKind as FfiFolderTargetKind, GroupAuthority as FfiGroupAuthority,
@@ -55,6 +56,7 @@ use kult_ffi::{
 use crate::qr;
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static CLEANUP_MEDIA_TEMPS: Once = Once::new();
 
 struct PrivateTemp(PathBuf);
 
@@ -254,15 +256,20 @@ impl Drop for PrivateTemp {
     }
 }
 
-fn cleanup_media_temps() {
+fn cleanup_media_temps_once() {
+    CLEANUP_MEDIA_TEMPS.call_once(cleanup_current_process_media_temps);
+}
+
+fn cleanup_current_process_media_temps() {
     let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
         return;
     };
+    let prefix = format!("komms-media-{}-", std::process::id());
     for entry in entries.flatten() {
         if entry
             .file_name()
             .to_str()
-            .is_some_and(|name| name.starts_with("komms-media-"))
+            .is_some_and(|name| name.starts_with(&prefix))
         {
             let _ = std::fs::remove_file(entry.path());
         }
@@ -1411,6 +1418,61 @@ pub struct UiBundle {
     pub qr_svg: String,
 }
 
+/// One exact account-authorized physical installation.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiLinkedDevice {
+    /// Physical-device public id (hex).
+    pub id: String,
+    /// User-controlled name authenticated by the account manifest.
+    pub name: String,
+    /// Latest signed activity instant.
+    pub last_seen: u64,
+    /// Permanent revocation instant, when revoked.
+    pub revoked_at: Option<u64>,
+    /// Whether this row is the installation rendering it.
+    pub current: bool,
+}
+
+/// Per-physical-device delivery state for one outbound message.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiMessageDeviceDelivery {
+    /// Exact destination device id (hex).
+    pub device: String,
+    /// Current signed device name, when the manifest supplies one.
+    pub name: Option<String>,
+    /// `queued`, `sent`, or `delivered`.
+    pub state: &'static str,
+}
+
+/// Opaque link offer rendered both as exact hex and a QR.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiDeviceLinkOffer {
+    /// Exact opaque offer bytes as lowercase hex.
+    pub hex: String,
+    /// QR carrying the same bytes in uppercase hex.
+    pub qr_svg: String,
+}
+
+/// Target-side response and human comparison code.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiDeviceLinkAcceptance {
+    /// Exact opaque response bytes as lowercase hex.
+    pub response_hex: String,
+    /// Fixed six ASCII digits that must match on both installations.
+    pub confirmation_code: String,
+}
+
+/// Explicit initial-transfer categories selected after code comparison.
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct UiDeviceLinkSelection {
+    /// Transfer contacts and verification state.
+    pub contacts: bool,
+    /// Transfer folders, labels, pins, icons, and appearance.
+    pub organization: bool,
+    /// Transfer non-ephemeral conversation history.
+    pub history: bool,
+}
+
 /// A delivery hint as the UI edits it: a `kind` tag plus one string value.
 #[derive(Clone, Debug, Deserialize)]
 pub struct UiHint {
@@ -1586,6 +1648,15 @@ impl UiAttachment {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UiEvent {
+    /// Account-authorized device list, name, or revocation changed.
+    DevicesChanged,
+    /// This pristine installation completed a confirmed account link.
+    DeviceLinkCompleted {
+        /// Stable account id (hex).
+        account: String,
+        /// Exact new physical-device id (hex).
+        device: String,
+    },
     /// A scheduled message was created or edited.
     ScheduledMessageUpdated {
         /// Stable message id (hex).
@@ -1790,6 +1861,10 @@ pub enum UiEvent {
 impl UiEvent {
     fn from_ffi(event: Event) -> Self {
         match event {
+            Event::DevicesChanged => Self::DevicesChanged,
+            Event::DeviceLinkCompleted { account, device } => {
+                Self::DeviceLinkCompleted { account, device }
+            }
             Event::ScheduledMessageUpdated { id } => Self::ScheduledMessageUpdated { id },
             Event::ScheduledMessageCancelled { id } => Self::ScheduledMessageCancelled { id },
             Event::ScheduledMessageActivated { id } => Self::ScheduledMessageActivated { id },
@@ -2074,7 +2149,7 @@ impl Session {
         kdf: KdfChoice,
         sink: EventSink,
     ) -> Result<Self, String> {
-        cleanup_media_temps();
+        cleanup_media_temps_once();
         let config = build_config(data_dir, passphrase, settings, kdf);
         let node = KultNode::start(config, Box::new(Forwarder(sink))).map_err(|e| e.to_string())?;
         Ok(Self {
@@ -2095,7 +2170,7 @@ impl Session {
         kdf: KdfChoice,
         sink: EventSink,
     ) -> Result<Self, String> {
-        cleanup_media_temps();
+        cleanup_media_temps_once();
         let config = build_config(data_dir, passphrase, settings, kdf);
         let node = KultNode::restore(config, backup_path, mnemonic, Box::new(Forwarder(sink)))
             .map_err(|e| e.to_string())?;
@@ -2163,6 +2238,145 @@ impl Session {
         let hex = hex_encode(&bytes);
         let qr_svg = qr::svg(hex.to_uppercase().as_bytes())?;
         Ok(UiBundle { hex, qr_svg })
+    }
+
+    /// Exact public id for this physical installation.
+    pub fn device_id(&self) -> Result<String, String> {
+        self.node.device_id().map_err(|error| error.to_string())
+    }
+
+    /// Current complete account-authorized device list, including revoked rows.
+    pub fn linked_devices(&self) -> Result<Vec<UiLinkedDevice>, String> {
+        Ok(self
+            .node
+            .linked_devices()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|device| UiLinkedDevice {
+                id: device.id,
+                name: device.name,
+                last_seen: device.last_seen,
+                revoked_at: device.revoked_at,
+                current: device.current,
+            })
+            .collect())
+    }
+
+    /// Per-physical-device states for one outbound message.
+    pub fn message_device_deliveries(
+        &self,
+        message: String,
+    ) -> Result<Vec<UiMessageDeviceDelivery>, String> {
+        Ok(self
+            .node
+            .message_device_deliveries(message)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|delivery| UiMessageDeviceDelivery {
+                device: delivery.device,
+                name: delivery.name,
+                state: state_str(delivery.state),
+            })
+            .collect())
+    }
+
+    /// Rename one exact active linked device.
+    pub fn rename_linked_device(&self, device: String, name: String) -> Result<(), String> {
+        self.node
+            .rename_linked_device(device, name)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Permanently revoke another exact physical device.
+    pub fn revoke_linked_device(&self, device: String, confirmed: bool) -> Result<(), String> {
+        if !confirmed {
+            return Err("permanent device revocation requires explicit confirmation".to_owned());
+        }
+        self.node
+            .revoke_linked_device(device)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Begin a ten-minute proximate link offer and render it as hex and QR.
+    pub fn begin_device_link(&self) -> Result<UiDeviceLinkOffer, String> {
+        let bytes = self
+            .node
+            .begin_device_link()
+            .map_err(|error| error.to_string())?;
+        let hex = hex_encode(&bytes);
+        let qr_svg = qr::svg(hex.to_uppercase().as_bytes())?;
+        Ok(UiDeviceLinkOffer { hex, qr_svg })
+    }
+
+    /// Accept a pasted or scanned offer on a pristine target.
+    pub fn accept_device_link(
+        &self,
+        offer_hex: String,
+        device_name: String,
+    ) -> Result<UiDeviceLinkAcceptance, String> {
+        let offer = hex_decode(&offer_hex).ok_or("device link offer must be hex")?;
+        let accepted = self
+            .node
+            .accept_device_link(offer, device_name)
+            .map_err(|error| error.to_string())?;
+        Ok(UiDeviceLinkAcceptance {
+            response_hex: hex_encode(&accepted.response),
+            confirmation_code: accepted.confirmation_code,
+        })
+    }
+
+    /// Derive the source-side comparison code for a target response.
+    pub fn device_link_confirmation_code(&self, response_hex: String) -> Result<String, String> {
+        let response = hex_decode(&response_hex).ok_or("device link response must be hex")?;
+        self.node
+            .device_link_confirmation_code(response)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Confirm a matching code and build the encrypted selective transfer package.
+    pub fn approve_device_link(
+        &self,
+        response_hex: String,
+        selection: UiDeviceLinkSelection,
+        confirmed: bool,
+    ) -> Result<String, String> {
+        let response = hex_decode(&response_hex).ok_or("device link response must be hex")?;
+        self.node
+            .approve_device_link(
+                response,
+                FfiDeviceLinkSelection {
+                    contacts: selection.contacts,
+                    organization: selection.organization,
+                    history: selection.history,
+                },
+                confirmed,
+            )
+            .map(|package| hex_encode(&package))
+            .map_err(|error| error.to_string())
+    }
+
+    /// Confirm and import one encrypted package on the pristine target.
+    pub fn complete_device_link(&self, package_hex: String, confirmed: bool) -> Result<(), String> {
+        let package = hex_decode(&package_hex).ok_or("device link package must be hex")?;
+        self.node
+            .complete_device_link(package, confirmed)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Export one encrypted convergence bundle to an active linked device.
+    pub fn export_device_sync(&self, device: String) -> Result<String, String> {
+        self.node
+            .export_device_sync(device)
+            .map(|bundle| hex_encode(&bundle))
+            .map_err(|error| error.to_string())
+    }
+
+    /// Import one authenticated convergence bundle from another linked device.
+    pub fn import_device_sync(&self, bundle_hex: String) -> Result<u64, String> {
+        let bundle = hex_decode(&bundle_hex).ok_or("device sync bundle must be hex")?;
+        self.node
+            .import_device_sync(bundle)
+            .map_err(|error| error.to_string())
     }
 
     /// Add a contact from pasted/scanned bundle hex, with delivery hints.
@@ -3805,8 +4019,10 @@ impl Session {
         if let Ok(mut drafts) = self.pending_images.lock() {
             drafts.clear();
         }
+        if let Ok(mut attachments) = self.opened_attachments.lock() {
+            attachments.clear();
+        }
         self.node.stop();
-        cleanup_media_temps();
     }
 }
 

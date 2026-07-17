@@ -25,11 +25,11 @@
 //! File layout (strict, all-or-nothing, like the sneakernet bundle format):
 //!
 //! ```text
-//! magic "KKR6" (4) ‖ m_cost_kib u32 LE ‖ t_cost u32 LE ‖ p_cost u32 LE
+//! magic "KKR7" (4) ‖ m_cost_kib u32 LE ‖ t_cost u32 LE ‖ p_cost u32 LE
 //!   ‖ salt (16) ‖ sealed( postcard(BackupPayload) )
 //! ```
 //!
-//! Files with the older `KKR1` through `KKR5` magic still restore with the
+//! Files with the older `KKR1` through `KKR6` magic still restore with the
 //! same header layout.
 //!
 //! The Argon2id cost parameters ride in the header so a backup written on
@@ -45,18 +45,22 @@ use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
 use kult_crypto::{
-    derive_kek, mnemonic_from_entropy, mnemonic_to_entropy, GroupSenderChain, Identity, KdfProfile,
-    StorageKey,
+    derive_kek, mnemonic_from_entropy, mnemonic_to_entropy, DeviceCertificate, DeviceManifest,
+    DeviceManifestEntry, GroupSenderChain, Identity, KdfProfile, StorageKey, MAX_LINKED_DEVICES,
 };
+use kult_protocol::DeviceSyncEvent;
 
 use crate::{
-    ContactRecord, EphemeralConversation, EphemeralRecord, EphemeralState, GroupAuthorityRecord,
-    GroupMember, GroupMessageRecord, GroupRecord, LocalMetadataRecord, MessageRecord,
-    NoteMessageRecord, PendingAnnounce, Result, Store, StoreError,
+    ContactDeviceRecord, ContactRecord, DeviceStateRecord, EphemeralConversation, EphemeralRecord,
+    EphemeralState, GroupAuthorityRecord, GroupMember, GroupMessageRecord, GroupRecord,
+    LocalMetadataRecord, MessageRecord, NoteMessageRecord, PendingAnnounce, Result, Store,
+    StoreError,
 };
 
-/// Backup file magic: Komms recovery file, format 6 (group authority included).
-pub const BACKUP_MAGIC: [u8; 4] = *b"KKR6";
+/// Backup file magic: Komms recovery file, format 7 (linked-device authority).
+pub const BACKUP_MAGIC: [u8; 4] = *b"KKR7";
+/// The pre-linked-device format 6 magic — still restorable.
+pub const BACKUP_MAGIC_V6: [u8; 4] = *b"KKR6";
 /// The pre-group-authority format 5 magic — still restorable.
 pub const BACKUP_MAGIC_V5: [u8; 4] = *b"KKR5";
 /// The pre-ephemeral-tombstone format 4 magic — still restorable.
@@ -108,6 +112,30 @@ struct BackupPayload {
     /// First-class local note-to-self text history.
     note_messages: Vec<NoteMessageRecord>,
     /// Tombstones only: ephemeral plaintext/media is never backed up.
+    ephemeral: Vec<EphemeralRecord>,
+    /// Latest signed device authority, but never local device/channel secrets.
+    device_manifest: Option<DeviceManifest>,
+    /// Exporting physical device, revoked during recovery.
+    local_device: Option<[u8; 32]>,
+    /// Authenticated convergence events used for revocation cutoffs and sync.
+    device_sync_events: Vec<Vec<u8>>,
+    /// Contact physical endpoints; ratchet session state remains excluded.
+    contact_devices: Vec<ContactDeviceRecord>,
+}
+
+/// The `KKR6` payload shape, before linked-device authority existed.
+#[derive(Serialize, Deserialize)]
+struct BackupPayloadV6 {
+    created_at: u64,
+    identity: Vec<u8>,
+    contacts: Vec<ContactRecord>,
+    messages: Vec<MessageRecord>,
+    reset_peers: Vec<[u8; 32]>,
+    groups: Vec<BackupGroup>,
+    group_messages: Vec<GroupMessageRecord>,
+    group_authorities: Vec<GroupAuthorityRecord>,
+    local_metadata: Vec<LocalMetadataRecord>,
+    note_messages: Vec<NoteMessageRecord>,
     ephemeral: Vec<EphemeralRecord>,
 }
 
@@ -210,6 +238,7 @@ impl Store {
             record.transfer_ids.clear();
         }
         let me = identity.public().ed;
+        let device_state = self.get_device_state()?;
         let payload = BackupPayload {
             created_at: now,
             identity: identity.to_bytes().to_vec(),
@@ -262,6 +291,12 @@ impl Store {
             local_metadata: self.local_metadata()?,
             note_messages: self.note_messages()?,
             ephemeral,
+            device_manifest: device_state.as_ref().map(|state| state.manifest.clone()),
+            local_device: device_state
+                .as_ref()
+                .map(|state| state.local_certificate.device_id()),
+            device_sync_events: self.device_sync_events()?,
+            contact_devices: self.contact_devices()?,
         };
         let plain =
             Zeroizing::new(postcard::to_allocvec(&payload).map_err(|_| StoreError::Serialization)?);
@@ -306,7 +341,8 @@ impl Store {
             return Err(StoreError::NotABackup);
         }
         let version = match <[u8; 4]>::try_from(&backup[..4]).expect("length checked") {
-            BACKUP_MAGIC => 6,
+            BACKUP_MAGIC => 7,
+            BACKUP_MAGIC_V6 => 6,
             BACKUP_MAGIC_V5 => 5,
             BACKUP_MAGIC_V4 => 4,
             BACKUP_MAGIC_V3 => 3,
@@ -343,6 +379,10 @@ impl Store {
                     local_metadata: Vec::new(),
                     note_messages: Vec::new(),
                     ephemeral: Vec::new(),
+                    device_manifest: None,
+                    local_device: None,
+                    device_sync_events: Vec::new(),
+                    contact_devices: Vec::new(),
                 }
             }
             2 => {
@@ -359,6 +399,10 @@ impl Store {
                     local_metadata: Vec::new(),
                     note_messages: Vec::new(),
                     ephemeral: Vec::new(),
+                    device_manifest: None,
+                    local_device: None,
+                    device_sync_events: Vec::new(),
+                    contact_devices: Vec::new(),
                 }
             }
             3 => {
@@ -375,6 +419,10 @@ impl Store {
                     local_metadata: v3.local_metadata,
                     note_messages: Vec::new(),
                     ephemeral: Vec::new(),
+                    device_manifest: None,
+                    local_device: None,
+                    device_sync_events: Vec::new(),
+                    contact_devices: Vec::new(),
                 }
             }
             4 => {
@@ -391,6 +439,10 @@ impl Store {
                     local_metadata: v4.local_metadata,
                     note_messages: v4.note_messages,
                     ephemeral: Vec::new(),
+                    device_manifest: None,
+                    local_device: None,
+                    device_sync_events: Vec::new(),
+                    contact_devices: Vec::new(),
                 }
             }
             5 => {
@@ -407,9 +459,33 @@ impl Store {
                     local_metadata: v5.local_metadata,
                     note_messages: v5.note_messages,
                     ephemeral: v5.ephemeral,
+                    device_manifest: None,
+                    local_device: None,
+                    device_sync_events: Vec::new(),
+                    contact_devices: Vec::new(),
                 }
             }
-            6 => decode_exact(&plain)?,
+            6 => {
+                let v6: BackupPayloadV6 = decode_exact(&plain)?;
+                BackupPayload {
+                    created_at: v6.created_at,
+                    identity: v6.identity,
+                    contacts: v6.contacts,
+                    messages: v6.messages,
+                    reset_peers: v6.reset_peers,
+                    groups: v6.groups,
+                    group_messages: v6.group_messages,
+                    group_authorities: v6.group_authorities,
+                    local_metadata: v6.local_metadata,
+                    note_messages: v6.note_messages,
+                    ephemeral: v6.ephemeral,
+                    device_manifest: None,
+                    local_device: None,
+                    device_sync_events: Vec::new(),
+                    contact_devices: Vec::new(),
+                }
+            }
+            7 => decode_exact(&plain)?,
             _ => unreachable!("version matched above"),
         };
         let identity_bytes: Zeroizing<[u8; 64]> = Zeroizing::new(
@@ -425,6 +501,9 @@ impl Store {
         store.put_identity(&identity, rng)?;
         for contact in &payload.contacts {
             store.put_contact(contact, rng)?;
+        }
+        for endpoint in &payload.contact_devices {
+            store.put_contact_device(endpoint, rng)?;
         }
         for message in &payload.messages {
             store.put_message(message, rng)?;
@@ -483,6 +562,24 @@ impl Store {
         for record in &payload.ephemeral {
             store.put_ephemeral_record(record, rng)?;
         }
+        for event in &payload.device_sync_events {
+            let decoded = DeviceSyncEvent::decode(event)?;
+            if let Some(manifest) = &payload.device_manifest {
+                decoded.verify(manifest)?;
+            } else {
+                return Err(StoreError::NotABackup);
+            }
+            store.put_device_sync_event(event, rng)?;
+        }
+        restore_device_state(
+            &store,
+            &identity,
+            payload.device_manifest,
+            payload.local_device,
+            &payload.device_sync_events,
+            payload.created_at,
+            rng,
+        )?;
         Ok(store)
     }
 
@@ -561,4 +658,92 @@ impl Store {
         )?;
         Ok(())
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn restore_device_state(
+    store: &Store,
+    account: &Identity,
+    prior_manifest: Option<DeviceManifest>,
+    prior_local_device: Option<[u8; 32]>,
+    sync_events: &[Vec<u8>],
+    created_at: u64,
+    rng: &mut impl CryptoRngCore,
+) -> Result<()> {
+    let device = Identity::generate(rng);
+    let certificate = DeviceCertificate::issue(account, &device, created_at, rng);
+    let manifest =
+        if let Some(mut manifest) = prior_manifest {
+            manifest.verify()?;
+            if manifest.account != account.public() {
+                return Err(StoreError::NotABackup);
+            }
+            let prior_local = prior_local_device.ok_or(StoreError::NotABackup)?;
+            if !manifest.devices.iter().any(|entry| {
+                entry.certificate.device_id() == prior_local && entry.revoked_at.is_none()
+            }) {
+                return Err(StoreError::NotABackup);
+            }
+            let counter_for = |device_id: &[u8; 32]| -> Result<u64> {
+                let mut counter = 0u64;
+                for encoded in sync_events {
+                    let event = DeviceSyncEvent::decode(encoded)?;
+                    if &event.author_device == device_id {
+                        counter = counter.max(event.counter);
+                    }
+                }
+                Ok(counter)
+            };
+            let active = manifest
+                .devices
+                .iter()
+                .filter(|entry| entry.revoked_at.is_none())
+                .count();
+            if active >= MAX_LINKED_DEVICES {
+                let cutoff = counter_for(&prior_local)?;
+                manifest.revoke_device(account, &prior_local, created_at, cutoff)?;
+            }
+            manifest.add_device(
+                account,
+                DeviceManifestEntry {
+                    certificate: certificate.clone(),
+                    name: "Recovered device".into(),
+                    last_seen: created_at,
+                    revoked_at: None,
+                    revoked_after_counter: None,
+                },
+            )?;
+            let old_active: Vec<[u8; 32]> = manifest
+                .devices
+                .iter()
+                .filter(|entry| {
+                    entry.revoked_at.is_none()
+                        && entry.certificate.device_id() != certificate.device_id()
+                })
+                .map(|entry| entry.certificate.device_id())
+                .collect();
+            for old in old_active {
+                let cutoff = counter_for(&old)?;
+                manifest.revoke_device(account, &old, created_at, cutoff)?;
+            }
+            manifest
+        } else {
+            DeviceManifest::initial(
+                account,
+                certificate.clone(),
+                "Recovered device".into(),
+                created_at,
+            )?
+        };
+    store.put_device_state(
+        &DeviceStateRecord {
+            local_device_secret: device.to_bytes().to_vec(),
+            local_certificate: certificate,
+            manifest,
+            sync_counter: 0,
+            channels: Vec::new(),
+        },
+        rng,
+    )?;
+    Ok(())
 }

@@ -66,8 +66,8 @@ revision zero. This gives the same result for:
 - edit before original;
 - duplicate delivery;
 - stale revisions arriving late;
-- two same-revision edits minted by future linked devices;
-- restart and `KKR6` backup/restore; and
+- two same-revision edits minted concurrently by linked devices;
+- restart and `KKR7` backup/restore; and
 - different carrier paths delivering records in different orders.
 
 The random id is only a deterministic tie-breaker; it does not claim causal or
@@ -80,9 +80,13 @@ so would make endpoints disagree.
 
 The existing sealed pairwise/group history rows retain exact originals and edit
 events. No plaintext `current_body` column, mutable source row, or new backup
-format exists. `KKR6` carries those sealed history records unchanged and the
+format exists. `KKR7` carries those sealed history records unchanged and the
 derived winner is rebuilt after open or restore. A copied database continues to
 leak only the already accepted sealed-row count and approximate sizes.
+
+C2 own-device sync carries immutable originals and edit events under their exact
+conversation/content ids. Each destination recomputes the same winning tuple;
+no mutable current-body projection crosses devices.
 
 Normal history APIs hide edit events as standalone chat rows. Each returned
 message instead includes:

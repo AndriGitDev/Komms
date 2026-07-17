@@ -39,6 +39,7 @@
         <activity android:name=".VerifyActivity" android:exported="false" />
         <activity android:name=".ScanActivity" android:exported="false" />
         <activity android:name=".SettingsActivity" android:exported="false" />
+        <activity android:name=".DeviceActivity" android:exported="false" />
         <activity android:name=".LabelManagerActivity" android:exported="false" />
         <activity android:name=".FolderManagerActivity" android:exported="false" />
         <activity android:name=".CustomIconActivity" android:exported="false" />

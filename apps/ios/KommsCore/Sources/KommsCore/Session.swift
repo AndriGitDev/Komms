@@ -79,6 +79,9 @@ private func validateLabelWrite(name: String, color: String) throws {
 /// `kult bundle` / `kult add`.
 public func bundleQrText(_ bundleHex: String) -> String { bundleHex.uppercased() }
 
+/// Compact QR text for one opaque C2 device-link offer.
+public func deviceLinkQrText(_ offerHex: String) -> String { offerHex.uppercased() }
+
 /// QR text for a safety number: uppercase hex of the raw 32-byte comparison
 /// value — both parties render the identical code, on any platform.
 public func safetyQrText(_ sn: SafetyNumber) -> String { hexEncode(sn.qr).uppercased() }
@@ -113,6 +116,92 @@ public final class Session: @unchecked Sendable {
 
     /// Status snapshot for the UI's transport indicators.
     public func status() throws -> Status { try node.status() }
+
+    /// Exact public id for this physical installation.
+    public func deviceId() throws -> String { try node.deviceId() }
+
+    /// Complete account-authorized device list, including revoked rows.
+    public func linkedDevices() throws -> [LinkedDevice] { try node.linkedDevices() }
+
+    /// Per-physical-device delivery states for one outbound message.
+    public func messageDeviceDeliveries(message: String) throws -> [MessageDeviceDelivery] {
+        try node.messageDeviceDeliveries(message: message)
+    }
+
+    /// Rename one exact active linked device.
+    public func renameLinkedDevice(device: String, name: String) throws {
+        try node.renameLinkedDevice(device: device, name: name)
+    }
+
+    /// Permanently revoke another exact device after explicit review.
+    public func revokeLinkedDevice(device: String, confirmed: Bool) throws {
+        guard confirmed else {
+            throw InputError("permanent device revocation requires explicit confirmation")
+        }
+        try node.revokeLinkedDevice(device: device)
+    }
+
+    /// Begin a ten-minute proximate link offer as exact lowercase hex.
+    public func beginDeviceLink() throws -> String {
+        hexEncode(try node.beginDeviceLink())
+    }
+
+    /// Accept a scanned or pasted offer on a pristine target.
+    public func acceptDeviceLink(
+        offerHex: String, deviceName: String
+    ) throws -> DeviceLinkAcceptance {
+        guard let offer = hexDecode(offerHex) else {
+            throw InputError("device link offer must be hex")
+        }
+        return try node.acceptDeviceLink(offer: offer, deviceName: deviceName)
+    }
+
+    /// Derive the source-side six-digit comparison code.
+    public func deviceLinkConfirmationCode(responseHex: String) throws -> String {
+        guard let response = hexDecode(responseHex) else {
+            throw InputError("device link response must be hex")
+        }
+        return try node.deviceLinkConfirmationCode(response: response)
+    }
+
+    /// Confirm matching codes and create the encrypted selective transfer.
+    public func approveDeviceLink(
+        responseHex: String,
+        contacts: Bool,
+        organization: Bool,
+        history: Bool,
+        confirmed: Bool
+    ) throws -> String {
+        guard let response = hexDecode(responseHex) else {
+            throw InputError("device link response must be hex")
+        }
+        return hexEncode(try node.approveDeviceLink(
+            response: response,
+            selection: DeviceLinkSelection(
+                contacts: contacts, organization: organization, history: history),
+            confirmed: confirmed))
+    }
+
+    /// Confirm and import one source package on the pristine target.
+    public func completeDeviceLink(packageHex: String, confirmed: Bool) throws {
+        guard let package = hexDecode(packageHex) else {
+            throw InputError("device link package must be hex")
+        }
+        try node.completeDeviceLink(package: package, confirmed: confirmed)
+    }
+
+    /// Export one encrypted convergence bundle for an active linked device.
+    public func exportDeviceSync(device: String) throws -> String {
+        hexEncode(try node.exportDeviceSync(device: device))
+    }
+
+    /// Import one authenticated convergence bundle from another linked device.
+    public func importDeviceSync(bundleHex: String) throws -> UInt64 {
+        guard let bundle = hexDecode(bundleHex) else {
+            throw InputError("device sync bundle must be hex")
+        }
+        return try node.importDeviceSync(bundle: bundle)
+    }
 
     /// Render exact source into the shared bounded and inert local text model.
     public func formatText(

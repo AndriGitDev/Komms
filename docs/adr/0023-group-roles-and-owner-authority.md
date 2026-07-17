@@ -150,7 +150,7 @@ state is sorted by peer id with one entry per roster member. Unknown authority
 versions remain unsupported and malformed/trailing/noncanonical encodings fail
 closed. Generic raw group or pairwise send APIs reject canonical kind `0x0007`.
 
-`KKR6` adds the sealed authority record, owner-transfer chain, consumed request
+`KKR6` introduced the sealed authority record, owner-transfer chain, consumed request
 ids, and authority events. `KKR1`–`KKR5` remain restorable as legacy
 creator-managed groups. Sender chains are still never backed up. The authority
 table is sealed under the existing group-storage key and adds no public index,
@@ -185,4 +185,4 @@ Release acceptance covers signature and bound failures, stale/deduplicated
 requests, concurrent admin requests, owner transfer and conflicting transfer
 certificates, last-owner safeguards, offline delivery, removal/exclusion,
 mandatory rotation, poll moderation, deterministic reorder convergence,
-`KKR1`–`KKR6`, RPC/CLI, UniFFI, and accessible desktop/Android/iOS role controls.
+`KKR1`–`KKR7`, RPC/CLI, UniFFI, and accessible desktop/Android/iOS role controls.

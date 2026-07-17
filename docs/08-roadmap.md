@@ -183,12 +183,14 @@ surface alone: pairing by bundle exchange, verified `delivered` states via
 listener events, history, safety numbers, restart persistence, honest
 errors, and `cargo run -p kult-ffi --features bindgen --bin uniffi-bindgen`
 generates the Kotlin/Swift sources. Backup/restore is in (ADR-0011/ADR-0012):
-the current encrypted `KKR6` file carries identity, contacts, ordinary history, group
-state and signed authority, user-authored sealed local metadata, note-to-self history, and
+the current encrypted `KKR7` file carries the stable account, contacts, ordinary
+history, group state and signed authority, user-authored sealed local metadata,
+note-to-self history, linked-device manifests/endpoints/convergence winners, and
 session-reset markers, sealed via Argon2id under a 24-word BIP-39 mnemonic (wordlist and
 codec in-tree in `kult-crypto`, KAT-tested against the reference vectors);
-ratchet sessions and prekey secrets are deliberately excluded, and a restored
-node (fresh store, fresh vault, resumed identity) turns each reset marker
+ratchet sessions, prekey secrets, and reusable physical-device credentials are
+deliberately excluded. Recovery revokes every device active in the backup,
+mints a fresh sole active device, and turns each reset marker
 into a proactive OPK-less re-handshake on its first tick, so messaging
 resumes in both directions without the user sending first. Exposed at every
 front door: `kult backup` / `Op::Backup` (file written 0600, mnemonic shown
@@ -296,9 +298,14 @@ delivery/security indicators. Backup/restore round-trips.
 ## M6: Hardening & reach *(in progress)*
 
 Sender-key groups polish → OpenMLS for large groups; censorship-resistant transports
-(obfuscation, arti/Tor); multi-device (Sesame-style); panic wipe; reproducible builds;
+(obfuscation, arti/Tor); panic wipe; reproducible builds;
 **external security audit** of `kult-crypto` + `kult-protocol`; F-Droid and store
 distribution.
+
+C2 multi-device is shipped: the stable account signs bounded device manifests,
+every physical endpoint keeps independent pairwise/group cryptographic state,
+and explicit authenticated bundles converge an allowlisted set of owned-device
+state without cloud infrastructure. See [22: Linked Devices](22-linked-devices.md).
 
 The optional Hybrid Infrastructure Layer is proposed as an independent M6
 adoption track under ADR-0017 through ADR-0019: explicit Sovereign/Private/
@@ -323,8 +330,8 @@ timer until the ordinary encrypted receipt acknowledges it, so an envelope lost
 on a lossy carrier never leaves a member permanently deaf to a sender. Removal
 re-keys the group secret and rotates every remaining chain (the removed member
 gets a notice that deliberately carries nothing else); rotation also triggers
-on leave, on a message-count threshold (PCS), and on restore. Backups (`KKR6`;
-older `KKR1` through `KKR5` files still restore) carry group identities and history but
+on leave, on a message-count threshold (PCS), and on restore. Backups (`KKR7`;
+older `KKR1` through `KKR6` files still restore) carry group identities and history but
 never chains: a restored node announces a fresh chain, and co-members
 redistribute theirs on the re-handshake, both directions pinned by the
 `kult-node` e2e suite (`groups_e2e.rs`) alongside encrypt-once-on-the-wire,
@@ -435,7 +442,7 @@ The F5 sealed local-metadata foundation is shipped in `kult-store`: typed and
 bounded conversation, folder, pin, label, draft, preference, and custom-icon
 records use an isolated storage key and reveal no local organization keys in a
 copied database. User-authored metadata and sealed note-to-self history are
-included in current `KKR6` backups. Note-to-self text is shipped through every shell under one
+included in current `KKR7` backups. Note-to-self text is shipped through every shell under one
 reserved identity; folders, conversation pins, labels, appearance, and bounded
 metadata-free custom icons now ship as separate local experiences.
 
@@ -446,7 +453,7 @@ NFC-normalized and bounded to 256 UTF-8 bytes; duplicate names are permitted.
 The shared assessment reports normalization plus duplicate,
 mixed-script/confusable, bidirectional-control, and invisible-character risks,
 and warned mutations require explicit acceptance. Rename emits one local event,
-survives restart and `KKR6`, and produces zero discovery, notification, queue,
+survives restart and `KKR7`, and produces zero discovery, notification, queue,
 envelope, capability, or transport work. Optional signed self-display
 suggestions remain a separate unimplemented bundle-format/compatibility program.
 
@@ -456,7 +463,7 @@ folder, and note-to-self targets render generated initials when absent or after 
 safe read failure. Eight bundled glyphs and selected local JPEG/PNG inputs become
 strict 256×256 RGBA PNGs after bounded orientation/crop/resize and metadata-free
 re-encoding. Per-record, count, and 64 MiB aggregate quotas are enforced at the
-sealed-store boundary; `KKR6` preserves canonical records. Icons create no remote
+sealed-store boundary; `KKR7` preserves canonical records. Icons create no remote
 lookup, peer sync, envelope, capability, queue, notification, or transport work.
 
 B10 private local conversation folders are shipped end to end across the
@@ -467,8 +474,9 @@ have at most one folder assignment; All and Unfiled are virtual views. Atomic
 create, rename, complete-set reorder, move/unfile, delete cascade, stale cleanup,
 and folder-first composition with independent B18 label filters create zero
 network or transport work. Limits are 128 folders, 8,192 assignments, and 256
-UTF-8 bytes per name. `KKR6` preserves exact identity, order, membership, and
-stale behavior; there is no remote or linked-device folder synchronization.
+UTF-8 bytes per name. `KKR7` preserves exact identity, order, membership, and
+stale behavior. Folders never synchronize to contacts or services; C2 can
+converge them only between authorized devices of the same account.
 
 B11 private local conversation pins are shipped end to end across the unchanged
 F5 record contract, `kult-node`, RPC/CLI, UniFFI, desktop, Android, and iOS.
@@ -479,14 +487,14 @@ stale cleanup, and same-identity reactivation preserve durable intent. Folder
 selection and B18 label filtering run before the leading pinned block; pinned
 and unpinned rows then use deterministic manual/activity/typed-ID ordering.
 Every operation creates zero network, transport, notification, or cryptographic
-work. `KKR6` is the only current pin portability path; message pins and linked-device
-pin synchronization remain separate work.
+work. Portability is limited to `KKR7` and authenticated own-device C2 sync;
+message pins remain separate work.
 
 B12 private appearance is shipped end to end across the unchanged F5 UI
 preference record, `kult-node`, strict RPC/CLI, UniFFI, desktop, Android, and
 iOS. The exact `system`, `light`, and `dark` vocabulary defaults safely to System,
 persists at `appearance.theme`, emits one local change event only on mutation,
-and survives restart and `KKR6` restore with zero delivery or transport work.
+and survives restart and `KKR7` restore with zero delivery or transport work.
 All shells apply a non-sensitive pre-unlock cache and then treat the sealed value
 as authoritative; desktop uses semantic CSS roles, Android native DayNight
 resources, and iOS adaptive system colors. Native high-contrast/reduced-motion
@@ -503,8 +511,9 @@ live assignments, 32 labels per conversation, and 256 UTF-8 bytes per name.
 Duplicate names are disambiguated by color and deterministic local order.
 Atomic deletion, stale-record diagnostics, and deterministic match-any/match-all
 filters remain local presentation behavior and create zero network or transport
-work. `KKR6` preserves exact identity, ordering, and membership; there is no
-shared taxonomy, remote synchronization, or multi-device label sync.
+work. `KKR7` preserves exact identity, ordering, and membership. There is no
+shared taxonomy or contact/service synchronization; C2 can converge labels only
+between authorized devices of the same account.
 
 Durable scheduled pairwise and group text is shipped end to end. The sealed
 scheduled outbox does not advance a ratchet or create transport work early;
@@ -519,7 +528,7 @@ queue/fragment retention, strict RPC/CLI, UniFFI, desktop, Android, and iOS.
 ADR-0021 binds an exact local deadline to an hour-aligned envelope-v2 relay
 deletion hint. Expiry and first reveal remove exact history/media and retain a
 sealed terminal tombstone; KKR6 excludes live ephemeral plaintext/manifests/
-media and includes those tombstones while KKR1–KKR5 remain restorable. The UI
+media and includes those tombstones while KKR1–KKR6 remain restorable. The UI
 promises removal only from this device, never remote erasure or screenshot
 prevention. Android APK/device and iOS simulator qualification remain part of
 the hands-on M5 gate. See
@@ -528,7 +537,7 @@ the hands-on M5 gate. See
 C5 fixed-electorate group polls are shipped across protocol, node, RPC/CLI,
 UniFFI, desktop, Android, and iOS. Authenticated immutable creation, visible vote
 heads, and creator closure converge deterministically after delay, duplicates,
-reorder, membership change, restart, and KKR6 restore. Poll events render as
+reorder, membership change, restart, and KKR1–KKR7 restore. Poll events render as
 cards rather than empty chat rows and never claim anonymity. See
 [20: Group Polls](20-group-polls.md).
 

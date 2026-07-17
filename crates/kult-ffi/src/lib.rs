@@ -1751,10 +1751,87 @@ pub struct Status {
     pub contacts: u64,
 }
 
+/// Render-safe account-authorized physical-device row.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct LinkedDevice {
+    /// Exact physical-device id (hex).
+    pub id: String,
+    /// Exact bounded user-visible name.
+    pub name: String,
+    /// Coarse authenticated observation time; not a presence promise.
+    pub last_seen: u64,
+    /// Permanent revocation time, when excluded.
+    pub revoked_at: Option<u64>,
+    /// Whether this is the current installation.
+    pub current: bool,
+}
+
+impl From<kult_node::LinkedDeviceInfo> for LinkedDevice {
+    fn from(device: kult_node::LinkedDeviceInfo) -> Self {
+        Self {
+            id: hex_encode(&device.id),
+            name: device.name,
+            last_seen: device.last_seen,
+            revoked_at: device.revoked_at,
+            current: device.current,
+        }
+    }
+}
+
+/// Honest delivery state for one exact recipient physical device.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct MessageDeviceDelivery {
+    /// Exact recipient device id (hex).
+    pub device: String,
+    /// Account-authorized device name, if known.
+    pub name: Option<String>,
+    /// Queued/sent/delivered state for this copy.
+    pub state: DeliveryState,
+}
+
+impl From<kult_node::MessageDeviceDeliveryInfo> for MessageDeviceDelivery {
+    fn from(delivery: kult_node::MessageDeviceDeliveryInfo) -> Self {
+        Self {
+            device: hex_encode(&delivery.device),
+            name: delivery.name,
+            state: DeliveryState::from_store(delivery.state),
+        }
+    }
+}
+
+/// Explicit selective initial state for one confirmed proximate link.
+#[derive(Clone, Copy, Debug, uniffi::Record)]
+pub struct DeviceLinkSelection {
+    /// Transfer contacts and verification state.
+    pub contacts: bool,
+    /// Transfer folders, labels, pins, icons, and appearance.
+    pub organization: bool,
+    /// Transfer non-ephemeral pairwise/group/note history.
+    pub history: bool,
+}
+
+/// Target response plus the six-digit code both devices must compare.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct DeviceLinkAcceptance {
+    /// Opaque authenticated response bytes returned to the source.
+    pub response: Vec<u8>,
+    /// Fixed six ASCII digits for out-of-band comparison.
+    pub confirmation_code: String,
+}
+
 /// What the node reports back to the application
 /// (docs/09-implementation-guide.md §3.5).
 #[derive(Clone, Debug, uniffi::Enum)]
 pub enum Event {
+    /// Account-authorized device list, name, or revocation changed.
+    DevicesChanged,
+    /// This pristine installation completed a confirmed device link.
+    DeviceLinkCompleted {
+        /// Stable account id (hex).
+        account: String,
+        /// Exact new physical-device id (hex).
+        device: String,
+    },
     /// Private local custom icons changed; shells re-read visible targets.
     CustomIconsChanged,
     /// Private local appearance preference changed; shells re-read it.
@@ -1961,6 +2038,13 @@ impl Event {
     /// update, never silently mislabeled.
     fn from_node(event: kult_node::Event) -> Option<Self> {
         Some(match event {
+            kult_node::Event::DevicesChanged => Self::DevicesChanged,
+            kult_node::Event::DeviceLinkCompleted { account, device } => {
+                Self::DeviceLinkCompleted {
+                    account: hex_encode(&account),
+                    device: hex_encode(&device),
+                }
+            }
             kult_node::Event::CustomIconsChanged => Self::CustomIconsChanged,
             kult_node::Event::ThemeChanged => Self::ThemeChanged,
             kult_node::Event::FoldersChanged => Self::FoldersChanged,
@@ -2149,8 +2233,7 @@ pub trait EventListener: Send + Sync {
 /// the [`EventListener`]. Call [`KultNode::stop`] when done.
 #[derive(uniffi::Object)]
 pub struct KultNode {
-    address: String,
-    peer: String,
+    identity: Mutex<(String, String)>,
     inner: Mutex<Option<Runtime>>,
 }
 
@@ -2187,12 +2270,12 @@ impl KultNode {
 
     /// This node's human-shareable kult address.
     pub fn address(&self) -> String {
-        self.address.clone()
+        self.identity.lock().expect("lock").0.clone()
     }
 
     /// This node's peer id (hex).
     pub fn peer(&self) -> String {
-        self.peer.clone()
+        self.identity.lock().expect("lock").1.clone()
     }
 
     /// Render exact message source into the bounded, inert shared display model.
@@ -2229,9 +2312,10 @@ impl KultNode {
             Ok(kult_transport::NatStatus::Private) => NatVerdict::Private,
             _ => NatVerdict::Unknown,
         };
+        let (address, peer) = self.identity.lock().expect("lock").clone();
         Ok(Status {
-            address: self.address.clone(),
-            peer: self.peer.clone(),
+            address,
+            peer,
             listen: rt.net.listen_addrs(),
             lan_peers: rt.net.lan_peers(),
             nat,
@@ -2246,6 +2330,109 @@ impl KultNode {
     /// (QR code, file, …).
     pub fn handshake_bundle(&self) -> Result<Vec<u8>, FfiError> {
         self.call(|resp| Msg::HandshakeBundle { resp })
+    }
+
+    /// Exact separately authenticated physical-device id (hex).
+    pub fn device_id(&self) -> Result<String, FfiError> {
+        self.call(|resp| Msg::DeviceId { resp })
+            .map(|device| hex_encode(&device))
+    }
+
+    /// Complete account-authorized device list, including revocation rows.
+    pub fn linked_devices(&self) -> Result<Vec<LinkedDevice>, FfiError> {
+        self.call(|resp| Msg::LinkedDevices { resp })
+            .map(|devices| devices.into_iter().map(Into::into).collect())
+    }
+
+    /// Honest per-recipient-device delivery state for one message id.
+    pub fn message_device_deliveries(
+        &self,
+        message: String,
+    ) -> Result<Vec<MessageDeviceDelivery>, FfiError> {
+        let message = parse_message(&message)?;
+        self.call(|resp| Msg::MessageDeviceDeliveries { message, resp })
+            .map(|deliveries| deliveries.into_iter().map(Into::into).collect())
+    }
+
+    /// Rename one active exact physical device.
+    pub fn rename_linked_device(&self, device: String, name: String) -> Result<(), FfiError> {
+        let device = parse_peer(&device)?;
+        self.call(|resp| Msg::DeviceRename { device, name, resp })
+    }
+
+    /// Permanently revoke another exact physical device.
+    pub fn revoke_linked_device(&self, device: String) -> Result<(), FfiError> {
+        let device = parse_peer(&device)?;
+        self.call(|resp| Msg::DeviceRevoke { device, resp })
+    }
+
+    /// Begin a ten-minute account-authenticated proximate link offer.
+    pub fn begin_device_link(&self) -> Result<Vec<u8>, FfiError> {
+        self.call(|resp| Msg::DeviceLinkBegin { resp })
+    }
+
+    /// Accept one offer on a pristine target and return response plus code.
+    pub fn accept_device_link(
+        &self,
+        offer: Vec<u8>,
+        device_name: String,
+    ) -> Result<DeviceLinkAcceptance, FfiError> {
+        self.call(|resp| Msg::DeviceLinkAccept {
+            offer,
+            name: device_name,
+            resp,
+        })
+        .map(|(response, confirmation_code)| DeviceLinkAcceptance {
+            response,
+            confirmation_code,
+        })
+    }
+
+    /// Derive the source-side six-digit comparison code.
+    pub fn device_link_confirmation_code(&self, response: Vec<u8>) -> Result<String, FfiError> {
+        self.call(|resp| Msg::DeviceLinkCode { response, resp })
+    }
+
+    /// Confirm and create the encrypted selective initial-transfer package.
+    pub fn approve_device_link(
+        &self,
+        response: Vec<u8>,
+        selection: DeviceLinkSelection,
+        confirmed: bool,
+    ) -> Result<Vec<u8>, FfiError> {
+        self.call(|resp| Msg::DeviceLinkApprove {
+            response,
+            selection: kult_node::DeviceLinkSelection {
+                contacts: selection.contacts,
+                organization: selection.organization,
+                history: selection.history,
+            },
+            confirmed,
+            resp,
+        })
+    }
+
+    /// Confirm and import one encrypted link package on the pristine target.
+    pub fn complete_device_link(&self, package: Vec<u8>, confirmed: bool) -> Result<(), FfiError> {
+        let (address, peer) = self.call(|resp| Msg::DeviceLinkComplete {
+            package,
+            confirmed,
+            resp,
+        })?;
+        *self.identity.lock().expect("lock") = (address, hex_encode(&peer));
+        Ok(())
+    }
+
+    /// Export one encrypted convergence bundle to an active linked device.
+    pub fn export_device_sync(&self, device: String) -> Result<Vec<u8>, FfiError> {
+        let device = parse_peer(&device)?;
+        self.call(|resp| Msg::DeviceSyncExport { device, resp })
+    }
+
+    /// Import one authenticated convergence bundle; returns new event rows.
+    pub fn import_device_sync(&self, bundle: Vec<u8>) -> Result<u64, FfiError> {
+        self.call(|resp| Msg::DeviceSyncImport { bundle, resp })
+            .map(|inserted| inserted as u64)
     }
 
     /// Add (or replace) a contact from their prekey bundle, with delivery
@@ -3705,8 +3892,7 @@ impl KultNode {
         });
         let rt = Runtime::start(cfg, sink).map_err(|reason| FfiError::Startup { reason })?;
         Ok(Arc::new(Self {
-            address: rt.address.clone(),
-            peer: hex_encode(&rt.peer),
+            identity: Mutex::new((rt.address.clone(), hex_encode(&rt.peer))),
             inner: Mutex::new(Some(rt)),
         }))
     }

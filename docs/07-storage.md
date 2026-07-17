@@ -6,8 +6,9 @@ deletable for real.
 
 ## 1. Principles
 
-1. **The device is the source of truth.** No cloud copy exists unless the user creates an
-   encrypted export. Sync between own devices (M6) is device-to-device, E2E-encrypted.
+1. **Owned devices are the source of truth.** No cloud copy exists unless the user creates an
+   encrypted export. Shipped C2 sync is explicit device-to-device, end-to-end encrypted,
+   and accepted only between account-authorized physical devices.
 2. **Durable state at rest is sealed.** The core database never persists plaintext:
    messages, drafts, media chunks/previews, metadata, and search terms are independently
    sealed. Bounded protected transients required by OS picker, recording, editing,
@@ -30,7 +31,9 @@ HKDF per-domain keys.
 |---|---|---|
 | `identity` | Own keys (wrapped), device settings | Smallest, most sensitive; extra wrap layer |
 | `sessions` | Serialized ratchet states, skipped-key store | Rewrapped on every persist; zeroized in memory after |
-| `contacts` | Peer keys, verification state, petnames, relay hints | Never leaves the device |
+| `contacts` | Peer keys, verification state, petnames, relay hints | Sealed locally; selected fields may enter authenticated own-device sync |
+| `devices` | Own and contact device certificates, signed manifests, revocation tombstones | Bounded authority state; exact physical identities |
+| `device_sync` | Per-device channels, counters, Lamport winners, terminal convergence tombstones | Direction-bound, replay-protected, never a cloud log |
 | `messages` | Envelope plaintexts post-decrypt, delivery state | Per-blob AEAD, random nonces |
 | `queue` | Outbound envelopes pending delivery per transport | Ciphertext only, survives crash/restart |
 | `scheduled_messages` | Pairwise/group text held until an absolute UTC instant | Plaintext fields exist only inside independently sealed blobs; no ratchet or envelope is created early |
@@ -38,7 +41,7 @@ HKDF per-domain keys.
 | `pending` | Inbound envelopes not yet readable (arrived before their session) | Ciphertext only; TTL-bounded |
 | `media` | Attachment blobs, chunked | Each chunk sealed; keys stored in `messages` |
 | `ephemeral` | Exact local deadlines, mode, transfer references, active/terminal lifecycle | Sealed separately; terminal tombstones block resurrection after plaintext/media deletion |
-| `local_metadata` | Conversation types, folders, pins, labels, drafts, UI preferences, custom icons | Local-only; keys and relationships are inside sealed blobs |
+| `local_metadata` | Conversation types, folders, pins, labels, drafts, UI preferences, custom icons | Endpoint-private; only the C2 allowlist can sync to another owned device |
 
 Every blob is individually AEAD-sealed (XChaCha20-Poly1305, random 24-byte nonce, table
 name + row purpose as associated data), a copied database file leaks only row counts and
@@ -47,14 +50,14 @@ approximate sizes; rows can't be transplanted across tables or databases.
 B9 formatting creates no additional durable state. The `messages`,
 `scheduled_messages`, group history, and note-to-self rows retain exact source
 bytes under their existing seals; formatting markers are not rewritten and no
-rendered HTML/attributed text or cache is persisted. `KKR6` therefore carries
+rendered HTML/attributed text or cache is persisted. `KKR7` therefore carries
 the same source it already carried and needs no format or migration change.
 
 C3 edits also add no mutable plaintext projection. Canonical originals and edit
 events remain separate individually sealed pairwise/group history rows; derived
 history hides edit rows and returns the winning text, marker, revision, and
 ordered versions. The winner is rebuilt from authenticated rows after restart or
-restore, including edit-before-original order. `KKR6` carries those
+restore, including edit-before-original order. `KKR7` carries those
 history rows, so no backup version or migration changes. The node caps locally
 authored edits at 64 per target; it retains every authenticated inbound edit so
 admission order cannot change convergence. See
@@ -82,7 +85,8 @@ B12 stores only the canonical `system`, `light`, or `dark` bytes under the seale
 UI-preference key `appearance.theme`. Missing or unknown legacy values render as
 System without a read-time rewrite. The small shell cache used before unlock is
 non-sensitive presentation state; after unlock the sealed F5 value is
-authoritative and is the only value carried by `KKR6` to another device.
+authoritative. `KKR7` backup and C2 own-device sync carry only that canonical
+value, never the pre-unlock cache.
 
 ### Protected application transients
 
@@ -174,30 +178,36 @@ trade for this project.)
 
 - **Encrypted backup file**: single-file export (identity + contacts + ordinary history +
   local organization/drafts/preferences/icons + note-to-self history +
-  terminal ephemeral tombstones + signed group authority + session-reset markers), sealed under a key derived from a BIP-39-style
+  terminal ephemeral tombstones + signed group authority + linked-device authority,
+  convergence winners, and session-reset markers), sealed under a key derived from a BIP-39-style
   mnemonic via Argon2id. `KKR3` added the sealed local metadata domain and
   `KKR4` added sealed note-to-self history, `KKR5` added terminal ephemeral
   tombstones while excluding every active ephemeral history row, manifest,
-  transfer, and media chunk, and current `KKR6` adds signed group authority
-  state plus bounded consumed admin-request ids. Older `KKR1` through `KKR5` files remain
-  restorable. Restoring on a new
-  device resumes identity; sessions re-handshake (ratchet states are deliberately *not*
-  portable, importing stale ratchet state is a correctness and security hazard). Format
+  transfer, and media chunk, `KKR6` added signed group authority plus bounded
+  consumed admin-request ids, and current `KKR7` adds linked-device manifests,
+  certified endpoints, convergence winners, and recovery state. Older `KKR1`
+  through `KKR6` files remain restorable. Restoring resumes the stable account,
+  revokes every device active in the backup, and mints a fresh sole active
+  physical device; sessions re-handshake (ratchet states and reusable device
+  private credentials are deliberately *not* portable). Format
   and mechanism: ADR-0011.
-- **B18 label backup behavior**: `KKR6` preserves exact label IDs, names, color
+- **B18 label backup behavior**: `KKR7` preserves exact label IDs, names, color
   tokens, insertion order, assignments, and stale-reference behavior. Labels
-  have no independent cloud, server, or linked-device synchronization path.
-- **B10 folder backup behavior**: `KKR6` preserves exact folder IDs, names,
+  have no cloud, server, contact, or taxonomy-sharing path; C2 may converge them
+  only between account-authorized owned devices.
+- **B10 folder backup behavior**: `KKR7` preserves exact folder IDs, names,
   manual order, single-membership assignments, and stale-reference behavior.
-  Folders have no independent cloud, server, or linked-device synchronization.
-- **B11 pin backup behavior**: `KKR6` preserves exact typed targets, durable
-  order, and stale/reactivation behavior. Pins have no independent cloud,
-  server, or linked-device synchronization path.
-- **B13 custom-icon backup behavior**: `KKR6` preserves each canonical sealed
+  Folders have no cloud, server, or contact synchronization; C2 may converge
+  them only between account-authorized owned devices.
+- **B11 pin backup behavior**: `KKR7` preserves exact typed targets, durable
+  order, and stale/reactivation behavior. Pins have no cloud, server, or contact
+  synchronization; C2 may converge them only between authorized owned devices.
+- **B13 custom-icon backup behavior**: `KKR7` preserves each canonical sealed
   PNG under its exact typed contact/group/folder/note-to-self target. Restore
   reuses the same strict read verification and generated-initials fallback.
-  Icons have no avatar URL, cloud, server, peer, or linked-device synchronization
-  path; the shared caps are 512 KiB per icon, 1,024 records, and 64 MiB total.
+  Icons have no avatar URL, cloud, server, or peer synchronization path; C2 may
+  converge them only between authorized owned devices. The shared caps are
+  512 KiB per icon, 1,024 records, and 64 MiB total.
 - **Scheduled outbox state is not a backup payload.** Like the live encrypted
   delivery queue, it is device runtime state rather than conversation history;
   it survives ordinary process/app restarts on that device but is not resurrected
@@ -214,11 +224,16 @@ trade for this project.)
   ride with ordinary sealed group history. Restore derives the same stable IDs,
   fixed electorate, visible vote heads, closed state, and tally; no mutable
   counter, new KKR version, or schema migration is involved.
-- **C6 authority backup behavior**: `KKR6` carries the winning canonical signed
+- **C6 authority backup behavior**: `KKR6` introduced the winning canonical signed
   authority payload, authority event id, owner-transfer chain, and bounded
-  consumed request ids. `KKR1`-`KKR5` restore with no authority record and remain
+  consumed request ids; `KKR7` carries it forward. `KKR1`-`KKR5` restore with no authority record and remain
   legacy creator-managed until a capability-gated upgrade. Sender/receiver
   chains remain excluded and are refreshed after restore.
+- **C2 linked-device backup behavior**: `KKR7` carries the stable account, signed
+  manifest, local device id, certified contact endpoints, convergence winners,
+  and terminal tombstones, but never exports ratchets or a reusable physical
+  device private credential. Recovery permanently revokes every device that was
+  active in the backup and mints a fresh sole active device.
 - **Plaintext export**: JSON-lines + media directory, clearly warned as plaintext.
   The user's data is the user's.
 - **Panic wipe** (roadmap M6): duress passphrase unlocking a decoy profile while

@@ -291,6 +291,53 @@ pub struct CarrierCapabilitySnapshot {
     pub expires_at: u64,
 }
 
+/// Render-safe account-authorized physical-device row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkedDeviceInfo {
+    /// Exact stable physical-device id.
+    pub id: [u8; 32],
+    /// User-visible exact UTF-8 device name.
+    pub name: String,
+    /// Coarse authenticated observation time; not a presence promise.
+    pub last_seen: u64,
+    /// Revocation time, if this credential is permanently excluded.
+    pub revoked_at: Option<u64>,
+    /// Whether this row is the current physical installation.
+    pub current: bool,
+}
+
+/// Honest delivery state for one exact recipient physical device.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MessageDeviceDeliveryInfo {
+    /// Exact recipient physical-device id.
+    pub device: [u8; 32],
+    /// Current account-authorized user-visible name, if known.
+    pub name: Option<String>,
+    /// Honest queued/sent/delivered state for this copy.
+    pub state: DeliveryState,
+}
+
+/// User-controlled state selection for a confirmed initial device transfer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeviceLinkSelection {
+    /// Transfer contacts and verification state.
+    pub contacts: bool,
+    /// Transfer folders, labels, pins, icons, and appearance choice.
+    pub organization: bool,
+    /// Transfer pairwise/group/note history without downloaded media.
+    pub history: bool,
+}
+
+impl Default for DeviceLinkSelection {
+    fn default() -> Self {
+        Self {
+            contacts: true,
+            organization: true,
+            history: true,
+        }
+    }
+}
+
 /// Instructions the application layer gives the node. Every command is also
 /// available as a typed method on [`crate::Node`]; this enum is the single
 /// serializable entry point the FFI layer wraps.
@@ -831,6 +878,15 @@ pub enum ContentStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event {
+    /// Account-authorized physical-device list, name, or revocation changed.
+    DevicesChanged,
+    /// This installation completed a confirmed proximate account link.
+    DeviceLinkCompleted {
+        /// Stable account identity now active on this installation.
+        account: [u8; 32],
+        /// Exact new physical-device id.
+        device: [u8; 32],
+    },
     /// One or more private local custom icons changed; shells re-read visible targets.
     /// This event never enters an envelope, capability, group state, or transport.
     CustomIconsChanged,

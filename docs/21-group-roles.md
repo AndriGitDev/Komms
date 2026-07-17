@@ -83,8 +83,8 @@ The winning authority payload, event id, and bounded consumed-request ids live i
 a separately sealed `group_authority` record. This preserves legacy group-record
 encoding and adds no public database index or transport metadata.
 
-`KKR6` is the current mnemonic-sealed backup format. It carries signed authority
-records and consumed request ids, while continuing KKR5's terminal ephemeral
+`KKR6` introduced signed authority records and consumed request ids; current
+`KKR7` carries them forward with linked-device recovery state, while continuing KKR5's terminal ephemeral
 tombstones and exclusion of live ephemeral plaintext/media. `KKR1` through
 `KKR5` remain restorable as legacy creator-managed groups. Sender and receiver
 chains are never portable.
@@ -115,7 +115,7 @@ or claim that owner action is fair.
 Local acceptance covers canonical and arbitrary decoding, signature/domain
 failure, stale and duplicate requests, concurrent admins, transfer-chain forks,
 last-owner refusal, offline delivery, removal and re-keying, signed moderation,
-reorder convergence, KKR1-KKR6 restore, RPC/CLI, UniFFI, desktop, Android host
+reorder and C2 owned-device convergence, KKR1-KKR7 restore, RPC/CLI, UniFFI, desktop, Android host
 core, and iOS host/app builds. Android APK/device execution remains part of the
 common deferred SDK/device gate; it does not weaken the implemented Android
 surface or shared protocol contract.

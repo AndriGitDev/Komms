@@ -103,5 +103,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "device_sync_bundle_decode"
+path = "fuzz_targets/device_sync_bundle_decode.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

@@ -47,5 +47,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "device_prekey_decode"
+path = "fuzz_targets/device_prekey_decode.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

@@ -48,10 +48,10 @@ status and prerequisites are tracked in the delivery plan.
   work. An optional signed self-display name may later be advertised as a
   non-unique suggestion, but it is not implemented and could never silently
   override the recipient's petname.
-- **Secure backups.** Shipped: the `KKR6` mnemonic-sealed backup (Argon2id under a
+- **Secure backups.** Shipped: the `KKR7` mnemonic-sealed backup (Argon2id under a
   24-word BIP-39 phrase, ADR-0011/ADR-0012), including sealed local metadata and
   note-to-self history, terminal ephemeral tombstones, and signed group
-  authority; `KKR1` through `KKR5` remain restorable. Stored locally or
+  authority plus linked-device recovery state; `KKR1` through `KKR6` remain restorable. Stored locally or
   moved by sneakernet; no cloud.
 - **Note to self.** Shipped as a sealed local conversation in `kult-store`, with
   the reserved `note_to_self` identity across every shell and no peer, envelopes,
@@ -76,7 +76,8 @@ status and prerequisites are tracked in the delivery plan.
   manual order, idempotent append/unpin, complete-set reorder including stale
   targets, deterministic activity tie-breaking, cleanup, and reactivation stay
   local. Folder selection and label filtering precede one leading pinned block.
-  The limit is 8,192, `KKR6` is the only current portability path, and every operation
+  The limit is 8,192; `KKR7` and authenticated own-device C2 sync are the only
+  portability paths, and every operation
   creates zero network, notification, crypto, or transport work. Message pins
   remain a separate design because they require stable message references.
 - **Dark mode.** Shipped as the exact `system` / `light` / `dark` preference
@@ -85,7 +86,7 @@ status and prerequisites are tracked in the delivery plan.
   changes live; desktop uses semantic CSS roles, Android uses DayNight resources,
   and iOS uses adaptive system colors. Reference palettes meet WCAG normal-text
   contrast, high-contrast and reduced-motion behavior remains native, and color
-  is never the only security or delivery signal. `KKR6` is the authoritative
+  is never the only security or delivery signal. `KKR7` is the authoritative
   portability path; a small non-sensitive device cache exists only to style the
   pre-unlock gate without a flash.
 - **Custom icons.** Shipped for contacts, groups, folders, and note-to-self over
@@ -94,7 +95,8 @@ status and prerequisites are tracked in the delivery plan.
   metadata-free 256×256 RGBA PNGs after orientation normalization and square
   crop. Animated/decompression-heavy inputs fail closed. Limits are 512 KiB per
   icon, 1,024 records, and 64 MiB aggregate; reads safely fall back after corrupt
-  or legacy non-canonical bytes. `KKR6` is the only current portability path. Icons never
+  or legacy non-canonical bytes. Portability is limited to `KKR7` and authenticated
+  own-device C2 sync. Icons never
   enter avatar URLs, peer sync, envelopes, capabilities, queues, notifications,
   DHT state, or transport work.
 - **Screen security.** Shipped as an always-on pre-unlock policy. The shared
@@ -133,10 +135,11 @@ status and prerequisites are tracked in the delivery plan.
   managers, non-color badges, assignment actions, stale-record cleanup, and
   deterministic match-any/match-all filters are local presentation only. Limits
   are 128 live labels, 8,192 assignments, 32 labels per conversation, and 256
-  UTF-8 bytes per name. `KKR6` preserves exact identity, ordering, membership,
+  UTF-8 bytes per name. `KKR7` preserves exact identity, ordering, membership,
   and stale behavior. Labels do not affect messages, delivery, search, unread
-  truth, notifications, or transports and do not sync remotely. Message labels,
-  shared tags, and linked-device label sync remain separate work; B11
+  truth, notifications, or transports and do not sync to contacts or services.
+  C2 may converge them only between authorized devices of the same account.
+  Message labels and shared tags remain separate work; B11
   conversation pins compose independently after label filtering.
 - **Private conversation folders.** Shipped for pairwise contacts, groups, and
   note-to-self through F5 and every wrapper and shell. One stable typed
@@ -145,10 +148,11 @@ status and prerequisites are tracked in the delivery plan.
   never display-name inference. Create, rename, complete-set reorder, move,
   unfile, deletion review/cascade, and stale cleanup are atomic local operations.
   Folder selection runs before the independent B18 any/all label filter. Limits
-  are 128 folders, 8,192 assignments, and 256 UTF-8 bytes per name. `KKR6`
+  are 128 folders, 8,192 assignments, and 256 UTF-8 bytes per name. `KKR7`
   preserves exact identity, order, membership, and stale behavior. Folders do
   not affect messages, delivery, search, unread truth, notifications, transports,
-  or remote state and are not synchronized between devices.
+  or contact/service state; C2 may converge them only between authorized devices
+  of the same account.
 
 ## Build with constraints (needs transport-awareness or local-first sync)
 
@@ -164,10 +168,13 @@ and degrade honestly, exactly as the delivery ladder already does.
   mismatched, unknown, or nameless files. A hard no-airtime class still holds
   every bulk object for a faster link; no scanner, remote preview, or new
   transport behavior is implied.
-- **Linked devices.** One account identity uses separately authenticated device
+- **Linked devices.** Shipped across the core, strict RPC/CLI, UniFFI, and every
+  shell. One account identity uses separately authenticated device
   keys, per-device sessions, revocation, and deterministic sync. Linking happens
-  proximately through a confirmed QR or LAN ceremony, never by copying live
-  ratchet databases or depending on cloud sync.
+  proximately through a mutually confirmed QR/paste ceremony, never by copying
+  live ratchet databases or depending on cloud sync. See
+  [22: Linked Devices](22-linked-devices.md) and
+  [ADR-0024](adr/0024-account-authorized-linked-devices.md).
 - **Message editing.** Shipped for canonical pairwise and group Text through
   every front door and shell. Immutable authenticated events target exact
   author/content ids, retain inspectable versions, and converge under offline
@@ -195,7 +202,8 @@ and degrade honestly, exactly as the delivery ladder already does.
   ownership-transfer certificates, admin requests, and moderation snapshots are
   identity-signed; the sole owner serializes transitions and every accepted
   change re-keys. Stale/demoted requests and losing transfer forks fail closed;
-  `KKR6` preserves authority while KKR1-KKR5 restore as legacy groups. See
+  `KKR6` introduced authority and `KKR7` carries it forward, while KKR1-KKR5
+  restore as legacy groups. See
   [21: Group Roles, Ownership, and Moderation](21-group-roles.md) and
   [ADR-0023](adr/0023-group-roles-and-owner-authority.md).
 - **Live voice and video calls.** In scope and on the near horizon, strictly

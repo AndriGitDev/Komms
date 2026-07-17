@@ -828,6 +828,8 @@ async function refreshStatus() {
     return; // locked or shutting down — the poll just goes quiet
   }
   state.peer = s.peer;
+  state.address = s.address;
+  $("#my-address").textContent = s.address;
   const nat = $("#stat-nat");
   nat.textContent = `NAT: ${s.nat}`;
   nat.className = "stat " + (s.nat === "public" ? "good" : s.nat === "private" ? "warn" : "");
@@ -2613,6 +2615,16 @@ $("#btn-attach").addEventListener("click", async () => {
 
 listen("node-event", async ({ payload: ev }) => {
   switch (ev.type) {
+    case "devices_changed": {
+      if (!$("#modal-backdrop").hidden && $("#modal-title").textContent === "Linked devices") {
+        await renderLinkedDevices($("#modal-body"));
+      }
+      break;
+    }
+    case "device_link_completed": {
+      await refreshStatus();
+      break;
+    }
     case "theme_changed": {
       const theme = await invoke("theme");
       applyTheme(theme.preference);
@@ -3743,6 +3755,164 @@ $("#btn-theme").addEventListener("click", async () => {
   });
   root.addEventListener("click", (event) => {
     if (event.target.matches('[data-act="close"]')) closeModal();
+  });
+});
+
+async function renderLinkedDevices(root) {
+  const list = root.querySelector('[data-f="device-list"]');
+  const devices = await invoke("linked_devices");
+  list.replaceChildren();
+  for (const device of devices) {
+    const row = document.createElement("div");
+    row.className = "member-row";
+    const summary = document.createElement("div");
+    const name = document.createElement("strong");
+    name.textContent = device.name;
+    const detail = document.createElement("small");
+    const stateText = device.revoked_at
+      ? "revoked " + fmtTime(device.revoked_at)
+      : device.current ? "this device" : "active · seen " + fmtTime(device.last_seen);
+    detail.textContent = stateText + " · " + device.id;
+    summary.append(name, document.createElement("br"), detail);
+    const actions = document.createElement("div");
+    if (!device.revoked_at) {
+      const rename = document.createElement("button");
+      rename.className = "ghost";
+      rename.type = "button";
+      rename.textContent = "Rename";
+      rename.addEventListener("click", async () => {
+        const next = window.prompt("Signed device name", device.name);
+        if (next === null) return;
+        try {
+          await invoke("rename_linked_device", { device: device.id, name: next });
+          await renderLinkedDevices(root);
+        } catch (error) { showError(root, error); }
+      });
+      actions.append(rename);
+      if (!device.current) {
+        const sync = document.createElement("button");
+        sync.className = "ghost";
+        sync.type = "button";
+        sync.textContent = "Export sync";
+        sync.addEventListener("click", async () => {
+          try {
+            const bundle = await invoke("export_device_sync", { device: device.id });
+            await copyText(bundle);
+            toast("Encrypted sync for " + device.name + " copied");
+          } catch (error) { showError(root, error); }
+        });
+        const revoke = document.createElement("button");
+        revoke.className = "danger";
+        revoke.type = "button";
+        revoke.textContent = "Revoke";
+        revoke.addEventListener("click", async () => {
+          const confirmed = window.confirm("Permanently revoke “" + device.name + "”? This cannot be undone.");
+          if (!confirmed) return;
+          try {
+            await invoke("revoke_linked_device", { device: device.id, confirmed: true });
+            await renderLinkedDevices(root);
+          } catch (error) { showError(root, error); }
+        });
+        actions.append(sync, revoke);
+      }
+    }
+    row.append(summary, actions);
+    list.append(row);
+  }
+}
+
+async function openDeviceLinkSource() {
+  const root = openModal("Link another device", "tpl-device-link-source");
+  try {
+    const offer = await invoke("begin_device_link");
+    root.querySelector('[data-f="offer-qr"]').innerHTML = offer.qr_svg;
+    root.querySelector('[data-f="offer"]').value = offer.hex;
+  } catch (error) { showError(root, error); }
+  root.addEventListener("click", async (event) => {
+    try {
+      if (event.target.matches('[data-act="copy-offer"]')) {
+        await copyText(root.querySelector('[data-f="offer"]').value);
+      }
+      if (event.target.matches('[data-act="compare"]')) {
+        const responseHex = root.querySelector('[data-f="response"]').value.trim();
+        const code = await invoke("device_link_confirmation_code", { responseHex });
+        root.querySelector('[data-f="code"]').textContent = code;
+        root.querySelector('[data-f="approval"]').hidden = false;
+      }
+      if (event.target.matches('[data-act="approve"]')) {
+        const confirmed = root.querySelector('[data-f="confirmed"]').checked;
+        if (!confirmed) throw "compare the six digits on both devices first";
+        const responseHex = root.querySelector('[data-f="response"]').value.trim();
+        const selection = {
+          contacts: root.querySelector('[data-f="contacts"]').checked,
+          organization: root.querySelector('[data-f="organization"]').checked,
+          history: root.querySelector('[data-f="history"]').checked,
+        };
+        const packageHex = await invoke("approve_device_link", { responseHex, selection, confirmed: true });
+        root.querySelector('[data-f="package"]').value = packageHex;
+        root.querySelector('[data-f="package-wrap"]').hidden = false;
+      }
+      if (event.target.matches('[data-act="copy-package"]')) {
+        await copyText(root.querySelector('[data-f="package"]').value);
+      }
+    } catch (error) { showError(root, error); }
+  });
+}
+
+function openDeviceLinkTarget() {
+  const root = openModal("Link this new device", "tpl-device-link-target");
+  root.addEventListener("click", async (event) => {
+    try {
+      if (event.target.matches('[data-act="accept"]')) {
+        const accepted = await invoke("accept_device_link", {
+          offerHex: root.querySelector('[data-f="offer"]').value.trim(),
+          deviceName: root.querySelector('[data-f="name"]').value.trim(),
+        });
+        root.querySelector('[data-f="code"]').textContent = accepted.confirmation_code;
+        root.querySelector('[data-f="response"]').value = accepted.response_hex;
+        root.querySelector('[data-f="accepted"]').hidden = false;
+      }
+      if (event.target.matches('[data-act="copy-response"]')) {
+        await copyText(root.querySelector('[data-f="response"]').value);
+      }
+      if (event.target.matches('[data-act="complete"]')) {
+        const confirmed = root.querySelector('[data-f="confirmed"]').checked;
+        if (!confirmed) throw "compare the six digits on both devices first";
+        await invoke("complete_device_link", {
+          packageHex: root.querySelector('[data-f="package"]').value.trim(),
+          confirmed: true,
+        });
+        closeModal();
+        await refreshStatus();
+        await Promise.all([refreshContacts(), refreshGroups(), refreshFolders(), refreshLabels()]);
+        toast("Device linked with independent keys");
+      }
+    } catch (error) { showError(root, error); }
+  });
+}
+
+function openDeviceSyncImport() {
+  const root = openModal("Import linked-device sync", "tpl-device-sync");
+  root.addEventListener("click", async (event) => {
+    if (!event.target.matches('[data-act="import"]')) return;
+    try {
+      const inserted = await invoke("import_device_sync", {
+        bundleHex: root.querySelector('[data-f="bundle"]').value.trim(),
+      });
+      closeModal();
+      await Promise.all([refreshContacts(), refreshGroups(), refreshFolders(), refreshLabels()]);
+      toast("Device sync imported · " + inserted + " new events");
+    } catch (error) { showError(root, error); }
+  });
+}
+
+$("#btn-devices").addEventListener("click", async () => {
+  const root = openModal("Linked devices", "tpl-devices");
+  try { await renderLinkedDevices(root); } catch (error) { showError(root, error); }
+  root.addEventListener("click", (event) => {
+    if (event.target.matches('[data-act="begin-link"]')) openDeviceLinkSource();
+    if (event.target.matches('[data-act="join-link"]')) openDeviceLinkTarget();
+    if (event.target.matches('[data-act="import-sync"]')) openDeviceSyncImport();
   });
 });
 

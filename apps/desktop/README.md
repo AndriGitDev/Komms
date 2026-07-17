@@ -14,7 +14,7 @@ security indicators are the node's own, verbatim.
   lock path. Capture protection remains honestly best effort because desktop OS,
   window-server, compositor, privileged-software, and external-camera behavior
   cannot be controlled universally.
-- **Reduce input retention on every editable text control.** All 26 controls are
+- **Reduce input retention on every editable text control.** All audited controls are
   semantically classified and receive disabled autocomplete, autocorrect,
   autocapitalization, and spellcheck at startup and after modal cloning.
   Passphrases and recovery mnemonics are password inputs. The unlock screen
@@ -25,11 +25,17 @@ security indicators are the node's own, verbatim.
 - **Pair out-of-band**: share your prekey bundle as a QR code or pasteable
   hex (interoperable with `kult bundle` / `kult add`), or add a contact
   from their kult address alone via DHT lookup.
+- **Link and manage owned devices** without a cloud account. The keyboard and
+  screen-reader-accessible manager lists exact physical devices, supports signed
+  rename and permanently confirmed revoke, and drives both sides of the
+  time-bounded QR/paste ceremony with matching comparison codes and selective
+  transfer. Explicit encrypted sync export/import carries only the C2 allowlist;
+  per-device cryptography and delivery state remain independent.
 - **Rename a contact's private local petname** from the active chat. The shell
   targets the exact peer key, previews shared NFC normalization and duplicate/
   confusable/bidi/invisible warnings, and requires explicit confirmation before
   accepting a warned name. Duplicate names remain separate; rename survives
-  restart/`KKR6` and creates no network, notification, queue, or transport work.
+  restart/`KKR7` and creates no network, notification, queue, or transport work.
 - **Message** with honest delivery states: `queued` → `sent` (handed to a
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted
@@ -109,11 +115,11 @@ security indicators are the node's own, verbatim.
   note-to-self in one leading accessible block. Keyboard buttons provide exact
   complete-set reorder and unpin; unavailable records remain visible for exact
   cleanup. Folder selection and label filtering run before pin/activity order.
-  The 8,192-pin bound, stable typed identity, restart/`KKR6` restoration, and
+  The 8,192-pin bound, stable typed identity, restart/`KKR7` restoration, and
   zero-network behavior come from the shared core rather than display names.
 - **Choose System, Light, or Dark appearance** at the gate or in the unlocked
   app. A non-sensitive local cache applies before first paint; after unlock the
-  sealed F5 `appearance.theme` value is authoritative and travels in `KKR6`.
+  sealed F5 `appearance.theme` value is authoritative and travels in `KKR7`.
   System follows live OS changes, semantic CSS roles meet the shared contrast
   targets, `prefers-contrast` and `prefers-reduced-motion` remain native, and
   delivery/security meaning always retains text, glyph, or accessible labels.
@@ -122,7 +128,8 @@ security indicators are the node's own, verbatim.
   offers eight bundled glyphs, local JPEG/PNG selection with centered-square crop,
   clear-to-fallback, and quota usage. The shared core emits only metadata-free
   256×256 RGBA PNGs, enforces 512 KiB/1,024-record/64 MiB limits, and safely falls
-  back after corrupt bytes. Icons travel only in `KKR6`, never URLs, peer sync,
+  back after corrupt bytes. Icons travel only in `KKR7` or authenticated
+  own-device C2 sync, never URLs, peer sync,
   envelopes, capabilities, queues, notifications, or transports.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends, compared out-of-band, with a visible verified badge.
@@ -155,7 +162,7 @@ path dependency on `kult-ffi`.
 Custom-icon acceptance consumes the shared B13 fixture through the same session
 surface the Tauri commands wrap: canonical metadata-free local data URLs, exact
 folder/note targets, bundled and selected-image paths, quota accounting,
-restart/`KKR6`, safe fallback, local events, and zero delivery work. Rust node
+restart/`KKR7`, safe fallback, local events, and zero delivery work. Rust node
 acceptance independently covers contact and group identities plus corrupt sealed
 legacy bytes.
 
@@ -205,5 +212,6 @@ directory.
   state. They never enter envelopes, DHT records, capabilities, analytics,
   notifications, or logs; navigation/filtering changes presentation only.
   Custom icons are likewise exact typed sealed local records, rendered only from
-  verified bounded data URLs. `KKR6` preserves them exactly, while multi-device
-  synchronization, message pins, and message labels are not implemented.
+  verified bounded data URLs. `KKR7` preserves them exactly and C2 can converge
+  them only between authorized owned devices; message pins and message labels
+  are not implemented.

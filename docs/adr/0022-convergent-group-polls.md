@@ -91,7 +91,7 @@ being guessed as text.
 
 Poll events remain individually sealed ordinary group-history rows. The node
 derives cards, visible vote heads, and tallies on read; it persists no mutable
-tally. Current `KKR6` carries those rows unchanged, so restart and restore recompute the
+tally. Current `KKR7` carries those rows unchanged, so restart and restore recompute the
 same result without a backup version or database migration.
 
 ## Alternatives considered
@@ -116,5 +116,6 @@ Poll creators determine when to close and attest the final observed snapshot;
 Komms guarantees deterministic convergence, not election fairness or secret
 ballots. The fixed electorate and visible identities must be shown before
 creation and voting. Parser fuzzing, changed/duplicate/reordered vote tests,
-membership and old-client gates, closure conflicts, KKR6 restore, strict
+membership and old-client gates, closure conflicts, KKR1–KKR7 restore, C2
+owned-device convergence, strict
 RPC/CLI, UniFFI, and all shell contracts are release requirements.

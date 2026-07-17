@@ -20,6 +20,11 @@ const GROUP_AUTHORITY_STATE_DOMAIN: &[u8] = b"Komms-group-authority-state-v1";
 const GROUP_OWNER_TRANSFER_DOMAIN: &[u8] = b"Komms-group-owner-transfer-v1";
 const GROUP_ADMIN_REQUEST_DOMAIN: &[u8] = b"Komms-group-admin-request-v1";
 const GROUP_POLL_MODERATION_DOMAIN: &[u8] = b"Komms-group-poll-moderation-v1";
+const DEVICE_CERTIFICATE_DOMAIN: &[u8] = b"Komms-device-certificate-v1";
+const DEVICE_MANIFEST_DOMAIN: &[u8] = b"Komms-device-manifest-v1";
+const DEVICE_LINK_OFFER_DOMAIN: &[u8] = b"Komms-device-link-offer-v1";
+const DEVICE_LINK_RESPONSE_DOMAIN: &[u8] = b"Komms-device-link-response-v1";
+const DEVICE_SYNC_EVENT_DOMAIN: &[u8] = b"Komms-device-sync-event-v1";
 
 fn verify_peer_domain(
     peer: &[u8; 32],
@@ -155,6 +160,31 @@ impl Identity {
         self.sign_domain(GROUP_POLL_MODERATION_DOMAIN, canonical_moderation)
     }
 
+    /// Sign one canonical C2 device certificate as the stable account root.
+    pub fn sign_device_certificate(&self, canonical_certificate: &[u8]) -> [u8; 64] {
+        self.sign_domain(DEVICE_CERTIFICATE_DOMAIN, canonical_certificate)
+    }
+
+    /// Sign one complete, generation-bound C2 device manifest.
+    pub fn sign_device_manifest(&self, canonical_manifest: &[u8]) -> [u8; 64] {
+        self.sign_domain(DEVICE_MANIFEST_DOMAIN, canonical_manifest)
+    }
+
+    /// Sign the authorizing half of one proximate C2 linking ceremony.
+    pub fn sign_device_link_offer(&self, canonical_offer: &[u8]) -> [u8; 64] {
+        self.sign_domain(DEVICE_LINK_OFFER_DOMAIN, canonical_offer)
+    }
+
+    /// Sign the target half of one proximate C2 linking ceremony.
+    pub fn sign_device_link_response(&self, canonical_response: &[u8]) -> [u8; 64] {
+        self.sign_domain(DEVICE_LINK_RESPONSE_DOMAIN, canonical_response)
+    }
+
+    /// Sign one deterministic C2 state-synchronization mutation.
+    pub fn sign_device_sync_event(&self, canonical_event: &[u8]) -> [u8; 64] {
+        self.sign_domain(DEVICE_SYNC_EVENT_DOMAIN, canonical_event)
+    }
+
     /// X25519 agreement with a peer public key.
     pub(crate) fn dh(&self, their: &[u8; 32]) -> Zeroizing<[u8; 32]> {
         let shared = self.agreement.diffie_hellman(&PublicKey::from(*their));
@@ -261,6 +291,51 @@ impl IdentityPublic {
             canonical_moderation,
             signature,
         )
+    }
+
+    /// Verify one canonical C2 device certificate from this account root.
+    pub fn verify_device_certificate(
+        &self,
+        canonical_certificate: &[u8],
+        signature: &[u8; 64],
+    ) -> Result<()> {
+        self.verify_domain(DEVICE_CERTIFICATE_DOMAIN, canonical_certificate, signature)
+    }
+
+    /// Verify one complete, generation-bound C2 device manifest.
+    pub fn verify_device_manifest(
+        &self,
+        canonical_manifest: &[u8],
+        signature: &[u8; 64],
+    ) -> Result<()> {
+        self.verify_domain(DEVICE_MANIFEST_DOMAIN, canonical_manifest, signature)
+    }
+
+    /// Verify the authorizing half of one proximate C2 linking ceremony.
+    pub fn verify_device_link_offer(
+        &self,
+        canonical_offer: &[u8],
+        signature: &[u8; 64],
+    ) -> Result<()> {
+        self.verify_domain(DEVICE_LINK_OFFER_DOMAIN, canonical_offer, signature)
+    }
+
+    /// Verify the target half of one proximate C2 linking ceremony.
+    pub fn verify_device_link_response(
+        &self,
+        canonical_response: &[u8],
+        signature: &[u8; 64],
+    ) -> Result<()> {
+        self.verify_domain(DEVICE_LINK_RESPONSE_DOMAIN, canonical_response, signature)
+    }
+
+    /// Verify one deterministic C2 state-synchronization mutation.
+    pub fn verify_device_sync_event(
+        &self,
+        canonical_event: &[u8],
+        signature: &[u8; 64],
+    ) -> Result<()> {
+        self.verify_domain(DEVICE_SYNC_EVENT_DOMAIN, canonical_event, signature)
     }
 
     /// The 32-byte SHA-256 digest over `ed || x` that the kult address

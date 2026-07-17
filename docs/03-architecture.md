@@ -20,22 +20,22 @@ flowchart TB
         F1["Stable typed calls<br/>+ listener events"]
     end
     subgraph Node["kult-node: runtime"]
-        N1["Session manager"]
+        N1["Account/device sessions<br/>+ deterministic sync"]
         N2["Delivery engine<br/>(store-and-forward, retries, receipts)"]
         N3["Transport scheduler<br/>(multipath selection)"]
     end
     subgraph Proto["kult-protocol"]
         P1["Envelope codec"]
         P2["Fragmentation / reassembly"]
-        P3["Group state (sender keys)"]
+        P3["Group + linked-device state"]
     end
     subgraph Crypto["kult-crypto"]
         C1["PQXDH handshake"]
-        C2["Double Ratchet"]
+        C2["Per-device Double Ratchet"]
         C3["Primitives (X25519, Ed25519,<br/>ML-KEM-768, XChaCha20-Poly1305)"]
     end
     subgraph Store["kult-store"]
-        S1["Encrypted SQLite<br/>(messages, sessions, media,<br/>scheduled + local metadata)"]
+        S1["Encrypted SQLite<br/>(messages, sessions, devices, sync,<br/>media, scheduled + local metadata)"]
     end
     subgraph Transport["kult-transport"]
         T1["Internet (libp2p: QUIC/TCP,<br/>Kademlia, relay v2)"]
@@ -58,11 +58,11 @@ base small.
 
 | Crate | Owns | Must never |
 |---|---|---|
-| `kult-crypto` | Key generation, PQXDH, Double Ratchet, AEAD, fingerprints. Pure functions + opaque state objects; `#![forbid(unsafe_code)]`; all secrets `zeroize`-on-drop. | Perform I/O of any kind. |
-| `kult-protocol` | Envelope wire format, fragmentation for small-MTU links, sender-key group fan-out, padding. | Touch key material directly (only via `kult-crypto` handles). |
+| `kult-crypto` | Account/device key generation, certificates and manifests, PQXDH, Double Ratchet, sync sealing, AEAD, fingerprints. Pure functions + opaque state objects; `#![forbid(unsafe_code)]`; all secrets `zeroize`-on-drop. | Perform I/O of any kind. |
+| `kult-protocol` | Envelope wire format, fragmentation for small-MTU links, sender-key group fan-out, bounded linked-device bundles/events, padding. | Touch key material directly (only via `kult-crypto` handles). |
 | `kult-transport` | The `Transport` trait and its implementations; peer discovery; link encryption. | See plaintext or long-term identity secrets. |
-| `kult-store` | Encrypted persistence of messages, sessions, contacts, queues, media, scheduled work, backups, and sealed local metadata. | Perform network I/O or transport scheduling. |
-| `kult-node` | Composition: session lifecycle, delivery engine, multipath scheduling, event bus. | Reimplement lower-layer logic. |
+| `kult-store` | Encrypted persistence of messages, sessions, contacts, devices, sync convergence, queues, media, scheduled work, backups, and sealed local metadata. | Perform network I/O or transport scheduling. |
+| `kult-node` | Composition: account/device lifecycle, per-device delivery, deterministic sync, multipath scheduling, event bus. | Reimplement lower-layer logic. |
 | `kult-ffi` | UniFFI-exposed API and embedded runtime for Kotlin, Swift, and shell consumers. | Add behavior beyond `kult-node`. |
 
 B9 formatting is deliberately a pure `kult-node` projection rather than a
@@ -94,7 +94,7 @@ choices and honest local-only language. See
 C5 polls follow the immutable replicated-state shape: `kult-protocol` owns
 content-v1 kind 6 create/vote/close frames; `kult-node` authenticates the group
 sender and derives fixed-electorate vote heads and final tallies; existing
-sealed group rows and `KKR6` carry the source events; RPC/UniFFI expose typed
+sealed group rows and `KKR7` carry the source events; RPC/UniFFI expose typed
 snapshots; shells render and refresh cards without resolving votes. The
 sender-key path hides poll content from transports, while authenticated
 capability intersection keeps old clients off the typed send path. See
@@ -109,8 +109,20 @@ the one current owner; `kult-store` seals the winning state and consumed request
 ids separately from legacy group records. RPC/UniFFI expose render-safe roles
 and typed commands/events. Apps display roles and invoke those commands but
 never see group secrets, signatures, identity blobs, or chain state. `KKR6`
-carries authority records while `KKR1`-`KKR5` restore as legacy groups. See
+introduced authority records and `KKR7` carries them forward, while
+`KKR1`-`KKR5` restore as legacy groups. See
 [21: Group Roles, Ownership, and Moderation](21-group-roles.md).
+
+C2 linked devices separate stable account identity from physical endpoint
+cryptography. `kult-crypto` owns certificates, manifests, link transcripts, and
+sync sealing; `kult-protocol` owns bounded endpoint bundles and sync events;
+`kult-store` seals device authority, per-endpoint delivery state, sync counters,
+and deterministic winners; `kult-node` enforces fan-out, capability intersection,
+revocation, convergence, and recovery. RPC/UniFFI expose opaque ceremony bytes
+and strict render-safe device models; shells compare codes and collect explicit
+approvals without implementing authority rules. See
+[22: Linked Devices](22-linked-devices.md) and
+[ADR-0024](adr/0024-account-authorized-linked-devices.md).
 
 ## 3. Message lifecycle
 

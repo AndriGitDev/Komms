@@ -116,6 +116,7 @@
           <button id="btn-icon-manager" class="ghost" title="Private custom icons">Icons</button>
           <button id="btn-theme" class="ghost" title="Appearance">Theme</button>
           <button id="btn-backup" class="ghost" title="Export encrypted backup">Backup</button>
+          <button id="btn-devices" class="ghost" title="Linked devices">Devices</button>
         </div>
       </header>
 
@@ -510,6 +511,81 @@
     <div class="row end">
       <button class="primary" data-act="export">Export backup</button>
     </div>
+  </template>
+
+  <template id="tpl-devices">
+    <p class="modal-note">Each installation has its own authenticated keys. Revocation is permanent and immediately excludes that exact device from new delivery and sync.</p>
+    <div data-f="device-list" class="member-list" aria-live="polite"></div>
+    <p class="error" data-f="error" role="alert" hidden></p>
+    <div class="row split">
+      <button class="primary" data-act="begin-link">Link another device</button>
+      <button class="ghost" data-act="join-link">Link this new device</button>
+      <button class="ghost" data-act="import-sync">Import device sync</button>
+    </div>
+  </template>
+
+  <template id="tpl-device-link-source">
+    <p class="modal-note">On the new pristine installation, scan or paste this ten-minute offer. Nothing transfers until both screens show the same six digits and you explicitly approve.</p>
+    <div class="qr-card" data-f="offer-qr"></div>
+    <label>Offer
+      <textarea data-f="offer" rows="4" readonly data-incognito-input="technical" spellcheck="false"></textarea>
+    </label>
+    <button class="ghost" data-act="copy-offer">Copy offer</button>
+    <label>Response from the new device
+      <textarea data-f="response" rows="4" data-incognito-input="technical" spellcheck="false"></textarea>
+    </label>
+    <button class="primary" data-act="compare">Show comparison code</button>
+    <div data-f="approval" hidden>
+      <p class="safety-digits" data-f="code" aria-live="polite"></p>
+      <fieldset>
+        <legend>Initial encrypted transfer</legend>
+        <label><input type="checkbox" data-f="contacts" checked /> Contacts and verification</label>
+        <label><input type="checkbox" data-f="organization" checked /> Folders, labels, pins, icons, and appearance</label>
+        <label><input type="checkbox" data-f="history" /> Non-ephemeral history</label>
+      </fieldset>
+      <label class="check"><input type="checkbox" data-f="confirmed" /> I compared the six digits on both devices</label>
+      <button class="primary" data-act="approve">Approve and create package</button>
+    </div>
+    <div data-f="package-wrap" hidden>
+      <label>Encrypted package for the new device
+        <textarea data-f="package" rows="5" readonly data-incognito-input="technical" spellcheck="false"></textarea>
+      </label>
+      <button class="ghost" data-act="copy-package">Copy package</button>
+    </div>
+    <p class="error" data-f="error" role="alert" hidden></p>
+  </template>
+
+  <template id="tpl-device-link-target">
+    <p class="modal-note">Use this only on a pristine installation. Scan or paste the source offer, compare the code on both screens, then import the encrypted package the source creates.</p>
+    <label>Name for this device
+      <input type="text" data-f="name" data-incognito-input="name" value="New device" maxlength="80" />
+    </label>
+    <label>Source offer
+      <textarea data-f="offer" rows="4" data-incognito-input="technical" spellcheck="false"></textarea>
+    </label>
+    <button class="primary" data-act="accept">Accept offer</button>
+    <div data-f="accepted" hidden>
+      <p class="safety-digits" data-f="code" aria-live="polite"></p>
+      <label>Response for the source device
+        <textarea data-f="response" rows="4" readonly data-incognito-input="technical" spellcheck="false"></textarea>
+      </label>
+      <button class="ghost" data-act="copy-response">Copy response</button>
+      <label>Encrypted package from the source
+        <textarea data-f="package" rows="5" data-incognito-input="technical" spellcheck="false"></textarea>
+      </label>
+      <label class="check"><input type="checkbox" data-f="confirmed" /> I compared the six digits on both devices</label>
+      <button class="primary" data-act="complete">Complete device link</button>
+    </div>
+    <p class="error" data-f="error" role="alert" hidden></p>
+  </template>
+
+  <template id="tpl-device-sync">
+    <p class="modal-note">Paste an encrypted convergence bundle exported by another active linked device. Replays and bundles for a different device are rejected.</p>
+    <label>Encrypted device sync bundle
+      <textarea data-f="bundle" rows="7" data-incognito-input="technical" spellcheck="false"></textarea>
+    </label>
+    <p class="error" data-f="error" role="alert" hidden></p>
+    <div class="row end"><button class="primary" data-act="import">Import sync</button></div>
   </template>
 
   <template id="tpl-theme">

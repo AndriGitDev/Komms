@@ -23,6 +23,8 @@ import uniffi.kult_ffi.CustomIcon
 import uniffi.kult_ffi.CustomIconCrop
 import uniffi.kult_ffi.CustomIconQuotaUsage
 import uniffi.kult_ffi.CustomIconTarget
+import uniffi.kult_ffi.DeviceLinkAcceptance
+import uniffi.kult_ffi.DeviceLinkSelection
 import uniffi.kult_ffi.Event
 import uniffi.kult_ffi.EventListener
 import uniffi.kult_ffi.FfiException
@@ -45,6 +47,8 @@ import uniffi.kult_ffi.LabelConversation
 import uniffi.kult_ffi.LabelFilterResult
 import uniffi.kult_ffi.LabelMatchMode
 import uniffi.kult_ffi.LabelTarget
+import uniffi.kult_ffi.LinkedDevice
+import uniffi.kult_ffi.MessageDeviceDelivery
 import uniffi.kult_ffi.Pin
 import uniffi.kult_ffi.PinConversationResult
 import uniffi.kult_ffi.PinTarget
@@ -146,6 +150,9 @@ private fun validateLabelWrite(name: String, color: String) {
  */
 fun bundleQrText(bundleHex: String): String = bundleHex.uppercase()
 
+/** Compact QR text for one opaque C2 link offer. */
+fun deviceLinkQrText(offerHex: String): String = offerHex.uppercase()
+
 /**
  * QR text for a safety number: uppercase hex of the raw 32-byte comparison
  * value — both parties render the identical code, on any platform.
@@ -170,13 +177,86 @@ private class Forwarder(private val sink: EventSink) : EventListener {
 class Session private constructor(private val node: KultNode) {
 
     /** This node's human-shareable kult address. */
-    val address: String by lazy { node.address() }
+    val address: String get() = node.address()
 
     /** This node's peer id (hex). */
-    val peer: String by lazy { node.peer() }
+    val peer: String get() = node.peer()
 
     /** Status snapshot for the UI's transport indicators. */
     fun status(): Status = node.status()
+
+    /** Exact public id for this physical installation. */
+    fun deviceId(): String = node.deviceId()
+
+    /** Complete account-authorized device list, including revoked rows. */
+    fun linkedDevices(): List<LinkedDevice> = node.linkedDevices()
+
+    /** Per-physical-device delivery states for one outbound message. */
+    fun messageDeviceDeliveries(message: String): List<MessageDeviceDelivery> =
+        node.messageDeviceDeliveries(message)
+
+    /** Rename one exact active linked device. */
+    fun renameLinkedDevice(device: String, name: String) =
+        node.renameLinkedDevice(device, name)
+
+    /** Permanently revoke another exact device after explicit review. */
+    fun revokeLinkedDevice(device: String, confirmed: Boolean) {
+        require(confirmed) { "permanent device revocation requires explicit confirmation" }
+        node.revokeLinkedDevice(device)
+    }
+
+    /** Begin one ten-minute proximate link offer as exact lowercase hex. */
+    fun beginDeviceLink(): String = hexEncode(node.beginDeviceLink())
+
+    /** Accept a scanned/pasted offer on a pristine target. */
+    fun acceptDeviceLink(offerHex: String, deviceName: String): DeviceLinkAcceptance {
+        val offer = hexDecode(offerHex)
+            ?: throw IllegalArgumentException("device link offer must be hex")
+        return node.acceptDeviceLink(offer, deviceName)
+    }
+
+    /** Source-side six-digit comparison code for one target response. */
+    fun deviceLinkConfirmationCode(responseHex: String): String {
+        val response = hexDecode(responseHex)
+            ?: throw IllegalArgumentException("device link response must be hex")
+        return node.deviceLinkConfirmationCode(response)
+    }
+
+    /** Confirm matching codes and create the encrypted selective transfer. */
+    fun approveDeviceLink(
+        responseHex: String,
+        contacts: Boolean,
+        organization: Boolean,
+        history: Boolean,
+        confirmed: Boolean,
+    ): String {
+        val response = hexDecode(responseHex)
+            ?: throw IllegalArgumentException("device link response must be hex")
+        return hexEncode(
+            node.approveDeviceLink(
+                response,
+                DeviceLinkSelection(contacts, organization, history),
+                confirmed,
+            ),
+        )
+    }
+
+    /** Confirm and import one source package on the pristine target. */
+    fun completeDeviceLink(packageHex: String, confirmed: Boolean) {
+        val packageBytes = hexDecode(packageHex)
+            ?: throw IllegalArgumentException("device link package must be hex")
+        node.completeDeviceLink(packageBytes, confirmed)
+    }
+
+    /** Export one encrypted convergence bundle for an active linked device. */
+    fun exportDeviceSync(device: String): String = hexEncode(node.exportDeviceSync(device))
+
+    /** Import one authenticated convergence bundle from another linked device. */
+    fun importDeviceSync(bundleHex: String): ULong {
+        val bundle = hexDecode(bundleHex)
+            ?: throw IllegalArgumentException("device sync bundle must be hex")
+        return node.importDeviceSync(bundle)
+    }
 
     /** Render exact source into the shared bounded and inert local text model. */
     fun formatText(

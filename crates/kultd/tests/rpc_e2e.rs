@@ -81,6 +81,126 @@ fn ephemeral_parity_fixture() -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn linked_device_ceremony_and_sync_via_strict_rpc_only() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = Daemon::start(test_config(directory.path(), "device-rpc-source"))
+        .await
+        .unwrap();
+    let target = Daemon::start(test_config(directory.path(), "device-rpc-target"))
+        .await
+        .unwrap();
+    let mut source_client = Client::connect(&source.socket_path).await;
+    let mut target_client = Client::connect(&target.socket_path).await;
+    target_client.ok(json!({ "op": "subscribe" })).await;
+
+    source_client
+        .ok(json!({
+            "op": "note_to_self_send",
+            "body": "source-only history",
+        }))
+        .await;
+    let source_account = source_client.ok(json!({ "op": "status" })).await["peer"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let source_device = source_client.ok(json!({ "op": "device_id" })).await["device"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let target_device = target_client.ok(json!({ "op": "device_id" })).await["device"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let offer = source_client.ok(json!({ "op": "device_link_begin" })).await["offer"].clone();
+    let acceptance = target_client
+        .ok(json!({
+            "op": "device_link_accept",
+            "offer": offer,
+            "name": "Laptop",
+        }))
+        .await;
+    assert_eq!(acceptance["code"].as_str().unwrap().len(), 6);
+    let source_code = source_client
+        .ok(json!({
+            "op": "device_link_code",
+            "response": acceptance["response"],
+        }))
+        .await;
+    assert_eq!(source_code["code"], acceptance["code"]);
+    let approved = source_client
+        .ok(json!({
+            "op": "device_link_approve",
+            "response": acceptance["response"],
+            "selection": {
+                "contacts": false,
+                "organization": false,
+                "history": false,
+            },
+            "confirmed": true,
+        }))
+        .await;
+    let completed = target_client
+        .ok(json!({
+            "op": "device_link_complete",
+            "package": approved["package"],
+            "confirmed": true,
+        }))
+        .await;
+    assert_eq!(completed["account"], source_account);
+    assert_eq!(completed["device"], target_device);
+    assert_ne!(source_device, target_device);
+    assert!(target_client
+        .ok(json!({ "op": "note_to_self_messages" }))
+        .await["messages"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        source_client.ok(json!({ "op": "linked_devices" })).await["devices"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    target_client
+        .wait_event(|event| {
+            event["type"] == "device_link_completed" && event["device"] == target_device
+        })
+        .await;
+
+    source_client
+        .ok(json!({
+            "op": "device_rename",
+            "device": target_device,
+            "name": "Travel laptop",
+        }))
+        .await;
+    let sync = source_client
+        .ok(json!({
+            "op": "device_sync_export",
+            "device": target_device,
+        }))
+        .await;
+    target_client
+        .ok(json!({
+            "op": "device_sync_import",
+            "bundle": sync["bundle"],
+        }))
+        .await;
+    assert!(
+        target_client.ok(json!({ "op": "linked_devices" })).await["devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|device| device["id"] == target_device && device["name"] == "Travel laptop")
+    );
+
+    source.shutdown().await;
+    target.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn file_presentation_via_strict_rpc_matches_shared_fail_closed_policy() {
     let fixture = file_presentation_parity_fixture();
     let directory = tempfile::tempdir().unwrap();

@@ -27,7 +27,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use kult_crypto::KdfProfile;
-use kult_node::{FolderSelection, LabelMatchMode, Node, NodeError};
+use kult_node::{DeviceLinkSelection, FolderSelection, LabelMatchMode, Node, NodeError};
 use kult_transport::{
     DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, MeshtasticOptions,
     MeshtasticTransport, NatStatus, Transport, TransportOptions,
@@ -508,6 +508,107 @@ async fn handle_op(
         Op::Bundle => {
             let bundle = node.handshake_bundle(now(), &mut OsRng).map_err(fail)?;
             Ok(json!({ "bundle": wire::hex_encode(&bundle) }))
+        }
+        Op::DeviceId => Ok(json!({ "device": wire::hex_encode(&node.device_id()) })),
+        Op::LinkedDevices => Ok(json!({
+            "devices": node.linked_devices().into_iter().map(|device| json!({
+                "id": wire::hex_encode(&device.id),
+                "name": device.name,
+                "last_seen": device.last_seen,
+                "revoked_at": device.revoked_at,
+                "current": device.current,
+            })).collect::<Vec<_>>()
+        })),
+        Op::MessageDeviceDeliveries { message } => {
+            let message = wire::parse_message(&message)?;
+            let deliveries = node
+                .message_device_deliveries(&message)
+                .map_err(fail)?
+                .into_iter()
+                .map(|delivery| {
+                    json!({
+                        "device": wire::hex_encode(&delivery.device),
+                        "name": delivery.name,
+                        "state": match delivery.state {
+                            kult_store::DeliveryState::Queued => "queued",
+                        kult_store::DeliveryState::Sent => "sent",
+                        kult_store::DeliveryState::Delivered => "delivered",
+                        kult_store::DeliveryState::Received => "received",
+                        },
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok(json!({ "deliveries": deliveries }))
+        }
+        Op::DeviceRename { device, name } => {
+            let device = wire::parse_peer(&device)?;
+            node.rename_linked_device(&device, &name, &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "renamed": wire::hex_encode(&device) }))
+        }
+        Op::DeviceRevoke { device } => {
+            let device = wire::parse_peer(&device)?;
+            node.revoke_linked_device(&device, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "revoked": wire::hex_encode(&device) }))
+        }
+        Op::DeviceLinkBegin => {
+            let offer = node.begin_device_link(now(), &mut OsRng).map_err(fail)?;
+            Ok(json!({ "offer": wire::hex_encode(&offer) }))
+        }
+        Op::DeviceLinkAccept { offer, name } => {
+            let offer = wire::hex_decode(&offer).ok_or("offer must be hex")?;
+            let (response, code) = node
+                .accept_device_link(&offer, &name, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "response": wire::hex_encode(&response), "code": code }))
+        }
+        Op::DeviceLinkCode { response } => {
+            let response = wire::hex_decode(&response).ok_or("response must be hex")?;
+            let code = node
+                .device_link_confirmation_code(&response)
+                .map_err(fail)?;
+            Ok(json!({ "code": code }))
+        }
+        Op::DeviceLinkApprove {
+            response,
+            selection,
+            confirmed,
+        } => {
+            let response = wire::hex_decode(&response).ok_or("response must be hex")?;
+            let package = node
+                .approve_device_link(
+                    &response,
+                    DeviceLinkSelection {
+                        contacts: selection.contacts,
+                        organization: selection.organization,
+                        history: selection.history,
+                    },
+                    confirmed,
+                    now(),
+                    &mut OsRng,
+                )
+                .map_err(fail)?;
+            Ok(json!({ "package": wire::hex_encode(&package) }))
+        }
+        Op::DeviceLinkComplete { package, confirmed } => {
+            let package = wire::hex_decode(&package).ok_or("package must be hex")?;
+            node.complete_device_link(&package, confirmed, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({
+                "account": wire::hex_encode(&node.peer_id()),
+                "device": wire::hex_encode(&node.device_id()),
+            }))
+        }
+        Op::DeviceSyncExport { device } => {
+            let device = wire::parse_peer(&device)?;
+            let bundle = node.export_device_sync(&device, &mut OsRng).map_err(fail)?;
+            Ok(json!({ "bundle": wire::hex_encode(&bundle) }))
+        }
+        Op::DeviceSyncImport { bundle } => {
+            let bundle = wire::hex_decode(&bundle).ok_or("bundle must be hex")?;
+            let inserted = node.import_device_sync(&bundle, &mut OsRng).map_err(fail)?;
+            Ok(json!({ "inserted": inserted }))
         }
         Op::FormatText { source, highlights } => {
             let highlights = highlights.into_iter().map(Into::into).collect::<Vec<_>>();

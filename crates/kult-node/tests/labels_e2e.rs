@@ -202,7 +202,7 @@ fn kkr5_backup_restores_exact_ids_order_names_colors_and_memberships() {
         .unwrap();
     let before = node.labels().unwrap();
     let (backup, mnemonic) = node.export_backup(NOW + 1, &mut rng).unwrap();
-    assert_eq!(&backup[..4], b"KKR6");
+    assert_eq!(&backup[..4], b"KKR7");
 
     let restored = Node::restore(
         &directory.path().join("restored.db"),

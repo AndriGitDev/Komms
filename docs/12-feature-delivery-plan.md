@@ -23,9 +23,9 @@ not.
 ## 2. Current baseline
 
 Komms has a strong transport and security foundation plus shared versioned
-content, attachment, carrier-capability, and authenticated-edit front doors.
-Remaining replicated content types such as polls, expiry, and call signaling
-still require their own accepted designs before individual shells implement UI.
+content, attachment, carrier-capability, replicated-conversation, and linked-
+device front doors. Real-time calls and optional hybrid services still require
+their proposed ADRs to be accepted before product implementation.
 
 | Feature from scope | Current status | Main gap |
 |---|---|---|
@@ -42,14 +42,14 @@ still require their own accepted designs before individual shells implement UI.
 | Folders | Shipped | Preserve single-folder membership, All/Unfiled views, deterministic order, stale cleanup, label composition, and zero-network behavior. |
 | Pins | Shipped (conversation) | Preserve exact typed targets, complete durable reorder, stale reactivation/cleanup, folder → label → pin composition, and zero-network behavior; message pins remain separate. |
 | Dark mode | Shipped | Sealed system/light/dark preference, shared semantic roles, and native live switching in every shell. |
-| Custom icons | Shipped | Preserve exact typed targets, strict local image canonicalization, sealed quotas, initials fallback, `KKR6` portability, and zero-network behavior. |
+| Custom icons | Shipped | Preserve exact typed targets, strict local image canonicalization, sealed quotas, initials fallback, `KKR7`/C2 own-device portability, and zero-network behavior. |
 | Screen security | Shipped | Always-on shared policy, native shell protections, rapid desktop lock, and explicit platform limitations. |
 | Incognito keyboard | Shipped | Always-on field inventory, Android no-learning request, secure secret fields, and honest iOS/desktop limits. |
 | Local still-image editing | Shipped | Keep shared deterministic semantics, cleanup, exact-review, and metadata-removal gates stable; video remains out of scope. |
 | Mentions | Shipped | ADR-0016 canonical peer targets, current-roster composers, conservative group capability gating, and local navigation/notification. |
 | Labels | Shipped (contact/conversation) | Private pairwise, group, and note-to-self labels with fixed limits, stale cleanup, and accessible any/all filtering; message labels remain deferred. |
 | File sharing | Shipped | Bounded F3/F4 delivery plus shared fail-closed file rows, explicit warned open/export, mismatch handling, lifecycle cleanup, and cross-language parity. |
-| Linked devices | Planned | Proximate linking, device keys, sync, revocation, and recovery. |
+| Linked devices | Shipped | Preserve ADR-0024 confirmed linking, independent per-device cryptography, deterministic sync, revocation, and KKR7 recovery across every surface. |
 | Message editing | Shipped | ADR-0020 immutable authenticated revisions, deterministic offline reconciliation, retained versions, and every front door/shell. |
 | Disappearing/view-once messages | Shipped | ADR-0021 exact local deadlines, envelope-v2 coarse relay deletion, tombstones, KKR6 exclusion, terminal reveal, and honest local-only promises. |
 | Group polls | Shipped | ADR-0022 fixed-electorate visible votes, deterministic heads/tallies, creator snapshot closure, and every front door/shell. |
@@ -171,15 +171,16 @@ must not assume that before measurements exist.
 bounded records and stable replacement keys for conversation types, folders,
 single-folder membership, pins, labels and multi-label membership, drafts, UI
 preferences, and custom icons. The table exposes only row count and approximate
-sealed sizes in a copied database; `KKR6` backs up every non-ephemeral user-authored record
-and note-to-self history while `KKR1`, `KKR2`, and `KKR3` remain restorable.
+sealed sizes in a copied database; `KKR7` backs up every non-ephemeral user-authored record
+and note-to-self history while `KKR1` through `KKR6` remain restorable.
 Feature behavior and shell UX remain separate B7/B13 slices. B10 folders,
 B11 conversation pins, B12 appearance, and B18 labels use the shipped record
-shapes and the ordinary-history `KKR6` contract unchanged.
+shapes and the ordinary-history `KKR7` contract unchanged.
 
-Add sealed local-only records for conversation type, folders, pins, labels,
-drafts, UI preferences, and custom icons. Keep local organization out of network
-payloads. Define which records belong in encrypted backups and version the backup
+Add sealed endpoint-private records for conversation type, folders, pins, labels,
+drafts, UI preferences, and custom icons. Keep local organization out of peer,
+service, and transport payloads; C2 sync may carry only its explicit own-device
+allowlist. Define which records belong in encrypted backups and version the backup
 format when the first new record ships. Scheduled delivery is separate core queue
 state covered by B8, not a UI-metadata timer.
 
@@ -293,7 +294,7 @@ bounds the proposed name, permits duplicates, and assesses duplicate,
 mixed-script/confusable, bidirectional-control, and invisible-character risks.
 A warned rename requires explicit acceptance. The mutation rewrites only the
 sealed contact record, emits one endpoint-local event, survives restart and
-`KKR6`, and creates zero lookup, capability, message, notification, queue,
+`KKR7`, and creates zero lookup, capability, message, notification, queue,
 envelope, or transport work. The shared B5 fixture and cross-surface tests pin
 normalization, warnings, duplicate acceptance, persistence, and privacy.
 
@@ -306,7 +307,7 @@ for remote-suggestion changes. It is not part of shipped B5.
 
 ### B6. Secure backups
 
-**State:** KKR6 shipped; permanent KKR1–KKR5 compatibility track.
+**State:** KKR7 shipped; permanent KKR1–KKR6 compatibility track.
 
 For every feature in this plan, decide explicitly whether its state is identity
 critical, conversation history, local preference, secret ephemeral state, or
@@ -316,7 +317,7 @@ never back up live ratchet/sender chains or temporary decrypted media.
 Acceptance:
 
 - backup and restore preserve all promised feature state;
-- older KKR1/KKR2/KKR3 files remain restorable;
+- older KKR1 through KKR6 files remain restorable;
 - a restored node rotates/re-handshakes where required;
 - omitted caches are rebuilt without data loss or false delivery state.
 
@@ -326,7 +327,7 @@ Acceptance:
 
 **State:** text note-to-self shipped through `kult-store`, `kult-node`, RPC/CLI,
 UniFFI, desktop, Android, and iOS. Every surface uses the reserved
-`note_to_self` identity. `KKR6` includes the sealed history; exact KKR1–KKR5
+`note_to_self` identity. `KKR7` includes the sealed history; exact KKR1–KKR6
 restore compatibility remains. Attachments follow F3 shell integration.
 
 Implement a first-class local conversation, not a fake contact or a message sent
@@ -413,7 +414,7 @@ UTF-8 bytes and may duplicate; cryptorandom 16-byte IDs and persisted manual
 order disambiguate them. All and Unfiled are virtual views. Complete-set reorder,
 move/unfile, delete cascade, and stale cleanup are atomic, and folder selection
 composes before the independent B18 any/all label filter. Shared limits are 128
-folders, 8,192 assignments, and 256 UTF-8 bytes per name. `KKR6` preserves exact
+folders, 8,192 assignments, and 256 UTF-8 bytes per name. `KKR7` preserves exact
 IDs, names, order, membership, and stale behavior. Every mutation creates zero
 envelope, queue, receipt, capability, or transport work.
 
@@ -436,7 +437,7 @@ leading pinned block. Pinned rows use manual order, recent activity for tied
 legacy order, and stable typed bytes; unpinned rows use recent activity and the
 same typed tie-breaker. Unavailable pins remain diagnosable, can be removed only
 by exact cleanup while stale, and reactivate only when the same typed identity
-becomes available. `KKR6` preserves exact target, order, and stale behavior.
+becomes available. `KKR7` preserves exact target, order, and stale behavior.
 Every surface proves that pin work creates no envelope, queue, receipt,
 notification, capability, crypto, or transport work.
 
@@ -452,7 +453,7 @@ no envelope, queue, capability, notification, cryptographic, or transport work.
 
 Every shell applies a non-sensitive device-local cache before unlock to prevent
 a theme flash, then reconciles after unlock: a canonical sealed value wins
-(including after `KKR6` restore), while a missing value is initialized from the
+(including after `KKR7` restore), while a missing value is initialized from the
 cached/default System choice. Desktop resolves shared semantic CSS roles and
 live `prefers-color-scheme` / `prefers-contrast` / `prefers-reduced-motion`;
 Android applies AppCompat DayNight before the first Activity and uses matching
@@ -460,7 +461,7 @@ light/night semantic resources; iOS applies SwiftUI's preferred color scheme and
 adaptive platform colors. The shared B12 fixture pins the exact vocabulary,
 semantic roles, WCAG 2 contrast thresholds, and reference-palette ratios.
 
-Acceptance covers first-run System, strict input, idempotency, restart, `KKR6`
+Acceptance covers first-run System, strict input, idempotency, restart, `KKR7`
 restore, local-only events, zero delivery work, live native switching, high
 contrast, reduced motion, and light/dark major-surface rendering. Security and
 delivery states retain text, icons, or accessible labels and never rely on color.
@@ -483,7 +484,7 @@ The existing F5 record is now enforced as one icon per exact target, at most
 canonical profile again; a missing, corrupt, or non-canonical sealed image falls
 back without rewriting or exposing it. Folder deletion removes its icon; other
 unavailable exact identities remain inaccessible and can safely reactivate only
-if that same technical identity returns. `KKR6` preserves icons as ordinary
+if that same technical identity returns. `KKR7` preserves icons as ordinary
 sealed user-authored local metadata.
 
 Node, strict RPC/CLI, UniFFI, desktop, Android, and iOS expose the same target,
@@ -493,7 +494,7 @@ all conversation/folder lists render the sealed icon or initials. No avatar URL,
 envelope, capability, notification, DHT record, peer synchronization, queue item,
 or transport work exists. The shared B13 fixture and layer acceptance tests prove
 metadata removal, input/output bounds, quota enforcement including the low-level
-store boundary, all four target types, restart, `KKR6`, idempotency, corrupt and
+store boundary, all four target types, restart, `KKR7`, idempotency, corrupt and
 missing fallback, and zero delivery work.
 
 ### B14. Screen security
@@ -622,7 +623,7 @@ policy; they provide no server-push or online-delivery guarantee.
 **State:** shipped through `kult-store`, `kult-node`, RPC/CLI, UniFFI, desktop,
 Android, and iOS. PR #43/B17 was only the administrative branch base; labels have
 no semantic dependency on Mention content. B18 stays inside the accepted F5
-`LabelRecord` and `LabelAssignment` shapes and `KKR6`, so it requires no new
+`LabelRecord` and `LabelAssignment` shapes and `KKR7`, so it requires no new
 payload ADR.
 
 Labels target stable pairwise, group, and note-to-self `ConversationId` values.
@@ -640,7 +641,7 @@ bounded node operations shared by every wrapper. Deletion cascades atomically;
 assign/unassign are idempotent. Unavailable definitions and conversation targets
 stay durably diagnosable but are excluded from active filters. Filters affect
 presentation only, never receipt, notification, delivery, search, unread truth,
-queue work, ordering, or history. `KKR6` preserves exact IDs, names, colors,
+queue work, ordering, or history. `KKR7` preserves exact IDs, names, colors,
 ordering, membership, and stale behavior while KKR1–KKR3 restore unchanged.
 
 All shells provide accessible managers, non-color badges, assignment actions,
@@ -649,7 +650,9 @@ Android and iOS retain selected filters only in protected device-local state.
 Label data never enters logs, crash reports, OS metadata, envelopes, DHT, group
 state, capability advertisements, sender keys, ratchets, transport hints,
 analytics, or remote notifications; label operations create zero network work.
-There is no server, remote, shared, or linked-device label synchronization.
+There is no server, contact, or shared-taxonomy synchronization. C2 may converge
+labels only inside authenticated encrypted bundles between authorized devices
+of the same account.
 
 Acceptance covers exact Unicode and whitespace boundaries, collision retry,
 unknown colors, duplicate names, limit exhaustion, atomic failure/restart,
@@ -690,7 +693,8 @@ proof that an oversized transfer emits zero mesh frames.
 
 ### C2. Linked devices
 
-**ADR required; major M6 work.**
+**State:** shipped. **Decision:**
+[ADR-0024](adr/0024-account-authorized-linked-devices.md).
 
 Use one account identity with separately authenticated device keys rather than
 copying live ratchet databases. Linking is proximate through a QR handshake or a
@@ -707,9 +711,12 @@ local-network session confirmed on both devices. Define:
 - backup interaction and how a restored identity avoids resurrecting revoked
   devices.
 
-Acceptance requires three-device partition/rejoin tests, concurrent sends and
-edits, revoked-device exclusion, group re-key after revocation, no cloud service,
-and a full QR/LAN linking ceremony on each platform.
+Acceptance covers three-device partition/rejoin, concurrent pairwise and group
+sends, edits/polls/tombstones, revoked-device exclusion, group re-key after
+revocation, replay/rollback rejection, KKR1–KKR7 migration/recovery, no cloud
+service, strict RPC/CLI, UniFFI, and the confirmed QR/paste ceremony in every
+shell. Android APK/device validation remains gated only by the local SDK; full
+iOS app/simulator validation remains gated by full Xcode.
 
 ### C3. Message editing
 
@@ -724,12 +731,13 @@ locally inspectable. A user may edit only content they authored.
 
 Offline peers apply edits when they arrive, including edit-before-original
 ordering. Group edits use ordinary sender-key fan-out and the same authorship
-checks. Linked-device convergence must be designed together with C2.
+checks. Shipped C2 sync carries immutable edit rows and their deterministic
+winners between authorized owned devices.
 
 Acceptance covers reorder, duplication, partitions, malicious cross-author
 edits, edits after group removal, old-client fallback, and eventual convergence.
 The shipped implementation additionally covers strict raw-send bypass refusal,
-restart/`KKR6` restore, shared parity fixtures, dedicated fuzzing, exact RPC/CLI
+restart/`KKR7` restore, shared parity fixtures, dedicated fuzzing, exact RPC/CLI
 and UniFFI events/models, and accessible retained-version UI on all three shells.
 See [18: Authenticated Message Editing](18-message-editing.md).
 
@@ -764,12 +772,13 @@ deadline and canonical hour-ceiling hint are authenticated together; relays
 apply the hint only to deletion, while endpoints enforce the exact deadline.
 Sealed lifecycle rows and terminal tombstones prevent restart, duplicate, and
 reorder resurrection. KKR6 excludes active ephemeral plaintext/manifests/media
-and includes terminal tombstones; KKR1–KKR5 remain restorable. View-once
+and includes terminal tombstones; KKR1–KKR6 remain restorable. View-once
 consumption commits the tombstone before output and ordinary preview/export/
 playback paths refuse the transfer. Pair/group capability gates, anonymous-first-
 flight refusal, raw-send bypass tests, strict RPC/CLI, UniFFI, all three shells,
-parity fixtures, and dedicated fuzzing are included. Linked-device propagation
-remains coupled to C2; until then the UI promises only removal from this device.
+parity fixtures, and dedicated fuzzing are included. C2 sync propagates only
+terminal expiry/consumption tombstones; active ephemeral content remains
+installation-local and the UI still makes no remote-erasure promise.
 See [19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
 
 ### C5. Group polls
@@ -786,7 +795,7 @@ roster capability gating and raw-send refusal protect old clients.
 
 Acceptance covers canonical/arbitrary decoding, partitions, changed,
 duplicate, and reordered votes, outsiders, additions/removals, conflicting
-closure, convergence, KKR6 restore, RPC/CLI, UniFFI, desktop, Android host core,
+closure, convergence, KKR1–KKR7 restore, C2 owned-device sync, RPC/CLI, UniFFI, desktop, Android host core,
 and iOS host/app contracts. Android APK/device evidence remains in the common
 M5 platform release gate rather than weakening the shipped protocol contract.
 
@@ -820,9 +829,9 @@ the group secret and sender chains; excluded members never receive the new
 secret. Poll moderation is a separately signed owner snapshot under its own
 domain and is never mislabeled as creator closure.
 
-`KKR6` adds sealed authority records and consumed request ids while KKR1-KKR5
+`KKR6` added sealed authority records and consumed request ids while KKR1-KKR5
 remain restorable as legacy groups. Acceptance is pinned in crypto/protocol,
-node concurrency/transfer/removal flows, KKR1-KKR6 restore, RPC/CLI, UniFFI,
+node concurrency/transfer/removal flows, KKR1-KKR7 restore, RPC/CLI, UniFFI,
 desktop, Android host core, and iOS host/app coverage. The shared Android
 APK/device SDK gate remains deferred without weakening implementation parity.
 
@@ -917,8 +926,8 @@ honest. Parallel work is safe only where rows do not share a foundation.
 | **Parallel: mobile reachability** | Design-only | Accept ADR-0017–0019, then implement C8 behind reversible feature gates. |
 | **1: Local-first product polish** | Complete | B5, B7–B15, and B18 are shipped; optional signed self-display suggestions remain a separate format-gated extension to B5. |
 | **2: Typed content and asynchronous media** | Complete | F2/F3, B2, B16, B17, and C1 are shipped across the shared core and all three shells; hands-on device evidence remains an M5 release gate. |
-| **3: Replicated conversation features** | In progress | C3, C4, and C5 are shipped; C6 remains. |
-| **4: Multi-device** | Planned | C2, followed by cross-device hardening of Wave 3. |
+| **3: Replicated conversation features** | Complete | C3, C4, C5, and C6 are shipped through every surface. |
+| **4: Multi-device** | Complete | ADR-0024 and C2 are shipped, including cross-device hardening of Wave 3. |
 | **5: Real-time media** | Design-only | ADR-0013 spike and C7, restricted to qualified internet/LAN paths. |
 
 Scheduled messages (B8) completed as the intended isolated core-plus-shell
@@ -940,8 +949,8 @@ Do not combine these into one oversized design decision.
 | 7 (done) | ADR-0021: expiry/retention metadata and deletion semantics | C4 disappearing and view-once content. |
 | 8 (done) | ADR-0020: immutable edit events, authorization, ordering, and retained versions | Message editing and multi-device convergence. |
 | 9 (done) | ADR-0022: fixed-electorate visible-vote polls and creator snapshot closure | Convergent encrypted group polls. |
-| 10 | Group roles/capabilities and authority transfer | Admin controls and moderated polls. |
-| 11 | Multi-device identity, device certificates, sync, revocation | Linked devices. |
+| 10 (done) | ADR-0023: group roles/capabilities and authority transfer | Admin controls and moderated polls. |
+| 11 (done) | ADR-0024: multi-device identity, device certificates, sync, revocation | Linked devices. |
 | 12 | Accept ADR-0013 after measured media spike | Voice/video calls. |
 | As needed | Signed optional self-display name in bundle records | Non-global username suggestion. |
 | Before next PQ suite | Downgrade-safe crypto agility | Future post-quantum upgrades. |
@@ -1013,9 +1022,9 @@ tombstones, and KKR6 exclusion. C5 encrypted group polls are now shipped with
 visible authenticated votes, fixed electorates, deterministic convergence, and
 creator snapshot closure. C6 signed owner/admin/member roles, ownership transfer,
 mandatory re-keying, and poll moderation are now shipped through every shell.
-The next product programs are C2 linked devices and C7 calls; each remains behind
-its stated ADR gate until that decision is written and accepted.
+The next product program is C7 calls, which remains behind ADR-0013 acceptance
+and measured high-bandwidth-carrier evidence.
 Optional signed self-display suggestions remain deferred behind their separate
 bundle-format ADR and compatibility work.
-Linked-device identity, real-time media, and
-optional hybrid services remain separate programs with their stated ADR gates.
+Real-time media and optional hybrid services remain separate programs with
+their stated ADR gates.

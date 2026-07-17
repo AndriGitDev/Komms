@@ -9,6 +9,7 @@
 use std::collections::HashSet;
 
 use rand_core::CryptoRngCore;
+use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
 use kult_crypto::{
@@ -23,9 +24,9 @@ use kult_protocol::{
     MAX_EDIT_TEXT_LEN, MAX_EPHEMERAL_LIFETIME_SECS, MIN_EPHEMERAL_LIFETIME_SECS,
 };
 use kult_store::{
-    ContactRecord, DeliveryState, Direction, EphemeralConversation, EphemeralMode, EphemeralRecord,
-    EphemeralState, GroupDelivery, GroupMember, GroupMessageRecord, GroupRecord, PendingAnnounce,
-    QueueClass, QueueItem,
+    ContactDeviceRecord, ContactRecord, DeliveryState, Direction, EphemeralConversation,
+    EphemeralMode, EphemeralRecord, EphemeralState, GroupDelivery, GroupMember, GroupMessageRecord,
+    GroupRecord, MessageDeviceDeliveryRecord, PendingAnnounce, QueueClass, QueueItem,
 };
 
 use crate::api::{
@@ -42,6 +43,52 @@ const GROUP_ROTATE_MSGS: u32 = 1000;
 /// retries handle a flaky link; this covers an envelope lost in transit
 /// outright (a member missing one announce is deaf to its sender).
 const GROUP_ANNOUNCE_RETRY_SECS: u64 = 900;
+const DEVICE_GROUP_CHAINS_MAGIC: &[u8; 4] = b"KGC2";
+const MAX_DEVICE_GROUP_CHAINS: usize = 64;
+
+#[derive(Serialize, Deserialize)]
+struct DeviceGroupReceiverChain {
+    device: [u8; 32],
+    chain: GroupReceiverChain,
+}
+
+fn decode_device_group_chains(
+    bytes: &[u8],
+    legacy_device: [u8; 32],
+) -> Result<Vec<DeviceGroupReceiverChain>> {
+    if let Some(body) = bytes.strip_prefix(DEVICE_GROUP_CHAINS_MAGIC) {
+        let (chains, remainder): (Vec<DeviceGroupReceiverChain>, &[u8]) =
+            postcard::take_from_bytes(body).map_err(|_| NodeError::CorruptState)?;
+        if !remainder.is_empty()
+            || chains.is_empty()
+            || chains.len() > MAX_DEVICE_GROUP_CHAINS
+            || chains
+                .windows(2)
+                .any(|pair| pair[0].device >= pair[1].device)
+        {
+            return Err(NodeError::CorruptState);
+        }
+        return Ok(chains);
+    }
+    let chain = postcard::from_bytes(bytes).map_err(|_| NodeError::CorruptState)?;
+    Ok(vec![DeviceGroupReceiverChain {
+        device: legacy_device,
+        chain,
+    }])
+}
+
+fn encode_device_group_chains(chains: &mut Vec<DeviceGroupReceiverChain>) -> Result<Vec<u8>> {
+    chains.sort_by_key(|entry| entry.device);
+    chains.dedup_by_key(|entry| entry.device);
+    if chains.is_empty() || chains.len() > MAX_DEVICE_GROUP_CHAINS {
+        return Err(NodeError::CorruptState);
+    }
+    let body = postcard::to_allocvec(chains).map_err(|_| NodeError::CorruptState)?;
+    let mut encoded = Vec::with_capacity(DEVICE_GROUP_CHAINS_MAGIC.len() + body.len());
+    encoded.extend_from_slice(DEVICE_GROUP_CHAINS_MAGIC);
+    encoded.extend_from_slice(&body);
+    Ok(encoded)
+}
 
 impl Node {
     // ---- commands -----------------------------------------------------------
@@ -387,7 +434,7 @@ impl Node {
             return Err(NodeError::InvalidEphemeral);
         }
         for member in rec.members.iter().filter(|member| member.peer != me) {
-            if !self.sessions.contains_key(&member.peer)
+            if !self.peer_has_live_device_sessions(&member.peer)?
                 || !self.peer_supports_kind(&member.peer, CONTENT_KIND_EPHEMERAL)?
             {
                 return Err(NodeError::EphemeralUnsupported);
@@ -834,6 +881,36 @@ impl Node {
         Ok(())
     }
 
+    /// Bind a pre-C2 account-key receiving chain to the certified physical
+    /// endpoint that inherited that compatibility session.
+    pub(crate) fn groups_retarget_legacy_device_chain(
+        &mut self,
+        account: &[u8; 32],
+        old_device: &[u8; 32],
+        new_device: &[u8; 32],
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        for group in self.store.groups()? {
+            let Some(blob) = self.store.get_group_chain(&group.id, account)? else {
+                continue;
+            };
+            let mut chains = decode_device_group_chains(&blob, *old_device)?;
+            let mut changed = false;
+            for entry in &mut chains {
+                if &entry.device == old_device {
+                    entry.device = *new_device;
+                    changed = true;
+                }
+            }
+            if changed {
+                let encoded = encode_device_group_chains(&mut chains)?;
+                self.store
+                    .put_group_chain(&group.id, account, &encoded, rng)?;
+            }
+        }
+        Ok(())
+    }
+
     // ---- receive path --------------------------------------------------------
 
     /// Consume a `GroupMessage` envelope. The delivery token names the
@@ -848,9 +925,10 @@ impl Node {
         rng: &mut impl CryptoRngCore,
         acks: &mut Vec<([u8; 32], [u8; 16])>,
     ) -> Result<Consumed> {
-        let Some(peer) = self.match_session(&env.token, now) else {
+        let Some(peer_device) = self.match_session(&env.token, now) else {
             return Ok(Consumed::Later);
         };
+        let peer = self.account_for_device(&peer_device)?;
         let me = self.identity.public().ed;
         let done = |node: &mut Self| -> Result<Consumed> {
             node.store.mark_seen(&env.content_id())?;
@@ -880,16 +958,19 @@ impl Node {
             let Some(blob) = self.store.get_group_chain(&rec.id, &peer)? else {
                 return Ok(Consumed::Later); // sender's announce still in flight
             };
-            let mut chain: GroupReceiverChain =
-                postcard::from_bytes(&blob).map_err(|_| NodeError::CorruptState)?;
-            if chain.key_id() != key_id {
+            let mut chains = decode_device_group_chains(&blob, peer)?;
+            let Some(chain) = chains
+                .iter_mut()
+                .find(|entry| entry.device == peer_device && entry.chain.key_id() == key_id)
+                .map(|entry| &mut entry.chain)
+            else {
                 return Ok(Consumed::Later); // rotation announce still in flight
-            }
+            };
             let Ok(padded) = chain.open(&rec.id, &msg, iteration, now) else {
                 // Tampered or replayed — permanent, honest failure.
                 return done(self);
             };
-            let encoded = postcard::to_allocvec(&chain).map_err(|_| NodeError::CorruptState)?;
+            let encoded = encode_device_group_chains(&mut chains)?;
             self.store.put_group_chain(&rec.id, &peer, &encoded, rng)?;
             let Ok(body) = unpad(&padded) else {
                 return done(self);
@@ -925,7 +1006,7 @@ impl Node {
                     .get_ephemeral_record(&conversation, &peer, &id)?
                     .is_some()
                 {
-                    acks.push((peer, env.content_id()));
+                    acks.push((peer_device, env.content_id()));
                     return done(self);
                 }
                 let duplicate = self.store.group_messages(&rec.id)?.iter().any(|record| {
@@ -944,7 +1025,7 @@ impl Node {
                         )
                 });
                 if duplicate {
-                    acks.push((peer, env.content_id()));
+                    acks.push((peer_device, env.content_id()));
                     return done(self);
                 }
             }
@@ -1025,7 +1106,7 @@ impl Node {
                             content_id: id,
                             reason: state,
                         });
-                        acks.push((peer, env.content_id()));
+                        acks.push((peer_device, env.content_id()));
                         return done(self);
                     }
                     (
@@ -1132,7 +1213,7 @@ impl Node {
                             content_id: id,
                             reason: EphemeralState::Expired,
                         });
-                        acks.push((peer, env.content_id()));
+                        acks.push((peer_device, env.content_id()));
                         return done(self);
                     }
                     let entitled_peers = rec.members.iter().map(|member| member.peer).collect();
@@ -1241,7 +1322,7 @@ impl Node {
             if mentions_local_peer {
                 self.events.push_back(Event::MentionReceived { id });
             }
-            acks.push((peer, env.content_id()));
+            acks.push((peer_device, env.content_id()));
             return done(self);
         }
         // No group of this sender opened the header: the invite may still
@@ -1256,6 +1337,7 @@ impl Node {
     pub(crate) fn apply_group_control(
         &mut self,
         peer: [u8; 32],
+        peer_device: [u8; 32],
         body: &[u8],
         now: u64,
         rng: &mut impl CryptoRngCore,
@@ -1267,7 +1349,7 @@ impl Node {
         let _ = now;
         match &payload {
             GroupControlPayload::Announce(a) => {
-                self.apply_group_announce(peer, a, rng, established)
+                self.apply_group_announce(peer, peer_device, a, rng, established)
             }
             GroupControlPayload::Leave { group } => self.apply_group_leave(peer, group, rng),
             GroupControlPayload::Remove { group } => {
@@ -1291,6 +1373,7 @@ impl Node {
     fn apply_group_announce(
         &mut self,
         peer: [u8; 32],
+        peer_device: [u8; 32],
         a: &GroupAnnounce,
         rng: &mut impl CryptoRngCore,
         established: &mut bool,
@@ -1396,17 +1479,27 @@ impl Node {
         if !rec.members.iter().any(|m| m.peer == peer) {
             return Ok(false);
         }
-        let replace = match self.store.get_group_chain(&rec.id, &peer)? {
+        let mut chains = match self.store.get_group_chain(&rec.id, &peer)? {
+            Some(blob) => decode_device_group_chains(&blob, peer)?,
+            None => Vec::new(),
+        };
+        let replace = chains
+            .iter()
+            .find(|entry| entry.device == peer_device)
             // Same chain id: the stored state reads from an earlier (or
             // equal) iteration — strictly more capable, keep it.
-            Some(blob) => postcard::from_bytes::<GroupReceiverChain>(&blob)
-                .map(|c| c.key_id() != a.key_id)
-                .unwrap_or(true),
-            None => true,
-        };
+            .is_none_or(|entry| entry.chain.key_id() != a.key_id);
         if replace {
             let chain = GroupReceiverChain::new(a.key_id, &a.chain_key, a.iteration);
-            let encoded = postcard::to_allocvec(&chain).map_err(|_| NodeError::CorruptState)?;
+            if let Some(entry) = chains.iter_mut().find(|entry| entry.device == peer_device) {
+                entry.chain = chain;
+            } else {
+                chains.push(DeviceGroupReceiverChain {
+                    device: peer_device,
+                    chain,
+                });
+            }
+            let encoded = encode_device_group_chains(&mut chains)?;
             self.store.put_group_chain(&rec.id, &peer, &encoded, rng)?;
             // Stashed group messages on this chain may decrypt now.
             *established = true;
@@ -1469,6 +1562,7 @@ impl Node {
     pub(crate) fn apply_group_receipt(
         &mut self,
         peer: &[u8; 32],
+        peer_device: &[u8; 32],
         acks: &[[u8; 16]],
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
@@ -1486,10 +1580,21 @@ impl Node {
         }
         for mut record in self.store.all_group_messages()? {
             let mut changed = false;
+            let mut device_acked = false;
+            for mut delivery in self.store.message_device_deliveries(&record.id)? {
+                if delivery.account == *peer
+                    && delivery.device == *peer_device
+                    && delivery.wire_id.as_ref().is_some_and(&acked)
+                {
+                    delivery.state = DeliveryState::Delivered;
+                    self.store.put_message_device_delivery(&delivery, rng)?;
+                    device_acked = true;
+                }
+            }
             for d in record.deliveries.iter_mut() {
                 if &d.peer == peer
                     && d.state != DeliveryState::Delivered
-                    && d.wire_id.as_ref().is_some_and(&acked)
+                    && (device_acked || d.wire_id.as_ref().is_some_and(&acked))
                 {
                     d.state = DeliveryState::Delivered;
                     changed = true;
@@ -1511,9 +1616,19 @@ impl Node {
     pub(crate) fn group_mark_sent(
         &mut self,
         peer: &[u8; 32],
+        peer_device: &[u8; 32],
         group_msg_id: &[u8; 16],
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
+        for mut delivery in self.store.message_device_deliveries(group_msg_id)? {
+            if delivery.account == *peer
+                && delivery.device == *peer_device
+                && delivery.state == DeliveryState::Queued
+            {
+                delivery.state = DeliveryState::Sent;
+                self.store.put_message_device_delivery(&delivery, rng)?;
+            }
+        }
         for mut record in self.store.all_group_messages()? {
             if &record.id != group_msg_id {
                 continue;
@@ -1603,32 +1718,72 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Option<[u8; 16]>> {
-        let Some(session) = self.sessions.get(peer) else {
-            return Ok(None);
-        };
-        let token = delivery_token(
-            &MailboxKey::from_bytes(*session.mailbox_key()),
-            epoch_day(now),
-            peer,
-        );
-        let envelope = match retention_until {
-            Some(deadline) => {
-                Envelope::new_retained(EnvelopeKind::GroupMessage, token, deadline, wire.to_vec())?
+        let mut routes: Vec<[u8; 32]> = self
+            .store
+            .contact_devices_for(peer)?
+            .into_iter()
+            .map(|endpoint| endpoint.device)
+            .collect();
+        if routes.is_empty() {
+            routes.push(*peer);
+        }
+        routes.sort_unstable();
+        routes.dedup();
+
+        let existing = self.store.message_device_deliveries(&group_msg_id)?;
+        let mut first_wire = None;
+        let mut all_served = true;
+        for route in routes {
+            if let Some(wire_id) = existing
+                .iter()
+                .find(|delivery| delivery.account == *peer && delivery.device == route)
+                .and_then(|delivery| delivery.wire_id)
+            {
+                first_wire.get_or_insert(wire_id);
+                continue;
             }
-            None => Envelope::new(EnvelopeKind::GroupMessage, token, wire.to_vec()),
-        };
-        let cid = envelope.content_id();
-        self.store.queue_push(
-            &QueueItem {
-                peer: *peer,
-                msg_id: None,
-                group_msg_id: Some(group_msg_id),
-                class,
-                envelope,
-            },
-            rng,
-        )?;
-        Ok(Some(cid))
+            let Some(session) = self.sessions.get(&route) else {
+                all_served = false;
+                continue;
+            };
+            let token = delivery_token(
+                &MailboxKey::from_bytes(*session.mailbox_key()),
+                epoch_day(now),
+                &route,
+            );
+            let envelope = match retention_until {
+                Some(deadline) => Envelope::new_retained(
+                    EnvelopeKind::GroupMessage,
+                    token,
+                    deadline,
+                    wire.to_vec(),
+                )?,
+                None => Envelope::new(EnvelopeKind::GroupMessage, token, wire.to_vec()),
+            };
+            let wire_id = envelope.content_id();
+            first_wire.get_or_insert(wire_id);
+            self.store.put_message_device_delivery(
+                &MessageDeviceDeliveryRecord {
+                    message: group_msg_id,
+                    account: *peer,
+                    device: route,
+                    wire_id: Some(wire_id),
+                    state: DeliveryState::Queued,
+                },
+                rng,
+            )?;
+            self.store.queue_push(
+                &QueueItem {
+                    peer: route,
+                    msg_id: None,
+                    group_msg_id: Some(group_msg_id),
+                    class,
+                    envelope,
+                },
+                rng,
+            )?;
+        }
+        Ok(all_served.then_some(first_wire).flatten())
     }
 
     /// Encrypt one already-persisted Attachment manifest exactly once on the
@@ -1659,12 +1814,10 @@ impl Node {
         {
             return Ok(false);
         }
-        if record
-            .deliveries
-            .iter()
-            .any(|delivery| !self.sessions.contains_key(&delivery.peer))
-        {
-            return Ok(false);
+        for delivery in &record.deliveries {
+            if !self.peer_has_live_device_sessions(&delivery.peer)? {
+                return Ok(false);
+            }
         }
         if rec.sent_since_rotation >= GROUP_ROTATE_MSGS {
             self.rotate_group(&mut rec, rng)?;
@@ -1706,54 +1859,84 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Option<[u8; 16]>> {
-        if !self.sessions.contains_key(peer) {
-            let Some(contact) = self.store.get_contact(peer)? else {
-                return Ok(None);
-            };
-            if contact.bundle.is_empty() {
-                return Ok(None);
+        let Some(contact) = self.store.get_contact(peer)? else {
+            return Ok(None);
+        };
+        let mut routes = self.store.contact_devices_for(peer)?;
+        if routes.is_empty() {
+            routes.push(ContactDeviceRecord {
+                account: *peer,
+                device: *peer,
+                name: None,
+                certificate: Vec::new(),
+                bundle: contact.bundle,
+                hints: contact.hints,
+                manifest_generation: 0,
+                manifest_state_id: [0u8; 32],
+                last_seen: 0,
+                revoked_at: None,
+                revoked_after_counter: None,
+            });
+        }
+        routes.sort_by(|left, right| {
+            right
+                .last_seen
+                .cmp(&left.last_seen)
+                .then_with(|| left.device.cmp(&right.device))
+        });
+        routes.dedup_by_key(|route| route.device);
+
+        let bytes = zeroize::Zeroizing::new(payload.encode());
+        let padded = pad(&bytes)?;
+        let mut preferred_wire = None;
+        for route in routes {
+            let device = route.device;
+            if !self.sessions.contains_key(&device) {
+                if route.bundle.is_empty() {
+                    continue;
+                }
+                // An empty first flight; the control message rides behind it.
+                let Ok(flight) =
+                    self.initiate_session(peer, &device, &route.bundle, &pad(&[])?, now, rng)
+                else {
+                    continue; // e.g. the bundle expired — paced retry
+                };
+                self.store.queue_push(
+                    &QueueItem {
+                        peer: device,
+                        msg_id: None,
+                        group_msg_id: None,
+                        class: QueueClass::Normal,
+                        envelope: flight,
+                    },
+                    rng,
+                )?;
             }
-            // An empty first flight; the control message rides behind it.
-            let Ok(flight) = self.initiate_session(peer, &contact.bundle, &pad(&[])?, now, rng)
-            else {
-                return Ok(None); // e.g. the bundle expired — paced retry
-            };
+            let session = self
+                .sessions
+                .get_mut(&device)
+                .expect("route session just ensured above");
+            let msg = session.encrypt(rng, now, &padded, &[]);
+            let token = delivery_token(
+                &MailboxKey::from_bytes(*session.mailbox_key()),
+                epoch_day(now),
+                &device,
+            );
+            self.store.put_session(&device, session, rng)?;
+            let envelope = Envelope::new(EnvelopeKind::GroupControl, token, msg.encode());
+            preferred_wire.get_or_insert_with(|| envelope.content_id());
             self.store.queue_push(
                 &QueueItem {
-                    peer: *peer,
+                    peer: device,
                     msg_id: None,
                     group_msg_id: None,
                     class: QueueClass::Normal,
-                    envelope: flight,
+                    envelope,
                 },
                 rng,
             )?;
         }
-        let session = self
-            .sessions
-            .get_mut(peer)
-            .expect("session just ensured above");
-        let bytes = zeroize::Zeroizing::new(payload.encode());
-        let msg = session.encrypt(rng, now, &pad(&bytes)?, &[]);
-        let token = delivery_token(
-            &MailboxKey::from_bytes(*session.mailbox_key()),
-            epoch_day(now),
-            peer,
-        );
-        self.store.put_session(peer, session, rng)?;
-        let envelope = Envelope::new(EnvelopeKind::GroupControl, token, msg.encode());
-        let cid = envelope.content_id();
-        self.store.queue_push(
-            &QueueItem {
-                peer: *peer,
-                msg_id: None,
-                group_msg_id: None,
-                class: QueueClass::Normal,
-                envelope,
-            },
-            rng,
-        )?;
-        Ok(Some(cid))
+        Ok(preferred_wire)
     }
 
     /// Roster members met only through an announce have identity but no
@@ -1765,7 +1948,7 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
-        if self.sessions.contains_key(peer) || self.discoveries.is_empty() {
+        if self.peer_has_session_or_bundle(peer)? || self.discoveries.is_empty() {
             return Ok(());
         }
         let Some(mut contact) = self.store.get_contact(peer)? else {
@@ -1860,6 +2043,9 @@ mod tests {
         let bob_bundle = bob.handshake_bundle(1_800_000_000, &mut rng).unwrap();
         let bob_peer = alice
             .add_contact("bob", &bob_bundle, &[], 1_800_000_000, &mut rng)
+            .unwrap();
+        alice
+            .send_message(&bob_peer, b"establish session", 1_800_000_000, &mut rng)
             .unwrap();
         let group = alice
             .create_group("old client", &[bob_peer], &mut rng)

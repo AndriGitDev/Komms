@@ -194,7 +194,7 @@ fn backup_round_trip() {
     store.put_group_authority(&authority, &mut rng).unwrap();
 
     let (file, mnemonic) = store.export_backup(NOW + 100, &mut rng).unwrap();
-    assert_eq!(&file[..4], b"KKR6");
+    assert_eq!(&file[..4], b"KKR7");
     assert!(mnemonic_to_entropy(&mnemonic).is_ok(), "24 valid words");
     let old_group = store.groups().unwrap().remove(0);
     drop(store); // the old device is gone
@@ -558,6 +558,81 @@ fn legacy_v5_backup_restores() {
     .unwrap();
     assert_eq!(restored.ephemeral_records().unwrap(), ephemeral);
     assert!(restored.group_authorities().unwrap().is_empty());
+}
+
+/// The immediately previous KKR6 shape restores signed authority and migrates
+/// to one fresh physical device without inventing linked-device history.
+#[test]
+fn legacy_v6_backup_restores_and_mints_device_authority() {
+    let mut rng = StdRng::seed_from_u64(19);
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::generate(&mut rng);
+    let contacts = Vec::<ContactRecord>::new();
+    let messages = Vec::<MessageRecord>::new();
+    let reset_peers = Vec::<[u8; 32]>::new();
+    let groups = Vec::<()>::new();
+    let group_messages = Vec::<GroupMessageRecord>::new();
+    let authority = GroupAuthorityRecord {
+        group: [7; 32],
+        state_id: [8; 16],
+        state_payload: b"signed KKR6 authority".to_vec(),
+        consumed_requests: vec![[9; 16]],
+    };
+    let authorities = vec![authority.clone()];
+    let local_metadata = Vec::<LocalMetadataRecord>::new();
+    let notes = Vec::<NoteMessageRecord>::new();
+    let ephemeral = Vec::<EphemeralRecord>::new();
+    let payload = postcard::to_allocvec(&(
+        NOW,
+        identity.to_bytes().to_vec(),
+        &contacts,
+        &messages,
+        &reset_peers,
+        &groups,
+        &group_messages,
+        &authorities,
+        &local_metadata,
+        &notes,
+        &ephemeral,
+    ))
+    .unwrap();
+
+    let entropy = [0x47u8; 32];
+    let mnemonic = kult_crypto::mnemonic_from_entropy(&entropy);
+    let salt = [12u8; 16];
+    let kek = kult_crypto::derive_kek(&entropy, &salt, TEST_KDF).unwrap();
+    let key = kult_crypto::StorageKey::from_bytes(*kek);
+    let mut file = Vec::new();
+    file.extend_from_slice(b"KKR6");
+    file.extend_from_slice(&TEST_KDF.m_cost_kib.to_le_bytes());
+    file.extend_from_slice(&TEST_KDF.t_cost.to_le_bytes());
+    file.extend_from_slice(&TEST_KDF.p_cost.to_le_bytes());
+    file.extend_from_slice(&salt);
+    file.extend_from_slice(&key.seal(b"KK-backup-v1", &payload, &mut rng));
+
+    let restored = Store::restore_backup(
+        &dir.path().join("v6.db"),
+        &file,
+        &mnemonic,
+        b"new-pass",
+        TEST_KDF,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(restored.group_authorities().unwrap(), vec![authority]);
+    assert!(restored.contact_devices().unwrap().is_empty());
+    assert!(restored.device_sync_events().unwrap().is_empty());
+    let device = restored
+        .get_device_state()
+        .unwrap()
+        .expect("device migration");
+    assert_eq!(device.manifest.account, identity.public());
+    assert_eq!(device.manifest.devices.len(), 1);
+    assert_eq!(
+        device.manifest.devices[0].certificate,
+        device.local_certificate
+    );
+    assert!(device.manifest.devices[0].revoked_at.is_none());
 }
 
 #[test]

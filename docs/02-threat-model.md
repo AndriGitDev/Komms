@@ -210,6 +210,19 @@ requests from removed/demoted admins fail closed. See
 [21: Group Roles, Ownership, and Moderation](21-group-roles.md) and
 [ADR-0023](adr/0023-group-roles-and-owner-authority.md).
 
+C2 prevents two installations from sharing live ratchet or sender-chain state,
+but it does not make an authorized device harmless. Every physical endpoint has
+an account-signed certificate and independent delivery cryptography; manifests,
+link transcripts, sync events, counters, and revocations are authenticated and
+rollback/replay checked. A compromised authorized device can retain plaintext,
+emit account-authorized events, or race a same-generation manifest fork until
+another surviving device permanently revokes it. Revocation protects future
+delivery and accepted sync, not content already seen. Explicit bounded sync has
+no server log and excludes live queues/ratchets, active ephemeral content,
+downloaded media, drafts, and scheduled outbox rows. See
+[22: Linked Devices](22-linked-devices.md) and
+[ADR-0024](adr/0024-account-authorized-linked-devices.md).
+
 Private folders, conversation pins, and labels are endpoint organization, never
 communications metadata. Their definitions, single-folder assignments,
 exact typed peer/group/note-to-self pins, and many-to-many label memberships
@@ -218,14 +231,16 @@ folder/label view preferences remain device-local. An organization operation
 creates no envelope, mailbox, mesh, sneakernet,
 LAN, internet, DHT, capability, sender-key, ratchet, delivery-token, analytics,
 or remote-notification work. A copied SQLite database reveals only the already
-accepted row count and approximate sealed blob sizes. `KKR6` is the current folder,
-pin, or label portability mechanism: none has server or linked-device
-synchronization. Once rendered on an unlocked endpoint, organization text has
+accepted row count and approximate sealed blob sizes. `KKR7` is the current folder,
+pin, or label backup format. None has server, contact, or service
+synchronization; C2 may carry them only in authenticated encrypted bundles
+between account-authorized owned devices. Once rendered on an unlocked endpoint, organization text has
 the same bounded A7 exposure as the rest of the user's visible local data.
 
 Contact petnames have the same endpoint-only boundary. Rename rewrites only the
-sealed local contact record and emits a local event; it does not advertise,
-resolve, or synchronize a name. Names may duplicate, so every action targets the
+sealed local contact record and emits a local event; it does not advertise or
+resolve a name, and C2 syncs it only to authorized devices of the same account.
+Names may duplicate, so every action targets the
 peer key and interfaces retain disambiguating context. Warning heuristics reduce
 accidental Unicode spoofing but are not a complete UTS #39 implementation and
 cannot make two visually similar labels safe by themselves. A user may

@@ -13,7 +13,7 @@ are the node's own, verbatim.
   inactive/background transitions, and responds to UIKit capture notifications.
   Settings explicitly state that iOS cannot universally block still screenshots
   and that capture notification is not retroactive.
-- **Reduce keyboard retention on every SwiftUI editor.** All 25 text editors
+- **Reduce keyboard retention on every SwiftUI editor.** Every audited text editor
   disable autocorrection through one audited modifier; message/name fields keep
   only explicit capitalization semantics. Passphrases and recovery mnemonics use
   `SecureField`. Settings state that iOS has no per-field personalized-learning
@@ -24,11 +24,17 @@ are the node's own, verbatim.
   with the camera (or paste the hex, interoperable with the desktop and
   Android apps and `kult bundle` / `kult add`), or add a contact from
   their kult address alone via DHT lookup.
+- **Link and manage owned devices** without iCloud or another account service.
+  The VoiceOver/Dynamic-Type manager lists exact physical devices, supports
+  signed rename and permanently confirmed revoke, and drives both sides of the
+  time-bounded QR/paste ceremony with matching comparison codes and selective
+  transfer. Explicit encrypted sync export/import carries only the C2 allowlist;
+  physical-device cryptography and delivery state remain independent.
 - **Rename a contact's private local petname** through swipe or context-menu
   actions. SwiftUI targets the exact peer key, uses the shared incognito field,
   previews NFC normalization and duplicate/confusable/bidi/invisible warnings,
   and requires explicit acceptance for risk. Duplicate names remain distinct;
-  restart/`KKR6` preserves the local rename with zero delivery work.
+  restart/`KKR7` preserves the local rename with zero delivery work.
 - **Message** with honest delivery states: `queued` → `sent` (handed to a
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted
@@ -115,11 +121,11 @@ are the node's own, verbatim.
   note-to-self. The leading VoiceOver/Dynamic-Type block follows folder and
   label eligibility; conversation actions pin/unpin exact typed targets and the
   manager provides button reorder plus unavailable-record cleanup. The shared
-  8,192-pin limit, restart/`KKR6` behavior, and zero-network contract live in
+  8,192-pin limit, restart/`KKR7` behavior, and zero-network contract live in
   `KommsCore`, with no new permission or synchronized state.
 - **Choose System, Light, or Dark appearance** in Settings, including at the
   gate. SwiftUI applies the cached choice immediately, then treats the sealed F5
-  value as authoritative after unlock or `KKR6` restore. System follows iOS
+  value as authoritative after unlock or `KKR7` restore. System follows iOS
   changes live; adaptive semantic colors preserve Increase Contrast,
   Differentiate Without Color, Dynamic Type, and Reduce Motion behavior, while
   delivery/security meaning always retains text, symbols, or accessible labels.
@@ -128,8 +134,9 @@ are the node's own, verbatim.
   VoiceOver/Dynamic-Type manager offers all eight bundled glyphs, security-
   scoped Files JPEG/PNG selection, clear-to-fallback, and quota usage. The shared
   core produces only metadata-free 256×256 RGBA PNGs and enforces the 512 KiB,
-  1,024-record, and 64 MiB caps with safe corrupt fallback. `KKR6` is the only current
-  portability path; icons never enter iCloud sync, URLs, peers, envelopes,
+  1,024-record, and 64 MiB caps with safe corrupt fallback. Portability is limited
+  to `KKR7` and authenticated own-device C2 sync; icons never enter iCloud sync,
+  URLs, peers, envelopes,
   capabilities, notifications, queues, or transports.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends (all platforms), compared aloud or by scanning each other's code,
@@ -191,31 +198,33 @@ Kotlin, covering exact Unicode, stable ids/order, duplicate names, typed targets
 any/all results, restart, and errors. Labels request no Contacts, Photos,
 notification, local-network, or other permission and never enter notification
 categories, Spotlight, widgets, Siri/App Intents, pasteboard, previews, logs,
-crash/analytics payloads, or ordinary scene restoration. `KKR6` preserves exact
-definitions and memberships; message labels and linked-device synchronization
-remain deferred.
+crash/analytics payloads, or ordinary scene restoration. `KKR7` preserves exact
+definitions and memberships; C2 can converge them only between authorized owned
+devices, while message labels remain deferred.
 
 Folder acceptance uses the same B10 fixture as Rust RPC, UniFFI, and Kotlin,
 covering exact Unicode, duplicate names, stable manual order, typed
 peer/group/note targets, single membership, label composition, restart,
 deletion, and structured errors. Folder state requests no additional permission,
-never leaves sealed local storage, and `KKR6` is its only current portability path.
+never leaves sealed owned-device storage. Portability is limited to `KKR7` and
+authenticated own-device C2 sync.
 
 Pin acceptance uses the same B11 fixture as Rust RPC, UniFFI, and Kotlin,
 covering exact typed peer/group/note targets, append and exact complete-set
 reorder, folder/label composition, activity order, stale cleanup/reactivation,
-restart, structured errors, and zero delivery work. `KKR6` is the only current
-portability path; message pins and linked-device pin sync remain deferred.
+restart, structured errors, and zero delivery work. `KKR7` together with
+authenticated own-device C2 sync are the only portability paths; message pins
+remain deferred.
 
 Theme acceptance uses the same B12 fixture as Rust RPC, UniFFI, and Kotlin,
 covering the exact vocabulary/roles, first-run System, idempotency, restart,
-`KKR6`, one local change event, and zero queued or transport work. The ordinary
+`KKR7`, one local change event, and zero queued or transport work. The ordinary
 non-synchronizing `UserDefaults` cache contains only the pre-unlock theme token;
 it is not a portability or backup channel.
 
 Custom-icon acceptance uses the same B13 fixture as Rust RPC, UniFFI, and
 Kotlin, covering all exact target kinds, canonical metadata-free PNG output,
-quota accounting, restart/`KKR6`, safe initials fallback, local events, and zero
+quota accounting, restart/`KKR7`, safe initials fallback, local events, and zero
 delivery work. Security-scoped Files access lasts only for the explicit blocking
 import call; no selected path or plaintext image becomes synchronized state.
 

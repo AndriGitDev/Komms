@@ -19,10 +19,11 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use kult_crypto::{KdfProfile, SafetyNumber};
 use kult_node::{
-    AttachmentInfo, AttachmentMetadata, CarrierCapabilitySnapshot, Event, FolderConversationInfo,
-    FolderConversationList, FolderInfo, FolderSelection, GroupAuthorityInfo, GroupInfo,
-    GroupMentionCapability, GroupRole, LabelConversationInfo, LabelFilterInfo, LabelInfo,
-    LabelMatchMode, MentionSpan, Node, PinConversationList, PinInfo, ScheduledMessageInfo,
+    AttachmentInfo, AttachmentMetadata, CarrierCapabilitySnapshot, DeviceLinkSelection, Event,
+    FolderConversationInfo, FolderConversationList, FolderInfo, FolderSelection,
+    GroupAuthorityInfo, GroupInfo, GroupMentionCapability, GroupRole, LabelConversationInfo,
+    LabelFilterInfo, LabelInfo, LabelMatchMode, LinkedDeviceInfo, MentionSpan,
+    MessageDeviceDeliveryInfo, Node, PinConversationList, PinInfo, ScheduledMessageInfo,
     StaleFolderInfo, StaleLabelInfo,
 };
 use kult_store::{ContactRecord, ConversationId, NoteMessageRecord};
@@ -73,6 +74,56 @@ type Resp<T> = oneshot::Sender<Result<T, String>>;
 pub(crate) enum Msg {
     HandshakeBundle {
         resp: Resp<Vec<u8>>,
+    },
+    DeviceId {
+        resp: Resp<[u8; 32]>,
+    },
+    LinkedDevices {
+        resp: Resp<Vec<LinkedDeviceInfo>>,
+    },
+    MessageDeviceDeliveries {
+        message: [u8; 16],
+        resp: Resp<Vec<MessageDeviceDeliveryInfo>>,
+    },
+    DeviceRename {
+        device: [u8; 32],
+        name: String,
+        resp: Resp<()>,
+    },
+    DeviceRevoke {
+        device: [u8; 32],
+        resp: Resp<()>,
+    },
+    DeviceLinkBegin {
+        resp: Resp<Vec<u8>>,
+    },
+    DeviceLinkAccept {
+        offer: Vec<u8>,
+        name: String,
+        resp: Resp<(Vec<u8>, String)>,
+    },
+    DeviceLinkCode {
+        response: Vec<u8>,
+        resp: Resp<String>,
+    },
+    DeviceLinkApprove {
+        response: Vec<u8>,
+        selection: DeviceLinkSelection,
+        confirmed: bool,
+        resp: Resp<Vec<u8>>,
+    },
+    DeviceLinkComplete {
+        package: Vec<u8>,
+        confirmed: bool,
+        resp: Resp<(String, [u8; 32])>,
+    },
+    DeviceSyncExport {
+        device: [u8; 32],
+        resp: Resp<Vec<u8>>,
+    },
+    DeviceSyncImport {
+        bundle: Vec<u8>,
+        resp: Resp<usize>,
     },
     AddContact {
         name: String,
@@ -832,6 +883,67 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
     match msg {
         Msg::HandshakeBundle { resp } => {
             let _ = resp.send(node.handshake_bundle(now, &mut OsRng).map_err(fail));
+        }
+        Msg::DeviceId { resp } => {
+            let _ = resp.send(Ok(node.device_id()));
+        }
+        Msg::LinkedDevices { resp } => {
+            let _ = resp.send(Ok(node.linked_devices()));
+        }
+        Msg::MessageDeviceDeliveries { message, resp } => {
+            let _ = resp.send(node.message_device_deliveries(&message).map_err(fail));
+        }
+        Msg::DeviceRename { device, name, resp } => {
+            let _ = resp.send(
+                node.rename_linked_device(&device, &name, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::DeviceRevoke { device, resp } => {
+            let _ = resp.send(
+                node.revoke_linked_device(&device, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::DeviceLinkBegin { resp } => {
+            let _ = resp.send(node.begin_device_link(now, &mut OsRng).map_err(fail));
+        }
+        Msg::DeviceLinkAccept { offer, name, resp } => {
+            let _ = resp.send(
+                node.accept_device_link(&offer, &name, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::DeviceLinkCode { response, resp } => {
+            let _ = resp.send(node.device_link_confirmation_code(&response).map_err(fail));
+        }
+        Msg::DeviceLinkApprove {
+            response,
+            selection,
+            confirmed,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.approve_device_link(&response, selection, confirmed, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::DeviceLinkComplete {
+            package,
+            confirmed,
+            resp,
+        } => {
+            let result = node
+                .complete_device_link(&package, confirmed, now, &mut OsRng)
+                .map(|()| (node.address(), node.peer_id()))
+                .map_err(fail);
+            let _ = resp.send(result);
+        }
+        Msg::DeviceSyncExport { device, resp } => {
+            let _ = resp.send(node.export_device_sync(&device, &mut OsRng).map_err(fail));
+        }
+        Msg::DeviceSyncImport { bundle, resp } => {
+            let _ = resp.send(node.import_device_sync(&bundle, &mut OsRng).map_err(fail));
         }
         Msg::AddContact {
             name,

@@ -69,6 +69,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var themePreference: ThemePreference = ThemePreferenceStore.load()
     @Published private(set) var customIcons: [CustomIconTarget: CustomIcon] = [:]
     @Published private(set) var customIconUsage = CustomIconQuotaUsage(records: 0, bytes: 0)
+    @Published private(set) var linkedDevices: [LinkedDevice] = []
     /// Surfaced node happenings: key changes, held-for-faster-link verdicts.
     @Published var notices: [String] = []
 
@@ -206,6 +207,7 @@ final class AppModel: ObservableObject {
         stalePinRecords = []
         customIcons = [:]
         customIconUsage = CustomIconQuotaUsage(records: 0, bytes: 0)
+        linkedDevices = []
     }
 
     private func adopt(_ session: Session) async {
@@ -237,6 +239,13 @@ final class AppModel: ObservableObject {
 
     private func handle(_ event: Event) {
         switch event {
+        case .devicesChanged:
+            Task { await refreshDevices() }
+        case .deviceLinkCompleted:
+            Task {
+                await refreshDevices()
+                await refresh()
+            }
         case .themeChanged:
             Task { await refreshTheme() }
         case .customIconsChanged:
@@ -273,6 +282,79 @@ final class AppModel: ObservableObject {
         case .awaitingFasterLink:
             notices.append("A message is held — will send when a faster link exists.")
         }
+    }
+
+    // MARK: linked devices
+
+    func refreshDevices() async {
+        guard let session,
+              let devices = try? await run({ try session.linkedDevices() }) else { return }
+        linkedDevices = devices
+    }
+
+    func beginDeviceLink() async throws -> String {
+        guard let session else { throw InputError("locked") }
+        return try await run { try session.beginDeviceLink() }
+    }
+
+    func acceptDeviceLink(offerHex: String, name: String) async throws -> (String, String) {
+        guard let session else { throw InputError("locked") }
+        return try await run {
+            let accepted = try session.acceptDeviceLink(offerHex: offerHex, deviceName: name)
+            return (hexEncode(accepted.response), accepted.confirmationCode)
+        }
+    }
+
+    func deviceLinkConfirmationCode(responseHex: String) async throws -> String {
+        guard let session else { throw InputError("locked") }
+        return try await run { try session.deviceLinkConfirmationCode(responseHex: responseHex) }
+    }
+
+    func approveDeviceLink(
+        responseHex: String,
+        contacts: Bool,
+        organization: Bool,
+        history: Bool,
+        confirmed: Bool
+    ) async throws -> String {
+        guard let session else { throw InputError("locked") }
+        return try await run {
+            try session.approveDeviceLink(
+                responseHex: responseHex, contacts: contacts,
+                organization: organization, history: history, confirmed: confirmed)
+        }
+    }
+
+    func completeDeviceLink(packageHex: String, confirmed: Bool) async throws {
+        guard let session else { throw InputError("locked") }
+        try await run { try session.completeDeviceLink(packageHex: packageHex, confirmed: confirmed) }
+        await refreshDevices()
+        await refresh()
+    }
+
+    func renameLinkedDevice(device: String, name: String) async throws {
+        guard let session else { throw InputError("locked") }
+        try await run { try session.renameLinkedDevice(device: device, name: name) }
+        await refreshDevices()
+    }
+
+    func revokeLinkedDevice(device: String, confirmed: Bool) async throws {
+        guard let session else { throw InputError("locked") }
+        try await run { try session.revokeLinkedDevice(device: device, confirmed: confirmed) }
+        await refreshDevices()
+    }
+
+    func exportDeviceSync(device: String) async throws -> String {
+        guard let session else { throw InputError("locked") }
+        return try await run { try session.exportDeviceSync(device: device) }
+    }
+
+    func importDeviceSync(bundleHex: String) async throws -> UInt64 {
+        guard let session else { throw InputError("locked") }
+        let inserted = try await run { try session.importDeviceSync(bundleHex: bundleHex) }
+        await refreshDevices()
+        await refresh()
+        return inserted
     }
 
     func setTheme(_ preference: ThemePreference) async {

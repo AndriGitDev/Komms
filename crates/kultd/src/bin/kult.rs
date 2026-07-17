@@ -21,6 +21,20 @@ The socket defaults to the KULTD_SOCKET environment variable.
 COMMANDS:
     status                          daemon and node status
     bundle                          export a fresh prekey bundle (hex)
+    device-id                       show this exact certified physical-device id
+    devices                         list active and revoked account devices
+    message-devices MESSAGE_ID      show honest delivery state per recipient device
+    device-rename DEVICE_ID NAME... rename an active linked device
+    device-revoke DEVICE_ID --yes   permanently revoke another device
+    device-link-begin               create a ten-minute proximate QR offer
+    device-link-accept OFFER NAME... accept on a pristine target; show response/code
+    device-link-code RESPONSE       show the source-side comparison code
+    device-link-approve RESPONSE --confirm [--no-contacts] [--no-organization] [--no-history]
+                                    confirm and create the encrypted transfer package
+    device-link-complete PACKAGE --confirm
+                                    confirm and import on the pristine target
+    device-sync-export DEVICE_ID    export encrypted convergence bytes
+    device-sync-import BUNDLE       import encrypted convergence bytes
     format-text TEXT...             render the safe local text model as JSON
     file-presentation MEDIA_TYPE [FILENAME]
                                     classify untrusted file hints; never scans or opens content
@@ -343,6 +357,85 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
     let request = match command {
         "status" => json!({ "op": "status" }),
         "bundle" => json!({ "op": "bundle" }),
+        "device-id" => json!({ "op": "device_id" }),
+        "devices" => json!({ "op": "linked_devices" }),
+        "message-devices" => {
+            if args.len() != 1 {
+                return Err("message-devices: expected MESSAGE_ID".to_owned());
+            }
+            json!({ "op": "message_device_deliveries", "message": args[0] })
+        }
+        "device-rename" => {
+            need(2)?;
+            json!({ "op": "device_rename", "device": args[0], "name": args[1..].join(" ") })
+        }
+        "device-revoke" => {
+            if args.len() != 2 || args[1] != "--yes" {
+                return Err(
+                    "device-revoke: permanent revocation requires DEVICE_ID --yes".to_owned(),
+                );
+            }
+            json!({ "op": "device_revoke", "device": args[0] })
+        }
+        "device-link-begin" => json!({ "op": "device_link_begin" }),
+        "device-link-accept" => {
+            need(2)?;
+            json!({ "op": "device_link_accept", "offer": args[0], "name": args[1..].join(" ") })
+        }
+        "device-link-code" => {
+            if args.len() != 1 {
+                return Err("device-link-code: expected RESPONSE".to_owned());
+            }
+            json!({ "op": "device_link_code", "response": args[0] })
+        }
+        "device-link-approve" => {
+            need(2)?;
+            if !args[1..].iter().any(|arg| arg == "--confirm") {
+                return Err(
+                    "device-link-approve: comparison-code confirmation requires --confirm"
+                        .to_owned(),
+                );
+            }
+            if args[1..].iter().any(|arg| {
+                !matches!(
+                    arg.as_str(),
+                    "--confirm" | "--no-contacts" | "--no-organization" | "--no-history"
+                )
+            }) {
+                return Err("device-link-approve: unknown selection flag".to_owned());
+            }
+            json!({
+                "op": "device_link_approve",
+                "response": args[0],
+                "selection": {
+                    "contacts": !args[1..].iter().any(|arg| arg == "--no-contacts"),
+                    "organization": !args[1..].iter().any(|arg| arg == "--no-organization"),
+                    "history": !args[1..].iter().any(|arg| arg == "--no-history"),
+                },
+                "confirmed": true,
+            })
+        }
+        "device-link-complete" => {
+            if args.len() != 2 || args[1] != "--confirm" {
+                return Err(
+                    "device-link-complete: comparison-code confirmation requires PACKAGE --confirm"
+                        .to_owned(),
+                );
+            }
+            json!({ "op": "device_link_complete", "package": args[0], "confirmed": true })
+        }
+        "device-sync-export" => {
+            if args.len() != 1 {
+                return Err("device-sync-export: expected DEVICE_ID".to_owned());
+            }
+            json!({ "op": "device_sync_export", "device": args[0] })
+        }
+        "device-sync-import" => {
+            if args.len() != 1 {
+                return Err("device-sync-import: expected BUNDLE".to_owned());
+            }
+            json!({ "op": "device_sync_import", "bundle": args[0] })
+        }
         "format-text" => {
             need(1)?;
             json!({ "op": "format_text", "source": args.join(" "), "highlights": [] })
@@ -1344,6 +1437,29 @@ mod tests {
             ]
         )
         .is_err());
+
+        assert_eq!(
+            build_request("devices", &[]).unwrap()["op"],
+            "linked_devices"
+        );
+        let approve = build_request(
+            "device-link-approve",
+            &[
+                "aa".repeat(64),
+                "--confirm".to_owned(),
+                "--no-history".to_owned(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(approve["confirmed"], true);
+        assert_eq!(approve["selection"]["history"], false);
+        assert_eq!(approve["selection"]["contacts"], true);
+        assert!(build_request(
+            "device-link-approve",
+            &["aa".repeat(64), "--no-history".to_owned()]
+        )
+        .is_err());
+        assert!(build_request("device-revoke", &["11".repeat(32)]).is_err());
 
         let request = build_request(
             "group-create",

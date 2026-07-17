@@ -14,9 +14,10 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 use komms_desktop::commands;
 use komms_desktop::session::{
-    hex_decode, NetworkSettings, Session, UiCustomIconCrop, UiCustomIconTarget, UiEvent,
-    UiFolderSelection, UiFolderTarget, UiHint, UiImageCrop, UiImageEditRecipe, UiImageRegion,
-    UiLabelTarget, UiMentionSpan, UiPinTarget, UiTextFormatHighlight, UiThemePreference,
+    hex_decode, NetworkSettings, Session, UiCustomIconCrop, UiCustomIconTarget,
+    UiDeviceLinkSelection, UiEvent, UiFolderSelection, UiFolderTarget, UiHint, UiImageCrop,
+    UiImageEditRecipe, UiImageRegion, UiLabelTarget, UiMentionSpan, UiPinTarget,
+    UiTextFormatHighlight, UiThemePreference,
 };
 use kult_ffi::{
     edit_image, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, KdfChoice,
@@ -165,6 +166,66 @@ fn open(dir: &Path, name: &str, events: &Events) -> Session {
         events.sink(),
     )
     .expect("session opens")
+}
+
+#[test]
+fn desktop_linked_device_ceremony_and_sync_use_only_session_surface() {
+    let directory = tempfile::tempdir().unwrap();
+    let source_events = Events::default();
+    let target_events = Events::default();
+    let source = open(directory.path(), "device-source", &source_events);
+    let target = open(directory.path(), "device-target", &target_events);
+    source
+        .send_note_to_self("source-only history".to_owned())
+        .unwrap();
+
+    let source_device = source.device_id().unwrap();
+    let target_device = target.device_id().unwrap();
+    let offer = source.begin_device_link().unwrap();
+    assert!(offer.qr_svg.contains("<svg"));
+    let accepted = target
+        .accept_device_link(offer.hex, "Laptop".to_owned())
+        .unwrap();
+    assert_eq!(accepted.confirmation_code.len(), 6);
+    assert_eq!(
+        source
+            .device_link_confirmation_code(accepted.response_hex.clone())
+            .unwrap(),
+        accepted.confirmation_code
+    );
+    let package = source
+        .approve_device_link(
+            accepted.response_hex,
+            UiDeviceLinkSelection {
+                contacts: false,
+                organization: false,
+                history: false,
+            },
+            true,
+        )
+        .unwrap();
+    target.complete_device_link(package, true).unwrap();
+    assert_eq!(source.status().unwrap().peer, target.status().unwrap().peer);
+    assert_ne!(source_device, target_device);
+    assert!(target.note_to_self_messages().unwrap().is_empty());
+    assert_eq!(source.linked_devices().unwrap().len(), 2);
+    target_events.wait("device link completion", |event| {
+        matches!(event, UiEvent::DeviceLinkCompleted { device, .. } if device == &target_device)
+    });
+
+    source
+        .rename_linked_device(target_device.clone(), "Travel laptop".to_owned())
+        .unwrap();
+    let sync = source.export_device_sync(target_device.clone()).unwrap();
+    target.import_device_sync(sync).unwrap();
+    assert!(target
+        .linked_devices()
+        .unwrap()
+        .iter()
+        .any(|device| device.id == target_device && device.name == "Travel laptop"));
+
+    source.stop();
+    target.stop();
 }
 
 fn wait_authority_generation(
@@ -501,7 +562,7 @@ fn desktop_incognito_keyboard_covers_every_editable_text_field_before_unlock() {
         - html
             .matches("<textarea class=\"share-hex\" rows=\"4\" readonly")
             .count();
-    assert_eq!(28, editable_text_fields);
+    assert_eq!(36, editable_text_fields);
     assert_eq!(
         editable_text_fields,
         html.matches("data-incognito-input=").count()

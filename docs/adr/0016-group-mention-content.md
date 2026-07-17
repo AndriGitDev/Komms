@@ -238,7 +238,7 @@ fan-out, mailbox, sneakernet, LAN, internet, and mesh scheduling behavior is
 unchanged. Mention is ordinary text-sized `QueueClass::Normal` content; it gets no
 special airtime or priority rule.
 
-KKR6 backs up ordinary sealed group message bodies as opaque bytes, so no backup
+Current `KKR7` backs up ordinary sealed group message bodies as opaque bytes, so no backup
 format bump or migration is needed. Restored valid, unknown, and malformed
 Mention bodies retain exact bytes and re-decode locally. As required by ADR-0011
 and ADR-0012, live pairwise sessions, capability snapshots, and group chains are
@@ -420,13 +420,13 @@ accessibility, backup/restore, mixed-version, metadata-leakage, and diff checks.
 - Group Mention availability progresses at the least-capable current co-member.
   Users retain an explicit readable plain-text path with honestly reduced
   semantics and zero mention notification.
-- Storage and KKR6 need no content-row migration because exact ordinary bodies are already
+- Storage and KKR7 need no content-row migration because exact ordinary bodies are already
   sealed opaque bytes; APIs and shells do need new render-safe structured records.
 - Native shells must maintain byte-accurate semantic drafts despite UTF-16/String
   editing models, IME composition, restoration, accessibility, and bidi layout.
 - Local notifications become more relevant without creating a delivery guarantee
   or revealing semantic fields outside end-to-end encryption.
 - This decision should be revisited only through a new ADR if measured message
-  limits are inadequate, stable identity changes under a future multi-device
+  limits are inadequate, stable identity/device semantics change beyond ADR-0024's
   model, or a separately accepted generic annotation model replaces B17's single
   non-overlapping mention layer.

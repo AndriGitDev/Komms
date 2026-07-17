@@ -12,8 +12,8 @@ own, verbatim.
   before each activity draws. Compliant screenshots, screen recordings, and
   recent-task previews are blocked. Settings show the shared B14 policy and its
   compromised-device, overlay/accessibility-abuse, and external-camera limits.
-- **Request private keyboard behavior on every text editor.** All 17 XML fields
-  and every programmatic field use `IncognitoEditText`, which sets Android's
+- **Request private keyboard behavior on every text editor.** Every audited XML
+  and programmatic field uses `IncognitoEditText`, which sets Android's
   no-personalized-learning and no-suggestions metadata. Passphrases and recovery
   mnemonics are masked. Settings state honestly that third-party IMEs may ignore
   the request.
@@ -23,11 +23,18 @@ own, verbatim.
   with the camera (or paste the hex, interoperable with the desktop app
   and `kult bundle` / `kult add`), or add a contact from their kult
   address alone via DHT lookup.
+- **Link and manage owned devices** without a cloud account. The dedicated
+  TalkBack-accessible manager lists exact physical devices, offers signed rename
+  and permanently confirmed revoke, and drives both sides of the time-bounded
+  QR/paste ceremony with matching comparison codes and selective initial
+  transfer. Explicit encrypted sync export/import carries only the C2 allowlist;
+  device ids, pairwise sessions, group sender chains, and delivery rows remain
+  independent.
 - **Rename a contact's private local petname** with an explicit TalkBack-
   accessible row action. Android targets the exact peer key, uses an incognito
   field, previews shared NFC normalization and duplicate/confusable/bidi/
   invisible warnings, and confirms before accepting risk. Duplicate names remain
-  separate; restart/`KKR6` preserves the rename with zero delivery work.
+  separate; restart/`KKR7` preserves the rename with zero delivery work.
 - **Message** with honest delivery states: `queued` → `sent` (handed to a
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted
@@ -117,7 +124,7 @@ own, verbatim.
 - **Choose System, Light, or Dark appearance** from Settings, including before
   unlock. AppCompat DayNight is applied in `Application.onCreate` so the gate
   does not flash the wrong palette; after unlock the sealed F5 value wins and is
-  restored by `KKR6`. Light/night resources use semantic roles and WCAG-tested
+  restored by `KKR7`. Light/night resources use semantic roles and WCAG-tested
   reference contrast, Android high-contrast text and disabled-animation settings
   remain native, and delivery/security rows retain non-color cues.
 - **Manage private custom icons** for contacts, groups, folders, and note-to-self.
@@ -126,7 +133,8 @@ own, verbatim.
   fallback, and quota usage. Selected content is copied only into a short-lived
   app-private file before the shared core emits a metadata-free 256×256 RGBA PNG.
   The 512 KiB/1,024-record/64 MiB limits and corrupt fallback are shared with
-  every shell; `KKR6` is the only current portability path and no icon creates network,
+  every shell; `KKR7` and authenticated own-device C2 sync are the only
+  portability paths, and no icon creates network,
   permission beyond the picker, notification, capability, or transport work.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends (desktop included), compared aloud or by scanning each other's
@@ -183,29 +191,32 @@ peer/group/note targets, stable order, any/all results, restart, and errors.
 Labels request no Contacts, clipboard, broad-storage, notification, nearby, or
 network permission. Label data never appears in notification channels, lock
 screen metadata, recent-task titles, logs, crash/analytics payloads, or
-unprotected state. `KKR6` preserves exact definitions and memberships; message
-labels and linked-device synchronization remain deferred.
+unprotected state. `KKR7` preserves exact definitions and memberships; C2 can
+converge them only between authorized owned devices, while message labels remain
+deferred.
 
 Folder acceptance drives the shared B10 fixture through Rust RPC, UniFFI,
 Kotlin, and Swift, including exact Unicode, duplicate names, stable manual order,
 typed peer/group/note targets, single membership, label composition, restart,
 deletion, and structured errors. Folder state requests no additional permission,
-never leaves sealed local storage, and `KKR6` is its only current portability path.
+never leaves sealed owned-device storage. Portability is limited to `KKR7` and
+authenticated own-device C2 sync.
 
 Pin acceptance drives the shared B11 fixture through Rust RPC, UniFFI, Kotlin,
 and Swift, covering exact typed peer/group/note targets, append and complete-set
 reorder, folder/label composition, activity ordering, stale cleanup/reactivation,
-restart, structured limits/errors, and zero delivery work. `KKR6` is the only current
-portability path; message pins and linked-device pin sync remain deferred.
+restart, structured limits/errors, and zero delivery work. `KKR7` together with
+authenticated own-device C2 sync are the only portability paths; message pins
+remain deferred.
 
 Theme acceptance drives the shared B12 fixture through Rust RPC, UniFFI, Kotlin,
 and Swift: exact vocabulary/roles, first-run System, idempotency, restart,
-`KKR6`, one local event, and zero queued or transport work. The ordinary private
+`KKR7`, one local event, and zero queued or transport work. The ordinary private
 preference cache carries no identity, message, contact, or network data.
 
 Custom-icon acceptance drives the shared B13 fixture through Rust RPC, UniFFI,
 Kotlin, and Swift: all four exact target types, canonical metadata-free output,
-quota accounting, restart/`KKR6`, generated-initials fallback, local events, and
+quota accounting, restart/`KKR7`, generated-initials fallback, local events, and
 zero delivery work. The Android manager uses SAF access only for the explicit
 selection and deletes its app-private transient after the blocking core call.
 

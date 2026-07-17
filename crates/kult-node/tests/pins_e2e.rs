@@ -192,7 +192,7 @@ fn stale_pin_reactivation_cleanup_errors_and_kkr5_round_trip_are_honest() {
     ));
 
     let (backup, mnemonic) = node.export_backup(NOW + 2, &mut rng).unwrap();
-    assert_eq!(&backup[..4], b"KKR6");
+    assert_eq!(&backup[..4], b"KKR7");
     let mut restored = Node::restore(
         &directory.path().join("restored.db"),
         &backup,

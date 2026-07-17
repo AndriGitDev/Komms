@@ -158,6 +158,53 @@ class SessionE2eTest {
     }
 
     @Test
+    fun `linked device ceremony and sync use only Android Session`() {
+        val directory = Files.createTempDirectory("komms-android-devices-").toFile()
+        val sourceEvents = Events()
+        val targetEvents = Events()
+        val source = open(directory, "source", sourceEvents)
+        val target = open(directory, "target", targetEvents)
+        source.sendNoteToSelf("source-only history")
+
+        val sourceDevice = source.deviceId()
+        val targetDevice = target.deviceId()
+        val offer = source.beginDeviceLink()
+        assertEquals(offer.uppercase(), deviceLinkQrText(offer))
+        val accepted = target.acceptDeviceLink(offer, "Android tablet")
+        assertEquals(6, accepted.confirmationCode.length)
+        val responseHex = hexEncode(accepted.response)
+        assertEquals(
+            accepted.confirmationCode,
+            source.deviceLinkConfirmationCode(responseHex),
+        )
+        val packageHex = source.approveDeviceLink(
+            responseHex,
+            contacts = false,
+            organization = false,
+            history = false,
+            confirmed = true,
+        )
+        target.completeDeviceLink(packageHex, confirmed = true)
+        assertEquals(source.peer, target.peer)
+        assertNotEquals(sourceDevice, targetDevice)
+        assertTrue(target.noteToSelfMessages().isEmpty())
+        assertEquals(2, source.linkedDevices().size)
+        targetEvents.wait("device link completed") { event ->
+            (event as? Event.DeviceLinkCompleted)?.takeIf { it.device == targetDevice }
+        }
+
+        source.renameLinkedDevice(targetDevice, "Travel tablet")
+        target.importDeviceSync(source.exportDeviceSync(targetDevice))
+        assertTrue(target.linkedDevices().any {
+            it.id == targetDevice && it.name == "Travel tablet"
+        })
+
+        source.stop()
+        target.stop()
+        directory.deleteRecursively()
+    }
+
+    @Test
     fun `Android ephemeral controls match the shared contract`() {
         val root = File(checkNotNull(System.getProperty("komms.repo.root")))
         assertEquals("5", ephemeralFixture.getValue("content_kind").jsonPrimitive.content)

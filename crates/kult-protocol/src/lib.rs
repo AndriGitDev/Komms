@@ -30,6 +30,7 @@ mod attachment_bulk;
 mod bundle;
 mod capability;
 mod content;
+mod device_sync;
 mod edit;
 mod envelope;
 mod ephemeral;
@@ -69,6 +70,11 @@ pub use content::{
     CONTENT_KIND_GROUP_AUTHORITY, CONTENT_KIND_MENTION, CONTENT_KIND_POLL, CONTENT_KIND_TEXT,
     CONTENT_MAGIC, MAX_COLLECTION_ENTRIES, MAX_CONTENT_FRAME_LEN, MAX_CONTENT_PAYLOAD_LEN,
     MAX_NESTING_DEPTH,
+};
+pub use device_sync::{
+    resolve_device_sync_events, DeviceSyncBundle, DeviceSyncEvent, DeviceSyncNamespace,
+    OpenedDeviceSyncBundle, MAX_DEVICE_SYNC_BUNDLE_BYTES, MAX_DEVICE_SYNC_BUNDLE_EVENTS,
+    MAX_DEVICE_SYNC_KEY_BYTES, MAX_DEVICE_SYNC_VALUE_BYTES,
 };
 pub use edit::{
     decode_edit_payload, encode_edit_payload, DecodedEdit, Edit, EDIT_HEADER_LEN,

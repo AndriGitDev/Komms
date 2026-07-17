@@ -13,12 +13,14 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::session::{
     NetworkSettings, Session, UiAttachment, UiAudioMedia, UiBundle, UiContact,
     UiContactNameAssessment, UiCustomIcon, UiCustomIconCrop, UiCustomIconTarget, UiCustomIconUsage,
-    UiFolder, UiFolderConversation, UiFolderConversationResult, UiFolderSelection, UiFolderTarget,
+    UiDeviceLinkAcceptance, UiDeviceLinkOffer, UiDeviceLinkSelection, UiFolder,
+    UiFolderConversation, UiFolderConversationResult, UiFolderSelection, UiFolderTarget,
     UiFormattedText, UiGroup, UiGroupAuthority, UiGroupMessage, UiGroupPoll, UiHint,
     UiImageEditRecipe, UiImageReview, UiLabel, UiLabelConversation, UiLabelFilterResult,
-    UiLabelTarget, UiMentionCapability, UiMentionSpan, UiMessage, UiNoteMessage, UiPin,
-    UiPinConversationResult, UiPinTarget, UiSafetyNumber, UiScheduledMessage, UiStaleFolder,
-    UiStaleLabel, UiStatus, UiTextFormatHighlight, UiThemeInfo, UiThemePreference,
+    UiLabelTarget, UiLinkedDevice, UiMentionCapability, UiMentionSpan, UiMessage,
+    UiMessageDeviceDelivery, UiNoteMessage, UiPin, UiPinConversationResult, UiPinTarget,
+    UiSafetyNumber, UiScheduledMessage, UiStaleFolder, UiStaleLabel, UiStatus,
+    UiTextFormatHighlight, UiThemeInfo, UiThemePreference,
 };
 
 /// Render-safe shared B14 policy shown before unlock.
@@ -276,6 +278,61 @@ macro_rules! forward {
 forward!(
     /// Status snapshot for the transport indicators.
     status() -> UiStatus, |s| s.status()
+);
+forward!(
+    /// Exact public id for this physical installation.
+    device_id() -> String, |s| s.device_id()
+);
+forward!(
+    /// Complete signed linked-device list, including revoked rows.
+    linked_devices() -> Vec<UiLinkedDevice>, |s| s.linked_devices()
+);
+forward!(
+    /// Per-device delivery states for one outbound message.
+    message_device_deliveries(message: String) -> Vec<UiMessageDeviceDelivery>,
+    |s| s.message_device_deliveries(message)
+);
+forward!(
+    /// Rename one exact active linked device.
+    rename_linked_device(device: String, name: String) -> (),
+    |s| s.rename_linked_device(device, name)
+);
+forward!(
+    /// Permanently revoke another exact linked device after confirmation.
+    revoke_linked_device(device: String, confirmed: bool) -> (),
+    |s| s.revoke_linked_device(device, confirmed)
+);
+forward!(
+    /// Begin a ten-minute link offer rendered as hex and QR.
+    begin_device_link() -> UiDeviceLinkOffer, |s| s.begin_device_link()
+);
+forward!(
+    /// Accept a pasted or scanned offer on a pristine target.
+    accept_device_link(offer_hex: String, device_name: String) -> UiDeviceLinkAcceptance,
+    |s| s.accept_device_link(offer_hex, device_name)
+);
+forward!(
+    /// Derive the source-side six-digit comparison code.
+    device_link_confirmation_code(response_hex: String) -> String,
+    |s| s.device_link_confirmation_code(response_hex)
+);
+forward!(
+    /// Confirm matching codes and build the encrypted selective transfer.
+    approve_device_link(response_hex: String, selection: UiDeviceLinkSelection, confirmed: bool) -> String,
+    |s| s.approve_device_link(response_hex, selection, confirmed)
+);
+forward!(
+    /// Confirm and import a link package on the pristine target.
+    complete_device_link(package_hex: String, confirmed: bool) -> (),
+    |s| s.complete_device_link(package_hex, confirmed)
+);
+forward!(
+    /// Export one encrypted convergence bundle to an active linked device.
+    export_device_sync(device: String) -> String, |s| s.export_device_sync(device)
+);
+forward!(
+    /// Import one authenticated linked-device convergence bundle.
+    import_device_sync(bundle_hex: String) -> u64, |s| s.import_device_sync(bundle_hex)
 );
 forward!(
     /// Render exact source into the bounded inert local text model.

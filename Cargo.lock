@@ -1734,6 +1734,7 @@ dependencies = [
  "postcard",
  "proptest",
  "rand 0.8.7",
+ "rand_core 0.6.4",
  "serde",
  "sha2",
  "zeroize",

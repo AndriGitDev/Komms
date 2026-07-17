@@ -15,13 +15,13 @@ use kult_ffi::{
     probe_edited_image, probe_recorded_audio, screen_security_policy, AttachmentDirection,
     AttachmentFileKind, AttachmentFileWarning, AttachmentOpenPolicy, AttachmentState,
     CarrierCapability, Config, ContactNameWarning, ContentKind, CustomIconCrop, CustomIconTarget,
-    CustomIconTargetKind, DeliveryState, Event, EventListener, FfiError, FolderErrorCode,
-    FolderSelection, FolderSelectionKind, FolderTarget, FolderTargetKind, GroupRole, Hint,
-    ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, IncognitoKeyboardLevel,
-    IncognitoKeyboardPlatform, KdfChoice, KultNode, LabelErrorCode, LabelMatchMode, LabelTarget,
-    LabelTargetKind, MentionSpan, PinErrorCode, PinTarget, PinTargetKind, ScheduledConversation,
-    ScreenSecurityLevel, ScreenSecurityPlatform, TextFormatBlockKind, TextFormatHighlight,
-    ThemePreference,
+    CustomIconTargetKind, DeliveryState, DeviceLinkSelection, Event, EventListener, FfiError,
+    FolderErrorCode, FolderSelection, FolderSelectionKind, FolderTarget, FolderTargetKind,
+    GroupRole, Hint, ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind,
+    IncognitoKeyboardLevel, IncognitoKeyboardPlatform, KdfChoice, KultNode, LabelErrorCode,
+    LabelMatchMode, LabelTarget, LabelTargetKind, MentionSpan, PinErrorCode, PinTarget,
+    PinTargetKind, ScheduledConversation, ScreenSecurityLevel, ScreenSecurityPlatform,
+    TextFormatBlockKind, TextFormatHighlight, ThemePreference,
 };
 
 fn file_presentation_parity_fixture() -> serde_json::Value {
@@ -2047,6 +2047,78 @@ fn restart_persists_history_and_refuses_wrong_passphrase() {
 
     alice.stop();
     bob.stop();
+}
+
+#[test]
+fn linked_device_ceremony_and_sync_via_ffi_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_events = Recorder::default();
+    let target_events = Recorder::default();
+    let source = KultNode::start(
+        test_config(dir.path(), "device-source"),
+        Box::new(source_events.clone()),
+    )
+    .unwrap();
+    let target = KultNode::start(
+        test_config(dir.path(), "device-target"),
+        Box::new(target_events.clone()),
+    )
+    .unwrap();
+    source
+        .send_note_to_self("source-only history".to_owned())
+        .unwrap();
+
+    let source_device = source.device_id().unwrap();
+    let target_device = target.device_id().unwrap();
+    let offer = source.begin_device_link().unwrap();
+    let accepted = target
+        .accept_device_link(offer, "Laptop".to_owned())
+        .unwrap();
+    assert_eq!(accepted.confirmation_code.len(), 6);
+    assert_eq!(
+        source
+            .device_link_confirmation_code(accepted.response.clone())
+            .unwrap(),
+        accepted.confirmation_code
+    );
+    let package = source
+        .approve_device_link(
+            accepted.response,
+            DeviceLinkSelection {
+                contacts: false,
+                organization: false,
+                history: false,
+            },
+            true,
+        )
+        .unwrap();
+    target.complete_device_link(package, true).unwrap();
+    assert_eq!(source.peer(), target.peer());
+    assert_ne!(source_device, target_device);
+    assert!(target.note_to_self_messages().unwrap().is_empty());
+    assert_eq!(source.linked_devices().unwrap().len(), 2);
+    assert_eq!(target.linked_devices().unwrap().len(), 2);
+    target_events.wait("device link completed", |event| {
+        matches!(event, Event::DeviceLinkCompleted { device, .. } if device == &target_device)
+    });
+
+    source
+        .rename_linked_device(target_device.clone(), "Travel laptop".to_owned())
+        .unwrap();
+    let sync = source.export_device_sync(target_device.clone()).unwrap();
+    target.import_device_sync(sync).unwrap();
+    assert!(target
+        .linked_devices()
+        .unwrap()
+        .iter()
+        .any(|device| device.id == target_device && device.name == "Travel laptop"));
+    assert!(source
+        .message_device_deliveries("00".repeat(16))
+        .unwrap()
+        .is_empty());
+
+    source.stop();
+    target.stop();
 }
 
 /// F1 group front-door acceptance through only the public UniFFI-shaped API.

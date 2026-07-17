@@ -86,7 +86,7 @@ mesh, or group-control format changes.
 ### Storage, API, and lifecycle
 
 Raw originals and edits stay individually sealed in the existing message/group
-history tables and ride `KKR6` unchanged. Derived views are recomputed from
+history tables and ride `KKR7` unchanged. Derived views are recomputed from
 authenticated records after restart/restore; no plaintext index or mutable
 "current body" column is added. Search and notifications use the derived winner
 only after authorization succeeds. An inbound edit emits a typed local event so
@@ -117,7 +117,7 @@ and prior-version inspection. Display names never authorize or resolve edits.
 ## Consequences
 
 Edits converge under loss, duplication, reordering, partitions, restore, and
-future linked-device concurrency while retaining exact provenance. Storage grows
+linked-device concurrency while retaining exact provenance. Storage grows
 with edit count, so node APIs enforce at most 64 locally authored edit events per
 target and reject further local sends. Every authenticated edit received from a
 peer remains durable and participates in the same deterministic maximum; a local

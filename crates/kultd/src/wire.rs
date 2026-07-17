@@ -82,6 +82,15 @@ fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
         "rename_contact" => Some(&["id", "op", "peer", "name", "accept_warnings"]),
         "screen_security_policy" | "incognito_keyboard_policy" => Some(&["id", "op", "platform"]),
         "theme" => Some(&["id", "op"]),
+        "device_id" | "linked_devices" | "device_link_begin" => Some(&["id", "op"]),
+        "message_device_deliveries" => Some(&["id", "op", "message"]),
+        "device_rename" => Some(&["id", "op", "device", "name"]),
+        "device_revoke" | "device_sync_export" => Some(&["id", "op", "device"]),
+        "device_link_accept" => Some(&["id", "op", "offer", "name"]),
+        "device_link_code" => Some(&["id", "op", "response"]),
+        "device_link_approve" => Some(&["id", "op", "response", "selection", "confirmed"]),
+        "device_link_complete" => Some(&["id", "op", "package", "confirmed"]),
+        "device_sync_import" => Some(&["id", "op", "bundle"]),
         "theme_set" => Some(&["id", "op", "preference"]),
         "custom_icon" | "custom_icon_clear" => Some(&["id", "op", "target"]),
         "custom_icon_set_path" => Some(&["id", "op", "target", "path", "crop"]),
@@ -168,6 +177,18 @@ fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
     }
 }
 
+/// Explicit selective state imported during a confirmed device link.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceLinkSelectionInput {
+    /// Import contacts and verification.
+    pub contacts: bool,
+    /// Import private local organization.
+    pub organization: bool,
+    /// Import non-ephemeral history.
+    pub history: bool,
+}
+
 /// Every operation the daemon serves. Mirrors the node's command/event API
 /// (docs/09-implementation-guide.md §3.5) plus daemon-level introspection.
 #[derive(Debug, Deserialize)]
@@ -178,6 +199,67 @@ pub enum Op {
     Status,
     /// Export a fresh signed prekey bundle (hex) for out-of-band sharing.
     Bundle,
+    /// Exact separately authenticated physical-device id.
+    DeviceId,
+    /// Complete account-authorized local device list.
+    LinkedDevices,
+    /// Per-device delivery state for one account-level message.
+    MessageDeviceDeliveries {
+        /// Stable message id (hex).
+        message: String,
+    },
+    /// Rename one active linked physical device.
+    DeviceRename {
+        /// Exact device id (hex).
+        device: String,
+        /// Exact bounded UTF-8 display name.
+        name: String,
+    },
+    /// Permanently revoke another linked physical device.
+    DeviceRevoke {
+        /// Exact device id (hex).
+        device: String,
+    },
+    /// Begin a bounded account-authenticated proximate link offer.
+    DeviceLinkBegin,
+    /// Accept a link offer on a pristine target and return response/code.
+    DeviceLinkAccept {
+        /// Hex-encoded offer bytes.
+        offer: String,
+        /// Exact proposed device name.
+        name: String,
+    },
+    /// Derive the source-side comparison code for one target response.
+    DeviceLinkCode {
+        /// Hex-encoded response bytes.
+        response: String,
+    },
+    /// Confirm and produce the encrypted selective initial-transfer package.
+    DeviceLinkApprove {
+        /// Hex-encoded target response.
+        response: String,
+        /// Explicit initial-transfer selection.
+        selection: DeviceLinkSelectionInput,
+        /// Both users explicitly confirmed the comparison code.
+        confirmed: bool,
+    },
+    /// Confirm and import one encrypted link package on the pristine target.
+    DeviceLinkComplete {
+        /// Hex-encoded approved package.
+        package: String,
+        /// Both users explicitly confirmed the comparison code.
+        confirmed: bool,
+    },
+    /// Export one encrypted convergence bundle to an active linked device.
+    DeviceSyncExport {
+        /// Exact recipient device id (hex).
+        device: String,
+    },
+    /// Import one encrypted convergence bundle.
+    DeviceSyncImport {
+        /// Hex-encoded bundle bytes.
+        bundle: String,
+    },
     /// Render exact source into the bounded, inert shared display model.
     FormatText {
         /// Exact authenticated or composed UTF-8 source.
@@ -999,6 +1081,14 @@ pub fn err(id: u64, message: &str) -> String {
 /// An event line for subscribed connections.
 pub fn event_line(event: &Event) -> String {
     let body = match event {
+        Event::DevicesChanged => json!({
+            "type": "devices_changed",
+        }),
+        Event::DeviceLinkCompleted { account, device } => json!({
+            "type": "device_link_completed",
+            "account": hex_encode(account),
+            "device": hex_encode(device),
+        }),
         Event::CustomIconsChanged => json!({
             "type": "custom_icons_changed",
         }),
@@ -2267,6 +2357,60 @@ mod tests {
             .to_string(),
         )
         .is_err());
+    }
+
+    #[test]
+    fn linked_device_rpcs_are_explicit_bounded_and_strict() {
+        let device = "11".repeat(32);
+        let response = "22".repeat(64);
+        let approve = parse_request(
+            &json!({
+                "id": 30,
+                "op": "device_link_approve",
+                "response": response,
+                "selection": {
+                    "contacts": true,
+                    "organization": false,
+                    "history": true,
+                },
+                "confirmed": true,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(matches!(approve.op, Op::DeviceLinkApprove { .. }));
+        assert!(parse_request(
+            &json!({
+                "id": 31,
+                "op": "device_link_approve",
+                "response": "00",
+                "selection": {
+                    "contacts": true,
+                    "organization": true,
+                    "history": true,
+                    "drafts": true,
+                },
+                "confirmed": true,
+            })
+            .to_string(),
+        )
+        .is_err());
+        assert!(parse_request(
+            &json!({
+                "id": 32,
+                "op": "device_revoke",
+                "device": device,
+                "name": "ambiguous",
+            })
+            .to_string(),
+        )
+        .is_err());
+        assert!(matches!(
+            parse_request(r#"{"id":33,"op":"linked_devices"}"#)
+                .unwrap()
+                .op,
+            Op::LinkedDevices
+        ));
     }
 
     #[test]

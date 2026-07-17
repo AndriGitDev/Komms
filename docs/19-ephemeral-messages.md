@@ -71,16 +71,17 @@ terminal `expired` or `consumed` tombstone. Duplicate, delayed, reordered, and
 expiry-before-original delivery therefore cannot resurrect plaintext after a
 restart.
 
-`KKR6` is the current backup format. It preserves KKR5's exclusion of active ephemeral history,
+`KKR7` is the current backup format. It preserves KKR5's exclusion of active ephemeral history,
 attachment manifests, and media, while including terminal tombstones. Restore
 cannot move a live disappearing/view-once copy to another device and cannot
-revive a copy already removed on the source. `KKR1` through `KKR5` remain
+revive a copy already removed on the source. `KKR1` through `KKR6` remain
 restorable. Ordinary history, edits, note-to-self, and private local metadata
 keep their previous backup behavior.
 
-Linked-device replication is not shipped yet. Each future device will enforce
-its own local deadline/first reveal and converge terminal tombstones; no device
-may promise that another device or recipient deleted a copy.
+C2 linked-device sync carries terminal expiry/consumption tombstones but never
+active ephemeral plaintext, manifests, or media. Every installation enforces
+its own local deadline and first reveal; no device may promise that another
+device or recipient deleted a copy.
 
 ## 4. Surfaces
 
@@ -117,7 +118,8 @@ Automated acceptance covers bounded/malformed decoding and fuzzing; envelope
 hint mismatch; capability and anonymous-first-flight refusal; pairwise/group
 delivery; expiry before original; duplicate/reordered delivery; restart;
 tombstone non-resurrection; first-output and output-failure consumption;
-ordinary export refusal; KKR1–KKR5 restore; KKR6 exclusion/tombstones; relay,
+ordinary export refusal; KKR1–KKR7 restore; active-content exclusion and
+tombstones; C2 tombstone convergence; relay,
 bridge, fragment, and queue deletion; strict RPC/CLI; UniFFI; shared parity
 fixtures; and desktop/Android/iOS source behavior.
 

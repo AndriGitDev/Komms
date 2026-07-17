@@ -21,15 +21,15 @@ use kult_protocol::{
     epoch_day, pad, pad_to_minimum, validate_missing_ranges, AttachmentBulkOperation,
     AttachmentBulkRecord, AttachmentManifest, AttachmentObject, AttachmentReason, AttachmentRole,
     AttachmentScope, DecodedAttachmentBulkRecord, DecodedContent, Envelope, EnvelopeKind,
-    Ephemeral, MailboxKey, MissingRange, CONTENT_FORMAT_V1, CONTENT_KIND_ATTACHMENT,
-    CONTENT_KIND_EPHEMERAL, MAX_EPHEMERAL_LIFETIME_SECS, MAX_PREVIEW_OBJECT_LEN,
-    MAX_PRIMARY_OBJECT_LEN, MIN_EPHEMERAL_LIFETIME_SECS,
+    Ephemeral, MailboxKey, MissingRange, CONTENT_KIND_ATTACHMENT, CONTENT_KIND_EPHEMERAL,
+    MAX_EPHEMERAL_LIFETIME_SECS, MAX_PREVIEW_OBJECT_LEN, MAX_PRIMARY_OBJECT_LEN,
+    MIN_EPHEMERAL_LIFETIME_SECS,
 };
 use kult_store::{
     DeliveryState, Direction, EphemeralConversation, EphemeralMode, EphemeralRecord,
     EphemeralState, GroupDelivery, GroupMessageRecord, MediaDirection, MediaObjectRecord,
-    MediaRecord, MediaScope, MediaTransferRecord, MediaTransferState, MessageRecord, QueueClass,
-    QueueItem, Store, StoreError,
+    MediaRecord, MediaScope, MediaTransferRecord, MediaTransferState, MessageDeviceDeliveryRecord,
+    MessageRecord, QueueClass, QueueItem, Store, StoreError,
 };
 
 const BULK_CONTROL_PADDING_FLOOR: usize = 4096;
@@ -282,7 +282,7 @@ impl Node {
             return Err(NodeError::AttachmentUnsupported);
         }
         if expires_at.is_some()
-            && (!self.sessions.contains_key(peer)
+            && (!self.peer_has_live_device_sessions(peer)?
                 || !self.peer_supports_kind(peer, CONTENT_KIND_EPHEMERAL)?)
         {
             return Err(NodeError::EphemeralUnsupported);
@@ -575,7 +575,7 @@ impl Node {
                 return Err(NodeError::AttachmentUnsupported);
             }
             if expires_at.is_some()
-                && (!self.sessions.contains_key(peer)
+                && (!self.peer_has_live_device_sessions(peer)?
                     || !self.peer_supports_kind(peer, CONTENT_KIND_EPHEMERAL)?)
             {
                 return Err(NodeError::EphemeralUnsupported);
@@ -1233,7 +1233,12 @@ impl Node {
                                     content_hash: object.content_hash,
                                 },
                             )?;
-                            self.queue_attachment_bulk(&transfer.peer, &complete, now, rng)?;
+                            self.queue_attachment_bulk_to_account(
+                                &transfer.peer,
+                                &complete,
+                                now,
+                                rng,
+                            )?;
                             queued = true;
                             continue;
                         }
@@ -1247,7 +1252,7 @@ impl Node {
                             object.object_id,
                             AttachmentBulkOperation::RequestMissing { role, ranges },
                         )?;
-                        self.queue_attachment_bulk(&transfer.peer, &record, now, rng)?;
+                        self.queue_attachment_bulk_to_account(&transfer.peer, &record, now, rng)?;
                         queued = true;
                     }
                     if queued {
@@ -1296,7 +1301,7 @@ impl Node {
                     _ => unreachable!("terminal state checked above"),
                 };
                 let terminal = self.bulk_record(transfer, object.object_id, operation)?;
-                self.queue_attachment_bulk(&transfer.peer, &terminal, now, rng)?;
+                self.queue_attachment_bulk_to_account(&transfer.peer, &terminal, now, rng)?;
                 self.store
                     .set_media_transfer_state(&transfer.local_id, transfer.state, 0, rng)?;
             }
@@ -1349,6 +1354,7 @@ impl Node {
     pub(crate) fn apply_attachment_bulk(
         &mut self,
         peer: [u8; 32],
+        peer_device: [u8; 32],
         body: &[u8],
         now: u64,
         rng: &mut impl CryptoRngCore,
@@ -1394,7 +1400,7 @@ impl Node {
                                 sealed_chunk: &sealed,
                             },
                         )?;
-                        self.queue_attachment_bulk(&peer, &chunk, now, rng)?;
+                        self.queue_attachment_bulk(&peer_device, &chunk, now, rng)?;
                         served += 1;
                     }
                 }
@@ -1448,7 +1454,7 @@ impl Node {
                         false,
                         rng,
                     )?;
-                    self.queue_attachment_bulk(&peer, &corrupt, now, rng)?;
+                    self.queue_attachment_bulk(&peer_device, &corrupt, now, rng)?;
                     return Ok(());
                 }
                 match self
@@ -1469,7 +1475,7 @@ impl Node {
                             false,
                             rng,
                         )?;
-                        self.queue_attachment_bulk(&peer, &reject, now, rng)?;
+                        self.queue_attachment_bulk(&peer_device, &reject, now, rng)?;
                         return Ok(());
                     }
                     Err(StoreError::LowStorage) => {
@@ -1485,7 +1491,7 @@ impl Node {
                             false,
                             rng,
                         )?;
-                        self.queue_attachment_bulk(&peer, &reject, now, rng)?;
+                        self.queue_attachment_bulk(&peer_device, &reject, now, rng)?;
                         return Ok(());
                     }
                     Err(StoreError::MediaState) => {
@@ -1501,7 +1507,7 @@ impl Node {
                             false,
                             rng,
                         )?;
-                        self.queue_attachment_bulk(&peer, &corrupt, now, rng)?;
+                        self.queue_attachment_bulk(&peer_device, &corrupt, now, rng)?;
                         return Ok(());
                     }
                     Err(error) => return Err(error.into()),
@@ -1542,7 +1548,7 @@ impl Node {
                             false,
                             rng,
                         )?;
-                        self.queue_attachment_bulk(&peer, &corrupt, now, rng)?;
+                        self.queue_attachment_bulk(&peer_device, &corrupt, now, rng)?;
                         return Ok(());
                     }
                     self.store
@@ -1555,7 +1561,7 @@ impl Node {
                             content_hash: verified_hash,
                         },
                     )?;
-                    self.queue_attachment_bulk(&peer, &complete, now, rng)?;
+                    self.queue_attachment_bulk(&peer_device, &complete, now, rng)?;
                     let all_complete = self
                         .store
                         .media_objects_for_transfer(&transfer.local_id)?
@@ -1661,12 +1667,7 @@ impl Node {
     }
 
     pub(crate) fn peer_supports_attachment(&self, peer: &[u8; 32]) -> Result<bool> {
-        Ok(self
-            .store
-            .get_capabilities(peer)?
-            .is_some_and(|capabilities| {
-                capabilities.supports(CONTENT_FORMAT_V1, CONTENT_KIND_ATTACHMENT)
-            }))
+        self.peer_supports_kind(peer, CONTENT_KIND_ATTACHMENT)
     }
 
     fn queue_pairwise_attachment_manifest(
@@ -1686,38 +1687,116 @@ impl Node {
         else {
             return Err(NodeError::UnknownAttachment);
         };
-        if message.wire_id.is_some() {
+        let mut routes = self.store.contact_devices_for(&transfer.peer)?;
+        if routes.is_empty() {
+            routes.push(kult_store::ContactDeviceRecord {
+                account: transfer.peer,
+                device: transfer.peer,
+                name: None,
+                certificate: Vec::new(),
+                bundle: Vec::new(),
+                hints: Vec::new(),
+                manifest_generation: 0,
+                manifest_state_id: [0u8; 32],
+                last_seen: now,
+                revoked_at: None,
+                revoked_after_counter: None,
+            });
+        }
+        routes.sort_by_key(|endpoint| endpoint.device);
+        routes.dedup_by_key(|endpoint| endpoint.device);
+        let deliveries = self
+            .store
+            .message_device_deliveries(&transfer.manifest_content_id)?;
+        if routes.iter().any(|endpoint| {
+            !deliveries
+                .iter()
+                .any(|delivery| delivery.device == endpoint.device && delivery.wire_id.is_some())
+                && !self.sessions.contains_key(&endpoint.device)
+        }) {
             return Ok(false);
         }
-        let Some(session) = self.sessions.get_mut(&transfer.peer) else {
-            return Ok(false);
-        };
-        let ratchet = session.encrypt(rng, now, &pad(&message.body)?, &[]);
-        let token = delivery_token(
-            &MailboxKey::from_bytes(*session.mailbox_key()),
-            epoch_day(now),
-            &transfer.peer,
-        );
-        self.store.put_session(&transfer.peer, session, rng)?;
-        let envelope = match attachment_ephemeral_retention(&message.body) {
-            Some(deadline) => {
-                Envelope::new_retained(EnvelopeKind::Message, token, deadline, ratchet.encode())?
+
+        let padded = pad(&message.body)?;
+        let retention = attachment_ephemeral_retention(&message.body);
+        let mut queued = message.wire_id.is_some();
+        for endpoint in routes {
+            if deliveries
+                .iter()
+                .any(|delivery| delivery.device == endpoint.device && delivery.wire_id.is_some())
+            {
+                queued = true;
+                continue;
             }
-            None => Envelope::new(EnvelopeKind::Message, token, ratchet.encode()),
-        };
-        message.wire_id = Some(envelope.content_id());
+            let route = endpoint.device;
+            let session = self.sessions.get_mut(&route).ok_or(NodeError::NoSession)?;
+            let ratchet = session.encrypt(rng, now, &padded, &[]);
+            let token = delivery_token(
+                &MailboxKey::from_bytes(*session.mailbox_key()),
+                epoch_day(now),
+                &route,
+            );
+            self.store.put_session(&route, session, rng)?;
+            let envelope = match retention {
+                Some(deadline) => Envelope::new_retained(
+                    EnvelopeKind::Message,
+                    token,
+                    deadline,
+                    ratchet.encode(),
+                )?,
+                None => Envelope::new(EnvelopeKind::Message, token, ratchet.encode()),
+            };
+            let wire_id = envelope.content_id();
+            if message.wire_id.is_none() {
+                message.wire_id = Some(wire_id);
+            }
+            self.store.put_message_device_delivery(
+                &MessageDeviceDeliveryRecord {
+                    message: message.id,
+                    account: transfer.peer,
+                    device: route,
+                    wire_id: Some(wire_id),
+                    state: DeliveryState::Queued,
+                },
+                rng,
+            )?;
+            self.store.queue_push(
+                &QueueItem {
+                    peer: route,
+                    msg_id: Some(message.id),
+                    group_msg_id: None,
+                    class: QueueClass::Bulk,
+                    envelope,
+                },
+                rng,
+            )?;
+            queued = true;
+        }
         self.store.update_message(&message, rng)?;
-        self.store.queue_push(
-            &QueueItem {
-                peer: transfer.peer,
-                msg_id: Some(message.id),
-                group_msg_id: None,
-                class: QueueClass::Bulk,
-                envelope,
-            },
-            rng,
-        )?;
-        Ok(true)
+        Ok(queued)
+    }
+
+    fn queue_attachment_bulk_to_account(
+        &mut self,
+        account: &[u8; 32],
+        record: &AttachmentBulkRecord<'_>,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let endpoints = self.store.contact_devices_for(account)?;
+        if endpoints.is_empty() {
+            return self.queue_attachment_bulk(account, record, now, rng);
+        }
+        if endpoints
+            .iter()
+            .any(|endpoint| !self.sessions.contains_key(&endpoint.device))
+        {
+            return Err(NodeError::NoSession);
+        }
+        for endpoint in endpoints {
+            self.queue_attachment_bulk(&endpoint.device, record, now, rng)?;
+        }
+        Ok(())
     }
 
     fn queue_attachment_bulk(
@@ -2082,7 +2161,7 @@ mod tests {
             operation: AttachmentBulkOperation::Cancel(AttachmentReason::User),
         };
         let encoded = encode_attachment_bulk_record(&record).unwrap();
-        node.apply_attachment_bulk([2; 32], &encoded, 1_800_000_000, &mut rng)
+        node.apply_attachment_bulk([2; 32], [2; 32], &encoded, 1_800_000_000, &mut rng)
             .unwrap();
         assert!(node.attachments().unwrap().is_empty());
         assert!(node.drain_events().is_empty());

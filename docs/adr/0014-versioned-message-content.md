@@ -303,5 +303,5 @@ The implementation PR must include:
   where necessary, extend capabilities, add unknown-client tests, and state
   backup behavior.
 - This decision should be revisited only if measured overhead makes the fixed
-  header untenable on the physical LoRa bench, or if a future multi-device ADR
-  needs capability convergence beyond identity-scoped pairwise sessions.
+  header untenable on the physical LoRa bench, or if a later ADR needs
+  capability convergence beyond ADR-0024's per-device pairwise sessions.

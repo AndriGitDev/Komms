@@ -439,6 +439,57 @@ private func imageRecipe() -> ImageEditRecipe {
 }
 
 final class SessionE2eTests: XCTestCase {
+    func testLinkedDeviceCeremonyAndSyncUseOnlyIOSSession() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceEvents = Events()
+        let targetEvents = Events()
+        let source = try open(directory, "source", sourceEvents)
+        let target = try open(directory, "target", targetEvents)
+        _ = try source.sendNoteToSelf(body: "source-only history")
+
+        let sourceDevice = try source.deviceId()
+        let targetDevice = try target.deviceId()
+        let offer = try source.beginDeviceLink()
+        XCTAssertEqual(offer.uppercased(), deviceLinkQrText(offer))
+        let accepted = try target.acceptDeviceLink(
+            offerHex: offer, deviceName: "iPad")
+        XCTAssertEqual(6, accepted.confirmationCode.count)
+        let responseHex = hexEncode(accepted.response)
+        XCTAssertEqual(
+            accepted.confirmationCode,
+            try source.deviceLinkConfirmationCode(responseHex: responseHex))
+        let package = try source.approveDeviceLink(
+            responseHex: responseHex,
+            contacts: false,
+            organization: false,
+            history: false,
+            confirmed: true)
+        try target.completeDeviceLink(packageHex: package, confirmed: true)
+        XCTAssertEqual(source.peer, target.peer)
+        XCTAssertNotEqual(sourceDevice, targetDevice)
+        XCTAssertTrue(try target.noteToSelfMessages().isEmpty)
+        XCTAssertEqual(2, try source.linkedDevices().count)
+        _ = try targetEvents.wait("device link completion") { event -> String? in
+            if case .deviceLinkCompleted(_, let device) = event, device == targetDevice {
+                return device
+            }
+            return nil
+        }
+
+        try source.renameLinkedDevice(device: targetDevice, name: "Travel iPad")
+        _ = try target.importDeviceSync(
+            bundleHex: source.exportDeviceSync(device: targetDevice))
+        XCTAssertTrue(try target.linkedDevices().contains {
+            $0.id == targetDevice && $0.name == "Travel iPad"
+        })
+
+        source.stop()
+        target.stop()
+    }
+
     func testMessageEditSharedFixtureHasCanonicalWireAndWinner() throws {
         let fixture = try MessageEditParityFixture.load()
         XCTAssertEqual("komms-message-edit-parity-v1", fixture.schema)
