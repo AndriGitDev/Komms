@@ -658,6 +658,37 @@ async fn wait_poll_closed(client: &mut Client, group: &str, poll_id: &str) -> Va
     panic!("poll {poll_id} did not close");
 }
 
+async fn wait_authority_generation(client: &mut Client, group: &str, generation: u64) -> Value {
+    for _ in 0..100 {
+        let authority = client
+            .ok(json!({ "op": "group_authority", "group": group }))
+            .await;
+        if authority["signed"] == json!(true)
+            && authority["generation"]
+                .as_u64()
+                .is_some_and(|seen| seen >= generation)
+        {
+            return authority;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("group authority did not reach generation {generation}");
+}
+
+async fn wait_group_presence(client: &mut Client, group: &str, present: bool) {
+    for _ in 0..100 {
+        let groups = client.ok(json!({ "op": "groups" })).await;
+        let found = groups["groups"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item["id"] == json!(group)));
+        if found == present {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("group {group} presence did not become {present}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn note_to_self_via_rpc_is_local_and_uses_the_reserved_identity() {
     let directory = tempfile::tempdir().unwrap();
@@ -1745,6 +1776,153 @@ async fn groups_via_rpc_only() {
         "poll events never become empty chat rows"
     );
 
+    // C6 remains typed across RPC: capability-gated legacy upgrade, owner
+    // role changes, generation-bound admin requests, signed moderation, and
+    // ownership transfer all converge without exposing authority payloads.
+    let legacy_authority = a
+        .ok(json!({ "op": "group_authority", "group": group }))
+        .await;
+    assert_eq!(legacy_authority["signed"], json!(false));
+    assert_eq!(legacy_authority["owner"], json!(alice_peer));
+    assert_eq!(legacy_authority["my_role"], json!("owner"));
+    let upgrade_generation = legacy_authority["generation"].as_u64().unwrap() + 1;
+    a.ok(json!({ "op": "group_upgrade_authority", "group": group }))
+        .await;
+    let upgraded = wait_authority_generation(&mut b, &group, upgrade_generation).await;
+    assert_eq!(upgraded["owner"], json!(alice_peer));
+    assert_eq!(upgraded["my_role"], json!("member"));
+    assert_eq!(upgraded["members"].as_array().unwrap().len(), 2);
+
+    a.ok(json!({
+        "op": "group_set_role",
+        "group": group,
+        "peer": bob_peer,
+        "role": "admin",
+    }))
+    .await;
+    let admin_generation = upgrade_generation + 1;
+    let administered = wait_authority_generation(&mut b, &group, admin_generation).await;
+    assert_eq!(administered["my_role"], json!("admin"));
+    let err = b
+        .call(json!({
+            "op": "group_set_role",
+            "group": group,
+            "peer": alice_peer,
+            "role": "member",
+        }))
+        .await
+        .unwrap_err();
+    assert!(err.contains("owner"), "got: {err}");
+
+    let rename_request = b
+        .ok(json!({
+            "op": "group_rename",
+            "group": group,
+            "name": "authority trail crew",
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let rename_generation = admin_generation + 1;
+    let rename_result = b_events
+        .wait_event(|event| {
+            event["type"] == json!("group_admin_request_resolved")
+                && event["request_id"] == json!(rename_request)
+        })
+        .await;
+    assert_eq!(rename_result["accepted"], json!(true));
+    assert_eq!(rename_result["generation"], json!(rename_generation));
+    assert!(rename_result["state_id"].as_str().is_some());
+    wait_authority_generation(&mut b, &group, rename_generation).await;
+    let renamed_groups = b.ok(json!({ "op": "groups" })).await;
+    assert!(renamed_groups["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|listed| {
+            listed["id"] == json!(group) && listed["name"] == json!("authority trail crew")
+        }));
+
+    let moderated_poll = a
+        .ok(json!({
+            "op": "group_poll_create",
+            "group": group,
+            "question": "Close for weather?",
+            "options": ["Keep open", "Close"],
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    b_events
+        .wait_event(|event| {
+            event["type"] == json!("poll_updated") && event["poll_id"] == json!(moderated_poll)
+        })
+        .await;
+    let moderation_request = b
+        .ok(json!({
+            "op": "group_poll_moderate_close",
+            "group": group,
+            "poll_author": alice_peer,
+            "poll_id": moderated_poll,
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let moderation_generation = rename_generation + 1;
+    let moderation_result = b_events
+        .wait_event(|event| {
+            event["type"] == json!("group_admin_request_resolved")
+                && event["request_id"] == json!(moderation_request)
+        })
+        .await;
+    assert_eq!(moderation_result["accepted"], json!(true));
+    assert_eq!(
+        moderation_result["generation"],
+        json!(moderation_generation)
+    );
+    let moderated = wait_poll_closed(&mut b, &group, &moderated_poll).await;
+    assert_eq!(moderated["moderated_by"], json!(alice_peer));
+    assert_eq!(moderated["close_policy"], json!("signed_owner_snapshot"));
+
+    a.ok(json!({
+        "op": "group_transfer_owner",
+        "group": group,
+        "peer": bob_peer,
+    }))
+    .await;
+    let bob_owner_generation = moderation_generation + 1;
+    let bob_owner = wait_authority_generation(&mut b, &group, bob_owner_generation).await;
+    assert_eq!(bob_owner["owner"], json!(bob_peer));
+    assert_eq!(bob_owner["owner_epoch"], json!(1));
+    assert_eq!(bob_owner["my_role"], json!("owner"));
+    let err = b
+        .call(json!({ "op": "group_leave", "group": group }))
+        .await
+        .unwrap_err();
+    assert!(err.contains("owner"), "got: {err}");
+
+    b.ok(json!({
+        "op": "group_transfer_owner",
+        "group": group,
+        "peer": alice_peer,
+    }))
+    .await;
+    let alice_owner_generation = bob_owner_generation + 1;
+    let alice_owner = wait_authority_generation(&mut a, &group, alice_owner_generation).await;
+    assert_eq!(alice_owner["owner"], json!(alice_peer));
+    assert_eq!(alice_owner["owner_epoch"], json!(2));
+    a.ok(json!({
+        "op": "group_set_role",
+        "group": group,
+        "peer": bob_peer,
+        "role": "member",
+    }))
+    .await;
+    wait_authority_generation(&mut b, &group, alice_owner_generation + 1).await;
+
     // B10 stays local and structured through RPC: explicit random folder ids,
     // complete-set reorder, and exact typed targets without name inference.
     let queued_before_folders = a.ok(json!({ "op": "status" })).await["queued"].clone();
@@ -2230,9 +2408,7 @@ async fn groups_via_rpc_only() {
 
     a.ok(json!({ "op": "group_remove", "group": group, "peer": bob_peer }))
         .await;
-    b_events
-        .wait_event_count(|event| event["type"] == json!("group_updated"), 2)
-        .await;
+    wait_group_presence(&mut b, &group, false).await;
     assert!(b.ok(json!({ "op": "groups" })).await["groups"]
         .as_array()
         .unwrap()
@@ -2244,9 +2420,7 @@ async fn groups_via_rpc_only() {
         .as_str()
         .unwrap()
         .to_owned();
-    b_events
-        .wait_event_count(|event| event["type"] == json!("group_updated"), 3)
-        .await;
+    wait_group_presence(&mut b, &leave_group, true).await;
     assert_eq!(
         b.ok(json!({ "op": "group_leave", "group": leave_group }))
             .await,

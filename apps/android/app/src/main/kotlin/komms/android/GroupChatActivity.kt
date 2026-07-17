@@ -34,9 +34,11 @@ import uniffi.kult_ffi.Event
 import uniffi.kult_ffi.FolderTarget
 import uniffi.kult_ffi.FolderTargetKind
 import uniffi.kult_ffi.Group
+import uniffi.kult_ffi.GroupAuthority
 import uniffi.kult_ffi.GroupMentionCapability
 import uniffi.kult_ffi.GroupMessage
 import uniffi.kult_ffi.GroupPoll
+import uniffi.kult_ffi.GroupRole
 import uniffi.kult_ffi.LabelTarget
 import uniffi.kult_ffi.LabelTargetKind
 import uniffi.kult_ffi.MentionSpan
@@ -61,6 +63,7 @@ class GroupChatActivity : SecureActivity() {
     private lateinit var attachmentController: AttachmentController
     private lateinit var audioController: AudioMessageController
     private var currentGroup: Group? = null
+    private var currentAuthority: GroupAuthority? = null
     private var mentionCapability: GroupMentionCapability? = null
     private val draftMentions = mutableListOf<DraftMention>()
     private var suppressMentionWatcher = false
@@ -72,6 +75,8 @@ class GroupChatActivity : SecureActivity() {
             is Event.GroupDeliveryUpdated -> true // ids are cheap to refresh
             is Event.GroupUpdated -> event.group == groupId
             is Event.PollUpdated -> event.group == groupId
+            is Event.GroupAuthorityUpdated -> event.group == groupId
+            is Event.GroupAdminRequestResolved -> event.group == groupId
             is Event.MentionReceived -> true
             is Event.SessionEstablished -> true
             is Event.ScheduledMessageUpdated -> true
@@ -283,6 +288,7 @@ class GroupChatActivity : SecureActivity() {
                     }.map { message -> RenderedMessage(message, session.formatText(message.body)) },
                     attachments = session.attachments(),
                     polls = if (group == null) emptyList() else session.groupPolls(groupId),
+                    authority = if (group == null) null else session.groupAuthority(groupId),
                 )
             },
         ) { state ->
@@ -294,6 +300,7 @@ class GroupChatActivity : SecureActivity() {
             }
             contacts = state.contacts
             currentGroup = group
+            currentAuthority = state.authority
             groupName = group.name
             supportActionBar?.title = group.name
             adapter.submit(state.messages)
@@ -326,7 +333,11 @@ class GroupChatActivity : SecureActivity() {
                 setTypeface(typeface, Typeface.BOLD)
             })
             card.addView(TextView(this).apply {
-                text = getString(if (poll.closed) R.string.poll_closed_policy else R.string.poll_open_policy)
+                text = if (poll.closed && poll.moderatedBy != null) {
+                    getString(R.string.poll_moderated_policy, memberLabel(poll.moderatedBy))
+                } else {
+                    getString(if (poll.closed) R.string.poll_closed_policy else R.string.poll_open_policy)
+                }
             })
             poll.options.forEach { option ->
                 card.addView(Button(this).apply {
@@ -383,6 +394,33 @@ class GroupChatActivity : SecureActivity() {
                                     session.closeGroupPoll(groupId, poll.author, poll.id)
                                 }) {
                                     toast(getString(R.string.poll_closed))
+                                    refresh()
+                                }
+                            }
+                            .setNegativeButton(android.R.string.cancel, null)
+                            .show()
+                    }
+                })
+            }
+            if (!poll.closed && currentAuthority?.myRole in listOf(GroupRole.OWNER, GroupRole.ADMIN)) {
+                card.addView(Button(this).apply {
+                    text = getString(
+                        if (currentAuthority?.myRole == GroupRole.OWNER) {
+                            R.string.poll_moderate_action
+                        } else {
+                            R.string.poll_moderate_request_action
+                        },
+                    )
+                    setOnClickListener {
+                        AlertDialog.Builder(this@GroupChatActivity)
+                            .setTitle(R.string.poll_moderate_confirm_title)
+                            .setMessage(getString(R.string.poll_moderate_confirm, poll.question))
+                            .setPositiveButton(text) { _, _ ->
+                                val session = NodeHolder.session ?: return@setPositiveButton
+                                runNode(work = {
+                                    session.moderateGroupPollClose(groupId, poll.author, poll.id)
+                                }) {
+                                    toast(getString(R.string.poll_moderate_sent))
                                     refresh()
                                 }
                             }
@@ -847,53 +885,92 @@ class GroupChatActivity : SecureActivity() {
         val session = NodeHolder.session ?: return
         runNode(
             work = {
-                session.groups().firstOrNull { it.id == groupId } to session.contacts()
+                Triple(
+                    session.groups().firstOrNull { it.id == groupId },
+                    session.contacts(),
+                    session.groupAuthority(groupId),
+                )
             },
-        ) { (group, availableContacts) ->
+        ) { (group, availableContacts, authority) ->
             if (group == null) {
                 toast(getString(R.string.group_no_longer_active))
                 finish()
                 return@runNode
             }
             contacts = availableContacts
-            showMembersDialog(group, availableContacts)
+            showMembersDialog(group, availableContacts, authority)
         }
     }
 
-    private fun showMembersDialog(group: Group, availableContacts: List<Contact>) {
+    private fun showMembersDialog(
+        group: Group,
+        availableContacts: List<Contact>,
+        authority: GroupAuthority,
+    ) {
         val session = NodeHolder.session ?: return
         val self = session.peer
-        val isCreator = group.creator == self
+        val isOwner = authority.myRole == GroupRole.OWNER
+        val isAdmin = authority.myRole == GroupRole.ADMIN
         val view = LayoutInflater.from(this).inflate(R.layout.dialog_group_members, null)
-        view.findViewById<TextView>(R.id.group_member_summary).text = if (isCreator) {
-            resources.getQuantityString(
-                R.plurals.group_summary_creator,
-                group.members.size,
-                group.members.size,
-            )
-        } else {
-            resources.getQuantityString(
-                R.plurals.group_summary_member,
-                group.members.size,
-                group.members.size,
-                memberName(group.creator),
-            )
-        }
-        val roster = view.findViewById<LinearLayout>(R.id.group_member_roster)
         val dialog = AlertDialog.Builder(this)
             .setTitle(getString(R.string.group_members_title, group.name))
             .setView(view)
             .setNegativeButton(android.R.string.ok, null)
             .create()
-
-        for (peer in group.members) {
+        view.findViewById<TextView>(R.id.group_member_summary).text = getString(
+            R.string.group_authority_summary,
+            group.members.size,
+            memberName(authority.owner),
+            authority.generation.toString(),
+            if (authority.signed) getString(R.string.group_authority_signed) else getString(R.string.group_authority_legacy),
+        )
+        view.findViewById<EditText>(R.id.group_rename_input).apply {
+            visibility = if (isOwner || isAdmin) View.VISIBLE else View.GONE
+            setText(group.name)
+        }
+        view.findViewById<Button>(R.id.group_rename).apply {
+            visibility = if (isOwner || isAdmin) View.VISIBLE else View.GONE
+            text = getString(if (isOwner) R.string.group_rename_action else R.string.group_rename_request_action)
+            setOnClickListener {
+                val name = view.findViewById<EditText>(R.id.group_rename_input).text.toString().trim()
+                if (name.isEmpty()) return@setOnClickListener
+                runNode(work = { session.renameGroup(group.id, name) }) {
+                    dialog.dismiss()
+                    refresh()
+                }
+            }
+        }
+        val roster = view.findViewById<LinearLayout>(R.id.group_member_roster)
+        for (member in authority.members) {
+            val peer = member.peer
             val row = LayoutInflater.from(this).inflate(R.layout.row_group_member, roster, false)
             row.findViewById<TextView>(R.id.group_member_name).text = memberName(peer)
-            row.findViewById<TextView>(R.id.group_member_role).text = getString(
-                if (peer == group.creator) R.string.group_role_creator else R.string.group_role_member,
-            )
+            row.findViewById<TextView>(R.id.group_member_role).text = member.role.name.lowercase()
+            row.findViewById<Button>(R.id.group_member_role_action).apply {
+                visibility = if (isOwner && member.role != GroupRole.OWNER) View.VISIBLE else View.GONE
+                text = getString(if (member.role == GroupRole.ADMIN) R.string.group_make_member else R.string.group_make_admin)
+                setOnClickListener {
+                    val next = if (member.role == GroupRole.ADMIN) GroupRole.MEMBER else GroupRole.ADMIN
+                    runNode(work = { session.setGroupRole(group.id, peer, next) }) {
+                        dialog.dismiss()
+                        refresh()
+                    }
+                }
+            }
+            row.findViewById<Button>(R.id.group_member_transfer_owner).apply {
+                visibility = if (isOwner && member.role != GroupRole.OWNER) View.VISIBLE else View.GONE
+                setOnClickListener {
+                    runNode(work = { session.transferGroupOwner(group.id, peer) }) {
+                        dialog.dismiss()
+                        refresh()
+                    }
+                }
+            }
             row.findViewById<Button>(R.id.group_member_remove).apply {
-                visibility = if (isCreator && peer != self) View.VISIBLE else View.GONE
+                visibility = if (
+                    (isOwner && member.role != GroupRole.OWNER) ||
+                    (isAdmin && member.role == GroupRole.MEMBER)
+                ) View.VISIBLE else View.GONE
                 setOnClickListener { confirmRemove(dialog, group, peer) }
             }
             roster.addView(row)
@@ -901,11 +978,11 @@ class GroupChatActivity : SecureActivity() {
 
         val candidates = availableContacts.filter { it.peer !in group.members }
         view.findViewById<Button>(R.id.group_add_member).apply {
-            visibility = if (isCreator && candidates.isNotEmpty()) View.VISIBLE else View.GONE
+            visibility = if ((isOwner || isAdmin) && candidates.isNotEmpty()) View.VISIBLE else View.GONE
             setOnClickListener { chooseMemberToAdd(dialog, group, candidates) }
         }
         view.findViewById<Button>(R.id.group_leave).setOnClickListener {
-            confirmLeave(dialog, group)
+            if (isOwner) toast(getString(R.string.group_owner_must_transfer)) else confirmLeave(dialog, group)
         }
         dialog.show()
     }
@@ -963,6 +1040,7 @@ private data class GroupScreenState(
     val scheduled: List<RenderedMessage<ScheduledMessage>>,
     val attachments: List<Attachment>,
     val polls: List<GroupPoll>,
+    val authority: GroupAuthority?,
 )
 
 private data class DraftMention(val start: Int, val end: Int, val target: String)

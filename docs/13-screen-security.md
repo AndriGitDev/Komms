@@ -9,7 +9,7 @@ limits.
 ## User promise
 
 Protection starts before the encrypted store opens and cannot be disabled. It is
-therefore not a sealed preference, does not enter `KKR5`, and never creates an
+therefore not a sealed preference, does not enter `KKR6`, and never creates an
 envelope, capability, notification, queue item, peer synchronization, or
 transport work. `kult-node` owns the render-safe capability vocabulary;
 RPC/CLI and UniFFI expose it so every shell describes the same promise.

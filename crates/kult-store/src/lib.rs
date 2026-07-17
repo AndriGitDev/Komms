@@ -343,6 +343,20 @@ pub struct GroupRecord {
     pub pending: Vec<PendingAnnounce>,
 }
 
+/// Sealed C6 authority state kept separate from the ADR-0012 group blob so
+/// legacy postcard records remain byte-compatible.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupAuthorityRecord {
+    /// Exact group id and table key.
+    pub group: [u8; 32],
+    /// Winning immutable authority content event id.
+    pub state_id: [u8; 16],
+    /// Canonical signed authority payload (content frame payload only).
+    pub state_payload: Vec<u8>,
+    /// Bounded signed admin request ids already terminally processed.
+    pub consumed_requests: Vec<[u8; 16]>,
+}
+
 /// Per-member delivery state of one outbound group message.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupDelivery {
@@ -406,6 +420,7 @@ CREATE TABLE IF NOT EXISTS prekeys  (id INTEGER PRIMARY KEY CHECK (id = 1), blob
 CREATE TABLE IF NOT EXISTS pending  (seq INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS resets   (peer BLOB PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS groups       (gid BLOB PRIMARY KEY, blob BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS group_authority (gid BLOB PRIMARY KEY, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS group_chains (gid BLOB NOT NULL, peer BLOB NOT NULL, blob BLOB NOT NULL, PRIMARY KEY (gid, peer));
 CREATE TABLE IF NOT EXISTS group_msgs   (rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS media_transfers (id BLOB PRIMARY KEY, blob BLOB NOT NULL);
@@ -988,7 +1003,60 @@ impl Store {
             "DELETE FROM group_chains WHERE gid = ?1",
             params![id.as_slice()],
         )?;
+        self.conn.execute(
+            "DELETE FROM group_authority WHERE gid = ?1",
+            params![id.as_slice()],
+        )?;
         Ok(())
+    }
+
+    /// Persist or replace one sealed signed authority state.
+    pub fn put_group_authority(
+        &self,
+        rec: &GroupAuthorityRecord,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let plain =
+            Zeroizing::new(postcard::to_allocvec(rec).map_err(|_| StoreError::Serialization)?);
+        let sealed = self.k_groups.seal(b"group-authority", &plain, rng);
+        self.conn.execute(
+            "INSERT OR REPLACE INTO group_authority (gid, blob) VALUES (?1, ?2)",
+            params![rec.group.as_slice(), sealed],
+        )?;
+        Ok(())
+    }
+
+    /// Load one group's sealed signed authority state.
+    pub fn get_group_authority(&self, group: &[u8; 32]) -> Result<Option<GroupAuthorityRecord>> {
+        let sealed: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT blob FROM group_authority WHERE gid = ?1",
+                params![group.as_slice()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match sealed {
+            Some(sealed) => {
+                let plain = Zeroizing::new(self.k_groups.open(b"group-authority", &sealed)?);
+                Ok(Some(
+                    postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?,
+                ))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// All sealed C6 authority records for backup and audit.
+    pub fn group_authorities(&self) -> Result<Vec<GroupAuthorityRecord>> {
+        let mut stmt = self.conn.prepare("SELECT blob FROM group_authority")?;
+        let rows = stmt.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let plain = Zeroizing::new(self.k_groups.open(b"group-authority", &row?)?);
+            out.push(postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?);
+        }
+        Ok(out)
     }
 
     /// Persist (or replace) a co-member's receiving chain for a group. The

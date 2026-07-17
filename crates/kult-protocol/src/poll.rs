@@ -22,11 +22,13 @@ pub const MAX_POLL_VOTERS: usize = 64;
 const OP_CREATE: u8 = 1;
 const OP_VOTE: u8 = 2;
 const OP_CLOSE: u8 = 3;
+const OP_MODERATED_CLOSE: u8 = 4;
 const COMMON_HEADER_LEN: usize = 4;
 const CREATE_HEADER_LEN: usize = COMMON_HEADER_LEN + 8 + 2 + 1 + 1;
 const VOTE_LEN: usize = COMMON_HEADER_LEN + 32 + 16 + 16 + 8;
 const CLOSE_HEADER_LEN: usize = COMMON_HEADER_LEN + 32 + 16 + 1 + 3;
 const CLOSE_HEAD_LEN: usize = 32 + 16 + 16 + 8;
+const MODERATED_CLOSE_HEADER_LEN: usize = COMMON_HEADER_LEN + 32 + 32 + 16 + 8 + 1 + 3;
 
 /// Caller-provided stable choice for poll creation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -161,6 +163,31 @@ pub struct PollClose<'a> {
     head_bytes: &'a [u8],
 }
 
+/// Borrowed, validated owner-authored C6 moderation closure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PollModeratedClose<'a> {
+    /// Exact group containing the poll and authority state.
+    pub group: [u8; 32],
+    /// Original poll creator.
+    pub poll_author: [u8; 32],
+    /// Creator-minted poll id.
+    pub poll_id: [u8; 16],
+    /// Exact signed group-authority generation authorizing the moderator.
+    pub authority_generation: u64,
+    /// Domain-separated Ed25519 signature by the owner at that generation.
+    pub signature: [u8; 64],
+    head_bytes: &'a [u8],
+}
+
+impl<'a> PollModeratedClose<'a> {
+    /// Sorted owner-attested final vote heads.
+    pub fn heads(&self) -> PollVoteHeads<'a> {
+        PollVoteHeads {
+            bytes: self.head_bytes,
+        }
+    }
+}
+
 impl<'a> PollClose<'a> {
     /// Sorted creator-attested final vote heads.
     pub fn heads(&self) -> PollVoteHeads<'a> {
@@ -217,6 +244,8 @@ pub enum Poll<'a> {
     Vote(PollVote),
     /// Irreversibly close using the creator's exact accepted vote heads.
     Close(PollClose<'a>),
+    /// Owner-authored closure authorized by signed C6 group state.
+    ModeratedClose(PollModeratedClose<'a>),
 }
 
 /// Total classification of an authenticated poll payload.
@@ -332,6 +361,53 @@ pub fn encode_poll_close_payload(
     Ok(out)
 }
 
+/// Encode a canonical C6 owner-moderated closure.
+pub fn encode_poll_moderated_close_payload(
+    group: [u8; 32],
+    poll_author: [u8; 32],
+    poll_id: [u8; 16],
+    authority_generation: u64,
+    heads: &[PollVoteHead],
+    signature: [u8; 64],
+) -> Result<Vec<u8>> {
+    let mut out =
+        poll_moderation_signing_bytes(group, poll_author, poll_id, authority_generation, heads)?;
+    out.extend_from_slice(&signature);
+    Ok(out)
+}
+
+/// Canonical bytes covered by the C6 owner's moderation signature.
+pub fn poll_moderation_signing_bytes(
+    group: [u8; 32],
+    poll_author: [u8; 32],
+    poll_id: [u8; 16],
+    authority_generation: u64,
+    heads: &[PollVoteHead],
+) -> Result<Vec<u8>> {
+    if authority_generation == 0
+        || heads.len() > MAX_POLL_VOTERS
+        || !strictly_sorted_voters(heads.iter().map(|head| head.voter))
+        || heads.iter().any(|head| head.revision == 0)
+    {
+        return Err(ProtocolError::Malformed);
+    }
+    let mut out = Vec::with_capacity(MODERATED_CLOSE_HEADER_LEN + heads.len() * CLOSE_HEAD_LEN);
+    out.extend_from_slice(&[POLL_VERSION, OP_MODERATED_CLOSE, 0, 0]);
+    out.extend_from_slice(&group);
+    out.extend_from_slice(&poll_author);
+    out.extend_from_slice(&poll_id);
+    out.extend_from_slice(&authority_generation.to_le_bytes());
+    out.push(heads.len() as u8);
+    out.extend_from_slice(&[0; 3]);
+    for head in heads {
+        out.extend_from_slice(&head.voter);
+        out.extend_from_slice(&head.event_id);
+        out.extend_from_slice(&head.option_id);
+        out.extend_from_slice(&head.revision.to_le_bytes());
+    }
+    Ok(out)
+}
+
 /// Decode and validate one poll payload without allocating.
 pub fn decode_poll_payload(bytes: &[u8]) -> DecodedPoll<'_> {
     if bytes.len() < COMMON_HEADER_LEN {
@@ -344,6 +420,7 @@ pub fn decode_poll_payload(bytes: &[u8]) -> DecodedPoll<'_> {
         OP_CREATE => decode_create(bytes),
         OP_VOTE => decode_vote(bytes),
         OP_CLOSE => decode_close(bytes),
+        OP_MODERATED_CLOSE => decode_moderated_close(bytes),
         _ => DecodedPoll::Malformed,
     }
 }
@@ -473,6 +550,51 @@ fn decode_close(bytes: &[u8]) -> DecodedPoll<'_> {
     }))
 }
 
+fn decode_moderated_close(bytes: &[u8]) -> DecodedPoll<'_> {
+    if bytes.len() < MODERATED_CLOSE_HEADER_LEN + 64 || bytes[2] != 0 || bytes[3] != 0 {
+        return DecodedPoll::Malformed;
+    }
+    let mut group = [0u8; 32];
+    group.copy_from_slice(&bytes[4..36]);
+    let mut poll_author = [0u8; 32];
+    poll_author.copy_from_slice(&bytes[36..68]);
+    let mut poll_id = [0u8; 16];
+    poll_id.copy_from_slice(&bytes[68..84]);
+    let authority_generation = u64::from_le_bytes(bytes[84..92].try_into().expect("fixed slice"));
+    let count = bytes[92] as usize;
+    if authority_generation == 0
+        || count > MAX_POLL_VOTERS
+        || bytes[93..96] != [0; 3]
+        || MODERATED_CLOSE_HEADER_LEN + count * CLOSE_HEAD_LEN + 64 != bytes.len()
+    {
+        return DecodedPoll::Malformed;
+    }
+    let signature_at = bytes.len() - 64;
+    let head_bytes = &bytes[MODERATED_CLOSE_HEADER_LEN..signature_at];
+    let mut previous = None;
+    for chunk in head_bytes.chunks_exact(CLOSE_HEAD_LEN) {
+        let mut voter = [0u8; 32];
+        voter.copy_from_slice(&chunk[..32]);
+        if previous.is_some_and(|value| value >= voter) {
+            return DecodedPoll::Malformed;
+        }
+        previous = Some(voter);
+        if u64::from_le_bytes(chunk[64..72].try_into().expect("fixed slice")) == 0 {
+            return DecodedPoll::Malformed;
+        }
+    }
+    DecodedPoll::Poll(Poll::ModeratedClose(PollModeratedClose {
+        group,
+        poll_author,
+        poll_id,
+        authority_generation,
+        signature: bytes[signature_at..]
+            .try_into()
+            .expect("fixed signature slice"),
+        head_bytes,
+    }))
+}
+
 fn strictly_sorted_voters(voters: impl IntoIterator<Item = [u8; 32]>) -> bool {
     let mut previous = None;
     for voter in voters {
@@ -562,6 +684,30 @@ mod tests {
         assert_eq!(close.poll_author, [1; 32]);
         assert_eq!(close.poll_id, [2; 16]);
         assert_eq!(close.heads().collect::<Vec<_>>(), heads);
+
+        let signature = [0x77; 64];
+        let encoded =
+            encode_poll_moderated_close_payload([9; 32], [1; 32], [2; 16], 11, &heads, signature)
+                .unwrap();
+        assert_eq!(
+            &encoded[..encoded.len() - 64],
+            poll_moderation_signing_bytes([9; 32], [1; 32], [2; 16], 11, &heads)
+                .unwrap()
+                .as_slice()
+        );
+        let DecodedPoll::Poll(Poll::ModeratedClose(close)) = decode_poll_payload(&encoded) else {
+            panic!("moderated close must decode");
+        };
+        assert_eq!(close.group, [9; 32]);
+        assert_eq!(close.poll_author, [1; 32]);
+        assert_eq!(close.poll_id, [2; 16]);
+        assert_eq!(close.authority_generation, 11);
+        assert_eq!(close.signature, signature);
+        assert_eq!(close.heads().collect::<Vec<_>>(), heads);
+        assert_ne!(
+            poll_moderation_signing_bytes([8; 32], [1; 32], [2; 16], 11, &heads).unwrap(),
+            poll_moderation_signing_bytes([9; 32], [1; 32], [2; 16], 11, &heads).unwrap()
+        );
     }
 
     #[test]

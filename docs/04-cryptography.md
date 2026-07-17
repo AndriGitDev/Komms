@@ -189,10 +189,24 @@ keys LRU, 30-day TTL). The group message body is
 bytes) and the payload binds group id, protocol version, and sealed header as
 associated data. The single ciphertext fans out in per-member envelopes under the
 ordinary pairwise delivery tokens (§7), so relays and receipts need no group
-awareness. Distribution, membership (creator-managed, generation-counted), rotation
+awareness. Distribution, membership (legacy creator-managed or C6
+owner-serialized, generation-counted), rotation
 triggers, and the announce-until-acked reliability rule are specified in ADR-0012,
 along with the documented trade: authenticity is membership-level (any member could
-forge as another, no signatures, by design).
+forge ordinary sender-key content as another, no signatures, by design).
+
+C6 adds identity signatures only where durable authority requires third-party
+verification. Canonical full authority state uses
+`Komms-group-authority-state-v1`; ordered ownership certificates use
+`Komms-group-owner-transfer-v1`; generation-bound admin requests use
+`Komms-group-admin-request-v1`; and owner poll-moderation snapshots use
+`Komms-group-poll-moderation-v1`. Each domain signs its own bounded canonical
+bytes, never an ordinary chat message or vote. Moderation binds its exact group
+id, poll author/id, authority generation, and final vote heads. The prior owner signs the state
+that enacts transfer; the new owner signs later states. Every accepted authority
+transition also rotates the group secret and sender chains. Exact state, chain,
+fork, and verification rules are in
+[ADR-0023](adr/0023-group-roles-and-owner-authority.md).
 
 ## 7. Sealed sender & delivery tokens
 

@@ -49,6 +49,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var groups: [KommsCore.Group] = []
     @Published private(set) var groupHistories: [String: [GroupMessage]] = [:]
     @Published private(set) var groupPolls: [String: [GroupPoll]] = [:]
+    @Published private(set) var groupAuthorities: [String: GroupAuthority] = [:]
     @Published private(set) var scheduledMessages: [ScheduledMessage] = []
     @Published private(set) var attachments: [Attachment] = []
     @Published private(set) var noteHistory: [NoteMessage] = []
@@ -246,12 +247,17 @@ final class AppModel: ObservableObject {
              .noteToSelfMessageAdded,
              .carrierCapabilityChanged,
              .groupUpdated, .groupMessageReceived, .groupMessageEdited, .groupDeliveryUpdated,
-             .pollUpdated,
+             .pollUpdated, .groupAuthorityUpdated,
              .attachmentUpdated, .ephemeralRemoved,
              .foldersChanged, .labelsChanged, .pinsChanged:
             Task { await refresh() }
         case .mentionReceived:
             notices.append("You were mentioned in a group.")
+            Task { await refresh() }
+        case .groupAdminRequestResolved(_, _, let accepted, _, _, let reason):
+            notices.append(accepted
+                ? "The owner accepted your group administration request."
+                : "The owner rejected your group administration request (reason \(reason)).")
             Task { await refresh() }
         case .contactAdded, .contactRenamed:
             Task { await refresh() }
@@ -302,6 +308,10 @@ final class AppModel: ObservableObject {
                 let liveIds = Set(liveGroups.map(\.id))
                 var freshGroups: [String: [GroupMessage]] = [:]
                 var freshPolls: [String: [GroupPoll]] = [:]
+                var freshAuthorities: [String: GroupAuthority] = [:]
+                for group in liveGroups {
+                    freshAuthorities[group.id] = try session.groupAuthority(group: group.id)
+                }
                 for group in followedGroups where liveIds.contains(group) {
                     freshGroups[group] = try session.groupMessages(group: group)
                     freshPolls[group] = try session.groupPolls(group: group)
@@ -349,6 +359,7 @@ final class AppModel: ObservableObject {
                     status: try session.status(), contacts: liveContacts, histories: fresh,
                     groups: liveGroups, groupHistories: freshGroups,
                     groupPolls: freshPolls,
+                    groupAuthorities: freshAuthorities,
                     scheduled: try session.scheduledMessages(), attachments: try session.attachments(),
                     notes: try session.noteToSelfMessages(), folders: folders,
                     staleFolders: try session.staleFolders(), folderWasMissing: missingFolder,
@@ -363,6 +374,7 @@ final class AppModel: ObservableObject {
             groups = snapshot.groups
             groupHistories.merge(snapshot.groupHistories) { _, new in new }
             groupPolls.merge(snapshot.groupPolls) { _, new in new }
+            groupAuthorities = snapshot.groupAuthorities
             scheduledMessages = snapshot.scheduled
             attachments = snapshot.attachments
             noteHistory = snapshot.notes
@@ -999,6 +1011,17 @@ final class AppModel: ObservableObject {
         await refresh()
     }
 
+    func moderateGroupPollClose(
+        group: String, pollAuthor: String, pollId: String
+    ) async throws {
+        guard let session else { throw InputError("node is locked") }
+        _ = try await run {
+            try session.moderateGroupPollClose(
+                group: group, pollAuthor: pollAuthor, pollId: pollId)
+        }
+        await refresh()
+    }
+
     func editGroupMessage(group: String, targetContentId: String, text: String) async throws {
         guard let session, let targetAuthor = status?.peer else {
             throw InputError("node is locked")
@@ -1033,6 +1056,24 @@ final class AppModel: ObservableObject {
     func addGroupMember(group: String, peer: String) async throws {
         guard let session else { return }
         try await run { try session.addGroupMember(group: group, peer: peer) }
+        await refresh()
+    }
+
+    func renameGroup(group: String, name: String) async throws {
+        guard let session else { return }
+        _ = try await run { try session.renameGroup(group: group, name: name) }
+        await refresh()
+    }
+
+    func setGroupRole(group: String, peer: String, role: GroupRole) async throws {
+        guard let session else { return }
+        _ = try await run { try session.setGroupRole(group: group, peer: peer, role: role) }
+        await refresh()
+    }
+
+    func transferGroupOwner(group: String, peer: String) async throws {
+        guard let session else { return }
+        _ = try await run { try session.transferGroupOwner(group: group, peer: peer) }
         await refresh()
     }
 
@@ -1211,6 +1252,7 @@ private struct AppRefreshSnapshot: Sendable {
     let groups: [KommsCore.Group]
     let groupHistories: [String: [GroupMessage]]
     let groupPolls: [String: [GroupPoll]]
+    let groupAuthorities: [String: GroupAuthority]
     let scheduled: [ScheduledMessage]
     let attachments: [Attachment]
     let notes: [NoteMessage]

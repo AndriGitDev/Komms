@@ -1378,10 +1378,60 @@ async fn handle_op(
                 .map_err(fail)?;
             Ok(json!({ "id": wire::hex_encode(&id) }))
         }
+        Op::GroupPollModerateClose {
+            group,
+            poll_author,
+            poll_id,
+        } => {
+            let group = wire::parse_group(&group)?;
+            let poll_author = wire::parse_peer(&poll_author)?;
+            let poll_id = wire::parse_message(&poll_id)?;
+            let id = node
+                .group_moderate_poll_close(&group, poll_author, poll_id, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::GroupAuthority { group } => {
+            let group = wire::parse_group(&group)?;
+            Ok(wire::group_authority_json(
+                &node.group_authority(&group).map_err(fail)?,
+            ))
+        }
+        Op::GroupUpgradeAuthority { group } => {
+            let group = wire::parse_group(&group)?;
+            let id = node
+                .group_upgrade_authority(&group, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::GroupRename { group, name } => {
+            let group = wire::parse_group(&group)?;
+            let id = node
+                .group_rename(&group, &name, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::GroupSetRole { group, peer, role } => {
+            let group = wire::parse_group(&group)?;
+            let peer = wire::parse_peer(&peer)?;
+            let id = node
+                .group_set_role(&group, peer, role.into(), now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
+        Op::GroupTransferOwner { group, peer } => {
+            let group = wire::parse_group(&group)?;
+            let peer = wire::parse_peer(&peer)?;
+            let id = node
+                .group_transfer_owner(&group, peer, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "id": wire::hex_encode(&id) }))
+        }
         Op::GroupAdd { group, peer } => {
             let group = wire::parse_group(&group)?;
             let peer = wire::parse_peer(&peer)?;
-            node.group_add(&group, &peer, &mut OsRng).map_err(fail)?;
+            node.group_add(&group, &peer, now(), &mut OsRng)
+                .map_err(fail)?;
             Ok(json!({}))
         }
         Op::GroupRemove { group, peer } => {

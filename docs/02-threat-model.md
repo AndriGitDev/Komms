@@ -150,6 +150,7 @@ viewer, or defeat A7. Exact behavior is in
 | **Active-content isolation** | Authenticated message text must not become executable or network-active content. | B9 keeps exact source, applies a bounded local parser, exports only inert block/run tokens, literal-falls back on complexity, and never interprets HTML, links, images, or URL schemes. |
 | **Edit provenance** | A peer must not rewrite another author's message or make offline endpoints disagree about the visible version. | C3 immutable edit events bind exact author/content ids inside authenticated content; wrong-author/wrong-scope events never apply, and maximum `(revision, edit id)` converges without clocks. |
 | **Poll convergence and honesty** | A peer must not cast another member's vote or make replicas tally the same received events differently. | C5 binds each vote to the authenticated group sender, fixes the creator-attested electorate, selects maximum `(revision, event id)`, and freezes a creator-authenticated close snapshot; the UI says votes are visible and never claims anonymity or election fairness. |
+| **Group authority convergence** | A stale admin or losing ownership fork must not regain authority or future group secrets. | C6 signs canonical full role state and transfer certificates, binds admin requests to one generation, serializes mutations at one owner, rejects non-extending transfer chains, and re-keys every accepted transition. |
 | **Sovereignty** | Users hold their own keys and data; anyone can run every component. | Local-first storage, AGPLv3, no privileged nodes. |
 
 Optional Hybrid Infrastructure Layer modes do not change the confidentiality,
@@ -176,7 +177,7 @@ editing as remote deletion. Exact limits are in
 C4 ephemeral content narrows local retention; it does not create remote
 deletion authority. Exact deadlines and first-open state are authenticated and
 sealed per installation, and terminal tombstones prevent delayed ciphertext or
-backup restore from rehydrating removed plaintext. KKR5 excludes live ephemeral
+backup restore from rehydrating removed plaintext. KKR6 excludes live ephemeral
 history/manifests/media. Envelope carriers learn one hour-aligned deletion
 bucket and may delete early, ignore the hint, or retain copied ciphertext;
 recipients and compromised endpoints may capture plaintext. View once blocks
@@ -196,6 +197,19 @@ defined result. Removed members retain what they already received. See
 [20: Group Polls](20-group-polls.md) and
 [ADR-0022](adr/0022-convergent-group-polls.md).
 
+C6 group authority is attributable rather than deniable durable state. This is
+an intentional exception to ordinary deniable message content: identity
+signatures cover only canonical role/owner state, owner-transfer certificates,
+generation-bound admin requests, and owner moderation snapshots. They do not
+sign ordinary chat text or votes. A compromised legitimate owner can still
+remove members, grant admin, rename, transfer ownership, or moderate a poll;
+signatures provide validation and convergence, not an appeal system or fairness
+guarantee. Admin work waits for the owner, and removed endpoints retain content
+already received. Higher generations rooted in a losing transfer fork and stale
+requests from removed/demoted admins fail closed. See
+[21: Group Roles, Ownership, and Moderation](21-group-roles.md) and
+[ADR-0023](adr/0023-group-roles-and-owner-authority.md).
+
 Private folders, conversation pins, and labels are endpoint organization, never
 communications metadata. Their definitions, single-folder assignments,
 exact typed peer/group/note-to-self pins, and many-to-many label memberships
@@ -204,7 +218,7 @@ folder/label view preferences remain device-local. An organization operation
 creates no envelope, mailbox, mesh, sneakernet,
 LAN, internet, DHT, capability, sender-key, ratchet, delivery-token, analytics,
 or remote-notification work. A copied SQLite database reveals only the already
-accepted row count and approximate sealed blob sizes. `KKR5` is the only folder,
+accepted row count and approximate sealed blob sizes. `KKR6` is the current folder,
 pin, or label portability mechanism: none has server or linked-device
 synchronization. Once rendered on an unlocked endpoint, organization text has
 the same bounded A7 exposure as the rest of the user's visible local data.

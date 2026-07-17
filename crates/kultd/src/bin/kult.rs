@@ -139,8 +139,18 @@ COMMANDS:
                                     cast or change a vote using stable ids
     group-poll-close GROUP_HEX POLL_AUTHOR_HEX POLL_ID_HEX
                                     creator-only irreversible final snapshot
-    group-add GROUP_HEX PEER_HEX     add a member (creator only)
-    group-remove GROUP_HEX PEER_HEX  remove a member (creator only)
+    group-poll-moderate-close GROUP_HEX POLL_AUTHOR_HEX POLL_ID_HEX
+                                    owner/admin signed moderation snapshot
+    group-authority GROUP_HEX       show roles, owner, epoch, and generation
+    group-authority-upgrade GROUP_HEX
+                                    upgrade legacy creator authority
+    group-rename GROUP_HEX NAME...  rename directly as owner or request as admin
+    group-role GROUP_HEX PEER_HEX admin|member
+                                    owner-only role assignment
+    group-transfer-owner GROUP_HEX PEER_HEX
+                                    owner-only transfer to an existing member
+    group-add GROUP_HEX PEER_HEX     owner direct; admin request
+    group-remove GROUP_HEX PEER_HEX  owner direct; admin may remove members
     group-leave GROUP_HEX            leave a group
     groups                            list groups
     group-messages GROUP_HEX         group message history
@@ -1035,6 +1045,59 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
                 "poll_id": parse_poll_id(&args[2])?,
             })
         }
+        "group-poll-moderate-close" => {
+            need(3)?;
+            if args.len() != 3 {
+                return Err("group-poll-moderate-close: expected three ids".to_owned());
+            }
+            json!({
+                "op": "group_poll_moderate_close",
+                "group": parse_poll_peer(&args[0])?,
+                "poll_author": parse_poll_peer(&args[1])?,
+                "poll_id": parse_poll_id(&args[2])?,
+            })
+        }
+        "group-authority" => {
+            need(1)?;
+            if args.len() != 1 {
+                return Err("group-authority: expected one group id".to_owned());
+            }
+            json!({ "op": "group_authority", "group": parse_poll_peer(&args[0])? })
+        }
+        "group-authority-upgrade" => {
+            need(1)?;
+            if args.len() != 1 {
+                return Err("group-authority-upgrade: expected one group id".to_owned());
+            }
+            json!({ "op": "group_upgrade_authority", "group": parse_poll_peer(&args[0])? })
+        }
+        "group-rename" => {
+            need(2)?;
+            json!({ "op": "group_rename", "group": parse_poll_peer(&args[0])?, "name": args[1..].join(" ") })
+        }
+        "group-role" => {
+            need(3)?;
+            if args.len() != 3 || !matches!(args[2].as_str(), "admin" | "member") {
+                return Err("group-role: expected GROUP PEER admin|member".to_owned());
+            }
+            json!({
+                "op": "group_set_role",
+                "group": parse_poll_peer(&args[0])?,
+                "peer": parse_poll_peer(&args[1])?,
+                "role": args[2],
+            })
+        }
+        "group-transfer-owner" => {
+            need(2)?;
+            if args.len() != 2 {
+                return Err("group-transfer-owner: expected two ids".to_owned());
+            }
+            json!({
+                "op": "group_transfer_owner",
+                "group": parse_poll_peer(&args[0])?,
+                "peer": parse_poll_peer(&args[1])?,
+            })
+        }
         "group-add" => {
             need(2)?;
             json!({ "op": "group_add", "group": args[0], "peer": args[1] })
@@ -1407,6 +1470,62 @@ mod tests {
         )
         .is_err());
         assert!(build_request("group-poll-close", &["06".repeat(32), "07".repeat(32)]).is_err());
+        let moderated_close = build_request(
+            "group-poll-moderate-close",
+            &["06".repeat(32), "07".repeat(32), "08".repeat(16)],
+        )
+        .unwrap();
+        assert_eq!(moderated_close["op"], json!("group_poll_moderate_close"));
+        assert_eq!(moderated_close["poll_author"], json!("07".repeat(32)));
+        assert_eq!(moderated_close["poll_id"], json!("08".repeat(16)));
+        assert!(build_request(
+            "group-poll-moderate-close",
+            &["06".repeat(32), "07".repeat(32)]
+        )
+        .is_err());
+
+        let group = "10".repeat(32);
+        let member = "11".repeat(32);
+        assert_eq!(
+            build_request("group-authority", std::slice::from_ref(&group)).unwrap(),
+            json!({ "op": "group_authority", "group": group })
+        );
+        assert_eq!(
+            build_request("group-authority-upgrade", std::slice::from_ref(&group)).unwrap(),
+            json!({ "op": "group_upgrade_authority", "group": group })
+        );
+        assert_eq!(
+            build_request(
+                "group-rename",
+                &[group.clone(), "Trail".to_owned(), "crew".to_owned()]
+            )
+            .unwrap(),
+            json!({ "op": "group_rename", "group": group, "name": "Trail crew" })
+        );
+        assert_eq!(
+            build_request(
+                "group-role",
+                &[group.clone(), member.clone(), "admin".to_owned()]
+            )
+            .unwrap(),
+            json!({
+                "op": "group_set_role",
+                "group": group,
+                "peer": member,
+                "role": "admin",
+            })
+        );
+        assert_eq!(
+            build_request("group-transfer-owner", &[group.clone(), member.clone()]).unwrap(),
+            json!({ "op": "group_transfer_owner", "group": group, "peer": member })
+        );
+        assert!(build_request(
+            "group-role",
+            &[group.clone(), member.clone(), "owner".to_owned()]
+        )
+        .is_err());
+        assert!(build_request("group-authority", &[group.clone(), member.clone()]).is_err());
+        assert!(build_request("group-transfer-owner", std::slice::from_ref(&group)).is_err());
         assert_eq!(
             build_request("groups", &[]).unwrap(),
             json!({ "op": "groups" })

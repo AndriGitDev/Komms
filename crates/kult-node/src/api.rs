@@ -556,6 +556,36 @@ pub struct GroupInfo {
     pub members: Vec<[u8; 32]>,
 }
 
+/// One exact member role in signed C6 authority state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GroupMemberRoleInfo {
+    /// Exact peer identity.
+    pub peer: [u8; 32],
+    /// Fixed owner/admin/member role.
+    pub role: kult_protocol::GroupRole,
+}
+
+/// Render-safe group authority snapshot without secrets or signatures.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupAuthorityInfo {
+    /// Exact group id.
+    pub group: [u8; 32],
+    /// Whether the legacy group has entered signed C6 mode.
+    pub signed: bool,
+    /// Immutable original creator.
+    pub original_owner: [u8; 32],
+    /// Current single owner.
+    pub owner: [u8; 32],
+    /// Owner-transfer epoch.
+    pub owner_epoch: u64,
+    /// Current authority/roster generation.
+    pub generation: u64,
+    /// Sorted exact roles.
+    pub members: Vec<GroupMemberRoleInfo>,
+    /// Local identity's role, when still a member.
+    pub my_role: Option<kult_protocol::GroupRole>,
+}
+
 /// One stable choice and its locally derived tally in a group poll.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PollOptionInfo {
@@ -601,10 +631,13 @@ pub struct PollInfo {
     pub options: Vec<PollOptionInfo>,
     /// Visible accepted vote heads, sorted by voter.
     pub votes: Vec<PollVoteInfo>,
-    /// Whether a creator-authored final snapshot irreversibly closed the poll.
+    /// Whether a creator- or owner-authored final snapshot irreversibly closed the poll.
     pub closed: bool,
     /// Winning close event under the deterministic conflict rule.
     pub close_event_id: Option<[u8; 16]>,
+    /// Authenticated group owner when the winning closure was moderation;
+    /// absent when the poll creator closed their own poll.
+    pub moderated_by: Option<[u8; 32]>,
     /// Whether the local identity belongs to the fixed electorate.
     pub eligible: bool,
     /// Whether the local identity may close this still-open poll.
@@ -770,6 +803,15 @@ pub enum ContentStatus {
         poll_author: [u8; 32],
         /// Stable creator-minted poll id.
         poll_id: [u8; 16],
+    },
+    /// Canonical owner-signed C6 public authority commit.
+    GroupAuthority {
+        /// Exact event id.
+        id: [u8; 16],
+        /// Committed generation.
+        generation: u64,
+        /// Resulting current owner.
+        owner: [u8; 32],
     },
     /// Authenticated content this client version cannot interpret.
     Unsupported {
@@ -937,6 +979,30 @@ pub enum Event {
         poll_author: [u8; 32],
         /// Stable poll id.
         poll_id: [u8; 16],
+    },
+    /// Signed group roles/owner state changed or was observed.
+    GroupAuthorityUpdated {
+        /// Exact group.
+        group: [u8; 32],
+        /// Committed generation.
+        generation: u64,
+        /// Resulting current owner.
+        owner: [u8; 32],
+    },
+    /// The current owner accepted or rejected one local admin request.
+    GroupAdminRequestResolved {
+        /// Exact group.
+        group: [u8; 32],
+        /// Stable locally minted request id.
+        request_id: [u8; 16],
+        /// Whether the owner committed the requested action.
+        accepted: bool,
+        /// Owner-observed authority generation after processing.
+        generation: u64,
+        /// Resulting authority event when accepted.
+        state_id: Option<[u8; 16]>,
+        /// Stable rejection reason code; zero on acceptance.
+        reason: u8,
     },
     /// Ephemeral plaintext or decryptable media was durably removed locally.
     EphemeralRemoved {

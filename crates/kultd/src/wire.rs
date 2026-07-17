@@ -14,13 +14,13 @@ use kult_node::{
     AttachmentFileWarning, AttachmentInfo, AttachmentOpenPolicy, CarrierCapability,
     CarrierCapabilitySnapshot, ContactNameAssessment, ContactNameWarning, ContentStatus,
     CustomIconInfo, CustomIconTarget, CustomIconUsage, Event, FolderConversationInfo,
-    FolderConversationList, FolderInfo, FolderSelection, GroupInfo, GroupMentionCapability,
-    IncognitoKeyboardPlatform, IncognitoKeyboardPolicy, LabelConversationInfo, LabelFilterInfo,
-    LabelInfo, MentionCapabilityIssueReason, NodeStaleFolderReason, NodeStaleLabelReason,
-    PinConversationInfo, PinConversationList, PinInfo, PollInfo, ResolvedGroupMessage,
-    ResolvedMessage, ScheduledConversation, ScheduledMessageInfo, ScreenSecurityPlatform,
-    ScreenSecurityPolicy, StaleFolderInfo, StaleLabelInfo, TextFormatBlockKind,
-    TextFormatHighlight, TextFormatStyle, NOTE_TO_SELF_CONVERSATION_ID,
+    FolderConversationList, FolderInfo, FolderSelection, GroupAuthorityInfo, GroupInfo,
+    GroupMentionCapability, GroupRole, IncognitoKeyboardPlatform, IncognitoKeyboardPolicy,
+    LabelConversationInfo, LabelFilterInfo, LabelInfo, MentionCapabilityIssueReason,
+    NodeStaleFolderReason, NodeStaleLabelReason, PinConversationInfo, PinConversationList, PinInfo,
+    PollInfo, ResolvedGroupMessage, ResolvedMessage, ScheduledConversation, ScheduledMessageInfo,
+    ScreenSecurityPlatform, ScreenSecurityPolicy, StaleFolderInfo, StaleLabelInfo,
+    TextFormatBlockKind, TextFormatHighlight, TextFormatStyle, NOTE_TO_SELF_CONVERSATION_ID,
 };
 use kult_store::{
     valid_folder_name, valid_label_color, valid_label_name, ConversationId, DeliveryState,
@@ -159,6 +159,11 @@ fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
         "group_polls" => Some(&["id", "op", "group"]),
         "group_poll_vote" => Some(&["id", "op", "group", "poll_author", "poll_id", "option_id"]),
         "group_poll_close" => Some(&["id", "op", "group", "poll_author", "poll_id"]),
+        "group_poll_moderate_close" => Some(&["id", "op", "group", "poll_author", "poll_id"]),
+        "group_authority" | "group_upgrade_authority" => Some(&["id", "op", "group"]),
+        "group_rename" => Some(&["id", "op", "group", "name"]),
+        "group_set_role" => Some(&["id", "op", "group", "peer", "role"]),
+        "group_transfer_owner" => Some(&["id", "op", "group", "peer"]),
         _ => None,
     }
 }
@@ -725,6 +730,48 @@ pub enum Op {
         /// Stable poll id (hex).
         poll_id: String,
     },
+    /// Owner/admin moderation closure bound to signed group authority.
+    GroupPollModerateClose {
+        /// Group id (hex).
+        group: String,
+        /// Poll creator peer id (hex).
+        poll_author: String,
+        /// Stable poll id (hex).
+        poll_id: String,
+    },
+    /// Read current signed or synthesized group roles and ownership.
+    GroupAuthority {
+        /// Group id (hex).
+        group: String,
+    },
+    /// Upgrade a legacy creator group to signed authority state.
+    GroupUpgradeAuthority {
+        /// Group id (hex).
+        group: String,
+    },
+    /// Rename a group directly as owner or by admin request.
+    GroupRename {
+        /// Group id (hex).
+        group: String,
+        /// Exact replacement name.
+        name: String,
+    },
+    /// Grant or revoke admin role as owner.
+    GroupSetRole {
+        /// Group id (hex).
+        group: String,
+        /// Existing member peer id (hex).
+        peer: String,
+        /// `admin` or `member`.
+        role: GroupRoleInput,
+    },
+    /// Transfer sole ownership to an existing member.
+    GroupTransferOwner {
+        /// Group id (hex).
+        group: String,
+        /// Existing member peer id (hex).
+        peer: String,
+    },
     /// Add a stored contact to a group (creator only).
     GroupAdd {
         /// Group id (hex).
@@ -867,6 +914,25 @@ pub enum LabelMatchInput {
     Any,
     /// Match every selected label.
     All,
+}
+
+/// Strict mutable C6 role input; ownership uses its dedicated operation.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupRoleInput {
+    /// Grant bounded administration capability.
+    Admin,
+    /// Revoke administration capability.
+    Member,
+}
+
+impl From<GroupRoleInput> for GroupRole {
+    fn from(value: GroupRoleInput) -> Self {
+        match value {
+            GroupRoleInput::Admin => GroupRole::Admin,
+            GroupRoleInput::Member => GroupRole::Member,
+        }
+    }
 }
 
 /// Explicit virtual or stable-folder navigation selection.
@@ -1062,6 +1128,32 @@ pub fn event_line(event: &Event) -> String {
             "group": hex_encode(group),
             "poll_author": hex_encode(poll_author),
             "poll_id": hex_encode(poll_id),
+        }),
+        Event::GroupAuthorityUpdated {
+            group,
+            generation,
+            owner,
+        } => json!({
+            "type": "group_authority_updated",
+            "group": hex_encode(group),
+            "generation": generation,
+            "owner": hex_encode(owner),
+        }),
+        Event::GroupAdminRequestResolved {
+            group,
+            request_id,
+            accepted,
+            generation,
+            state_id,
+            reason,
+        } => json!({
+            "type": "group_admin_request_resolved",
+            "group": hex_encode(group),
+            "request_id": hex_encode(request_id),
+            "accepted": accepted,
+            "generation": generation,
+            "state_id": state_id.map(|id| hex_encode(&id)),
+            "reason": reason,
         }),
         Event::EphemeralRemoved {
             conversation,
@@ -1590,6 +1682,31 @@ pub fn group_json(group: &GroupInfo) -> Value {
     })
 }
 
+/// Current group authority without identities, secrets, signatures, or chains.
+pub fn group_authority_json(authority: &GroupAuthorityInfo) -> Value {
+    json!({
+        "group": hex_encode(&authority.group),
+        "signed": authority.signed,
+        "original_owner": hex_encode(&authority.original_owner),
+        "owner": hex_encode(&authority.owner),
+        "owner_epoch": authority.owner_epoch,
+        "generation": authority.generation,
+        "my_role": authority.my_role.map(group_role_str),
+        "members": authority.members.iter().map(|member| json!({
+            "peer": hex_encode(&member.peer),
+            "role": group_role_str(member.role),
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn group_role_str(role: GroupRole) -> &'static str {
+    match role {
+        GroupRole::Owner => "owner",
+        GroupRole::Admin => "admin",
+        GroupRole::Member => "member",
+    }
+}
+
 /// The current conservative semantic Mention capability verdict.
 pub fn group_mention_capability_json(capability: &GroupMentionCapability) -> Value {
     json!({
@@ -1629,11 +1746,16 @@ pub fn poll_json(poll: &PollInfo) -> Value {
         })).collect::<Vec<_>>(),
         "closed": poll.closed,
         "close_event_id": poll.close_event_id.map(|id| hex_encode(&id)),
+        "moderated_by": poll.moderated_by.map(|peer| hex_encode(&peer)),
         "eligible": poll.eligible,
         "can_close": poll.can_close,
         "votes_visible": true,
         "anonymous": false,
-        "close_policy": "manual_creator_snapshot",
+        "close_policy": if poll.moderated_by.is_some() {
+            "signed_owner_snapshot"
+        } else {
+            "manual_creator_snapshot"
+        },
     })
 }
 
@@ -1863,6 +1985,12 @@ fn render_stored_content(
             (String::new(), "poll", None, json!([]))
         }
         kult_protocol::DecodedContent::Poll { .. } => {
+            (UNSUPPORTED_MESSAGE.to_owned(), "malformed", None, json!([]))
+        }
+        kult_protocol::DecodedContent::GroupAuthority { .. } if allow_group_mention => {
+            (String::new(), "group_authority", None, json!([]))
+        }
+        kult_protocol::DecodedContent::GroupAuthority { .. } => {
             (UNSUPPORTED_MESSAGE.to_owned(), "malformed", None, json!([]))
         }
         kult_protocol::DecodedContent::Unsupported { .. } => (

@@ -11,7 +11,7 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 
 use kult_crypto::KdfProfile;
-use kult_node::{ContentStatus, Event, MentionSpan, Node, NodeError};
+use kult_node::{ContentStatus, Event, GroupRole, MentionSpan, Node, NodeError};
 use kult_protocol::{
     decode_content, encode_mention, encode_poll, encode_poll_vote_payload, DecodedContent,
     Envelope, EnvelopeKind, PollVote, CONTENT_HEADER_LEN, CONTENT_MAGIC,
@@ -342,7 +342,7 @@ async fn membership_changes_rotate_and_exclude() {
     alice.tick(NOW + 4, &mut rng).await.unwrap();
 
     // Add Carol: she learns the group, reads nothing sent before her time.
-    alice.group_add(&gid, &c_id, &mut rng).unwrap();
+    alice.group_add(&gid, &c_id, 7, &mut rng).unwrap();
     alice.tick(NOW + 10, &mut rng).await.unwrap();
     let events = carol.tick(NOW + 12, &mut rng).await.unwrap();
     assert!(events
@@ -421,13 +421,13 @@ async fn membership_changes_rotate_and_exclude() {
 
     // Non-creators cannot manage the roster.
     assert!(matches!(
-        carol.group_add(&gid, &b_id, &mut rng),
+        carol.group_add(&gid, &b_id, 8, &mut rng),
         Err(kult_node::NodeError::UnknownGroup)
     ));
 }
 
 // ---------------------------------------------------------------------------
-// 3. Backup/restore (KKR5): groups and ordinary history ride the backup; the
+// 3. Backup/restore (KKR6): groups and ordinary history ride the backup; the
 //    restored node re-handshakes, announces a fresh chain, co-members
 //    redistribute theirs, and messaging resumes in both directions.
 // ---------------------------------------------------------------------------
@@ -502,7 +502,7 @@ async fn restore_from_backup_reannounces_and_resumes() {
     bob.tick(NOW + 11, &mut rng).await.unwrap();
     alice.tick(NOW + 12, &mut rng).await.unwrap();
 
-    // Poll events are ordinary sealed group records, so KKR5 needs no new
+    // Poll events are ordinary sealed group records, so KKR6 needs no new
     // backup field. Prove the complete derived card survives restore.
     let poll_id = alice
         .group_create_poll(
@@ -595,7 +595,7 @@ async fn restore_from_backup_reannounces_and_resumes() {
         other => panic!("expected restored canonical mention, got {other:?}"),
     }
 
-    // Capability snapshots are intentionally excluded from KKR5 because
+    // Capability snapshots are intentionally excluded from KKR6 because
     // their authentication is session-bound. The old review token therefore
     // fails closed until the restored device completes a fresh handshake and
     // receives a new authenticated snapshot.
@@ -1050,7 +1050,7 @@ async fn polls_converge_across_changed_votes_roster_changes_and_closure() {
     assert_eq!(bob.group_polls(&gid).unwrap()[0].question, "Lunch? 👩🏽‍🚀");
 
     // Additions do not silently join an existing electorate.
-    alice.group_add(&gid, &c_id, &mut rng).unwrap();
+    alice.group_add(&gid, &c_id, 9, &mut rng).unwrap();
     settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 34).await;
     assert!(
         carol.group_polls(&gid).unwrap().is_empty(),
@@ -1116,4 +1116,165 @@ async fn polls_converge_across_changed_votes_roster_changes_and_closure() {
         0,
         "poll events render as poll cards, never empty chat bubbles"
     );
+}
+
+#[tokio::test]
+async fn signed_roles_owner_transfer_and_stale_admin_requests_converge() {
+    let mut rng = StdRng::seed_from_u64(23);
+    let dir = tempfile::tempdir().unwrap();
+    let net: Net = Arc::new(Mutex::new(HashMap::new()));
+    let (mut alice, mut bob, mut carol, a_id, b_id, c_id) = trio(dir.path(), &net, &mut rng).await;
+    let gid = alice
+        .create_group("legacy roles", &[b_id, c_id], &mut rng)
+        .unwrap();
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 1).await;
+
+    alice
+        .group_upgrade_authority(&gid, NOW + 30, &mut rng)
+        .unwrap();
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 31).await;
+    for node in [&alice, &bob, &carol] {
+        let authority = node.group_authority(&gid).unwrap();
+        assert!(authority.signed);
+        assert_eq!(authority.owner, a_id);
+        assert_eq!(
+            authority.my_role,
+            Some(if node.peer_id() == a_id {
+                GroupRole::Owner
+            } else {
+                GroupRole::Member
+            })
+        );
+    }
+
+    alice
+        .group_set_role(&gid, b_id, GroupRole::Admin, NOW + 50, &mut rng)
+        .unwrap();
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 51).await;
+    assert_eq!(
+        bob.group_authority(&gid).unwrap().my_role,
+        Some(GroupRole::Admin)
+    );
+
+    // Two independently signed admin requests against one exact generation
+    // serialize at the owner. Exactly one transition wins; the other is a
+    // stale terminal result and cannot add another generation later.
+    alice
+        .group_set_role(&gid, c_id, GroupRole::Admin, NOW + 52, &mut rng)
+        .unwrap();
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 53).await;
+    let concurrent_base = alice.group_authority(&gid).unwrap().generation;
+    bob.group_rename(&gid, "Bob concurrent", NOW + 55, &mut rng)
+        .unwrap();
+    carol
+        .group_rename(&gid, "Carol concurrent", NOW + 55, &mut rng)
+        .unwrap();
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 56).await;
+    let concurrent_name = alice.groups().unwrap()[0].name.clone();
+    assert!(matches!(
+        concurrent_name.as_str(),
+        "Bob concurrent" | "Carol concurrent"
+    ));
+    for node in [&alice, &bob, &carol] {
+        assert_eq!(node.groups().unwrap()[0].name, concurrent_name);
+        assert_eq!(
+            node.group_authority(&gid).unwrap().generation,
+            concurrent_base + 1
+        );
+    }
+
+    // The admin request waits for the owner, then the one owner commits and
+    // re-keys the exact next generation for every replica.
+    bob.group_rename(&gid, "admin requested 🧭", NOW + 70, &mut rng)
+        .unwrap();
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 71).await;
+    for node in [&alice, &bob, &carol] {
+        assert_eq!(node.groups().unwrap()[0].name, "admin requested 🧭");
+    }
+
+    // A signed request bound to the old generation is terminal after the
+    // owner demotes its author, even if it arrives later.
+    bob.group_rename(&gid, "must stay stale", NOW + 90, &mut rng)
+        .unwrap();
+    alice
+        .group_set_role(&gid, b_id, GroupRole::Member, NOW + 91, &mut rng)
+        .unwrap();
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 92).await;
+    for node in [&alice, &bob, &carol] {
+        assert_eq!(node.groups().unwrap()[0].name, "admin requested 🧭");
+        assert_eq!(
+            node.group_authority(&gid)
+                .unwrap()
+                .members
+                .iter()
+                .find(|member| member.peer == b_id)
+                .unwrap()
+                .role,
+            GroupRole::Member
+        );
+    }
+
+    alice
+        .group_transfer_owner(&gid, b_id, NOW + 120, &mut rng)
+        .unwrap();
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 121).await;
+    for node in [&alice, &bob, &carol] {
+        let authority = node.group_authority(&gid).unwrap();
+        assert_eq!(authority.owner, b_id);
+        assert_eq!(authority.owner_epoch, 1);
+    }
+    assert_eq!(
+        alice.group_authority(&gid).unwrap().my_role,
+        Some(GroupRole::Admin)
+    );
+    assert!(matches!(
+        bob.group_leave(&gid, NOW + 140, &mut rng),
+        Err(NodeError::LastGroupOwner)
+    ));
+
+    alice
+        .group_rename(&gid, "new owner sequenced", NOW + 141, &mut rng)
+        .unwrap();
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 142).await;
+    for node in [&alice, &bob, &carol] {
+        assert_eq!(node.groups().unwrap()[0].name, "new owner sequenced");
+    }
+
+    // The old owner is now an admin. Its moderation action is a signed,
+    // generation-bound request; Bob sequences a fresh authority generation
+    // and the resulting closure is never mislabeled as creator closure.
+    let poll_id = alice
+        .group_create_poll(
+            &gid,
+            "Close through authority?",
+            &["yes".to_owned(), "later".to_owned()],
+            NOW + 150,
+            &mut rng,
+        )
+        .unwrap();
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 151).await;
+    let generation_before = bob.group_authority(&gid).unwrap().generation;
+    alice
+        .group_moderate_poll_close(&gid, a_id, poll_id, NOW + 155, &mut rng)
+        .unwrap();
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 156).await;
+    for node in [&alice, &bob, &carol] {
+        let poll = node.group_polls(&gid).unwrap().remove(0);
+        assert!(poll.closed);
+        assert_eq!(poll.moderated_by, Some(b_id));
+        assert!(!poll.can_close);
+        assert!(node.group_authority(&gid).unwrap().generation > generation_before);
+    }
+
+    bob.group_remove(&gid, &c_id, NOW + 170, &mut rng).unwrap();
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 171).await;
+    assert!(!carol.groups().unwrap().iter().any(|group| group.id == gid));
+    for node in [&alice, &bob] {
+        assert!(!node
+            .group_authority(&gid)
+            .unwrap()
+            .members
+            .iter()
+            .any(|member| member.peer == c_id));
+    }
 }

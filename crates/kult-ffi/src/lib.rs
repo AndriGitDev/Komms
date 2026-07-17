@@ -481,6 +481,8 @@ pub enum ContentKind {
     ViewOnceAttachment,
     /// Canonical group-only poll event (rendered through the poll model).
     Poll,
+    /// Canonical group-only signed role/authority event.
+    GroupAuthority,
     /// Authenticated content this version cannot interpret.
     Unsupported,
     /// A typed frame that violated the canonical contract.
@@ -1424,6 +1426,89 @@ pub struct Group {
     pub members: Vec<String>,
 }
 
+/// Fixed C6 group role.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum GroupRole {
+    /// Sole serialized authority root.
+    Owner,
+    /// May submit bounded generation-bound administration requests.
+    Admin,
+    /// Ordinary participant.
+    Member,
+}
+
+impl From<kult_node::GroupRole> for GroupRole {
+    fn from(role: kult_node::GroupRole) -> Self {
+        match role {
+            kult_node::GroupRole::Owner => Self::Owner,
+            kult_node::GroupRole::Admin => Self::Admin,
+            kult_node::GroupRole::Member => Self::Member,
+        }
+    }
+}
+
+impl From<GroupRole> for kult_node::GroupRole {
+    fn from(role: GroupRole) -> Self {
+        match role {
+            GroupRole::Owner => Self::Owner,
+            GroupRole::Admin => Self::Admin,
+            GroupRole::Member => Self::Member,
+        }
+    }
+}
+
+/// One member and exact current authority role.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct GroupMemberRole {
+    /// Stable peer id (hex).
+    pub peer: String,
+    /// Exact role.
+    pub role: GroupRole,
+}
+
+/// Render-safe signed or legacy-compatible group authority.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct GroupAuthority {
+    /// Group id (hex).
+    pub group: String,
+    /// Whether the group has upgraded to signed C6 authority.
+    pub signed: bool,
+    /// Immutable original owner (hex).
+    pub original_owner: String,
+    /// Current sole owner (hex).
+    pub owner: String,
+    /// Number of valid owner transfers.
+    pub owner_epoch: u64,
+    /// Current roster/authority generation.
+    pub generation: u64,
+    /// Local role when still a member.
+    pub my_role: Option<GroupRole>,
+    /// Sorted exact roster roles.
+    pub members: Vec<GroupMemberRole>,
+}
+
+impl GroupAuthority {
+    fn from_node(authority: kult_node::GroupAuthorityInfo) -> Self {
+        Self {
+            group: hex_encode(&authority.group),
+            signed: authority.signed,
+            original_owner: hex_encode(&authority.original_owner),
+            owner: hex_encode(&authority.owner),
+            owner_epoch: authority.owner_epoch,
+            generation: authority.generation,
+            my_role: authority.my_role.map(Into::into),
+            members: authority
+                .members
+                .into_iter()
+                .map(|member| GroupMemberRole {
+                    peer: hex_encode(&member.peer),
+                    role: member.role.into(),
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Honest delivery state for one member's copy of an outbound group message.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct GroupDelivery {
@@ -1525,6 +1610,8 @@ pub struct GroupPoll {
     pub closed: bool,
     /// Winning close event id (hex), when closed.
     pub close_event_id: Option<String>,
+    /// Group owner peer id (hex) when moderation won the close race.
+    pub moderated_by: Option<String>,
     /// Whether the local identity belongs to the electorate.
     pub eligible: bool,
     /// Whether the local identity may close this still-open poll.
@@ -1533,7 +1620,7 @@ pub struct GroupPoll {
     pub votes_visible: bool,
     /// Always false; no anonymous-voting claim is made.
     pub anonymous: bool,
-    /// Exact close policy token: `manual_creator_snapshot`.
+    /// Exact close policy token for the winning closure.
     pub close_policy: String,
 }
 
@@ -1572,11 +1659,17 @@ impl GroupPoll {
                 .collect(),
             closed: poll.closed,
             close_event_id: poll.close_event_id.map(|id| hex_encode(&id)),
+            moderated_by: poll.moderated_by.map(|peer| hex_encode(&peer)),
             eligible: poll.eligible,
             can_close: poll.can_close,
             votes_visible: true,
             anonymous: false,
-            close_policy: "manual_creator_snapshot".to_owned(),
+            close_policy: if poll.moderated_by.is_some() {
+                "signed_owner_snapshot"
+            } else {
+                "manual_creator_snapshot"
+            }
+            .to_owned(),
         }
     }
 }
@@ -1802,6 +1895,30 @@ pub enum Event {
         /// Stable poll id (hex).
         poll_id: String,
     },
+    /// Signed group roles or ownership changed.
+    GroupAuthorityUpdated {
+        /// Group id (hex).
+        group: String,
+        /// Committed generation.
+        generation: u64,
+        /// Current owner (hex).
+        owner: String,
+    },
+    /// The owner accepted or rejected one local admin request.
+    GroupAdminRequestResolved {
+        /// Group id (hex).
+        group: String,
+        /// Stable request id (hex).
+        request_id: String,
+        /// Whether a state transition was committed.
+        accepted: bool,
+        /// Owner-observed generation after processing.
+        generation: u64,
+        /// Resulting state event id (hex), when accepted.
+        state_id: Option<String>,
+        /// Stable rejection reason code; zero on acceptance.
+        reason: u8,
+    },
     /// Ephemeral plaintext/media became terminal on this installation.
     EphemeralRemoved {
         /// `pairwise` or `group`.
@@ -1948,6 +2065,30 @@ impl Event {
                 group: hex_encode(&group),
                 poll_author: hex_encode(&poll_author),
                 poll_id: hex_encode(&poll_id),
+            },
+            kult_node::Event::GroupAuthorityUpdated {
+                group,
+                generation,
+                owner,
+            } => Self::GroupAuthorityUpdated {
+                group: hex_encode(&group),
+                generation,
+                owner: hex_encode(&owner),
+            },
+            kult_node::Event::GroupAdminRequestResolved {
+                group,
+                request_id,
+                accepted,
+                generation,
+                state_id,
+                reason,
+            } => Self::GroupAdminRequestResolved {
+                group: hex_encode(&group),
+                request_id: hex_encode(&request_id),
+                accepted,
+                generation,
+                state_id: state_id.map(|id| hex_encode(&id)),
+                reason,
             },
             kult_node::Event::EphemeralRemoved {
                 conversation,
@@ -3296,14 +3437,85 @@ impl KultNode {
         .map(|id| hex_encode(&id))
     }
 
-    /// Add a stored contact to a group (creator only).
+    /// Close any poll under signed owner authority; admins submit a request.
+    pub fn moderate_group_poll_close(
+        &self,
+        group: String,
+        poll_author: String,
+        poll_id: String,
+    ) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        let poll_author = parse_peer(&poll_author)?;
+        let poll_id = parse_message(&poll_id)?;
+        self.call(|resp| Msg::GroupPollModerateClose {
+            group,
+            poll_author,
+            poll_id,
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
+    /// Read current signed or legacy-compatible group roles.
+    pub fn group_authority(&self, group: String) -> Result<GroupAuthority, FfiError> {
+        let group = parse_group(&group)?;
+        self.call(|resp| Msg::GroupAuthority { group, resp })
+            .map(GroupAuthority::from_node)
+    }
+
+    /// Upgrade a legacy creator group to signed owner authority.
+    pub fn upgrade_group_authority(&self, group: String) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        self.call(|resp| Msg::GroupUpgradeAuthority { group, resp })
+            .map(|id| hex_encode(&id))
+    }
+
+    /// Rename directly as owner or submit a generation-bound admin request.
+    pub fn rename_group(&self, group: String, name: String) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        self.call(|resp| Msg::GroupRename { group, name, resp })
+            .map(|id| hex_encode(&id))
+    }
+
+    /// Grant or revoke admin role as the current owner.
+    pub fn set_group_role(
+        &self,
+        group: String,
+        peer: String,
+        role: GroupRole,
+    ) -> Result<String, FfiError> {
+        if role == GroupRole::Owner {
+            return Err(FfiError::Node {
+                reason: "ownership uses transfer_group_owner".to_owned(),
+            });
+        }
+        let group = parse_group(&group)?;
+        let peer = parse_peer(&peer)?;
+        self.call(|resp| Msg::GroupSetRole {
+            group,
+            peer,
+            role: role.into(),
+            resp,
+        })
+        .map(|id| hex_encode(&id))
+    }
+
+    /// Transfer sole ownership to an existing member.
+    pub fn transfer_group_owner(&self, group: String, peer: String) -> Result<String, FfiError> {
+        let group = parse_group(&group)?;
+        let peer = parse_peer(&peer)?;
+        self.call(|resp| Msg::GroupTransferOwner { group, peer, resp })
+            .map(|id| hex_encode(&id))
+    }
+
+    /// Add a stored contact as owner, or submit an admin request.
     pub fn add_group_member(&self, group: String, peer: String) -> Result<(), FfiError> {
         let group = parse_group(&group)?;
         let peer = parse_peer(&peer)?;
         self.call(|resp| Msg::GroupAdd { group, peer, resp })
     }
 
-    /// Remove a member from a group (creator only), rotating group keys.
+    /// Remove a member with role-aware authority, rotating group keys.
     pub fn remove_group_member(&self, group: String, peer: String) -> Result<(), FfiError> {
         let group = parse_group(&group)?;
         let peer = parse_peer(&peer)?;
@@ -4045,6 +4257,7 @@ fn content_kind(status: &kult_node::ContentStatus) -> ContentKind {
         kult_node::ContentStatus::DisappearingText { .. } => ContentKind::DisappearingText,
         kult_node::ContentStatus::ViewOnceAttachment { .. } => ContentKind::ViewOnceAttachment,
         kult_node::ContentStatus::Poll { .. } => ContentKind::Poll,
+        kult_node::ContentStatus::GroupAuthority { .. } => ContentKind::GroupAuthority,
         kult_node::ContentStatus::Unsupported { .. } => ContentKind::Unsupported,
         kult_node::ContentStatus::Malformed => ContentKind::Malformed,
         _ => ContentKind::Unsupported,
@@ -4150,6 +4363,14 @@ fn render_stored_content(
             (String::new(), ContentKind::Poll, Vec::new())
         }
         kult_protocol::DecodedContent::Poll { .. } => (
+            UNSUPPORTED_MESSAGE.to_owned(),
+            ContentKind::Malformed,
+            Vec::new(),
+        ),
+        kult_protocol::DecodedContent::GroupAuthority { .. } if allow_group_mention => {
+            (String::new(), ContentKind::GroupAuthority, Vec::new())
+        }
+        kult_protocol::DecodedContent::GroupAuthority { .. } => (
             UNSUPPORTED_MESSAGE.to_owned(),
             ContentKind::Malformed,
             Vec::new(),

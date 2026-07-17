@@ -13,9 +13,9 @@ use kult_crypto::{
 use kult_protocol::{pad, CapabilityControl, FormatCapabilities};
 use kult_store::{
     ContactRecord, ConversationId, DeliveryState, Direction, DraftRecord, EphemeralConversation,
-    EphemeralMode, EphemeralRecord, EphemeralState, GroupDelivery, GroupMember, GroupMessageRecord,
-    GroupRecord, LocalMetadataRecord, MessageRecord, NoteMessageRecord, PendingAnnounce, Store,
-    StoreError,
+    EphemeralMode, EphemeralRecord, EphemeralState, GroupAuthorityRecord, GroupDelivery,
+    GroupMember, GroupMessageRecord, GroupRecord, LocalMetadataRecord, MessageRecord,
+    NoteMessageRecord, PendingAnnounce, Store, StoreError,
 };
 
 const NOW: u64 = 1_800_000_000;
@@ -185,9 +185,16 @@ fn backup_round_trip() {
         body: "backed up note to self".to_owned(),
     };
     store.put_note_message(&note_message, &mut rng).unwrap();
+    let authority = GroupAuthorityRecord {
+        group: [5; 32],
+        state_id: [12; 16],
+        state_payload: b"canonical signed authority".to_vec(),
+        consumed_requests: vec![[13; 16], [14; 16]],
+    };
+    store.put_group_authority(&authority, &mut rng).unwrap();
 
     let (file, mnemonic) = store.export_backup(NOW + 100, &mut rng).unwrap();
-    assert_eq!(&file[..4], b"KKR5");
+    assert_eq!(&file[..4], b"KKR6");
     assert!(mnemonic_to_entropy(&mnemonic).is_ok(), "24 valid words");
     let old_group = store.groups().unwrap().remove(0);
     drop(store); // the old device is gone
@@ -215,6 +222,7 @@ fn backup_round_trip() {
     assert!(restored.get_prekeys().unwrap().is_none());
     assert_eq!(restored.local_metadata().unwrap(), vec![local_metadata]);
     assert_eq!(restored.note_messages().unwrap(), vec![note_message]);
+    assert_eq!(restored.group_authorities().unwrap(), vec![authority]);
 
     // The group's identity survives; its chains do not (ADR-0012): a fresh
     // sending chain, announces owed to the whole roster, no receiving
@@ -488,6 +496,68 @@ fn legacy_v4_backup_restores() {
     .unwrap();
     assert_eq!(restored.note_messages().unwrap(), notes);
     assert!(restored.ephemeral_records().unwrap().is_empty());
+}
+
+/// The pre-authority KKR5 shape restores with no signed authority records.
+#[test]
+fn legacy_v5_backup_restores() {
+    let mut rng = StdRng::seed_from_u64(18);
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::generate(&mut rng);
+    let contacts = Vec::<ContactRecord>::new();
+    let messages = Vec::<MessageRecord>::new();
+    let reset_peers = Vec::<[u8; 32]>::new();
+    let groups = Vec::<()>::new();
+    let group_messages = Vec::<GroupMessageRecord>::new();
+    let local_metadata = Vec::<LocalMetadataRecord>::new();
+    let notes = Vec::<NoteMessageRecord>::new();
+    let ephemeral = vec![EphemeralRecord {
+        conversation: EphemeralConversation::Pairwise([3; 32]),
+        author: [4; 32],
+        content_id: [5; 16],
+        expires_at: NOW,
+        mode: EphemeralMode::DisappearingText,
+        state: EphemeralState::Expired,
+        transfer_ids: Vec::new(),
+    }];
+    let payload = postcard::to_allocvec(&(
+        NOW,
+        identity.to_bytes().to_vec(),
+        &contacts,
+        &messages,
+        &reset_peers,
+        &groups,
+        &group_messages,
+        &local_metadata,
+        &notes,
+        &ephemeral,
+    ))
+    .unwrap();
+
+    let entropy = [0x46u8; 32];
+    let mnemonic = kult_crypto::mnemonic_from_entropy(&entropy);
+    let salt = [11u8; 16];
+    let kek = kult_crypto::derive_kek(&entropy, &salt, TEST_KDF).unwrap();
+    let key = kult_crypto::StorageKey::from_bytes(*kek);
+    let mut file = Vec::new();
+    file.extend_from_slice(b"KKR5");
+    file.extend_from_slice(&TEST_KDF.m_cost_kib.to_le_bytes());
+    file.extend_from_slice(&TEST_KDF.t_cost.to_le_bytes());
+    file.extend_from_slice(&TEST_KDF.p_cost.to_le_bytes());
+    file.extend_from_slice(&salt);
+    file.extend_from_slice(&key.seal(b"KK-backup-v1", &payload, &mut rng));
+
+    let restored = Store::restore_backup(
+        &dir.path().join("v5.db"),
+        &file,
+        &mnemonic,
+        b"new-pass",
+        TEST_KDF,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(restored.ephemeral_records().unwrap(), ephemeral);
+    assert!(restored.group_authorities().unwrap().is_empty());
 }
 
 #[test]

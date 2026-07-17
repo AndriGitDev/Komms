@@ -74,6 +74,7 @@ const state = {
   audioDraft: null,
   imageDraft: null,
   mentionDraft: { group: null, spans: [], capability: null, lastText: "", suppressInput: false },
+  currentAuthority: null,
   statusTimer: null,
 };
 
@@ -2017,7 +2018,7 @@ function renderAttachments(attachments) {
   for (const attachment of matching) panel.append(attachmentRow(attachment));
 }
 
-function renderPolls(polls) {
+function renderPolls(polls, authority) {
   const panel = $("#group-polls");
   panel.replaceChildren();
   panel.hidden = state.currentKind !== "group" || polls.length === 0;
@@ -2030,7 +2031,9 @@ function renderPolls(polls) {
     const policy = document.createElement("p");
     policy.className = "poll-policy";
     policy.textContent = poll.closed
-      ? "Closed · final creator snapshot · votes visible to all members"
+      ? (poll.moderated_by
+        ? `Closed by owner ${memberLabel(poll.moderated_by)} · signed moderation snapshot · votes visible to all members`
+        : "Closed · final creator snapshot · votes visible to all members")
       : "Open · single choice · votes visible to all members · not anonymous";
     const choices = document.createElement("div");
     choices.className = "poll-options";
@@ -2090,6 +2093,25 @@ function renderPolls(polls) {
       });
       card.append(close);
     }
+    if (!poll.closed && ["owner", "admin"].includes(authority?.my_role)) {
+      const moderate = document.createElement("button");
+      moderate.type = "button";
+      moderate.className = "ghost";
+      moderate.textContent = authority.my_role === "owner" ? "Moderate close…" : "Request moderation close…";
+      moderate.addEventListener("click", async () => {
+        if (!confirm(`Close “${poll.question}” through signed group authority? The owner sequences the exact final snapshot.`)) return;
+        try {
+          await call("moderate_group_poll_close", {
+            group: poll.group,
+            pollAuthor: poll.author,
+            pollId: poll.id,
+          });
+          await renderMessages();
+          toast(authority.my_role === "owner" ? "Poll closed by signed owner authority." : "Moderation request sent to the owner.");
+        } catch (error) { toast(String(error), true); }
+      });
+      card.append(moderate);
+    }
     panel.append(card);
   }
 }
@@ -2097,7 +2119,7 @@ function renderPolls(polls) {
 async function renderMessages() {
   const isNote = state.currentKind === "note";
   const isGroup = state.currentKind === "group";
-  const [msgs, scheduled, attachments, polls] = await Promise.all([
+  const [msgs, scheduled, attachments, polls, authority] = await Promise.all([
     isNote
       ? call("note_to_self_messages")
       : isGroup
@@ -2106,7 +2128,9 @@ async function renderMessages() {
     isNote ? Promise.resolve([]) : call("scheduled_messages"),
     isNote ? Promise.resolve([]) : call("attachments"),
     isGroup ? call("group_polls", { group: state.currentId }) : Promise.resolve([]),
+    isGroup ? call("group_authority", { group: state.currentId }) : Promise.resolve(null),
   ]);
+  state.currentAuthority = authority;
   const box = $("#messages");
   box.textContent = "";
   state.msgEls.clear();
@@ -2132,7 +2156,7 @@ async function renderMessages() {
     box.append(scheduledBubble(visibleScheduled[index], formattedScheduled[index]));
   }
   renderAttachments(attachments);
-  renderPolls(polls);
+  renderPolls(polls, authority);
   box.scrollTop = box.scrollHeight;
 }
 
@@ -2713,6 +2737,19 @@ listen("node-event", async ({ payload: ev }) => {
         const group = state.groups.find((item) => item.id === ev.group);
         toast(`${group?.name ?? "Group"} poll updated. Votes are visible to members.`);
       }
+      break;
+    }
+    case "group_authority_updated": {
+      await refreshGroups();
+      if (state.currentKind === "group" && ev.group === state.currentId) {
+        updateChatHead();
+        await renderMessages();
+      }
+      break;
+    }
+    case "group_admin_request_resolved": {
+      if (state.currentKind === "group" && ev.group === state.currentId) await renderMessages();
+      toast(ev.accepted ? "The owner accepted your group administration request." : `The owner rejected your group administration request (reason ${ev.reason}).`, !ev.accepted);
       break;
     }
     case "ephemeral_removed": {
@@ -3434,13 +3471,20 @@ async function openGroupDetails() {
   const group = currentGroup();
   if (!group) return;
   if (!state.peer) state.peer = (await call("status")).peer;
-  const isCreator = group.creator === state.peer;
+  const authority = await call("group_authority", { group: group.id });
+  const isOwner = authority.my_role === "owner";
+  const isAdmin = authority.my_role === "admin";
   const root = openModal(`Members of ${group.name}`, "tpl-group-details");
-  root.querySelector(".group-summary").textContent = isCreator
-    ? `${group.members.length} members · You manage this group.`
-    : `${group.members.length} members · ${memberName(group.creator)} manages this group.`;
+  root.querySelector(".group-summary").textContent = `${group.members.length} members · ${memberName(authority.owner)} owns this group · generation ${authority.generation}${authority.signed ? " · signed authority" : " · legacy authority"}.`;
+  const manage = root.querySelector('[data-f="manage"]');
+  if (isOwner || isAdmin) {
+    manage.hidden = false;
+    root.querySelector('[data-f="rename"]').value = group.name;
+    root.querySelector('[data-act="rename"]').textContent = isOwner ? "Rename" : "Request rename";
+  }
   const roster = root.querySelector('[data-f="roster"]');
-  for (const peer of group.members) {
+  for (const member of authority.members) {
+    const peer = member.peer;
     const row = document.createElement("div");
     row.className = "member-row";
     row.dataset.peer = peer;
@@ -3449,9 +3493,24 @@ async function openGroupDetails() {
     name.textContent = memberName(peer);
     const role = document.createElement("span");
     role.className = "member-role";
-    role.textContent = peer === group.creator ? "creator" : "member";
+    role.textContent = member.role;
     row.append(name, role);
-    if (isCreator && peer !== state.peer) {
+    if (isOwner && member.role !== "owner") {
+      const roleButton = document.createElement("button");
+      roleButton.className = "ghost";
+      roleButton.dataset.act = "set-role";
+      roleButton.dataset.peer = peer;
+      roleButton.dataset.role = member.role === "admin" ? "member" : "admin";
+      roleButton.textContent = member.role === "admin" ? "Make member" : "Make admin";
+      row.append(roleButton);
+      const transfer = document.createElement("button");
+      transfer.className = "ghost";
+      transfer.dataset.act = "transfer-owner";
+      transfer.dataset.peer = peer;
+      transfer.textContent = "Make owner";
+      row.append(transfer);
+    }
+    if ((isOwner && member.role !== "owner") || (isAdmin && member.role === "member")) {
       const remove = document.createElement("button");
       remove.className = "danger";
       remove.dataset.act = "remove-member";
@@ -3464,7 +3523,7 @@ async function openGroupDetails() {
 
   const candidates = state.contacts.filter((contact) => !group.members.includes(contact.peer));
   const addWrap = root.querySelector('[data-f="add-wrap"]');
-  if (isCreator && candidates.length > 0) {
+  if ((isOwner || isAdmin) && candidates.length > 0) {
     addWrap.hidden = false;
     const select = root.querySelector('[data-f="add-peer"]');
     for (const contact of candidates) {
@@ -3478,6 +3537,38 @@ async function openGroupDetails() {
   root.addEventListener("click", async (event) => {
     const action = event.target.dataset.act;
     if (action === "close") closeModal();
+    if (action === "rename") {
+      try {
+        const name = root.querySelector('[data-f="rename"]').value.trim();
+        if (!name) throw "give this group a name";
+        await invoke("rename_group", { group: group.id, name });
+        closeModal();
+        await refreshGroups();
+        toast(isOwner ? "Group renamed." : "Rename request sent to the owner.");
+      } catch (err) { showError(root, err); }
+    }
+    if (action === "set-role") {
+      try {
+        await invoke("set_group_role", {
+          group: group.id,
+          peer: event.target.dataset.peer,
+          role: event.target.dataset.role,
+        });
+        closeModal();
+        await refreshGroups();
+        await openGroupDetails();
+      } catch (err) { showError(root, err); }
+    }
+    if (action === "transfer-owner") {
+      const peer = event.target.dataset.peer;
+      if (!confirm(`Transfer sole ownership to ${memberName(peer)}? You will become an admin.`)) return;
+      try {
+        await invoke("transfer_group_owner", { group: group.id, peer });
+        closeModal();
+        await refreshGroups();
+        await openGroupDetails();
+      } catch (err) { showError(root, err); }
+    }
     if (action === "add-member") {
       try {
         await invoke("add_group_member", {
@@ -3504,6 +3595,7 @@ async function openGroupDetails() {
       }
     }
     if (action === "leave") {
+      if (isOwner) { showError(root, "Transfer ownership before leaving this group."); return; }
       if (!window.confirm(`Leave ${group.name}? Its history stays on this device.`)) return;
       try {
         await invoke("leave_group", { group: group.id });

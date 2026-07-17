@@ -48,7 +48,11 @@ pub use group::{
     GROUP_MAX_STORED_SKIPPED, GROUP_SKIPPED_TTL_SECS,
 };
 pub use handshake::{initiate, respond, InitialMessage};
-pub use identity::{parse_address, Identity, IdentityPublic};
+pub use identity::{
+    parse_address, verify_group_admin_request_signature, verify_group_authority_state_signature,
+    verify_group_owner_transfer_signature, verify_group_poll_moderation_signature, Identity,
+    IdentityPublic,
+};
 pub use kdf::{derive_kek, KdfProfile, KDF_PROFILE_DESKTOP, KDF_PROFILE_MOBILE};
 pub use mnemonic::{mnemonic_from_entropy, mnemonic_to_entropy, MNEMONIC_WORDS};
 pub use prekeys::{

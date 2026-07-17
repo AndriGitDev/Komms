@@ -277,6 +277,16 @@
     </plurals>
     <string name="group_role_creator">creator</string>
     <string name="group_role_member">member</string>
+    <string name="group_authority_summary">%1$d members · %2$s owns this group · generation %3$s · %4$s</string>
+    <string name="group_authority_signed">signed authority</string>
+    <string name="group_authority_legacy">legacy authority</string>
+    <string name="group_rename_hint">Group name</string>
+    <string name="group_rename_action">Rename</string>
+    <string name="group_rename_request_action">Request rename</string>
+    <string name="group_make_admin">Make admin</string>
+    <string name="group_make_member">Make member</string>
+    <string name="group_make_owner">Make owner</string>
+    <string name="group_owner_must_transfer">Transfer ownership before leaving this group.</string>
     <string name="group_add_member_action">Add member</string>
     <string name="group_add_member_title">Add a contact</string>
     <string name="group_member_added">Added %1$s</string>
@@ -298,6 +308,12 @@
     <string name="poll_create_visible">Create visible-vote poll</string>
     <string name="poll_open_policy">Open · single choice · votes visible to all members · not anonymous</string>
     <string name="poll_closed_policy">Closed · final creator snapshot · votes visible to all members</string>
+    <string name="poll_moderated_policy">Closed by owner %1$s · signed moderation snapshot · votes visible to all members</string>
+    <string name="poll_moderate_action">Moderate close…</string>
+    <string name="poll_moderate_request_action">Request moderation close…</string>
+    <string name="poll_moderate_confirm_title">Close through group authority?</string>
+    <string name="poll_moderate_confirm">Close “%1$s” through signed group authority? The owner sequences the exact final snapshot.</string>
+    <string name="poll_moderate_sent">Signed moderation action submitted.</string>
     <string name="poll_no_votes">No votes yet.</string>
     <string name="poll_visible_votes">Visible votes: %1$s.</string>
     <string name="poll_vote_confirm_title">Cast visible vote?</string>

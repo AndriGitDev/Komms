@@ -16,6 +16,80 @@ use crate::{util, CryptoError, Result};
 /// Domain separator for the cross-signature binding the X25519 key to the
 /// Ed25519 identity.
 const CROSS_SIGN_DOMAIN: &[u8] = b"Komms-cross-sign-v1";
+const GROUP_AUTHORITY_STATE_DOMAIN: &[u8] = b"Komms-group-authority-state-v1";
+const GROUP_OWNER_TRANSFER_DOMAIN: &[u8] = b"Komms-group-owner-transfer-v1";
+const GROUP_ADMIN_REQUEST_DOMAIN: &[u8] = b"Komms-group-admin-request-v1";
+const GROUP_POLL_MODERATION_DOMAIN: &[u8] = b"Komms-group-poll-moderation-v1";
+
+fn verify_peer_domain(
+    peer: &[u8; 32],
+    domain: &[u8],
+    message: &[u8],
+    signature: &[u8; 64],
+) -> Result<()> {
+    let key = VerifyingKey::from_bytes(peer).map_err(|_| CryptoError::InvalidKey)?;
+    let mut signed = alloc::vec::Vec::with_capacity(domain.len() + message.len());
+    signed.extend_from_slice(domain);
+    signed.extend_from_slice(message);
+    key.verify(&signed, &Signature::from_bytes(signature))
+        .map_err(|_| CryptoError::InvalidSignature)
+}
+
+/// Verify a C6 authority-state signature from an exact peer id.
+pub fn verify_group_authority_state_signature(
+    peer: &[u8; 32],
+    canonical_state: &[u8],
+    signature: &[u8; 64],
+) -> Result<()> {
+    verify_peer_domain(
+        peer,
+        GROUP_AUTHORITY_STATE_DOMAIN,
+        canonical_state,
+        signature,
+    )
+}
+
+/// Verify a C6 ownership-transfer signature from an exact peer id.
+pub fn verify_group_owner_transfer_signature(
+    peer: &[u8; 32],
+    canonical_transfer: &[u8],
+    signature: &[u8; 64],
+) -> Result<()> {
+    verify_peer_domain(
+        peer,
+        GROUP_OWNER_TRANSFER_DOMAIN,
+        canonical_transfer,
+        signature,
+    )
+}
+
+/// Verify a C6 admin-request signature from an exact peer id.
+pub fn verify_group_admin_request_signature(
+    peer: &[u8; 32],
+    canonical_request: &[u8],
+    signature: &[u8; 64],
+) -> Result<()> {
+    verify_peer_domain(
+        peer,
+        GROUP_ADMIN_REQUEST_DOMAIN,
+        canonical_request,
+        signature,
+    )
+}
+
+/// Verify a C6 poll-moderation signature from an exact owner id.
+pub fn verify_group_poll_moderation_signature(
+    peer: &[u8; 32],
+    canonical_moderation: &[u8],
+    signature: &[u8; 64],
+) -> Result<()> {
+    verify_peer_domain(
+        peer,
+        GROUP_POLL_MODERATION_DOMAIN,
+        canonical_moderation,
+        signature,
+    )
+}
 
 /// A user's full identity: long-term signing and agreement secrets.
 ///
@@ -56,6 +130,29 @@ impl Identity {
         buf.extend_from_slice(domain);
         buf.extend_from_slice(msg);
         self.signing.sign(&buf).to_bytes()
+    }
+
+    /// Sign one canonical C6 group-authority state.
+    ///
+    /// The fixed domain prevents a valid authority signature from being
+    /// replayed as a prekey, owner transfer, or administrative request.
+    pub fn sign_group_authority_state(&self, canonical_state: &[u8]) -> [u8; 64] {
+        self.sign_domain(GROUP_AUTHORITY_STATE_DOMAIN, canonical_state)
+    }
+
+    /// Sign one canonical C6 ownership-transfer certificate.
+    pub fn sign_group_owner_transfer(&self, canonical_transfer: &[u8]) -> [u8; 64] {
+        self.sign_domain(GROUP_OWNER_TRANSFER_DOMAIN, canonical_transfer)
+    }
+
+    /// Sign one canonical C6 generation-bound administrative request.
+    pub fn sign_group_admin_request(&self, canonical_request: &[u8]) -> [u8; 64] {
+        self.sign_domain(GROUP_ADMIN_REQUEST_DOMAIN, canonical_request)
+    }
+
+    /// Sign one exact generation-bound C6 poll moderation snapshot.
+    pub fn sign_group_poll_moderation(&self, canonical_moderation: &[u8]) -> [u8; 64] {
+        self.sign_domain(GROUP_POLL_MODERATION_DOMAIN, canonical_moderation)
     }
 
     /// X25519 agreement with a peer public key.
@@ -126,6 +223,46 @@ impl IdentityPublic {
             .map_err(|_| CryptoError::InvalidSignature)
     }
 
+    /// Verify a canonical C6 group-authority state signature.
+    pub fn verify_group_authority_state(
+        &self,
+        canonical_state: &[u8],
+        signature: &[u8; 64],
+    ) -> Result<()> {
+        self.verify_domain(GROUP_AUTHORITY_STATE_DOMAIN, canonical_state, signature)
+    }
+
+    /// Verify a canonical C6 ownership-transfer certificate signature.
+    pub fn verify_group_owner_transfer(
+        &self,
+        canonical_transfer: &[u8],
+        signature: &[u8; 64],
+    ) -> Result<()> {
+        self.verify_domain(GROUP_OWNER_TRANSFER_DOMAIN, canonical_transfer, signature)
+    }
+
+    /// Verify a canonical C6 generation-bound administrative request.
+    pub fn verify_group_admin_request(
+        &self,
+        canonical_request: &[u8],
+        signature: &[u8; 64],
+    ) -> Result<()> {
+        self.verify_domain(GROUP_ADMIN_REQUEST_DOMAIN, canonical_request, signature)
+    }
+
+    /// Verify a generation-bound C6 poll moderation snapshot.
+    pub fn verify_group_poll_moderation(
+        &self,
+        canonical_moderation: &[u8],
+        signature: &[u8; 64],
+    ) -> Result<()> {
+        self.verify_domain(
+            GROUP_POLL_MODERATION_DOMAIN,
+            canonical_moderation,
+            signature,
+        )
+    }
+
     /// The 32-byte SHA-256 digest over `ed || x` that the kult address
     /// encodes — also the DHT record key this identity's prekey bundles are
     /// published under (docs/05-transports.md §2, docs/06-identity-trust.md §2).
@@ -175,5 +312,34 @@ impl core::fmt::Debug for IdentityPublic {
         f.debug_struct("IdentityPublic")
             .field("address", &self.address())
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::rngs::OsRng;
+
+    #[test]
+    fn group_authority_signatures_are_identity_bound_and_domain_separated() {
+        let identity = Identity::generate(&mut OsRng);
+        let public = identity.public();
+        let state = b"canonical authority state";
+        let signature = identity.sign_group_authority_state(state);
+        public
+            .verify_group_authority_state(state, &signature)
+            .unwrap();
+        assert!(public
+            .verify_group_authority_state(b"different state", &signature)
+            .is_err());
+        assert!(public
+            .verify_group_owner_transfer(state, &signature)
+            .is_err());
+        assert!(public
+            .verify_group_admin_request(state, &signature)
+            .is_err());
+        assert!(public
+            .verify_group_poll_moderation(state, &signature)
+            .is_err());
     }
 }

@@ -89,6 +89,14 @@ are visible to members—Komms does not call them anonymous—and the creator cl
 the exact vote snapshot they have received. Offline, duplicate, and reordered
 events still converge locally. See [Group Polls](20-group-polls.md).
 
+Groups can upgrade to signed owner, admin, and member roles. There is always one
+owner. Admins can request common work while the owner is offline, but the owner
+still commits one ordered change and refreshes the group's encryption keys.
+Ownership can be transferred; the owner must transfer before leaving. A signed
+owner moderation close is visibly different from the poll creator's ordinary
+close. There is no server account or hidden moderator behind these roles. See
+[Group Roles, Ownership, and Moderation](21-group-roles.md).
+
 If you're comfortable with a terminal, the desktop shell is the quickest start:
 
 ```sh
@@ -121,6 +129,7 @@ Platform build instructions:
 | how authored message edits work and what they cannot erase | [Authenticated Message Editing](18-message-editing.md) |
 | what disappearing/view-once means—and what it cannot erase | [Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md) |
 | how encrypted group polls converge and why votes are visible | [Group Polls](20-group-polls.md) |
+| how signed group roles, ownership transfer, and moderation work | [Group Roles, Ownership, and Moderation](21-group-roles.md) |
 | why a technical decision was made | [ADR Index](adr/README.md) |
 
 ## How can I help?

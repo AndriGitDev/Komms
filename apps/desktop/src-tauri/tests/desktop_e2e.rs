@@ -167,6 +167,48 @@ fn open(dir: &Path, name: &str, events: &Events) -> Session {
     .expect("session opens")
 }
 
+fn wait_authority_generation(
+    session: &Session,
+    group: &str,
+    generation: u64,
+) -> komms_desktop::session::UiGroupAuthority {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let authority = session.group_authority(group.to_owned()).unwrap();
+        if authority.signed && authority.generation >= generation {
+            return authority;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "desktop authority generation did not converge"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn wait_closed_poll(
+    session: &Session,
+    group: &str,
+    poll_id: &str,
+) -> komms_desktop::session::UiGroupPoll {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(poll) = session
+            .group_polls(group.to_owned())
+            .unwrap()
+            .into_iter()
+            .find(|poll| poll.id == poll_id && poll.closed)
+        {
+            return poll;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "desktop poll closure did not converge"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 #[test]
 fn desktop_ephemeral_controls_match_shared_honesty_and_block_render_bypasses() {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
@@ -192,10 +234,12 @@ fn desktop_poll_ui_keeps_visibility_policy_and_uses_inert_exact_text() {
     let html = include_str!("../../ui/index.html");
     let frontend = include_str!("../../ui/main.js");
     assert!(html.contains("Votes are visible to every member. This is not anonymous."));
-    assert!(html.contains("only the poll creator can close it"));
+    assert!(html.contains("The poll creator can close it"));
+    assert!(html.contains("a group owner can also commit a signed moderation snapshot"));
     assert!(frontend.contains("create_group_poll"));
     assert!(frontend.contains("vote_group_poll"));
     assert!(frontend.contains("close_group_poll"));
+    assert!(frontend.contains("moderate_group_poll_close"));
     assert!(frontend.contains("new TextEncoder().encode(value).length"));
     let renderer = frontend
         .split("function renderPolls")
@@ -208,9 +252,8 @@ fn desktop_poll_ui_keeps_visibility_policy_and_uses_inert_exact_text() {
     assert!(renderer.contains("textContent = option.text"));
     assert!(!renderer.contains("innerHTML"));
 
-    let android = include_str!(
-        "../../../android/app/src/main/kotlin/komms/android/GroupChatActivity.kt"
-    );
+    let android =
+        include_str!("../../../android/app/src/main/kotlin/komms/android/GroupChatActivity.kt");
     let android_strings = include_str!("../../../android/app/src/main/res/values/strings.xml");
     assert!(android.contains("is Event.PollUpdated -> event.group == groupId"));
     assert!(android.contains("session.createGroupPoll(groupId, exactQuestion, exactChoices)"));
@@ -458,7 +501,7 @@ fn desktop_incognito_keyboard_covers_every_editable_text_field_before_unlock() {
         - html
             .matches("<textarea class=\"share-hex\" rows=\"4\" readonly")
             .count();
-    assert_eq!(26, editable_text_fields);
+    assert_eq!(28, editable_text_fields);
     assert_eq!(
         editable_text_fields,
         html.matches("data-incognito-input=").count()
@@ -1489,6 +1532,114 @@ fn desktop_group_ux_create_roster_message_and_partial_delivery() {
     assert!(bob.group_polls(group.clone()).unwrap()[0].closed);
     assert_eq!(alice.group_messages(group.clone()).unwrap().len(), 1);
     assert_eq!(bob.group_messages(group.clone()).unwrap().len(), 1);
+
+    // C6 authority stays typed through Session, exactly as Tauri commands
+    // and the members/poll dialogs consume it.
+    let legacy = alice.group_authority(group.clone()).unwrap();
+    assert!(!legacy.signed);
+    assert_eq!(legacy.owner, alice_at_bob);
+    assert_eq!(legacy.my_role, Some("owner"));
+    let upgrade_generation = legacy.generation + 1;
+    alice.upgrade_group_authority(group.clone()).unwrap();
+    let upgraded = wait_authority_generation(&bob, &group, upgrade_generation);
+    assert_eq!(upgraded.owner, alice_at_bob);
+    assert_eq!(upgraded.my_role, Some("member"));
+    assert_eq!(upgraded.members.len(), 2);
+
+    alice
+        .set_group_role(group.clone(), bob_peer.clone(), "admin".to_owned())
+        .unwrap();
+    let admin_generation = upgrade_generation + 1;
+    assert_eq!(
+        wait_authority_generation(&bob, &group, admin_generation).my_role,
+        Some("admin")
+    );
+    let err = bob
+        .set_group_role(group.clone(), alice_at_bob.clone(), "member".to_owned())
+        .unwrap_err();
+    assert!(err.contains("owner"), "got: {err}");
+
+    let rename_request = bob
+        .rename_group(group.clone(), "Authority trail crew".to_owned())
+        .unwrap();
+    let rename_generation = admin_generation + 1;
+    b_ev.wait("desktop admin rename result", |event| {
+        matches!(event, UiEvent::GroupAdminRequestResolved {
+            request_id,
+            accepted: true,
+            generation,
+            state_id: Some(_),
+            reason: 0,
+            ..
+        } if request_id == &rename_request && *generation == rename_generation)
+    });
+    wait_authority_generation(&bob, &group, rename_generation);
+    let rename_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if bob
+            .groups()
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate.id == group && candidate.name == "Authority trail crew")
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < rename_deadline,
+            "desktop admin rename did not converge"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let moderated_poll = alice
+        .create_group_poll(
+            group.clone(),
+            "Close for weather?".to_owned(),
+            vec!["Keep open".to_owned(), "Close".to_owned()],
+        )
+        .unwrap();
+    b_ev.wait(
+        "desktop moderated poll",
+        |event| matches!(event, UiEvent::PollUpdated { poll_id, .. } if poll_id == &moderated_poll),
+    );
+    let moderation_request = bob
+        .moderate_group_poll_close(group.clone(), alice_at_bob.clone(), moderated_poll.clone())
+        .unwrap();
+    let moderation_generation = rename_generation + 1;
+    b_ev.wait("desktop moderation result", |event| {
+        matches!(event, UiEvent::GroupAdminRequestResolved {
+            request_id,
+            accepted: true,
+            generation,
+            reason: 0,
+            ..
+        } if request_id == &moderation_request && *generation == moderation_generation)
+    });
+    let moderated = wait_closed_poll(&bob, &group, &moderated_poll);
+    assert_eq!(moderated.moderated_by, Some(alice_at_bob.clone()));
+    assert_eq!(moderated.close_policy, "signed_owner_snapshot");
+
+    alice
+        .transfer_group_owner(group.clone(), bob_peer.clone())
+        .unwrap();
+    let bob_owner_generation = moderation_generation + 1;
+    let bob_owner = wait_authority_generation(&bob, &group, bob_owner_generation);
+    assert_eq!(bob_owner.owner, bob_peer);
+    assert_eq!(bob_owner.owner_epoch, 1);
+    assert_eq!(bob_owner.my_role, Some("owner"));
+    let err = bob.leave_group(group.clone()).unwrap_err();
+    assert!(err.contains("owner"), "got: {err}");
+
+    bob.transfer_group_owner(group.clone(), alice_at_bob.clone())
+        .unwrap();
+    let alice_owner_generation = bob_owner_generation + 1;
+    let alice_owner = wait_authority_generation(&alice, &group, alice_owner_generation);
+    assert_eq!(alice_owner.owner, alice_at_bob);
+    assert_eq!(alice_owner.owner_epoch, 2);
+    alice
+        .set_group_role(group.clone(), bob_peer.clone(), "member".to_owned())
+        .unwrap();
+    wait_authority_generation(&bob, &group, alice_owner_generation + 1);
 
     // A member can leave; their live group disappears locally and the
     // creator converges too.

@@ -47,14 +47,14 @@ approximate sizes; rows can't be transplanted across tables or databases.
 B9 formatting creates no additional durable state. The `messages`,
 `scheduled_messages`, group history, and note-to-self rows retain exact source
 bytes under their existing seals; formatting markers are not rewritten and no
-rendered HTML/attributed text or cache is persisted. `KKR5` therefore carries
+rendered HTML/attributed text or cache is persisted. `KKR6` therefore carries
 the same source it already carried and needs no format or migration change.
 
 C3 edits also add no mutable plaintext projection. Canonical originals and edit
 events remain separate individually sealed pairwise/group history rows; derived
 history hides edit rows and returns the winning text, marker, revision, and
 ordered versions. The winner is rebuilt from authenticated rows after restart or
-restore, including edit-before-original order. `KKR5` carries those
+restore, including edit-before-original order. `KKR6` carries those
 history rows, so no backup version or migration changes. The node caps locally
 authored edits at 64 per target; it retains every authenticated inbound edit so
 admission order cannot change convergence. See
@@ -82,7 +82,7 @@ B12 stores only the canonical `system`, `light`, or `dark` bytes under the seale
 UI-preference key `appearance.theme`. Missing or unknown legacy values render as
 System without a read-time rewrite. The small shell cache used before unlock is
 non-sensitive presentation state; after unlock the sealed F5 value is
-authoritative and is the only value carried by `KKR5` to another device.
+authoritative and is the only value carried by `KKR6` to another device.
 
 ### Protected application transients
 
@@ -174,25 +174,26 @@ trade for this project.)
 
 - **Encrypted backup file**: single-file export (identity + contacts + ordinary history +
   local organization/drafts/preferences/icons + note-to-self history +
-  terminal ephemeral tombstones + session-reset markers), sealed under a key derived from a BIP-39-style
+  terminal ephemeral tombstones + signed group authority + session-reset markers), sealed under a key derived from a BIP-39-style
   mnemonic via Argon2id. `KKR3` added the sealed local metadata domain and
-  `KKR4` added sealed note-to-self history; current `KKR5` adds terminal
-  ephemeral tombstones while excluding every active ephemeral history row,
-  manifest, transfer, and media chunk. Older `KKR1` through `KKR4` files remain
+  `KKR4` added sealed note-to-self history, `KKR5` added terminal ephemeral
+  tombstones while excluding every active ephemeral history row, manifest,
+  transfer, and media chunk, and current `KKR6` adds signed group authority
+  state plus bounded consumed admin-request ids. Older `KKR1` through `KKR5` files remain
   restorable. Restoring on a new
   device resumes identity; sessions re-handshake (ratchet states are deliberately *not*
   portable, importing stale ratchet state is a correctness and security hazard). Format
   and mechanism: ADR-0011.
-- **B18 label backup behavior**: `KKR5` preserves exact label IDs, names, color
+- **B18 label backup behavior**: `KKR6` preserves exact label IDs, names, color
   tokens, insertion order, assignments, and stale-reference behavior. Labels
   have no independent cloud, server, or linked-device synchronization path.
-- **B10 folder backup behavior**: `KKR5` preserves exact folder IDs, names,
+- **B10 folder backup behavior**: `KKR6` preserves exact folder IDs, names,
   manual order, single-membership assignments, and stale-reference behavior.
   Folders have no independent cloud, server, or linked-device synchronization.
-- **B11 pin backup behavior**: `KKR5` preserves exact typed targets, durable
+- **B11 pin backup behavior**: `KKR6` preserves exact typed targets, durable
   order, and stale/reactivation behavior. Pins have no independent cloud,
   server, or linked-device synchronization path.
-- **B13 custom-icon backup behavior**: `KKR5` preserves each canonical sealed
+- **B13 custom-icon backup behavior**: `KKR6` preserves each canonical sealed
   PNG under its exact typed contact/group/folder/note-to-self target. Restore
   reuses the same strict read verification and generated-initials fallback.
   Icons have no avatar URL, cloud, server, peer, or linked-device synchronization
@@ -206,13 +207,18 @@ trade for this project.)
   winner and prior-version list; it never imports a mutable current-body cache
   or discards stale losing revisions.
 - **C4 ephemeral backup behavior**: no live disappearing plaintext, view-once
-  manifest, or associated media enters KKR5. Terminal tombstones do, so restore
+  manifest, or associated media enters KKR6. Terminal tombstones do, so restore
   cannot resurrect a removed content id. Active ephemeral content is
   intentionally non-portable and there is no remote-erasure claim.
 - **C5 poll backup behavior**: immutable create, vote, and creator-close rows
   ride with ordinary sealed group history. Restore derives the same stable IDs,
   fixed electorate, visible vote heads, closed state, and tally; no mutable
   counter, new KKR version, or schema migration is involved.
+- **C6 authority backup behavior**: `KKR6` carries the winning canonical signed
+  authority payload, authority event id, owner-transfer chain, and bounded
+  consumed request ids. `KKR1`-`KKR5` restore with no authority record and remain
+  legacy creator-managed until a capability-gated upgrade. Sender/receiver
+  chains remain excluded and are refreshed after restore.
 - **Plaintext export**: JSON-lines + media directory, clearly warned as plaintext.
   The user's data is the user's.
 - **Panic wipe** (roadmap M6): duress passphrase unlocking a decoy profile while

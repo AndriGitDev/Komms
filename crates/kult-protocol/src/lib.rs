@@ -36,6 +36,7 @@ mod ephemeral;
 mod error;
 mod fragmentation;
 mod group;
+mod group_authority;
 mod mention;
 mod padding;
 mod poll;
@@ -62,11 +63,12 @@ pub use capability::{
     CAPABILITY_MAGIC, MAX_CAPABILITY_FORMATS, MAX_CAPABILITY_KINDS,
 };
 pub use content::{
-    decode_content, encode_attachment, encode_edit, encode_ephemeral, encode_mention, encode_poll,
-    encode_text, DecodedContent, CONTENT_FORMAT_V1, CONTENT_HEADER_LEN, CONTENT_KIND_ATTACHMENT,
-    CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL, CONTENT_KIND_MENTION, CONTENT_KIND_POLL,
-    CONTENT_KIND_TEXT, CONTENT_MAGIC, MAX_COLLECTION_ENTRIES, MAX_CONTENT_FRAME_LEN,
-    MAX_CONTENT_PAYLOAD_LEN, MAX_NESTING_DEPTH,
+    decode_content, encode_attachment, encode_edit, encode_ephemeral, encode_group_authority,
+    encode_mention, encode_poll, encode_text, DecodedContent, CONTENT_FORMAT_V1,
+    CONTENT_HEADER_LEN, CONTENT_KIND_ATTACHMENT, CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL,
+    CONTENT_KIND_GROUP_AUTHORITY, CONTENT_KIND_MENTION, CONTENT_KIND_POLL, CONTENT_KIND_TEXT,
+    CONTENT_MAGIC, MAX_COLLECTION_ENTRIES, MAX_CONTENT_FRAME_LEN, MAX_CONTENT_PAYLOAD_LEN,
+    MAX_NESTING_DEPTH,
 };
 pub use edit::{
     decode_edit_payload, encode_edit_payload, DecodedEdit, Edit, EDIT_HEADER_LEN,
@@ -84,7 +86,17 @@ pub use ephemeral::{
 };
 pub use error::ProtocolError;
 pub use fragmentation::{fragment, Reassembler, FRAG_HEADER_LEN, REASSEMBLY_WINDOW_SECS};
-pub use group::{GroupAnnounce, GroupControlPayload, GroupMemberInfo};
+pub use group::{
+    group_admin_request_signing_bytes, GroupAdminAction, GroupAdminRequest, GroupAdminResult,
+    GroupAnnounce, GroupAuthorityAnnounce, GroupControlPayload, GroupMemberInfo,
+    MAX_GROUP_ADMIN_REQUESTS,
+};
+pub use group_authority::{
+    decode_group_authority, encode_group_authority_state, group_authority_state_signing_bytes,
+    owner_transfer_signing_bytes, DecodedGroupAuthority, GroupAuthorityMember, GroupRole,
+    OwnerTransferCertificate, SignedGroupAuthorityState, GROUP_AUTHORITY_VERSION,
+    MAX_GROUP_AUTHORITY_MEMBERS, MAX_GROUP_MEMBER_IDENTITY_LEN, MAX_GROUP_NAME_LEN,
+};
 pub use mention::{
     decode_mention_payload, encode_mention_payload, DecodedMention, Mention, MentionSpan,
     MentionSpans, MentionTargets, MAX_MENTION_PAYLOAD_LEN, MAX_MENTION_SPANS, MAX_MENTION_TARGETS,
@@ -94,7 +106,8 @@ pub use mention::{
 pub use padding::{pad, pad_to_minimum, unpad, PAD_BUCKETS};
 pub use poll::{
     decode_poll_payload, encode_poll_close_payload, encode_poll_create_payload,
-    encode_poll_vote_payload, DecodedPoll, Poll, PollClose, PollCreate, PollOption, PollOptions,
+    encode_poll_moderated_close_payload, encode_poll_vote_payload, poll_moderation_signing_bytes,
+    DecodedPoll, Poll, PollClose, PollCreate, PollModeratedClose, PollOption, PollOptions,
     PollVote, PollVoteHead, PollVoteHeads, PollVoters, MAX_POLL_OPTIONS, MAX_POLL_OPTION_TEXT_LEN,
     MAX_POLL_QUESTION_LEN, MAX_POLL_VOTERS, MIN_POLL_OPTIONS, POLL_CLOSE_MANUAL, POLL_VERSION,
 };

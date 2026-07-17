@@ -19,6 +19,14 @@ fuzz_target!(|data: &[u8]| {
                 close.poll_id,
                 &close.heads().collect::<Vec<_>>(),
             ),
+            Poll::ModeratedClose(close) => kult_protocol::encode_poll_moderated_close_payload(
+                close.group,
+                close.poll_author,
+                close.poll_id,
+                close.authority_generation,
+                &close.heads().collect::<Vec<_>>(),
+                close.signature,
+            ),
         }
         .unwrap();
         assert_eq!(encoded, data);

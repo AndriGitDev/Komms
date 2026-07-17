@@ -42,7 +42,7 @@ still require their own accepted designs before individual shells implement UI.
 | Folders | Shipped | Preserve single-folder membership, All/Unfiled views, deterministic order, stale cleanup, label composition, and zero-network behavior. |
 | Pins | Shipped (conversation) | Preserve exact typed targets, complete durable reorder, stale reactivation/cleanup, folder → label → pin composition, and zero-network behavior; message pins remain separate. |
 | Dark mode | Shipped | Sealed system/light/dark preference, shared semantic roles, and native live switching in every shell. |
-| Custom icons | Shipped | Preserve exact typed targets, strict local image canonicalization, sealed quotas, initials fallback, `KKR5` portability, and zero-network behavior. |
+| Custom icons | Shipped | Preserve exact typed targets, strict local image canonicalization, sealed quotas, initials fallback, `KKR6` portability, and zero-network behavior. |
 | Screen security | Shipped | Always-on shared policy, native shell protections, rapid desktop lock, and explicit platform limitations. |
 | Incognito keyboard | Shipped | Always-on field inventory, Android no-learning request, secure secret fields, and honest iOS/desktop limits. |
 | Local still-image editing | Shipped | Keep shared deterministic semantics, cleanup, exact-review, and metadata-removal gates stable; video remains out of scope. |
@@ -51,9 +51,9 @@ still require their own accepted designs before individual shells implement UI.
 | File sharing | Shipped | Bounded F3/F4 delivery plus shared fail-closed file rows, explicit warned open/export, mismatch handling, lifecycle cleanup, and cross-language parity. |
 | Linked devices | Planned | Proximate linking, device keys, sync, revocation, and recovery. |
 | Message editing | Shipped | ADR-0020 immutable authenticated revisions, deterministic offline reconciliation, retained versions, and every front door/shell. |
-| Disappearing/view-once messages | Shipped | ADR-0021 exact local deadlines, envelope-v2 coarse relay deletion, tombstones, KKR5 exclusion, terminal reveal, and honest local-only promises. |
+| Disappearing/view-once messages | Shipped | ADR-0021 exact local deadlines, envelope-v2 coarse relay deletion, tombstones, KKR6 exclusion, terminal reveal, and honest local-only promises. |
 | Group polls | Shipped | ADR-0022 fixed-electorate visible votes, deterministic heads/tallies, creator snapshot closure, and every front door/shell. |
-| Admin/role controls | Planned | Cryptographic group capabilities and authority transitions. |
+| Admin/role controls | Shipped | ADR-0023 owner-serialized signed roles, transfer, re-keying, and poll moderation through every shell. |
 | Live voice/video calls | Design-only | ADR-0013 remains Proposed; measured media transport and carrier gating precede implementation. |
 | Optional hybrid reachability/wake | Design-only | ADR-0017 through ADR-0019 remain Proposed; acceptance precedes mode boundaries, rotating rendezvous, and best-effort native wake. |
 
@@ -171,11 +171,11 @@ must not assume that before measurements exist.
 bounded records and stable replacement keys for conversation types, folders,
 single-folder membership, pins, labels and multi-label membership, drafts, UI
 preferences, and custom icons. The table exposes only row count and approximate
-sealed sizes in a copied database; `KKR5` backs up every non-ephemeral user-authored record
+sealed sizes in a copied database; `KKR6` backs up every non-ephemeral user-authored record
 and note-to-self history while `KKR1`, `KKR2`, and `KKR3` remain restorable.
 Feature behavior and shell UX remain separate B7/B13 slices. B10 folders,
 B11 conversation pins, B12 appearance, and B18 labels use the shipped record
-shapes and the ordinary-history `KKR5` contract unchanged.
+shapes and the ordinary-history `KKR6` contract unchanged.
 
 Add sealed local-only records for conversation type, folders, pins, labels,
 drafts, UI preferences, and custom icons. Keep local organization out of network
@@ -293,7 +293,7 @@ bounds the proposed name, permits duplicates, and assesses duplicate,
 mixed-script/confusable, bidirectional-control, and invisible-character risks.
 A warned rename requires explicit acceptance. The mutation rewrites only the
 sealed contact record, emits one endpoint-local event, survives restart and
-`KKR5`, and creates zero lookup, capability, message, notification, queue,
+`KKR6`, and creates zero lookup, capability, message, notification, queue,
 envelope, or transport work. The shared B5 fixture and cross-surface tests pin
 normalization, warnings, duplicate acceptance, persistence, and privacy.
 
@@ -306,7 +306,7 @@ for remote-suggestion changes. It is not part of shipped B5.
 
 ### B6. Secure backups
 
-**State:** KKR5 shipped; permanent KKR1–KKR4 compatibility track.
+**State:** KKR6 shipped; permanent KKR1–KKR5 compatibility track.
 
 For every feature in this plan, decide explicitly whether its state is identity
 critical, conversation history, local preference, secret ephemeral state, or
@@ -326,7 +326,7 @@ Acceptance:
 
 **State:** text note-to-self shipped through `kult-store`, `kult-node`, RPC/CLI,
 UniFFI, desktop, Android, and iOS. Every surface uses the reserved
-`note_to_self` identity. `KKR5` includes the sealed history; exact KKR1–KKR4
+`note_to_self` identity. `KKR6` includes the sealed history; exact KKR1–KKR5
 restore compatibility remains. Attachments follow F3 shell integration.
 
 Implement a first-class local conversation, not a fake contact or a message sent
@@ -413,7 +413,7 @@ UTF-8 bytes and may duplicate; cryptorandom 16-byte IDs and persisted manual
 order disambiguate them. All and Unfiled are virtual views. Complete-set reorder,
 move/unfile, delete cascade, and stale cleanup are atomic, and folder selection
 composes before the independent B18 any/all label filter. Shared limits are 128
-folders, 8,192 assignments, and 256 UTF-8 bytes per name. `KKR5` preserves exact
+folders, 8,192 assignments, and 256 UTF-8 bytes per name. `KKR6` preserves exact
 IDs, names, order, membership, and stale behavior. Every mutation creates zero
 envelope, queue, receipt, capability, or transport work.
 
@@ -436,7 +436,7 @@ leading pinned block. Pinned rows use manual order, recent activity for tied
 legacy order, and stable typed bytes; unpinned rows use recent activity and the
 same typed tie-breaker. Unavailable pins remain diagnosable, can be removed only
 by exact cleanup while stale, and reactivate only when the same typed identity
-becomes available. `KKR5` preserves exact target, order, and stale behavior.
+becomes available. `KKR6` preserves exact target, order, and stale behavior.
 Every surface proves that pin work creates no envelope, queue, receipt,
 notification, capability, crypto, or transport work.
 
@@ -452,7 +452,7 @@ no envelope, queue, capability, notification, cryptographic, or transport work.
 
 Every shell applies a non-sensitive device-local cache before unlock to prevent
 a theme flash, then reconciles after unlock: a canonical sealed value wins
-(including after `KKR5` restore), while a missing value is initialized from the
+(including after `KKR6` restore), while a missing value is initialized from the
 cached/default System choice. Desktop resolves shared semantic CSS roles and
 live `prefers-color-scheme` / `prefers-contrast` / `prefers-reduced-motion`;
 Android applies AppCompat DayNight before the first Activity and uses matching
@@ -460,7 +460,7 @@ light/night semantic resources; iOS applies SwiftUI's preferred color scheme and
 adaptive platform colors. The shared B12 fixture pins the exact vocabulary,
 semantic roles, WCAG 2 contrast thresholds, and reference-palette ratios.
 
-Acceptance covers first-run System, strict input, idempotency, restart, `KKR5`
+Acceptance covers first-run System, strict input, idempotency, restart, `KKR6`
 restore, local-only events, zero delivery work, live native switching, high
 contrast, reduced motion, and light/dark major-surface rendering. Security and
 delivery states retain text, icons, or accessible labels and never rely on color.
@@ -483,7 +483,7 @@ The existing F5 record is now enforced as one icon per exact target, at most
 canonical profile again; a missing, corrupt, or non-canonical sealed image falls
 back without rewriting or exposing it. Folder deletion removes its icon; other
 unavailable exact identities remain inaccessible and can safely reactivate only
-if that same technical identity returns. `KKR5` preserves icons as ordinary
+if that same technical identity returns. `KKR6` preserves icons as ordinary
 sealed user-authored local metadata.
 
 Node, strict RPC/CLI, UniFFI, desktop, Android, and iOS expose the same target,
@@ -493,7 +493,7 @@ all conversation/folder lists render the sealed icon or initials. No avatar URL,
 envelope, capability, notification, DHT record, peer synchronization, queue item,
 or transport work exists. The shared B13 fixture and layer acceptance tests prove
 metadata removal, input/output bounds, quota enforcement including the low-level
-store boundary, all four target types, restart, `KKR5`, idempotency, corrupt and
+store boundary, all four target types, restart, `KKR6`, idempotency, corrupt and
 missing fallback, and zero delivery work.
 
 ### B14. Screen security
@@ -622,7 +622,7 @@ policy; they provide no server-push or online-delivery guarantee.
 **State:** shipped through `kult-store`, `kult-node`, RPC/CLI, UniFFI, desktop,
 Android, and iOS. PR #43/B17 was only the administrative branch base; labels have
 no semantic dependency on Mention content. B18 stays inside the accepted F5
-`LabelRecord` and `LabelAssignment` shapes and `KKR5`, so it requires no new
+`LabelRecord` and `LabelAssignment` shapes and `KKR6`, so it requires no new
 payload ADR.
 
 Labels target stable pairwise, group, and note-to-self `ConversationId` values.
@@ -640,7 +640,7 @@ bounded node operations shared by every wrapper. Deletion cascades atomically;
 assign/unassign are idempotent. Unavailable definitions and conversation targets
 stay durably diagnosable but are excluded from active filters. Filters affect
 presentation only, never receipt, notification, delivery, search, unread truth,
-queue work, ordering, or history. `KKR5` preserves exact IDs, names, colors,
+queue work, ordering, or history. `KKR6` preserves exact IDs, names, colors,
 ordering, membership, and stale behavior while KKR1–KKR3 restore unchanged.
 
 All shells provide accessible managers, non-color badges, assignment actions,
@@ -729,7 +729,7 @@ checks. Linked-device convergence must be designed together with C2.
 Acceptance covers reorder, duplication, partitions, malicious cross-author
 edits, edits after group removal, old-client fallback, and eventual convergence.
 The shipped implementation additionally covers strict raw-send bypass refusal,
-restart/`KKR5` restore, shared parity fixtures, dedicated fuzzing, exact RPC/CLI
+restart/`KKR6` restore, shared parity fixtures, dedicated fuzzing, exact RPC/CLI
 and UniFFI events/models, and accessible retained-version UI on all three shells.
 See [18: Authenticated Message Editing](18-message-editing.md).
 
@@ -763,8 +763,8 @@ The shipped implementation uses content-v1 kind 5 plus envelope v2. The exact
 deadline and canonical hour-ceiling hint are authenticated together; relays
 apply the hint only to deletion, while endpoints enforce the exact deadline.
 Sealed lifecycle rows and terminal tombstones prevent restart, duplicate, and
-reorder resurrection. KKR5 excludes active ephemeral plaintext/manifests/media
-and includes terminal tombstones; KKR1–KKR4 remain restorable. View-once
+reorder resurrection. KKR6 excludes active ephemeral plaintext/manifests/media
+and includes terminal tombstones; KKR1–KKR5 remain restorable. View-once
 consumption commits the tombstone before output and ordinary preview/export/
 playback paths refuse the transfer. Pair/group capability gates, anonymous-first-
 flight refusal, raw-send bypass tests, strict RPC/CLI, UniFFI, all three shells,
@@ -786,13 +786,14 @@ roster capability gating and raw-send refusal protect old clients.
 
 Acceptance covers canonical/arbitrary decoding, partitions, changed,
 duplicate, and reordered votes, outsiders, additions/removals, conflicting
-closure, convergence, KKR5 restore, RPC/CLI, UniFFI, desktop, Android host core,
+closure, convergence, KKR6 restore, RPC/CLI, UniFFI, desktop, Android host core,
 and iOS host/app contracts. Android APK/device evidence remains in the common
 M5 platform release gate rather than weakening the shipped protocol contract.
 
 ### C6. Admin and role controls
 
-**Depends on:** F1. **ADR required.**
+**State:** Shipped. **Depends on:** F1. **Decision:**
+[ADR-0023](adr/0023-group-roles-and-owner-authority.md).
 
 Extend the current single creator-managed roster with signed, generation-bound
 capabilities such as invite, remove, rename, role grant, and poll moderation.
@@ -807,6 +808,23 @@ their stale commands arrive later.
 Acceptance includes forged/stale capability rejection, concurrent admin actions,
 owner transfer, last-owner safeguards, offline members, removed-device exclusion,
 and deterministic convergence.
+
+The shipped design keeps exactly one owner as sequencer. Admin invite, ordinary
+member removal, rename, and poll moderation are signed generation-bound requests;
+role grants, admin removal, and ownership transfer remain owner-only. Canonical
+content-v1 kind 7 full states and ordered transfer certificates make authority
+auditable after forwarding, restart, and backup. Same-generation forks use the
+smallest authenticated state event id and a higher generation cannot advance a
+replica through a losing transfer-chain prefix. Every accepted operation rotates
+the group secret and sender chains; excluded members never receive the new
+secret. Poll moderation is a separately signed owner snapshot under its own
+domain and is never mislabeled as creator closure.
+
+`KKR6` adds sealed authority records and consumed request ids while KKR1-KKR5
+remain restorable as legacy groups. Acceptance is pinned in crypto/protocol,
+node concurrency/transfer/removal flows, KKR1-KKR6 restore, RPC/CLI, UniFFI,
+desktop, Android host core, and iOS host/app coverage. The shared Android
+APK/device SDK gate remains deferred without weakening implementation parity.
 
 ### C7. Live voice and video calls
 
@@ -991,12 +1009,13 @@ shipped across protocol, node, storage, RPC/CLI, UniFFI, desktop, Android, and
 iOS with retained versions and deterministic offline convergence. C4
 disappearing text and view-once attachments are likewise shipped end to end
 with exact local deadlines, coarse authenticated relay deletion, sealed
-tombstones, and KKR5 exclusion. C5 encrypted group polls are now shipped with
+tombstones, and KKR6 exclusion. C5 encrypted group polls are now shipped with
 visible authenticated votes, fixed electorates, deterministic convergence, and
-creator snapshot closure. The next product programs are C6 roles, C2 linked devices, and C7
-calls; each remains behind its stated ADR gate until that decision is written
-and accepted.
+creator snapshot closure. C6 signed owner/admin/member roles, ownership transfer,
+mandatory re-keying, and poll moderation are now shipped through every shell.
+The next product programs are C2 linked devices and C7 calls; each remains behind
+its stated ADR gate until that decision is written and accepted.
 Optional signed self-display suggestions remain deferred behind their separate
 bundle-format ADR and compatibility work.
-Replicated roles, linked-device identity, real-time media, and
+Linked-device identity, real-time media, and
 optional hybrid services remain separate programs with their stated ADR gates.

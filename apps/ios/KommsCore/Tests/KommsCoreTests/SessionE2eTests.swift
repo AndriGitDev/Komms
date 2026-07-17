@@ -552,7 +552,7 @@ final class SessionE2eTests: XCTestCase {
         let text = try files.map { try String(contentsOf: $0, encoding: .utf8) }.joined(separator: "\n")
         let occurrences = { (needle: String) in text.components(separatedBy: needle).count - 1 }
         let editors = occurrences("TextField(") + occurrences("SecureField(") + occurrences("TextEditor(")
-        XCTAssertEqual(24, editors)
+        XCTAssertEqual(25, editors)
         XCTAssertEqual(editors, occurrences(".incognitoKeyboard("))
         let gate = try String(contentsOf: source.appendingPathComponent("GateView.swift"), encoding: .utf8)
         XCTAssertTrue(gate.contains("SecureField(\"24-word mnemonic\""))
@@ -1191,6 +1191,118 @@ final class SessionE2eTests: XCTestCase {
         try alice.removeGroupMember(group: group, peer: carolPeer)
         XCTAssertEqual(2, try alice.groups()[0].members.count)
         Thread.sleep(forTimeInterval: 0.3)
+
+        // C6 remains fully typed through the Swift wrapper: upgrade, roles,
+        // admin results, signed owner moderation, and ownership transfer.
+        let legacy = try alice.groupAuthority(group: group)
+        XCTAssertFalse(legacy.signed)
+        XCTAssertEqual(aliceAtBob, legacy.owner)
+        XCTAssertEqual(.owner, legacy.myRole)
+        let upgradeGeneration = legacy.generation + 1
+        _ = try alice.upgradeGroupAuthority(group: group)
+        func authorityAt(_ session: Session, _ generation: UInt64) throws -> GroupAuthority {
+            let deadline = Date().addingTimeInterval(30)
+            while true {
+                let authority = try session.groupAuthority(group: group)
+                if authority.signed, authority.generation >= generation { return authority }
+                guard Date() < deadline else {
+                    throw Timeout(what: "authority generation \(generation)")
+                }
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+        }
+        let upgraded = try authorityAt(bob, upgradeGeneration)
+        XCTAssertEqual(aliceAtBob, upgraded.owner)
+        XCTAssertEqual(.member, upgraded.myRole)
+        XCTAssertEqual(2, upgraded.members.count)
+
+        _ = try alice.setGroupRole(group: group, peer: bobPeer, role: .admin)
+        let adminGeneration = upgradeGeneration + 1
+        XCTAssertEqual(.admin, try authorityAt(bob, adminGeneration).myRole)
+        XCTAssertThrowsError(
+            try bob.setGroupRole(group: group, peer: aliceAtBob, role: .member)
+        ) { error in
+            guard let ffi = error as? FfiError, case .Node = ffi else {
+                return XCTFail("expected FfiError.Node, got: \(error)")
+            }
+            XCTAssertTrue(ffi.reasonText.contains("owner"), "got: \(ffi.reasonText)")
+        }
+
+        let renameRequest = try bob.renameGroup(group: group, name: "Authority trail crew")
+        let renameGeneration = adminGeneration + 1
+        _ = try bEv.wait("iOS admin rename result") { event -> Void? in
+            if case let .groupAdminRequestResolved(
+                _, requestId, accepted, generation, stateId, reason) = event,
+               requestId == renameRequest, accepted,
+               generation == renameGeneration, stateId != nil, reason == 0 {
+                return ()
+            }
+            return nil
+        }
+        _ = try authorityAt(bob, renameGeneration)
+        let renameDeadline = Date().addingTimeInterval(30)
+        while try !bob.groups().contains(where: {
+            $0.id == group && $0.name == "Authority trail crew"
+        }) {
+            guard Date() < renameDeadline else { throw Timeout(what: "admin group rename") }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+
+        let moderatedPoll = try alice.createGroupPoll(
+            group: group,
+            question: "Close for weather?",
+            options: ["Keep open", "Close"])
+        _ = try bEv.wait("iOS moderated poll") { event -> Void? in
+            if case let .pollUpdated(_, _, pollId) = event, pollId == moderatedPoll { return () }
+            return nil
+        }
+        let moderationRequest = try bob.moderateGroupPollClose(
+            group: group, pollAuthor: aliceAtBob, pollId: moderatedPoll)
+        let moderationGeneration = renameGeneration + 1
+        _ = try bEv.wait("iOS moderation result") { event -> Void? in
+            if case let .groupAdminRequestResolved(
+                _, requestId, accepted, generation, _, reason) = event,
+               requestId == moderationRequest, accepted,
+               generation == moderationGeneration, reason == 0 {
+                return ()
+            }
+            return nil
+        }
+        let moderationDeadline = Date().addingTimeInterval(30)
+        var moderated = try XCTUnwrap(
+            bob.groupPolls(group: group).first(where: { $0.id == moderatedPoll }))
+        while !moderated.closed {
+            guard Date() < moderationDeadline else {
+                throw Timeout(what: "signed moderated poll closure")
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+            moderated = try XCTUnwrap(
+                bob.groupPolls(group: group).first(where: { $0.id == moderatedPoll }))
+        }
+        XCTAssertEqual(aliceAtBob, moderated.moderatedBy)
+        XCTAssertEqual("signed_owner_snapshot", moderated.closePolicy)
+
+        _ = try alice.transferGroupOwner(group: group, peer: bobPeer)
+        let bobOwnerGeneration = moderationGeneration + 1
+        let bobOwner = try authorityAt(bob, bobOwnerGeneration)
+        XCTAssertEqual(bobPeer, bobOwner.owner)
+        XCTAssertEqual(1, bobOwner.ownerEpoch)
+        XCTAssertEqual(.owner, bobOwner.myRole)
+        XCTAssertThrowsError(try bob.leaveGroup(group: group)) { error in
+            guard let ffi = error as? FfiError, case .Node = ffi else {
+                return XCTFail("expected FfiError.Node, got: \(error)")
+            }
+            XCTAssertTrue(ffi.reasonText.contains("owner"), "got: \(ffi.reasonText)")
+        }
+
+        _ = try bob.transferGroupOwner(group: group, peer: aliceAtBob)
+        let aliceOwnerGeneration = bobOwnerGeneration + 1
+        let aliceOwner = try authorityAt(alice, aliceOwnerGeneration)
+        XCTAssertEqual(aliceAtBob, aliceOwner.owner)
+        XCTAssertEqual(2, aliceOwner.ownerEpoch)
+        _ = try alice.setGroupRole(group: group, peer: bobPeer, role: .member)
+        _ = try authorityAt(bob, aliceOwnerGeneration + 1)
+
         let editable = try alice.sendGroup(group: group, body: "iOS group edit original")
         _ = try bEv.wait("Bob's editable iOS group Text") { event -> Void? in
             if case let .groupMessageReceived(_, _, id, _, _, kind, _, _) = event,

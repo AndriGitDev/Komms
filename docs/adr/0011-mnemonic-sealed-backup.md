@@ -40,12 +40,14 @@ The same header and AEAD construction is versioned by magic as payload domains
 grow: `KKR2` added sender-key group identities/history, `KKR3` added F5
 user-authored local metadata (organization, drafts, preferences, and custom
 icons), `KKR4` added sealed note-to-self history, and `KKR5` adds terminal C4
-ephemeral tombstones while excluding live ephemeral plaintext/manifests/media. Restore remains
+ephemeral tombstones while excluding live ephemeral plaintext/manifests/media.
+`KKR6` adds C6 signed group authority state and consumed admin-request ids. Restore remains
 backward-compatible with all earlier payload shapes;
 live cryptographic/session state and re-creatable caches remain excluded.
 
 **Contents**: identity, contacts (bundles, hints, petnames, verification
-state), ordinary message history, terminal C4 tombstones, and the peers holding a live session at export
+state), ordinary message history, terminal C4 tombstones, signed C6 group
+authority, and the peers holding a live session at export
 time, recorded as **session-reset markers**. Excluded on purpose: ratchet
 state (resurrecting old message keys is a correctness and security hazard),
 own prekey secrets (a restored vault must never honor a one-time prekey

@@ -71,10 +71,10 @@ terminal `expired` or `consumed` tombstone. Duplicate, delayed, reordered, and
 expiry-before-original delivery therefore cannot resurrect plaintext after a
 restart.
 
-`KKR5` is the current backup format. It excludes active ephemeral history,
+`KKR6` is the current backup format. It preserves KKR5's exclusion of active ephemeral history,
 attachment manifests, and media, while including terminal tombstones. Restore
 cannot move a live disappearing/view-once copy to another device and cannot
-revive a copy already removed on the source. `KKR1` through `KKR4` remain
+revive a copy already removed on the source. `KKR1` through `KKR5` remain
 restorable. Ordinary history, edits, note-to-self, and private local metadata
 keep their previous backup behavior.
 
@@ -117,7 +117,7 @@ Automated acceptance covers bounded/malformed decoding and fuzzing; envelope
 hint mismatch; capability and anonymous-first-flight refusal; pairwise/group
 delivery; expiry before original; duplicate/reordered delivery; restart;
 tombstone non-resurrection; first-output and output-failure consumption;
-ordinary export refusal; KKR1–KKR4 restore; KKR5 exclusion/tombstones; relay,
+ordinary export refusal; KKR1–KKR5 restore; KKR6 exclusion/tombstones; relay,
 bridge, fragment, and queue deletion; strict RPC/CLI; UniFFI; shared parity
 fixtures; and desktop/Android/iOS source behavior.
 

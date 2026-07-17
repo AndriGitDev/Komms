@@ -216,7 +216,7 @@ fn kkr5_restores_exact_ids_names_order_membership_and_stale_behavior() {
         .unwrap();
     let before = node.folders().unwrap();
     let (backup, mnemonic) = node.export_backup(NOW + 1, &mut rng).unwrap();
-    assert_eq!(&backup[..4], b"KKR5");
+    assert_eq!(&backup[..4], b"KKR6");
     let restored = Node::restore(
         &directory.path().join("restored.db"),
         &backup,

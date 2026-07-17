@@ -86,7 +86,7 @@ mesh, or group-control format changes.
 ### Storage, API, and lifecycle
 
 Raw originals and edits stay individually sealed in the existing message/group
-history tables and ride `KKR5` unchanged. Derived views are recomputed from
+history tables and ride `KKR6` unchanged. Derived views are recomputed from
 authenticated records after restart/restore; no plaintext index or mutable
 "current body" column is added. Search and notifications use the derived winner
 only after authorization succeeds. An inbound edit emits a typed local event so

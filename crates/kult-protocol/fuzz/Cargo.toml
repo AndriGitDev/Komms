@@ -96,5 +96,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "group_authority_decode"
+path = "fuzz_targets/group_authority_decode.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

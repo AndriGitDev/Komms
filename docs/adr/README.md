@@ -29,6 +29,7 @@ product promise merely because the file exists.
 | [0020](0020-authenticated-message-edits.md) | Accepted | Immutable authenticated message-edit events and deterministic convergence |
 | [0021](0021-ephemeral-retention.md) | Accepted | Authenticated local expiry, view-once consumption, and coarse relay retention |
 | [0022](0022-convergent-group-polls.md) | Accepted | Visible-vote group polls, fixed electorates, deterministic vote heads, and creator closure |
+| [0023](0023-group-roles-and-owner-authority.md) | Accepted | Owner-serialized roles, signed generation-bound admin requests, and authority transfer |
 
 The attachment implementation follows ADR-0015 and its hard no-airtime rule,
 but the ADR file still carries Proposed status. This index reports that

@@ -16,8 +16,8 @@ use kult_ffi::{
     AttachmentFileKind, AttachmentFileWarning, AttachmentOpenPolicy, AttachmentState,
     CarrierCapability, Config, ContactNameWarning, ContentKind, CustomIconCrop, CustomIconTarget,
     CustomIconTargetKind, DeliveryState, Event, EventListener, FfiError, FolderErrorCode,
-    FolderSelection, FolderSelectionKind, FolderTarget, FolderTargetKind, Hint, ImageCrop,
-    ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, IncognitoKeyboardLevel,
+    FolderSelection, FolderSelectionKind, FolderTarget, FolderTargetKind, GroupRole, Hint,
+    ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, IncognitoKeyboardLevel,
     IncognitoKeyboardPlatform, KdfChoice, KultNode, LabelErrorCode, LabelMatchMode, LabelTarget,
     LabelTargetKind, MentionSpan, PinErrorCode, PinTarget, PinTargetKind, ScheduledConversation,
     ScreenSecurityLevel, ScreenSecurityPlatform, TextFormatBlockKind, TextFormatHighlight,
@@ -676,6 +676,39 @@ fn closed_poll(node: &KultNode, group: &str, poll_id: &str) -> kult_ffi::GroupPo
             return poll;
         }
         assert!(Instant::now() < deadline, "poll closure did not converge");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn authority_generation(node: &KultNode, group: &str, generation: u64) -> kult_ffi::GroupAuthority {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let authority = node
+            .group_authority(group.to_owned())
+            .expect("group authority");
+        if authority.signed && authority.generation >= generation {
+            return authority;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "authority generation did not converge"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn wait_group_presence(node: &KultNode, group: &str, present: bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let found = node
+            .groups()
+            .expect("groups")
+            .iter()
+            .any(|candidate| candidate.id == group);
+        if found == present {
+            return;
+        }
+        assert!(Instant::now() < deadline, "group presence did not converge");
         std::thread::sleep(Duration::from_millis(50));
     }
 }
@@ -2384,6 +2417,116 @@ fn groups_via_ffi_only() {
         "poll events never become empty group-message rows"
     );
 
+    // C6 is exposed without raw protocol bytes: legacy upgrade, exact roles,
+    // admin request results, signed owner moderation, and ownership transfer.
+    let legacy_authority = alice.group_authority(group.clone()).unwrap();
+    assert!(!legacy_authority.signed);
+    assert_eq!(legacy_authority.owner, alice_peer);
+    assert_eq!(legacy_authority.my_role, Some(GroupRole::Owner));
+    let upgrade_generation = legacy_authority.generation + 1;
+    alice.upgrade_group_authority(group.clone()).unwrap();
+    let upgraded = authority_generation(&bob, &group, upgrade_generation);
+    assert_eq!(upgraded.owner, alice_peer);
+    assert_eq!(upgraded.my_role, Some(GroupRole::Member));
+    assert_eq!(upgraded.members.len(), 2);
+
+    alice
+        .set_group_role(group.clone(), bob_peer.clone(), GroupRole::Admin)
+        .unwrap();
+    let admin_generation = upgrade_generation + 1;
+    assert_eq!(
+        authority_generation(&bob, &group, admin_generation).my_role,
+        Some(GroupRole::Admin)
+    );
+    let error = bob
+        .set_group_role(group.clone(), alice_peer.clone(), GroupRole::Member)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("owner"), "got: {error}");
+
+    let rename_request = bob
+        .rename_group(group.clone(), "authority trail crew".to_owned())
+        .unwrap();
+    let rename_generation = admin_generation + 1;
+    let rename_result = b_rec.wait("admin rename result", |event| {
+        matches!(event, Event::GroupAdminRequestResolved {
+            request_id,
+            accepted: true,
+            generation,
+            state_id: Some(_),
+            reason: 0,
+            ..
+        } if request_id == &rename_request && *generation == rename_generation)
+    });
+    assert!(matches!(
+        rename_result,
+        Event::GroupAdminRequestResolved { accepted: true, .. }
+    ));
+    authority_generation(&bob, &group, rename_generation);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if bob
+            .groups()
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate.id == group && candidate.name == "authority trail crew")
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "group rename did not converge");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let moderated_poll = alice
+        .create_group_poll(
+            group.clone(),
+            "Close for weather?".to_owned(),
+            vec!["Keep open".to_owned(), "Close".to_owned()],
+        )
+        .unwrap();
+    b_rec.wait(
+        "moderated poll creation",
+        |event| matches!(event, Event::PollUpdated { poll_id, .. } if poll_id == &moderated_poll),
+    );
+    let moderation_request = bob
+        .moderate_group_poll_close(group.clone(), alice_peer.clone(), moderated_poll.clone())
+        .unwrap();
+    let moderation_generation = rename_generation + 1;
+    b_rec.wait("admin moderation result", |event| {
+        matches!(event, Event::GroupAdminRequestResolved {
+            request_id,
+            accepted: true,
+            generation,
+            reason: 0,
+            ..
+        } if request_id == &moderation_request && *generation == moderation_generation)
+    });
+    let moderated = closed_poll(&bob, &group, &moderated_poll);
+    assert_eq!(moderated.moderated_by, Some(alice_peer.clone()));
+    assert_eq!(moderated.close_policy, "signed_owner_snapshot");
+
+    alice
+        .transfer_group_owner(group.clone(), bob_peer.clone())
+        .unwrap();
+    let bob_owner_generation = moderation_generation + 1;
+    let bob_owner = authority_generation(&bob, &group, bob_owner_generation);
+    assert_eq!(bob_owner.owner, bob_peer);
+    assert_eq!(bob_owner.owner_epoch, 1);
+    assert_eq!(bob_owner.my_role, Some(GroupRole::Owner));
+    let error = bob.leave_group(group.clone()).unwrap_err().to_string();
+    assert!(error.contains("owner"), "got: {error}");
+
+    bob.transfer_group_owner(group.clone(), alice_peer.clone())
+        .unwrap();
+    let alice_owner_generation = bob_owner_generation + 1;
+    let alice_owner = authority_generation(&alice, &group, alice_owner_generation);
+    assert_eq!(alice_owner.owner, alice_peer);
+    assert_eq!(alice_owner.owner_epoch, 2);
+    alice
+        .set_group_role(group.clone(), bob_peer.clone(), GroupRole::Member)
+        .unwrap();
+    authority_generation(&bob, &group, alice_owner_generation + 1);
+
     let group_attachment_bytes = canonical_audio(1_600);
     let group_source = dir.path().join("ffi-group-source.bin");
     std::fs::write(&group_source, &group_attachment_bytes).unwrap();
@@ -2472,21 +2615,13 @@ fn groups_via_ffi_only() {
     alice
         .remove_group_member(group.clone(), bob_peer.clone())
         .unwrap();
-    b_rec.wait_count(
-        "bob's removal",
-        |event| matches!(event, Event::GroupUpdated { group: id } if *id == group),
-        2,
-    );
+    wait_group_presence(&bob, &group, false);
     assert!(bob.groups().unwrap().is_empty());
 
     let leave_group = alice
         .create_group("short trip".to_owned(), vec![bob_peer])
         .unwrap();
-    b_rec.wait_count(
-        "bob's second group invite",
-        |event| matches!(event, Event::GroupUpdated { .. }),
-        3,
-    );
+    wait_group_presence(&bob, &leave_group, true);
     bob.leave_group(leave_group).unwrap();
 
     alice.stop();

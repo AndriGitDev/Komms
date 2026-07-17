@@ -4,10 +4,13 @@ use std::collections::HashMap;
 
 use rand_core::CryptoRngCore;
 
+use kult_crypto::verify_group_poll_moderation_signature;
+
 use kult_protocol::{
-    decode_content, encode_poll, encode_poll_close_payload, encode_poll_create_payload,
-    encode_poll_vote_payload, DecodedContent, Poll, PollOption, PollVote, PollVoteHead,
-    CONTENT_KIND_POLL, MAX_POLL_OPTIONS,
+    decode_content, decode_group_authority, encode_poll, encode_poll_close_payload,
+    encode_poll_create_payload, encode_poll_moderated_close_payload, encode_poll_vote_payload,
+    poll_moderation_signing_bytes, DecodedContent, DecodedGroupAuthority, GroupAdminAction,
+    GroupRole, Poll, PollOption, PollVote, PollVoteHead, CONTENT_KIND_POLL, MAX_POLL_OPTIONS,
 };
 use kult_store::GroupMessageRecord;
 
@@ -16,6 +19,7 @@ use crate::{Node, NodeError, PollInfo, PollOptionInfo, PollVoteInfo, Result};
 /// Maximum locally authored vote revisions per exact poll and identity.
 pub const MAX_POLL_VOTE_REVISIONS: usize = 64;
 const ID_RETRY_LIMIT: usize = 16;
+type PollClose = ([u8; 16], Vec<PollVoteInfo>, Option<[u8; 32]>);
 
 #[derive(Clone)]
 struct WorkingPoll {
@@ -26,7 +30,7 @@ struct WorkingPoll {
     eligible_voters: Vec<[u8; 32]>,
     options: Vec<([u8; 16], String)>,
     votes: HashMap<[u8; 32], PollVoteInfo>,
-    close: Option<([u8; 16], Vec<PollVoteInfo>)>,
+    close: Option<PollClose>,
 }
 
 impl Node {
@@ -226,6 +230,75 @@ impl Node {
         self.group_send_content_with_id(group, wire, id, now, now, rng)
     }
 
+    /// Close any open poll under an exact signed owner generation. Admins
+    /// submit the same generation-bound request to the owner for sequencing.
+    pub fn group_moderate_poll_close(
+        &mut self,
+        group: &[u8; 32],
+        poll_author: [u8; 32],
+        poll_id: [u8; 16],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        self.ensure_signed_authority(group, now, rng)?;
+        let authority = self.group_authority(group)?;
+        let me = self.identity.public().ed;
+        match authority.my_role {
+            Some(GroupRole::Admin) => {
+                return self.queue_admin_action(
+                    group,
+                    GroupAdminAction::ModeratePoll {
+                        poll_author,
+                        poll_id,
+                    },
+                    now,
+                    rng,
+                );
+            }
+            Some(GroupRole::Owner) if authority.owner == me => {}
+            _ => return Err(NodeError::NotGroupOwner),
+        }
+        let poll = self
+            .group_polls(group)?
+            .into_iter()
+            .find(|poll| poll.author == poll_author && poll.id == poll_id)
+            .ok_or(NodeError::InvalidPoll)?;
+        if poll.closed {
+            return Err(NodeError::PollClosed);
+        }
+        let heads = poll
+            .votes
+            .iter()
+            .map(|vote| PollVoteHead {
+                voter: vote.voter,
+                event_id: vote.event_id,
+                option_id: vote.option_id,
+                revision: vote.revision,
+            })
+            .collect::<Vec<_>>();
+        self.advance_authority(group, now, rng)?;
+        let generation = self.group_authority(group)?.generation;
+        let records = self.store.group_messages(group)?;
+        let id = mint_unique_id(rng, |candidate| {
+            records.iter().any(|record| record.id == candidate)
+        })?;
+        let signing =
+            poll_moderation_signing_bytes(*group, poll_author, poll_id, generation, &heads)
+                .map_err(|_| NodeError::InvalidPoll)?;
+        let signature = self.identity.sign_group_poll_moderation(&signing);
+        let payload = encode_poll_moderated_close_payload(
+            *group,
+            poll_author,
+            poll_id,
+            generation,
+            &heads,
+            signature,
+        )
+        .map_err(|_| NodeError::InvalidPoll)?;
+        let wire = encode_poll(id, &payload).map_err(|_| NodeError::InvalidPoll)?;
+        self.group_send_content_with_id(group, wire, id, now, now, rng)
+    }
+
     fn ensure_group_poll_support(&self, members: &[[u8; 32]]) -> Result<()> {
         let me = self.identity.public().ed;
         for peer in members.iter().filter(|peer| **peer != me) {
@@ -256,6 +329,28 @@ fn resolve_polls(
     local_peer: [u8; 32],
     records: Vec<GroupMessageRecord>,
 ) -> Vec<PollInfo> {
+    let mut authority_owners = HashMap::<u64, ([u8; 16], [u8; 32])>::new();
+    for record in &records {
+        let DecodedContent::GroupAuthority { id, payload } = decode_content(&record.body) else {
+            continue;
+        };
+        let DecodedGroupAuthority::State(state) = decode_group_authority(payload) else {
+            continue;
+        };
+        if state.group == group
+            && state.signer == record.sender
+            && crate::authority::verify_authority_state(&state, None).is_ok()
+        {
+            authority_owners
+                .entry(state.generation)
+                .and_modify(|winner| {
+                    if id < winner.0 {
+                        *winner = (id, state.owner);
+                    }
+                })
+                .or_insert((id, state.owner));
+        }
+    }
     let mut polls = Vec::<WorkingPoll>::new();
     let mut indexes = HashMap::<([u8; 32], [u8; 16]), usize>::new();
     for record in &records {
@@ -344,9 +439,67 @@ fn resolve_polls(
                 if working
                     .close
                     .as_ref()
-                    .is_none_or(|(current, _)| id < *current)
+                    .is_none_or(|(current, _, _)| id < *current)
                 {
-                    working.close = Some((id, heads));
+                    working.close = Some((id, heads, None));
+                }
+            }
+            Poll::ModeratedClose(close) => {
+                if close.group != group
+                    || authority_owners
+                        .get(&close.authority_generation)
+                        .map(|(_, owner)| *owner)
+                        != Some(record.sender)
+                {
+                    continue;
+                }
+                let signed_heads = close.heads().collect::<Vec<_>>();
+                let Ok(signing) = poll_moderation_signing_bytes(
+                    close.group,
+                    close.poll_author,
+                    close.poll_id,
+                    close.authority_generation,
+                    &signed_heads,
+                ) else {
+                    continue;
+                };
+                if verify_group_poll_moderation_signature(
+                    &record.sender,
+                    &signing,
+                    &close.signature,
+                )
+                .is_err()
+                {
+                    continue;
+                }
+                let Some(index) = indexes.get(&(close.poll_author, close.poll_id)).copied() else {
+                    continue;
+                };
+                let working = &mut polls[index];
+                let heads = signed_heads
+                    .into_iter()
+                    .map(|head| PollVoteInfo {
+                        voter: head.voter,
+                        event_id: head.event_id,
+                        option_id: head.option_id,
+                        revision: head.revision,
+                    })
+                    .collect::<Vec<_>>();
+                if heads.iter().any(|head| {
+                    !working.eligible_voters.contains(&head.voter)
+                        || !working
+                            .options
+                            .iter()
+                            .any(|(option, _)| *option == head.option_id)
+                }) {
+                    continue;
+                }
+                if working
+                    .close
+                    .as_ref()
+                    .is_none_or(|(current, _, _)| id < *current)
+                {
+                    working.close = Some((id, heads, Some(record.sender)));
                 }
             }
             _ => {}
@@ -356,9 +509,9 @@ fn resolve_polls(
     polls
         .into_iter()
         .map(|working| {
-            let (close_event_id, mut votes) = match working.close {
-                Some((id, heads)) => (Some(id), heads),
-                None => (None, working.votes.into_values().collect()),
+            let (close_event_id, moderated_by, mut votes) = match working.close {
+                Some((id, heads, moderator)) => (Some(id), moderator, heads),
+                None => (None, None, working.votes.into_values().collect()),
             };
             votes.sort_unstable_by_key(|vote| vote.voter);
             let options = working
@@ -387,6 +540,7 @@ fn resolve_polls(
                 votes,
                 closed,
                 close_event_id,
+                moderated_by,
             }
         })
         .collect()

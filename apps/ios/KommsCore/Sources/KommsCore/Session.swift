@@ -671,6 +671,38 @@ public final class Session: @unchecked Sendable {
         try node.closeGroupPoll(group: group, pollAuthor: pollAuthor, pollId: pollId)
     }
 
+    /// Signed owner closure; admins submit a generation-bound request.
+    public func moderateGroupPollClose(
+        group: String, pollAuthor: String, pollId: String
+    ) throws -> String {
+        try node.moderateGroupPollClose(group: group, pollAuthor: pollAuthor, pollId: pollId)
+    }
+
+    /// Current signed or legacy-compatible exact group roles.
+    public func groupAuthority(group: String) throws -> GroupAuthority {
+        try node.groupAuthority(group: group)
+    }
+
+    /// Upgrade legacy creator authority to signed C6 roles.
+    public func upgradeGroupAuthority(group: String) throws -> String {
+        try node.upgradeGroupAuthority(group: group)
+    }
+
+    /// Rename directly as owner or submit a signed admin request.
+    public func renameGroup(group: String, name: String) throws -> String {
+        try node.renameGroup(group: group, name: name)
+    }
+
+    /// Owner-only admin grant/revoke.
+    public func setGroupRole(group: String, peer: String, role: GroupRole) throws -> String {
+        try node.setGroupRole(group: group, peer: peer, role: role)
+    }
+
+    /// Transfer sole ownership to an existing member.
+    public func transferGroupOwner(group: String, peer: String) throws -> String {
+        try node.transferGroupOwner(group: group, peer: peer)
+    }
+
     /// Queue an immutable edit for this identity's exact group Text event.
     public func editGroupMessage(
         group: String,
@@ -699,7 +731,7 @@ public final class Session: @unchecked Sendable {
             group: group, text: text, spans: spans, reviewToken: reviewToken)
     }
 
-    /// Add a stored contact to a group (creator only).
+    /// Add as owner or submit a signed admin request.
     public func addGroupMember(group: String, peer: String) throws {
         try node.addGroupMember(group: group, peer: peer)
     }

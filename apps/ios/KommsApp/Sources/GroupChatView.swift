@@ -48,6 +48,7 @@ struct GroupChatView: View {
             .sorted { $0.notBefore < $1.notBefore }
     }
     private var polls: [GroupPoll] { model.groupPolls[groupId] ?? [] }
+    private var authority: GroupAuthority? { model.groupAuthorities[groupId] }
 
     var body: some View {
         presentedContent
@@ -171,6 +172,7 @@ struct GroupChatView: View {
                 ForEach(polls, id: \.id) { poll in
                     GroupPollCard(
                         poll: poll,
+                        authority: authority,
                         memberName: memberLabel,
                         vote: { option in
                             do {
@@ -186,6 +188,16 @@ struct GroupChatView: View {
                         close: {
                             do {
                                 try await model.closeGroupPoll(
+                                    group: groupId,
+                                    pollAuthor: poll.author,
+                                    pollId: poll.id)
+                            } catch {
+                                self.error = errorText(error)
+                            }
+                        },
+                        moderate: {
+                            do {
+                                try await model.moderateGroupPollClose(
                                     group: groupId,
                                     pollAuthor: poll.author,
                                     pollId: poll.id)
@@ -489,12 +501,19 @@ struct GroupChatView: View {
 
 private struct GroupPollCard: View {
     let poll: GroupPoll
+    let authority: GroupAuthority?
     let memberName: (String) -> String
     let vote: (PollOption) async -> Void
     let close: () async -> Void
+    let moderate: () async -> Void
 
     @State private var pendingOption: PollOption?
     @State private var showCloseConfirmation = false
+    @State private var showModerateConfirmation = false
+
+    private var canModerate: Bool {
+        !poll.closed && (authority?.myRole == .owner || authority?.myRole == .admin)
+    }
 
     private var visibleVotes: String {
         let rows = poll.votes.map { vote in
@@ -509,7 +528,9 @@ private struct GroupPollCard: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(poll.question).font(.headline)
             Text(poll.closed
-                 ? "Closed · final creator snapshot · votes visible to all members"
+                 ? (poll.moderatedBy.map {
+                    "Closed by owner \(memberName($0)) · signed moderation snapshot · votes visible to all members"
+                 } ?? "Closed · final creator snapshot · votes visible to all members")
                  : "Open · single choice · votes visible to all members · not anonymous")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -537,6 +558,13 @@ private struct GroupPollCard: View {
                 Button("Close poll…") { showCloseConfirmation = true }
                     .buttonStyle(.bordered)
             }
+            if canModerate {
+                Button(authority?.myRole == .owner
+                       ? "Moderate close…" : "Request moderation close…") {
+                    showModerateConfirmation = true
+                }
+                .buttonStyle(.bordered)
+            }
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -562,6 +590,12 @@ private struct GroupPollCard: View {
         } message: {
             Text("Close “\(poll.question)” with the visible vote heads shown now? This cannot be undone.")
         }
+        .alert("Close through group authority?", isPresented: $showModerateConfirmation) {
+            Button("Submit", role: .destructive) { Task { await moderate() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The owner sequences an exact signed final snapshot. Admin actions are generation-bound requests.")
+        }
     }
 }
 
@@ -581,7 +615,7 @@ private struct CreateGroupPollView: View {
         NavigationStack {
             Form {
                 Section {
-                    Text("Votes are visible to every member. This is not anonymous. The current roster is fixed as the electorate, and only the poll creator can close it with a final vote snapshot.")
+                    Text("Votes are visible to every member. This is not anonymous. The current roster is fixed as the electorate. The creator may close it; an owner can commit signed moderation, and an admin can request it.")
                         .font(.footnote)
                 }
                 Section("Question") {
@@ -985,10 +1019,13 @@ private struct GroupMembersView: View {
     @State private var showLeave = false
     @State private var working = false
     @State private var error: String?
+    @State private var rename = ""
 
     private var group: KommsCore.Group? { model.groups.first { $0.id == groupId } }
     private var ownPeer: String? { model.status?.peer }
-    private var isCreator: Bool { group?.creator == ownPeer }
+    private var authority: GroupAuthority? { model.groupAuthorities[groupId] }
+    private var isOwner: Bool { authority?.myRole == .owner }
+    private var isAdmin: Bool { authority?.myRole == .admin }
     private var candidates: [Contact] {
         guard let group else { return [] }
         return model.contacts
@@ -1006,19 +1043,42 @@ private struct GroupMembersView: View {
                             .foregroundStyle(.secondary)
                     }
 
+                    if isOwner || isAdmin {
+                        Section("Group name") {
+                            TextField("Group name", text: $rename)
+                                .textInputAutocapitalization(.sentences)
+                                .autocorrectionDisabled()
+                                .incognitoKeyboard(capitalization: .sentences)
+                            Button(isOwner ? "Rename" : "Request rename") { renameGroup() }
+                                .disabled(working || rename.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    }
+
                     Section("Members") {
-                        ForEach(group.members, id: \.self) { peer in
+                        ForEach(authority?.members ?? [], id: \.peer) { member in
                             HStack {
                                 VStack(alignment: .leading) {
-                                    Text(memberName(peer))
-                                    Text(peer == group.creator ? "creator" : "member")
+                                    Text(memberName(member.peer))
+                                    Text(roleName(member.role))
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                if isCreator && peer != ownPeer {
+                                if isOwner && member.role != .owner {
+                                    Menu("Role") {
+                                        Button(member.role == .admin ? "Make member" : "Make admin") {
+                                            setRole(
+                                                member.peer,
+                                                member.role == .admin ? .member : .admin)
+                                        }
+                                        Button("Make owner") { transferOwner(member.peer) }
+                                    }
+                                    .disabled(working)
+                                }
+                                if (isOwner && member.role != .owner)
+                                    || (isAdmin && member.role == .member) {
                                     Button("Remove", role: .destructive) {
-                                        removalPeer = peer
+                                        removalPeer = member.peer
                                     }
                                     .disabled(working)
                                 }
@@ -1026,7 +1086,7 @@ private struct GroupMembersView: View {
                         }
                     }
 
-                    if isCreator && !candidates.isEmpty {
+                    if (isOwner || isAdmin) && !candidates.isEmpty {
                         Section {
                             Menu("Add member") {
                                 ForEach(candidates, id: \.peer) { contact in
@@ -1039,9 +1099,11 @@ private struct GroupMembersView: View {
 
                     Section {
                         Button("Leave group", role: .destructive) { showLeave = true }
-                            .disabled(working)
+                            .disabled(working || isOwner)
                     } footer: {
-                        Text("Message history stays stored on this device after leaving.")
+                        Text(isOwner
+                             ? "Transfer ownership before leaving."
+                             : "Message history stays stored on this device after leaving.")
                     }
                 }
 
@@ -1056,6 +1118,7 @@ private struct GroupMembersView: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .onAppear { rename = group?.name ?? "" }
             .alert(
                 "Remove member?",
                 isPresented: Binding(
@@ -1096,9 +1159,48 @@ private struct GroupMembersView: View {
     private func summary(_ group: KommsCore.Group) -> String {
         let count = "\(group.members.count) "
             + (group.members.count == 1 ? "member" : "members")
-        return isCreator
-            ? "\(count) · You manage this group."
-            : "\(count) · \(memberName(group.creator)) manages this group."
+        guard let authority else { return count }
+        return "\(count) · \(memberName(authority.owner)) owns this group · generation \(authority.generation) · \(authority.signed ? "signed authority" : "legacy authority")."
+    }
+
+    private func roleName(_ role: GroupRole) -> String {
+        switch role {
+        case .owner: return "owner"
+        case .admin: return "admin"
+        case .member: return "member"
+        }
+    }
+
+    private func renameGroup() {
+        let exact = rename.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !exact.isEmpty else { return }
+        working = true
+        error = nil
+        Task {
+            do { try await model.renameGroup(group: groupId, name: exact) }
+            catch { self.error = errorText(error) }
+            working = false
+        }
+    }
+
+    private func setRole(_ peer: String, _ role: GroupRole) {
+        working = true
+        error = nil
+        Task {
+            do { try await model.setGroupRole(group: groupId, peer: peer, role: role) }
+            catch { self.error = errorText(error) }
+            working = false
+        }
+    }
+
+    private func transferOwner(_ peer: String) {
+        working = true
+        error = nil
+        Task {
+            do { try await model.transferGroupOwner(group: groupId, peer: peer) }
+            catch { self.error = errorText(error) }
+            working = false
+        }
     }
 
     private func add(_ contact: Contact) {

@@ -14,11 +14,11 @@ use crate::session::{
     NetworkSettings, Session, UiAttachment, UiAudioMedia, UiBundle, UiContact,
     UiContactNameAssessment, UiCustomIcon, UiCustomIconCrop, UiCustomIconTarget, UiCustomIconUsage,
     UiFolder, UiFolderConversation, UiFolderConversationResult, UiFolderSelection, UiFolderTarget,
-    UiFormattedText, UiGroup, UiGroupMessage, UiGroupPoll, UiHint, UiImageEditRecipe,
-    UiImageReview, UiLabel, UiLabelConversation, UiLabelFilterResult, UiLabelTarget,
-    UiMentionCapability, UiMentionSpan, UiMessage, UiNoteMessage, UiPin, UiPinConversationResult,
-    UiPinTarget, UiSafetyNumber, UiScheduledMessage, UiStaleFolder, UiStaleLabel, UiStatus,
-    UiTextFormatHighlight, UiThemeInfo, UiThemePreference,
+    UiFormattedText, UiGroup, UiGroupAuthority, UiGroupMessage, UiGroupPoll, UiHint,
+    UiImageEditRecipe, UiImageReview, UiLabel, UiLabelConversation, UiLabelFilterResult,
+    UiLabelTarget, UiMentionCapability, UiMentionSpan, UiMessage, UiNoteMessage, UiPin,
+    UiPinConversationResult, UiPinTarget, UiSafetyNumber, UiScheduledMessage, UiStaleFolder,
+    UiStaleLabel, UiStatus, UiTextFormatHighlight, UiThemeInfo, UiThemePreference,
 };
 
 /// Render-safe shared B14 policy shown before unlock.
@@ -736,7 +736,34 @@ forward!(
     |s| s.close_group_poll(group, poll_author, poll_id)
 );
 forward!(
-    /// Add a stored contact to a group (creator only).
+    /// Signed owner/admin poll moderation closure.
+    moderate_group_poll_close(group: String, poll_author: String, poll_id: String) -> String,
+    |s| s.moderate_group_poll_close(group, poll_author, poll_id)
+);
+forward!(
+    /// Current exact group roles and ownership.
+    group_authority(group: String) -> UiGroupAuthority, |s| s.group_authority(group)
+);
+forward!(
+    /// Upgrade legacy creator authority.
+    upgrade_group_authority(group: String) -> String, |s| s.upgrade_group_authority(group)
+);
+forward!(
+    /// Rename directly as owner or request as admin.
+    rename_group(group: String, name: String) -> String, |s| s.rename_group(group, name)
+);
+forward!(
+    /// Owner-only admin grant/revoke.
+    set_group_role(group: String, peer: String, role: String) -> String,
+    |s| s.set_group_role(group, peer, role)
+);
+forward!(
+    /// Owner-only ownership transfer.
+    transfer_group_owner(group: String, peer: String) -> String,
+    |s| s.transfer_group_owner(group, peer)
+);
+forward!(
+    /// Add a stored contact as owner or request as admin.
     add_group_member(group: String, peer: String) -> (), |s| s.add_group_member(group, peer)
 );
 forward!(

@@ -17,6 +17,7 @@ kult-transport = { version = "0.1.0", path = "../kult-transport" }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 rand_core = "0.6"
 serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
 subtle = { version = "2", default-features = false }
 unicode-normalization = "0.1.25"
 zeroize = { version = "1", features = ["zeroize_derive"] }

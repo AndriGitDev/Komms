@@ -62,6 +62,16 @@ pub enum NodeError {
     PollClosed,
     /// Only the authenticated creator of this exact poll may close it.
     NotPollCreator,
+    /// Signed group-authority content or transition is malformed or misplaced.
+    InvalidGroupAuthority,
+    /// One or more current members lack signed C6 role support.
+    GroupRolesUnsupported,
+    /// The operation requires the current group owner.
+    NotGroupOwner,
+    /// Role assignment or target violates the fixed C6 role table.
+    InvalidGroupRole,
+    /// The sole owner must transfer ownership before leaving/removal.
+    LastGroupOwner,
     /// The peer/group lacks ephemeral v1 plus envelope-v2 support.
     EphemeralUnsupported,
     /// Lifetime, deadline, content, hint binding, or lifecycle is invalid.
@@ -125,6 +135,13 @@ impl std::fmt::Display for NodeError {
             Self::PollVoteLimit => f.write_str("poll vote revision limit reached"),
             Self::PollClosed => f.write_str("poll is already closed"),
             Self::NotPollCreator => f.write_str("only the poll creator may close it"),
+            Self::InvalidGroupAuthority => f.write_str("invalid group authority transition"),
+            Self::GroupRolesUnsupported => {
+                f.write_str("one or more group members do not support signed roles")
+            }
+            Self::NotGroupOwner => f.write_str("only the current group owner may do that"),
+            Self::InvalidGroupRole => f.write_str("invalid group role or role target"),
+            Self::LastGroupOwner => f.write_str("transfer ownership before the owner can leave"),
             Self::EphemeralUnsupported => {
                 f.write_str("peer or group member does not support ephemeral content")
             }

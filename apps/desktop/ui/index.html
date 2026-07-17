@@ -453,6 +453,12 @@
 
   <template id="tpl-group-details">
     <p class="modal-note group-summary"></p>
+    <div class="group-add" data-f="manage" hidden>
+      <label>Group name
+        <input type="text" data-f="rename" data-incognito-input="name" maxlength="256" autocomplete="off" />
+      </label>
+      <button class="ghost" data-act="rename">Rename</button>
+    </div>
     <div class="member-list" data-f="roster"></div>
     <div class="group-add" data-f="add-wrap" hidden>
       <label>Add a contact
@@ -468,7 +474,7 @@
   </template>
 
   <template id="tpl-create-poll">
-    <p class="modal-note">Votes are visible to every member. This is not anonymous. The current roster is fixed as the electorate, and only the poll creator can close it with a final vote snapshot.</p>
+    <p class="modal-note">Votes are visible to every member. This is not anonymous. The current roster is fixed as the electorate. The poll creator can close it; a group owner can also commit a signed moderation snapshot, and an admin can request one.</p>
     <label>Question
       <input type="text" data-f="poll-question" data-incognito-input="message" maxlength="1024" autocomplete="off" />
     </label>

@@ -37,18 +37,19 @@ use kult_ffi::{
     EventListener, Folder as FfiFolder, FolderConversation as FfiFolderConversation,
     FolderConversationResult as FfiFolderConversationResult, FolderSelection as FfiFolderSelection,
     FolderSelectionKind as FfiFolderSelectionKind, FolderTarget as FfiFolderTarget,
-    FolderTargetKind as FfiFolderTargetKind, GroupPoll as FfiGroupPoll, Hint, ImageCrop,
-    ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, ImageInfo, KdfChoice, KultNode,
-    Label as FfiLabel, LabelConversation as FfiLabelConversation,
-    LabelFilterResult as FfiLabelFilterResult, LabelMatchMode as FfiLabelMatchMode,
-    LabelTarget as FfiLabelTarget, LabelTargetKind as FfiLabelTargetKind,
-    MentionCapabilityIssueReason, MentionSpan, NatVerdict, Pin as FfiPin,
-    PinConversation as FfiPinConversation, PinConversationResult as FfiPinConversationResult,
-    PinTarget as FfiPinTarget, PinTargetKind as FfiPinTargetKind, ScheduledConversation,
-    StaleFolder as FfiStaleFolder, StaleLabel as FfiStaleLabel,
-    TextFormatBlockKind as FfiTextFormatBlockKind, TextFormatHighlight as FfiTextFormatHighlight,
-    TextFormatStyle as FfiTextFormatStyle, ThemePreference as FfiThemePreference, AUDIO_MAX_BYTES,
-    AUDIO_MEDIA_TYPE, IMAGE_MAX_INPUT_BYTES, IMAGE_MEDIA_TYPE,
+    FolderTargetKind as FfiFolderTargetKind, GroupAuthority as FfiGroupAuthority,
+    GroupPoll as FfiGroupPoll, GroupRole as FfiGroupRole, Hint, ImageCrop, ImageEditRecipe,
+    ImageEditRegion, ImageEditRegionKind, ImageInfo, KdfChoice, KultNode, Label as FfiLabel,
+    LabelConversation as FfiLabelConversation, LabelFilterResult as FfiLabelFilterResult,
+    LabelMatchMode as FfiLabelMatchMode, LabelTarget as FfiLabelTarget,
+    LabelTargetKind as FfiLabelTargetKind, MentionCapabilityIssueReason, MentionSpan, NatVerdict,
+    Pin as FfiPin, PinConversation as FfiPinConversation,
+    PinConversationResult as FfiPinConversationResult, PinTarget as FfiPinTarget,
+    PinTargetKind as FfiPinTargetKind, ScheduledConversation, StaleFolder as FfiStaleFolder,
+    StaleLabel as FfiStaleLabel, TextFormatBlockKind as FfiTextFormatBlockKind,
+    TextFormatHighlight as FfiTextFormatHighlight, TextFormatStyle as FfiTextFormatStyle,
+    ThemePreference as FfiThemePreference, AUDIO_MAX_BYTES, AUDIO_MEDIA_TYPE,
+    IMAGE_MAX_INPUT_BYTES, IMAGE_MEDIA_TYPE,
 };
 
 use crate::qr;
@@ -1137,6 +1138,66 @@ pub struct UiGroup {
     pub members: Vec<String>,
 }
 
+/// One exact member role for desktop rendering and controls.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiGroupMemberRole {
+    /// Stable peer id (hex).
+    pub peer: String,
+    /// `owner`, `admin`, or `member`.
+    pub role: &'static str,
+}
+
+/// Render-safe signed or legacy-compatible group authority.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiGroupAuthority {
+    /// Group id (hex).
+    pub group: String,
+    /// Whether signed C6 authority is active.
+    pub signed: bool,
+    /// Immutable original owner (hex).
+    pub original_owner: String,
+    /// Current sole owner (hex).
+    pub owner: String,
+    /// Ownership transfer epoch.
+    pub owner_epoch: u64,
+    /// Current roster generation.
+    pub generation: u64,
+    /// Local role, when still a member.
+    pub my_role: Option<&'static str>,
+    /// Sorted exact roster roles.
+    pub members: Vec<UiGroupMemberRole>,
+}
+
+impl UiGroupAuthority {
+    fn from_ffi(authority: FfiGroupAuthority) -> Self {
+        Self {
+            group: authority.group,
+            signed: authority.signed,
+            original_owner: authority.original_owner,
+            owner: authority.owner,
+            owner_epoch: authority.owner_epoch,
+            generation: authority.generation,
+            my_role: authority.my_role.map(group_role_str),
+            members: authority
+                .members
+                .into_iter()
+                .map(|member| UiGroupMemberRole {
+                    peer: member.peer,
+                    role: group_role_str(member.role),
+                })
+                .collect(),
+        }
+    }
+}
+
+fn group_role_str(role: FfiGroupRole) -> &'static str {
+    match role {
+        FfiGroupRole::Owner => "owner",
+        FfiGroupRole::Admin => "admin",
+        FfiGroupRole::Member => "member",
+    }
+}
+
 /// One member's honest delivery state for an outbound group message.
 #[derive(Clone, Debug, Serialize)]
 pub struct UiGroupDelivery {
@@ -1232,6 +1293,8 @@ pub struct UiGroupPoll {
     pub anonymous: bool,
     /// `manual_creator_snapshot`.
     pub close_policy: String,
+    /// Owner peer id when signed moderation won closure.
+    pub moderated_by: Option<String>,
 }
 
 impl UiGroupPoll {
@@ -1267,6 +1330,7 @@ impl UiGroupPoll {
             votes_visible: poll.votes_visible,
             anonymous: poll.anonymous,
             close_policy: poll.close_policy,
+            moderated_by: poll.moderated_by,
         }
     }
 }
@@ -1654,6 +1718,30 @@ pub enum UiEvent {
         /// Stable poll id (hex).
         poll_id: String,
     },
+    /// Signed group roles or ownership changed.
+    GroupAuthorityUpdated {
+        /// Group id (hex).
+        group: String,
+        /// Committed generation.
+        generation: u64,
+        /// Current owner (hex).
+        owner: String,
+    },
+    /// One local admin request reached a terminal owner decision.
+    GroupAdminRequestResolved {
+        /// Group id (hex).
+        group: String,
+        /// Stable request id (hex).
+        request_id: String,
+        /// Whether the action was committed.
+        accepted: bool,
+        /// Resulting owner-observed generation.
+        generation: u64,
+        /// Resulting state event id, when accepted.
+        state_id: Option<String>,
+        /// Stable rejection reason code.
+        reason: u8,
+    },
     /// Ephemeral content became terminal on this installation.
     EphemeralRemoved {
         /// `pairwise` or `group`.
@@ -1797,6 +1885,30 @@ impl UiEvent {
                 poll_author,
                 poll_id,
             },
+            Event::GroupAuthorityUpdated {
+                group,
+                generation,
+                owner,
+            } => Self::GroupAuthorityUpdated {
+                group,
+                generation,
+                owner,
+            },
+            Event::GroupAdminRequestResolved {
+                group,
+                request_id,
+                accepted,
+                generation,
+                state_id,
+                reason,
+            } => Self::GroupAdminRequestResolved {
+                group,
+                request_id,
+                accepted,
+                generation,
+                state_id,
+                reason,
+            },
             Event::EphemeralRemoved {
                 conversation_kind,
                 conversation_id,
@@ -1886,6 +1998,7 @@ fn content_kind_str(kind: ContentKind) -> &'static str {
         ContentKind::DisappearingText => "disappearing_text",
         ContentKind::ViewOnceAttachment => "view_once_attachment",
         ContentKind::Poll => "poll",
+        ContentKind::GroupAuthority => "group_authority",
         ContentKind::Unsupported => "unsupported",
         ContentKind::Malformed => "malformed",
     }
@@ -3570,6 +3683,64 @@ impl Session {
     ) -> Result<String, String> {
         self.node
             .close_group_poll(group, poll_author, poll_id)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Close a poll through signed owner/admin authority.
+    pub fn moderate_group_poll_close(
+        &self,
+        group: String,
+        poll_author: String,
+        poll_id: String,
+    ) -> Result<String, String> {
+        self.node
+            .moderate_group_poll_close(group, poll_author, poll_id)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Current exact group roles and owner state.
+    pub fn group_authority(&self, group: String) -> Result<UiGroupAuthority, String> {
+        self.node
+            .group_authority(group)
+            .map(UiGroupAuthority::from_ffi)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Upgrade legacy creator authority to signed roles.
+    pub fn upgrade_group_authority(&self, group: String) -> Result<String, String> {
+        self.node
+            .upgrade_group_authority(group)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Rename directly as owner or submit an admin request.
+    pub fn rename_group(&self, group: String, name: String) -> Result<String, String> {
+        self.node
+            .rename_group(group, name)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Owner-only admin grant/revoke.
+    pub fn set_group_role(
+        &self,
+        group: String,
+        peer: String,
+        role: String,
+    ) -> Result<String, String> {
+        let role = match role.as_str() {
+            "admin" => FfiGroupRole::Admin,
+            "member" => FfiGroupRole::Member,
+            _ => return Err("role must be admin or member".to_owned()),
+        };
+        self.node
+            .set_group_role(group, peer, role)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Transfer sole ownership to an existing member.
+    pub fn transfer_group_owner(&self, group: String, peer: String) -> Result<String, String> {
+        self.node
+            .transfer_group_owner(group, peer)
             .map_err(|error| error.to_string())
     }
 

@@ -25,11 +25,11 @@
 //! File layout (strict, all-or-nothing, like the sneakernet bundle format):
 //!
 //! ```text
-//! magic "KKR5" (4) ‖ m_cost_kib u32 LE ‖ t_cost u32 LE ‖ p_cost u32 LE
+//! magic "KKR6" (4) ‖ m_cost_kib u32 LE ‖ t_cost u32 LE ‖ p_cost u32 LE
 //!   ‖ salt (16) ‖ sealed( postcard(BackupPayload) )
 //! ```
 //!
-//! Files with the older `KKR1` through `KKR4` magic still restore with the
+//! Files with the older `KKR1` through `KKR5` magic still restore with the
 //! same header layout.
 //!
 //! The Argon2id cost parameters ride in the header so a backup written on
@@ -50,13 +50,15 @@ use kult_crypto::{
 };
 
 use crate::{
-    ContactRecord, EphemeralConversation, EphemeralRecord, EphemeralState, GroupMember,
-    GroupMessageRecord, GroupRecord, LocalMetadataRecord, MessageRecord, NoteMessageRecord,
-    PendingAnnounce, Result, Store, StoreError,
+    ContactRecord, EphemeralConversation, EphemeralRecord, EphemeralState, GroupAuthorityRecord,
+    GroupMember, GroupMessageRecord, GroupRecord, LocalMetadataRecord, MessageRecord,
+    NoteMessageRecord, PendingAnnounce, Result, Store, StoreError,
 };
 
-/// Backup file magic: Komms recovery file, format 4 (note-to-self included).
-pub const BACKUP_MAGIC: [u8; 4] = *b"KKR5";
+/// Backup file magic: Komms recovery file, format 6 (group authority included).
+pub const BACKUP_MAGIC: [u8; 4] = *b"KKR6";
+/// The pre-group-authority format 5 magic — still restorable.
+pub const BACKUP_MAGIC_V5: [u8; 4] = *b"KKR5";
 /// The pre-ephemeral-tombstone format 4 magic — still restorable.
 pub const BACKUP_MAGIC_V4: [u8; 4] = *b"KKR4";
 /// The pre-note-to-self format 3 magic — still restorable.
@@ -99,11 +101,28 @@ struct BackupPayload {
     /// Group message history (wire bodies stripped: any unserved fan-out
     /// belonged to the dead chains).
     group_messages: Vec<GroupMessageRecord>,
+    /// Signed C6 authority state and consumed admin request ids.
+    group_authorities: Vec<GroupAuthorityRecord>,
     /// User-authored local organization, drafts, preferences, and icons.
     local_metadata: Vec<LocalMetadataRecord>,
     /// First-class local note-to-self text history.
     note_messages: Vec<NoteMessageRecord>,
     /// Tombstones only: ephemeral plaintext/media is never backed up.
+    ephemeral: Vec<EphemeralRecord>,
+}
+
+/// The `KKR5` payload shape, before C6 signed group authority existed.
+#[derive(Serialize, Deserialize)]
+struct BackupPayloadV5 {
+    created_at: u64,
+    identity: Vec<u8>,
+    contacts: Vec<ContactRecord>,
+    messages: Vec<MessageRecord>,
+    reset_peers: Vec<[u8; 32]>,
+    groups: Vec<BackupGroup>,
+    group_messages: Vec<GroupMessageRecord>,
+    local_metadata: Vec<LocalMetadataRecord>,
+    note_messages: Vec<NoteMessageRecord>,
     ephemeral: Vec<EphemeralRecord>,
 }
 
@@ -239,6 +258,7 @@ impl Store {
                     m
                 })
                 .collect(),
+            group_authorities: self.group_authorities()?,
             local_metadata: self.local_metadata()?,
             note_messages: self.note_messages()?,
             ephemeral,
@@ -286,7 +306,8 @@ impl Store {
             return Err(StoreError::NotABackup);
         }
         let version = match <[u8; 4]>::try_from(&backup[..4]).expect("length checked") {
-            BACKUP_MAGIC => 5,
+            BACKUP_MAGIC => 6,
+            BACKUP_MAGIC_V5 => 5,
             BACKUP_MAGIC_V4 => 4,
             BACKUP_MAGIC_V3 => 3,
             BACKUP_MAGIC_V2 => 2,
@@ -318,6 +339,7 @@ impl Store {
                     reset_peers: v1.reset_peers,
                     groups: Vec::new(),
                     group_messages: Vec::new(),
+                    group_authorities: Vec::new(),
                     local_metadata: Vec::new(),
                     note_messages: Vec::new(),
                     ephemeral: Vec::new(),
@@ -333,6 +355,7 @@ impl Store {
                     reset_peers: v2.reset_peers,
                     groups: v2.groups,
                     group_messages: v2.group_messages,
+                    group_authorities: Vec::new(),
                     local_metadata: Vec::new(),
                     note_messages: Vec::new(),
                     ephemeral: Vec::new(),
@@ -348,6 +371,7 @@ impl Store {
                     reset_peers: v3.reset_peers,
                     groups: v3.groups,
                     group_messages: v3.group_messages,
+                    group_authorities: Vec::new(),
                     local_metadata: v3.local_metadata,
                     note_messages: Vec::new(),
                     ephemeral: Vec::new(),
@@ -363,12 +387,29 @@ impl Store {
                     reset_peers: v4.reset_peers,
                     groups: v4.groups,
                     group_messages: v4.group_messages,
+                    group_authorities: Vec::new(),
                     local_metadata: v4.local_metadata,
                     note_messages: v4.note_messages,
                     ephemeral: Vec::new(),
                 }
             }
-            5 => decode_exact(&plain)?,
+            5 => {
+                let v5: BackupPayloadV5 = decode_exact(&plain)?;
+                BackupPayload {
+                    created_at: v5.created_at,
+                    identity: v5.identity,
+                    contacts: v5.contacts,
+                    messages: v5.messages,
+                    reset_peers: v5.reset_peers,
+                    groups: v5.groups,
+                    group_messages: v5.group_messages,
+                    group_authorities: Vec::new(),
+                    local_metadata: v5.local_metadata,
+                    note_messages: v5.note_messages,
+                    ephemeral: v5.ephemeral,
+                }
+            }
+            6 => decode_exact(&plain)?,
             _ => unreachable!("version matched above"),
         };
         let identity_bytes: Zeroizing<[u8; 64]> = Zeroizing::new(
@@ -429,6 +470,9 @@ impl Store {
         }
         for message in &payload.group_messages {
             store.put_group_message(message, rng)?;
+        }
+        for authority in &payload.group_authorities {
+            store.put_group_authority(authority, rng)?;
         }
         for record in &payload.local_metadata {
             store.put_local_metadata(record, rng)?;

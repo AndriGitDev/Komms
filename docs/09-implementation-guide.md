@@ -139,7 +139,7 @@ pub struct Node { /* composes store + transports + sessions */ }
 // ephemeral: send_disappearing_message / send_group_disappearing_message
 //          / send[_group]_view_once_attachment / consume_view_once_attachment
 //          → expiry-bearing history/events + EphemeralRemoved
-// Exact deadline sweep, tombstone-before-output, raw-send refusal, and KKR5
+// Exact deadline sweep, tombstone-before-output, raw-send refusal, and KKR6
 // exclusion live below the shell; ordinary attachment export rejects view once.
 ```
 
@@ -232,7 +232,7 @@ content, and an anonymous first flight is forbidden. RPC operations are
 exposes the same typed methods, expiry fields, attachment flags, and terminal
 event. Sweep before all tick work, bind envelope-v2's coarse bucket to the exact
 authenticated deadline, commit a tombstone before reveal output, refuse normal
-export/preview, and keep active ephemeral content out of KKR5. The complete
+export/preview, and keep active ephemeral content out of KKR6. The complete
 contract is [19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
 
 C5 polls are replicated immutable group content, never a shell-owned counter.
@@ -246,6 +246,22 @@ hyphenated commands; UniFFI exposes `GroupPoll` and `PollUpdated`. Shells render
 the node snapshot and never resolve raw events. The complete contract is
 [20: Group Polls](20-group-polls.md) and
 [ADR-0022](adr/0022-convergent-group-polls.md).
+
+C6 authority is a signed control plane over the existing sender-key group, not
+mutable role flags in a shell. Use only content-v1 kind `0x0007` for canonical
+full public state and only the bounded pairwise `GroupControl` variants for
+announces, requests, results, and removals. Verify identity signatures, exact
+member identities, transfer-chain continuity, current-owner ancestry, secret
+hash, generation, request id, and role table before mutation. Same-generation
+states choose the smallest authenticated event id; a greater generation must
+extend the accepted transfer prefix. The owner commits one transition, rotates
+secret and chains, stores the winning sealed authority record, and emits typed
+refresh events. RPC/CLI and UniFFI expose only exact ids and render-safe roles;
+shells must not parse payloads or infer authority from display names. Moderated
+poll closure has its own owner-signature domain and renders a moderator identity.
+The complete contract is
+[21: Group Roles, Ownership, and Moderation](21-group-roles.md) and
+[ADR-0023](adr/0023-group-roles-and-owner-authority.md).
 
 ## 4. Testing strategy (beyond per-milestone acceptance)
 

@@ -29,11 +29,17 @@ security indicators are the node's own, verbatim.
   targets the exact peer key, previews shared NFC normalization and duplicate/
   confusable/bidi/invisible warnings, and requires explicit confirmation before
   accepting a warned name. Duplicate names remain separate; rename survives
-  restart/`KKR5` and creates no network, notification, queue, or transport work.
+  restart/`KKR6` and creates no network, notification, queue, or transport work.
 - **Message** with honest delivery states: `queued` → `sent` (handed to a
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted
   mesh links.
+- **Manage signed group authority** with visible owner/admin/member roles,
+  capability-gated legacy upgrade, owner/admin rename and membership controls,
+  owner-only role grants and ownership transfer, and signed poll moderation.
+  The members dialog shows generation and signed/legacy state, prevents the
+  owner from leaving, and reports terminal admin-request results without
+  parsing protocol bytes in the webview.
 - **Send disappearing pairwise/group text and view-once attachments** through
   explicit lifetime selectors. History shows the device-local deadline.
   View-once rows never preview, autoplay, open, or export through ordinary
@@ -103,11 +109,11 @@ security indicators are the node's own, verbatim.
   note-to-self in one leading accessible block. Keyboard buttons provide exact
   complete-set reorder and unpin; unavailable records remain visible for exact
   cleanup. Folder selection and label filtering run before pin/activity order.
-  The 8,192-pin bound, stable typed identity, restart/`KKR5` restoration, and
+  The 8,192-pin bound, stable typed identity, restart/`KKR6` restoration, and
   zero-network behavior come from the shared core rather than display names.
 - **Choose System, Light, or Dark appearance** at the gate or in the unlocked
   app. A non-sensitive local cache applies before first paint; after unlock the
-  sealed F5 `appearance.theme` value is authoritative and travels in `KKR5`.
+  sealed F5 `appearance.theme` value is authoritative and travels in `KKR6`.
   System follows live OS changes, semantic CSS roles meet the shared contrast
   targets, `prefers-contrast` and `prefers-reduced-motion` remain native, and
   delivery/security meaning always retains text, glyph, or accessible labels.
@@ -116,7 +122,7 @@ security indicators are the node's own, verbatim.
   offers eight bundled glyphs, local JPEG/PNG selection with centered-square crop,
   clear-to-fallback, and quota usage. The shared core emits only metadata-free
   256×256 RGBA PNGs, enforces 512 KiB/1,024-record/64 MiB limits, and safely falls
-  back after corrupt bytes. Icons travel only in `KKR5`, never URLs, peer sync,
+  back after corrupt bytes. Icons travel only in `KKR6`, never URLs, peer sync,
   envelopes, capabilities, queues, notifications, or transports.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends, compared out-of-band, with a visible verified badge.
@@ -149,7 +155,7 @@ path dependency on `kult-ffi`.
 Custom-icon acceptance consumes the shared B13 fixture through the same session
 surface the Tauri commands wrap: canonical metadata-free local data URLs, exact
 folder/note targets, bundled and selected-image paths, quota accounting,
-restart/`KKR5`, safe fallback, local events, and zero delivery work. Rust node
+restart/`KKR6`, safe fallback, local events, and zero delivery work. Rust node
 acceptance independently covers contact and group identities plus corrupt sealed
 legacy bytes.
 
@@ -192,12 +198,12 @@ directory.
 - Ephemeral exact deadlines, lifecycle state, deletion, and tombstones live in
   the shared core. The webview receives only typed expiry/terminal events and
   cannot bypass view-once through its ordinary preview/export/audio actions.
-  KKR5 excludes live ephemeral plaintext/media and includes terminal
+  KKR6 excludes live ephemeral plaintext/media and includes terminal
   tombstones. See [C4 semantics and qualification](../../docs/19-ephemeral-messages.md).
 - Folder, pin, and label ids, names, order, membership, filters/selections, and stale
   diagnostics stay in the existing sealed local store or process-local UI
   state. They never enter envelopes, DHT records, capabilities, analytics,
   notifications, or logs; navigation/filtering changes presentation only.
   Custom icons are likewise exact typed sealed local records, rendered only from
-  verified bounded data URLs. `KKR5` preserves them exactly, while multi-device
+  verified bounded data URLs. `KKR6` preserves them exactly, while multi-device
   synchronization, message pins, and message labels are not implemented.

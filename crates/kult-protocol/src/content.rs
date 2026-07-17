@@ -8,10 +8,11 @@ use alloc::vec::Vec;
 
 use crate::{
     decode_attachment_manifest, decode_edit_payload, decode_ephemeral_payload,
-    decode_mention_payload, decode_poll_payload, encode_attachment_manifest, encode_edit_payload,
-    encode_mention_payload, AttachmentManifest, DecodedAttachmentManifest, DecodedEdit,
-    DecodedEphemeral, DecodedMention, DecodedPoll, Edit, Ephemeral, Mention, MentionSpan, Poll,
-    ProtocolError, Result,
+    decode_group_authority, decode_mention_payload, decode_poll_payload,
+    encode_attachment_manifest, encode_edit_payload, encode_mention_payload, AttachmentManifest,
+    DecodedAttachmentManifest, DecodedEdit, DecodedEphemeral, DecodedGroupAuthority,
+    DecodedMention, DecodedPoll, Edit, Ephemeral, Mention, MentionSpan, Poll, ProtocolError,
+    Result,
 };
 
 /// Prefix that unambiguously distinguishes typed content from valid UTF-8.
@@ -30,6 +31,8 @@ pub const CONTENT_KIND_EDIT: u16 = 4;
 pub const CONTENT_KIND_EPHEMERAL: u16 = 5;
 /// The v1 kind assigned to authenticated group poll events.
 pub const CONTENT_KIND_POLL: u16 = 6;
+/// The v1 kind assigned to owner-signed group authority state.
+pub const CONTENT_KIND_GROUP_AUTHORITY: u16 = 7;
 /// Size of the fixed v1 content header.
 pub const CONTENT_HEADER_LEN: usize = 28;
 /// Maximum unpadded content frame size.
@@ -92,6 +95,13 @@ pub enum DecodedContent<'a> {
         id: [u8; 16],
         /// Exact supported poll event.
         poll: Poll<'a>,
+    },
+    /// Canonical group-only owner-signed role/authority state.
+    GroupAuthority {
+        /// Random event id for this exact committed state.
+        id: [u8; 16],
+        /// Exact canonical authority payload for authority-aware callers.
+        payload: &'a [u8],
     },
     /// Authenticated bytes the current client cannot interpret.
     Unsupported {
@@ -196,6 +206,22 @@ pub fn encode_poll(id: [u8; 16], payload: &[u8]) -> Result<Vec<u8>> {
     Ok(frame)
 }
 
+/// Wrap one canonical group-authority payload in the common v1 content frame.
+pub fn encode_group_authority(id: [u8; 16], payload: &[u8]) -> Result<Vec<u8>> {
+    if payload.len() > MAX_CONTENT_PAYLOAD_LEN {
+        return Err(ProtocolError::TooLarge);
+    }
+    let mut frame = Vec::with_capacity(CONTENT_HEADER_LEN + payload.len());
+    frame.extend_from_slice(&CONTENT_MAGIC);
+    frame.push(CONTENT_FORMAT_V1);
+    frame.extend_from_slice(&CONTENT_KIND_GROUP_AUTHORITY.to_le_bytes());
+    frame.push(0);
+    frame.extend_from_slice(&id);
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    frame.extend_from_slice(payload);
+    Ok(frame)
+}
+
 /// Classify authenticated, unpadded message-content bytes.
 ///
 /// This function is total for arbitrary input and allocates nothing. A magic
@@ -291,6 +317,14 @@ pub fn decode_content(bytes: &[u8]) -> DecodedContent<'_> {
                 kind: Some(kind),
             },
             DecodedPoll::Malformed => DecodedContent::Malformed,
+        },
+        CONTENT_KIND_GROUP_AUTHORITY => match decode_group_authority(payload) {
+            DecodedGroupAuthority::State(_) => DecodedContent::GroupAuthority { id, payload },
+            DecodedGroupAuthority::Unsupported => DecodedContent::Unsupported {
+                format_version: Some(format_version),
+                kind: Some(kind),
+            },
+            DecodedGroupAuthority::Malformed => DecodedContent::Malformed,
         },
         _ => DecodedContent::Unsupported {
             format_version: Some(format_version),

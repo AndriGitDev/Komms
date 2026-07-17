@@ -48,9 +48,10 @@ use kult_protocol::{
     encode_ephemeral, encode_text, epoch_day, fragment, intro_token, is_capability_control, pad,
     retention_bucket, unpad, CapabilityControl, DecodedContent, Edit, Envelope, EnvelopeKind,
     Ephemeral, FormatCapabilities, MailboxKey, Reassembler, ReceiptPayload, CONTENT_FORMAT_V1,
-    CONTENT_KIND_ATTACHMENT, CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL, CONTENT_KIND_MENTION,
-    CONTENT_KIND_POLL, CONTENT_KIND_TEXT, ENVELOPE_HEADER_LEN, MAX_EDIT_TEXT_LEN,
-    MAX_EPHEMERAL_LIFETIME_SECS, MIN_EPHEMERAL_LIFETIME_SECS, REASSEMBLY_WINDOW_SECS,
+    CONTENT_KIND_ATTACHMENT, CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL,
+    CONTENT_KIND_GROUP_AUTHORITY, CONTENT_KIND_MENTION, CONTENT_KIND_POLL, CONTENT_KIND_TEXT,
+    ENVELOPE_HEADER_LEN, MAX_EDIT_TEXT_LEN, MAX_EPHEMERAL_LIFETIME_SECS,
+    MIN_EPHEMERAL_LIFETIME_SECS, REASSEMBLY_WINDOW_SECS,
 };
 use kult_store::{
     ContactRecord, ConversationId, ConversationMetadata, DeliveryState, Direction,
@@ -62,6 +63,7 @@ use kult_transport::{CostClass, DeliveryHint, Discovery, Reachability, Transport
 
 mod api;
 mod attachment;
+mod authority;
 mod carrier;
 mod contact_names;
 mod edits;
@@ -83,11 +85,12 @@ pub use api::{
     AttachmentConversation, AttachmentDirection, AttachmentInfo, AttachmentMetadata,
     AttachmentObjectInfo, CarrierCapability, CarrierCapabilitySnapshot, Command, ContentStatus,
     CustomIconCrop, CustomIconInfo, CustomIconUsage, EditVersionInfo, Event,
-    FolderConversationInfo, FolderConversationList, FolderInfo, FolderSelection, GroupInfo,
-    GroupMentionCapability, LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode,
-    MentionCapabilityIssue, MentionCapabilityIssueReason, MentionSpan, PinConversationInfo,
-    PinConversationList, PinInfo, PollInfo, PollOptionInfo, PollVoteInfo, ResolvedGroupMessage,
-    ResolvedMessage, ScheduledConversation, ScheduledMessageInfo, StaleFolderInfo,
+    FolderConversationInfo, FolderConversationList, FolderInfo, FolderSelection,
+    GroupAuthorityInfo, GroupInfo, GroupMemberRoleInfo, GroupMentionCapability,
+    LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode, MentionCapabilityIssue,
+    MentionCapabilityIssueReason, MentionSpan, PinConversationInfo, PinConversationList, PinInfo,
+    PollInfo, PollOptionInfo, PollVoteInfo, ResolvedGroupMessage, ResolvedMessage,
+    ScheduledConversation, ScheduledMessageInfo, StaleFolderInfo,
     StaleFolderReason as NodeStaleFolderReason, StaleLabelInfo,
     StaleLabelReason as NodeStaleLabelReason,
 };
@@ -102,6 +105,7 @@ pub use incognito_keyboard::{
     incognito_keyboard_policy, IncognitoKeyboardLevel, IncognitoKeyboardPlatform,
     IncognitoKeyboardPolicy, INCOGNITO_KEYBOARD_PROTECTED_FIELDS,
 };
+pub use kult_protocol::GroupRole;
 pub use kult_store::{
     ConversationId as LabelConversationId, CustomIconTarget, ThemePreference,
     CUSTOM_ICON_BUNDLED_GLYPHS, CUSTOM_ICON_DIMENSION, CUSTOM_ICON_MEDIA_TYPE,
@@ -873,7 +877,7 @@ impl Node {
             } => {
                 self.group_send_mention(&group, &text, &spans, review_token, now, rng)?;
             }
-            Command::GroupAdd { group, peer } => self.group_add(&group, &peer, rng)?,
+            Command::GroupAdd { group, peer } => self.group_add(&group, &peer, now, rng)?,
             Command::GroupRemove { group, peer } => self.group_remove(&group, &peer, now, rng)?,
             Command::GroupLeave { group } => self.group_leave(&group, now, rng)?,
             Command::AttachmentAccept { transfer } => {
@@ -910,6 +914,7 @@ impl Node {
             DecodedContent::Edit { .. } => return Err(NodeError::InvalidEdit),
             DecodedContent::Ephemeral { .. } => return Err(NodeError::InvalidEphemeral),
             DecodedContent::Poll { .. } => return Err(NodeError::InvalidPoll),
+            DecodedContent::GroupAuthority { .. } => return Err(NodeError::InvalidGroupAuthority),
             _ => {}
         }
         let mut id = [0u8; 16];
@@ -1055,6 +1060,7 @@ impl Node {
         match decode_content(body) {
             DecodedContent::Mention { .. } => return Err(NodeError::InvalidMention),
             DecodedContent::Poll { .. } => return Err(NodeError::InvalidPoll),
+            DecodedContent::GroupAuthority { .. } => return Err(NodeError::InvalidGroupAuthority),
             _ => {}
         }
         let contact = self
@@ -1863,7 +1869,8 @@ impl Node {
         | DecodedContent::Mention { id, .. }
         | DecodedContent::Edit { id, .. }
         | DecodedContent::Ephemeral { id, .. }
-        | DecodedContent::Poll { id, .. } = decoded
+        | DecodedContent::Poll { id, .. }
+        | DecodedContent::GroupAuthority { id, .. } = decoded
         {
             let conversation = EphemeralConversation::Pairwise(peer);
             if self
@@ -1883,6 +1890,7 @@ impl Node {
                             | DecodedContent::Edit { id: stored_id, .. }
                             | DecodedContent::Ephemeral { id: stored_id, .. }
                             | DecodedContent::Poll { id: stored_id, .. }
+                            | DecodedContent::GroupAuthority { id: stored_id, .. }
                             if stored_id == id
                     )
             });
@@ -2026,6 +2034,11 @@ impl Node {
                 rng.fill_bytes(&mut id);
                 (id, Vec::new(), ContentStatus::Malformed)
             }
+            DecodedContent::GroupAuthority { .. } => {
+                let mut id = [0u8; 16];
+                rng.fill_bytes(&mut id);
+                (id, Vec::new(), ContentStatus::Malformed)
+            }
             DecodedContent::Unsupported {
                 format_version,
                 kind,
@@ -2100,6 +2113,7 @@ impl Node {
                     CONTENT_KIND_EDIT,
                     CONTENT_KIND_EPHEMERAL,
                     CONTENT_KIND_POLL,
+                    CONTENT_KIND_GROUP_AUTHORITY,
                 ],
             }],
         }

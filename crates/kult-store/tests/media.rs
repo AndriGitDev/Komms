@@ -1,5 +1,5 @@
 //! ADR-0015 media-store acceptance: sealed metadata, atomic chunk files,
-//! restart reconciliation, quota enforcement, and KKR5 exclusion.
+//! restart reconciliation, quota enforcement, and KKR6 exclusion.
 
 use rand::rngs::StdRng;
 use rand::SeedableRng;

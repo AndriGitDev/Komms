@@ -86,7 +86,7 @@ C4 ephemeral content crosses every layer without moving deletion policy into a
 shell or relay. `kult-protocol` owns content-v1 kind 5 and envelope v2's coarse
 retention field; `kult-node` binds capabilities, exact deadlines, queueing,
 expiry-before-work, and terminal events; `kult-store` owns sealed lifecycle rows,
-tombstones, media deletion, and KKR5 exclusion; transports only delete sealed
+tombstones, media deletion, and KKR6 exclusion; transports only delete sealed
 envelopes from the authenticated hour bucket. RPC/UniFFI and apps expose typed
 choices and honest local-only language. See
 [19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
@@ -94,11 +94,23 @@ choices and honest local-only language. See
 C5 polls follow the immutable replicated-state shape: `kult-protocol` owns
 content-v1 kind 6 create/vote/close frames; `kult-node` authenticates the group
 sender and derives fixed-electorate vote heads and final tallies; existing
-sealed group rows and `KKR5` carry the source events; RPC/UniFFI expose typed
+sealed group rows and `KKR6` carry the source events; RPC/UniFFI expose typed
 snapshots; shells render and refresh cards without resolving votes. The
 sender-key path hides poll content from transports, while authenticated
 capability intersection keeps old clients off the typed send path. See
 [20: Group Polls](20-group-polls.md).
+
+C6 authority adds a deliberately separate signed control plane without moving
+policy into shells. `kult-protocol` owns content-v1 kind 7, the canonical full
+authority state, owner-transfer certificates, signed admin requests, and signed
+poll-moderation closure; `kult-crypto` owns the four identity-signature domains;
+`kult-node` validates transfer-chain ancestry and serializes every mutation at
+the one current owner; `kult-store` seals the winning state and consumed request
+ids separately from legacy group records. RPC/UniFFI expose render-safe roles
+and typed commands/events. Apps display roles and invoke those commands but
+never see group secrets, signatures, identity blobs, or chain state. `KKR6`
+carries authority records while `KKR1`-`KKR5` restore as legacy groups. See
+[21: Group Roles, Ownership, and Moderation](21-group-roles.md).
 
 ## 3. Message lifecycle
 

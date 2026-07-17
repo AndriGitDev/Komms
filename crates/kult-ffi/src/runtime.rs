@@ -20,9 +20,10 @@ use tokio::sync::{mpsc, oneshot, watch};
 use kult_crypto::{KdfProfile, SafetyNumber};
 use kult_node::{
     AttachmentInfo, AttachmentMetadata, CarrierCapabilitySnapshot, Event, FolderConversationInfo,
-    FolderConversationList, FolderInfo, FolderSelection, GroupInfo, GroupMentionCapability,
-    LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode, MentionSpan, Node,
-    PinConversationList, PinInfo, ScheduledMessageInfo, StaleFolderInfo, StaleLabelInfo,
+    FolderConversationList, FolderInfo, FolderSelection, GroupAuthorityInfo, GroupInfo,
+    GroupMentionCapability, GroupRole, LabelConversationInfo, LabelFilterInfo, LabelInfo,
+    LabelMatchMode, MentionSpan, Node, PinConversationList, PinInfo, ScheduledMessageInfo,
+    StaleFolderInfo, StaleLabelInfo,
 };
 use kult_store::{ContactRecord, ConversationId, NoteMessageRecord};
 use kult_transport::{
@@ -441,6 +442,36 @@ pub(crate) enum Msg {
         group: [u8; 32],
         poll_author: [u8; 32],
         poll_id: [u8; 16],
+        resp: Resp<[u8; 16]>,
+    },
+    GroupPollModerateClose {
+        group: [u8; 32],
+        poll_author: [u8; 32],
+        poll_id: [u8; 16],
+        resp: Resp<[u8; 16]>,
+    },
+    GroupAuthority {
+        group: [u8; 32],
+        resp: Resp<GroupAuthorityInfo>,
+    },
+    GroupUpgradeAuthority {
+        group: [u8; 32],
+        resp: Resp<[u8; 16]>,
+    },
+    GroupRename {
+        group: [u8; 32],
+        name: String,
+        resp: Resp<[u8; 16]>,
+    },
+    GroupSetRole {
+        group: [u8; 32],
+        peer: [u8; 32],
+        role: GroupRole,
+        resp: Resp<[u8; 16]>,
+    },
+    GroupTransferOwner {
+        group: [u8; 32],
+        peer: [u8; 32],
         resp: Resp<[u8; 16]>,
     },
     GroupAdd {
@@ -1425,8 +1456,51 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
                     .map_err(fail),
             );
         }
+        Msg::GroupPollModerateClose {
+            group,
+            poll_author,
+            poll_id,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.group_moderate_poll_close(&group, poll_author, poll_id, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::GroupAuthority { group, resp } => {
+            let _ = resp.send(node.group_authority(&group).map_err(fail));
+        }
+        Msg::GroupUpgradeAuthority { group, resp } => {
+            let _ = resp.send(
+                node.group_upgrade_authority(&group, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::GroupRename { group, name, resp } => {
+            let _ = resp.send(
+                node.group_rename(&group, &name, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::GroupSetRole {
+            group,
+            peer,
+            role,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.group_set_role(&group, peer, role, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::GroupTransferOwner { group, peer, resp } => {
+            let _ = resp.send(
+                node.group_transfer_owner(&group, peer, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
         Msg::GroupAdd { group, peer, resp } => {
-            let _ = resp.send(node.group_add(&group, &peer, &mut OsRng).map_err(fail));
+            let _ = resp.send(node.group_add(&group, &peer, now, &mut OsRng).map_err(fail));
         }
         Msg::GroupRemove { group, peer, resp } => {
             let _ = resp.send(

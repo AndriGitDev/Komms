@@ -42,6 +42,7 @@ import uniffi.kult_ffi.FolderSelection
 import uniffi.kult_ffi.FolderSelectionKind
 import uniffi.kult_ffi.FolderTarget
 import uniffi.kult_ffi.FolderTargetKind
+import uniffi.kult_ffi.GroupRole
 import uniffi.kult_ffi.KdfChoice
 import uniffi.kult_ffi.ImageCrop
 import uniffi.kult_ffi.ImageEditRecipe
@@ -343,7 +344,7 @@ class SessionE2eTest {
             .filter { it.isFile && it.extension == "xml" }
             .joinToString("\n") { it.readText() }
         assertFalse(Regex("<\\s*EditText\\b").containsMatchIn(layouts))
-        assertEquals(16, Regex("<komms\\.android\\.IncognitoEditText\\b").findAll(layouts).count())
+        assertEquals(17, Regex("<komms\\.android\\.IncognitoEditText\\b").findAll(layouts).count())
 
         val kotlin = File(app, "kotlin/komms/android").walkTopDown()
             .filter { it.isFile && it.extension == "kt" && it.name != "IncognitoEditText.kt" }
@@ -995,6 +996,103 @@ class SessionE2eTest {
         alice.removeGroupMember(group, carolPeer)
         assertEquals(2, alice.groups()[0].members.size)
         Thread.sleep(300)
+
+        // C6 uses only generated typed bindings: upgrade, roles, admin
+        // result events, signed owner moderation, and ownership transfer.
+        val legacy = alice.groupAuthority(group)
+        assertFalse(legacy.signed)
+        assertEquals(aliceAtBob, legacy.owner)
+        assertEquals(GroupRole.OWNER, legacy.myRole)
+        val upgradeGeneration = legacy.generation + 1uL
+        alice.upgradeGroupAuthority(group)
+        val authorityDeadline = System.nanoTime() + 30_000_000_000L
+        fun authorityAt(session: Session, generation: ULong): uniffi.kult_ffi.GroupAuthority {
+            while (true) {
+                val authorityState = session.groupAuthority(group)
+                if (authorityState.signed && authorityState.generation >= generation) {
+                    return authorityState
+                }
+                check(System.nanoTime() < authorityDeadline) {
+                    "timed out waiting for authority generation $generation"
+                }
+                Thread.sleep(50)
+            }
+        }
+        val upgraded = authorityAt(bob, upgradeGeneration)
+        assertEquals(aliceAtBob, upgraded.owner)
+        assertEquals(GroupRole.MEMBER, upgraded.myRole)
+        assertEquals(2, upgraded.members.size)
+
+        alice.setGroupRole(group, bobPeer, GroupRole.ADMIN)
+        val adminGeneration = upgradeGeneration + 1uL
+        assertEquals(GroupRole.ADMIN, authorityAt(bob, adminGeneration).myRole)
+        val roleError = assertFailsWith<FfiException.Node> {
+            bob.setGroupRole(group, aliceAtBob, GroupRole.MEMBER)
+        }
+        assertTrue("owner" in roleError.reasonText(), "got: ${roleError.reasonText()}")
+
+        val renameRequest = bob.renameGroup(group, "Authority trail crew")
+        val renameGeneration = adminGeneration + 1uL
+        bEv.wait("Android admin rename result") {
+            (it as? Event.GroupAdminRequestResolved)?.takeIf { event ->
+                event.requestId == renameRequest && event.accepted &&
+                    event.generation == renameGeneration && event.stateId != null && event.reason == 0.toUByte()
+            }
+        }
+        authorityAt(bob, renameGeneration)
+        val renameDeadline = System.nanoTime() + 30_000_000_000L
+        while (bob.groups().none { it.id == group && it.name == "Authority trail crew" }) {
+            check(System.nanoTime() < renameDeadline) { "timed out waiting for admin rename" }
+            Thread.sleep(50)
+        }
+
+        val moderatedPoll = alice.createGroupPoll(
+            group,
+            "Close for weather?",
+            listOf("Keep open", "Close"),
+        )
+        bEv.wait("Android moderated poll") {
+            (it as? Event.PollUpdated)?.takeIf { event -> event.pollId == moderatedPoll }
+        }
+        val moderationRequest = bob.moderateGroupPollClose(
+            group,
+            aliceAtBob,
+            moderatedPoll,
+        )
+        val moderationGeneration = renameGeneration + 1uL
+        bEv.wait("Android moderation result") {
+            (it as? Event.GroupAdminRequestResolved)?.takeIf { event ->
+                event.requestId == moderationRequest && event.accepted &&
+                    event.generation == moderationGeneration && event.reason == 0.toUByte()
+            }
+        }
+        val moderationDeadline = System.nanoTime() + 30_000_000_000L
+        var moderated = bob.groupPolls(group).single { it.id == moderatedPoll }
+        while (!moderated.closed) {
+            check(System.nanoTime() < moderationDeadline) { "timed out waiting for moderated close" }
+            Thread.sleep(50)
+            moderated = bob.groupPolls(group).single { it.id == moderatedPoll }
+        }
+        assertEquals(aliceAtBob, moderated.moderatedBy)
+        assertEquals("signed_owner_snapshot", moderated.closePolicy)
+
+        alice.transferGroupOwner(group, bobPeer)
+        val bobOwnerGeneration = moderationGeneration + 1uL
+        val bobOwner = authorityAt(bob, bobOwnerGeneration)
+        assertEquals(bobPeer, bobOwner.owner)
+        assertEquals(1uL, bobOwner.ownerEpoch)
+        assertEquals(GroupRole.OWNER, bobOwner.myRole)
+        val leaveError = assertFailsWith<FfiException.Node> { bob.leaveGroup(group) }
+        assertTrue("owner" in leaveError.reasonText(), "got: ${leaveError.reasonText()}")
+
+        bob.transferGroupOwner(group, aliceAtBob)
+        val aliceOwnerGeneration = bobOwnerGeneration + 1uL
+        val aliceOwner = authorityAt(alice, aliceOwnerGeneration)
+        assertEquals(aliceAtBob, aliceOwner.owner)
+        assertEquals(2uL, aliceOwner.ownerEpoch)
+        alice.setGroupRole(group, bobPeer, GroupRole.MEMBER)
+        authorityAt(bob, aliceOwnerGeneration + 1uL)
+
         val editable = alice.sendGroup(group, "Android group edit original")
         bEv.wait("Bob's editable Android group Text") {
             (it as? Event.GroupMessageReceived)?.takeIf { event ->

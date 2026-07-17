@@ -214,7 +214,7 @@ fn every_target_source_restart_restore_fallback_and_zero_network_work() {
     assert!(reopened.custom_icon(&targets[2]).unwrap().is_none());
 
     let (backup, mnemonic) = reopened.export_backup(NOW, &mut rng).unwrap();
-    assert_eq!(&backup[..4], b"KKR5");
+    assert_eq!(&backup[..4], b"KKR6");
     let restored = Node::restore(
         &directory.path().join("restored.db"),
         &backup,

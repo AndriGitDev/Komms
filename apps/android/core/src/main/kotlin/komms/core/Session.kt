@@ -33,9 +33,11 @@ import uniffi.kult_ffi.FolderSelection
 import uniffi.kult_ffi.FolderTarget
 import uniffi.kult_ffi.FormattedText
 import uniffi.kult_ffi.Group
+import uniffi.kult_ffi.GroupAuthority
 import uniffi.kult_ffi.GroupMentionCapability
 import uniffi.kult_ffi.GroupMessage
 import uniffi.kult_ffi.GroupPoll
+import uniffi.kult_ffi.GroupRole
 import uniffi.kult_ffi.KdfChoice
 import uniffi.kult_ffi.KultNode
 import uniffi.kult_ffi.Label
@@ -619,6 +621,27 @@ class Session private constructor(private val node: KultNode) {
     fun closeGroupPoll(group: String, pollAuthor: String, pollId: String): String =
         node.closeGroupPoll(group, pollAuthor, pollId)
 
+    /** Signed owner closure; admins submit a generation-bound request. */
+    fun moderateGroupPollClose(group: String, pollAuthor: String, pollId: String): String =
+        node.moderateGroupPollClose(group, pollAuthor, pollId)
+
+    /** Current signed or legacy-compatible exact group roles. */
+    fun groupAuthority(group: String): GroupAuthority = node.groupAuthority(group)
+
+    /** Upgrade legacy creator authority to signed C6 roles. */
+    fun upgradeGroupAuthority(group: String): String = node.upgradeGroupAuthority(group)
+
+    /** Rename directly as owner or submit an admin request. */
+    fun renameGroup(group: String, name: String): String = node.renameGroup(group, name)
+
+    /** Owner-only admin grant/revoke. */
+    fun setGroupRole(group: String, peer: String, role: GroupRole): String =
+        node.setGroupRole(group, peer, role)
+
+    /** Transfer sole ownership to an existing member. */
+    fun transferGroupOwner(group: String, peer: String): String =
+        node.transferGroupOwner(group, peer)
+
     /** Queue an immutable edit for this identity's exact group Text event. */
     fun editGroupMessage(
         group: String,
@@ -639,7 +662,7 @@ class Session private constructor(private val node: KultNode) {
         reviewToken: String,
     ): String = node.sendGroupMention(group, text, spans, reviewToken)
 
-    /** Add a stored contact to a group (creator only). */
+    /** Add as owner or submit a signed admin request. */
     fun addGroupMember(group: String, peer: String) = node.addGroupMember(group, peer)
 
     /** Remove a member and rotate group keys (creator only). */
