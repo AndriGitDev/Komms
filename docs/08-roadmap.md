@@ -216,7 +216,7 @@ mnemonic shown exactly once. Network settings persist as secret-free
 `settings.json` (the same knobs as `kultd` flags, radios included). The
 app is its own cargo workspace so the GUI dependency tree stays out of
 the core's lockfile and cargo-deny surface (it carries its own, equally
-strict deny config, and its own CI job); all shell behavior lives in a
+strict deny config and local release gates); all shell behavior lives in a
 webview-agnostic layer pinned by a two-node end-to-end test: pairing by
 scanned-style hex, events as the webview receives them, verification,
 and the backup → mnemonic → restore flow. The Android alpha is in
@@ -237,7 +237,8 @@ key-change surfacing, transport indicators, hint editing, secret-free
 `settings.json` (same file format as desktop), mnemonic-shown-once backup
 export with OS cloud backup disabled, and a foreground service keeping
 delivery alive in the background. Native libraries cross-compile via
-cargo-ndk; CI runs the `:core` e2e and assembles the debug APK. Android
+cargo-ndk; the local release matrix runs the `:core` e2e and assembles the
+debug APK when the SDK/NDK is installed. Android
 sender-key group UX is also shipped: a distinct group list/create flow,
 dedicated history/chat/member surface, truthful per-recipient outbound
 delivery rows, and a JVM acceptance scenario with a real offline member.
@@ -263,11 +264,11 @@ member-management surfaces, truthful per-recipient outbound delivery rows,
 and a host acceptance scenario with a real offline member. QR rendering is
 CoreImage and scanning is AVFoundation. The app has zero third-party dependencies;
 the only library it links is the workspace's own Rust core, built into
-`KultFFI.xcframework` by a script for device/simulator targets. CI runs the
-`KommsCore` e2e on every push. A macOS job gated by the `IOS_APP_CI`
-repository variable assembles the xcframework and builds the app for a generic
-iOS Simulator destination; full recent release-feature matrices have run that
-job successfully. The app target's earlier SwiftUI initializer and
+`KultFFI.xcframework` by a script for device/simulator targets. The local release
+matrix runs the `KommsCore` e2e, assembles the xcframework, and builds the app
+for an unsigned iOS Simulator destination on a full Xcode host. An explicitly
+gated hosted macOS repetition remains available for publication. The app
+target's earlier SwiftUI initializer and
 `SystemConfiguration.framework` linkage failures are fixed and guarded by that
 build. Remaining: a full hands-on SwiftUI messaging pass and an on-device run;
 background delivery and store distribution stay M6.
@@ -290,6 +291,22 @@ full webview input-hint set to every classified editable text control. Automated
 field inventories and native build gates are in. Manual first-/third-party
 keyboard evidence follows [14: Incognito Keyboard](14-incognito-keyboard.md)
 without treating absence of later suggestions as proof of non-retention.
+
+C7 live audio calls are shipped through the bounded content-v1 `CallControl`
+shape, transient account/device-aware node state, and one authenticated
+`/komms/call/1` substream on an observed fresh direct QUIC connection. The
+transport and every shell refuse TCP, relay-only, mailbox, sneakernet, and
+airtime-budgeted paths; no call attempt becomes queued delayed work. Fresh
+per-call secrets derive directional media keys without exporting ratchet keys,
+and authenticated sequence/timestamp/key-phase records bound replay, jitter,
+and unsent audio. Strict RPC/CLI, UniFFI, desktop, Android, and iOS expose the
+same ring/answer/decline/cancel/hangup and bidirectional Opus lifecycle. Controls
+and media are absent from chat history, search, backup, C2 sync, and remote
+notification previews. Real distinct-NAT/DCUtR, sustained network, battery,
+audio-route, background/lock, and physical Android/iOS device evidence remain
+M5 release qualification; video begins only after the audio matrix passes. See
+[23: Live Audio Calls](23-live-audio-calls.md) and
+[ADR-0013](adr/0013-real-time-calls.md).
 
 **Acceptance**: a non-technical user can install desktop + mobile builds, exchange QR
 verification with a friend, and message over internet, LAN, and mesh with truthful
@@ -555,18 +572,14 @@ and consumed request ids while KKR1-KKR5 restore as legacy groups. See
 **Acceptance**: audit findings triaged with public report; reproducible-build attestation
 for all release artifacts.
 
-## Near horizon: real-time calls
+## Shipped alpha: real-time audio calls
 
-Live voice and video calls are in scope as a near-horizon capability, strictly
-confined to a fresh direct QUIC path reached through internet libp2p or LAN/mDNS
-and disabled over relay-only, TCP, store-and-forward, or airtime-budgeted links.
-The transport core can negotiate direct connections, including DCUtR hole
-punching, and identity keys authenticate the peer with no central coordinator.
-ADR-0013 is accepted for audio implementation after a pinned direct-QUIC
-reliable-substream spike; real NAT and mobile platform qualification remain
-release gates. Recorded
-audio/video clips are already in scope as ordinary asynchronous payloads. Details
-and constraints: [11: Feature Scope](11-feature-scope.md).
+The C7 audio implementation is complete across the shared core and all shipped
+front doors under the strict direct-QUIC and transient-state contract above.
+Video remains unimplemented until real-network and physical-device audio
+qualification passes. Details and constraints:
+[11: Feature Scope](11-feature-scope.md) and
+[23: Live Audio Calls](23-live-audio-calls.md).
 
 ## Explicitly not scheduled
 

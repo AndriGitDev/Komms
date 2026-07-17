@@ -156,6 +156,21 @@ Mirror image: transport yields envelope → reassembly → dedup by message ID �
 decrypt (tolerating skipped/out-of-order counters within the configured window) → persist →
 event to app → (optionally) send encrypted receipt.
 
+### Live-call path
+
+C7 deliberately does not reuse the durable message lifecycle for media. A
+bounded `CallControl` offer/answer/decline/busy/cancel/hangup value travels
+inside the existing pairwise ratchet, but the node keeps its decoded state
+transient and excludes it from history, search, backup, and C2 sync. After one
+authorized physical device wins the answer, `kult-transport` opens
+`/komms/call/1` only on the observed direct QUIC connection. `kult-crypto`
+derives and owns directional per-call media keys plus replay/key-phase state;
+the shells exchange only bounded Opus packets and render-safe call status.
+
+TCP, relay-only, mailbox, sneakernet, and airtime-budgeted carriers fail the
+availability check before an offer is emitted. This path has no coordinator or
+store-and-forward substitute. See [23: Live Audio Calls](23-live-audio-calls.md).
+
 ## 4. Store-and-forward without servers
 
 Peers are rarely online at the same moment, especially off-grid. Delivery uses three

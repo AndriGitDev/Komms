@@ -28,10 +28,10 @@ sender-key group encryption and inside the existing padding. It must therefore:
 - avoid sending typed bytes to a pre-content-model client that would render
   them as damaged text.
 
-This ADR decides the common frame and compatibility contract. It introduces
-only the `Text` kind. Attachments, edits, polls, votes, and mentions each still
-need their own payload decision when they land; attachment chunks and call
-media remain separate transport work.
+This ADR decided the common frame and compatibility contract and initially
+introduced only `Text`. Later accepted feature decisions now allocate the
+additional v1 kinds listed below. Attachment chunks and live call media remain
+outside the content frame even though their manifests/control use typed content.
 
 ## Decision
 
@@ -81,6 +81,22 @@ rendering, and confusable warnings are presentation concerns; clients must not
 rewrite authenticated text while decoding it. Kind `0x0000` is invalid. Every
 other kind is unassigned until a later accepted ADR fixes its payload shape.
 Once assigned, a `(format_version, kind)` payload shape is immutable.
+
+Subsequent fixed allocations are:
+
+| Kind | Content | Governing decision |
+|---:|---|---|
+| `0x0001` | Text | this ADR |
+| `0x0002` | Attachment manifest | ADR-0015 implementation contract |
+| `0x0003` | Group Mention | ADR-0016 |
+| `0x0004` | Authenticated Edit | ADR-0020 |
+| `0x0005` | Ephemeral text/view-once manifest | ADR-0021 |
+| `0x0006` | Fixed-electorate Poll event | ADR-0022 |
+| `0x0007` | Signed GroupAuthority state | ADR-0023 |
+| `0x0008` | Transient pairwise CallControl | ADR-0013 |
+
+These allocations do not change the common header or legacy-text path. Unknown
+future kinds retain the same durable unsupported behavior.
 
 `flags` is reserved and must be zero in v1. A decoder that sees a non-zero v1
 flag value retains the frame as unsupported instead of attempting a partial

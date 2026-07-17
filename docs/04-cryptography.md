@@ -166,6 +166,27 @@ metadata leakage, and backup behavior are normative in
 [ADR-0021](adr/0021-ephemeral-retention.md) and summarized in
 [19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
 
+### 5.3 Authenticated live-call control and media
+
+C7 signaling is content-v1 kind `0x0008` inside the pairwise Double Ratchet.
+The offer carries a fresh random 32-byte call master secret and binds a random
+16-byte call id, exact initiating physical device, and expiry. Answer/decline/
+busy/hangup bind the exact responding physical device. No outer envelope field
+identifies a call, and call control never becomes durable history or backup
+content.
+
+After one answer wins, the media context binds the call id, both stable account
+identities, and both exact physical-device ids. HKDF-SHA-256 derives separate
+initiator→responder and responder→initiator media/header bases. Each direction
+must authenticate an empty hello before audio; XChaCha20-Poly1305 protects the
+record kind, phase, sequence, timestamp, and at most 1,275 Opus bytes under the
+context hash. Keys rotate every 4,096 records and a 128-record replay window
+fails closed. Wrong context, role, direction, phase, call, replay, tamper, and
+post-terminal media are rejected without releasing plaintext. Master/derived
+keys and decoded packets zeroize on terminal/drop paths. The normative contract
+and limitations are [ADR-0013](adr/0013-real-time-calls.md) and
+[23: Live Audio Calls](23-live-audio-calls.md).
+
 ## 6. Group messaging (v1: sender keys)
 
 Per group, each member generates a **sender key**: a chain key + Ed25519-free MAC scheme
@@ -274,5 +295,8 @@ digest is the QR comparison value. Rationale and UX:
    to the repo.
 3. Property tests: ratchet under arbitrary message loss/reorder within `MAX_SKIP` always
    decrypts; beyond bounds always fails closed.
-4. Fuzzing (cargo-fuzz) on envelope parsing and handshake message parsing.
+4. Fuzzing (cargo-fuzz) on envelope, handshake, backup/mnemonic, attachment,
+   device-prekey, and call-media parsing/opening.
 5. `cargo-deny` + pinned lockfile; no git dependencies in `kult-crypto`.
+6. Call media KAT/property coverage for both directions, mandatory hello,
+   tamper/replay/wrong-context failure, key-phase rotation, and exact bounds.

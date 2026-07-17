@@ -81,6 +81,13 @@ cannot change the result. Local authors are capped at 64 vote revisions per
 poll; authenticated inbound history is retained for convergence. See
 [20: Group Polls](20-group-polls.md).
 
+C7 live calls add no durable domain. Decoded call control, call/device
+arbitration, master secrets, derived media keys, replay state, Opus queues, and
+decoded PCM are transient memory-only state. Call controls do not enter ordinary
+history, search, scheduled/queued tables, C2 sync, or notification previews;
+terminal transitions erase secrets and shells clear their protected media
+buffers. See [23: Live Audio Calls](23-live-audio-calls.md).
+
 B12 stores only the canonical `system`, `light`, or `dark` bytes under the sealed
 UI-preference key `appearance.theme`. Missing or unknown legacy values render as
 System without a read-time rewrite. The small shell cache used before unlock is
@@ -234,6 +241,9 @@ trade for this project.)
   and terminal tombstones, but never exports ratchets or a reusable physical
   device private credential. Recovery permanently revokes every device that was
   active in the backup and mints a fresh sole active device.
+- **C7 call backup behavior**: no offer/answer/terminal row, call id, device
+  arbitration, secret, media key, Opus packet, or decoded audio enters any KKR
+  version. Restore never resumes or reveals a prior call.
 - **Plaintext export**: JSON-lines + media directory, clearly warned as plaintext.
   The user's data is the user's.
 - **Panic wipe** (roadmap M6): duress passphrase unlocking a decoy profile while

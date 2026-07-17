@@ -88,6 +88,23 @@ content, because relays can delete but cannot authenticate a sender or safely
 rewrite the hint. Exact endpoint semantics and limitations are in
 [19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
 
+### 2.3 Direct-QUIC live audio
+
+C7 calls use a separate `/komms/call/1` reliable ordered substream only after
+the transport has observed a fresh direct `/quic-v1` connection to the exact
+peer. TCP/Yamux and Circuit Relay connectivity remain valid for ordinary
+messages but do not qualify as `realtime`; DCUtR must complete a direct upgrade
+first. Mailbox, sneakernet, BLE, and Meshtastic carriers never receive call
+media or a queued call fallback.
+
+Call setup itself is bounded content-v1 data inside the ordinary pairwise
+ratchet, so no cleartext call protocol is visible to a relay. The media stream
+starts with an authenticated call/device hello and carries bounded
+sequence/timestamp/key-phase records under fresh directional keys. Unsent audio
+and jitter queues have fixed frame/age caps. See
+[23: Live Audio Calls](23-live-audio-calls.md) and
+[ADR-0013](adr/0013-real-time-calls.md).
+
 ## 3. Proximity transports
 
 - **mDNS/LAN**: automatic discovery and direct QUIC on shared Wi-Fi. Covers the

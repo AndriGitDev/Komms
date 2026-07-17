@@ -1,12 +1,12 @@
 # ADR-0013: Real-time voice/video calls over high-bandwidth carriers only
 
-- **Status**: Accepted for audio implementation; platform qualification remains a release gate
+- **Status**: Accepted; audio alpha implemented; platform qualification remains a release gate
 - **Date**: 2026-07-13
 - **Accepted**: 2026-07-16
 
 ## Context
 
-The roadmap now puts live voice and video calls on the near horizon
+The roadmap introduced live voice and video calls as a near-horizon capability
 ([08: Roadmap](../08-roadmap.md), [11: Feature Scope](../11-feature-scope.md)).
 This is the first **synchronous, real-time media** path in a system otherwise
 built entirely around asynchronous, delay-tolerant, sealed messages, and it
@@ -37,7 +37,7 @@ mailbox path exists, offers no call and says why, mirroring the delivery ladder'
 honest "held, will send when a faster link exists" verdict. Asynchronous
 audio/video **clips** are unaffected and remain ordinary payloads on every carrier.
 
-**Signaling** is a bounded content-v1 `CallControl` event encrypted as an
+**Signaling** is the fixed content-v1 kind `0x0008` `CallControl`, encrypted as an
 ordinary pairwise ratchet message. It does not add a cleartext
 `EnvelopeKind::CallSignal`: envelope kind is relay-visible in the shipped wire
 format, so a dedicated kind would unnecessarily identify call attempts. The
@@ -69,7 +69,7 @@ late sequence numbers rather than growing latency without bound. Once bytes
 enter the reliable stream, packet loss can still cause head-of-line delay, which
 is an explicit alpha limitation and a measured release criterion.
 
-The first implementation therefore requires a fresh direct `/quic-v1` route.
+The shipped audio implementation therefore requires a fresh direct `/quic-v1` route.
 TCP/Yamux, Circuit Relay, mailbox, sneakernet, and every airtime carrier do not
 qualify as `realtime`. AutoNAT, relay reservation, and DCUtR may establish and
 upgrade connectivity, but the call button remains unavailable until the
@@ -129,10 +129,10 @@ widens `realtime` to relay, TCP, or mesh.
 - **Easier:** reuses the transport core's connection establishment, NAT
   traversal, and the ratchet's authenticated confidential channel; adds no
   servers and no new trust root; signaling rides machinery that already exists.
-- **Harder:** introduces real-time media handling (codecs, jitter buffering,
-  congestion control, echo cancellation), a category the codebase currently has
-  none of, and a non-trivial codec dependency that must clear `cargo-deny` and
-  the app workspaces' strict posture. Reliable ordered delivery also leaves
+- **Harder:** introduced real-time media handling (codecs, jitter buffering,
+  transport congestion, native voice processing), a category the earlier
+  codebase did not have, and native codec paths that must keep clearing the
+  app workspaces' strict posture. Reliable ordered delivery also leaves
   head-of-line latency to bound and qualify. The feature is
   internet/LAN only and must be presented that way everywhere: the UI and the
   marketing copy must never imply calls work off-grid, or they would contradict

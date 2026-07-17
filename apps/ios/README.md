@@ -39,6 +39,14 @@ are the node's own, verbatim.
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted
   mesh links.
+- **Make alpha live-audio calls** to paired contacts only while the shared core
+  observes a fresh direct QUIC route. AVFoundation voice processing and the
+  native Opus codec use 48 kHz mono, 20 ms frames at 24 kbit/s. The VoiceOver/
+  Dynamic-Type call bar provides ring/answer/decline/cancel/hangup state and an
+  explicit direct-QUIC/no-history explanation. Background, protected-data loss,
+  interruption, or media-service reset tears down the call and clears media
+  state. TCP, relay-only, mailbox, sneakernet, and mesh routes cannot start or
+  queue it.
 - **Manage signed group authority** with visible owner/admin/member roles,
   capability-gated legacy upgrade, owner/admin rename and membership controls,
   owner-only role grants and ownership transfer, and signed poll moderation.
@@ -257,10 +265,10 @@ Meshtastic radio support is feature-gated off, mirroring `kult-ffi`'s
 default (an iPhone has no serial port; a radio's network API can be
 attached from a `meshtastic`-featured build).
 
-CI runs the `KommsCore` e2e on every push (Linux, official Swift
-container). The simulator app build is a macOS job gated behind the
-`IOS_APP_CI` repository variable; set it to `1` to arm (macOS runners
-are billed 10× on private repos).
+The local release matrix runs the `KommsCore` host e2e and, on a full Xcode
+host, assembles the XCFramework and unsigned simulator app. Hosted repetitions
+remain explicitly gated because private-repository macOS runners are billed at
+a much higher multiplier.
 
 ## Not yet
 

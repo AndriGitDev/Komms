@@ -2,7 +2,8 @@
 
 Komms is an alpha built from source. Its core, transports, local RPC/CLI and
 UniFFI surfaces, and desktop/Android/iOS shells are implemented, while hardware
-qualification, distribution, hardening, and several product slices remain.
+qualification, distribution, broader hardening, and explicitly design-gated
+programs remain.
 
 ## Where contributions help
 
@@ -25,7 +26,11 @@ Open an issue for anything in `docs/` that is wrong, unclear, or missing:
   crate boundaries, crypto coding standards, and review gates. Checked-in APIs
   are authoritative. PRs that change design without an ADR will be redirected
   to the ADR process, kindly.
-- CI must be green: `fmt`, `clippy` (deny warnings), tests, fuzz smoke, `cargo-deny`.
+- Run the complete [local release gate](docs/24-local-release-gate.md): `fmt`,
+  warnings-as-errors `clippy`, all tests, `no_std`, dependency policy, generated
+  bindings/shell gates, and every fuzz target. Do not use hosted CI as an
+  interactive compiler; publication and any hosted repetition require explicit
+  maintainer authorization.
 - Keep PRs scoped to one concern; cite the spec section your change implements.
 
 ## Process

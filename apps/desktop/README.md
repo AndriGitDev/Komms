@@ -40,6 +40,12 @@ security indicators are the node's own, verbatim.
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted
   mesh links.
+- **Make alpha live-audio calls** to paired contacts only while a fresh direct
+  QUIC route is observed. The accessible call bar provides ring, answer,
+  decline, cancel, and hangup state plus an explicit direct-QUIC/no-history
+  explanation. Capture and playback use bounded 48 kHz mono 20 ms Opus packets;
+  hiding or locking Komms tears the call down and clears media state. TCP,
+  relay-only, mailbox, sneakernet, and mesh routes never enable or queue a call.
 - **Manage signed group authority** with visible owner/admin/member roles,
   capability-gated legacy upgrade, owner/admin rename and membership controls,
   owner-only role grants and ownership transfer, and signed poll moderation.
@@ -207,6 +213,10 @@ directory.
   cannot bypass view-once through its ordinary preview/export/audio actions.
   KKR6 excludes live ephemeral plaintext/media and includes terminal
   tombstones. See [C4 semantics and qualification](../../docs/19-ephemeral-messages.md).
+- Call control and media are transient shared-core state. The webview receives
+  only render-safe status and bounded authenticated Opus packets; it never sees
+  ratchet or call keys. Calls create no history, backup, C2 sync, mailbox, or
+  mesh work. See [C7 semantics and qualification](../../docs/23-live-audio-calls.md).
 - Folder, pin, and label ids, names, order, membership, filters/selections, and stale
   diagnostics stay in the existing sealed local store or process-local UI
   state. They never enter envelopes, DHT records, capabilities, analytics,

@@ -24,8 +24,10 @@ design doc wins and the conflict is a bug—file it.
 4. **Errors are honest**: failure states surface to the delivery engine and UI truthfully
    (`queued/sent/delivered/failed`), never faked.
 5. **Every milestone lands with its tests** as defined in the acceptance criteria of
-   [08: Roadmap](08-roadmap.md); CI = fmt + clippy (deny warnings) + tests + fuzz smoke
-   (60 s per target) + cargo-deny.
+   [08: Roadmap](08-roadmap.md); the local release matrix = fmt + clippy (deny
+   warnings) + tests + no_std + bindings/shell builds + fuzz smoke (60 s per
+   target) + cargo-deny. Hosted CI repeats an already-green checkpoint only
+   after explicit publication authorization.
 
 ## 2. Build order
 
@@ -71,6 +73,10 @@ impl Session {
 }
 
 pub fn safety_number(a: &IdentityPublic, b: &IdentityPublic) -> SafetyNumber; // 04 §9
+// C7 derives directional media/header keys from a fresh call master secret,
+// call id, both accounts, and exact answering device. Ratchet keys never cross.
+pub struct CallMediaSender;  // seal hello/audio; bounded key-phase rotation
+pub struct CallMediaReceiver; // authenticate context/direction; reject replay
 ```
 
 ### 3.2 `kult-protocol`
@@ -90,6 +96,9 @@ pub fn pad(plaintext: &[u8]) -> Padded;                     // buckets per 04 §
 pub fn fragment(env: &Envelope, mtu: usize) -> Vec<Envelope>;      // type 0x04
 pub struct Reassembler { /* 24h window, per-peer caps, NACK generation (05 §4.2) */ }
 pub fn delivery_token(k_mailbox: &MailboxKey, epoch: Epoch) -> Token; // 04 §7
+// C7 content-v1 CallControl: offer/answer/decline/busy/cancel/hangup, strict and bounded.
+pub fn encode_call_control_payload(control: &CallControl) -> Result<Vec<u8>>;
+pub fn decode_call_control_payload(bytes: &[u8]) -> DecodedCallControl;
 ```
 
 ### 3.3 `kult-transport`
@@ -102,6 +111,7 @@ pub struct SneakernetTransport;   // .kkb bundles, implement FIRST (M2): no netw
 pub struct Libp2pTransport;       // M3: QUIC/TCP, Kademlia records, relay-v2 mailboxes
 pub struct MeshtasticTransport;   // M4: serial/TCP protobuf client, private PortNum,
                                   // runtime MTU from radio config, duty-cycle accounting
+pub struct CallStream;            // C7: /komms/call/1, direct QUIC only; never TCP/relay
 ```
 
 For Meshtastic: use the published protobuf definitions via a generated client; do not
@@ -141,6 +151,9 @@ pub struct Node { /* composes store + transports + sessions */ }
 //          → expiry-bearing history/events + EphemeralRemoved
 // Exact deadline sweep, tombstone-before-output, raw-send refusal, and KKR6
 // exclusion live below the shell; ordinary attachment export rejects view once.
+// calls: call_availability / calls / start|answer|decline|cancel|hangup_call
+//      / send_call_audio / take_call_audio
+//      → CallUpdated; transient direct-QUIC state, no history/backup/delayed work
 ```
 
 `kult-ffi` exposes exactly `Node`'s command/event API via UniFFI, nothing more.
@@ -263,6 +276,15 @@ The complete contract is
 [21: Group Roles, Ownership, and Moderation](21-group-roles.md) and
 [ADR-0023](adr/0023-group-roles-and-owner-authority.md).
 
+C7 calls are a transient authenticated media path, not another durable message
+type. Only `kult-node` may emit/consume content-v1 `CallControl`, select the
+first valid linked-device answer, derive the exact media context, and open a
+stream after the shared F4 verdict confirms direct QUIC. RPC/CLI and UniFFI
+mirror typed call snapshots, availability reasons, lifecycle actions, and
+bounded Opus packet ingress/egress; shells never receive a call master secret or
+ratchet key. Every terminal or background/lock path must erase secrets and
+buffers. The complete contract is [23: Live Audio Calls](23-live-audio-calls.md).
+
 ## 4. Testing strategy (beyond per-milestone acceptance)
 
 - **KATs**: primitive test vectors vendored under `crates/kult-crypto/tests/vectors/`.
@@ -282,7 +304,9 @@ The complete contract is
 
 ## 5. Review gates
 
-Every PR: CI green + one review. Additionally:
+Every publication candidate has a green local release matrix and an explicit
+deferred-gate list. Every PR also needs one review; a hosted repetition runs
+only when explicitly authorized. Additionally:
 
 | Touched | Extra gate |
 |---|---|
@@ -297,6 +321,8 @@ Every PR: CI green + one review. Additionally:
 
 ## 6. Definition of done (any milestone)
 
-Acceptance criteria in [08: Roadmap](08-roadmap.md) demonstrably met, CI green, docs
-updated where behavior is user-visible, no `TODO` without a tracking issue, and the demo
-described in the milestone runs from a fresh clone with documented commands.
+Acceptance criteria in [08: Roadmap](08-roadmap.md) demonstrably met, the local
+release matrix green, docs updated where behavior is user-visible, no `TODO`
+without a tracking issue, and the demo described in the milestone runs from a
+fresh clone with documented commands. The exact local/publication workflow is
+[24: Local Release Gate](24-local-release-gate.md).

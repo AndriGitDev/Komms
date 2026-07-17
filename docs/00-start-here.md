@@ -97,6 +97,14 @@ owner moderation close is visibly different from the poll creator's ordinary
 close. There is no server account or hidden moderator behind these roles. See
 [Group Roles, Ownership, and Moderation](21-group-roles.md).
 
+Already paired contacts can also make alpha live-audio calls when both devices
+have a fresh direct QUIC connection. Call setup stays inside the ordinary
+end-to-end encrypted ratchet and the audio uses fresh call-specific keys; there
+is no Komms call server. Calls do not work through volunteer relays, TCP
+fallback, mailboxes, radio, or sneakernet and never become delayed work. Real
+phone/network/audio-route qualification remains before a stable release. See
+[Live Audio Calls](23-live-audio-calls.md).
+
 If you're comfortable with a terminal, the desktop shell is the quickest start:
 
 ```sh
@@ -130,6 +138,8 @@ Platform build instructions:
 | what disappearing/view-once means—and what it cannot erase | [Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md) |
 | how encrypted group polls converge and why votes are visible | [Group Polls](20-group-polls.md) |
 | how signed group roles, ownership transfer, and moderation work | [Group Roles, Ownership, and Moderation](21-group-roles.md) |
+| when live audio calls work—and when they deliberately do not | [Live Audio Calls](23-live-audio-calls.md) |
+| how a release is validated locally before any hosted run | [Local Release Gate](24-local-release-gate.md) |
 | why a technical decision was made | [ADR Index](adr/README.md) |
 
 ## How can I help?

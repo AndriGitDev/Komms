@@ -254,6 +254,16 @@ backup, are never the core database source of truth, and are cleaned on the
 documented success, discard, failure, lock/background, shutdown, and restart
 paths. Their exposure on a persistently compromised unlocked endpoint remains A7.
 
+C7 live audio is transient but not anonymous. Signaling remains inside the
+pairwise ratchet and media records use fresh call/device/direction-bound keys,
+so relays and transports receive no new plaintext call metadata field. The
+direct QUIC peers and a network observer can still see endpoint addresses,
+timing, duration, and traffic volume. Call secrets, Opus queues, and decoded PCM
+are memory-only and erased on terminal/background paths; a compromised endpoint,
+platform audio service, Bluetooth route, or external recorder remains A7. Calls
+never fall back to store-and-forward or radio merely to improve availability.
+See [23: Live Audio Calls](23-live-audio-calls.md).
+
 ## 4. Non-goals and accepted limitations
 
 Honesty here is a security feature. Komms does **not** claim to provide:
@@ -277,6 +287,10 @@ Honesty here is a security feature. Komms does **not** claim to provide:
 7. **Guaranteed mobile background execution.** APNs/FCM and the operating system
    may throttle, delay, coalesce, or discard a wake; force-quit, permissions,
    battery policy, and provider outage remain honest failure cases.
+8. **Network anonymity for live calls.** Direct peer-to-peer QUIC necessarily
+   exposes each endpoint's network address to the other endpoint and remains
+   traffic-analysis-visible. Komms adds no coordinator, TURN service, or relay
+   fallback to conceal that fact.
 
 ## 5. Residual-risk summary
 

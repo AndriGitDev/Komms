@@ -9,6 +9,12 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
+# Publication happens only after the complete local release gate. If an
+# authorized follow-up push supersedes a run, do not pay for both copies.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: fmt, clippy, tests
@@ -82,13 +88,13 @@ jobs:
       - name: fuzz kult-crypto targets
         working-directory: crates/kult-crypto
         run: |
-          for t in envelope_decode handshake_decode bundle_decode mnemonic_decode attachment_chunk_open device_prekey_decode; do
+          for t in envelope_decode handshake_decode bundle_decode mnemonic_decode attachment_chunk_open device_prekey_decode call_media_open; do
             cargo +nightly fuzz run "$t" -- -max_total_time=60
           done
       - name: fuzz kult-protocol targets
         working-directory: crates/kult-protocol
         run: |
-          for t in protocol_envelope_decode bundle_import reassembler_insert content_decode capability_decode attachment_manifest_decode attachment_bulk_decode attachment_ranges mention_decode edit_decode ephemeral_decode poll_decode group_authority_decode device_sync_bundle_decode; do
+          for t in protocol_envelope_decode bundle_import reassembler_insert content_decode capability_decode attachment_manifest_decode attachment_bulk_decode attachment_ranges mention_decode edit_decode ephemeral_decode poll_decode group_authority_decode device_sync_bundle_decode call_control_decode; do
             cargo +nightly fuzz run "$t" -- -max_total_time=60
           done
 

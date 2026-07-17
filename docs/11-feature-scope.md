@@ -19,9 +19,9 @@ Each item notes where it lands: which crate or milestone already covers it, or
 what it would take. Nothing here loosens a security or scope commitment in
 [01: Why](01-why.md) or the [roadmap](08-roadmap.md); where a feature touches the
 protocol, transports, or crypto, it lands only behind an ADR that shows it
-surviving the threat model and the mesh bandwidth floor (real-time calls, now in
-scope, are the current example: internet/LAN only, ADR-0013 (accepted for audio
-implementation with platform qualification still required)).
+surviving the threat model and the mesh bandwidth floor (the shipped C7 audio
+alpha is the current example: direct internet/LAN QUIC only under accepted
+ADR-0013, with physical-platform qualification still required).
 
 ## Build (fits the architecture as-is)
 
@@ -207,17 +207,18 @@ and degrade honestly, exactly as the delivery ladder already does.
   restore as legacy groups. See
   [21: Group Roles, Ownership, and Moderation](21-group-roles.md) and
   [ADR-0023](adr/0023-group-roles-and-owner-authority.md).
-- **Live voice and video calls.** In scope and on the near horizon, strictly
-  confined to a fresh direct QUIC path reached through internet libp2p or LAN
-  discovery, never a relay-only, TCP, mailbox, sneakernet, or radio-mesh route.
-  DCUtR may upgrade a relayed path before the call becomes available. Signaling
-  stays inside ordinary ratcheted message content and a fresh per-call secret
-  authenticates and encrypts one reliable `/komms/call/1` audio substream; no
-  central coordinator mints or routes anything. Recorded audio/video *clips*
-  remain asynchronous payloads and keep their existing F4 bulk-carrier rule.
-  ADR-0013 is accepted for audio implementation after a pinned localhost/loss
-  spike; real NAT, mobile network, battery, audio-route, background, and lock
+- **Live voice and video calls.** The audio alpha is shipped across transport,
+  node, RPC/CLI, UniFFI, desktop, Android, and iOS. It is strictly confined to a
+  fresh direct QUIC path reached through internet libp2p or LAN discovery, never
+  a relay-only, TCP, mailbox, sneakernet, or radio-mesh route. DCUtR may upgrade
+  a relayed path before the call becomes available. Bounded signaling stays
+  inside ordinary ratcheted message content; a fresh per-call secret derives
+  directional authenticated keys for one reliable `/komms/call/1` Opus
+  substream. There is no coordinator, call history, backup state, or delayed
+  fallback. Recorded audio/video *clips* remain asynchronous F3 payloads. Real
+  NAT, sustained network, battery, native audio-route, background, and lock
   qualification remains a release gate. Video starts only after audio passes.
+  See [23: Live Audio Calls](23-live-audio-calls.md).
 - **Optional hybrid reachability and native wake.** In scope only as a
   reversible convenience plane over the unchanged server-independent core.
   Established peers may use rotating provider-specific rendezvous slots for

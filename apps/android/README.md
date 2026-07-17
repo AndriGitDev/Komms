@@ -39,6 +39,14 @@ own, verbatim.
   link) → `delivered` (end-to-end encrypted receipt came back), plus the
   "held, will send when a faster link exists" verdict on airtime-budgeted
   mesh links.
+- **Make alpha live-audio calls** to paired contacts only while the shared core
+  observes a fresh direct QUIC route. Native `AudioRecord`, `AudioTrack`, and
+  MediaCodec Opus use the voice-communication path at 48 kHz mono, 20 ms, and
+  24 kbit/s. The TalkBack-labelled UI provides ring/answer/decline/cancel/
+  hangup state and an explicit direct-QUIC/no-history explanation. Microphone
+  permission is requested only for a call action; backgrounding tears down the
+  call, and the delivery foreground service never claims continuous calling.
+  TCP, relay-only, mailbox, sneakernet, and mesh routes cannot start or queue it.
 - **Manage signed group authority** with visible owner/admin/member roles,
   capability-gated legacy upgrade, owner/admin rename and membership controls,
   owner-only role grants and ownership transfer, and signed poll moderation.
@@ -253,8 +261,9 @@ ABIs default to `arm64-v8a,x86_64` (real phones + emulator); widen with
 feature-gated off, mirroring `kult-ffi`'s default (a radio's network API
 can be attached from a `meshtastic`-featured build).
 
-CI runs both: the `:core` JVM e2e on every push, and a debug-APK assembly
-job that uploads the artifact.
+The local release matrix runs the `:core` JVM e2e and, on a host with the full
+SDK/NDK, debug-APK assembly. Hosted repetitions are reserved for an explicitly
+authorized publication run.
 
 ## Not yet
 

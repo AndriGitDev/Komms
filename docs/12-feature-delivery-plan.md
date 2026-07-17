@@ -24,8 +24,9 @@ not.
 
 Komms has a strong transport and security foundation plus shared versioned
 content, attachment, carrier-capability, replicated-conversation, and linked-
-device front doors. Real-time calls and optional hybrid services still require
-their proposed ADRs to be accepted before product implementation.
+device front doors. C7 direct-QUIC audio calls are implemented across the full
+stack under accepted ADR-0013; optional hybrid services remain design-only
+behind their three proposed ADRs.
 
 | Feature from scope | Current status | Main gap |
 |---|---|---|
@@ -54,7 +55,7 @@ their proposed ADRs to be accepted before product implementation.
 | Disappearing/view-once messages | Shipped | ADR-0021 exact local deadlines, envelope-v2 coarse relay deletion, tombstones, KKR6 exclusion, terminal reveal, and honest local-only promises. |
 | Group polls | Shipped | ADR-0022 fixed-electorate visible votes, deterministic heads/tallies, creator snapshot closure, and every front door/shell. |
 | Admin/role controls | Shipped | ADR-0023 owner-serialized signed roles, transfer, re-keying, and poll moderation through every shell. |
-| Live voice/video calls | Design-only | ADR-0013 remains Proposed; measured media transport and carrier gating precede implementation. |
+| Live voice/video calls | Shipped (audio alpha) | Preserve direct-QUIC-only gating, transient ratcheted control, authenticated Opus media, and zero history/backup/mesh work; real-network/device qualification precedes stable enablement and video. |
 | Optional hybrid reachability/wake | Design-only | ADR-0017 through ADR-0019 remain Proposed; acceptance precedes mode boundaries, rotating rendezvous, and best-effort native wake. |
 
 ## 3. Shared foundations
@@ -83,12 +84,12 @@ encrypted capability negotiation, scoped stable content ids, bounded
 unknown-content behavior, sealed capability state, and render-safe RPC/UniFFI
 outcomes are shared across pairwise and sender-key group messages.
 
-The shipped codec keeps legacy raw text readable and carries bounded typed
-`Text`, `Attachment`, `Mention`, and `Edit` content under their accepted feature
-contracts. Future candidates include `Poll` and `PollVote`; each exact shape
-still requires its own accepted design. Call signaling remains the separate
-`CallSignal` envelope proposed by ADR-0013. Formatting remains text
-plus local rendering metadata and does not need a distinct wire type.
+The shipped codec keeps legacy raw text readable and carries the accepted,
+bounded `Text`, `Attachment`, `Mention`, `Edit`, `Ephemeral`, `Poll`,
+`GroupAuthority`, and `CallControl` kinds. C7 call control is ordinary encrypted
+pairwise content—there is deliberately no relay-visible `CallSignal` envelope.
+Formatting remains exact Text plus local rendering metadata and does not need a
+distinct wire type.
 
 The ADR must define:
 
@@ -161,9 +162,9 @@ change events such as:
 
 This verdict gates calls, large files, media autoplay/download, and user-facing
 explanations. It must remain advisory and time-bounded because reachability can
-change immediately. The ADR-0013 spike decides whether any circuit-relayed path
-meets the latency and capacity requirements for `realtime`; the capability API
-must not assume that before measurements exist.
+change immediately. ADR-0013's measured decision is conservative: only an
+observed fresh direct QUIC path qualifies as `realtime`; TCP and circuit-relayed
+paths do not, even when they can carry ordinary messages.
 
 ### F5. Local metadata store
 
@@ -839,28 +840,33 @@ APK/device SDK gate remains deferred without weakening implementation parity.
 
 **Depends on:** F4 and accepted ADR-0013.
 
-**Decision:** ADR-0013 is accepted for audio implementation. The pinned
+**State:** audio alpha shipped. ADR-0013 is accepted. The pinned
 localhost/loss spike selected one reliable ordered `/komms/call/1` substream on
 a fresh direct QUIC connection; the shipped libp2p QUIC transport disables
 datagrams. Relay-only and TCP paths do not qualify as realtime. Distinct-NAT,
 DCUtR, mobile network, CPU, battery, native audio-route, background, and lock
 measurements remain release gates rather than unmeasured design claims.
 
-Then deliver ratchet-carried call offer/answer/cancel/busy/hangup signaling,
-call-specific media keys derived inside the core, replay protection, key
-rotation, Opus audio, echo cancellation, jitter buffering, and interruption
-handling. Add video only after audio acceptance passes. Never export ratchet
-secrets to the UI layer.
+The implementation delivers ratchet-carried offer/answer/decline/busy/cancel/
+hangup signaling, linked-device first-answer arbitration, call-specific media
+keys derived inside the core, replay protection, key rotation, bounded Opus
+audio, jitter buffering, native voice processing, and interruption teardown.
+Controls and media are transient and absent from history, search, backup, and C2
+sync. Ratchet secrets never reach the UI layer. Video begins only after the
+physical audio qualification matrix passes.
 
 The call button is enabled only for a fresh F4 `realtime` capability backed by
 an observed direct QUIC route. Mailbox, sneakernet, LoRa, TCP fallback, and
 relay-only paths show a precise unavailable reason. No project-operated
 STUN/TURN, SFU, or signaling service is introduced.
 
-Acceptance includes authenticated caller identity, declined/busy/racing calls,
-NAT and LAN matrices, path loss during a call, Bluetooth/headset transitions,
-background/lock behavior, network handoff, call-key erasure, and proof that call
-attempts emit no mesh frames.
+Automated acceptance now covers authenticated caller identity, declined/busy/
+racing calls, direct LAN/localhost QUIC, bounded media, tamper/replay failure,
+key erasure transitions, exact hangup, linked-device arbitration, every front
+door/shell host layer, and proof that call attempts emit no mesh frames. Real
+distinct-NAT/DCUtR, sustained loss/jitter, network handoff, CPU/battery,
+Bluetooth/headset, and physical background/lock evidence remain release gates.
+See [23: Live Audio Calls](23-live-audio-calls.md).
 
 ### C8. Optional hybrid reachability and native wake
 
@@ -926,7 +932,7 @@ honest. Parallel work is safe only where rows do not share a foundation.
 | **2: Typed content and asynchronous media** | Complete | F2/F3, B2, B16, B17, and C1 are shipped across the shared core and all three shells; hands-on device evidence remains an M5 release gate. |
 | **3: Replicated conversation features** | Complete | C3, C4, C5, and C6 are shipped through every surface. |
 | **4: Multi-device** | Complete | ADR-0024 and C2 are shipped, including cross-device hardening of Wave 3. |
-| **5: Real-time media** | Design-only | ADR-0013 spike and C7, restricted to qualified internet/LAN paths. |
+| **5: Real-time media** | Complete (audio alpha) | ADR-0013 and C7 audio are implemented through every surface, restricted to observed direct QUIC; real-network/device qualification gates stable enablement and video. |
 
 Scheduled messages (B8) completed as the intended isolated core-plus-shell
 delivery. Its durable gate remains in the shared queue/storage schema rather
@@ -949,7 +955,7 @@ Do not combine these into one oversized design decision.
 | 9 (done) | ADR-0022: fixed-electorate visible-vote polls and creator snapshot closure | Convergent encrypted group polls. |
 | 10 (done) | ADR-0023: group roles/capabilities and authority transfer | Admin controls and moderated polls. |
 | 11 (done) | ADR-0024: multi-device identity, device certificates, sync, revocation | Linked devices. |
-| 12 | Accept ADR-0013 after measured media spike | Voice/video calls. |
+| 12 (done) | ADR-0013: measured direct-QUIC call signaling/media contract | C7 audio alpha; physical qualification gates video and stable enablement. |
 | As needed | Signed optional self-display name in bundle records | Non-global username suggestion. |
 | Before next PQ suite | Downgrade-safe crypto agility | Future post-quantum upgrades. |
 
@@ -980,9 +986,11 @@ No feature is done until all applicable gates pass:
    quotas fail safely and visibly.
 9. **Documentation:** user promise, limitations, threat-model effect, and manual
    test instructions are current.
-10. **CI:** format, clippy with denied warnings, tests, fuzz smoke, and
-    `cargo-deny` are green; platform-specific behavior has device/simulator
-    evidence where CI cannot prove it.
+10. **Local release matrix:** format, clippy with denied warnings, tests,
+    no_std, fuzz smoke, generated bindings, shell tests/builds, and `cargo-deny`
+    are green before publication; platform-specific behavior has device/
+    simulator evidence where host tests cannot prove it. Hosted CI is a later,
+    explicitly authorized repetition, not the development loop.
 
 ## 9. Completed foundation program and next priorities
 
@@ -1020,9 +1028,11 @@ tombstones, and KKR6 exclusion. C5 encrypted group polls are now shipped with
 visible authenticated votes, fixed electorates, deterministic convergence, and
 creator snapshot closure. C6 signed owner/admin/member roles, ownership transfer,
 mandatory re-keying, and poll moderation are now shipped through every shell.
-The next product program is C7 calls, which remains behind ADR-0013 acceptance
-and measured high-bandwidth-carrier evidence.
+C7 live audio calls are now shipped through direct QUIC, transient ratcheted
+signaling, authenticated media, RPC/CLI, UniFFI, and all three shells. Real-NAT,
+mobile handoff, battery, route, background/lock, and physical-device evidence
+remain release qualification; video remains gated on that audio evidence.
 Optional signed self-display suggestions remain deferred behind their separate
 bundle-format ADR and compatibility work.
-Real-time media and optional hybrid services remain separate programs with
-their stated ADR gates.
+Optional hybrid services remain a separate design program with their stated ADR
+gates.
