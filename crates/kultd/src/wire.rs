@@ -11,7 +11,8 @@ use serde_json::{json, Value};
 
 use kult_node::{
     AttachmentConversation, AttachmentDirection, AttachmentFileKind, AttachmentFilePresentation,
-    AttachmentFileWarning, AttachmentInfo, AttachmentOpenPolicy, CarrierCapability,
+    AttachmentFileWarning, AttachmentInfo, AttachmentOpenPolicy, CallAudioFrame, CallAvailability,
+    CallDirection, CallEndReason, CallInfo, CallPhase, CallUnavailableReason, CarrierCapability,
     CarrierCapabilitySnapshot, ContactNameAssessment, ContactNameWarning, ContentStatus,
     CustomIconInfo, CustomIconTarget, CustomIconUsage, Event, FolderConversationInfo,
     FolderConversationList, FolderInfo, FolderSelection, GroupAuthorityInfo, GroupInfo,
@@ -173,6 +174,12 @@ fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
         "group_rename" => Some(&["id", "op", "group", "name"]),
         "group_set_role" => Some(&["id", "op", "group", "peer", "role"]),
         "group_transfer_owner" => Some(&["id", "op", "group", "peer"]),
+        "calls" => Some(&["id", "op"]),
+        "call_availability" | "call_start" => Some(&["id", "op", "peer"]),
+        "call_answer" | "call_decline" | "call_cancel" | "call_hangup" | "call_audio_take" => {
+            Some(&["id", "op", "call"])
+        }
+        "call_audio_send" => Some(&["id", "op", "call", "timestamp_ms", "opus"]),
         _ => None,
     }
 }
@@ -884,6 +891,52 @@ pub enum Op {
     Contacts,
     /// List safe, time-bounded carrier snapshots for all contacts.
     CarrierCapabilities,
+    /// List transient render-safe call state retained by this installation.
+    Calls,
+    /// Return the honest current call-start verdict for one contact.
+    CallAvailability {
+        /// Exact contact peer id (hex).
+        peer: String,
+    },
+    /// Start one capability-gated outgoing audio call.
+    CallStart {
+        /// Exact contact peer id (hex).
+        peer: String,
+    },
+    /// Answer one ringing incoming call on this physical device.
+    CallAnswer {
+        /// Exact call id (hex).
+        call: String,
+    },
+    /// Decline one ringing incoming call on this physical device.
+    CallDecline {
+        /// Exact call id (hex).
+        call: String,
+    },
+    /// Cancel one locally initiated ringing call.
+    CallCancel {
+        /// Exact call id (hex).
+        call: String,
+    },
+    /// End one connecting or active call.
+    CallHangup {
+        /// Exact call id (hex).
+        call: String,
+    },
+    /// Queue one native-encoded Opus packet for authenticated transmission.
+    CallAudioSend {
+        /// Exact call id (hex).
+        call: String,
+        /// Sender capture timestamp in milliseconds.
+        timestamp_ms: u64,
+        /// Exact bounded Opus packet (hex).
+        opus: String,
+    },
+    /// Take at most one authenticated Opus packet from the bounded jitter buffer.
+    CallAudioTake {
+        /// Exact call id (hex).
+        call: String,
+    },
     /// Message history with a peer.
     Messages {
         /// The peer id (hex).
@@ -1176,6 +1229,10 @@ pub fn event_line(event: &Event) -> String {
         Event::CarrierCapabilityChanged { snapshot } => json!({
             "type": "carrier_capability",
             "snapshot": carrier_json(snapshot),
+        }),
+        Event::CallUpdated { call } => json!({
+            "type": "call_updated",
+            "call": call_json(call),
         }),
         Event::GroupUpdated { group } => json!({
             "type": "group_updated",
@@ -1681,6 +1738,12 @@ fn error_code(message: &str) -> &'static str {
         "store error: conversation pin limit exhausted" => "pin_limit",
         "store error: invalid complete pin order" => "invalid_pin_order",
         "store error: conversation pin is active or absent" => "stale_pin_active",
+        "call id must be hex" | "call id must be 16 bytes" => "invalid_call_id",
+        "invalid call control, route, expiry, or transition" => "invalid_call",
+        "call does not exist on this installation" => "unknown_call",
+        "peer does not support live calls" => "call_unsupported",
+        "no fresh direct QUIC route is available" => "call_unavailable",
+        "this installation is already in a call" => "call_busy",
         _ if message.starts_with("bad request:") => "bad_request",
         _ if message.starts_with("store error:") => "storage_failure",
         _ => "operation_failed",
@@ -1856,6 +1919,63 @@ pub fn carrier_json(snapshot: &CarrierCapabilitySnapshot) -> Value {
         "capability": carrier_str(snapshot.capability),
         "observed_at": snapshot.observed_at,
         "expires_at": snapshot.expires_at,
+    })
+}
+
+/// One render-safe transient call snapshot as JSON.
+pub fn call_json(call: &CallInfo) -> Value {
+    json!({
+        "id": hex_encode(&call.id),
+        "peer": hex_encode(&call.peer),
+        "direction": match call.direction {
+            CallDirection::Outgoing => "outgoing",
+            CallDirection::Incoming => "incoming",
+        },
+        "phase": match call.phase {
+            CallPhase::Ringing => "ringing",
+            CallPhase::Connecting => "connecting",
+            CallPhase::Active => "active",
+            CallPhase::Ended => "ended",
+        },
+        "initiator_device": hex_encode(&call.initiator_device),
+        "responder_device": call.responder_device.map(|device| hex_encode(&device)),
+        "expires_at": call.expires_at,
+        "end_reason": call.end_reason.map(|reason| match reason {
+            CallEndReason::Declined => "declined",
+            CallEndReason::Busy => "busy",
+            CallEndReason::Cancelled => "cancelled",
+            CallEndReason::HungUp => "hung_up",
+            CallEndReason::Expired => "expired",
+            CallEndReason::AnsweredElsewhere => "answered_elsewhere",
+            CallEndReason::RouteLost => "route_lost",
+        }),
+    })
+}
+
+/// One honest contact call-start verdict as JSON.
+pub fn call_availability_json(availability: &CallAvailability) -> Value {
+    json!({
+        "peer": hex_encode(&availability.peer),
+        "available": availability.available(),
+        "unavailable": availability.unavailable.map(|reason| match reason {
+            CallUnavailableReason::OfflineOrUnknown => "offline_or_unknown",
+            CallUnavailableReason::BulkOnly => "bulk_only",
+            CallUnavailableReason::MeshOnly => "mesh_only",
+            CallUnavailableReason::MissingSession => "missing_session",
+            CallUnavailableReason::Unsupported => "unsupported",
+            CallUnavailableReason::AlreadyInCall => "already_in_call",
+        }),
+    })
+}
+
+/// One authenticated decoded Opus packet as JSON. The frame owns and erases
+/// its packet bytes immediately after this short-lived serialization copy.
+pub fn call_audio_json(frame: &CallAudioFrame) -> Value {
+    json!({
+        "call": hex_encode(&frame.call_id),
+        "sequence": frame.sequence,
+        "timestamp_ms": frame.timestamp_ms,
+        "opus": hex_encode(&frame.opus_packet),
     })
 }
 
@@ -2153,6 +2273,14 @@ pub fn parse_message(s: &str) -> Result<[u8; 16], String> {
         .map_err(|_| "message id must be 16 bytes".to_owned())
 }
 
+/// Parse a 16-byte transient call id from lowercase/uppercase hex.
+pub fn parse_call(s: &str) -> Result<[u8; 16], String> {
+    hex_decode(s)
+        .ok_or_else(|| "call id must be hex".to_owned())?
+        .try_into()
+        .map_err(|_| "call id must be 16 bytes".to_owned())
+}
+
 /// Parse a 16-byte local Mention review token.
 pub fn parse_review_token(s: &str) -> Result<[u8; 16], String> {
     hex_decode(s)
@@ -2427,6 +2555,35 @@ mod tests {
         assert!(matches!(r.op, Op::AddContact { .. }));
         let r: Request = serde_json::from_str(r#"{"id":3,"op":"carrier_capabilities"}"#).unwrap();
         assert!(matches!(r.op, Op::CarrierCapabilities));
+        let call = "ab".repeat(16);
+        let r = parse_request(
+            &json!({
+                "id": 34,
+                "op": "call_audio_send",
+                "call": call,
+                "timestamp_ms": 42,
+                "opus": "f801",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(matches!(
+            r.op,
+            Op::CallAudioSend {
+                timestamp_ms: 42,
+                ..
+            }
+        ));
+        assert!(parse_request(
+            &json!({
+                "id": 35,
+                "op": "call_answer",
+                "call": "ab".repeat(16),
+                "peer": "ambiguous",
+            })
+            .to_string(),
+        )
+        .is_err());
         let r: Request =
             serde_json::from_str(r#"{"id":4,"op":"note_to_self_send","body":"remember this"}"#)
                 .unwrap();
@@ -2581,6 +2738,31 @@ mod tests {
         assert_eq!(value["event"]["type"], json!("carrier_capability"));
         assert_eq!(value["event"]["snapshot"]["capability"], json!("mesh_only"));
         assert_eq!(value["event"]["snapshot"]["expires_at"], json!(70));
+    }
+
+    #[test]
+    fn call_event_is_render_safe_and_exact() {
+        let line = event_line(&Event::CallUpdated {
+            call: CallInfo {
+                id: [0x21; 16],
+                peer: [0x22; 32],
+                direction: CallDirection::Incoming,
+                phase: CallPhase::Ended,
+                initiator_device: [0x23; 32],
+                responder_device: Some([0x24; 32]),
+                expires_at: 90,
+                end_reason: Some(CallEndReason::AnsweredElsewhere),
+            },
+        });
+        let value: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(value["event"]["type"], json!("call_updated"));
+        assert_eq!(value["event"]["call"]["direction"], json!("incoming"));
+        assert_eq!(
+            value["event"]["call"]["end_reason"],
+            json!("answered_elsewhere")
+        );
+        assert!(value.to_string().find("secret").is_none());
+        assert!(value.to_string().find("route").is_none());
     }
 
     #[test]

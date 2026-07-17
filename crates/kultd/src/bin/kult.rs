@@ -170,6 +170,16 @@ COMMANDS:
     group-messages GROUP_HEX         group message history
     contacts                        list contacts
     carriers                        list per-peer carrier capability snapshots
+    calls                           list transient call state on this installation
+    call-availability PEER_HEX      show the exact current call-start verdict
+    call-start PEER_HEX             start one direct-QUIC audio call
+    call-answer CALL_ID             answer one ringing incoming call
+    call-decline CALL_ID            decline one ringing incoming call
+    call-cancel CALL_ID             cancel one outgoing ringing call
+    call-hangup CALL_ID             end one connecting or active call
+    call-audio-send CALL_ID TIMESTAMP_MS OPUS_HEX
+                                    diagnostic native-Opus capture adapter
+    call-audio-take CALL_ID         take one authenticated Opus playout packet
     messages PEER_HEX               message history with a peer
     safety PEER_HEX                 safety number for out-of-band verification
     verify PEER_HEX                 mark a contact verified
@@ -259,6 +269,34 @@ fn parse_poll_peer(value: &str) -> Result<String, String> {
         Ok(value.to_ascii_lowercase())
     } else {
         Err("group or poll-author id must be 64 hexadecimal characters".to_owned())
+    }
+}
+
+fn parse_call_id(value: &str) -> Result<String, String> {
+    if value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(value.to_ascii_lowercase())
+    } else {
+        Err("call id must be 32 hexadecimal characters".to_owned())
+    }
+}
+
+fn parse_call_peer(value: &str) -> Result<String, String> {
+    if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(value.to_ascii_lowercase())
+    } else {
+        Err("call peer id must be 64 hexadecimal characters".to_owned())
+    }
+}
+
+fn parse_opus_packet(value: &str) -> Result<String, String> {
+    if !value.is_empty()
+        && value.len() <= 2_550
+        && value.len() % 2 == 0
+        && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        Ok(value.to_ascii_lowercase())
+    } else {
+        Err("Opus packet must be 1 through 1275 bytes of hexadecimal data".to_owned())
     }
 }
 
@@ -1210,6 +1248,52 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
         }
         "contacts" => json!({ "op": "contacts" }),
         "carriers" => json!({ "op": "carrier_capabilities" }),
+        "calls" => {
+            if !args.is_empty() {
+                return Err("calls: expected no arguments".to_owned());
+            }
+            json!({ "op": "calls" })
+        }
+        "call-availability" => {
+            if args.len() != 1 {
+                return Err("call-availability: expected PEER_HEX".to_owned());
+            }
+            json!({ "op": "call_availability", "peer": parse_call_peer(&args[0])? })
+        }
+        "call-start" => {
+            if args.len() != 1 {
+                return Err("call-start: expected PEER_HEX".to_owned());
+            }
+            json!({ "op": "call_start", "peer": parse_call_peer(&args[0])? })
+        }
+        "call-answer" | "call-decline" | "call-cancel" | "call-hangup" | "call-audio-take" => {
+            if args.len() != 1 {
+                return Err(format!("{command}: expected CALL_ID"));
+            }
+            let op = match command {
+                "call-answer" => "call_answer",
+                "call-decline" => "call_decline",
+                "call-cancel" => "call_cancel",
+                "call-hangup" => "call_hangup",
+                "call-audio-take" => "call_audio_take",
+                _ => unreachable!(),
+            };
+            json!({ "op": op, "call": parse_call_id(&args[0])? })
+        }
+        "call-audio-send" => {
+            if args.len() != 3 {
+                return Err("call-audio-send: expected CALL_ID TIMESTAMP_MS OPUS_HEX".to_owned());
+            }
+            let timestamp_ms = args[1]
+                .parse::<u64>()
+                .map_err(|_| "call-audio-send: timestamp must be an unsigned integer".to_owned())?;
+            json!({
+                "op": "call_audio_send",
+                "call": parse_call_id(&args[0])?,
+                "timestamp_ms": timestamp_ms,
+                "opus": parse_opus_packet(&args[2])?,
+            })
+        }
         "messages" => {
             need(1)?;
             json!({ "op": "messages", "peer": args[0] })
@@ -1651,7 +1735,35 @@ mod tests {
             build_request("carriers", &[]).unwrap(),
             json!({ "op": "carrier_capabilities" })
         );
+        let call = "ab".repeat(16);
         let peer = "ca".repeat(32);
+        assert_eq!(
+            build_request("call-availability", std::slice::from_ref(&peer)).unwrap(),
+            json!({ "op": "call_availability", "peer": peer })
+        );
+        assert_eq!(
+            build_request("call-answer", std::slice::from_ref(&call)).unwrap(),
+            json!({ "op": "call_answer", "call": call })
+        );
+        assert_eq!(
+            build_request(
+                "call-audio-send",
+                &[call.clone(), "1234".to_owned(), "F801".to_owned()]
+            )
+            .unwrap(),
+            json!({
+                "op": "call_audio_send",
+                "call": call,
+                "timestamp_ms": 1234,
+                "opus": "f801",
+            })
+        );
+        assert!(build_request("call-start", &["not-a-peer".to_owned()]).is_err());
+        assert!(build_request(
+            "call-audio-send",
+            &["ab".repeat(16), "now".to_owned(), "f801".to_owned()]
+        )
+        .is_err());
         assert_eq!(
             build_request(
                 "contact-name-check",

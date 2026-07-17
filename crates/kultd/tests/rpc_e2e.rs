@@ -348,6 +348,210 @@ async fn private_contact_rename_via_strict_rpc_is_normalized_warned_and_delivery
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn direct_quic_call_lifecycle_and_opus_via_rpc_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let alice = Daemon::start(test_config(dir.path(), "alice"))
+        .await
+        .unwrap();
+    let bob = Daemon::start(test_config(dir.path(), "bob")).await.unwrap();
+
+    let mut a = Client::connect(&alice.socket_path).await;
+    let mut b = Client::connect(&bob.socket_path).await;
+    let a_addr = listen_addr(&mut a).await;
+    let b_addr = listen_addr(&mut b).await;
+    let a_bundle = a.ok(json!({ "op": "bundle" })).await["bundle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let b_bundle = b.ok(json!({ "op": "bundle" })).await["bundle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bob_peer = a
+        .ok(json!({
+            "op": "add_contact",
+            "name": "bob",
+            "bundle": b_bundle,
+            "hints": [{ "multiaddr": b_addr }],
+        }))
+        .await["peer"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let alice_peer = b
+        .ok(json!({
+            "op": "add_contact",
+            "name": "alice",
+            "bundle": a_bundle,
+            "hints": [{ "multiaddr": a_addr }],
+        }))
+        .await["peer"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let mut a_events = Client::connect(&alice.socket_path).await;
+    let mut b_events = Client::connect(&bob.socket_path).await;
+    a_events.ok(json!({ "op": "subscribe" })).await;
+    b_events.ok(json!({ "op": "subscribe" })).await;
+
+    wait_carrier(&mut a, &bob_peer, "realtime").await;
+    let session_message = a
+        .ok(json!({
+            "op": "send",
+            "peer": bob_peer,
+            "body": "establish call session",
+        }))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut session_settled = false;
+    let mut last_alice_history = Value::Null;
+    let mut last_bob_history = Value::Null;
+    for _ in 0..200 {
+        let alice_history = a.ok(json!({ "op": "messages", "peer": bob_peer })).await;
+        let bob_history = b.ok(json!({ "op": "messages", "peer": alice_peer })).await;
+        let alice_delivered = alice_history["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| {
+                message["id"] == json!(session_message) && message["state"] == json!("delivered")
+            });
+        let bob_received = bob_history["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| {
+                message["direction"] == json!("in")
+                    && message["body"] == json!("establish call session")
+            });
+        if alice_delivered && bob_received {
+            session_settled = true;
+            break;
+        }
+        last_alice_history = alice_history;
+        last_bob_history = bob_history;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    if !session_settled {
+        let alice_status = a.ok(json!({ "op": "status" })).await;
+        let bob_status = b.ok(json!({ "op": "status" })).await;
+        panic!(
+            "call prerequisite session did not settle: alice={alice_status}, bob={bob_status}, alice_history={last_alice_history}, bob_history={last_bob_history}"
+        );
+    }
+    wait_carrier(&mut b, &alice_peer, "realtime").await;
+    let availability = wait_call_available(&mut a, &bob_peer).await;
+    assert_eq!(availability["peer"], json!(bob_peer));
+    assert!(availability["unavailable"].is_null());
+    assert!(a.ok(json!({ "op": "calls" })).await["calls"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    let call = a.ok(json!({ "op": "call_start", "peer": bob_peer })).await["call"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(call.len(), 32);
+    let incoming = b_events
+        .wait_event(|event| {
+            event["type"] == json!("call_updated")
+                && event["call"]["id"] == json!(call)
+                && event["call"]["phase"] == json!("ringing")
+        })
+        .await;
+    assert_eq!(incoming["call"]["direction"], json!("incoming"));
+    assert_eq!(incoming["call"]["peer"], json!(alice_peer));
+
+    let answered = b.ok(json!({ "op": "call_answer", "call": call })).await;
+    assert_eq!(answered["call"]["phase"], json!("connecting"));
+    let active_a = a_events
+        .wait_event(|event| {
+            event["type"] == json!("call_updated")
+                && event["call"]["id"] == json!(call)
+                && event["call"]["phase"] == json!("active")
+        })
+        .await;
+    let active_b = b_events
+        .wait_event(|event| {
+            event["type"] == json!("call_updated")
+                && event["call"]["id"] == json!(call)
+                && event["call"]["phase"] == json!("active")
+        })
+        .await;
+    assert_eq!(
+        active_a["call"]["responder_device"],
+        active_b["call"]["responder_device"]
+    );
+
+    let alice_packets = ["f801", "f802", "f803"];
+    let bob_packets = ["f811", "f812", "f813"];
+    for (index, packet) in alice_packets.iter().enumerate() {
+        assert_eq!(
+            a.ok(json!({
+                "op": "call_audio_send",
+                "call": call,
+                "timestamp_ms": 1_000 + index as u64 * 20,
+                "opus": packet,
+            }))
+            .await["accepted"],
+            json!(true)
+        );
+    }
+    for (index, packet) in bob_packets.iter().enumerate() {
+        assert_eq!(
+            b.ok(json!({
+                "op": "call_audio_send",
+                "call": call,
+                "timestamp_ms": 2_000 + index as u64 * 20,
+                "opus": packet,
+            }))
+            .await["accepted"],
+            json!(true)
+        );
+    }
+    let at_alice = wait_call_audio(&mut a, &call).await;
+    let at_bob = wait_call_audio(&mut b, &call).await;
+    assert_eq!(at_alice["call"], json!(call));
+    assert_eq!(at_alice["opus"], json!(bob_packets[0]));
+    assert_eq!(at_alice["timestamp_ms"], json!(2_000));
+    assert_eq!(at_bob["opus"], json!(alice_packets[0]));
+    assert_eq!(at_bob["timestamp_ms"], json!(1_000));
+
+    for history in [
+        a.ok(json!({ "op": "messages", "peer": bob_peer })).await,
+        b.ok(json!({ "op": "messages", "peer": alice_peer })).await,
+    ] {
+        assert_eq!(history["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            history["messages"][0]["body"],
+            json!("establish call session")
+        );
+    }
+
+    let ended = a.ok(json!({ "op": "call_hangup", "call": call })).await;
+    assert_eq!(ended["call"]["phase"], json!("ended"));
+    assert_eq!(ended["call"]["end_reason"], json!("hung_up"));
+    b_events
+        .wait_event(|event| {
+            event["type"] == json!("call_updated")
+                && event["call"]["id"] == json!(call)
+                && event["call"]["phase"] == json!("ended")
+        })
+        .await;
+    assert!(b
+        .call(json!({ "op": "call_audio_send", "call": call, "timestamp_ms": 3_000, "opus": "f8" }))
+        .await
+        .is_err());
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn incognito_keyboard_policy_via_strict_rpc_matches_platforms_without_delivery_work() {
     let fixture = incognito_keyboard_parity_fixture();
     let directory = tempfile::tempdir().unwrap();
@@ -721,6 +925,34 @@ async fn wait_carrier(client: &mut Client, peer: &str, expected: &str) -> Value 
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     panic!("no {expected} carrier verdict for {peer} within 5s");
+}
+
+async fn wait_call_available(client: &mut Client, peer: &str) -> Value {
+    let mut last = Value::Null;
+    for _ in 0..200 {
+        let availability = client
+            .ok(json!({ "op": "call_availability", "peer": peer }))
+            .await;
+        if availability["available"] == json!(true) {
+            return availability;
+        }
+        last = availability;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("call did not become available for {peer} within 10s: {last}");
+}
+
+async fn wait_call_audio(client: &mut Client, call: &str) -> Value {
+    for _ in 0..200 {
+        let result = client
+            .ok(json!({ "op": "call_audio_take", "call": call }))
+            .await;
+        if !result["frame"].is_null() {
+            return result["frame"].clone();
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("no authenticated call audio for {call} within 2s");
 }
 
 async fn wait_mention_supported(client: &mut Client, group: &str) -> Value {

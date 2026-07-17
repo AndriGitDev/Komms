@@ -442,6 +442,8 @@ async fn actor(
 ) {
     let mut tick = tokio::time::interval(cfg.tick_interval);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut media_tick = tokio::time::interval(Duration::from_millis(20));
+    media_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,
@@ -453,6 +455,14 @@ async fn actor(
                         }
                     }
                     Err(e) => eprintln!("kultd: tick failed: {e}"),
+                }
+            }
+            _ = media_tick.tick() => {
+                if let Err(e) = node.pump_call_media(now()).await {
+                    eprintln!("kultd: call media pump failed: {e}");
+                }
+                for event in node.drain_events() {
+                    let _ = events.send(wire::event_line(&event));
                 }
             }
             msg = rx.recv() => match msg {
@@ -1590,6 +1600,56 @@ async fn handle_op(
                 .collect::<Vec<_>>();
             Ok(json!({ "capabilities": snapshots }))
         }
+        Op::Calls => Ok(json!({
+            "calls": node.calls().iter().map(wire::call_json).collect::<Vec<_>>()
+        })),
+        Op::CallAvailability { peer } => {
+            let peer = wire::parse_peer(&peer)?;
+            let availability = node.call_availability(&peer, now()).map_err(fail)?;
+            Ok(wire::call_availability_json(&availability))
+        }
+        Op::CallStart { peer } => {
+            let peer = wire::parse_peer(&peer)?;
+            let call = node.start_call(&peer, now(), &mut OsRng).map_err(fail)?;
+            Ok(json!({ "call": wire::hex_encode(&call) }))
+        }
+        Op::CallAnswer { call } => {
+            let call = wire::parse_call(&call)?;
+            node.answer_call(&call, now(), &mut OsRng).map_err(fail)?;
+            Ok(call_state_json(node, &call)?)
+        }
+        Op::CallDecline { call } => {
+            let call = wire::parse_call(&call)?;
+            node.decline_call(&call, now(), &mut OsRng).map_err(fail)?;
+            Ok(call_state_json(node, &call)?)
+        }
+        Op::CallCancel { call } => {
+            let call = wire::parse_call(&call)?;
+            node.cancel_call(&call, now(), &mut OsRng).map_err(fail)?;
+            Ok(call_state_json(node, &call)?)
+        }
+        Op::CallHangup { call } => {
+            let call = wire::parse_call(&call)?;
+            node.hangup_call(&call, now(), &mut OsRng).map_err(fail)?;
+            Ok(call_state_json(node, &call)?)
+        }
+        Op::CallAudioSend {
+            call,
+            timestamp_ms,
+            opus,
+        } => {
+            let call = wire::parse_call(&call)?;
+            let opus = wire::hex_decode(&opus).ok_or("Opus packet must be hex")?;
+            let accepted = node
+                .send_call_audio(&call, timestamp_ms, &opus)
+                .map_err(fail)?;
+            Ok(json!({ "accepted": accepted }))
+        }
+        Op::CallAudioTake { call } => {
+            let call = wire::parse_call(&call)?;
+            let frame = node.take_call_audio(&call).map_err(fail)?;
+            Ok(json!({ "frame": frame.as_ref().map(wire::call_audio_json) }))
+        }
         Op::Messages { peer } => {
             let peer = wire::parse_peer(&peer)?;
             let messages: Vec<Value> = node
@@ -1630,6 +1690,15 @@ async fn handle_op(
         // Handled at the connection layer; reaching the actor is a bug.
         Op::Subscribe => Err("subscribe is connection-level".to_owned()),
     }
+}
+
+fn call_state_json(node: &Node, call_id: &[u8; 16]) -> Result<Value, String> {
+    let call = node
+        .calls()
+        .into_iter()
+        .find(|call| &call.id == call_id)
+        .ok_or_else(|| "call does not exist on this installation".to_owned())?;
+    Ok(json!({ "call": wire::call_json(&call) }))
 }
 
 /// Background lifecycle: bootstrap, publish, NAT probing + relay
