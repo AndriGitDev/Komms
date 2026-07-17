@@ -68,7 +68,7 @@ struct DevicesView: View {
             .alert("Rename linked device", isPresented: Binding(
                 get: { renameDevice != nil }, set: { if !$0 { renameDevice = nil } })) {
                 TextField("Signed device name", text: $renameText)
-                    .textInputAutocapitalization(.words).autocorrectionDisabled()
+                    .incognitoKeyboard(capitalization: .words)
                 Button("Cancel", role: .cancel) { renameDevice = nil }
                 Button("Rename") {
                     guard let device = renameDevice else { return }
@@ -136,7 +136,7 @@ private struct DeviceLinkSourceView: View {
                     }
                 }
                 Section("Response from new device") {
-                    TextEditor(text: $response).frame(minHeight: 100).autocorrectionDisabled()
+                    TextEditor(text: $response).frame(minHeight: 100).incognitoKeyboard()
                     Button("Show comparison code") { compare() }.disabled(response.isEmpty)
                 }
                 if let code {
@@ -201,8 +201,9 @@ private struct DeviceLinkTargetView: View {
             Form {
                 Section { Text("Use only on a pristine installation. Scan or paste the source offer.") }
                 Section("Offer") {
-                    TextField("Name for this device", text: $name).autocorrectionDisabled()
-                    TextEditor(text: $offer).frame(minHeight: 100).autocorrectionDisabled()
+                    TextField("Name for this device", text: $name)
+                        .incognitoKeyboard(capitalization: .words)
+                    TextEditor(text: $offer).frame(minHeight: 100).incognitoKeyboard()
                     Button("Scan offer QR") { scanning = true }
                     Button("Accept offer") { accept() }.disabled(name.isEmpty || offer.isEmpty)
                 }
@@ -211,7 +212,7 @@ private struct DeviceLinkTargetView: View {
                         Text(code).font(.largeTitle.monospacedDigit()).accessibilityLabel("Comparison code \(code)")
                         Text(response).font(.caption2.monospaced()).textSelection(.enabled)
                         Button("Copy response") { UIPasteboard.general.string = response }
-                        TextEditor(text: $package).frame(minHeight: 120).autocorrectionDisabled()
+                        TextEditor(text: $package).frame(minHeight: 120).incognitoKeyboard()
                         Toggle("I compared the six digits", isOn: $confirmed)
                         Button("Complete device link") { complete() }.disabled(!confirmed || package.isEmpty)
                     }
@@ -257,7 +258,7 @@ private struct DeviceSyncImportView: View {
         NavigationStack {
             Form {
                 Text("Paste an encrypted convergence bundle exported for this exact active device. Replays are rejected.")
-                TextEditor(text: $bundle).frame(minHeight: 180).autocorrectionDisabled()
+                TextEditor(text: $bundle).frame(minHeight: 180).incognitoKeyboard()
                 if let error { Text(error).foregroundStyle(.red) }
                 Button("Import encrypted sync") { importBundle() }.disabled(bundle.isEmpty)
             }

@@ -9,6 +9,7 @@
 import Foundation
 import KommsCore
 import SwiftUI
+import UIKit
 
 private enum ThemePreferenceStore {
     static let key = "komms.appearance.theme"
@@ -70,6 +71,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var customIcons: [CustomIconTarget: CustomIcon] = [:]
     @Published private(set) var customIconUsage = CustomIconQuotaUsage(records: 0, bytes: 0)
     @Published private(set) var linkedDevices: [LinkedDevice] = []
+    @Published private(set) var calls: [KommsCore.Call] = []
+    @Published private(set) var callAvailability: [String: CallAvailability] = [:]
     /// Surfaced node happenings: key changes, held-for-faster-link verdicts.
     @Published var notices: [String] = []
 
@@ -82,8 +85,32 @@ final class AppModel: ObservableObject {
     }()
 
     private var refreshTimer: Timer?
+    private var lifecycleObservers: [NSObjectProtocol] = []
+    private var callAudio: CallAudioController?
+    private var callAudioAllowed = true
 
     init() {
+        callAudioAllowed = UIApplication.shared.applicationState == .active
+        callAudio = CallAudioController { [weak self] call, reason in
+            Task { @MainActor in self?.callAudioFailed(call: call, reason: reason) }
+        }
+        let center = NotificationCenter.default
+        for name in [
+            UIApplication.didEnterBackgroundNotification,
+            UIApplication.protectedDataWillBecomeUnavailableNotification,
+        ] {
+            lifecycleObservers.append(center.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in await self?.endCallsForForegroundExit() }
+            })
+        }
+        lifecycleObservers.append(center.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.callAudioAllowed = true }
+        })
         let filter = LabelFilterStore.load()
         selectedLabelIds = filter.ids
         labelFilterMode = filter.mode == "all" ? .all : .any
@@ -103,6 +130,11 @@ final class AppModel: ObservableObject {
         entries?.filter { url in
             plaintextPrefixes.contains { url.lastPathComponent.hasPrefix($0) }
         }.forEach { try? FileManager.default.removeItem(at: $0) }
+    }
+
+    deinit {
+        lifecycleObservers.forEach(NotificationCenter.default.removeObserver)
+        callAudio?.stop()
     }
 
     /// True on first run: no store yet, so the gate offers create/restore.
@@ -185,6 +217,7 @@ final class AppModel: ObservableObject {
     func lock() {
         refreshTimer?.invalidate()
         refreshTimer = nil
+        callAudio?.stop()
         session?.stop()
         session = nil
         contacts = []
@@ -208,6 +241,8 @@ final class AppModel: ObservableObject {
         customIcons = [:]
         customIconUsage = CustomIconQuotaUsage(records: 0, bytes: 0)
         linkedDevices = []
+        calls = []
+        callAvailability = [:]
     }
 
     private func adopt(_ session: Session) async {
@@ -239,6 +274,8 @@ final class AppModel: ObservableObject {
 
     private func handle(_ event: Event) {
         switch event {
+        case .callUpdated(let call):
+            receive(call)
         case .devicesChanged:
             Task { await refreshDevices() }
         case .deviceLinkCompleted:
@@ -281,6 +318,116 @@ final class AppModel: ObservableObject {
             Task { await refresh() }
         case .awaitingFasterLink:
             notices.append("A message is held — will send when a faster link exists.")
+        }
+    }
+
+    // MARK: authenticated direct-QUIC calls
+
+    func call(peer: String) -> KommsCore.Call? {
+        calls.last(where: { $0.peer == peer && $0.phase != .ended })
+            ?? calls.last(where: { $0.peer == peer })
+    }
+
+    func refreshCall(peer: String) async {
+        guard let session else { return }
+        do {
+            let snapshot = try await run {
+                (try session.calls(), try session.callAvailability(peer: peer))
+            }
+            calls = snapshot.0
+            callAvailability[peer] = snapshot.1
+            for call in snapshot.0 where call.phase == .active { activateAudio(call) }
+        } catch {
+            // A stopped handle or changing route is reflected by the next event/tick.
+        }
+    }
+
+    func startCall(peer: String) async throws {
+        guard let session else { throw InputError("node is locked") }
+        guard callAudioAllowed else { throw InputError("live calls require the foreground") }
+        guard await callAudio?.requestPermission() == true else {
+            throw InputError("microphone permission is required to place a live call")
+        }
+        _ = try await run { try session.startCall(peer: peer) }
+        await refreshCall(peer: peer)
+    }
+
+    func answerCall(_ call: KommsCore.Call) async throws {
+        guard let session else { throw InputError("node is locked") }
+        guard callAudioAllowed else { throw InputError("live calls require the foreground") }
+        guard await callAudio?.requestPermission() == true else {
+            throw InputError("microphone permission is required to answer a live call")
+        }
+        try await run { try session.answerCall(call: call.id) }
+    }
+
+    func declineCall(_ call: KommsCore.Call) async throws {
+        guard let session else { throw InputError("node is locked") }
+        try await run { try session.declineCall(call: call.id) }
+    }
+
+    func cancelCall(_ call: KommsCore.Call) async throws {
+        guard let session else { throw InputError("node is locked") }
+        try await run { try session.cancelCall(call: call.id) }
+    }
+
+    func hangupCall(_ call: KommsCore.Call) async throws {
+        guard let session else { throw InputError("node is locked") }
+        callAudio?.stop(call: call.id)
+        try await run { try session.hangupCall(call: call.id) }
+    }
+
+    private func receive(_ call: KommsCore.Call) {
+        calls.removeAll { $0.id == call.id }
+        calls.append(call)
+        if calls.count > 32 { calls.removeFirst(calls.count - 32) }
+        switch call.phase {
+        case .active:
+            activateAudio(call)
+        case .ended:
+            callAudio?.stop(call: call.id)
+        case .ringing, .connecting:
+            break
+        }
+        Task { await refreshCall(peer: call.peer) }
+    }
+
+    private func activateAudio(_ call: KommsCore.Call) {
+        guard let session else { return }
+        guard callAudioAllowed else {
+            callAudioFailed(call: call.id, reason: "Komms left the foreground")
+            return
+        }
+        do {
+            try callAudio?.start(call: call.id, session: session)
+        } catch {
+            callAudioFailed(call: call.id, reason: errorText(error))
+        }
+    }
+
+    private func callAudioFailed(call: String, reason: String) {
+        notices.append("Live call audio stopped: \(reason)")
+        callAudio?.stop(call: call)
+        guard let session else { return }
+        Task { try? await run { try session.hangupCall(call: call) } }
+    }
+
+    private func endCallsForForegroundExit() async {
+        callAudioAllowed = false
+        callAudio?.stop()
+        guard let session else { return }
+        for call in calls where call.phase != .ended {
+            try? await run {
+                if call.phase == .ringing {
+                    if call.direction == .outgoing {
+                        try session.cancelCall(call: call.id)
+                    } else {
+                        try session.declineCall(call: call.id)
+                    }
+                } else {
+                    try session.hangupCall(call: call.id)
+                }
+            }
         }
     }
 

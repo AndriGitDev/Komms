@@ -45,6 +45,7 @@ struct ChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             LabelBadgeRow(labels: model.labelsForTarget(LabelTarget(kind: .peer, id: peer)))
+            CallBar(peer: peer, contactName: contact?.name ?? String(peer.prefix(12)))
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 8) {
@@ -171,6 +172,7 @@ struct ChatView: View {
         .task {
             do {
                 try await model.follow(peer: peer)
+                await model.refreshCall(peer: peer)
             } catch {
                 self.error = errorText(error)
             }
@@ -202,6 +204,121 @@ struct ChatView: View {
             } catch {
                 self.error = errorText(error)
             }
+        }
+    }
+}
+
+private struct CallBar: View {
+    @EnvironmentObject private var model: AppModel
+    let peer: String
+    let contactName: String
+    @State private var error: String?
+
+    private var call: KommsCore.Call? { model.call(peer: peer) }
+    private var activeCall: KommsCore.Call? { call?.phase == .ended ? nil : call }
+    private var availability: CallAvailability? { model.callAvailability[peer] }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Image(systemName: activeCall?.phase == .active ? "waveform" : "phone")
+                    .foregroundStyle(activeCall?.phase == .active ? .green : .secondary)
+                Text(statusText)
+                    .font(.footnote)
+                Spacer()
+                controls
+            }
+            Text("Authenticated end-to-end encrypted audio uses only a direct QUIC route and is never stored in message history.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            if let error {
+                Text(error).font(.caption2).foregroundStyle(.red)
+            }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 6)
+        .background(Color.secondary.opacity(0.08))
+    }
+
+    @ViewBuilder
+    private var controls: some View {
+        if let activeCall {
+            switch activeCall.phase {
+            case .ringing where activeCall.direction == .incoming:
+                Button("Decline", role: .destructive) {
+                    perform { try await model.declineCall(activeCall) }
+                }
+                Button("Answer") {
+                    perform { try await model.answerCall(activeCall) }
+                }
+                .buttonStyle(.borderedProminent)
+            case .ringing:
+                Button("Cancel", role: .destructive) {
+                    perform { try await model.cancelCall(activeCall) }
+                }
+            case .connecting, .active:
+                Button("Hang up", role: .destructive) {
+                    perform { try await model.hangupCall(activeCall) }
+                }
+            case .ended:
+                EmptyView()
+            }
+        } else {
+            Button {
+                perform { try await model.startCall(peer: peer) }
+            } label: {
+                Label("Call", systemImage: "phone.fill")
+            }
+            .buttonStyle(.bordered)
+            .disabled(availability?.available != true)
+            .accessibilityHint(unavailableText)
+        }
+    }
+
+    private var statusText: String {
+        guard let call else {
+            return availability?.available == true ? "Direct call available" : unavailableText
+        }
+        switch call.phase {
+        case .ringing:
+            return call.direction == .incoming
+                ? "Incoming authenticated call from \(contactName)" : "Ringing…"
+        case .connecting: return "Connecting direct audio…"
+        case .active: return "Authenticated direct audio call"
+        case .ended: return endText(call.endReason)
+        }
+    }
+
+    private var unavailableText: String {
+        switch availability?.unavailable {
+        case .offlineOrUnknown: return "Contact is offline or no direct route is known"
+        case .bulkOnly: return "The current route is not real-time"
+        case .meshOnly: return "Mesh routes do not carry live calls"
+        case .missingSession: return "Send a message first to establish an authenticated session"
+        case .unsupported: return "This contact does not advertise compatible calling support"
+        case .alreadyInCall: return "Another call is already in progress"
+        case nil: return "Checking direct call route…"
+        }
+    }
+
+    private func endText(_ reason: CallEndReason?) -> String {
+        switch reason {
+        case .declined: return "Call declined"
+        case .busy: return "Contact is busy"
+        case .cancelled: return "Call cancelled"
+        case .hungUp: return "Call ended"
+        case .expired: return "Call was not answered"
+        case .answeredElsewhere: return "Call answered on another linked device"
+        case .routeLost: return "Direct call route lost"
+        case nil: return "Call ended"
+        }
+    }
+
+    private func perform(_ action: @escaping () async throws -> Void) {
+        error = nil
+        Task {
+            do { try await action() }
+            catch { self.error = errorText(error) }
         }
     }
 }

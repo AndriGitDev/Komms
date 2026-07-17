@@ -233,6 +233,42 @@ public final class Session: @unchecked Sendable {
     /// All stored contacts.
     public func contacts() throws -> [Contact] { try node.contacts() }
 
+    /// Every current and briefly retained terminal direct-QUIC call.
+    public func calls() throws -> [Call] { try node.calls() }
+
+    /// Honest current call-start verdict for one pairwise contact.
+    public func callAvailability(peer: String) throws -> CallAvailability {
+        try node.callAvailability(peer: peer)
+    }
+
+    /// Start one capability-gated direct-QUIC audio call.
+    public func startCall(peer: String) throws -> String { try node.startCall(peer: peer) }
+
+    /// Answer one ringing incoming call on this physical device.
+    public func answerCall(call: String) throws { try node.answerCall(call: call) }
+
+    /// Decline one ringing incoming call.
+    public func declineCall(call: String) throws { try node.declineCall(call: call) }
+
+    /// Cancel one outgoing ringing call.
+    public func cancelCall(call: String) throws { try node.cancelCall(call: call) }
+
+    /// End one connecting or active call.
+    public func hangupCall(call: String) throws { try node.hangupCall(call: call) }
+
+    /// Queue one AVFoundation Opus capture packet.
+    public func sendCallAudio(
+        call: String, timestampMs: UInt64, opusPacket: Data
+    ) throws -> Bool {
+        try node.sendCallAudio(
+            call: call, timestampMs: timestampMs, opusPacket: opusPacket)
+    }
+
+    /// Take at most one authenticated Opus packet for native playback.
+    public func takeCallAudio(call: String) throws -> CallAudioFrame? {
+        try node.takeCallAudio(call: call)
+    }
+
     /// Assess a proposed private local petname without mutation.
     public func assessContactName(peer: String, name: String) throws -> ContactNameAssessment {
         try node.assessContactName(peer: peer, name: name)

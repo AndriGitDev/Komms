@@ -603,7 +603,7 @@ final class SessionE2eTests: XCTestCase {
         let text = try files.map { try String(contentsOf: $0, encoding: .utf8) }.joined(separator: "\n")
         let occurrences = { (needle: String) in text.components(separatedBy: needle).count - 1 }
         let editors = occurrences("TextField(") + occurrences("SecureField(") + occurrences("TextEditor(")
-        XCTAssertEqual(25, editors)
+        XCTAssertEqual(31, editors)
         XCTAssertEqual(editors, occurrences(".incognitoKeyboard("))
         let gate = try String(contentsOf: source.appendingPathComponent("GateView.swift"), encoding: .utf8)
         XCTAssertTrue(gate.contains("SecureField(\"24-word mnemonic\""))
@@ -778,6 +778,59 @@ final class SessionE2eTests: XCTestCase {
         XCTAssertEqual(.inbound, inbox[0].direction)
         XCTAssertEqual(.received, inbox[0].state)
         XCTAssertEqual(formattedSource, inbox[0].body)
+
+        // iOS's Session surface carries authenticated direct-QUIC call
+        // control and already encoded Opus without creating history rows.
+        let callDeadline = Date().addingTimeInterval(10)
+        while try !alice.callAvailability(peer: bobPeer).available {
+            guard Date() < callDeadline else { throw Timeout(what: "iOS call availability") }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        XCTAssertTrue(try alice.calls().isEmpty)
+        let call = try alice.startCall(peer: bobPeer)
+        _ = try bEv.wait("iOS incoming call") { event -> Void? in
+            if case .callUpdated(let snapshot) = event,
+               snapshot.id == call, snapshot.phase == .ringing { return () }
+            return nil
+        }
+        try bob.answerCall(call: call)
+        _ = try aEv.wait("iOS outgoing call active") { event -> Void? in
+            if case .callUpdated(let snapshot) = event,
+               snapshot.id == call, snapshot.phase == .active { return () }
+            return nil
+        }
+        _ = try bEv.wait("iOS incoming call active") { event -> Void? in
+            if case .callUpdated(let snapshot) = event,
+               snapshot.id == call, snapshot.phase == .active { return () }
+            return nil
+        }
+        for (index, packet) in [Data([0xf8, 1]), Data([0xf8, 2]), Data([0xf8, 3])].enumerated() {
+            XCTAssertTrue(try alice.sendCallAudio(
+                call: call, timestampMs: UInt64(1_000 + index * 20), opusPacket: packet))
+        }
+        for (index, packet) in [Data([0xf9, 1]), Data([0xf9, 2]), Data([0xf9, 3])].enumerated() {
+            XCTAssertTrue(try bob.sendCallAudio(
+                call: call, timestampMs: UInt64(2_000 + index * 20), opusPacket: packet))
+        }
+        func takeAudio(_ session: Session) throws -> Data {
+            let deadline = Date().addingTimeInterval(5)
+            while Date() < deadline {
+                if let frame = try session.takeCallAudio(call: call) { return frame.opusPacket }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            throw Timeout(what: "authenticated iOS call audio")
+        }
+        XCTAssertEqual(Data([0xf9, 1]), try takeAudio(alice))
+        XCTAssertEqual(Data([0xf8, 1]), try takeAudio(bob))
+        try alice.hangupCall(call: call)
+        _ = try bEv.wait("iOS authenticated hangup") { event -> Void? in
+            if case .callUpdated(let snapshot) = event,
+               snapshot.id == call, snapshot.phase == .ended,
+               snapshot.endReason == .hungUp { return () }
+            return nil
+        }
+        XCTAssertEqual(1, try alice.messages(peer: bobPeer).count)
+        XCTAssertEqual(1, try bob.messages(peer: alicePeer).count)
 
         Thread.sleep(forTimeInterval: 0.3)
         let editable = try alice.send(peer: bobPeer, body: "iOS edit original")
