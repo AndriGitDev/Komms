@@ -11,6 +11,30 @@
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize" />
 
+    <LinearLayout
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingHorizontal="12dp"
+        android:paddingVertical="4dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <Button
+            android:id="@+id/chat_call"
+            android:text="@string/call_start"
+            android:contentDescription="@string/call_start_description"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+
+        <TextView
+            android:id="@+id/chat_call_status"
+            android:accessibilityLiveRegion="polite"
+            android:paddingStart="12dp"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content" />
+    </LinearLayout>
+
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/chat_messages"
         android:paddingHorizontal="8dp"

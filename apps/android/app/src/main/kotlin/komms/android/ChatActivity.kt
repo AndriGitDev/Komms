@@ -1,7 +1,9 @@
 package komms.android
 
+import android.Manifest
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.Gravity
 import android.view.LayoutInflater
@@ -13,6 +15,8 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import java.text.DateFormat
@@ -46,6 +50,19 @@ class ChatActivity : SecureActivity() {
     )
     private lateinit var attachmentController: AttachmentController
     private lateinit var audioController: AudioMessageController
+    private lateinit var callController: CallController
+    private var pendingMicrophoneAction: (() -> Unit)? = null
+    private val microphonePermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val action = pendingMicrophoneAction
+        pendingMicrophoneAction = null
+        if (granted && action != null) {
+            prepareForLiveCall(action)
+        } else if (!granted) {
+            toast(getString(R.string.call_microphone_denied))
+        }
+    }
 
     private val listener: (Event) -> Unit = { event ->
         val relevant = when (event) {
@@ -61,9 +78,16 @@ class ChatActivity : SecureActivity() {
                     attachmentController.isRelevant(event.attachment)
             is Event.EphemeralRemoved ->
                 event.conversationKind == "pairwise" && event.conversationId == peer
+            is Event.CallUpdated -> event.call.peer == peer
             else -> false
         }
-        if (relevant) runOnUiThread { refresh() }
+        if (relevant) runOnUiThread {
+            if (event is Event.CallUpdated && ::callController.isInitialized) {
+                callController.onCallUpdated(event.call)
+            } else {
+                refresh()
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -88,6 +112,12 @@ class ChatActivity : SecureActivity() {
             },
             carrierExplanation = { session -> session.audioCarrierExplanation(peer) },
             refresh = ::refresh,
+        )
+        callController = CallController(
+            activity = this,
+            peer = peer,
+            contactName = contactName,
+            withMicrophonePermission = ::withMicrophonePermission,
         )
         attachmentController = AttachmentController(
             activity = this,
@@ -137,10 +167,12 @@ class ChatActivity : SecureActivity() {
         NodeHolder.removeListener(listener)
         if (::attachmentController.isInitialized) attachmentController.close()
         if (::audioController.isInitialized) audioController.close()
+        if (::callController.isInitialized) callController.close()
         super.onDestroy()
     }
 
     override fun onStop() {
+        if (::callController.isInitialized) callController.onStop()
         if (::attachmentController.isInitialized) attachmentController.onStop()
         if (::audioController.isInitialized) audioController.onStop()
         super.onStop()
@@ -153,7 +185,24 @@ class ChatActivity : SecureActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (::callController.isInitialized) callController.onResume()
         refresh()
+    }
+
+    private fun withMicrophonePermission(action: () -> Unit) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            prepareForLiveCall(action)
+        } else {
+            pendingMicrophoneAction = action
+            microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    private fun prepareForLiveCall(action: () -> Unit) {
+        if (::audioController.isInitialized) audioController.prepareForLiveCall()
+        action()
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {

@@ -16,6 +16,9 @@ package komms.core
 import java.io.File
 import uniffi.kult_ffi.Attachment
 import uniffi.kult_ffi.AudioInfo
+import uniffi.kult_ffi.Call
+import uniffi.kult_ffi.CallAudioFrame
+import uniffi.kult_ffi.CallAvailability
 import uniffi.kult_ffi.CarrierCapability
 import uniffi.kult_ffi.Config
 import uniffi.kult_ffi.Contact
@@ -286,6 +289,34 @@ class Session private constructor(private val node: KultNode) {
 
     /** All stored contacts. */
     fun contacts(): List<Contact> = node.contacts()
+
+    /** Every current and briefly retained terminal direct-QUIC call. */
+    fun calls(): List<Call> = node.calls()
+
+    /** Honest current call-start verdict for one pairwise contact. */
+    fun callAvailability(peer: String): CallAvailability = node.callAvailability(peer)
+
+    /** Start one capability-gated direct-QUIC audio call. */
+    fun startCall(peer: String): String = node.startCall(peer)
+
+    /** Answer one ringing incoming call on this physical device. */
+    fun answerCall(call: String) = node.answerCall(call)
+
+    /** Decline one ringing incoming call. */
+    fun declineCall(call: String) = node.declineCall(call)
+
+    /** Cancel one outgoing ringing call. */
+    fun cancelCall(call: String) = node.cancelCall(call)
+
+    /** End one connecting or active call. */
+    fun hangupCall(call: String) = node.hangupCall(call)
+
+    /** Queue one Android MediaCodec Opus capture packet. */
+    fun sendCallAudio(call: String, timestampMs: ULong, opusPacket: ByteArray): Boolean =
+        node.sendCallAudio(call, timestampMs, opusPacket)
+
+    /** Take at most one authenticated Opus packet for native playback. */
+    fun takeCallAudio(call: String): CallAudioFrame? = node.takeCallAudio(call)
 
     /** Assess a proposed private local petname without mutation. */
     fun assessContactName(peer: String, name: String) = node.assessContactName(peer, name)

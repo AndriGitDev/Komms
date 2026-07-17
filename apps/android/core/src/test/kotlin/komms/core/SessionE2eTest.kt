@@ -27,6 +27,8 @@ import kotlinx.serialization.json.jsonPrimitive
 import uniffi.kult_ffi.AttachmentConversation
 import uniffi.kult_ffi.AttachmentDirection
 import uniffi.kult_ffi.AttachmentState
+import uniffi.kult_ffi.CallEndReason
+import uniffi.kult_ffi.CallPhase
 import uniffi.kult_ffi.attachmentFilePresentation
 import uniffi.kult_ffi.ContentKind
 import uniffi.kult_ffi.ContactNameWarning
@@ -577,6 +579,59 @@ class SessionE2eTest {
         assertEquals(Direction.INBOUND, inbox[0].direction)
         assertEquals(DeliveryState.RECEIVED, inbox[0].state)
         assertEquals(formattedSource, inbox[0].body)
+
+        // Android's testable Session surface carries the complete call
+        // lifecycle and already encoded Opus without creating history rows.
+        val callDeadline = System.nanoTime() + 10_000_000_000L
+        while (!alice.callAvailability(bobPeer).available) {
+            check(System.nanoTime() < callDeadline) { "call never became available" }
+            Thread.sleep(50)
+        }
+        assertTrue(alice.calls().isEmpty())
+        val call = alice.startCall(bobPeer)
+        bEv.wait("Android incoming call") {
+            (it as? Event.CallUpdated)?.takeIf { event ->
+                event.call.id == call && event.call.phase == CallPhase.RINGING
+            }
+        }
+        bob.answerCall(call)
+        aEv.wait("Android outgoing call active") {
+            (it as? Event.CallUpdated)?.takeIf { event ->
+                event.call.id == call && event.call.phase == CallPhase.ACTIVE
+            }
+        }
+        bEv.wait("Android incoming call active") {
+            (it as? Event.CallUpdated)?.takeIf { event ->
+                event.call.id == call && event.call.phase == CallPhase.ACTIVE
+            }
+        }
+        listOf(byteArrayOf(0xf8.toByte(), 1), byteArrayOf(0xf8.toByte(), 2), byteArrayOf(0xf8.toByte(), 3))
+            .forEachIndexed { index, packet ->
+                assertTrue(alice.sendCallAudio(call, (1_000 + index * 20).toULong(), packet))
+            }
+        listOf(byteArrayOf(0xf9.toByte(), 1), byteArrayOf(0xf9.toByte(), 2), byteArrayOf(0xf9.toByte(), 3))
+            .forEachIndexed { index, packet ->
+                assertTrue(bob.sendCallAudio(call, (2_000 + index * 20).toULong(), packet))
+            }
+        fun takeAudio(session: Session): ByteArray {
+            val deadline = System.nanoTime() + 5_000_000_000L
+            while (true) {
+                session.takeCallAudio(call)?.let { return it.opusPacket }
+                check(System.nanoTime() < deadline) { "no authenticated Android call audio" }
+                Thread.sleep(10)
+            }
+        }
+        assertContentEquals(byteArrayOf(0xf9.toByte(), 1), takeAudio(alice))
+        assertContentEquals(byteArrayOf(0xf8.toByte(), 1), takeAudio(bob))
+        alice.hangupCall(call)
+        bEv.wait("Android authenticated hangup") {
+            (it as? Event.CallUpdated)?.takeIf { event ->
+                event.call.id == call && event.call.phase == CallPhase.ENDED &&
+                    event.call.endReason == CallEndReason.HUNG_UP
+            }
+        }
+        assertEquals(1, alice.messages(bobPeer).size)
+        assertEquals(1, bob.messages(alicePeer).size)
 
         val hour = ephemeralFixture.getValue("text_lifetimes").jsonArray[1]
             .jsonPrimitive.content.toULong()
