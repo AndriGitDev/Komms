@@ -31,7 +31,7 @@ mod mdns;
 mod mesh;
 mod sneakernet;
 
-pub use internet::{Libp2pTransport, NatStatus, TransportOptions};
+pub use internet::{CallStream, Libp2pTransport, NatStatus, TransportOptions};
 pub use mailbox::{MailboxConfig, MailboxContents};
 #[cfg(feature = "meshtastic")]
 #[doc(hidden)]
