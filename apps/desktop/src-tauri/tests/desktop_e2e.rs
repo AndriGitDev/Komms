@@ -801,6 +801,81 @@ fn two_desktops_pair_by_bundle_hex_and_message() {
     assert_eq!(inbox[0].state, "received");
     assert_eq!(inbox[0].body, formatted_source);
 
+    // Live calls use the same session surface as Tauri commands. The button
+    // gate is exact, media carries bounded Opus packets, and no call control
+    // or media record becomes a chat-history row.
+    let call_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let availability = alice.call_availability(bob_peer.clone()).unwrap();
+        if availability.available {
+            assert!(availability.unavailable.is_none());
+            break;
+        }
+        assert!(
+            Instant::now() < call_deadline,
+            "call never became available"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(alice.calls().unwrap().is_empty());
+    let call = alice.start_call(bob_peer.clone()).unwrap();
+    b_ev.wait("desktop incoming call", |event| {
+        matches!(event, UiEvent::CallUpdated { call: snapshot }
+            if snapshot.id == call && snapshot.phase == "ringing")
+    });
+    bob.answer_call(call.clone()).unwrap();
+    a_ev.wait("desktop outgoing call active", |event| {
+        matches!(event, UiEvent::CallUpdated { call: snapshot }
+            if snapshot.id == call && snapshot.phase == "active")
+    });
+    b_ev.wait("desktop incoming call active", |event| {
+        matches!(event, UiEvent::CallUpdated { call: snapshot }
+            if snapshot.id == call && snapshot.phase == "active")
+    });
+    for (index, packet) in [vec![0xf8, 1], vec![0xf8, 2], vec![0xf8, 3]]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(alice
+            .send_call_audio(call.clone(), 1_000 + index as u64 * 20, packet)
+            .unwrap());
+    }
+    for (index, packet) in [vec![0xf9, 1], vec![0xf9, 2], vec![0xf9, 3]]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(bob
+            .send_call_audio(call.clone(), 2_000 + index as u64 * 20, packet)
+            .unwrap());
+    }
+    let audio_deadline = Instant::now() + Duration::from_secs(5);
+    let at_alice = loop {
+        if let Some(frame) = alice.take_call_audio(call.clone()).unwrap() {
+            break frame;
+        }
+        assert!(Instant::now() < audio_deadline, "Alice heard no call audio");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let audio_deadline = Instant::now() + Duration::from_secs(5);
+    let at_bob = loop {
+        if let Some(frame) = bob.take_call_audio(call.clone()).unwrap() {
+            break frame;
+        }
+        assert!(Instant::now() < audio_deadline, "Bob heard no call audio");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(at_alice.opus_packet, vec![0xf9, 1]);
+    assert_eq!(at_bob.opus_packet, vec![0xf8, 1]);
+    alice.hangup_call(call.clone()).unwrap();
+    b_ev.wait("desktop remote hangup", |event| {
+        matches!(event, UiEvent::CallUpdated { call: snapshot }
+            if snapshot.id == call
+                && snapshot.phase == "ended"
+                && snapshot.end_reason == Some("hung_up"))
+    });
+    assert_eq!(alice.messages(bob_peer.clone()).unwrap().len(), 1);
+    assert_eq!(bob.messages(alice_peer.clone()).unwrap().len(), 1);
+
     let temporary = alice
         .send_disappearing(bob_peer.clone(), "temporary desktop text".to_owned(), 3_600)
         .unwrap();

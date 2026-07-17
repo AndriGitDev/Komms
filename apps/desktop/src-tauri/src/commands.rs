@@ -11,14 +11,14 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::session::{
-    NetworkSettings, Session, UiAttachment, UiAudioMedia, UiBundle, UiContact,
-    UiContactNameAssessment, UiCustomIcon, UiCustomIconCrop, UiCustomIconTarget, UiCustomIconUsage,
-    UiDeviceLinkAcceptance, UiDeviceLinkOffer, UiDeviceLinkSelection, UiFolder,
-    UiFolderConversation, UiFolderConversationResult, UiFolderSelection, UiFolderTarget,
-    UiFormattedText, UiGroup, UiGroupAuthority, UiGroupMessage, UiGroupPoll, UiHint,
-    UiImageEditRecipe, UiImageReview, UiLabel, UiLabelConversation, UiLabelFilterResult,
-    UiLabelTarget, UiLinkedDevice, UiMentionCapability, UiMentionSpan, UiMessage,
-    UiMessageDeviceDelivery, UiNoteMessage, UiPin, UiPinConversationResult, UiPinTarget,
+    NetworkSettings, Session, UiAttachment, UiAudioMedia, UiBundle, UiCall, UiCallAudioFrame,
+    UiCallAvailability, UiContact, UiContactNameAssessment, UiCustomIcon, UiCustomIconCrop,
+    UiCustomIconTarget, UiCustomIconUsage, UiDeviceLinkAcceptance, UiDeviceLinkOffer,
+    UiDeviceLinkSelection, UiFolder, UiFolderConversation, UiFolderConversationResult,
+    UiFolderSelection, UiFolderTarget, UiFormattedText, UiGroup, UiGroupAuthority, UiGroupMessage,
+    UiGroupPoll, UiHint, UiImageEditRecipe, UiImageReview, UiLabel, UiLabelConversation,
+    UiLabelFilterResult, UiLabelTarget, UiLinkedDevice, UiMentionCapability, UiMentionSpan,
+    UiMessage, UiMessageDeviceDelivery, UiNoteMessage, UiPin, UiPinConversationResult, UiPinTarget,
     UiSafetyNumber, UiScheduledMessage, UiStaleFolder, UiStaleLabel, UiStatus,
     UiTextFormatHighlight, UiThemeInfo, UiThemePreference,
 };
@@ -450,6 +450,43 @@ forward!(
 forward!(
     /// All stored contacts.
     contacts() -> Vec<UiContact>, |s| s.contacts()
+);
+forward!(
+    /// Every current and briefly retained terminal call.
+    calls() -> Vec<UiCall>, |s| s.calls()
+);
+forward!(
+    /// Honest current direct-QUIC call-start verdict.
+    call_availability(peer: String) -> UiCallAvailability, |s| s.call_availability(peer)
+);
+forward!(
+    /// Start one capability-gated audio call.
+    start_call(peer: String) -> String, |s| s.start_call(peer)
+);
+forward!(
+    /// Answer one ringing incoming call.
+    answer_call(call: String) -> (), |s| s.answer_call(call)
+);
+forward!(
+    /// Decline one ringing incoming call.
+    decline_call(call: String) -> (), |s| s.decline_call(call)
+);
+forward!(
+    /// Cancel one outgoing ringing call.
+    cancel_call(call: String) -> (), |s| s.cancel_call(call)
+);
+forward!(
+    /// End one connecting or active call.
+    hangup_call(call: String) -> (), |s| s.hangup_call(call)
+);
+forward!(
+    /// Queue one WebCodecs-encoded Opus capture packet.
+    send_call_audio(call: String, timestamp_ms: u64, opus_packet: Vec<u8>) -> bool,
+    |s| s.send_call_audio(call, timestamp_ms, opus_packet)
+);
+forward!(
+    /// Take one authenticated Opus packet for WebCodecs playout.
+    take_call_audio(call: String) -> Option<UiCallAudioFrame>, |s| s.take_call_audio(call)
 );
 forward!(
     /// Assess a proposed private local petname without mutation.

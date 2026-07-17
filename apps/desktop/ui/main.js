@@ -75,6 +75,10 @@ const state = {
   imageDraft: null,
   mentionDraft: { group: null, spans: [], capability: null, lastText: "", suppressInput: false },
   currentAuthority: null,
+  call: null,
+  callPrompted: new Set(),
+  callMedia: null,
+  pendingCallStream: null,
   statusTimer: null,
 };
 
@@ -740,11 +744,14 @@ async function syncThemeAfterUnlock() {
 
 async function leaveApp() {
   abortRecording("Recording stopped and discarded because Komms was locked.");
+  stopCallMedia();
   closeModal();
   clearInterval(state.statusTimer);
   state.statusTimer = null;
   state.currentKind = null;
   state.currentId = null;
+  state.call = null;
+  state.callPrompted.clear();
   state.contacts = [];
   state.groups = [];
   state.folders = [];
@@ -1476,6 +1483,7 @@ function updateChatHead() {
   $("#btn-verify").hidden = isGroup || isNote;
   $("#btn-rename-contact").hidden = isGroup || isNote;
   $("#btn-hints").hidden = isGroup || isNote;
+  $("#btn-call").hidden = isGroup || isNote;
   $("#btn-group-details").hidden = !isGroup;
   $("#btn-mention").hidden = !isGroup;
   $("#btn-poll").hidden = !isGroup;
@@ -1491,7 +1499,280 @@ function updateChatHead() {
   $("#btn-conversation-pin").setAttribute("aria-pressed", isPinned ? "true" : "false");
   if (target) renderTargetBadges($("#chat-label-badges"), target);
   else $("#chat-label-badges").replaceChildren();
+  updateCallButton().catch((error) => toast(String(error), true));
 }
+
+function callMediaSupported() {
+  return Boolean(
+    navigator.mediaDevices?.getUserMedia
+      && globalThis.AudioEncoder
+      && globalThis.AudioDecoder
+      && globalThis.AudioData
+      && globalThis.EncodedAudioChunk
+      && globalThis.MediaStreamTrackProcessor,
+  );
+}
+
+function callEndText(reason) {
+  return {
+    declined: "Call declined",
+    busy: "Contact is already in a call",
+    cancelled: "Call cancelled",
+    hung_up: "Call ended",
+    expired: "Call was not answered",
+    answered_elsewhere: "Answered on another linked device",
+    route_lost: "Direct QUIC route lost",
+  }[reason] ?? "Call ended";
+}
+
+function callUnavailableText(reason) {
+  return {
+    offline_or_unknown: "No fresh direct QUIC route",
+    bulk_only: "Direct QUIC connection is not ready",
+    mesh_only: "Calls never use radio mesh",
+    missing_session: "Send a message first to establish encryption",
+    unsupported: "A linked device does not support calls",
+    already_in_call: "Another call is already active",
+  }[reason] ?? "Call unavailable";
+}
+
+function showCallStatus(text, className = "") {
+  const status = $("#call-status");
+  status.hidden = !text;
+  status.textContent = text;
+  status.className = `call-status ${className}`.trim();
+}
+
+async function updateCallButton() {
+  const button = $("#btn-call");
+  if (state.currentKind !== "contact" || !state.currentId) {
+    button.hidden = true;
+    showCallStatus("");
+    return;
+  }
+  button.hidden = false;
+  const current = state.call && state.call.peer === state.currentId && state.call.phase !== "ended"
+    ? state.call : null;
+  if (current) {
+    button.disabled = false;
+    button.textContent = current.phase === "ringing" && current.direction === "outgoing"
+      ? "Cancel call" : "End call";
+    button.title = "Call media uses only the authenticated direct QUIC stream";
+    showCallStatus(
+      current.phase === "ringing" ? "Calling… direct QUIC only"
+        : current.phase === "connecting" ? "Authenticating direct QUIC media…"
+          : "Live audio · direct QUIC · end-to-end encrypted",
+      current.phase === "active" ? "active" : "",
+    );
+    return;
+  }
+  button.textContent = "Call";
+  if (!callMediaSupported()) {
+    button.disabled = true;
+    button.title = "This webview lacks WebCodecs Opus or microphone stream support";
+    showCallStatus("Live calls need WebCodecs Opus and microphone support in this webview.");
+    return;
+  }
+  const availability = await invoke("call_availability", { peer: state.currentId });
+  button.disabled = !availability.available;
+  button.title = availability.available
+    ? "Start end-to-end encrypted audio over direct QUIC"
+    : callUnavailableText(availability.unavailable);
+  showCallStatus(availability.available ? "" : callUnavailableText(availability.unavailable));
+}
+
+async function acquireCallStream() {
+  return navigator.mediaDevices.getUserMedia({
+    video: false,
+    audio: {
+      channelCount: 1,
+      sampleRate: 48_000,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    },
+  });
+}
+
+function stopCallMedia() {
+  const media = state.callMedia;
+  state.callMedia = null;
+  if (media) {
+    media.stopped = true;
+    clearInterval(media.pollTimer);
+    media.reader?.cancel().catch(() => {});
+    try { media.encoder?.close(); } catch {}
+    try { media.decoder?.close(); } catch {}
+    media.stream?.getTracks().forEach((track) => track.stop());
+    media.context?.close().catch(() => {});
+  }
+  if (state.pendingCallStream) {
+    state.pendingCallStream.getTracks().forEach((track) => track.stop());
+    state.pendingCallStream = null;
+  }
+}
+
+async function startCallMedia(snapshot) {
+  if (state.callMedia?.call === snapshot.id) return;
+  if (!callMediaSupported()) {
+    await invoke("hangup_call", { call: snapshot.id }).catch(() => {});
+    toast("This webview cannot encode and decode Opus call audio.", true);
+    return;
+  }
+  const stream = state.pendingCallStream ?? await acquireCallStream();
+  state.pendingCallStream = null;
+  const context = new AudioContext({ sampleRate: 48_000, latencyHint: "interactive" });
+  await context.resume();
+  const media = {
+    call: snapshot.id,
+    stream,
+    context,
+    encoder: null,
+    decoder: null,
+    reader: null,
+    pollTimer: null,
+    nextPlayback: context.currentTime + 0.06,
+    polling: false,
+    stopped: false,
+  };
+  state.callMedia = media;
+
+  media.decoder = new AudioDecoder({
+    error: (error) => toast(`Call decoder: ${error}`, true),
+    output: (audio) => {
+      if (media.stopped) { audio.close(); return; }
+      const buffer = context.createBuffer(audio.numberOfChannels, audio.numberOfFrames, audio.sampleRate);
+      for (let channel = 0; channel < audio.numberOfChannels; channel += 1) {
+        const samples = new Float32Array(audio.numberOfFrames);
+        audio.copyTo(samples, { planeIndex: channel, format: "f32-planar" });
+        buffer.copyToChannel(samples, channel);
+        samples.fill(0);
+      }
+      audio.close();
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      source.connect(context.destination);
+      const startsAt = Math.max(context.currentTime + 0.02, media.nextPlayback);
+      source.start(startsAt);
+      media.nextPlayback = startsAt + buffer.duration;
+    },
+  });
+  media.decoder.configure({ codec: "opus", sampleRate: 48_000, numberOfChannels: 1 });
+
+  media.encoder = new AudioEncoder({
+    error: (error) => toast(`Call encoder: ${error}`, true),
+    output: async (chunk) => {
+      if (media.stopped || chunk.byteLength > 1_275) return;
+      const packet = new Uint8Array(chunk.byteLength);
+      chunk.copyTo(packet);
+      try {
+        await invoke("send_call_audio", {
+          call: snapshot.id,
+          timestampMs: Math.max(0, Math.floor(chunk.timestamp / 1_000)),
+          opusPacket: [...packet],
+        });
+      } catch (error) {
+        if (!media.stopped) toast(String(error), true);
+      } finally {
+        packet.fill(0);
+      }
+    },
+  });
+  media.encoder.configure({
+    codec: "opus",
+    sampleRate: 48_000,
+    numberOfChannels: 1,
+    bitrate: 24_000,
+    opus: { frameDuration: 20_000 },
+  });
+  const processor = new MediaStreamTrackProcessor({ track: stream.getAudioTracks()[0] });
+  media.reader = processor.readable.getReader();
+  (async () => {
+    while (!media.stopped) {
+      const { done, value } = await media.reader.read();
+      if (done || media.stopped) break;
+      media.encoder.encode(value);
+      value.close();
+    }
+  })().catch((error) => {
+    if (!media.stopped) toast(`Microphone stream: ${error}`, true);
+  });
+
+  media.pollTimer = setInterval(async () => {
+    if (media.stopped || media.polling) return;
+    media.polling = true;
+    try {
+      for (let count = 0; count < 3; count += 1) {
+        const frame = await invoke("take_call_audio", { call: snapshot.id });
+        if (!frame) break;
+        const packet = new Uint8Array(frame.opus_packet);
+        media.decoder.decode(new EncodedAudioChunk({
+          type: "key",
+          timestamp: frame.timestamp_ms * 1_000,
+          data: packet,
+        }));
+        packet.fill(0);
+      }
+    } catch (error) {
+      if (!media.stopped && !String(error).includes("invalid call")) toast(String(error), true);
+    } finally {
+      media.polling = false;
+    }
+  }, 10);
+}
+
+async function handleCallUpdate(snapshot) {
+  state.call = snapshot;
+  if (snapshot.phase === "ringing" && snapshot.direction === "incoming"
+      && !state.callPrompted.has(snapshot.id)) {
+    state.callPrompted.add(snapshot.id);
+    const answer = window.confirm(`${contactName(snapshot.peer)} is calling over direct QUIC. Answer audio call?`);
+    if (answer) {
+      try {
+        state.pendingCallStream = await acquireCallStream();
+        await invoke("answer_call", { call: snapshot.id });
+      } catch (error) {
+        stopCallMedia();
+        await invoke("decline_call", { call: snapshot.id }).catch(() => {});
+        toast(String(error), true);
+      }
+    } else {
+      await invoke("decline_call", { call: snapshot.id });
+    }
+  } else if (snapshot.phase === "active") {
+    await startCallMedia(snapshot);
+  } else if (snapshot.phase === "ended") {
+    stopCallMedia();
+    showCallStatus(callEndText(snapshot.end_reason), "ended");
+    setTimeout(() => {
+      if (state.call?.id === snapshot.id) updateCallButton().catch(() => {});
+    }, 3_000);
+  }
+  await updateCallButton();
+}
+
+$("#btn-call").addEventListener("click", async () => {
+  const snapshot = state.call?.phase !== "ended" ? state.call : null;
+  try {
+    if (snapshot?.phase === "ringing" && snapshot.direction === "outgoing") {
+      stopCallMedia();
+      await invoke("cancel_call", { call: snapshot.id });
+    } else if (snapshot && ["connecting", "active"].includes(snapshot.phase)) {
+      stopCallMedia();
+      await invoke("hangup_call", { call: snapshot.id });
+    } else {
+      state.pendingCallStream = await acquireCallStream();
+      const callId = await invoke("start_call", { peer: state.currentId });
+      state.call = (await invoke("calls")).find((call) => call.id === callId) ?? {
+        id: callId, peer: state.currentId, direction: "outgoing", phase: "ringing",
+      };
+      await updateCallButton();
+    }
+  } catch (error) {
+    stopCallMedia();
+    toast(String(error), true);
+  }
+});
 
 function contactNameWarningText(assessment) {
   const messages = [];
@@ -2645,6 +2926,10 @@ listen("node-event", async ({ payload: ev }) => {
     case "pins_changed": {
       await runLabelFilter(true);
       updateChatHead();
+      break;
+    }
+    case "call_updated": {
+      await handleCallUpdate(ev.call);
       break;
     }
     case "scheduled_message_updated":

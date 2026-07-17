@@ -29,8 +29,11 @@ use kult_ffi::{
     AttachmentFileKind as FfiAttachmentFileKind,
     AttachmentFilePresentation as FfiAttachmentFilePresentation,
     AttachmentFileWarning as FfiAttachmentFileWarning,
-    AttachmentOpenPolicy as FfiAttachmentOpenPolicy, AttachmentState, AudioInfo, CarrierCapability,
-    Config, ContactNameAssessment as FfiContactNameAssessment,
+    AttachmentOpenPolicy as FfiAttachmentOpenPolicy, AttachmentState, AudioInfo, Call as FfiCall,
+    CallAudioFrame as FfiCallAudioFrame, CallAvailability as FfiCallAvailability,
+    CallDirection as FfiCallDirection, CallEndReason as FfiCallEndReason,
+    CallPhase as FfiCallPhase, CallUnavailableReason as FfiCallUnavailableReason,
+    CarrierCapability, Config, ContactNameAssessment as FfiContactNameAssessment,
     ContactNameWarning as FfiContactNameWarning, ContentKind, CustomIcon as FfiCustomIcon,
     CustomIconCrop as FfiCustomIconCrop, CustomIconTarget as FfiCustomIconTarget,
     CustomIconTargetKind as FfiCustomIconTargetKind, DeliveryState,
@@ -1747,6 +1750,11 @@ pub enum UiEvent {
         /// Unix time at which the verdict stops being authoritative.
         expires_at: u64,
     },
+    /// Transient direct-QUIC call state changed.
+    CallUpdated {
+        /// Current render-safe call snapshot.
+        call: UiCall,
+    },
     /// A group was created, joined, re-keyed, re-rostered, or left.
     GroupUpdated {
         /// Group id (hex).
@@ -1914,6 +1922,9 @@ impl UiEvent {
                 capability: carrier_capability_str(snapshot.capability),
                 observed_at: snapshot.observed_at,
                 expires_at: snapshot.expires_at,
+            },
+            Event::CallUpdated { call } => Self::CallUpdated {
+                call: UiCall::from_ffi(call),
             },
             Event::GroupUpdated { group } => Self::GroupUpdated { group },
             Event::GroupMessageReceived {
@@ -2114,6 +2125,118 @@ fn carrier_capability_str(capability: CarrierCapability) -> &'static str {
         CarrierCapability::Bulk => "bulk",
         CarrierCapability::MeshOnly => "mesh_only",
         CarrierCapability::OfflineOrUnknown => "offline_or_unknown",
+    }
+}
+
+/// Honest current call-start verdict for one pairwise contact.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiCallAvailability {
+    /// Exact contact peer id.
+    pub peer: String,
+    /// Whether a call may start immediately.
+    pub available: bool,
+    /// Stable unavailable reason, absent only when available.
+    pub unavailable: Option<&'static str>,
+}
+
+impl UiCallAvailability {
+    fn from_ffi(availability: FfiCallAvailability) -> Self {
+        Self {
+            peer: availability.peer,
+            available: availability.available,
+            unavailable: availability.unavailable.map(call_unavailable_reason_str),
+        }
+    }
+}
+
+/// Render-safe transient call state for the webview.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiCall {
+    /// Stable call id.
+    pub id: String,
+    /// Pairwise peer id.
+    pub peer: String,
+    /// `outgoing` or `incoming`.
+    pub direction: &'static str,
+    /// `ringing`, `connecting`, `active`, or `ended`.
+    pub phase: &'static str,
+    /// Exact initiating physical-device id.
+    pub initiator_device: String,
+    /// Winning answering physical-device id.
+    pub responder_device: Option<String>,
+    /// Authenticated answer deadline.
+    pub expires_at: u64,
+    /// Stable terminal reason.
+    pub end_reason: Option<&'static str>,
+}
+
+impl UiCall {
+    fn from_ffi(call: FfiCall) -> Self {
+        Self {
+            id: call.id,
+            peer: call.peer,
+            direction: match call.direction {
+                FfiCallDirection::Outgoing => "outgoing",
+                FfiCallDirection::Incoming => "incoming",
+            },
+            phase: match call.phase {
+                FfiCallPhase::Ringing => "ringing",
+                FfiCallPhase::Connecting => "connecting",
+                FfiCallPhase::Active => "active",
+                FfiCallPhase::Ended => "ended",
+            },
+            initiator_device: call.initiator_device,
+            responder_device: call.responder_device,
+            expires_at: call.expires_at,
+            end_reason: call.end_reason.map(call_end_reason_str),
+        }
+    }
+}
+
+/// One authenticated Opus packet for the webview's native decoder.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiCallAudioFrame {
+    /// Exact call id.
+    pub call: String,
+    /// Authenticated direction-local sequence.
+    pub sequence: u64,
+    /// Sender capture timestamp in milliseconds.
+    pub timestamp_ms: u64,
+    /// Exact bounded Opus bytes.
+    pub opus_packet: Vec<u8>,
+}
+
+impl From<FfiCallAudioFrame> for UiCallAudioFrame {
+    fn from(frame: FfiCallAudioFrame) -> Self {
+        Self {
+            call: frame.call,
+            sequence: frame.sequence,
+            timestamp_ms: frame.timestamp_ms,
+            opus_packet: frame.opus_packet,
+        }
+    }
+}
+
+fn call_unavailable_reason_str(reason: FfiCallUnavailableReason) -> &'static str {
+    match reason {
+        FfiCallUnavailableReason::OfflineOrUnknown => "offline_or_unknown",
+        FfiCallUnavailableReason::BulkOnly => "bulk_only",
+        FfiCallUnavailableReason::MeshOnly => "mesh_only",
+        FfiCallUnavailableReason::MissingSession => "missing_session",
+        FfiCallUnavailableReason::Unsupported => "unsupported",
+        FfiCallUnavailableReason::AlreadyInCall => "already_in_call",
+    }
+}
+
+fn call_end_reason_str(reason: FfiCallEndReason) -> &'static str {
+    match reason {
+        FfiCallEndReason::Declined => "declined",
+        FfiCallEndReason::Busy => "busy",
+        FfiCallEndReason::Cancelled => "cancelled",
+        FfiCallEndReason::HungUp => "hung_up",
+        FfiCallEndReason::Expired => "expired",
+        FfiCallEndReason::AnsweredElsewhere => "answered_elsewhere",
+        FfiCallEndReason::RouteLost => "route_lost",
     }
 }
 
@@ -2442,6 +2565,85 @@ impl Session {
                 verified: c.verified,
             })
             .collect())
+    }
+
+    /// Every current and briefly retained terminal direct-QUIC call.
+    pub fn calls(&self) -> Result<Vec<UiCall>, String> {
+        Ok(self
+            .node
+            .calls()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(UiCall::from_ffi)
+            .collect())
+    }
+
+    /// Honest current call-start verdict for one pairwise contact.
+    pub fn call_availability(&self, peer: String) -> Result<UiCallAvailability, String> {
+        self.node
+            .call_availability(peer)
+            .map(UiCallAvailability::from_ffi)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Start one capability-gated direct-QUIC audio call.
+    pub fn start_call(&self, peer: String) -> Result<String, String> {
+        self.node
+            .start_call(peer)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Answer one ringing incoming call.
+    pub fn answer_call(&self, call: String) -> Result<(), String> {
+        self.node
+            .answer_call(call)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Decline one ringing incoming call.
+    pub fn decline_call(&self, call: String) -> Result<(), String> {
+        self.node
+            .decline_call(call)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Cancel one outgoing ringing call.
+    pub fn cancel_call(&self, call: String) -> Result<(), String> {
+        self.node
+            .cancel_call(call)
+            .map_err(|error| error.to_string())
+    }
+
+    /// End one connecting or active call.
+    pub fn hangup_call(&self, call: String) -> Result<(), String> {
+        self.node
+            .hangup_call(call)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Queue one WebCodecs-encoded Opus packet. `false` means capture must
+    /// drop it because the bounded writer is full.
+    pub fn send_call_audio(
+        &self,
+        call: String,
+        timestamp_ms: u64,
+        mut opus_packet: Vec<u8>,
+    ) -> Result<bool, String> {
+        let result = self
+            .node
+            .send_call_audio(call, timestamp_ms, opus_packet.clone())
+            .map_err(|error| error.to_string());
+        opus_packet.fill(0);
+        result
+    }
+
+    /// Take at most one authenticated Opus packet for WebCodecs playout.
+    pub fn take_call_audio(&self, call: String) -> Result<Option<UiCallAudioFrame>, String> {
+        Ok(self
+            .node
+            .take_call_audio(call)
+            .map_err(|error| error.to_string())?
+            .map(Into::into))
     }
 
     /// Message history with a peer.

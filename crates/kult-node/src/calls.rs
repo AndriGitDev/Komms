@@ -50,7 +50,7 @@ const MAX_MEDIA_HANDSHAKE_FAILURES: u8 = 3;
 /// A closed active media stream may be the peer intentionally hanging up;
 /// leave one ordinary control heartbeat for its authenticated Hangup before
 /// classifying the same EOF as route loss.
-const MEDIA_ROUTE_LOSS_GRACE_SECS: u64 = 1;
+const MEDIA_ROUTE_LOSS_GRACE_SECS: u64 = 2;
 
 struct PendingMediaWrite {
     bytes: Vec<u8>,

@@ -379,6 +379,16 @@ label.check input { width: auto; margin: 0; }
 }
 .scheduled-actions button { font-size: 0.72em; }
 
+.call-status {
+  margin: 0;
+  padding: 0.55em 1.2em;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-dim);
+  background: var(--bg-raised);
+}
+.call-status.active { color: var(--success); }
+.call-status.ended { color: var(--danger); }
+
 #composer {
   display: flex;
   position: relative;
