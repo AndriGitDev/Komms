@@ -486,6 +486,7 @@ label.check input { width: auto; margin: 0; }
   border-top: 1px solid var(--line);
   background: rgba(22, 28, 34, 0.72);
 }
+.attachment-panel-toggle { display: block; margin-bottom: 0.4em; }
 .attachment-transfer {
   border: 1px solid var(--line);
   border-radius: 10px;

@@ -2287,17 +2287,35 @@ function attachmentRow(attachment) {
   return row;
 }
 
+// Collapsed by default: completed transfer records stay reachable (export
+// lives there) without the panel permanently occupying the conversation. A
+// transfer needing attention re-opens it; otherwise the user's choice stands.
+let attachmentsPanelExpanded = false;
+
 function renderAttachments(attachments) {
   const panel = $("#attachment-transfers");
   panel.textContent = "";
   const matching = attachments.filter(attachmentBelongsHere);
   panel.hidden = matching.length === 0;
-  if (matching.length > 0) {
-    const policy = document.createElement("p");
-    policy.className = "attachment-background-policy";
-    policy.textContent = "Transfers continue while Komms is open or minimized. Closing the app pauses network work; verified progress resumes after unlock.";
-    panel.append(policy);
-  }
+  if (matching.length === 0) return;
+  const anyActive = matching.some((attachment) =>
+    ["offered", "awaiting_consent", "queued", "transferring", "paused"].includes(attachment.state));
+  if (anyActive) attachmentsPanelExpanded = true;
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "ghost attachment-panel-toggle";
+  toggle.textContent = `${attachmentsPanelExpanded ? "▾" : "▸"} Attachments (${matching.length})`;
+  toggle.setAttribute("aria-expanded", String(attachmentsPanelExpanded));
+  toggle.addEventListener("click", () => {
+    attachmentsPanelExpanded = !attachmentsPanelExpanded;
+    renderAttachments(attachments);
+  });
+  panel.append(toggle);
+  if (!attachmentsPanelExpanded) return;
+  const policy = document.createElement("p");
+  policy.className = "attachment-background-policy";
+  policy.textContent = "Transfers continue while Komms is open or minimized. Closing the app pauses network work; verified progress resumes after unlock.";
+  panel.append(policy);
   for (const attachment of matching) panel.append(attachmentRow(attachment));
 }
 
