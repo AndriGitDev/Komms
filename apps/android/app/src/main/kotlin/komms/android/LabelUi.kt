@@ -71,6 +71,7 @@ class LabelManagerActivity : SecureActivity() {
         })
         content.addView(status)
         setContentView(ScrollView(this).apply { addView(content) })
+        applyEdgeToEdgeInsets()
     }
 
     override fun onResume() {

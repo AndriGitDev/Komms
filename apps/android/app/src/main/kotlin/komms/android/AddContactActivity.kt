@@ -23,6 +23,7 @@ class AddContactActivity : SecureActivity() {
         super.onCreate(savedInstanceState)
         if (NodeHolder.session == null) return finish()
         setContentView(R.layout.activity_add_contact)
+        applyEdgeToEdgeInsets()
         setSupportActionBar(findViewById(R.id.add_toolbar))
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
 

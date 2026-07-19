@@ -16,6 +16,7 @@ import android.os.Looper
 import android.provider.Settings
 import android.view.View
 import android.widget.Button
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
@@ -74,7 +75,7 @@ class AudioMessageController(
     private var playerFile: File? = null
     private var playerSeek: SeekBar? = null
     private var progressTask: Runnable? = null
-    private val recordButton: Button = activity.findViewById(R.id.chat_record)
+    private val recordButton: ImageButton = activity.findViewById(R.id.chat_record)
     private val recordStatus: TextView = activity.findViewById(R.id.chat_recording_status)
 
     private val permission = activity.registerForActivityResult(
@@ -184,7 +185,7 @@ class AudioMessageController(
             audioManager.abandonAudioFocus(focusListener)
             return activity.toast(activity.getString(R.string.audio_record_failed))
         }
-        recordButton.setText(R.string.audio_stop)
+        recordButton.setImageResource(R.drawable.ic_stop)
         recordButton.contentDescription = activity.getString(R.string.audio_stop_description)
         recordStatus.text = activity.getString(R.string.audio_recording)
         worker.execute { recordLoop(audio, file, minimum) }
@@ -232,7 +233,7 @@ class AudioMessageController(
         audio.release()
         recorder = null
         audioManager.abandonAudioFocus(focusListener)
-        recordButton.setText(R.string.audio_record)
+        recordButton.setImageResource(R.drawable.ic_mic)
         recordButton.contentDescription = activity.getString(R.string.audio_record_description)
         val source = rawFile
         rawFile = null
@@ -471,7 +472,8 @@ class AudioMessageController(
         rawFile?.delete()
         rawFile = null
         audioManager.abandonAudioFocus(focusListener)
-        recordButton.setText(R.string.audio_record)
+        recordButton.setImageResource(R.drawable.ic_mic)
+        recordButton.contentDescription = activity.getString(R.string.audio_record_description)
         recordStatus.text = reason
     }
 

@@ -55,6 +55,7 @@ class DeviceActivity : SecureActivity() {
         rows = column()
         body.addView(rows)
         setContentView(ScrollView(this).apply { addView(body) })
+        applyEdgeToEdgeInsets()
         NodeHolder.addListener(nodeListener)
         refresh()
     }

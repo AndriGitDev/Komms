@@ -38,6 +38,8 @@ class NoteToSelfActivity : SecureActivity() {
         if (conversation != session.noteToSelfId()) return finish()
 
         setContentView(R.layout.activity_chat)
+        applyEdgeToEdgeInsets()
+        configureComposerMenu()
         setSupportActionBar(findViewById(R.id.chat_toolbar))
         supportActionBar?.title = getString(R.string.note_to_self_title)
         supportActionBar?.subtitle = getString(R.string.note_local_only)
@@ -48,7 +50,7 @@ class NoteToSelfActivity : SecureActivity() {
         list.adapter = adapter
 
         val input = findViewById<EditText>(R.id.chat_input)
-        findViewById<android.widget.Button>(R.id.chat_send).setOnClickListener {
+        findViewById<android.view.View>(R.id.chat_send).setOnClickListener {
             val body = input.text.toString()
             if (body.isEmpty()) return@setOnClickListener
             val current = NodeHolder.session ?: return@setOnClickListener

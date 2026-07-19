@@ -119,6 +119,7 @@ class MainActivity : SecureActivity() {
         super.onCreate(savedInstanceState)
         if (NodeHolder.session == null) return backToGate()
         setContentView(R.layout.activity_main)
+        applyEdgeToEdgeInsets()
         setSupportActionBar(findViewById(R.id.main_toolbar))
         labelPreferences = LabelFilterPreferences(this)
         labelPreferences.load().also {

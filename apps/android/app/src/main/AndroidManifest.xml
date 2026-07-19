@@ -25,24 +25,37 @@
              backup pipeline (Google servers) must never see it at all.
              Portability is the user-held encrypted .kkr backup instead. -->
 
-        <activity android:name=".GateActivity" android:exported="true">
+        <activity android:name=".GateActivity" android:exported="true"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <activity android:name=".MainActivity" android:exported="false" />
-        <activity android:name=".AddContactActivity" android:exported="false" />
-        <activity android:name=".ChatActivity" android:exported="false" />
-        <activity android:name=".NoteToSelfActivity" android:exported="false" />
-        <activity android:name=".GroupChatActivity" android:exported="false" />
-        <activity android:name=".VerifyActivity" android:exported="false" />
-        <activity android:name=".ScanActivity" android:exported="false" />
-        <activity android:name=".SettingsActivity" android:exported="false" />
-        <activity android:name=".DeviceActivity" android:exported="false" />
-        <activity android:name=".LabelManagerActivity" android:exported="false" />
-        <activity android:name=".FolderManagerActivity" android:exported="false" />
-        <activity android:name=".CustomIconActivity" android:exported="false" />
+        <activity android:name=".MainActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".AddContactActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ChatActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".NoteToSelfActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".GroupChatActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".VerifyActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ScanActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".SettingsActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".DeviceActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".LabelManagerActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".FolderManagerActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".CustomIconActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
 
         <service
             android:name=".NodeService"

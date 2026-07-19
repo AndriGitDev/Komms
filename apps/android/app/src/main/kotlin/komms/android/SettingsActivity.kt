@@ -21,6 +21,7 @@ class SettingsActivity : SecureActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_settings)
+        applyEdgeToEdgeInsets()
         setSupportActionBar(findViewById(R.id.settings_toolbar))
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
 

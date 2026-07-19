@@ -107,6 +107,8 @@ class GroupChatActivity : SecureActivity() {
         groupId = intent.getStringExtra("group") ?: return finish()
         groupName = intent.getStringExtra("name") ?: getString(R.string.group_default_name)
         setContentView(R.layout.activity_chat)
+        applyEdgeToEdgeInsets()
+        configureComposerMenu()
         setSupportActionBar(findViewById(R.id.chat_toolbar))
         supportActionBar?.title = groupName
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
@@ -185,8 +187,8 @@ class GroupChatActivity : SecureActivity() {
                 }
             }
         })
-        findViewById<Button>(R.id.chat_schedule).setOnClickListener { schedule(input, null) }
-        findViewById<Button>(R.id.chat_send).setOnClickListener {
+        findViewById<View>(R.id.chat_schedule).setOnClickListener { schedule(input, null) }
+        findViewById<View>(R.id.chat_send).setOnClickListener {
             val body = input.text.toString()
             if (body.isEmpty()) return@setOnClickListener
             sendDraft(input, body)

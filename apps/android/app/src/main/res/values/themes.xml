@@ -8,6 +8,8 @@
         <item name="android:windowBackground">@color/surface</item>
         <item name="android:textColorPrimary">@color/text_primary</item>
         <item name="android:textColorSecondary">@color/text_secondary</item>
-        <item name="android:windowLightStatusBar">false</item>
+        <!-- Edge-to-edge: content is padded below the transparent status
+             bar, so its icons sit on the light window background. -->
+        <item name="android:windowLightStatusBar">true</item>
     </style>
 </resources>

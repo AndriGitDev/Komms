@@ -140,6 +140,7 @@
     <string name="chat_hint">Message</string>
     <string name="chat_send">Send</string>
     <string name="chat_attach">Attach</string>
+    <string name="chat_more_actions">More actions</string>
     <string name="chat_schedule">Schedule</string>
     <string name="call_start">Call</string>
     <string name="call_start_description">Start an authenticated direct QUIC audio call</string>
@@ -170,6 +171,7 @@
     <string name="call_audio_focus_failed">Another app is using audio; the call was ended</string>
     <string name="call_microphone_denied">Microphone permission is required to place or answer a live call</string>
     <string name="attachment_transfers_title">Attachments</string>
+    <string name="attachment_transfers_toggle">%1$s Attachments (%2$d)</string>
     <string name="attachment_default_name">attachment</string>
     <string name="attachment_queued">Attachment queued</string>
     <string name="attachment_exported">Attachment exported</string>
@@ -235,6 +237,7 @@
     <string name="state_held">held — will send when a faster link exists</string>
     <string name="state_received">received</string>
     <string name="ephemeral_remove_after">Remove after</string>
+    <string name="ephemeral_chip_active">Remove after %1$s</string>
     <string name="ephemeral_off">Off</string>
     <string name="ephemeral_one_minute">1 minute</string>
     <string name="ephemeral_one_hour">1 hour</string>

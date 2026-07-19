@@ -67,14 +67,18 @@
         android:layout_height="wrap_content">
 
         <TextView
+            android:id="@+id/chat_attachment_toggle"
             android:text="@string/attachment_transfers_title"
             android:textStyle="bold"
-            android:layout_width="wrap_content"
+            android:background="?attr/selectableItemBackground"
+            android:paddingVertical="8dp"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content" />
 
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/chat_attachments"
             android:nestedScrollingEnabled="false"
+            android:visibility="gone"
             android:layout_width="match_parent"
             android:layout_height="180dp" />
     </LinearLayout>
@@ -103,68 +107,25 @@
             android:layout_height="wrap_content" />
     </LinearLayout>
 
+    <!-- Disappearing-message state: a compact chip while the picker row is
+         tucked away in the "+" menu. Tapping re-opens the row. -->
+    <TextView
+        android:id="@+id/chat_ephemeral_chip"
+        android:visibility="gone"
+        android:textSize="12sp"
+        android:textColor="@color/accent"
+        android:paddingHorizontal="12dp"
+        android:paddingVertical="2dp"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content" />
+
+    <!-- Hidden until toggled from the "+" menu; the spinner stays the
+         single source of truth read at send time. -->
     <LinearLayout
-        android:orientation="horizontal"
-        android:padding="8dp"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content">
-
-        <Button
-            android:id="@+id/chat_attach"
-            android:text="@string/chat_attach"
-            android:contentDescription="@string/chat_attach"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content" />
-
-        <Button
-            android:id="@+id/chat_record"
-            android:text="@string/audio_record"
-            android:contentDescription="@string/audio_record_description"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content" />
-
-        <Button
-            android:id="@+id/chat_mention"
-            android:text="@string/mention_member"
-            android:contentDescription="@string/mention_member_description"
-            android:visibility="gone"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content" />
-
-        <Button
-            android:id="@+id/chat_poll"
-            android:text="@string/poll_create_action"
-            android:contentDescription="@string/poll_create_description"
-            android:visibility="gone"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content" />
-
-        <komms.android.IncognitoEditText
-            android:id="@+id/chat_input"
-            android:hint="@string/chat_hint"
-            android:inputType="textMultiLine|textCapSentences"
-            android:maxLines="4"
-            android:layout_width="0dp"
-            android:layout_weight="1"
-            android:layout_height="wrap_content" />
-
-        <Button
-            android:id="@+id/chat_schedule"
-            android:text="@string/chat_schedule"
-            android:contentDescription="@string/chat_schedule"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content" />
-
-        <Button
-            android:id="@+id/chat_send"
-            android:text="@string/chat_send"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content" />
-    </LinearLayout>
-
-    <LinearLayout
+        android:id="@+id/chat_ephemeral_section"
         android:orientation="horizontal"
         android:gravity="center_vertical"
+        android:visibility="gone"
         android:paddingHorizontal="12dp"
         android:layout_width="match_parent"
         android:layout_height="wrap_content">
@@ -188,6 +149,88 @@
             android:visibility="gone"
             android:layout_width="0dp"
             android:layout_weight="1"
+            android:layout_height="wrap_content" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingHorizontal="4dp"
+        android:paddingVertical="6dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <ImageButton
+            android:id="@+id/chat_more"
+            android:src="@drawable/ic_add"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/chat_more_actions"
+            android:layout_width="44dp"
+            android:layout_height="44dp" />
+
+        <ImageButton
+            android:id="@+id/chat_attach"
+            android:src="@drawable/ic_attach"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/chat_attach"
+            android:layout_width="44dp"
+            android:layout_height="44dp" />
+
+        <komms.android.IncognitoEditText
+            android:id="@+id/chat_input"
+            android:hint="@string/chat_hint"
+            android:inputType="textMultiLine|textCapSentences"
+            android:maxLines="4"
+            android:minHeight="44dp"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content" />
+
+        <ImageButton
+            android:id="@+id/chat_record"
+            android:src="@drawable/ic_mic"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/audio_record_description"
+            android:layout_width="44dp"
+            android:layout_height="44dp" />
+
+        <ImageButton
+            android:id="@+id/chat_send"
+            android:src="@drawable/ic_send"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/chat_send"
+            android:layout_width="44dp"
+            android:layout_height="44dp" />
+    </LinearLayout>
+
+    <!-- Never drawn: an action registry for the "+" menu. Child visibility
+         still carries availability (groups enable mention/poll), and menu
+         items delegate to these buttons' existing click handlers, so the
+         activities' and controllers' wiring is untouched. -->
+    <LinearLayout
+        android:id="@+id/chat_hidden_actions"
+        android:visibility="gone"
+        android:layout_width="0dp"
+        android:layout_height="0dp">
+
+        <Button
+            android:id="@+id/chat_schedule"
+            android:text="@string/chat_schedule"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+
+        <Button
+            android:id="@+id/chat_mention"
+            android:text="@string/mention_member"
+            android:visibility="gone"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+
+        <Button
+            android:id="@+id/chat_poll"
+            android:text="@string/poll_create_action"
+            android:visibility="gone"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content" />
     </LinearLayout>
 
