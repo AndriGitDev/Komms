@@ -35,7 +35,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "category": "Network",
+    "category": "SocialNetworking",
     "shortDescription": "Serverless E2EE messenger over internet, LAN, and LoRa mesh",
     "longDescription": "Komms is a sovereign messenger: end-to-end encrypted with hybrid post-quantum key agreement, server-independent at its core, and functional over the internet, LAN, commodity LoRa radios, or file sneakernet. No account, phone number, or project-operated service is required."
   }

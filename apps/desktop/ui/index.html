@@ -23,7 +23,7 @@
   <!-- ══ Gate: create / unlock / restore ══ -->
   <section id="gate" class="screen">
     <div class="gate-card">
-      <h1 class="brand">Komms</h1>
+      <h1 class="brand"><svg class="mark" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="12" r="2.2" fill="currentColor" stroke="none"/><path d="M11 7.5a7 7 0 0 1 0 9"/><path d="M14.8 4.5a11.5 11.5 0 0 1 0 15"/></svg>Komms</h1>
       <p class="tagline">Serverless end-to-end encrypted messaging: internet, LAN, and LoRa mesh.</p>
 
       <div class="tabs" id="gate-tabs" hidden>
@@ -108,7 +108,7 @@
   <section id="app" class="screen" hidden>
     <aside id="sidebar">
       <header class="me">
-        <div class="me-name">Komms</div>
+        <div class="me-name"><svg class="mark" viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="12" r="2.2" fill="currentColor" stroke="none"/><path d="M11 7.5a7 7 0 0 1 0 9"/><path d="M14.8 4.5a11.5 11.5 0 0 1 0 15"/></svg>Komms</div>
         <div class="me-address" id="my-address" title="Your kult address"></div>
         <div class="me-actions">
           <button id="btn-copy-address" class="ghost" title="Copy address">Copy</button>
@@ -191,7 +191,10 @@
 
     <main id="chat">
       <div id="chat-empty">
-        <p>Select a contact, or share your bundle to pair with someone.</p>
+        <div class="empty-state">
+          <svg class="mark" viewBox="0 0 24 24" width="44" height="44" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="12" r="2.2" fill="currentColor" stroke="none"/><path d="M11 7.5a7 7 0 0 1 0 9"/><path d="M14.8 4.5a11.5 11.5 0 0 1 0 15"/></svg>
+          <p>Select a contact, or share your bundle to pair with someone.</p>
+        </div>
       </div>
       <div id="chat-pane" hidden>
         <header id="chat-head">
