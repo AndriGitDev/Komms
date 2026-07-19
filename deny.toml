@@ -31,6 +31,16 @@ ignore = [
     # Compile-time proc-macro, archived by its author with no successor risk;
     # pulled in by if-watch (libp2p QUIC/TCP). Not a vulnerability.
     { id = "RUSTSEC-2024-0436", reason = "paste is an unmaintained build-time proc-macro, not a runtime dependency" },
+    # yamux 0.12.1 remote-panic DoS (CVE-2026-32314): a Data|SYN frame with
+    # body > DEFAULT_CREDIT panics the connection state machine. Patched only
+    # on the 0.13 line (0.13.10, which this tree also carries and actually
+    # runs). libp2p-yamux ≤ 0.47 hard-depends on both yamux 0.12 and 0.13;
+    # the 0.12 implementation is selected exclusively by the deprecated
+    # local set_window_update_mode() API, which this workspace never calls —
+    # every muxer here is built from yamux::Config::default(), i.e. the
+    # patched 0.13.10 code, and a remote peer cannot negotiate the legacy
+    # implementation. Delete this waiver when libp2p-yamux drops yamux 0.12.
+    { id = "GHSA-vxx9-2994-q338", reason = "vulnerable legacy yamux 0.12 codepath is unreachable: default config pins the patched 0.13.10 implementation and the selection is local-only" },
 ]
 
 [bans]
