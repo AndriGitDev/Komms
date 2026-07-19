@@ -2663,6 +2663,7 @@ dependencies = [
  "serde",
  "socket2 0.6.4",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -77,6 +77,24 @@ use crate::{
     Result, SendReceipt, Transport, TransportError,
 };
 
+/// Poison recovery for the transport's shared-state mutexes. A panicking
+/// holder poisons a std [`Mutex`]; every value guarded here is a single
+/// self-consistent field (a map, vec, or buffer updated in one statement),
+/// so continuing with the inner value is sound and beats cascading the
+/// panic through a long-lived daemon or FFI runtime.
+pub(crate) trait LockExt<T> {
+    fn lock_unpoisoned(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockExt<T> for Mutex<T> {
+    fn lock_unpoisoned(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|poisoned| {
+            tracing::error!("recovered poisoned transport lock");
+            poisoned.into_inner()
+        })
+    }
+}
+
 /// How long a send waits for the next hop's acknowledgment before reporting
 /// failure to the delivery engine (which then retries with backoff).
 const SEND_TIMEOUT: Duration = Duration::from_secs(20);
@@ -320,8 +338,7 @@ struct Shared {
 impl Shared {
     fn call_ready(&self, peer: &PeerId) -> bool {
         self.connections
-            .lock()
-            .expect("lock")
+            .lock_unpoisoned()
             .get(peer)
             .is_some_and(|connections| {
                 !connections.is_empty() && connections.values().all(|direct| *direct)
@@ -605,8 +622,7 @@ impl Libp2pTransport {
         let id = self.shared.local_peer_id;
         self.shared
             .listen_addrs
-            .lock()
-            .expect("lock")
+            .lock_unpoisoned()
             .iter()
             .map(|a| with_peer_id(a, id))
             .collect()
@@ -620,8 +636,7 @@ impl Libp2pTransport {
         let now = Instant::now();
         self.shared
             .lan_peers
-            .lock()
-            .expect("lock")
+            .lock_unpoisoned()
             .iter()
             .flat_map(|(peer, addrs)| {
                 addrs
@@ -706,7 +721,7 @@ impl Libp2pTransport {
     pub fn mailbox_contents(&self) -> Option<MailboxContents> {
         self.mailbox
             .as_ref()
-            .map(|store| store.lock().expect("lock").contents())
+            .map(|store| store.lock_unpoisoned().contents())
     }
 
     /// This node's NAT reachability as measured by AutoNAT dial-back probes.
@@ -994,8 +1009,7 @@ impl Transport for Libp2pTransport {
             };
             let accepted =
                 store
-                    .lock()
-                    .expect("lock")
+                    .lock_unpoisoned()
                     .deposit(envelope.token, envelope.encode(), unix_now());
             return if accepted {
                 Ok(SendReceipt::AckedByNextHop)
@@ -1022,14 +1036,14 @@ impl Transport for Libp2pTransport {
     }
 
     async fn recv(&self) -> Result<Vec<Envelope>> {
-        Ok(self.inbox.lock().expect("lock").drain(..).collect())
+        Ok(self.inbox.lock_unpoisoned().drain(..).collect())
     }
 
     async fn recv_transit(&self) -> Result<Vec<Envelope>> {
         Ok(self
             .bridge
             .as_ref()
-            .map(|buffer| buffer.lock().expect("lock").drain())
+            .map(|buffer| buffer.lock_unpoisoned().drain())
             .unwrap_or_default())
     }
 
@@ -1188,9 +1202,10 @@ async fn run_swarm(
                     // away lets identify/AutoNAT/Kademlia converge before
                     // anyone has a message to send; failures are just a
                     // peer that left between announcing and now.
+                    tracing::debug!(%peer, "mDNS LAN peer announced");
                     let expires = Instant::now() + ttl;
                     {
-                        let mut lan = shared.lan_peers.lock().expect("lock");
+                        let mut lan = shared.lan_peers.lock_unpoisoned();
                         lan.retain(|_, addrs| {
                             addrs.retain(|_, expiry| *expiry > Instant::now());
                             !addrs.is_empty()
@@ -1290,8 +1305,7 @@ async fn run_swarm(
                     // allowed to open a media stream.
                     let connections = shared
                         .connections
-                        .lock()
-                        .expect("lock")
+                        .lock_unpoisoned()
                         .get(&peer)
                         .cloned()
                         .unwrap_or_default();
@@ -1337,7 +1351,7 @@ async fn run_swarm(
             event = swarm.select_next_some() => match event {
                 SwarmEvent::NewListenAddr { listener_id, address } => {
                     let addrs = {
-                        let mut addrs = shared.listen_addrs.lock().expect("lock");
+                        let mut addrs = shared.listen_addrs.lock_unpoisoned();
                         addrs.push(address.clone());
                         addrs.clone()
                     };
@@ -1368,10 +1382,10 @@ async fn run_swarm(
                     ..
                 } => {
                     let direct = endpoint_is_direct_quic(&endpoint);
+                    tracing::debug!(peer = %peer_id, ?connection_id, direct, "connection established");
                     shared
                         .connections
-                        .lock()
-                        .expect("lock")
+                        .lock_unpoisoned()
                         .entry(peer_id)
                         .or_default()
                         .insert(connection_id, direct);
@@ -1404,8 +1418,9 @@ async fn run_swarm(
                     connection_id,
                     ..
                 } => {
+                    tracing::debug!(peer = %peer_id, ?connection_id, "connection closed");
                     {
-                        let mut all = shared.connections.lock().expect("lock");
+                        let mut all = shared.connections.lock_unpoisoned();
                         if let Some(connections) = all.get_mut(&peer_id) {
                             connections.remove(&connection_id);
                             if connections.is_empty() {
@@ -1459,7 +1474,7 @@ async fn run_swarm(
                             // Parse failures are dropped silently: transports
                             // carry sealed envelopes, nothing else.
                             if let Ok(env) = Envelope::decode(&request) {
-                                inbox.lock().expect("lock").push(env);
+                                inbox.lock_unpoisoned().push(env);
                             }
                             let _ = swarm.behaviour_mut().envelopes.send_response(channel, ());
                         }
@@ -1492,7 +1507,7 @@ async fn run_swarm(
                                         Ok(env) => {
                                             let now = unix_now();
                                             let mut store =
-                                                store.as_ref().map(|s| s.lock().expect("lock"));
+                                                store.as_ref().map(|s| s.lock_unpoisoned());
                                             // A *registered* token's mail
                                             // belongs to a libp2p collector:
                                             // it never diverts to the mesh,
@@ -1508,22 +1523,21 @@ async fn run_swarm(
                                             } else {
                                                 bridge.as_ref().is_some_and(|buffer| {
                                                     buffer
-                                                        .lock()
-                                                        .expect("lock")
+                                                        .lock_unpoisoned()
                                                         .push(env, envelope.len(), now)
                                                 })
                                             }
                                         }
                                         Err(_) => false,
                                     };
+                                    tracing::debug!(accepted, "mailbox deposit");
                                     MailboxResponse::Deposit { accepted }
                                 }
                                 (MailboxRequest::Checkin { tokens }, Some(store)) => {
                                     MailboxResponse::Checkin {
                                         serving: true,
                                         envelopes: store
-                                            .lock()
-                                            .expect("lock")
+                                            .lock_unpoisoned()
                                             .checkin(&tokens, unix_now()),
                                     }
                                 }
@@ -1553,7 +1567,7 @@ async fn run_swarm(
                                     // path; parse failures are dropped, as on
                                     // any link.
                                     let mut count = 0;
-                                    let mut inbox = inbox.lock().expect("lock");
+                                    let mut inbox = inbox.lock_unpoisoned();
                                     for bytes in envelopes {
                                         if let Ok(env) = Envelope::decode(&bytes) {
                                             inbox.push(env);

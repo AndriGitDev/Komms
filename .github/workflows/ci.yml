@@ -36,6 +36,23 @@ jobs:
       - name: no_std build (kult-protocol)
         run: cargo build -p kult-protocol --no-default-features
 
+  # Build-compatibility gate only: no -D warnings here, because lint output
+  # drifts across compiler versions and this job answers exactly one
+  # question — does the declared rust-version still compile the workspace?
+  msrv:
+    name: MSRV 1.88 check
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check
+        run: cargo check --workspace --all-features --all-targets
+
   desktop:
     name: desktop app (fmt, clippy, tests)
     runs-on: ubuntu-latest

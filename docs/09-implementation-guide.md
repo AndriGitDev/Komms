@@ -302,6 +302,36 @@ buffers. The complete contract is [23: Live Audio Calls](23-live-audio-calls.md)
 - **Hardware-in-loop** (M4): two USB Meshtastic radios in CI-adjacent nightly job;
   bench runbook in [10: HIL Bench](10-hil-bench.md).
 
+## 4b. Logging policy
+
+Operational diagnostics use `tracing`. The daemon (`kultd`) installs the only
+subscriber (stderr, `RUST_LOG`-filtered, default `info`); library crates emit
+events that are no-ops unless an embedding binary subscribes. `kult-crypto`
+and `kult-protocol` stay `no_std` and emit nothing. CLI output (`kult`) is
+user interface, not logging, and stays on plain stdout/stderr.
+
+The rule: **anything an on-path network observer can already see is loggable
+at DEBUG; anything end-to-end encryption protects is never loggable at any
+level.** Concretely:
+
+- **Never logged, at any level:** message plaintext or per-contact content
+  sizes; keys, prekeys, passphrases, mnemonics; attachment names or
+  manifests; identity-layer contact addresses; group names; anything read
+  from the store.
+- **INFO** — the operator's own configuration and state: own address, socket
+  path, bound listen multiaddrs, attached transports, bridge mode, relay
+  circuit, check-in results for operator-configured mailboxes,
+  startup/shutdown.
+- **WARN/ERROR** — recoverable or fatal failures, carrying only the typed
+  error's `Display` (`error = %e`), never payload context.
+- **DEBUG/TRACE** — transport-layer churn only: libp2p `PeerId`s and
+  multiaddrs (already visible on the wire), connection open/close, DHT and
+  mDNS events, mailbox accept/reject decisions.
+
+Every new log line is reviewed against this table; a line that needs data
+from the "never" list to be useful is evidence of a design problem, not an
+exception.
+
 ## 5. Review gates
 
 Every publication candidate has a green local release matrix and an explicit

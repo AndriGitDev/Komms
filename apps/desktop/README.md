@@ -189,9 +189,38 @@ cargo test                 # unit + two-node end-to-end tests (no webview needed
 cargo run --features meshtastic   # with USB Meshtastic radio support
 ```
 
-Installable bundles (`.deb`, `.rpm`, AppImage) need the Tauri CLI once:
-`cargo install tauri-cli --locked`, then `cargo tauri build` from this
-directory.
+Installable bundles need the Tauri CLI once: `cargo install tauri-cli
+--locked`, then `cargo tauri build` from this directory. The configured
+targets cover every desktop platform (`.deb`, `.rpm`, AppImage, `.app`,
+`.dmg`, `.msi`, NSIS); Tauri builds only the targets native to the host OS
+and skips the rest.
+
+## Packaging and signing (scaffold)
+
+Nothing in this repository signs anything yet — release signing is
+deliberately scaffold-only until real distribution begins, and no
+certificates or keys enter the tree. When they exist, Tauri picks
+credentials up from the environment at `cargo tauri build` time:
+
+- **macOS**: `APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD` (base64
+  Developer ID .p12) or `APPLE_SIGNING_IDENTITY`, plus `APPLE_ID` /
+  `APPLE_PASSWORD` / `APPLE_TEAM_ID` for notarization.
+- **Windows**: Authenticode signing via `bundle.windows.certificateThumbprint`
+  or an external `signCommand` in `tauri.conf.json` (e.g. Azure Trusted
+  Signing) — configure only when a certificate exists.
+- **Linux**: `.deb`/`.rpm`/AppImage are distributed unsigned for now;
+  repository-level signing (apt/rpm repo, AppImage GPG-embed) is part of
+  the M6 distribution work.
+
+The icon set in `icons/` is generated from `icons/icon.png` with
+`cargo tauri icon icons/icon.png` (or `npx @tauri-apps/cli icon`). The
+current source is 512×512; regenerate from a 1024×1024 master when one
+exists — macOS upscales the 512 source for its largest slot.
+
+An in-app updater is **intentionally absent**: update channels are part of
+the M6 reproducible-distribution work (see `docs/08-roadmap.md`), and an
+updater endpoint would be the kind of project-operated service the core
+must never depend on. Store/package-manager channels will carry updates.
 
 ## Security notes
 

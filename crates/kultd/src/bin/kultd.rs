@@ -6,7 +6,14 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use kultd::{Daemon, DaemonConfig};
+use kultd::{read_secret_file, Daemon, DaemonConfig};
+use zeroize::Zeroizing;
+
+/// A secret-file path taken from the environment. Treated exactly like the
+/// corresponding command-line flag, including the permissions check.
+fn secret_path_env(var: &str) -> Option<PathBuf> {
+    std::env::var_os(var).map(PathBuf::from)
+}
 
 const USAGE: &str = "\
 kultd — Komms headless daemon
@@ -14,8 +21,13 @@ kultd — Komms headless daemon
 USAGE:
     kultd --data-dir DIR [OPTIONS]
 
-The store passphrase comes from --passphrase-file or the KULTD_PASSPHRASE
-environment variable (file wins; a trailing newline is trimmed).
+The store passphrase comes from --passphrase-file, the KULTD_PASSPHRASE_FILE
+environment variable, or the KULTD_PASSPHRASE environment variable, in that
+order (a trailing newline is trimmed). Secret files must not be group- or
+world-accessible (chmod 600); this also makes systemd LoadCredential= work
+naturally (KULTD_PASSPHRASE_FILE=%d/passphrase). Prefer the *_FILE forms:
+plain environment variables are visible in /proc/<pid>/environ and to
+process inspection tools on some systems.
 
 OPTIONS:
     --data-dir DIR          node.db and the default socket live here (required)
@@ -38,15 +50,20 @@ OPTIONS:
                             on whenever a radio is configured)
     --restore FILE          first run only: restore the store from this encrypted
                             backup instead of creating a fresh identity; the
-                            mnemonic comes from --restore-mnemonic-file or the
-                            KULTD_RESTORE_MNEMONIC environment variable (file
-                            wins). Refused if node.db already exists.
+                            mnemonic comes from --restore-mnemonic-file, the
+                            KULTD_RESTORE_MNEMONIC_FILE environment variable,
+                            or the KULTD_RESTORE_MNEMONIC environment variable,
+                            in that order. Refused if node.db already exists.
     --restore-mnemonic-file PATH
                             read the backup's 24-word mnemonic from this file
     --kdf desktop|mobile    Argon2id profile for store creation [default: desktop]
     --tick-secs N           delivery-engine heartbeat [default: 0.5s granularity]
     --checkin-secs N        mailbox check-in cadence  [default: 300]
     -h, --help              this text
+
+Runtime diagnostics go to stderr and are controlled by RUST_LOG
+[default: info], e.g. RUST_LOG=kultd=debug,kult_transport=debug. Logs never
+contain message content, keys, or contact identities.
 ";
 
 fn parse_args() -> Result<DaemonConfig, String> {
@@ -124,34 +141,45 @@ fn parse_args() -> Result<DaemonConfig, String> {
     let data_dir = data_dir.ok_or("--data-dir is required")?;
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("cannot create data dir: {e}"))?;
 
+    let passphrase_file = passphrase_file.or_else(|| secret_path_env("KULTD_PASSPHRASE_FILE"));
     let passphrase = match passphrase_file {
         Some(path) => {
-            let raw = std::fs::read(&path).map_err(|e| format!("passphrase file: {e}"))?;
-            let mut raw = raw;
+            let mut raw = read_secret_file(&path, "passphrase file")?;
             while raw.last() == Some(&b'\n') || raw.last() == Some(&b'\r') {
                 raw.pop();
             }
-            raw
+            Zeroizing::new(raw)
         }
-        None => std::env::var("KULTD_PASSPHRASE")
-            .map_err(|_| "no passphrase: set --passphrase-file or KULTD_PASSPHRASE")?
-            .into_bytes(),
+        None => Zeroizing::new(
+            std::env::var("KULTD_PASSPHRASE")
+                .map_err(|_| {
+                    "no passphrase: set --passphrase-file, KULTD_PASSPHRASE_FILE, \
+                     or KULTD_PASSPHRASE"
+                })?
+                .into_bytes(),
+        ),
     };
     if passphrase.is_empty() {
         return Err("passphrase must not be empty".to_owned());
     }
 
     let restore_mnemonic = if restore.is_some() {
+        let restore_mnemonic_file =
+            restore_mnemonic_file.or_else(|| secret_path_env("KULTD_RESTORE_MNEMONIC_FILE"));
         let phrase = match restore_mnemonic_file {
             Some(path) => {
-                std::fs::read_to_string(&path).map_err(|e| format!("restore mnemonic file: {e}"))?
+                let raw = read_secret_file(&path, "restore mnemonic file")?;
+                Zeroizing::new(
+                    String::from_utf8(raw)
+                        .map_err(|_| "restore mnemonic file: not valid UTF-8".to_owned())?,
+                )
             }
-            None => std::env::var("KULTD_RESTORE_MNEMONIC").map_err(|_| {
-                "restore needs its mnemonic: set --restore-mnemonic-file or \
-                 KULTD_RESTORE_MNEMONIC"
-            })?,
+            None => Zeroizing::new(std::env::var("KULTD_RESTORE_MNEMONIC").map_err(|_| {
+                "restore needs its mnemonic: set --restore-mnemonic-file, \
+                 KULTD_RESTORE_MNEMONIC_FILE, or KULTD_RESTORE_MNEMONIC"
+            })?),
         };
-        Some(phrase.trim().to_owned())
+        Some(Zeroizing::new(phrase.trim().to_owned()))
     } else {
         None
     };
@@ -194,24 +222,35 @@ async fn main() -> ExitCode {
         }
     };
 
+    // Logging policy (docs/09-implementation-guide.md): events describe only
+    // what an on-path observer or the operator already knows — never message
+    // content, keys, passphrases, contact addresses, or store data.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+
     let daemon = match Daemon::start(cfg).await {
         Ok(daemon) => daemon,
         Err(e) => {
-            eprintln!("kultd: startup failed: {e}");
+            tracing::error!(error = %e, "startup failed");
             return ExitCode::FAILURE;
         }
     };
 
-    eprintln!("kultd: address {}", daemon.address);
-    eprintln!("kultd: rpc socket {}", daemon.socket_path.display());
+    tracing::info!(address = %daemon.address, "kultd running");
+    tracing::info!(socket = %daemon.socket_path.display(), "rpc socket bound");
     for addr in daemon.net.listen_addrs() {
-        eprintln!("kultd: listening on {addr}");
+        tracing::info!(%addr, "listening");
     }
 
     if tokio::signal::ctrl_c().await.is_err() {
-        eprintln!("kultd: signal handler failed; shutting down");
+        tracing::warn!("signal handler failed; shutting down");
     }
-    eprintln!("kultd: shutting down");
+    tracing::info!("shutting down");
     daemon.shutdown().await;
     ExitCode::SUCCESS
 }

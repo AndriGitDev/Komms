@@ -52,6 +52,11 @@ serde = { version = "1", features = ["derive"] }
 # and SO_REUSEPORT) and multicast-joined — tokio's plain bind can do neither.
 socket2 = "0.6"
 tokio = { version = "1", features = ["fs", "io-util", "net", "sync", "rt", "time", "macros"] }
+# Already in this crate's tree via libp2p; events are no-ops unless the
+# embedding binary installs a subscriber. Logging policy:
+# docs/09-implementation-guide.md — transport events name only what an
+# on-path network observer already sees.
+tracing = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["fs", "sync", "rt", "rt-multi-thread", "macros", "time"] }
