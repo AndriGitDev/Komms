@@ -1610,7 +1610,7 @@ async fn daemon_restarts_with_history() {
 
     // Wrong passphrase: refused, honestly.
     let mut bad = test_config(dir.path(), "alice");
-    bad.passphrase = b"wrong".to_vec();
+    bad.passphrase = b"wrong".to_vec().into();
     assert!(Daemon::start(bad).await.is_err());
 
     // Right passphrase: same identity, history intact.
@@ -1707,12 +1707,12 @@ async fn backup_and_restore_via_rpc() {
     // A fresh daemon restores from the backup (new data dir, new
     // passphrase) — but never over an existing store.
     let mut restored_cfg = test_config(dir.path(), "alice-new");
-    restored_cfg.passphrase = b"new-passphrase".to_vec();
+    restored_cfg.passphrase = b"new-passphrase".to_vec().into();
     restored_cfg.restore_from = Some(backup_path.clone());
-    restored_cfg.restore_mnemonic = Some(mnemonic.clone());
+    restored_cfg.restore_mnemonic = Some(mnemonic.clone().into());
     let mut over_existing = test_config(dir.path(), "alice");
     over_existing.restore_from = Some(backup_path.clone());
-    over_existing.restore_mnemonic = Some(mnemonic);
+    over_existing.restore_mnemonic = Some(mnemonic.into());
     assert!(Daemon::start(over_existing).await.is_err());
     let alice = Daemon::start(restored_cfg).await.unwrap();
     assert_eq!(alice.address, address_before);

@@ -4275,7 +4275,7 @@ pub fn hex_decode(s: &str) -> Option<Vec<u8>> {
         .filter(|c| !c.is_whitespace())
         .map(|c| c.to_digit(16))
         .collect::<Option<_>>()?;
-    if digits.len() % 2 != 0 {
+    if !digits.len().is_multiple_of(2) {
         return None;
     }
     Some(

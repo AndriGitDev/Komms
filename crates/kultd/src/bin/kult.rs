@@ -291,7 +291,7 @@ fn parse_call_peer(value: &str) -> Result<String, String> {
 fn parse_opus_packet(value: &str) -> Result<String, String> {
     if !value.is_empty()
         && value.len() <= 2_550
-        && value.len() % 2 == 0
+        && value.len().is_multiple_of(2)
         && value.bytes().all(|byte| byte.is_ascii_hexdigit())
     {
         Ok(value.to_ascii_lowercase())

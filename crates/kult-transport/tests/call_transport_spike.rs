@@ -67,7 +67,7 @@ async fn lossy_udp_proxy(
             // datagrams in both directions. QUIC recovers them; a reliable
             // media stream therefore delivers every frame but stalls behind
             // retransmission instead of exposing packet loss to a jitter buffer.
-            if datagrams > 30 && datagrams % 20 == 0 {
+            if datagrams > 30 && datagrams.is_multiple_of(20) {
                 dropped_by_task.fetch_add(1, Ordering::Relaxed);
                 continue;
             }

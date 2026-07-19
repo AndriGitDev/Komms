@@ -95,7 +95,7 @@ impl Envelope {
         retention_until: u64,
         body: Vec<u8>,
     ) -> Result<Self> {
-        if retention_until == 0 || retention_until % crate::RETENTION_BUCKET_SECS != 0 {
+        if retention_until == 0 || !retention_until.is_multiple_of(crate::RETENTION_BUCKET_SECS) {
             return Err(ProtocolError::Malformed);
         }
         Ok(Self {

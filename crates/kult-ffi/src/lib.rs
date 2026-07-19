@@ -52,6 +52,22 @@ use runtime::{Msg, RestoreSource, Runtime, RuntimeConfig};
 
 uniffi::setup_scaffolding!();
 
+/// Poison recovery for the handle's shared-state mutexes. A panicking holder
+/// poisons a std [`Mutex`]; every value guarded here is a single
+/// self-consistent field (the identity tuple or the runtime handle, each
+/// replaced in one statement), so continuing with the inner value is sound
+/// and beats cascading the panic into every host-app thread.
+trait LockExt<T> {
+    fn lock_unpoisoned(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockExt<T> for Mutex<T> {
+    fn lock_unpoisoned(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 /// Stable folder failure categories shared by Kotlin and Swift wrappers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum FolderErrorCode {
@@ -2446,12 +2462,12 @@ impl KultNode {
 
     /// This node's human-shareable kult address.
     pub fn address(&self) -> String {
-        self.identity.lock().expect("lock").0.clone()
+        self.identity.lock_unpoisoned().0.clone()
     }
 
     /// This node's peer id (hex).
     pub fn peer(&self) -> String {
-        self.identity.lock().expect("lock").1.clone()
+        self.identity.lock_unpoisoned().1.clone()
     }
 
     /// Render exact message source into the bounded, inert shared display model.
@@ -2481,14 +2497,14 @@ impl KultNode {
     /// queue depths, contact count.
     pub fn status(&self) -> Result<Status, FfiError> {
         let counts = self.call(|resp| Msg::Counts { resp })?;
-        let guard = self.inner.lock().expect("lock");
+        let guard = self.inner.lock_unpoisoned();
         let rt = guard.as_ref().ok_or(FfiError::Stopped)?;
         let nat = match rt.block_on(rt.net.nat_status()) {
             Ok(kult_transport::NatStatus::Public) => NatVerdict::Public,
             Ok(kult_transport::NatStatus::Private) => NatVerdict::Private,
             _ => NatVerdict::Unknown,
         };
-        let (address, peer) = self.identity.lock().expect("lock").clone();
+        let (address, peer) = self.identity.lock_unpoisoned().clone();
         Ok(Status {
             address,
             peer,
@@ -2595,7 +2611,7 @@ impl KultNode {
             confirmed,
             resp,
         })?;
-        *self.identity.lock().expect("lock") = (address, hex_encode(&peer));
+        *self.identity.lock_unpoisoned() = (address, hex_encode(&peer));
         Ok(())
     }
 
@@ -4125,7 +4141,7 @@ impl KultNode {
     /// Stop the node and release everything. Idempotent; every later call
     /// on this handle fails with [`FfiError::Stopped`].
     pub fn stop(&self) {
-        if let Some(rt) = self.inner.lock().expect("lock").take() {
+        if let Some(rt) = self.inner.lock_unpoisoned().take() {
             rt.stop();
         }
     }
@@ -4154,7 +4170,7 @@ impl KultNode {
         build: impl FnOnce(oneshot::Sender<Result<T, String>>) -> Msg,
     ) -> Result<T, FfiError> {
         let tx = {
-            let guard = self.inner.lock().expect("lock");
+            let guard = self.inner.lock_unpoisoned();
             guard.as_ref().ok_or(FfiError::Stopped)?.tx.clone()
         };
         let (resp, rx) = oneshot::channel();

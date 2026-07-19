@@ -37,22 +37,22 @@ use crate::wire::{self, Hint, Op, Request};
 
 /// Everything the daemon needs to run. Built by the CLI in `bin/kultd.rs`,
 /// or directly by tests.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct DaemonConfig {
     /// The encrypted store (created on first run).
     pub db_path: PathBuf,
     /// The RPC socket path (stale files are replaced).
     pub socket_path: PathBuf,
-    /// Store passphrase.
-    pub passphrase: Vec<u8>,
+    /// Store passphrase. Zeroized on drop.
+    pub passphrase: zeroize::Zeroizing<Vec<u8>>,
     /// Argon2id cost profile for store creation.
     pub kdf: KdfProfile,
     /// First run only: restore the store from this encrypted backup file
     /// instead of creating a fresh identity (docs/07-storage.md §4).
     /// Refused when `db_path` already exists.
     pub restore_from: Option<PathBuf>,
-    /// The 24-word mnemonic sealing `restore_from`.
-    pub restore_mnemonic: Option<String>,
+    /// The 24-word mnemonic sealing `restore_from`. Zeroized on drop.
+    pub restore_mnemonic: Option<zeroize::Zeroizing<String>>,
     /// Multiaddrs to listen on.
     pub listen: Vec<String>,
     /// DHT bootstrap peers (multiaddrs with `/p2p/…`). Empty is fine —
@@ -93,14 +93,50 @@ pub struct DaemonConfig {
     pub nat_interval: Duration,
 }
 
+// Hand-written so the config stays printable without ever printing the
+// passphrase or mnemonic a derive would happily emit.
+impl std::fmt::Debug for DaemonConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DaemonConfig")
+            .field("db_path", &self.db_path)
+            .field("socket_path", &self.socket_path)
+            .field("passphrase", &"<redacted>")
+            .field("kdf", &self.kdf)
+            .field("restore_from", &self.restore_from)
+            .field(
+                "restore_mnemonic",
+                &self.restore_mnemonic.as_ref().map(|_| "<redacted>"),
+            )
+            .field("listen", &self.listen)
+            .field("bootstrap", &self.bootstrap)
+            .field("relay", &self.relay)
+            .field("mailboxes", &self.mailboxes)
+            .field("serve_mailbox", &self.serve_mailbox)
+            .field("mdns", &self.mdns)
+            .field("spool", &self.spool)
+            .field("meshtastic_serial", &self.meshtastic_serial)
+            .field("meshtastic_tcp", &self.meshtastic_tcp)
+            .field("bridge", &self.bridge)
+            .field("tick_interval", &self.tick_interval)
+            .field("checkin_interval", &self.checkin_interval)
+            .field("nat_interval", &self.nat_interval)
+            .finish()
+    }
+}
+
 impl DaemonConfig {
     /// Sensible defaults rooted in a data directory: QUIC + TCP on
     /// OS-assigned ports, desktop KDF profile, no bootstrap peers.
-    pub fn new(data_dir: &std::path::Path, passphrase: Vec<u8>) -> Self {
+    /// The passphrase is held zeroized-on-drop; plain `Vec<u8>` input is
+    /// wrapped, so callers need no zeroize types of their own.
+    pub fn new(
+        data_dir: &std::path::Path,
+        passphrase: impl Into<zeroize::Zeroizing<Vec<u8>>>,
+    ) -> Self {
         Self {
             db_path: data_dir.join("node.db"),
             socket_path: data_dir.join("kultd.sock"),
-            passphrase,
+            passphrase: passphrase.into(),
             kdf: kult_crypto::KDF_PROFILE_DESKTOP,
             restore_from: None,
             restore_mnemonic: None,
@@ -262,20 +298,14 @@ impl Daemon {
                 MeshtasticTransport::connect_serial(port, None, MeshtasticOptions::default())
                     .await
                     .map_err(|e| DaemonError::Io(io::Error::other(e.to_string())))?;
-            eprintln!(
-                "kultd: meshtastic radio on {port} is node {}",
-                radio.node_num()
-            );
+            tracing::info!("meshtastic radio on {port} is node {}", radio.node_num());
             node.add_transport(Arc::new(radio));
         }
         if let Some(addr) = &cfg.meshtastic_tcp {
             let radio = MeshtasticTransport::connect_tcp(addr, MeshtasticOptions::default())
                 .await
                 .map_err(|e| DaemonError::Io(io::Error::other(e.to_string())))?;
-            eprintln!(
-                "kultd: meshtastic radio at {addr} is node {}",
-                radio.node_num()
-            );
+            tracing::info!("meshtastic radio at {addr} is node {}", radio.node_num());
             node.add_transport(Arc::new(radio));
         }
         if bridging {
@@ -283,7 +313,7 @@ impl Daemon {
             // checks in with; once a listen address is bound, the lifecycle
             // task adds this node's own mailbox service to the set.
             node.set_bridge(Some(bridge_relays(&cfg, None)));
-            eprintln!("kultd: bridging mesh↔internet (--no-bridge to opt out)");
+            tracing::info!("bridging mesh↔internet (--no-bridge to opt out)");
         }
 
         let address = node.address();
@@ -454,12 +484,12 @@ async fn actor(
                             let _ = events.send(wire::event_line(event));
                         }
                     }
-                    Err(e) => eprintln!("kultd: tick failed: {e}"),
+                    Err(e) => tracing::warn!(error = %e, "tick failed"),
                 }
             }
             _ = media_tick.tick() => {
                 if let Err(e) = node.pump_call_media(now()).await {
-                    eprintln!("kultd: call media pump failed: {e}");
+                    tracing::warn!(error = %e, "call media pump failed");
                 }
                 for event in node.drain_events() {
                     let _ = events.send(wire::event_line(&event));
@@ -473,7 +503,7 @@ async fn actor(
                 Some(NodeMsg::Publish) => {
                     let hints = own_hints(&net, &cfg.mailboxes);
                     if let Err(e) = node.publish_bundle(&hints, now()).await {
-                        eprintln!("kultd: bundle publish failed: {e}");
+                        tracing::warn!(error = %e, "bundle publish failed");
                     }
                 }
                 Some(NodeMsg::BridgeRelays(relays)) => {
@@ -1712,7 +1742,7 @@ async fn lifecycle(
     mut shutdown: watch::Receiver<bool>,
 ) {
     if net.wait_listen_addr().await.is_err() {
-        eprintln!("kultd: no listen address bound");
+        tracing::warn!("no listen address bound");
     }
     let bridging = cfg.bridge && (cfg.meshtastic_serial.is_some() || cfg.meshtastic_tcp.is_some());
     if bridging && cfg.serve_mailbox {
@@ -1727,7 +1757,7 @@ async fn lifecycle(
     if !cfg.bootstrap.is_empty() {
         let peers: Vec<&str> = cfg.bootstrap.iter().map(String::as_str).collect();
         if let Err(e) = net.bootstrap(&peers).await {
-            eprintln!("kultd: DHT bootstrap failed: {e}");
+            tracing::warn!(error = %e, "DHT bootstrap failed");
         }
         // Publish once the DHT has peers (a lone node has nowhere to put
         // records; contacts then come from out-of-band bundles instead).
@@ -1750,12 +1780,12 @@ async fn lifecycle(
                 if let Ok(NatStatus::Private) = net.nat_status().await {
                     match net.reserve_relay(relay).await {
                         Ok(circuit) => {
-                            eprintln!("kultd: NAT-ed; reserved relay circuit {circuit}");
+                            tracing::info!(%circuit, "NAT-ed; reserved relay circuit");
                             circuit_reserved = true;
                             // The circuit is a new listen address — republish.
                             let _ = node_tx.send(NodeMsg::Publish).await;
                         }
-                        Err(e) => eprintln!("kultd: relay reservation failed: {e}"),
+                        Err(e) => tracing::warn!(error = %e, "relay reservation failed"),
                     }
                 }
             }
@@ -1776,7 +1806,7 @@ async fn lifecycle(
                             Ok(0) => break,
                             Ok(_) => continue,
                             Err(e) => {
-                                eprintln!("kultd: mailbox check-in at {mailbox} failed: {e}");
+                                tracing::warn!(error = %e, %mailbox, "mailbox check-in failed");
                                 break;
                             }
                         }

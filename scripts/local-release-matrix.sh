@@ -55,6 +55,11 @@ if command -v swift >/dev/null 2>&1; then
     if [[ -d /Applications/Xcode.app ]]; then
         export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
         export PATH="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin:$PATH"
+        # The toolchain's clang is invoked directly (not via the /usr/bin
+        # shims), so it needs the SDK spelled out or C deps like ring fail
+        # with missing system headers.
+        SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+        export SDKROOT
     fi
     run_in "$root" "$root/apps/ios/scripts/test-core.sh"
 else

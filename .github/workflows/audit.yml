@@ -1,0 +1,66 @@
+name: audit
+
+# Scheduled evidence the per-push CI cannot provide: advisories published
+# between pushes (the local-first gate means pushes are release-shaped and
+# bursty), a macOS run of the core workspace, and a coverage snapshot.
+# Weekly, because each of these changes on the cadence of the ecosystem,
+# not of this repository — and the macOS runner is billed 10x, so its cost
+# stays bounded and deterministic here instead of accruing per push.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  advisories:
+    name: cargo-deny advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: core workspace
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+      - name: desktop app workspace
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+          manifest-path: apps/desktop/src-tauri/Cargo.toml
+
+  macos-core:
+    name: core tests on macOS
+    runs-on: macos-15
+    env:
+      RUSTFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: tests
+        run: cargo test --workspace --all-features
+
+  # Informational only: a failing coverage run must never block the
+  # advisory signal this workflow exists for.
+  coverage:
+    name: coverage snapshot (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: coverage summary
+        run: cargo llvm-cov --workspace --all-features --summary-only >> "$GITHUB_STEP_SUMMARY"
+      - name: lcov report
+        run: cargo llvm-cov report --lcov --output-path lcov.info
+      - name: upload lcov artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info

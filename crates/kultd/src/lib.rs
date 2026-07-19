@@ -15,6 +15,8 @@
 #![deny(missing_docs)]
 
 mod daemon;
+mod secret;
 pub mod wire;
 
 pub use daemon::{Daemon, DaemonConfig, DaemonError};
+pub use secret::read_secret_file;

@@ -2239,7 +2239,7 @@ pub fn hex_encode(bytes: &[u8]) -> String {
 
 /// Hex decoding (case-insensitive). `None` on odd length or non-hex input.
 pub fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     let digits: Vec<u32> = s.chars().map(|c| c.to_digit(16)).collect::<Option<_>>()?;

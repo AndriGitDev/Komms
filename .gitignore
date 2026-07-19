@@ -10,3 +10,7 @@ apps/android/.kotlin
 apps/android/*/build
 apps/android/build
 apps/android/local.properties
+# Release signing material never enters the repository.
+apps/android/keystore.properties
+apps/android/**/*.jks
+apps/android/**/*.keystore

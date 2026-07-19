@@ -2,6 +2,7 @@
 // on the JVM); this module is activities, layouts, the camera QR scanner,
 // and the cargo-ndk invocation that puts libkult_ffi.so into the APK.
 
+import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -36,6 +37,21 @@ val cargoNdk by tasks.registering(Exec::class) {
     outputs.upToDateWhen { false }
 }
 
+// Release signing is scaffold-only: provide apps/android/keystore.properties
+// (git-ignored; keys storeFile, storePassword, keyAlias, keyPassword) or the
+// KOMMS_ANDROID_KEYSTORE* environment variables. Absent both, release builds
+// stay unsigned and every debug/CI flow is unaffected. No keystore lives in
+// this repository.
+val keystoreProperties = Properties().apply {
+    val file = rootDir.resolve("keystore.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+
+fun signingValue(property: String, env: String): String? =
+    keystoreProperties.getProperty(property) ?: System.getenv(env)
+
+val releaseStore = signingValue("storeFile", "KOMMS_ANDROID_KEYSTORE")
+
 android {
     namespace = "komms.android"
     compileSdk = 35
@@ -46,7 +62,10 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "0.1.0-alpha"
+        // Plain 0.1.0 to match the workspace, desktop, and iOS version
+        // family exactly (Apple version strings cannot carry a suffix);
+        // alpha status is conveyed by the 0.x major and release notes.
+        versionName = "0.1.0"
     }
 
     compileOptions {
@@ -54,11 +73,23 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    if (releaseStore != null) {
+        signingConfigs.create("release") {
+            storeFile = rootDir.resolve(releaseStore)
+            storePassword = signingValue("storePassword", "KOMMS_ANDROID_KEYSTORE_PASSWORD")
+            keyAlias = signingValue("keyAlias", "KOMMS_ANDROID_KEY_ALIAS")
+            keyPassword = signingValue("keyPassword", "KOMMS_ANDROID_KEY_PASSWORD")
+        }
+    }
+
     buildTypes {
         release {
             // No minification: this is an alpha, and an auditable APK
             // (classes map 1:1 to this source tree) beats a smaller one.
             isMinifyEnabled = false
+            if (releaseStore != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
