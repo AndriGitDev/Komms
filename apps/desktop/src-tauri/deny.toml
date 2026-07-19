@@ -40,6 +40,11 @@ ignore = [
     # Compile-time proc-macro, archived by its author with no successor
     # risk; pulled in by if-watch (libp2p) — same waiver as the root config.
     { id = "RUSTSEC-2024-0436", reason = "paste is an unmaintained build-time proc-macro, not a runtime dependency" },
+    # yamux 0.12.1 remote-panic DoS (CVE-2026-32314) — same waiver as the
+    # root config: libp2p-yamux carries both yamux lines but only ever runs
+    # the patched 0.13.10 implementation under the default config this tree
+    # uses; the legacy selection is local-only and never exercised.
+    { id = "GHSA-vxx9-2994-q338", reason = "vulnerable legacy yamux 0.12 codepath is unreachable: default config pins the patched 0.13.10 implementation and the selection is local-only" },
     # gtk-rs GTK3 bindings family (atk/gdk/gtk and their -sys crates).
     { id = "RUSTSEC-2024-0411", reason = "GTK3 bindings: required by Tauri's Linux webview until its GTK4 move" },
     { id = "RUSTSEC-2024-0412", reason = "GTK3 bindings: required by Tauri's Linux webview until its GTK4 move" },

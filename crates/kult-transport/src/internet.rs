@@ -451,6 +451,11 @@ impl Libp2pTransport {
             lan_discovery,
             bridge_deposits,
         } = options;
+        // Every muxer below must stay on `yamux::Config::default()`: the
+        // default pins libp2p-yamux to the patched yamux 0.13 implementation.
+        // The deprecated set_window_update_mode() API would silently switch
+        // to the unpatched legacy 0.12 code (CVE-2026-32314 waiver in
+        // deny.toml relies on it never being called).
         let mut swarm = libp2p::SwarmBuilder::with_new_identity()
             .with_tokio()
             .with_tcp(
