@@ -270,6 +270,15 @@ host, assembles the XCFramework and unsigned simulator app. Hosted repetitions
 remain explicitly gated because private-repository macOS runners are billed at
 a much higher multiplier.
 
+## Version and distribution boundary
+
+The generated app targets iOS 16 or newer, uses bundle identifier
+`is.andri.komms`, and reports short version `0.1.0` / build `1`, aligned with the
+Rust, desktop, and Android surfaces. The documented gate is an unsigned
+Simulator build. No distribution certificate, provisioning profile, App Store
+metadata, notarized artifact, or supported update channel is configured in this
+repository; those remain M6 distribution work.
+
 ## Not yet
 
 Push-style wake-ups and continuous background delivery (iOS offers no

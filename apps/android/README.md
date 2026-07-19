@@ -161,9 +161,10 @@ own, verbatim.
   backgrounded; **Lock** stops the node and returns to the gate.
 
 C4 deadline calculation, capability checks, deletion, terminal tombstones, and
-KKR6 exclusion are shared-core behavior. Android APK/device qualification still
-requires an installed SDK; the SDK-free `:core:test` suite pins bindings and app
-source parity. See [C4 semantics and qualification](../../docs/19-ephemeral-messages.md).
+KKR6 exclusion are shared-core behavior. The SDK-free `:core:test` suite pins
+bindings and app source parity, and CI assembles a real debug APK; hands-on
+device behavior remains a separate qualification gate. See
+[C4 semantics and qualification](../../docs/19-ephemeral-messages.md).
 
 ## Layout
 
@@ -238,7 +239,7 @@ by `core/gradle.lockfile`.
 
 ## Build & test
 
-`:core` (bindings + session layer + e2e) needs only a JDK ≥ 17, Gradle,
+`:core` (bindings + session layer + e2e) needs only a JDK ≥ 17, Gradle 8.14.3,
 and the Rust toolchain, no Android SDK:
 
 ```sh
@@ -251,7 +252,7 @@ The APK additionally needs the Android SDK, NDK, and cargo-ndk:
 
 ```sh
 rustup target add aarch64-linux-android x86_64-linux-android
-cargo install cargo-ndk
+cargo install cargo-ndk --locked
 cd apps/android
 gradle :app:assembleDebug        # cross-compiles kult-ffi per ABI
 ```
@@ -262,8 +263,32 @@ feature-gated off, mirroring `kult-ffi`'s default (a radio's network API
 can be attached from a `meshtastic`-featured build).
 
 The local release matrix runs the `:core` JVM e2e and, on a host with the full
-SDK/NDK, debug-APK assembly. Hosted repetitions are reserved for an explicitly
-authorized publication run.
+SDK/NDK, debug-APK assembly plus lint. Per-push CI also assembles the real debug
+APK. Neither compilation path replaces the hands-on lifecycle, accessibility,
+audio-route, background, and physical-device qualification matrix.
+
+## Version and release signing (scaffold)
+
+The application id is `is.andri.komms`, the minimum Android version is API 26,
+and the current `versionName` is `0.1.0`, aligned with the Rust, desktop, and iOS
+surfaces. Release signing is optional and deliberately keyless by default.
+
+To configure a future signed release, create the git-ignored
+`apps/android/keystore.properties`:
+
+```properties
+storeFile=/absolute/path/to/komms-release.jks
+storePassword=...
+keyAlias=...
+keyPassword=...
+```
+
+The equivalent service/CI inputs are `KOMMS_ANDROID_KEYSTORE`,
+`KOMMS_ANDROID_KEYSTORE_PASSWORD`, `KOMMS_ANDROID_KEY_ALIAS`, and
+`KOMMS_ANDROID_KEY_PASSWORD`. Keystores and `keystore.properties` are ignored by
+Git and must never be committed. If no store is supplied, release builds stay
+unsigned and all debug/CI behavior is unchanged. Store publication, provenance,
+and reproducible signed APK/AAB artifacts remain M6 work.
 
 ## Not yet
 

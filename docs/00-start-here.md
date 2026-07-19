@@ -52,10 +52,12 @@ Our full, frank list is in the [threat model](02-threat-model.md).
 
 As an alpha built from source. There are no supported installers or app-store
 releases yet, but desktop, Android, and iOS shells all exist over the same Rust
-core. The local verification matrix exercises the shared core, desktop behavior,
-the Android SDK-free bindings/core, and Swift parsing/host behavior. Android APK
-and iOS simulator builds require their full platform SDKs. Hands-on device qualification, distribution, the physical radio bench,
-and the external audit remain before a stable release.
+core. Per-push automation exercises the shared core, desktop behavior, generated
+mobile bindings, Android host behavior and debug-APK assembly, and iOS host
+behavior. Full-SDK local gates add Android lint and the unsigned iOS Simulator
+app; the hosted simulator repetition is explicitly gated. Hands-on device
+qualification, signed distribution, the physical radio bench, and the external
+audit remain before a stable release.
 
 Messages may use a small safe formatting subset for emphasis, strong text,
 quotes, lists, and code. The exact readable source stays encrypted in history
@@ -96,6 +98,13 @@ Ownership can be transferred; the owner must transfer before leaving. A signed
 owner moderation close is visibly different from the poll creator's ordinary
 close. There is no server account or hidden moderator behind these roles. See
 [Group Roles, Ownership, and Moderation](21-group-roles.md).
+
+One Komms identity can authorize up to eight independently keyed devices through
+a mutually confirmed QR or paste ceremony. Sync is explicit and encrypted
+between those devices; there is no cloud account, and revoking one exact device
+does not revoke or silently clone another. Recovery creates fresh device
+credentials rather than reviving credentials from a backup. See
+[Linked Devices](22-linked-devices.md).
 
 Already paired contacts can also make alpha live-audio calls when both devices
 have a fresh direct QUIC connection. Call setup stays inside the ordinary
@@ -138,6 +147,7 @@ Platform build instructions:
 | what disappearing/view-once means—and what it cannot erase | [Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md) |
 | how encrypted group polls converge and why votes are visible | [Group Polls](20-group-polls.md) |
 | how signed group roles, ownership transfer, and moderation work | [Group Roles, Ownership, and Moderation](21-group-roles.md) |
+| how one account safely authorizes, syncs, and revokes physical devices | [Linked Devices](22-linked-devices.md) |
 | when live audio calls work—and when they deliberately do not | [Live Audio Calls](23-live-audio-calls.md) |
 | how a release is validated locally before any hosted run | [Local Release Gate](24-local-release-gate.md) |
 | why a technical decision was made | [ADR Index](adr/README.md) |

@@ -22,6 +22,10 @@ Open an issue for anything in `docs/` that is wrong, unclear, or missing:
 
 ## Implementation changes
 
+- Install Rust 1.88 or newer; CI compiles the workspace at exactly 1.88 to keep
+  the declared MSRV honest. The full fuzz gate also needs nightly Rust,
+  `cargo-fuzz`, and `cargo-deny`. Platform-specific prerequisites are listed in
+  each app README.
 - Read [09: Implementation Guide](docs/09-implementation-guide.md) first; it defines
   crate boundaries, crypto coding standards, and review gates. Checked-in APIs
   are authoritative. PRs that change design without an ADR will be redirected
@@ -31,6 +35,10 @@ Open an issue for anything in `docs/` that is wrong, unclear, or missing:
   bindings/shell gates, and every fuzz target. Do not use hosted CI as an
   interactive compiler; publication and any hosted repetition require explicit
   maintainer authorization.
+- Update the README/status table, affected design or feature contract, platform
+  guide, and ADR index whenever behavior, requirements, compatibility, or a
+  release gate changes. Documentation claims must distinguish automated build
+  evidence from hands-on device or hardware qualification.
 - Keep PRs scoped to one concern; cite the spec section your change implements.
 
 ## Process

@@ -716,8 +716,9 @@ Acceptance covers three-device partition/rejoin, concurrent pairwise and group
 sends, edits/polls/tombstones, revoked-device exclusion, group re-key after
 revocation, replay/rollback rejection, KKR1–KKR7 migration/recovery, no cloud
 service, strict RPC/CLI, UniFFI, and the confirmed QR/paste ceremony in every
-shell. Android APK/device validation remains gated only by the local SDK; full
-iOS app/simulator validation remains gated by full Xcode.
+shell. Per-push CI assembles the Android debug APK and the local full-SDK gate
+adds lint; full iOS app/simulator validation remains gated by full Xcode.
+Hands-on device behavior remains a separate M5 gate on both platforms.
 
 ### C3. Message editing
 
@@ -797,8 +798,9 @@ roster capability gating and raw-send refusal protect old clients.
 Acceptance covers canonical/arbitrary decoding, partitions, changed,
 duplicate, and reordered votes, outsiders, additions/removals, conflicting
 closure, convergence, KKR1–KKR7 restore, C2 owned-device sync, RPC/CLI, UniFFI, desktop, Android host core,
-and iOS host/app contracts. Android APK/device evidence remains in the common
-M5 platform release gate rather than weakening the shipped protocol contract.
+and iOS host/app contracts. Android debug-APK assembly is automated; hands-on
+Android/iOS device evidence remains in the common M5 platform release gate
+rather than weakening the shipped protocol contract.
 
 ### C6. Admin and role controls
 
@@ -833,8 +835,9 @@ domain and is never mislabeled as creator closure.
 `KKR6` added sealed authority records and consumed request ids while KKR1-KKR5
 remain restorable as legacy groups. Acceptance is pinned in crypto/protocol,
 node concurrency/transfer/removal flows, KKR1-KKR7 restore, RPC/CLI, UniFFI,
-desktop, Android host core, and iOS host/app coverage. The shared Android
-APK/device SDK gate remains deferred without weakening implementation parity.
+desktop, Android host core/APK assembly, and iOS host/app coverage. Hands-on
+Android and iOS device execution remains deferred without weakening
+implementation parity.
 
 ### C7. Live voice and video calls
 

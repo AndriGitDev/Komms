@@ -197,6 +197,9 @@ and skips the rest.
 
 ## Packaging and signing (scaffold)
 
+The package identifier is `is.andri.komms` and the current version is `0.1.0`,
+aligned with the Rust, Android, and iOS surfaces.
+
 Nothing in this repository signs anything yet — release signing is
 deliberately scaffold-only until real distribution begins, and no
 certificates or keys enter the tree. When they exist, Tauri picks
@@ -218,7 +221,8 @@ current source is 512×512; regenerate from a 1024×1024 master when one
 exists — macOS upscales the 512 source for its largest slot.
 
 An in-app updater is **intentionally absent**: update channels are part of
-the M6 reproducible-distribution work (see `docs/08-roadmap.md`), and an
+the M6 reproducible-distribution work (see
+[08: Roadmap](../../docs/08-roadmap.md)), and an
 updater endpoint would be the kind of project-operated service the core
 must never depend on. Store/package-manager channels will carry updates.
 

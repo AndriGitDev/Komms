@@ -149,5 +149,6 @@ edit/poll/tombstone convergence, rollback and replay rejection, restart and
 revocation exclusion, and backup recovery that never resurrects old
 credentials. The ceremony is driven end to end through node, strict JSON RPC,
 CLI parsing, UniFFI, desktop Session, Android Session, and iOS Session surfaces.
-Android APK/device qualification remains a release gate when an SDK is
-available; it does not weaken the shared-core acceptance.
+Android debug-APK assembly is automated, while real Android/iOS device
+qualification remains a release gate; it does not weaken the shared-core
+acceptance.

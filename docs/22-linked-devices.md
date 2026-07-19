@@ -81,5 +81,6 @@ Local acceptance covers three-device partitions and rejoin, concurrent sends,
 independent pairwise and group chains, selective transfer, edit/poll/tombstone
 convergence, malformed/replay/rollback rejection, revocation, restart, KKR7
 recovery, strict RPC/CLI, UniFFI, desktop, Android host-core source parity, and
-iOS host-core source parity. Android APK/device testing waits for an installed
-SDK; full SwiftUI app type-check/simulator testing requires full Xcode.
+iOS host-core source parity. Per-push CI assembles the Android debug APK; full
+SwiftUI app type-check/simulator testing requires full Xcode. Real-device
+ceremony, revocation, and recovery behaviors remain hands-on qualification.

@@ -117,7 +117,9 @@ These remain release qualification rather than implementation claims:
 - speaker, earpiece, wired, Bluetooth, and interruption matrices on real phones;
 - foreground/background/lock behavior on supported Android and iOS releases;
 - acoustic echo and intelligibility measurements; and
-- Android APK/device validation on a host with the Android SDK/NDK.
+- hands-on Android/iOS device, lifecycle, and audio-route validation (Android
+  debug-APK assembly and unsigned iOS Simulator builds are already automated
+  compilation evidence).
 
 Failure of a qualification gate keeps calls alpha or disabled for that platform;
 it never widens the carrier rule or invents a fallback through relay, TCP, radio,

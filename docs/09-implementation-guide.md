@@ -28,6 +28,10 @@ design doc wins and the conflict is a bug—file it.
    warnings) + tests + no_std + bindings/shell builds + fuzz smoke (60 s per
    target) + cargo-deny. Hosted CI repeats an already-green checkpoint only
    after explicit publication authorization.
+6. **The toolchain floor is explicit.** Both Cargo workspaces declare Rust 1.88;
+   the MSRV CI job compiles at exactly that version, while normal lint/test jobs
+   follow stable. Raising the floor requires updating both manifests, CI, the
+   README, and release documentation in the same change.
 
 ## 2. Build order
 
@@ -291,10 +295,10 @@ buffers. The complete contract is [23: Live Audio Calls](23-live-audio-calls.md)
 - **Property tests** (`proptest`): ratchet loss/reorder/dup within bounds ⇒ decrypts;
   outside bounds ⇒ typed failure. Padding round-trips. Fragment/reassemble = identity.
 - **Fuzz targets** (`cargo-fuzz`): crypto envelope, handshake, bundle, mnemonic,
-  and attachment-chunk decoding; protocol envelope, bundle import, reassembly,
-  content, capability, attachment manifest/bulk/ranges, mention, edit, ephemeral,
-  and poll
-  decoding.
+  attachment-chunk, device-prekey, and call-media decoding; protocol envelope,
+  bundle import, reassembly, content, capability, attachment
+  manifest/bulk/ranges, mention, edit, ephemeral, poll, group-authority,
+  device-sync, and call-control decoding.
 - **Simulation harness** (M3+): in-process multi-node network with scripted link
   conditions (latency, loss, partitions, MTU), deterministic seed, replayable failures.
   This harness is how store-and-forward, NACK, and bridging logic get tested without
@@ -331,6 +335,20 @@ level.** Concretely:
 Every new log line is reviewed against this table; a line that needs data
 from the "never" list to be useful is evidence of a design problem, not an
 exception.
+
+## 4c. Daemon secret input
+
+`kultd` resolves store passphrases in this order: `--passphrase-file`,
+`KULTD_PASSPHRASE_FILE`, then the discouraged `KULTD_PASSPHRASE` value. Restore
+mnemonics use the equivalent `--restore-mnemonic-file`,
+`KULTD_RESTORE_MNEMONIC_FILE`, and `KULTD_RESTORE_MNEMONIC` order. Prefer files:
+plain environment values can be visible through process inspection. On Unix,
+secret files are refused when any group/world permission bit is set; the mode is
+checked on the already-open file to avoid a path-swap race. A trailing newline
+is trimmed and secret values remain in `Zeroizing` storage. Configuration debug
+output must redact both fields. This supports service managers such as systemd
+`LoadCredential=` without adding a secret to arguments, configuration files, or
+the repository.
 
 ## 5. Review gates
 

@@ -69,8 +69,8 @@ malformed lengths and bounds, duplicate/reordered/changed votes, outsiders,
 fixed electorates, removal/addition, conflicting closure, partitions,
 cross-node convergence, raw-send refusal, RPC/CLI/UniFFI parity, desktop and
 host-mobile bindings, signed owner moderation, exact KKR1–KKR7 restore, and C2
-owned-device convergence. Android APK/device qualification
-still requires the Android SDK release gate.
+owned-device convergence. Android debug-APK assembly is automated; real-device
+poll interaction remains part of the platform release gate.
 
 The normative replicated-state and wire decision is
 [ADR-0022](adr/0022-convergent-group-polls.md).
