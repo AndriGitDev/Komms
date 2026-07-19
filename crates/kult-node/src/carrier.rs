@@ -71,7 +71,9 @@ impl Node {
         let transports = self.transports.clone();
 
         for peer in peers {
-            let hints = self.resolve_hints(&peer, now, rng).await?;
+            // Capability classification reads the stored route; stale-hint
+            // refresh stays owned by the delivery engine's failure signal.
+            let hints = self.resolve_hints(&peer, now, false, rng).await?;
             let capability = classify(&transports, &hints).await;
             let snapshot = CarrierCapabilitySnapshot {
                 peer,

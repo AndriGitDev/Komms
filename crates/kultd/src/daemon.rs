@@ -1768,10 +1768,26 @@ async fn lifecycle(
     let mut circuit_reserved = false;
     let mut nat_tick = tokio::time::interval(cfg.nat_interval);
     let mut checkin_tick = tokio::time::interval(cfg.checkin_interval);
+    // Bootstrap-less LAN operation has no publish trigger above, yet peers
+    // resolving this node's current (OS-assigned, per-run) ports depend on
+    // the republished bundle. Republish whenever mDNS shows a new LAN peer:
+    // the routing table just gained somewhere to put the record, and that
+    // peer may hold a queued message stuck on this node's previous address.
+    // Kept in lockstep with kult-ffi's lifecycle.
+    let mut lan_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut lan_tick = tokio::time::interval(Duration::from_secs(15));
 
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,
+            _ = lan_tick.tick() => {
+                let peers: std::collections::HashSet<String> =
+                    net.lan_peers().into_iter().collect();
+                if peers.difference(&lan_seen).next().is_some() {
+                    let _ = node_tx.send(NodeMsg::Publish).await;
+                }
+                lan_seen = peers;
+            }
             _ = nat_tick.tick() => {
                 if circuit_reserved {
                     continue;

@@ -184,6 +184,16 @@ const PENDING_TTL_SECS: u64 = 30 * 86_400;
 const RETRY_BASE_SECS: u64 = 30;
 const RETRY_CAP_SECS: u64 = 3_600;
 
+/// After this many failed delivery attempts for an item, its peer's stored
+/// hints are treated as possibly stale and the discovery planes are
+/// consulted again (a peer that rebound to fresh OS-assigned ports has a
+/// newer address in its republished bundle than in the pairing-time hint).
+const HINT_REFRESH_MIN_ATTEMPTS: u32 = 1;
+/// Discovery re-lookups for one account are spaced at least this far
+/// apart, so a long outage costs one bounded lookup per interval instead
+/// of one per queued item per tick.
+const HINT_REFRESH_INTERVAL_SECS: u64 = 60;
+
 /// Envelopes above this size never ride an airtime-budgeted (LoRa) link:
 /// they are held for a faster carrier, with honest feedback
 /// ([`Event::AwaitingFasterLink`]), instead of silently hogging the mesh
@@ -384,6 +394,8 @@ pub struct Node {
     call_queue_deadlines: HashMap<i64, u64>,
     reassembler: Reassembler,
     backoff: HashMap<i64, Backoff>,
+    /// Per-account floor on the next allowed stale-hint discovery re-lookup.
+    hint_refresh: HashMap<[u8; 32], u64>,
     frag_meta: HashMap<[u8; 4], PartialMeta>,
     frag_cache: HashMap<[u8; 4], SentFragments>,
     held_notified: HashSet<i64>,
@@ -508,6 +520,7 @@ impl Node {
             call_queue_deadlines: HashMap::new(),
             reassembler: Reassembler::new(),
             backoff: HashMap::new(),
+            hint_refresh: HashMap::new(),
             frag_meta: HashMap::new(),
             frag_cache: HashMap::new(),
             held_notified: HashSet::new(),
@@ -3002,7 +3015,13 @@ impl Node {
                     continue;
                 }
             }
-            let hints = self.resolve_hints(&item.peer, now, rng).await?;
+            // A route that keeps failing is a stale-hint suspect: re-consult
+            // the discovery planes for the peer's current address.
+            let refresh = self
+                .backoff
+                .get(&seq)
+                .is_some_and(|b| b.attempts >= HINT_REFRESH_MIN_ATTEMPTS);
+            let hints = self.resolve_hints(&item.peer, now, refresh, rng).await?;
             let oversize = item.envelope.encode().len() > AIRTIME_CEILING_BYTES;
             let mut held_for_airtime = false;
 
@@ -3320,24 +3339,43 @@ impl Node {
     }
 
     /// Delivery hints for a peer, consulting the discovery planes when the
-    /// contact record has none. Sealed sender means an inbound handshake
+    /// contact record has none — or, with `refresh`, when delivery over the
+    /// stored hints keeps failing. Sealed sender means an inbound handshake
     /// never reveals a return path — for a contact learned that way, the
-    /// peer's published DHT bundle is where the reply path comes from.
-    /// Freshly discovered hints are persisted on the contact, so the lookup
-    /// happens once, not per flush (and failed sends stay gated by the
-    /// delivery engine's backoff regardless).
+    /// peer's published DHT bundle is where the reply path comes from. A
+    /// pairing-time hint also goes stale whenever the peer rebinds to fresh
+    /// OS-assigned ports (mobile shells restart often), so a failing route
+    /// re-consults the same bundle for the peer's current address instead
+    /// of retrying the dead one forever. Discovered hints are persisted via
+    /// [`Node::set_hints`]; refresh lookups are rate-limited per account
+    /// (and failed sends stay gated by the delivery engine's backoff
+    /// regardless).
     async fn resolve_hints(
         &mut self,
         peer: &[u8; 32],
         now: u64,
+        refresh: bool,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Vec<DeliveryHint>> {
         let hints = self.hints_for(peer)?;
-        if !hints.is_empty() || self.discoveries.is_empty() {
+        if self.discoveries.is_empty() || (!hints.is_empty() && !refresh) {
             return Ok(hints);
         }
         let account = self.account_for_device(peer)?;
-        let Some(mut contact) = self.store.get_contact(&account)? else {
+        if !hints.is_empty() {
+            // Refresh of a non-empty (possibly stale) hint set: bounded by
+            // the per-account interval so retries stay cheap.
+            if self
+                .hint_refresh
+                .get(&account)
+                .is_some_and(|next| now < *next)
+            {
+                return Ok(hints);
+            }
+            self.hint_refresh
+                .insert(account, now + HINT_REFRESH_INTERVAL_SECS);
+        }
+        let Some(contact) = self.store.get_contact(&account)? else {
             return Ok(hints);
         };
         let Ok(identity) = postcard::from_bytes::<IdentityPublic>(&contact.identity) else {
@@ -3347,9 +3385,11 @@ impl Node {
             return Ok(hints);
         };
         let found = decode_hints(&bundle.relay_hints);
-        if !found.is_empty() {
-            contact.hints = bundle.relay_hints.clone();
-            self.store.put_contact(&contact, rng)?;
+        if found.is_empty() {
+            return Ok(hints);
+        }
+        if found != hints {
+            self.set_hints(&account, &found, rng)?;
         }
         Ok(found)
     }
