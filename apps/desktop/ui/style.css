@@ -52,6 +52,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   color: var(--on-accent);
   border-radius: 8px;
   padding: 0.55em 1.2em;
+  transition: background-color 120ms;
 }
 .primary:hover { background: var(--accent); }
 .primary:disabled { opacity: 0.5; cursor: wait; }
@@ -61,8 +62,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 0.3em 0.8em;
+  transition: color 120ms, background-color 120ms, border-color 120ms;
 }
-.ghost:hover { color: var(--text); background: var(--bg-hover); }
+.ghost:hover { color: var(--text); background: var(--bg-hover); border-color: var(--accent-dim); }
 .danger {
   color: var(--danger);
   border: 1px solid var(--danger);
@@ -106,11 +108,19 @@ label.check input { width: auto; margin: 0; }
   width: min(30rem, 92vw);
   background: var(--bg-raised);
   border: 1px solid var(--line);
+  border-top: 3px solid var(--accent);
   border-radius: 14px;
   padding: 2em;
   margin: 2em 0;
 }
-.brand { margin: 0; letter-spacing: 0.04em; }
+.brand {
+  margin: 0;
+  letter-spacing: 0.05em;
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+}
+.mark { color: var(--accent); flex: none; }
 .tagline { color: var(--text-dim); margin-top: 0.3em; }
 #gate-advanced { margin: 1em 0; border: 1px solid var(--line); border-radius: 8px; padding: 0.6em 1em; }
 #gate-advanced summary { cursor: pointer; color: var(--text-dim); }
@@ -127,7 +137,13 @@ label.check input { width: auto; margin: 0; }
   background: var(--bg-raised);
 }
 .me { padding: 1em; border-bottom: 1px solid var(--line); }
-.me-name { font-weight: 600; }
+.me-name {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  display: flex;
+  align-items: center;
+  gap: 0.35em;
+}
 .me-address {
   font-family: ui-monospace, monospace;
   font-size: 0.75em;
@@ -135,7 +151,10 @@ label.check input { width: auto; margin: 0; }
   word-break: break-all;
   margin: 0.4em 0;
 }
-.me-actions { display: flex; gap: 0.4em; }
+/* Six actions in a 19rem column: wrap and compact, or the tail of the row
+   slides under the chat pane and Backup/Devices stop being clickable. */
+.me-actions { display: flex; flex-wrap: wrap; gap: 0.35em; }
+.me-actions .ghost { padding: 0.25em 0.6em; font-size: 0.88em; }
 
 .contacts-head {
   display: flex;
@@ -156,6 +175,7 @@ label.check input { width: auto; margin: 0; }
   width: 100%;
   text-align: left;
   padding: 0.7em 1em;
+  transition: background-color 120ms;
 }
 .contact.group .avatar { background: #67529a; }
 .contact .c-detail {
@@ -164,6 +184,7 @@ label.check input { width: auto; margin: 0; }
   white-space: nowrap;
 }
 .contact:hover, .contact.active { background: var(--bg-hover); }
+.contact.active { box-shadow: inset 2px 0 0 var(--accent); }
 .contact .avatar {
   width: 2.2em; height: 2.2em;
   border-radius: 50%;
@@ -252,6 +273,8 @@ label.check input { width: auto; margin: 0; }
   display: flex; align-items: center; justify-content: center;
   color: var(--text-dim);
 }
+.empty-state { display: grid; justify-items: center; gap: 0.6em; text-align: center; padding: 1em; }
+.empty-state .mark { opacity: 0.5; }
 #chat-pane { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 #chat-head {
   display: flex;
@@ -278,7 +301,7 @@ label.check input { width: auto; margin: 0; }
   word-break: break-word;
 }
 .msg.out { align-self: flex-end; background: var(--bubble-out); border-bottom-right-radius: 4px; }
-.msg.in  { align-self: flex-start; background: var(--bubble-in); border-bottom-left-radius: 4px; }
+.msg.in  { align-self: flex-start; background: var(--bubble-in); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
 .msg .meta {
   display: block;
   margin-top: 0.25em;
