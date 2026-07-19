@@ -33,6 +33,17 @@ in scope. The intended immutable-event and retained-version contract is
 [18: Authenticated Message Editing](docs/18-message-editing.md) and
 [ADR-0020](docs/adr/0020-authenticated-message-edits.md).
 
+Runtime and release-surface reports are also in scope: plaintext or identity
+leakage through logs/errors, secret-file permission or time-of-check/time-of-use
+bypasses, passphrase/mnemonic retention, panic cascades across daemon or FFI
+synchronization boundaries, linked-device authorization/revocation failures,
+and direct-QUIC call-policy or media-authentication bypasses. The intended
+contracts are [09: Implementation Guide §4b–4c](docs/09-implementation-guide.md),
+[22: Linked Devices](docs/22-linked-devices.md), and
+[23: Live Audio Calls](docs/23-live-audio-calls.md). Release signing is currently
+scaffold-only: no official signed binary or update channel exists yet, so a
+third-party binary must not be represented as a supported Komms release.
+
 ## Scope notes
 
 Accepted limitations documented in

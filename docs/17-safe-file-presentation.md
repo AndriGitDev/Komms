@@ -90,9 +90,10 @@ For the core, every wrapper, and each shell:
 
 `fixtures/c1-file-presentation-parity.json` pins the cross-language policy.
 Rust/FFI, strict RPC, Kotlin/JVM, Swift binding, and desktop tests must agree with
-it. Android APK/device and iOS simulator/device interaction remain part of the
-M5 hands-on qualification gate; absence of that evidence must not be reported as
-a completed stable-release qualification.
+it. Android debug-APK and iOS Simulator builds provide automated compilation
+evidence; real Android/iOS file-picker and external-open interaction remains part
+of the M5 hands-on qualification gate and must not be reported as completed
+stable-release qualification.
 
 ## 5. Explicit non-goals
 

@@ -116,6 +116,6 @@ Local acceptance covers canonical and arbitrary decoding, signature/domain
 failure, stale and duplicate requests, concurrent admins, transfer-chain forks,
 last-owner refusal, offline delivery, removal and re-keying, signed moderation,
 reorder and C2 owned-device convergence, KKR1-KKR7 restore, RPC/CLI, UniFFI, desktop, Android host
-core, and iOS host/app builds. Android APK/device execution remains part of the
-common deferred SDK/device gate; it does not weaken the implemented Android
-surface or shared protocol contract.
+core/APK assembly, and iOS host/app builds. Real Android/iOS device execution
+remains part of the common hands-on platform gate; it does not weaken the
+implemented Android surface or shared protocol contract.

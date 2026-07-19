@@ -33,9 +33,9 @@ all three application shells:
 |---|---|
 | **Core and internet/LAN delivery** | M0–M3 are complete: hybrid PQXDH, Double Ratchet, sealed envelopes, encrypted storage, sneakernet, libp2p QUIC/TCP, Kademlia discovery, volunteer mailboxes, NAT traversal, mDNS, `kult-node`, `kultd`, local RPC, CLI, and UniFFI. |
 | **Off-grid delivery** | The M4 Meshtastic carrier, duty-cycle enforcement, selective retransmission, and token-blind internet↔mesh bridge are implemented and tested. The physical two-radio nightly bench still needs to be stood up. |
-| **Applications** | Tauri desktop, Kotlin Android, and SwiftUI iOS alpha shells build from source over the same embedded runtime. The complete local release matrix exercises shared behavior, generated bindings, desktop, Android host core, and the real iOS simulator build; Android APK assembly waits on this host's unavailable SDK. Installers/store distribution and hands-on device qualification remain. |
+| **Applications** | Tauri desktop, Kotlin Android, and SwiftUI iOS alpha shells build from source over the same embedded runtime. Per-push CI exercises the core and desktop workspaces, generated Kotlin/Swift bindings, Android host behavior, a real Android debug APK, and iOS host behavior. The local matrix additionally builds the unsigned iOS Simulator app when Xcode is present; the equivalent hosted macOS job is explicitly gated. Signed installers/store distribution and hands-on device qualification remain. |
 | **Messaging features** | Pairwise and sender-key group text, authenticated immutable message edits with inspectable version history, disappearing text, view-once attachments, fixed-electorate group polls, signed owner/admin/member authority, note-to-self, scheduled text, attachments, recorded audio, still-image editing, group mentions, and B9 safe text formatting are shipped through the shared APIs and all three shells. Poll votes and voter identities are visible to members—not anonymous—and converge under offline reorder; creators close ordinarily while the current owner can commit a separately signed moderation snapshot. C6 role changes, ownership transfer, and admin requests are owner-serialized, generation-bound, and re-key the group. C4 uses exact local deadlines, coarse authenticated relay deletion hints, terminal tombstones, and KKR6 backup exclusion without promising remote erasure or screenshot prevention. Edits converge without rewriting originals; formatting remains inert. Delivery state remains the honest `queued → sent → delivered` ladder. |
-| **Linked devices** | C2 is shipped through the shared core, strict RPC/CLI, UniFFI, and all three shells: one stable account can authorize up to eight independently keyed devices through a mutually confirmed QR/paste ceremony. Pairwise sessions, group sender chains, capability state, and delivery rows remain per physical device; encrypted explicit sync converges contacts, private organization, ordinary history, edits, polls, authority, and terminal tombstones without a cloud account. Permanent exact-device revocation and KKR7 recovery never resurrect old credentials. Android APK/device validation remains deferred on this host; the full-Xcode unsigned iOS simulator build is green, with hands-on iOS device qualification still required. |
+| **Linked devices** | C2 is shipped through the shared core, strict RPC/CLI, UniFFI, and all three shells: one stable account can authorize up to eight independently keyed devices through a mutually confirmed QR/paste ceremony. Pairwise sessions, group sender chains, capability state, and delivery rows remain per physical device; encrypted explicit sync converges contacts, private organization, ordinary history, edits, polls, authority, and terminal tombstones without a cloud account. Permanent exact-device revocation and KKR7 recovery never resurrect old credentials. Android APK and unsigned iOS Simulator builds are automated release evidence; hands-on device qualification remains. |
 | **Live audio calls** | C7 audio is shipped through direct libp2p QUIC, transient ratcheted signaling, authenticated per-call media, RPC/CLI, UniFFI, desktop, Android, and iOS. Calls never use TCP, relay-only, mailbox, sneakernet, or LoRa paths; they create no chat history or backup state and use no coordinator, SFU, STUN/TURN, or project service. Real-NAT, handoff, battery, audio-route, and device qualification remain alpha release gates; video remains later work. |
 | **Attachment safety** | C1 safe file presentation is shipped over the unchanged sealed F3/F4 pipeline. Sender filenames/types remain untrusted hints; mismatched, active, unknown, or nameless files are export-only, recognized external opening is explicit and warns that no malware scan is promised, and no file auto-opens or creates mesh airtime. |
 | **Private contact names** | B5 contact rename is shipped across node, RPC/CLI, UniFFI, desktop, Android, and iOS. Petnames are NFC-normalized, duplicate-capable private local labels; spoofing-risk warnings require explicit review, exact peer keys remain authoritative, and rename creates no protocol or transport work. Optional signed self-display suggestions remain deferred. |
@@ -44,14 +44,16 @@ all three application shells:
 | **Private custom icons** | B13 contact, group, folder, and note-to-self icons are shipped across the sealed F5 record, node, RPC/CLI, UniFFI, desktop, Android, and iOS. Generated initials are the safe fallback; eight bundled glyphs or selected local JPEG/PNG inputs become strict metadata-free 256×256 PNGs under per-icon/count/aggregate quotas. Icons create zero remote lookup, peer sync, notification, or transport work; portability is limited to `KKR7` and explicit authenticated own-device C2 sync. |
 | **Screen security** | B14 is shipped as an always-on pre-unlock policy across the shared capability contract, RPC/CLI, UniFFI, and every shell. Android applies `FLAG_SECURE` to every activity; iOS obscures inactive/app-switcher and live-captured scenes without claiming universal screenshot blocking; desktop requests best-effort native content protection, shields on focus loss, and locks immediately with `Ctrl/Cmd+Shift+L`. OS, compositor, privileged-software, and external-camera limits remain explicit. |
 | **Input privacy** | B15 is shipped as an always-on pre-unlock policy across the shared capability contract, RPC/CLI, UniFFI, and every textual field. Android requests `IME_FLAG_NO_PERSONALIZED_LEARNING` and no suggestions; iOS disables correction and uses secure passphrase/mnemonic fields; desktop disables webview autocomplete, correction, capitalization, and spellcheck. Keyboard, OS, webview, and writing-tool limits remain explicit. |
+| **Runtime and release assurance** | The headless runtime recovers poisoned synchronization locks instead of cascading a panic, emits policy-bounded structured diagnostics through `tracing`, and accepts passphrases/restore mnemonics from owner-only secret files. Rust 1.88 is the declared and tested MSRV. The core, desktop, Android, and iOS surfaces report `0.1.0`; desktop bundle metadata/icons and conditional Android release signing are scaffolded, but no signing key, updater, supported installer, or store artifact is shipped. Per-push CI, the complete local matrix, and a weekly advisory/macOS/coverage workflow provide complementary evidence. |
 | **Optional mobile convenience** | ADR-0017 through ADR-0019 propose reversible post-pairing rendezvous and content-free native wake. The layer is design-only: no optional service is implemented or required by the sovereign core. |
 
 Older `KKR1` through `KKR6` backups remain restorable; current backups are
 `KKR7`. KKR6 added signed group authority state and consumed admin-request ids.
 KKR7 adds linked-device authority, convergence state, and recovery semantics;
 all current backups exclude live ephemeral plaintext/media and carry terminal
-tombstones so restore cannot resurrect removed content. The principal release gaps are the physical radio bench, hands-on mobile
-qualification, reproducible/store distribution work, broader M6 hardening, and
+tombstones so restore cannot resurrect removed content. The principal release
+gaps are the physical radio bench, hands-on mobile qualification, reproducible
+signed/store distribution work, remaining M6 hardening, and
 an external security audit. See the [roadmap](docs/08-roadmap.md) for engineering
 milestones, the [feature delivery plan](docs/12-feature-delivery-plan.md) for
 the product backlog, and the [local release gate](docs/24-local-release-gate.md)
@@ -105,7 +107,7 @@ out plainly in [Why Komms](docs/01-why.md).
 | [21: Group Roles, Ownership, and Moderation](docs/21-group-roles.md) | C6 signed owner/admin/member authority, transfer, rotation, moderation, backup, and qualification |
 | [22: Linked Devices](docs/22-linked-devices.md) | C2 device certificates, confirmed linking, per-device delivery, deterministic sync, revocation, recovery, and qualification |
 | [23: Live Audio Calls](docs/23-live-audio-calls.md) | C7 direct-QUIC gating, transient signaling, authenticated Opus media, platform behavior, privacy limits, and qualification |
-| [24: Local Release Gate](docs/24-local-release-gate.md) | Complete local validation matrix, SDK deferrals, external evidence, and cost-conscious publication discipline |
+| [24: Local Release Gate](docs/24-local-release-gate.md) | Toolchains, complete local validation, CI/audit evidence, SDK deferrals, signing boundary, and publication discipline |
 | [ADRs](docs/adr/README.md) | Decision index, status, and the alternatives each decision beat |
 
 ## Stack
@@ -135,13 +137,31 @@ and `kult-ffi` (UniFFI bindings: the node's command/event API as typed
 records/enums with an embedded in-process runtime, for the application shells),
 plus `apps/desktop` (Tauri shell), `apps/android`
 (Kotlin alpha shell over the generated bindings), and `apps/ios`
-(SwiftUI alpha shell over the same bindings).
+(SwiftUI alpha shell over the same bindings). The daemon writes structured,
+content-free diagnostics to stderr (`RUST_LOG`, default `info`) and supports
+owner-only passphrase/mnemonic files for service deployment; run `kultd --help`
+for the complete operator surface.
+
+## Build and validation
+
+Rust **1.88 or newer** is required by the locked dependency graph and verified
+as the minimum supported Rust version in CI. A current stable toolchain is the
+normal developer choice; the complete fuzz gate additionally needs nightly
+Rust and `cargo-fuzz`. Platform SDK requirements live in the
+[desktop](apps/desktop/README.md), [Android](apps/android/README.md), and
+[iOS](apps/ios/README.md) guides.
 
 ```sh
-cargo test --workspace          # KATs, property tests, 10k-message soak
+cargo test --workspace --all-features          # KATs, properties, e2e, soak
 cargo build -p kult-crypto --no-default-features   # no_std build
 cd crates/kult-crypto && cargo +nightly fuzz run envelope_decode -- -max_total_time=60
 ```
+
+Before a publication candidate, run `scripts/local-release-matrix.sh` from the
+repository root and record every explicit `DEFERRED` platform gate. The exact
+division between local checks, per-push CI, weekly audit evidence, physical
+qualification, and signing is documented in the
+[local release gate](docs/24-local-release-gate.md).
 
 ## Contributing
 

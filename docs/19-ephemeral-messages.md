@@ -138,6 +138,7 @@ Before a packaged mobile release, qualify on physical devices as well:
 6. inspect app backups, logs, notifications, recent-task/app-switcher state, and
    protected transient directories for content leakage.
 
-Android APK/device validation is deferred on hosts without an Android SDK. iOS
-app type-check/simulator validation requires a full Xcode installation; Swift
-parse and the host UniFFI behavior suite remain the local fallback gates.
+Android debug-APK assembly is covered in per-push CI, while local lint requires
+an installed Android SDK. iOS app type-check/simulator validation requires full
+Xcode; Swift parsing and the host UniFFI behavior suite remain the SDK-free
+gates. Real lifecycle and device behaviors remain hands-on qualification.

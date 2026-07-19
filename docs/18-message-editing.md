@@ -146,5 +146,6 @@ Automated coverage includes:
 Manual release qualification must still exercise screen readers, keyboard-only
 operation, Dynamic Type/font scaling, Unicode and bidirectional replacement
 text, lifecycle interruption, old-client interop, and real Android/iOS devices.
-Android APK/device validation waits for the local Android SDK; this does not
-justify hosted CI or weaken the shared-core and host-JVM acceptance evidence.
+Android debug-APK assembly is covered in per-push CI; real-device interaction
+still requires the hands-on M5 qualification matrix and does not weaken the
+shared-core and host-JVM acceptance evidence.

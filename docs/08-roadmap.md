@@ -10,7 +10,7 @@ work. Build order details per crate: [09: Implementation Guide](09-implementatio
 | M0–M3 | Complete | Permanent regression and assurance work only |
 | M4 | In progress | Stand up the physical two-radio nightly bench |
 | M5 | In progress | Hands-on mobile qualification and installable distribution |
-| M6 | In progress | Broader hardening, reproducibility, store delivery, and external audit |
+| M6 | In progress | Remaining runtime hardening, reproducible signed artifacts, store delivery, and external audit |
 
 ## M0: Design framework *(done)*
 
@@ -237,8 +237,9 @@ key-change surfacing, transport indicators, hint editing, secret-free
 `settings.json` (same file format as desktop), mnemonic-shown-once backup
 export with OS cloud backup disabled, and a foreground service keeping
 delivery alive in the background. Native libraries cross-compile via
-cargo-ndk; the local release matrix runs the `:core` e2e and assembles the
-debug APK when the SDK/NDK is installed. Android
+cargo-ndk; the local release matrix runs the `:core` e2e and assembles/lints the
+debug APK when the SDK/NDK is installed, while per-push CI assembles a real debug
+APK in addition to the SDK-free host suite. Android
 sender-key group UX is also shipped: a distinct group list/create flow,
 dedicated history/chat/member surface, truthful per-recipient outbound
 delivery rows, and a JVM acceptance scenario with a real offline member.
@@ -318,6 +319,19 @@ Sender-key groups polish → OpenMLS for large groups; censorship-resistant tran
 (obfuscation, arti/Tor); panic wipe; reproducible builds;
 **external security audit** of `kult-crypto` + `kult-protocol`; F-Droid and store
 distribution.
+
+A production-readiness slice is shipped. Runtime synchronization in
+`kult-transport` and `kult-ffi` recovers poisoned locks rather than cascading a
+panic. `kultd` owns structured `tracing` output under the content-free logging
+policy in [09 §4b](09-implementation-guide.md), and passphrases/restore mnemonics
+can arrive through owner-only files checked on the opened file descriptor and
+held in zeroizing memory. The locked workspaces declare and compile-test MSRV
+1.88. Per-push CI now includes that MSRV gate and a real Android debug APK; a
+weekly workflow rechecks advisories for both Cargo workspaces, the core on macOS,
+and an informational coverage snapshot. All build surfaces identify as `0.1.0`.
+Desktop multi-platform bundle metadata/icons and conditional Android keystore
+inputs are scaffolded, but no signing key, updater, reproducible artifact, or
+store release is claimed. See [24: Local Release Gate](24-local-release-gate.md).
 
 C2 multi-device is shipped: the stable account signs bounded device manifests,
 every physical endpoint keeps independent pairwise/group cryptographic state,
@@ -547,8 +561,8 @@ deletion hint. Expiry and first reveal remove exact history/media and retain a
 sealed terminal tombstone; KKR6 excludes live ephemeral plaintext/manifests/
 media and includes those tombstones while KKR1–KKR6 remain restorable. The UI
 promises removal only from this device, never remote erasure or screenshot
-prevention. Android APK/device and iOS simulator qualification remain part of
-the hands-on M5 gate. See
+prevention. Automated Android APK and iOS simulator builds cover compilation;
+real-device interaction on both platforms remains part of the hands-on M5 gate. See
 [19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
 
 C5 fixed-electorate group polls are shipped across protocol, node, RPC/CLI,
