@@ -39,6 +39,7 @@ class VerifyActivity : SecureActivity() {
         peer = intent.getStringExtra("peer") ?: return finish()
         val name = intent.getStringExtra("name") ?: peer.take(12)
         setContentView(R.layout.activity_verify)
+        applyEdgeToEdgeInsets()
         setSupportActionBar(findViewById(R.id.verify_toolbar))
         supportActionBar?.title = getString(R.string.verify_title, name)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)

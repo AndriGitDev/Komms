@@ -48,6 +48,7 @@ class CustomIconActivity : SecureActivity() {
         super.onCreate(savedInstanceState)
         if (NodeHolder.session == null) return finish()
         setContentView(R.layout.activity_custom_icons)
+        applyEdgeToEdgeInsets()
         setSupportActionBar(findViewById(R.id.icons_toolbar))
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
         supportActionBar?.title = getString(R.string.icons_title)

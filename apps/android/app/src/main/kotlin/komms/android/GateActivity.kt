@@ -36,6 +36,7 @@ class GateActivity : SecureActivity() {
             return
         }
         setContentView(R.layout.activity_gate)
+        applyEdgeToEdgeInsets()
         dataDir = KommsApp.dataDir(application)
 
         val storeExists = File(dataDir, "node.db").exists()

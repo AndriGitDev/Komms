@@ -134,12 +134,35 @@ class AttachmentController(
         if (uri != null && transfer != null) export(transfer, uri)
     }
 
+    /// The transfers panel collapses to its header once nothing is active:
+    /// completed records stay reachable (export lives there) without the
+    /// panel permanently occupying the conversation.
+    private var panelExpanded = false
+
     init {
         cleanupPlaintextOrphans()
         activity.findViewById<RecyclerView>(R.id.chat_attachments).adapter = adapter
-        activity.findViewById<Button>(R.id.chat_attach).setOnClickListener {
+        activity.findViewById<View>(R.id.chat_attach).setOnClickListener {
             openDocument.launch(arrayOf("*/*"))
         }
+        activity.findViewById<View>(R.id.chat_attachment_toggle).setOnClickListener {
+            panelExpanded = !panelExpanded
+            renderPanel()
+        }
+    }
+
+    private var panelCount = 0
+
+    private fun renderPanel() {
+        val list = activity.findViewById<View>(R.id.chat_attachments)
+        val toggle = activity.findViewById<android.widget.TextView>(R.id.chat_attachment_toggle)
+        list.visibility = if (panelExpanded) View.VISIBLE else View.GONE
+        val chevron = if (panelExpanded) "▾" else "▸"
+        toggle.text = activity.getString(
+            R.string.attachment_transfers_toggle,
+            chevron,
+            panelCount,
+        )
     }
 
     fun isRelevant(attachment: Attachment): Boolean = belongsHere(attachment)
@@ -153,6 +176,20 @@ class AttachmentController(
         adapter.submit(matching)
         activity.findViewById<View>(R.id.chat_attachment_section).visibility =
             if (matching.isEmpty()) View.GONE else View.VISIBLE
+        // A transfer needing attention (consent, running, paused) opens the
+        // panel; otherwise the last user choice stands.
+        val anyActive = matching.any {
+            it.state in setOf(
+                AttachmentState.OFFERED,
+                AttachmentState.AWAITING_CONSENT,
+                AttachmentState.QUEUED,
+                AttachmentState.TRANSFERRING,
+                AttachmentState.PAUSED,
+            )
+        }
+        if (anyActive) panelExpanded = true
+        panelCount = matching.size
+        renderPanel()
     }
 
     private fun import(uri: Uri) {

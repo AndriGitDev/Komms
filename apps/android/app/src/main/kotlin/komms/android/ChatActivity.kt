@@ -96,6 +96,8 @@ class ChatActivity : SecureActivity() {
         peer = intent.getStringExtra("peer") ?: return finish()
         contactName = intent.getStringExtra("name") ?: peer.take(12)
         setContentView(R.layout.activity_chat)
+        applyEdgeToEdgeInsets()
+        configureComposerMenu()
         setSupportActionBar(findViewById(R.id.chat_toolbar))
         supportActionBar?.title = contactName
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
@@ -143,10 +145,10 @@ class ChatActivity : SecureActivity() {
 
         val input = findViewById<EditText>(R.id.chat_input)
         configureEphemeralComposer()
-        findViewById<android.widget.Button>(R.id.chat_schedule).setOnClickListener {
+        findViewById<android.view.View>(R.id.chat_schedule).setOnClickListener {
             schedule(input, null)
         }
-        findViewById<android.widget.Button>(R.id.chat_send).setOnClickListener {
+        findViewById<android.view.View>(R.id.chat_send).setOnClickListener {
             val body = input.text.toString()
             if (body.isEmpty()) return@setOnClickListener
             val session = NodeHolder.session ?: return@setOnClickListener
