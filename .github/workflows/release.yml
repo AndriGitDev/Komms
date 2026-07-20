@@ -33,7 +33,7 @@ jobs:
     outputs:
       release_id: ${{ steps.release.outputs.id }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
@@ -46,8 +46,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft >/tmp/komms-release-draft; then
-            if [[ "$(</tmp/komms-release-draft)" != "true" ]]; then
+          release_row="$(
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq '.[] | select(.tag_name == env.RELEASE_TAG) | [.id, .draft] | @tsv' \
+              | head -n 1
+          )"
+          if [[ -n "$release_row" ]]; then
+            read -r release_id is_draft <<< "$release_row"
+            if [[ "$is_draft" != "true" ]]; then
               echo "Release $RELEASE_TAG is already public; refusing to replace its assets." >&2
               exit 1
             fi
@@ -60,8 +66,16 @@ jobs:
               --prerelease \
               --title "Komms $series Alpha" \
               --notes-file .github/release-body.md
+            release_id="$(
+              gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+                --jq '.[] | select(.tag_name == env.RELEASE_TAG and .draft == true) | .id' \
+                | head -n 1
+            )"
           fi
-          release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq .id)"
+          if [[ -z "$release_id" ]]; then
+            echo "Draft $RELEASE_TAG was not found after creation." >&2
+            exit 1
+          fi
           echo "id=$release_id" >> "$GITHUB_OUTPUT"
 
   desktop:
@@ -88,7 +102,7 @@ jobs:
             args: --bundles msi,nsis
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ env.RELEASE_TAG }}
       - name: Install Linux bundle dependencies
@@ -136,7 +150,7 @@ jobs:
       KOMMS_ANDROID_KEY_ALIAS: ${{ secrets.KOMMS_ANDROID_KEY_ALIAS }}
       KOMMS_ANDROID_KEY_PASSWORD: ${{ secrets.KOMMS_ANDROID_KEY_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ env.RELEASE_TAG }}
       - uses: dtolnay/rust-toolchain@stable
