@@ -59,15 +59,19 @@ For a stable Android signing identity, configure these GitHub Actions secrets:
 - `KOMMS_ANDROID_KEY_ALIAS`; and
 - `KOMMS_ANDROID_KEY_PASSWORD`.
 
-When all are present, the workflow adds a signed release APK and AAB. The debug
-APK is still included as an obvious test artifact. Preserve the keystore and its
-passwords offline: losing them prevents compatible upgrades, while disclosing
-them lets another party impersonate a release.
+Then set the repository variable `KOMMS_ANDROID_SIGNING_ENABLED=1`. When the
+gate and all secrets are present, the workflow adds a signed release APK and
+AAB. The debug APK is still included as an obvious test artifact. Preserve the
+keystore and its passwords offline: losing them prevents compatible upgrades,
+while disclosing them lets another party impersonate a release.
 
 The macOS runner accepts Tauri's standard `APPLE_CERTIFICATE`,
 `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`,
-`APPLE_PASSWORD`, and `APPLE_TEAM_ID` secrets. Windows Authenticode signing is
-not configured yet; add a reviewed certificate provider or Tauri `signCommand`
+`APPLE_PASSWORD`, and `APPLE_TEAM_ID` secrets. Set the repository variable
+`KOMMS_APPLE_SIGNING_ENABLED=1` only after the certificate inputs have been
+validated. Without that explicit gate, stale or partial secrets are ignored and
+the Alpha macOS package remains unsigned. Windows Authenticode signing is not
+configured yet; add a reviewed certificate provider or Tauri `signCommand`
 before describing Windows packages as signed.
 
 ## 3. Build a draft candidate
