@@ -186,9 +186,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$RELEASE_TAG" release-assets/* --clobber
 
+  container-candidate:
+    name: validate kultd container
+    needs: prepare
+    if: github.event_name != 'workflow_dispatch' || inputs.publish != true
+    permissions:
+      contents: read
+    uses: ./.github/workflows/container.yml
+    with:
+      push: false
+      release_tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
   finalize:
     name: checksum draft
-    needs: [prepare, desktop, android]
+    needs: [prepare, desktop, android, container-candidate]
     if: github.event_name != 'workflow_dispatch' || inputs.publish != true
     runs-on: ubuntu-latest
     permissions:
@@ -214,9 +225,21 @@ jobs:
       - name: Report draft release
         run: echo "Release $RELEASE_TAG is complete and remains a draft for maintainer review."
 
+  publish-container:
+    name: publish kultd container
+    needs: prepare
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/container.yml
+    with:
+      push: true
+      release_tag: ${{ inputs.tag }}
+
   publish:
     name: publish qualified prerelease
-    needs: prepare
+    needs: [prepare, publish-container]
     if: github.event_name == 'workflow_dispatch' && inputs.publish
     runs-on: ubuntu-latest
     permissions:
@@ -243,6 +266,13 @@ jobs:
               exit 1
             fi
           done
+          version="${RELEASE_TAG#v}"
+          image="ghcr.io/andrigitdev/komms-kultd:$version"
+          if ! docker manifest inspect "$image" >/dev/null; then
+            echo "$image is not anonymously pullable." >&2
+            echo "On its first publication, change the linked GHCR package visibility to Public, then rerun this publish job." >&2
+            exit 1
+          fi
           gh release edit "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --draft=false \

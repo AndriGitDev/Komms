@@ -3,9 +3,11 @@
 Komms release candidates are assembled by
 [`release.yml`](../.github/workflows/release.yml) on native GitHub runners. One
 tag produces Windows MSI/NSIS installers, a universal macOS app/DMG, Linux
-AppImage/DEB/RPM packages, and an installable Android test APK. The workflow
-keeps the GitHub release in draft state until a maintainer explicitly publishes
-it as a prerelease.
+AppImage/DEB/RPM packages, an installable Android test APK, and a validated
+Linux `kultd` container candidate. The workflow keeps the GitHub release in
+draft state until a maintainer explicitly publishes it as a prerelease. That
+same explicit action publishes the multi-architecture self-hosting image to
+GHCR; a tag push alone never exposes an unqualified container.
 
 The current user-facing release name is **Komms 0.1 Alpha**. Its technical
 semantic version remains `0.1.0` across Cargo, Tauri, Android, and iOS, and its
@@ -102,8 +104,17 @@ build only after exporting any data that must be retained.
 Once the draft assets themselves pass qualification, manually run the workflow
 for the same tag with `publish` enabled. That explicit run verifies that the
 draft contains checksums, an APK, and every promised desktop package family,
-then publishes the existing qualified assets as a public GitHub prerelease. It
-does not rebuild or silently replace the artifacts that were tested.
+then builds and publishes `ghcr.io/andrigitdev/komms-kultd` for Linux amd64 and
+arm64 before publishing the existing qualified assets as a public GitHub
+prerelease. The version tag is accompanied by `0.1-alpha` and `alpha`
+for this release, never `latest`. It does not rebuild or silently replace the
+desktop/mobile artifacts that were tested.
+
+GHCR creates a first-time personal package as private. After the first image
+push, open the linked `komms-kultd` package settings and change its visibility
+to **Public**, acknowledging that GitHub does not allow a public package to be
+made private again. The publish job verifies an anonymous manifest pull and
+keeps the GitHub release in draft state until this one-time setting is correct.
 
 Do not mark an alpha prerelease as stable, claim that unsigned packages are
 signed, or promise an audited security level until the corresponding external
