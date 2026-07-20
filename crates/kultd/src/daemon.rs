@@ -528,9 +528,13 @@ async fn handle_op(
     let fail = |e: NodeError| e.to_string();
     match op {
         Op::Status => {
-            let nat = match net.nat_status().await {
-                Ok(NatStatus::Public) => "public",
-                Ok(NatStatus::Private) => "private",
+            // Status is a local UI/health request and must not hang behind a
+            // slow or wedged transport command loop. NAT starts as unknown
+            // already, so a bounded diagnostic miss has the same honest
+            // meaning and leaves the actor available for real node work.
+            let nat = match tokio::time::timeout(Duration::from_secs(1), net.nat_status()).await {
+                Ok(Ok(NatStatus::Public)) => "public",
+                Ok(Ok(NatStatus::Private)) => "private",
                 _ => "unknown",
             };
             Ok(json!({

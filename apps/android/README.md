@@ -267,6 +267,12 @@ SDK/NDK, debug-APK assembly plus lint. Per-push CI also assembles the real debug
 APK. Neither compilation path replaces the hands-on lifecycle, accessibility,
 audio-route, background, and physical-device qualification matrix.
 
+Every tagged release candidate also attaches that installable debug APK to a
+draft GitHub release alongside the desktop packages and checksums. Optional
+keystore secrets add a signed release APK and AAB. The exact secret names,
+qualification steps, and explicit publication control are in the
+[release runbook](../../docs/25-release-runbook.md).
+
 ## Version and release signing (scaffold)
 
 The application id is `is.andri.komms`, the minimum Android version is API 26,
@@ -283,12 +289,15 @@ keyAlias=...
 keyPassword=...
 ```
 
-The equivalent service/CI inputs are `KOMMS_ANDROID_KEYSTORE`,
+The equivalent local/service inputs are `KOMMS_ANDROID_KEYSTORE`,
 `KOMMS_ANDROID_KEYSTORE_PASSWORD`, `KOMMS_ANDROID_KEY_ALIAS`, and
 `KOMMS_ANDROID_KEY_PASSWORD`. Keystores and `keystore.properties` are ignored by
-Git and must never be committed. If no store is supplied, release builds stay
-unsigned and all debug/CI behavior is unchanged. Store publication, provenance,
-and reproducible signed APK/AAB artifacts remain M6 work.
+Git and must never be committed. GitHub Actions receives a keystore only through
+the `KOMMS_ANDROID_KEYSTORE_BASE64` secret described in the release runbook; it
+is decoded into the runner's temporary directory. If no store is supplied, the
+test APK is still produced and all ordinary debug/CI behavior is unchanged.
+Store publication, provenance, and reproducible signed APK/AAB artifacts remain
+M6 work.
 
 ## Not yet
 
