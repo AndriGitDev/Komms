@@ -1,0 +1,25 @@
+services:
+  kultd:
+    image: ghcr.io/andrigitdev/komms-kultd:0.1-alpha
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      KULTD_PASSPHRASE_FILE: /run/komms-secrets/passphrase
+      KULTD_SOCKET: /var/lib/komms/kultd.sock
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "4404:4404/tcp"
+      - "4404:4404/udp"
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    volumes:
+      - kultd-data:/var/lib/komms
+      - kultd-secrets:/run/komms-secrets
+
+volumes:
+  kultd-data:
+  kultd-secrets:

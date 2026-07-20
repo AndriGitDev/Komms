@@ -9,6 +9,28 @@ use std::time::Duration;
 use kultd::{read_secret_file, Daemon, DaemonConfig};
 use zeroize::Zeroizing;
 
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut terminate) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = terminate.recv() => {}
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "SIGTERM handler failed; waiting for Ctrl+C");
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
 /// A secret-file path taken from the environment. Treated exactly like the
 /// corresponding command-line flag, including the permissions check.
 fn secret_path_env(var: &str) -> Option<PathBuf> {
@@ -247,9 +269,7 @@ async fn main() -> ExitCode {
         tracing::info!(%addr, "listening");
     }
 
-    if tokio::signal::ctrl_c().await.is_err() {
-        tracing::warn!("signal handler failed; shutting down");
-    }
+    shutdown_signal().await;
     tracing::info!("shutting down");
     daemon.shutdown().await;
     ExitCode::SUCCESS

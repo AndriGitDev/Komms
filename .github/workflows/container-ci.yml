@@ -1,0 +1,44 @@
+name: kultd container CI
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - compose.yaml
+      - deploy/**
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/container-ci.yml
+      - .github/workflows/container.yml
+      - .github/workflows/release.yml
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - compose.yaml
+      - deploy/**
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/container-ci.yml
+      - .github/workflows/container.yml
+      - .github/workflows/release.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  container:
+    name: build image
+    permissions:
+      contents: read
+    uses: ./.github/workflows/container.yml
+    with:
+      push: false

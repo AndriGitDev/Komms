@@ -44,7 +44,7 @@ all three application shells:
 | **Private custom icons** | B13 contact, group, folder, and note-to-self icons are shipped across the sealed F5 record, node, RPC/CLI, UniFFI, desktop, Android, and iOS. Generated initials are the safe fallback; eight bundled glyphs or selected local JPEG/PNG inputs become strict metadata-free 256×256 PNGs under per-icon/count/aggregate quotas. Icons create zero remote lookup, peer sync, notification, or transport work; portability is limited to `KKR7` and explicit authenticated own-device C2 sync. |
 | **Screen security** | B14 is shipped as an always-on pre-unlock policy across the shared capability contract, RPC/CLI, UniFFI, and every shell. Android applies `FLAG_SECURE` to every activity; iOS obscures inactive/app-switcher and live-captured scenes without claiming universal screenshot blocking; desktop requests best-effort native content protection, shields on focus loss, and locks immediately with `Ctrl/Cmd+Shift+L`. OS, compositor, privileged-software, and external-camera limits remain explicit. |
 | **Input privacy** | B15 is shipped as an always-on pre-unlock policy across the shared capability contract, RPC/CLI, UniFFI, and every textual field. Android requests `IME_FLAG_NO_PERSONALIZED_LEARNING` and no suggestions; iOS disables correction and uses secure passphrase/mnemonic fields; desktop disables webview autocomplete, correction, capitalization, and spellcheck. Keyboard, OS, webview, and writing-tool limits remain explicit. |
-| **Runtime and release assurance** | The headless runtime recovers poisoned synchronization locks instead of cascading a panic, emits policy-bounded structured diagnostics through `tracing`, and accepts passphrases/restore mnemonics from owner-only secret files. Rust 1.88 is the declared and tested MSRV. The core, desktop, Android, and iOS surfaces report `0.1.0`; a tag-driven candidate pipeline builds native Windows/macOS/Linux packages and an installable Android test APK, with conditional Android/macOS signing. Packages remain alpha artifacts until their draft is qualified and explicitly published; Windows signing, store distribution, and an updater are not configured. Per-push CI, the complete local matrix, and a weekly advisory/macOS/coverage workflow provide complementary evidence. |
+| **Runtime and release assurance** | The headless runtime recovers poisoned synchronization locks instead of cascading a panic, emits policy-bounded structured diagnostics through `tracing`, and accepts passphrases/restore mnemonics from owner-only secret files. Rust 1.88 is the declared and tested MSRV. The core, desktop, Android, and iOS surfaces report `0.1.0`; a tag-driven candidate pipeline builds native Windows/macOS/Linux packages, an installable Android test APK, and validates a self-hosted `kultd` container. Qualified publication adds the Linux amd64/arm64 image to GHCR. Packages remain alpha artifacts until their draft is qualified and explicitly published; Windows signing, store distribution, and an updater are not configured. Per-push CI, the complete local matrix, and a weekly advisory/macOS/coverage workflow provide complementary evidence. |
 | **Optional mobile convenience** | ADR-0017 through ADR-0019 propose reversible post-pairing rendezvous and content-free native wake. The layer is design-only: no optional service is implemented or required by the sovereign core. |
 
 Older `KKR1` through `KKR6` backups remain restorable; current backups are
@@ -109,6 +109,7 @@ out plainly in [Why Komms](docs/01-why.md).
 | [23: Live Audio Calls](docs/23-live-audio-calls.md) | C7 direct-QUIC gating, transient signaling, authenticated Opus media, platform behavior, privacy limits, and qualification |
 | [24: Local Release Gate](docs/24-local-release-gate.md) | Toolchains, complete local validation, CI/audit evidence, SDK deferrals, signing boundary, and publication discipline |
 | [25: Release Runbook](docs/25-release-runbook.md) | Versioning, native desktop/APK artifact builds, signing inputs, qualification, and explicit publication |
+| [26: Self-hosting](docs/26-self-hosting.md) | Hardened Docker Compose deployment, ports, secret initialization, node modes, and Alpha limits |
 | [ADRs](docs/adr/README.md) | Decision index, status, and the alternatives each decision beat |
 
 ## Stack
@@ -165,9 +166,12 @@ qualification, and signing is documented in the
 [local release gate](docs/24-local-release-gate.md).
 
 The **Komms 0.1 Alpha** candidate is built from tag `v0.1.0` on native Windows,
-macOS, Linux, and Android runners. See the
+macOS, Linux, and Android runners. Its qualified prerelease also publishes the
+Linux amd64/arm64 self-hosting image
+`ghcr.io/andrigitdev/komms-kultd:0.1-alpha`. See the
 [release runbook](docs/25-release-runbook.md) for the version bump,
-APK/installer, signing, checksum, smoke-test, and publication process.
+APK/installer/container, signing, checksum, smoke-test, and publication process,
+or the [self-hosting guide](docs/26-self-hosting.md) to run `kultd`.
 
 ## Contributing
 
