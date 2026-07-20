@@ -237,6 +237,20 @@ basics, CameraX, and ZXing core (pure-Java QR encode/decode: no Google
 Play Services, no ML Kit, F-Droid friendly). JVM dependencies are pinned
 by `core/gradle.lockfile`.
 
+## Install the published Alpha
+
+Download `Komms-0.1.0-android-debug.apk` and `SHA256SUMS` from the public
+[Komms 0.1 Alpha release](https://github.com/AndriGitDev/Komms/releases/tag/v0.1.0).
+It supports Android 8.0 (API 26) or newer on `arm64-v8a` phones and `x86_64`
+emulators. This is a test-only APK signed with a development certificate, not a
+store or production build. Verify its checksum, allow **Install unknown apps**
+only for the browser or file manager used to open it, then turn that permission
+off again. See the [Alpha testing guide](../../docs/27-alpha-testing.md) for the
+complete install and smoke-test steps.
+
+Android rejects an in-place upgrade from a build signed by a different key.
+Export any data you need before uninstalling an older test build.
+
 ## Build & test
 
 `:core` (bindings + session layer + e2e) needs only a JDK ≥ 17, Gradle 8.14.3,
@@ -267,10 +281,10 @@ SDK/NDK, debug-APK assembly plus lint. Per-push CI also assembles the real debug
 APK. Neither compilation path replaces the hands-on lifecycle, accessibility,
 audio-route, background, and physical-device qualification matrix.
 
-Every tagged release candidate also attaches that installable debug APK to a
-draft GitHub release alongside the desktop packages and checksums. Optional
-keystore secrets add a signed release APK and AAB. The exact secret names,
-qualification steps, and explicit publication control are in the
+The published `v0.1.0` prerelease includes that installable debug APK alongside
+the desktop packages and checksums. Future tagged candidates begin as drafts;
+optional keystore secrets add a signed release APK and AAB. The exact secret
+names, qualification steps, and explicit publication control are in the
 [release runbook](../../docs/25-release-runbook.md).
 
 ## Version and release signing (scaffold)

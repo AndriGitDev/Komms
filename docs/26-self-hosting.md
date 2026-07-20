@@ -6,9 +6,16 @@ their own always-on peer, volunteer mailbox, relay-aware node, or
 internet-to-Meshtastic bridge. It is not a central Komms server and other users
 do not need it in order to communicate.
 
-The Alpha image is
-`ghcr.io/andrigitdev/komms-kultd:0.1-alpha`. It supports `linux/amd64` and
-`linux/arm64`, runs the daemon as numeric user/group `10001`, stores its sealed
+The [public Alpha package](https://github.com/AndriGitDev/Komms/pkgs/container/komms-kultd)
+supports `linux/amd64` and `linux/arm64`. Pull the immutable release tag with:
+
+```sh
+docker pull ghcr.io/andrigitdev/komms-kultd:0.1.0
+```
+
+The `0.1-alpha` and `alpha` tags are moving Alpha aliases; the committed Compose
+file tracks `0.1-alpha`, while automation should pin `0.1.0` or an image digest.
+The image runs the daemon as numeric user/group `10001`, stores its sealed
 database in `/var/lib/komms`, and listens on TCP and QUIC/UDP port `4404` by
 default. There is intentionally no `latest` tag during the Alpha series.
 

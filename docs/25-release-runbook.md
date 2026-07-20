@@ -13,6 +13,13 @@ The current user-facing release name is **Komms 0.1 Alpha**. Its technical
 semantic version remains `0.1.0` across Cargo, Tauri, Android, and iOS, and its
 release tag is `v0.1.0`.
 
+That release is now public as a
+[GitHub prerelease](https://github.com/AndriGitDev/Komms/releases/tag/v0.1.0),
+with Windows MSI/NSIS, universal macOS DMG/app archive, Linux
+AppImage/DEB/RPM, a debug-signed Android APK, and `SHA256SUMS`. Its public
+[`komms-kultd` package](https://github.com/AndriGitDev/Komms/pkgs/container/komms-kultd)
+provides Linux amd64/arm64 images under `0.1.0`, `0.1-alpha`, and `alpha`.
+
 This makes artifacts available consistently; it does not turn the current alpha
 into an audited stable release. Platform signing, hands-on device testing, radio
 hardware, real-NAT/live-call qualification, and an independent security audit
@@ -114,11 +121,11 @@ prerelease. The version tag is accompanied by `0.1-alpha` and `alpha`
 for this release, never `latest`. It does not rebuild or silently replace the
 desktop/mobile artifacts that were tested.
 
-GHCR creates a first-time personal package as private. After the first image
-push, open the linked `komms-kultd` package settings and change its visibility
-to **Public**, acknowledging that GitHub does not allow a public package to be
-made private again. The publish job verifies an anonymous manifest pull and
-keeps the GitHub release in draft state until this one-time setting is correct.
+The current `komms-kultd` package is public. A new package namespace may still
+default to private: if the anonymous manifest check fails after its first push,
+open that package's settings, change its visibility to **Public**, and rerun the
+publication job. The job keeps the GitHub release in draft state until an
+anonymous pull succeeds.
 
 Do not mark an alpha prerelease as stable, claim that unsigned packages are
 signed, or promise an audited security level until the corresponding external

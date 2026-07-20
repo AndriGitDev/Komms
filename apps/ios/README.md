@@ -240,6 +240,14 @@ Generated bindings are never committed; `scripts/generate-bindings.sh`
 produces them fresh from the crate. The package is deliberately outside
 the cargo workspace, mirroring the other shells' posture.
 
+## Alpha availability
+
+Komms 0.1 Alpha does not include a downloadable iOS package. The iOS shell is
+available for source builds and the Xcode Simulator only; there is no TestFlight
+or App Store release. Testers who need an installable package should use the
+published desktop or Android artifacts in the
+[Alpha testing guide](../../docs/27-alpha-testing.md).
+
 ## Build & test
 
 `KommsCore` (bindings + session layer + e2e) needs only a Swift ≥ 5.9
@@ -266,9 +274,9 @@ default (an iPhone has no serial port; a radio's network API can be
 attached from a `meshtastic`-featured build).
 
 The local release matrix runs the `KommsCore` host e2e and, on a full Xcode
-host, assembles the XCFramework and unsigned simulator app. Hosted repetitions
-remain explicitly gated because private-repository macOS runners are billed at
-a much higher multiplier.
+host, assembles the XCFramework and unsigned simulator app. Per-push hosted CI
+also assembles the unsigned Simulator app as build evidence; neither path is a
+physical-device or distribution qualification.
 
 ## Version and distribution boundary
 

@@ -40,9 +40,11 @@ synchronization boundaries, linked-device authorization/revocation failures,
 and direct-QUIC call-policy or media-authentication bypasses. The intended
 contracts are [09: Implementation Guide §4b–4c](docs/09-implementation-guide.md),
 [22: Linked Devices](docs/22-linked-devices.md), and
-[23: Live Audio Calls](docs/23-live-audio-calls.md). Release signing is currently
-scaffold-only: no official signed binary or update channel exists yet, so a
-third-party binary must not be represented as a supported Komms release.
+[23: Live Audio Calls](docs/23-live-audio-calls.md). Official 0.1 Alpha packages
+are published from tag `v0.1.0`, but desktop production signing/notarization,
+Android release signing, and an update channel remain scaffold-only. Verify
+`SHA256SUMS` from the [official prerelease](https://github.com/AndriGitDev/Komms/releases/tag/v0.1.0);
+a third-party binary must not be represented as an official Komms release.
 
 ## Scope notes
 

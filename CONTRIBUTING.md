@@ -1,9 +1,10 @@
 # Contributing to Komms
 
-Komms is an alpha built from source. Its core, transports, local RPC/CLI and
-UniFFI surfaces, and desktop/Android/iOS shells are implemented, while hardware
-qualification, distribution, broader hardening, and explicitly design-gated
-programs remain.
+Komms 0.1 Alpha is a packaged public prerelease. Its core, transports, local
+RPC/CLI and UniFFI surfaces, and desktop/Android/iOS shells are implemented,
+while hardware qualification, production-signed/store distribution, broader
+hardening, and explicitly design-gated programs remain. Testers can start with
+the [Alpha testing guide](docs/27-alpha-testing.md).
 
 ## Where contributions help
 

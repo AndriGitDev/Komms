@@ -267,9 +267,10 @@ CoreImage and scanning is AVFoundation. The app has zero third-party dependencie
 the only library it links is the workspace's own Rust core, built into
 `KultFFI.xcframework` by a script for device/simulator targets. The local release
 matrix runs the `KommsCore` e2e, assembles the xcframework, and builds the app
-for an unsigned iOS Simulator destination on a full Xcode host. An explicitly
-gated hosted macOS repetition remains available for publication. The app
-target's earlier SwiftUI initializer and
+for an unsigned iOS Simulator destination on a full Xcode host. The explicitly
+authorized hosted macOS job now repeats that Simulator build on each push while
+the `IOS_APP_CI=1` repository gate remains enabled. The app target's earlier
+SwiftUI initializer and
 `SystemConfiguration.framework` linkage failures are fixed and guarded by that
 build. Remaining: a full hands-on SwiftUI messaging pass and an on-device run;
 background delivery and store distribution stay M6.
@@ -326,12 +327,14 @@ panic. `kultd` owns structured `tracing` output under the content-free logging
 policy in [09 §4b](09-implementation-guide.md), and passphrases/restore mnemonics
 can arrive through owner-only files checked on the opened file descriptor and
 held in zeroizing memory. The locked workspaces declare and compile-test MSRV
-1.88. Per-push CI now includes that MSRV gate and a real Android debug APK; a
-weekly workflow rechecks advisories for both Cargo workspaces, the core on macOS,
-and an informational coverage snapshot. All build surfaces identify as `0.1.0`.
-Desktop multi-platform bundle metadata/icons and conditional Android keystore
-inputs are scaffolded, but no signing key, updater, reproducible artifact, or
-store release is claimed. See [24: Local Release Gate](24-local-release-gate.md).
+1.88. Per-push CI now includes that MSRV gate, a real Android debug APK, and the
+currently authorized iOS Simulator build; a weekly workflow rechecks advisories
+for both Cargo workspaces, the core on macOS, and an informational coverage
+snapshot. All build surfaces identify as `0.1.0`. The public Komms 0.1 Alpha
+prerelease contains native desktop packages, the debug-signed Android APK, and
+checksums, but no production signing key, updater, reproducible-artifact claim,
+or store release is claimed. See [24: Local Release Gate](24-local-release-gate.md)
+and [27: Alpha Testing](27-alpha-testing.md).
 
 C2 multi-device is shipped: the stable account signs bounded device manifests,
 every physical endpoint keeps independent pairwise/group cryptographic state,
