@@ -50,14 +50,14 @@ Our full, frank list is in the [threat model](02-threat-model.md).
 
 ## Can I use it today?
 
-As an alpha built from source. There are no supported installers or app-store
-releases yet, but desktop, Android, and iOS shells all exist over the same Rust
-core. Per-push automation exercises the shared core, desktop behavior, generated
-mobile bindings, Android host behavior and debug-APK assembly, and iOS host
-behavior. Full-SDK local gates add Android lint and the unsigned iOS Simulator
-app; the hosted simulator repetition is explicitly gated. Hands-on device
-qualification, signed distribution, the physical radio bench, and the external
-audit remain before a stable release.
+Yes, for Alpha testing. [Komms 0.1 Alpha](https://github.com/AndriGitDev/Komms/releases/tag/v0.1.0)
+has downloadable packages for Windows, macOS, Linux, and Android. Follow the
+[Alpha testing guide](27-alpha-testing.md) to choose a package, verify its
+checksum, install it, and report what you find. The desktop packages are not
+production-signed or notarized, the Android APK is debug-signed, and iOS remains
+source/Simulator-only. Hands-on device qualification, signed and store
+distribution, the physical radio bench, and an external audit remain before a
+stable release.
 
 Messages may use a small safe formatting subset for emphasis, strong text,
 quotes, lists, and code. The exact readable source stays encrypted in history
@@ -114,7 +114,8 @@ fallback, mailboxes, radio, or sneakernet and never become delayed work. Real
 phone/network/audio-route qualification remains before a stable release. See
 [Live Audio Calls](23-live-audio-calls.md).
 
-If you're comfortable with a terminal, the desktop shell is the quickest start:
+The published packages are the quickest start. If you are developing Komms or
+want to inspect it from source, run the desktop shell with:
 
 ```sh
 git clone https://github.com/AndriGitDev/Komms && cd Komms
@@ -137,6 +138,7 @@ Platform build instructions:
 
 | If you want to know… | Read… |
 |---|---|
+| how to install and test the 0.1 Alpha | [Alpha Testing](27-alpha-testing.md) |
 | what Komms promises and why | [Why Komms](01-why.md) |
 | what it protects—and what it cannot | [Threat Model](02-threat-model.md) |
 | how the system is layered | [Architecture](03-architecture.md) |
@@ -155,8 +157,8 @@ Platform build instructions:
 ## How can I help?
 
 - **Not technical?** Read this document and tell us what confused you: that's a
-  real contribution—file it as an issue. Hands-on testing of the source-built
-  apps and their setup instructions matters too.
+  real contribution—file it as an issue. Hands-on testing of the published
+  Alpha packages and their setup instructions matters too.
 - **Organizer / activist?** Read the [threat model](02-threat-model.md) and tell us
   where it doesn't match your reality on the ground.
 - **Developer?** Start with [CONTRIBUTING](../CONTRIBUTING.md) and the

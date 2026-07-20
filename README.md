@@ -15,27 +15,41 @@
 needs no provider and works over the internet, commodity LoRa radios, or a USB
 stick in a pocket.*
 
-**New here?** Read [Start Here](docs/00-start-here.md): the whole idea in plain words,
-no cryptography knowledge required. Then try the demo:
+**New here?** Read [Start Here](docs/00-start-here.md): the whole idea in plain
+words, with no cryptography knowledge required.
 
-```sh
-git clone https://github.com/AndriGitDev/Komms && cd Komms
-cargo run --example sneakernet_demo
-```
+## Install 0.1 Alpha for testing
+
+Open the public
+[Komms 0.1 Alpha release](https://github.com/AndriGitDev/Komms/releases/tag/v0.1.0)
+and download one package:
+
+| System | Choose |
+|---|---|
+| Windows 10/11 x64 | `.msi` or `-setup.exe` |
+| macOS Intel or Apple silicon | universal `.dmg` |
+| Linux x86-64 | `.AppImage`, `.deb`, or `.rpm` |
+| Android 8.0+ | `-android-debug.apk` |
+
+Download `SHA256SUMS` too. These are unsigned/debug-signed Alpha packages, so
+verify the download before accepting an operating-system warning. The
+[Alpha testing guide](docs/27-alpha-testing.md) has exact verification,
+installation, first-test, and issue-reporting steps. No source build is
+required. iOS currently remains source/Simulator-only.
 
 ## Current implementation status
 
-Komms is an alpha built from source, not yet a packaged stable release. The
-current repository contains the complete server-independent messaging core and
-all three application shells:
+Komms 0.1 Alpha is a packaged public prerelease for testing, not an audited
+stable release. The current repository contains the complete
+server-independent messaging core and all three application shells:
 
 | Area | Current state |
 |---|---|
 | **Core and internet/LAN delivery** | M0–M3 are complete: hybrid PQXDH, Double Ratchet, sealed envelopes, encrypted storage, sneakernet, libp2p QUIC/TCP, Kademlia discovery, volunteer mailboxes, NAT traversal, mDNS, `kult-node`, `kultd`, local RPC, CLI, and UniFFI. |
 | **Off-grid delivery** | The M4 Meshtastic carrier, duty-cycle enforcement, selective retransmission, and token-blind internet↔mesh bridge are implemented and tested. The physical two-radio nightly bench still needs to be stood up. |
-| **Applications** | Tauri desktop, Kotlin Android, and SwiftUI iOS alpha shells build from source over the same embedded runtime. Per-push CI exercises the core and desktop workspaces, generated Kotlin/Swift bindings, Android host behavior, a real Android debug APK, and iOS host behavior. The local matrix additionally builds the unsigned iOS Simulator app when Xcode is present; the equivalent hosted macOS job is explicitly gated. Signed installers/store distribution and hands-on device qualification remain. |
+| **Applications** | Tauri desktop packages are published for Windows x64, universal macOS, and Linux x86-64; a debug-signed Android APK supports Android 8+ on arm64 devices and x86-64 emulators. The SwiftUI iOS shell remains source/Simulator-only. Per-push CI exercises the core, desktop, generated bindings, Android APK, and iOS Simulator build. Production signing, store distribution, and hands-on device qualification remain. |
 | **Messaging features** | Pairwise and sender-key group text, authenticated immutable message edits with inspectable version history, disappearing text, view-once attachments, fixed-electorate group polls, signed owner/admin/member authority, note-to-self, scheduled text, attachments, recorded audio, still-image editing, group mentions, and B9 safe text formatting are shipped through the shared APIs and all three shells. Poll votes and voter identities are visible to members—not anonymous—and converge under offline reorder; creators close ordinarily while the current owner can commit a separately signed moderation snapshot. C6 role changes, ownership transfer, and admin requests are owner-serialized, generation-bound, and re-key the group. C4 uses exact local deadlines, coarse authenticated relay deletion hints, terminal tombstones, and KKR6 backup exclusion without promising remote erasure or screenshot prevention. Edits converge without rewriting originals; formatting remains inert. Delivery state remains the honest `queued → sent → delivered` ladder. |
-| **Linked devices** | C2 is shipped through the shared core, strict RPC/CLI, UniFFI, and all three shells: one stable account can authorize up to eight independently keyed devices through a mutually confirmed QR/paste ceremony. Pairwise sessions, group sender chains, capability state, and delivery rows remain per physical device; encrypted explicit sync converges contacts, private organization, ordinary history, edits, polls, authority, and terminal tombstones without a cloud account. Permanent exact-device revocation and KKR7 recovery never resurrect old credentials. Android APK and unsigned iOS Simulator builds are automated release evidence; hands-on device qualification remains. |
+| **Linked devices** | C2 is shipped through the shared core, strict RPC/CLI, UniFFI, and all three shells: one stable account can authorize up to eight independently keyed devices through a mutually confirmed QR/paste ceremony. Pairwise sessions, group sender chains, capability state, and delivery rows remain per physical device; encrypted explicit sync converges contacts, private organization, ordinary history, edits, polls, authority, and terminal tombstones without a cloud account. Permanent exact-device revocation and KKR7 recovery never resurrect old credentials. The published Android APK and automated iOS Simulator build provide release evidence; hands-on device qualification remains. |
 | **Live audio calls** | C7 audio is shipped through direct libp2p QUIC, transient ratcheted signaling, authenticated per-call media, RPC/CLI, UniFFI, desktop, Android, and iOS. Calls never use TCP, relay-only, mailbox, sneakernet, or LoRa paths; they create no chat history or backup state and use no coordinator, SFU, STUN/TURN, or project service. Real-NAT, handoff, battery, audio-route, and device qualification remain alpha release gates; video remains later work. |
 | **Attachment safety** | C1 safe file presentation is shipped over the unchanged sealed F3/F4 pipeline. Sender filenames/types remain untrusted hints; mismatched, active, unknown, or nameless files are export-only, recognized external opening is explicit and warns that no malware scan is promised, and no file auto-opens or creates mesh airtime. |
 | **Private contact names** | B5 contact rename is shipped across node, RPC/CLI, UniFFI, desktop, Android, and iOS. Petnames are NFC-normalized, duplicate-capable private local labels; spoofing-risk warnings require explicit review, exact peer keys remain authoritative, and rename creates no protocol or transport work. Optional signed self-display suggestions remain deferred. |
@@ -44,7 +58,7 @@ all three application shells:
 | **Private custom icons** | B13 contact, group, folder, and note-to-self icons are shipped across the sealed F5 record, node, RPC/CLI, UniFFI, desktop, Android, and iOS. Generated initials are the safe fallback; eight bundled glyphs or selected local JPEG/PNG inputs become strict metadata-free 256×256 PNGs under per-icon/count/aggregate quotas. Icons create zero remote lookup, peer sync, notification, or transport work; portability is limited to `KKR7` and explicit authenticated own-device C2 sync. |
 | **Screen security** | B14 is shipped as an always-on pre-unlock policy across the shared capability contract, RPC/CLI, UniFFI, and every shell. Android applies `FLAG_SECURE` to every activity; iOS obscures inactive/app-switcher and live-captured scenes without claiming universal screenshot blocking; desktop requests best-effort native content protection, shields on focus loss, and locks immediately with `Ctrl/Cmd+Shift+L`. OS, compositor, privileged-software, and external-camera limits remain explicit. |
 | **Input privacy** | B15 is shipped as an always-on pre-unlock policy across the shared capability contract, RPC/CLI, UniFFI, and every textual field. Android requests `IME_FLAG_NO_PERSONALIZED_LEARNING` and no suggestions; iOS disables correction and uses secure passphrase/mnemonic fields; desktop disables webview autocomplete, correction, capitalization, and spellcheck. Keyboard, OS, webview, and writing-tool limits remain explicit. |
-| **Runtime and release assurance** | The headless runtime recovers poisoned synchronization locks instead of cascading a panic, emits policy-bounded structured diagnostics through `tracing`, and accepts passphrases/restore mnemonics from owner-only secret files. Rust 1.88 is the declared and tested MSRV. The core, desktop, Android, and iOS surfaces report `0.1.0`; a tag-driven candidate pipeline builds native Windows/macOS/Linux packages, an installable Android test APK, and validates a self-hosted `kultd` container. Qualified publication adds the Linux amd64/arm64 image to GHCR. Packages remain alpha artifacts until their draft is qualified and explicitly published; Windows signing, store distribution, and an updater are not configured. Per-push CI, the complete local matrix, and a weekly advisory/macOS/coverage workflow provide complementary evidence. |
+| **Runtime and release assurance** | The headless runtime recovers poisoned synchronization locks instead of cascading a panic, emits policy-bounded structured diagnostics through `tracing`, and accepts passphrases/restore mnemonics from owner-only secret files. Rust 1.88 is the declared and tested MSRV. Version `0.1.0` is published as a GitHub prerelease with native Windows/macOS/Linux packages, an installable Android test APK, checksums, and a public Linux amd64/arm64 `kultd` image. These are Alpha artifacts: Windows signing, store distribution, an updater, and stable support promises are not configured. Per-push CI, the complete local matrix, and a weekly advisory/macOS/coverage workflow provide complementary evidence. |
 | **Optional mobile convenience** | ADR-0017 through ADR-0019 propose reversible post-pairing rendezvous and content-free native wake. The layer is design-only: no optional service is implemented or required by the sovereign core. |
 
 Older `KKR1` through `KKR6` backups remain restorable; current backups are
@@ -110,6 +124,7 @@ out plainly in [Why Komms](docs/01-why.md).
 | [24: Local Release Gate](docs/24-local-release-gate.md) | Toolchains, complete local validation, CI/audit evidence, SDK deferrals, signing boundary, and publication discipline |
 | [25: Release Runbook](docs/25-release-runbook.md) | Versioning, native desktop/APK artifact builds, signing inputs, qualification, and explicit publication |
 | [26: Self-hosting](docs/26-self-hosting.md) | Hardened Docker Compose deployment, ports, secret initialization, node modes, and Alpha limits |
+| [27: Alpha Testing](docs/27-alpha-testing.md) | Download verification, installation, smoke testing, issue reporting, and self-hosted image quick start |
 | [ADRs](docs/adr/README.md) | Decision index, status, and the alternatives each decision beat |
 
 ## Stack
@@ -165,10 +180,11 @@ division between local checks, per-push CI, weekly audit evidence, physical
 qualification, and signing is documented in the
 [local release gate](docs/24-local-release-gate.md).
 
-The **Komms 0.1 Alpha** candidate is built from tag `v0.1.0` on native Windows,
-macOS, Linux, and Android runners. Its qualified prerelease also publishes the
-Linux amd64/arm64 self-hosting image
-`ghcr.io/andrigitdev/komms-kultd:0.1-alpha`. See the
+The **Komms 0.1 Alpha** prerelease was built from tag `v0.1.0` on native Windows,
+macOS, Linux, and Android runners. Install it using the
+[Alpha testing guide](docs/27-alpha-testing.md). Its public Linux amd64/arm64
+self-hosting image is available as the immutable
+`ghcr.io/andrigitdev/komms-kultd:0.1.0` tag and the `0.1-alpha`/`alpha` aliases. See the
 [release runbook](docs/25-release-runbook.md) for the version bump,
 APK/installer/container, signing, checksum, smoke-test, and publication process,
 or the [self-hosting guide](docs/26-self-hosting.md) to run `kultd`.

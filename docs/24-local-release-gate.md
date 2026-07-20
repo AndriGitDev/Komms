@@ -83,8 +83,8 @@ Hosted automation complements the local checkpoint:
 - `.github/workflows/ci.yml` repeats core/desktop format, lint, tests,
   `no_std`, dependency policy, fuzz smoke, generated Android/iOS host suites,
   MSRV 1.88, and Android debug-APK assembly;
-- the iOS Simulator job exists behind the `IOS_APP_CI=1` repository variable so
-  a maintainer can authorize the higher-cost macOS repetition;
+- the iOS Simulator job remains gated by the `IOS_APP_CI=1` repository variable;
+  it is enabled for the current per-push release evidence;
 - `.github/workflows/audit.yml` runs weekly and on demand: advisories for both
   Cargo workspaces, core tests on macOS, and an informational coverage snapshot;
   and
@@ -100,7 +100,10 @@ was not exercised, or one of the external gates above.
 All current build surfaces report `0.1.0`: the Cargo workspace and desktop
 crate, Tauri bundle, Android `versionName`, and iOS short version. CI and the
 local matrix enforce that alignment with `scripts/check-release-version.py`.
-This alignment does not make 0.1.0 a supported binary release.
+Version `0.1.0` is now published as the **Komms 0.1 Alpha** prerelease from tag
+`v0.1.0`. Version alignment alone still does not qualify a build or make a
+future artifact an official release; publication applies only to the exact
+qualified tag and assets. See the [published release](https://github.com/AndriGitDev/Komms/releases/tag/v0.1.0).
 
 - `.github/workflows/release.yml` builds the configured desktop bundles on
   native Linux, macOS, and Windows runners, plus an installable Android debug
