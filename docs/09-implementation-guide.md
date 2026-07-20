@@ -35,6 +35,10 @@ design doc wins and the conflict is a bug—file it.
 
 ## 2. Build order
 
+The `kult-*` crate prefix refers to **Komms Ubiquitous Link Transmission**; the
+layer boundaries and responsibilities are defined in
+[03: Architecture](03-architecture.md).
+
 The original dependency order remains the rule for new lower-layer capability:
 `kult-crypto` → `kult-protocol` + `kult-store` (parallel-safe) → `kult-node`
 → transports → `kult-ffi`/RPC → apps. Existing features may touch several layers

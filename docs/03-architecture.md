@@ -7,6 +7,11 @@ operated by the project or any single party. Optional post-pairing rendezvous
 and native-wake services may accelerate mobile reachability under ADR-0017, but
 they are neither message transports nor dependencies of the core.
 
+The internal Rust crates use the `kult-*` prefix. **KULT** expands to **Komms
+Ubiquitous Link Transmission**: the shared system that carries one protected
+conversation across applications, cryptography, storage, and interchangeable
+online or off-grid links.
+
 ## 1. Layer model
 
 ```mermaid
