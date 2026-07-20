@@ -1,0 +1,249 @@
+name: release candidates
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vMAJOR.MINOR.PATCH tag to build
+        required: true
+        type: string
+      publish:
+        description: Publish the completed draft as a public prerelease
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  prepare:
+    name: validate tag and prepare draft
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.release.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+      - name: Validate aligned application versions
+        run: python3 scripts/check-release-version.py "$RELEASE_TAG"
+      - name: Require an existing annotated or lightweight tag
+        run: git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"
+      - name: Create or reuse a draft prerelease
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft >/tmp/komms-release-draft; then
+            if [[ "$(</tmp/komms-release-draft)" != "true" ]]; then
+              echo "Release $RELEASE_TAG is already public; refusing to replace its assets." >&2
+              exit 1
+            fi
+          else
+            version="${RELEASE_TAG#v}"
+            series="${version%.*}"
+            gh release create "$RELEASE_TAG" \
+              --verify-tag \
+              --draft \
+              --prerelease \
+              --title "Komms $series Alpha" \
+              --notes-file .github/release-body.md
+          fi
+          release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq .id)"
+          echo "id=$release_id" >> "$GITHUB_OUTPUT"
+
+  desktop:
+    name: desktop (${{ matrix.name }})
+    needs: prepare
+    if: github.event_name != 'workflow_dispatch' || inputs.publish != true
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            runner: ubuntu-22.04
+            rust_targets: ""
+            args: --bundles deb,rpm,appimage
+          - name: macOS universal
+            runner: macos-15
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            args: --target universal-apple-darwin --bundles app,dmg
+          - name: Windows x86_64
+            runner: windows-latest
+            rust_targets: ""
+            args: --bundles msi,nsis
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - name: Install Linux bundle dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev patchelf rpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - name: Build and upload native installers
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: apps/desktop/src-tauri
+          releaseId: ${{ needs.prepare.outputs.release_id }}
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseDraft: true
+          prerelease: true
+          args: ${{ matrix.args }}
+          releaseAssetNamePattern: Komms-[version]-[platform]-[arch][setup][ext]
+
+  android:
+    name: Android APK
+    needs: prepare
+    if: github.event_name != 'workflow_dispatch' || inputs.publish != true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      KOMMS_ANDROID_KEYSTORE_BASE64: ${{ secrets.KOMMS_ANDROID_KEYSTORE_BASE64 }}
+      KOMMS_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.KOMMS_ANDROID_KEYSTORE_PASSWORD }}
+      KOMMS_ANDROID_KEY_ALIAS: ${{ secrets.KOMMS_ANDROID_KEY_ALIAS }}
+      KOMMS_ANDROID_KEY_PASSWORD: ${{ secrets.KOMMS_ANDROID_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.14.3"
+      - name: Assemble test APK and optional signed release artifacts
+        working-directory: apps/android
+        run: |
+          version="${RELEASE_TAG#v}"
+          mkdir -p release-assets
+          gradle :app:assembleDebug :app:lintDebug -Pkomms.androidApp=true
+          install -m 0644 app/build/outputs/apk/debug/app-debug.apk \
+            "release-assets/Komms-$version-android-debug.apk"
+
+          if [[ -n "$KOMMS_ANDROID_KEYSTORE_BASE64" ]]; then
+            for required in \
+              KOMMS_ANDROID_KEYSTORE_PASSWORD \
+              KOMMS_ANDROID_KEY_ALIAS \
+              KOMMS_ANDROID_KEY_PASSWORD; do
+              if [[ -z "${!required}" ]]; then
+                echo "$required is required when KOMMS_ANDROID_KEYSTORE_BASE64 is set" >&2
+                exit 1
+              fi
+            done
+            keystore="$RUNNER_TEMP/komms-release.jks"
+            printf '%s' "$KOMMS_ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+            export KOMMS_ANDROID_KEYSTORE="$keystore"
+            gradle :app:assembleRelease :app:bundleRelease -Pkomms.androidApp=true
+            install -m 0644 app/build/outputs/apk/release/app-release.apk \
+              "release-assets/Komms-$version-android-release.apk"
+            install -m 0644 app/build/outputs/bundle/release/app-release.aab \
+              "release-assets/Komms-$version-android-release.aab"
+          fi
+      - name: Upload Android artifacts
+        working-directory: apps/android
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" release-assets/* --clobber
+
+  finalize:
+    name: checksum draft
+    needs: [prepare, desktop, android]
+    if: github.event_name != 'workflow_dispatch' || inputs.publish != true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download uploaded assets and create checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir release-assets
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir release-assets
+          (
+            cd release-assets
+            find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' \
+              | sort -z \
+              | xargs -0 -r sha256sum
+          ) > SHA256SUMS
+          gh release upload "$RELEASE_TAG" SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+      - name: Report draft release
+        run: echo "Release $RELEASE_TAG is complete and remains a draft for maintainer review."
+
+  publish:
+    name: publish qualified prerelease
+    needs: prepare
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Require a complete candidate and publish it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets="$(gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json assets \
+            --jq '.assets[].name')"
+          for pattern in \
+            'SHA256SUMS$' \
+            '\.apk$' \
+            '\.dmg$' \
+            '\.(msi|exe)$' \
+            '\.AppImage$' \
+            '\.deb$' \
+            '\.rpm$'; do
+            if ! grep -Eq "$pattern" <<< "$assets"; then
+              echo "Draft $RELEASE_TAG is incomplete: no asset matches $pattern" >&2
+              exit 1
+            fi
+          done
+          gh release edit "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false \
+            --prerelease

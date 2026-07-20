@@ -20,6 +20,7 @@ run_in() {
 
 export RUSTFLAGS="${RUSTFLAGS:--D warnings}"
 
+run_in "$root" python3 scripts/check-release-version.py
 run_in "$root" cargo fmt --all -- --check
 run_in "$root" cargo clippy --workspace --all-targets --all-features
 run_in "$root" cargo test --workspace --all-features

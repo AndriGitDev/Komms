@@ -838,7 +838,7 @@ impl Client {
         loop {
             let line = tokio::time::timeout(Duration::from_secs(30), self.lines.next_line())
                 .await
-                .expect("response timeout")
+                .unwrap_or_else(|_| panic!("response timeout for request: {request}"))
                 .expect("read")
                 .expect("eof");
             let value: Value = serde_json::from_str(&line).expect("json");

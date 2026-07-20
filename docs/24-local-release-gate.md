@@ -72,7 +72,8 @@ test:
 - the physical two-radio Meshtastic bench;
 - real distinct-NAT/DCUtR and live-call network/audio-route matrices;
 - hands-on Android/iOS accessibility, lifecycle, and device qualification;
-- reproducible installer/store artifacts; and
+- hands-on qualification of the tag-built installer/APK artifacts;
+- signed/store artifacts and reproducibility evidence; and
 - an independent security audit.
 
 ## 4. Hosted evidence
@@ -97,23 +98,30 @@ was not exercised, or one of the external gates above.
 ## 5. Version, packaging, and signing boundary
 
 All current build surfaces report `0.1.0`: the Cargo workspace and desktop
-crate, Tauri bundle, Android `versionName`, and iOS short version. This alignment
-does not make 0.1.0 a supported binary release.
+crate, Tauri bundle, Android `versionName`, and iOS short version. CI and the
+local matrix enforce that alignment with `scripts/check-release-version.py`.
+This alignment does not make 0.1.0 a supported binary release.
 
-- Desktop bundle targets and platform icon files are configured for Linux,
-  macOS, and Windows. No certificate, notarization credential, package-repository
-  signature, or updater endpoint is configured.
+- `.github/workflows/release.yml` builds the configured desktop bundles on
+  native Linux, macOS, and Windows runners, plus an installable Android debug
+  APK. It creates checksums and holds each candidate as a draft until an
+  explicit manual publication run. See the
+  [release runbook](25-release-runbook.md).
+- macOS signing/notarization is conditional on maintainer secrets. Windows
+  Authenticode, Linux package-repository signatures, and an updater endpoint
+  are not configured.
 - Android release signing is conditional. A maintainer may supply the
   git-ignored `apps/android/keystore.properties` file or the
-  `KOMMS_ANDROID_KEYSTORE*` environment variables described in the Android
-  README. Without them, release builds remain unsigned and debug/CI builds are
-  unchanged.
+  `KOMMS_ANDROID_KEYSTORE*` environment variables locally. CI accepts the
+  base64 keystore and password secrets described in the release runbook.
+  Without them, the always-produced debug APK remains explicitly test-only.
 - The iOS gate builds an unsigned Simulator application. App Store signing,
   provisioning, notarized distribution, and store metadata are not configured.
 
 Signing keys and credentials never enter the repository. Reproducible signed
-artifacts, store/package-manager publication, provenance, and update-channel
-policy remain M6 work and must not be implied by the existing scaffolds.
+artifacts, Windows signing, store/package-manager publication, stronger
+provenance, and update-channel policy remain M6 work and must not be implied by
+the candidate pipeline.
 
 ## 6. Publication discipline
 

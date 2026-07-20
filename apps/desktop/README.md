@@ -195,6 +195,12 @@ targets cover every desktop platform (`.deb`, `.rpm`, AppImage, `.app`,
 `.dmg`, `.msi`, NSIS); Tauri builds only the targets native to the host OS
 and skips the rest.
 
+For a shared candidate, the tag-driven release workflow builds those formats on
+native Linux, macOS, and Windows runners, adds checksums, and holds the result as
+a draft. Follow the [release runbook](../../docs/25-release-runbook.md); a
+successful build alone is not permission to publish or a claim that an unsigned
+package is production-ready.
+
 ## Packaging and signing (scaffold)
 
 The package identifier is `is.andri.komms` and the current version is `0.1.0`,
