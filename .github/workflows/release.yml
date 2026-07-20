@@ -134,16 +134,30 @@ jobs:
               exit 1
             fi
           done
-      - name: Build and upload native installers
+      - name: Build and upload unsigned native installers
+        if: runner.os != 'macOS' || vars.KOMMS_APPLE_SIGNING_ENABLED != '1'
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          APPLE_CERTIFICATE: ${{ vars.KOMMS_APPLE_SIGNING_ENABLED == '1' && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ vars.KOMMS_APPLE_SIGNING_ENABLED == '1' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ vars.KOMMS_APPLE_SIGNING_ENABLED == '1' && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_ID: ${{ vars.KOMMS_APPLE_SIGNING_ENABLED == '1' && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ vars.KOMMS_APPLE_SIGNING_ENABLED == '1' && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ vars.KOMMS_APPLE_SIGNING_ENABLED == '1' && secrets.APPLE_TEAM_ID || '' }}
+        with:
+          projectPath: apps/desktop/src-tauri
+          releaseId: ${{ needs.prepare.outputs.release_id }}
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseDraft: true
+          prerelease: true
+          args: ${{ matrix.args }}
+          releaseAssetNamePattern: Komms-[version]-[platform]-[arch][setup][ext]
+      - name: Build and upload signed macOS installers
+        if: runner.os == 'macOS' && vars.KOMMS_APPLE_SIGNING_ENABLED == '1'
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: apps/desktop/src-tauri
           releaseId: ${{ needs.prepare.outputs.release_id }}
@@ -245,6 +259,8 @@ jobs:
           gh release download "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --dir release-assets
+          # The output is in the parent directory, not the searched directory.
+          # shellcheck disable=SC2094
           (
             cd release-assets
             find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' \
