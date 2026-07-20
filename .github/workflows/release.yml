@@ -118,16 +118,32 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: apps/desktop/src-tauri
+      - name: Validate optional Apple signing inputs
+        if: runner.os == 'macOS' && vars.KOMMS_APPLE_SIGNING_ENABLED == '1'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          for required in \
+            APPLE_CERTIFICATE \
+            APPLE_CERTIFICATE_PASSWORD \
+            APPLE_SIGNING_IDENTITY; do
+            if [[ -z "${!required}" ]]; then
+              echo "$required is required when KOMMS_APPLE_SIGNING_ENABLED=1" >&2
+              exit 1
+            fi
+          done
       - name: Build and upload native installers
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_CERTIFICATE: ${{ vars.KOMMS_APPLE_SIGNING_ENABLED == '1' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ vars.KOMMS_APPLE_SIGNING_ENABLED == '1' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.KOMMS_APPLE_SIGNING_ENABLED == '1' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ vars.KOMMS_APPLE_SIGNING_ENABLED == '1' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ vars.KOMMS_APPLE_SIGNING_ENABLED == '1' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ vars.KOMMS_APPLE_SIGNING_ENABLED == '1' && secrets.APPLE_TEAM_ID || '' }}
         with:
           projectPath: apps/desktop/src-tauri
           releaseId: ${{ needs.prepare.outputs.release_id }}
@@ -145,10 +161,11 @@ jobs:
     permissions:
       contents: write
     env:
-      KOMMS_ANDROID_KEYSTORE_BASE64: ${{ secrets.KOMMS_ANDROID_KEYSTORE_BASE64 }}
-      KOMMS_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.KOMMS_ANDROID_KEYSTORE_PASSWORD }}
-      KOMMS_ANDROID_KEY_ALIAS: ${{ secrets.KOMMS_ANDROID_KEY_ALIAS }}
-      KOMMS_ANDROID_KEY_PASSWORD: ${{ secrets.KOMMS_ANDROID_KEY_PASSWORD }}
+      KOMMS_ANDROID_SIGNING_ENABLED: ${{ vars.KOMMS_ANDROID_SIGNING_ENABLED }}
+      KOMMS_ANDROID_KEYSTORE_BASE64: ${{ vars.KOMMS_ANDROID_SIGNING_ENABLED == '1' && secrets.KOMMS_ANDROID_KEYSTORE_BASE64 || '' }}
+      KOMMS_ANDROID_KEYSTORE_PASSWORD: ${{ vars.KOMMS_ANDROID_SIGNING_ENABLED == '1' && secrets.KOMMS_ANDROID_KEYSTORE_PASSWORD || '' }}
+      KOMMS_ANDROID_KEY_ALIAS: ${{ vars.KOMMS_ANDROID_SIGNING_ENABLED == '1' && secrets.KOMMS_ANDROID_KEY_ALIAS || '' }}
+      KOMMS_ANDROID_KEY_PASSWORD: ${{ vars.KOMMS_ANDROID_SIGNING_ENABLED == '1' && secrets.KOMMS_ANDROID_KEY_PASSWORD || '' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -175,8 +192,9 @@ jobs:
           install -m 0644 app/build/outputs/apk/debug/app-debug.apk \
             "release-assets/Komms-$version-android-debug.apk"
 
-          if [[ -n "$KOMMS_ANDROID_KEYSTORE_BASE64" ]]; then
+          if [[ "$KOMMS_ANDROID_SIGNING_ENABLED" == "1" ]]; then
             for required in \
+              KOMMS_ANDROID_KEYSTORE_BASE64 \
               KOMMS_ANDROID_KEYSTORE_PASSWORD \
               KOMMS_ANDROID_KEY_ALIAS \
               KOMMS_ANDROID_KEY_PASSWORD; do
