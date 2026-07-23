@@ -111,6 +111,96 @@ async fn establish(alice: &mut Node, bob: &mut Node, bob_id: [u8; 32], rng: &mut
 }
 
 #[tokio::test]
+async fn ten_megabyte_image_advances_on_progress_without_retry_timer_stalls() {
+    let mut rng = StdRng::seed_from_u64(0x1500);
+    let dir = tempfile::tempdir().unwrap();
+    let net: Net = Arc::new(Mutex::new(HashMap::new()));
+    let mut alice =
+        Node::create(&dir.path().join("alice.db"), b"alice", TEST_KDF, &mut rng).unwrap();
+    let mut bob = Node::create(&dir.path().join("bob.db"), b"bob", TEST_KDF, &mut rng).unwrap();
+    alice.add_transport(Arc::new(Link::new(&net, 1, CostClass::Metered)));
+    bob.add_transport(Arc::new(Link::new(&net, 2, CostClass::Metered)));
+
+    let alice_bundle = alice.handshake_bundle(NOW, &mut rng).unwrap();
+    let bob_bundle = bob.handshake_bundle(NOW, &mut rng).unwrap();
+    let bob_id = alice
+        .add_contact(
+            "bob",
+            &bob_bundle,
+            &[DeliveryHint::MeshNode(2)],
+            NOW,
+            &mut rng,
+        )
+        .unwrap();
+    bob.add_contact(
+        "alice",
+        &alice_bundle,
+        &[DeliveryHint::MeshNode(1)],
+        NOW,
+        &mut rng,
+    )
+    .unwrap();
+    establish(&mut alice, &mut bob, bob_id, &mut rng).await;
+
+    let bytes: Vec<u8> = (0..(10 * 1024 * 1024))
+        .map(|index| (index % 251) as u8)
+        .collect();
+    let content_id = alice
+        .send_attachment(
+            &bob_id,
+            &AttachmentMetadata {
+                media_type: "image/jpeg".to_owned(),
+                filename: Some("ten-megabyte-photo.jpg".to_owned()),
+            },
+            &mut Cursor::new(&bytes),
+            NOW + 10,
+            &mut rng,
+        )
+        .unwrap();
+    alice.tick(NOW + 11, &mut rng).await.unwrap();
+    let events = bob.tick(NOW + 12, &mut rng).await.unwrap();
+    let transfer_id = events
+        .iter()
+        .find_map(|event| match event {
+            Event::MessageReceived {
+                content: ContentStatus::Attachment { id, transfer },
+                ..
+            } if *id == content_id => Some(*transfer),
+            _ => None,
+        })
+        .expect("attachment offer");
+
+    bob.accept_attachment(&transfer_id, NOW + 13, &mut rng)
+        .unwrap();
+    bob.tick(NOW + 14, &mut rng).await.unwrap();
+
+    let mut windows = 0usize;
+    for window in 0..32u64 {
+        alice.tick(NOW + 15 + window * 2, &mut rng).await.unwrap();
+        bob.tick(NOW + 16 + window * 2, &mut rng).await.unwrap();
+        windows += 1;
+        let state = bob
+            .attachments()
+            .unwrap()
+            .into_iter()
+            .find(|attachment| attachment.transfer_id == transfer_id)
+            .unwrap()
+            .state;
+        if state == MediaTransferState::Complete {
+            break;
+        }
+    }
+
+    assert!(
+        windows <= 27,
+        "10 MiB should advance with each eight-chunk window, not wait 30 seconds between windows"
+    );
+    let mut exported = Vec::new();
+    bob.export_attachment(&transfer_id, &mut exported).unwrap();
+    assert_eq!(exported, bytes);
+}
+
+#[tokio::test]
 async fn pairwise_attachment_resumes_after_restart_and_exports_exact_bytes() {
     let mut rng = StdRng::seed_from_u64(0x1501);
     let dir = tempfile::tempdir().unwrap();
@@ -143,7 +233,9 @@ async fn pairwise_attachment_resumes_after_restart_and_exports_exact_bytes() {
     .unwrap();
     establish(&mut alice, &mut bob, bob_id, &mut rng).await;
 
-    let bytes: Vec<u8> = (0..(kult_crypto::ATTACHMENT_CHUNK_DATA_LEN * 9 + 7))
+    // Keep more than two request windows so the restart window still leaves
+    // verified work pending for the 30-day idle-pause assertion below.
+    let bytes: Vec<u8> = (0..(kult_crypto::ATTACHMENT_CHUNK_DATA_LEN * 17 + 7))
         .map(|index| (index % 251) as u8)
         .collect();
     let preview = b"bounded locally-generated jpeg preview".to_vec();

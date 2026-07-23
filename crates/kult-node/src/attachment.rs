@@ -923,6 +923,7 @@ impl Node {
                 self.store.delete_media_transfer_with_objects(transfer)?;
             }
             self.attachment_request_at.remove(transfer);
+            self.attachment_request_target.remove(transfer);
         }
         self.events.push_back(Event::EphemeralRemoved {
             conversation: record.conversation,
@@ -1034,6 +1035,7 @@ impl Node {
         self.store
             .set_media_transfer_state(transfer_id, MediaTransferState::Paused, now, rng)?;
         self.attachment_request_at.remove(transfer_id);
+        self.attachment_request_target.remove(transfer_id);
         self.emit_attachment_update(transfer_id)
     }
 
@@ -1069,6 +1071,7 @@ impl Node {
         self.store
             .set_media_transfer_state(transfer_id, state, now, rng)?;
         self.attachment_request_at.remove(transfer_id);
+        self.attachment_request_target.remove(transfer_id);
         self.emit_attachment_update(transfer_id)
     }
 
@@ -1222,6 +1225,9 @@ impl Node {
                                 })) =>
                 {
                     let mut queued = false;
+                    let verified_before =
+                        self.verified_attachment_chunk_count(&transfer.local_id)?;
+                    let mut requested_chunks = 0usize;
                     for object in self.store.media_objects_for_transfer(&transfer.local_id)? {
                         if object.state == MediaTransferState::Complete {
                             let role = role_from_u8(object.role)?;
@@ -1246,6 +1252,9 @@ impl Node {
                         if ranges.is_empty() {
                             continue;
                         }
+                        requested_chunks = requested_chunks.saturating_add(
+                            missing_chunk_count(&ranges).min(MAX_CHUNKS_PER_REQUEST),
+                        );
                         let role = role_from_u8(object.role)?;
                         let record = self.bulk_record(
                             transfer,
@@ -1271,6 +1280,14 @@ impl Node {
                             transfer.updated_at,
                             rng,
                         )?;
+                        if requested_chunks == 0 {
+                            self.attachment_request_target.remove(&transfer.local_id);
+                        } else {
+                            self.attachment_request_target.insert(
+                                transfer.local_id,
+                                verified_before.saturating_add(requested_chunks),
+                            );
+                        }
                         self.attachment_request_at.insert(transfer.local_id, now);
                         self.emit_attachment_update(&transfer.local_id)?;
                     }
@@ -1522,6 +1539,20 @@ impl Node {
                     Some(MediaRecord::Available(stored)) => stored,
                     _ => return Err(NodeError::UnknownAttachment),
                 };
+                if let Some(target) = self
+                    .attachment_request_target
+                    .get(&transfer.local_id)
+                    .copied()
+                {
+                    let verified = self.verified_attachment_chunk_count(&transfer.local_id)?;
+                    if verified >= target {
+                        // The bounded window made progress. Let this same
+                        // receive tick request the next window instead of
+                        // treating the 30-second loss-retry timer as pacing.
+                        self.attachment_request_at.remove(&transfer.local_id);
+                        self.attachment_request_target.remove(&transfer.local_id);
+                    }
+                }
                 if stored.chunk_addresses.iter().all(Option::is_some) {
                     let mut hasher = blake3::Hasher::new();
                     for chunk_index in 0..stored.chunk_count {
@@ -1990,7 +2021,23 @@ impl Node {
             rng,
         )?;
         self.attachment_request_at.remove(&transfer.local_id);
+        self.attachment_request_target.remove(&transfer.local_id);
         self.emit_attachment_update(&transfer.local_id)
+    }
+
+    fn verified_attachment_chunk_count(&self, transfer_id: &[u8; 16]) -> Result<usize> {
+        Ok(self
+            .store
+            .media_objects_for_transfer(transfer_id)?
+            .iter()
+            .map(|object| {
+                object
+                    .chunk_addresses
+                    .iter()
+                    .filter(|address| address.is_some())
+                    .count()
+            })
+            .sum())
     }
 
     fn attachment_manifest_was_queued(&self, transfer: &MediaTransferRecord) -> Result<bool> {
@@ -2117,6 +2164,13 @@ fn missing_ranges(object: &MediaObjectRecord) -> Vec<MissingRange> {
         });
     }
     ranges
+}
+
+fn missing_chunk_count(ranges: &[MissingRange]) -> usize {
+    ranges
+        .iter()
+        .map(|range| range.count as usize)
+        .fold(0usize, usize::saturating_add)
 }
 
 fn attachment_ephemeral_retention(body: &[u8]) -> Option<u64> {

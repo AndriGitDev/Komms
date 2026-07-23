@@ -13,6 +13,19 @@ use tokio::net::UnixStream;
 
 use kultd::{Daemon, DaemonConfig};
 
+// Each scenario launches one or more full libp2p daemons whose node actors
+// permanently occupy Tokio blocking threads. Running the whole file with the
+// test harness's default parallelism can create roughly thirty daemons at
+// once, starving healthy RPC actors long enough to trip client timeouts.
+static RPC_TEST_PERMIT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
+async fn serial_rpc_test() -> tokio::sync::SemaphorePermit<'static> {
+    RPC_TEST_PERMIT
+        .acquire()
+        .await
+        .expect("RPC test semaphore remains open")
+}
+
 fn label_parity_fixture() -> Value {
     serde_json::from_str(include_str!("../../../fixtures/b18-label-parity.json"))
         .expect("valid shared B18 label fixture")
@@ -82,6 +95,7 @@ fn ephemeral_parity_fixture() -> Value {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn linked_device_ceremony_and_sync_via_strict_rpc_only() {
+    let _serial = serial_rpc_test().await;
     let directory = tempfile::tempdir().unwrap();
     let source = Daemon::start(test_config(directory.path(), "device-rpc-source"))
         .await
@@ -202,6 +216,7 @@ async fn linked_device_ceremony_and_sync_via_strict_rpc_only() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn file_presentation_via_strict_rpc_matches_shared_fail_closed_policy() {
+    let _serial = serial_rpc_test().await;
     let fixture = file_presentation_parity_fixture();
     let directory = tempfile::tempdir().unwrap();
     let daemon = Daemon::start(test_config(directory.path(), "file-presentation-rpc"))
@@ -229,6 +244,7 @@ async fn file_presentation_via_strict_rpc_matches_shared_fail_closed_policy() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn safe_text_formatting_via_strict_rpc_matches_shared_corpus_without_delivery_work() {
+    let _serial = serial_rpc_test().await;
     let fixture = text_formatting_parity_fixture();
     let directory = tempfile::tempdir().unwrap();
     let daemon = Daemon::start(test_config(directory.path(), "text-formatting-rpc"))
@@ -271,6 +287,7 @@ async fn safe_text_formatting_via_strict_rpc_matches_shared_corpus_without_deliv
 
 #[tokio::test(flavor = "multi_thread")]
 async fn private_contact_rename_via_strict_rpc_is_normalized_warned_and_delivery_free() {
+    let _serial = serial_rpc_test().await;
     let fixture = contact_rename_parity_fixture();
     let directory = tempfile::tempdir().unwrap();
     let alice = Daemon::start(test_config(directory.path(), "contact-rename-rpc-alice"))
@@ -349,6 +366,7 @@ async fn private_contact_rename_via_strict_rpc_is_normalized_warned_and_delivery
 
 #[tokio::test(flavor = "multi_thread")]
 async fn direct_quic_call_lifecycle_and_opus_via_rpc_only() {
+    let _serial = serial_rpc_test().await;
     let dir = tempfile::tempdir().unwrap();
     let alice = Daemon::start(test_config(dir.path(), "alice"))
         .await
@@ -553,6 +571,7 @@ async fn direct_quic_call_lifecycle_and_opus_via_rpc_only() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn incognito_keyboard_policy_via_strict_rpc_matches_platforms_without_delivery_work() {
+    let _serial = serial_rpc_test().await;
     let fixture = incognito_keyboard_parity_fixture();
     let directory = tempfile::tempdir().unwrap();
     let daemon = Daemon::start(test_config(directory.path(), "incognito-keyboard-rpc"))
@@ -585,6 +604,7 @@ async fn incognito_keyboard_policy_via_strict_rpc_matches_platforms_without_deli
 
 #[tokio::test(flavor = "multi_thread")]
 async fn screen_security_policy_via_strict_rpc_matches_all_platforms_without_delivery_work() {
+    let _serial = serial_rpc_test().await;
     let fixture = screen_security_parity_fixture();
     let directory = tempfile::tempdir().unwrap();
     let daemon = Daemon::start(test_config(directory.path(), "screen-security-rpc"))
@@ -656,6 +676,7 @@ fn b12_reference_palettes_meet_wcag_normal_text_contrast() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn private_theme_via_strict_rpc_defaults_changes_and_stays_local() {
+    let _serial = serial_rpc_test().await;
     let fixture = theme_parity_fixture();
     assert_eq!(fixture["preferences"], json!(["system", "light", "dark"]));
     let directory = tempfile::tempdir().unwrap();
@@ -696,6 +717,7 @@ async fn private_theme_via_strict_rpc_defaults_changes_and_stays_local() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn private_custom_icons_via_strict_rpc_are_canonical_durable_and_local() {
+    let _serial = serial_rpc_test().await;
     let fixture = custom_icon_parity_fixture();
     let directory = tempfile::tempdir().unwrap();
     let daemon = Daemon::start(test_config(directory.path(), "icons-rpc"))
@@ -900,6 +922,35 @@ impl Client {
     }
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn daemon_start_returns_only_after_immediate_rpc_is_ready() {
+    let _serial = serial_rpc_test().await;
+    let directory = tempfile::tempdir().unwrap();
+    for index in 0..8 {
+        let daemon = Daemon::start(test_config(
+            directory.path(),
+            &format!("startup-ready-{index}"),
+        ))
+        .await
+        .unwrap();
+        let mut client = Client::connect(&daemon.socket_path).await;
+
+        let status =
+            tokio::time::timeout(Duration::from_secs(5), client.ok(json!({ "op": "status" })))
+                .await
+                .expect("status must be responsive as soon as start returns");
+        assert_eq!(status["peer"].as_str().unwrap().len(), 64);
+
+        let bundle =
+            tokio::time::timeout(Duration::from_secs(5), client.ok(json!({ "op": "bundle" })))
+                .await
+                .expect("the next startup RPC must not lose a race with the first heartbeat");
+        assert!(!bundle["bundle"].as_str().unwrap().is_empty());
+
+        daemon.shutdown().await;
+    }
+}
+
 /// Poll `status` until at least one listen address is bound.
 async fn listen_addr(client: &mut Client) -> String {
     for _ in 0..100 {
@@ -1043,6 +1094,7 @@ async fn wait_group_presence(client: &mut Client, group: &str, present: bool) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn note_to_self_via_rpc_is_local_and_uses_the_reserved_identity() {
+    let _serial = serial_rpc_test().await;
     let directory = tempfile::tempdir().unwrap();
     let daemon = Daemon::start(test_config(directory.path(), "notes"))
         .await
@@ -1159,6 +1211,7 @@ async fn note_to_self_via_rpc_is_local_and_uses_the_reserved_identity() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn two_daemons_message_via_rpc_only() {
+    let _serial = serial_rpc_test().await;
     let ephemeral = ephemeral_parity_fixture();
     let hour = ephemeral["text_lifetimes"][1].as_u64().unwrap();
     assert_eq!(ephemeral["content_kind"], json!(5));
@@ -1570,6 +1623,7 @@ async fn two_daemons_message_via_rpc_only() {
 /// survives — and a wrong passphrase is refused.
 #[tokio::test(flavor = "multi_thread")]
 async fn daemon_restarts_with_history() {
+    let _serial = serial_rpc_test().await;
     let dir = tempfile::tempdir().unwrap();
     let alice = Daemon::start(test_config(dir.path(), "alice"))
         .await
@@ -1633,6 +1687,7 @@ async fn daemon_restarts_with_history() {
 /// and messaging works again in both directions (docs/07-storage.md §4).
 #[tokio::test(flavor = "multi_thread")]
 async fn backup_and_restore_via_rpc() {
+    let _serial = serial_rpc_test().await;
     let dir = tempfile::tempdir().unwrap();
     let alice = Daemon::start(test_config(dir.path(), "alice"))
         .await
@@ -1762,6 +1817,7 @@ async fn backup_and_restore_via_rpc() {
 /// and per-member delivery state crosses only the public RPC boundary.
 #[tokio::test(flavor = "multi_thread")]
 async fn groups_via_rpc_only() {
+    let _serial = serial_rpc_test().await;
     let label_fixture = label_parity_fixture();
     let folder_fixture = folder_parity_fixture();
     let pin_fixture = pin_parity_fixture();

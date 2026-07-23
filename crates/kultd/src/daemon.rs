@@ -344,13 +344,22 @@ impl Daemon {
             events_tx.clone(),
             shutdown.subscribe(),
         );
+        let (actor_ready, actor_ready_rx) = oneshot::channel();
         tasks.push(tokio::task::spawn_blocking(move || {
             let (cfg, net, events, shutdown) = actor_inputs;
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("actor runtime");
-            rt.block_on(actor(node, cfg, net, node_rx, events, shutdown));
+            rt.block_on(actor(
+                node,
+                cfg,
+                net,
+                node_rx,
+                events,
+                shutdown,
+                actor_ready,
+            ));
         }));
         tasks.push(tokio::spawn(lifecycle(
             cfg.clone(),
@@ -358,12 +367,40 @@ impl Daemon {
             node_tx.clone(),
             shutdown.subscribe(),
         )));
+        let (serve_ready, serve_ready_rx) = oneshot::channel();
         tasks.push(tokio::spawn(serve(
             listener,
             node_tx,
             events_tx,
             shutdown.subscribe(),
+            serve_ready,
         )));
+
+        // Binding the socket is not sufficient startup readiness: the OS can
+        // accept a connection into its backlog before either the accept loop
+        // or the blocking-thread node actor has received its first scheduler
+        // poll. Returning in that window made an immediate status/bundle RPC
+        // intermittently sit unanswered until the client timed out.
+        let ready = async {
+            actor_ready_rx
+                .await
+                .map_err(|_| io::Error::other("node actor stopped during startup"))?;
+            serve_ready_rx
+                .await
+                .map_err(|_| io::Error::other("RPC server stopped during startup"))
+        };
+        if let Err(error) = tokio::time::timeout(Duration::from_secs(5), ready)
+            .await
+            .map_err(|_| io::Error::other("daemon tasks were not ready within 5s"))
+            .and_then(|result| result)
+        {
+            let _ = shutdown.send(true);
+            for task in tasks {
+                let _ = task.await;
+            }
+            let _ = std::fs::remove_file(&cfg.socket_path);
+            return Err(DaemonError::Io(error));
+        }
 
         Ok(Self {
             address,
@@ -469,11 +506,21 @@ async fn actor(
     mut rx: mpsc::Receiver<NodeMsg>,
     events: broadcast::Sender<String>,
     mut shutdown: watch::Receiver<bool>,
+    ready: oneshot::Sender<()>,
 ) {
-    let mut tick = tokio::time::interval(cfg.tick_interval);
+    // Tokio intervals tick immediately by default. Give startup RPCs a
+    // bounded window before the first potentially transport-bound heartbeat;
+    // subsequent ticks retain the configured cadence.
+    let started = tokio::time::Instant::now();
+    let first_tick = started + cfg.tick_interval.max(Duration::from_millis(250));
+    let mut tick = tokio::time::interval_at(first_tick, cfg.tick_interval);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut media_tick = tokio::time::interval(Duration::from_millis(20));
+    let mut media_tick = tokio::time::interval_at(
+        started + Duration::from_millis(20),
+        Duration::from_millis(20),
+    );
     media_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let _ = ready.send(());
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,
@@ -1843,7 +1890,9 @@ async fn serve(
     node_tx: mpsc::Sender<NodeMsg>,
     events: broadcast::Sender<String>,
     mut shutdown: watch::Receiver<bool>,
+    ready: oneshot::Sender<()>,
 ) {
+    let _ = ready.send(());
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,

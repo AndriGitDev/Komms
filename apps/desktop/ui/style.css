@@ -125,6 +125,19 @@ label.check input { width: auto; margin: 0; }
 #gate-advanced { margin: 1em 0; border: 1px solid var(--line); border-radius: 8px; padding: 0.6em 1em; }
 #gate-advanced summary { cursor: pointer; color: var(--text-dim); }
 #gate-go { width: 100%; margin-top: 0.6em; padding: 0.7em; }
+#startup-dialog {
+  width: min(30rem, 92vw);
+  color: var(--text);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-top: 3px solid var(--accent);
+  border-radius: 14px;
+  padding: 1.4em 1.6em;
+}
+#startup-dialog::backdrop { background: rgba(0, 0, 0, 0.62); }
+#startup-dialog h2 { margin: 0 0 0.45em; font-size: 1.15rem; }
+#startup-dialog p { margin: 0 0 1em; color: var(--text-dim); line-height: 1.45; }
+#startup-dialog progress { width: 100%; accent-color: var(--accent); }
 
 /* ── Layout ── */
 #app { display: flex; }

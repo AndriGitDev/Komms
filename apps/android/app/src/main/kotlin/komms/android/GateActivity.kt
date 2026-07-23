@@ -1,5 +1,6 @@
 package komms.android
 
+import android.app.AlertDialog
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -19,6 +20,7 @@ import uniffi.kult_ffi.KdfChoice
 class GateActivity : SecureActivity() {
     private lateinit var dataDir: File
     private var backupUri: Uri? = null
+    private var startupDialog: AlertDialog? = null
 
     private val pickBackup =
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -57,14 +59,20 @@ class GateActivity : SecureActivity() {
             if (!storeExists && pass != confirm.text.toString()) {
                 return@setOnClickListener toast(getString(R.string.gate_mismatch))
             }
+            showStartupDialog()
             busy(true)
             runNode(
                 work = {
                     Session.open(dataDir, pass, loadSettings(), KdfChoice.MOBILE, NodeHolder.sink)
                         .also(ThemeController::reconcile)
                 },
-                onError = { busy(false); toast(it) },
+                onError = {
+                    hideStartupDialog()
+                    busy(false)
+                    toast(it)
+                },
             ) { session ->
+                hideStartupDialog()
                 NodeHolder.attach(session)
                 proceed()
             }
@@ -83,6 +91,7 @@ class GateActivity : SecureActivity() {
             if (pass != confirm.text.toString()) {
                 return@setOnClickListener toast(getString(R.string.gate_mismatch))
             }
+            showStartupDialog()
             busy(true)
             runNode(
                 work = {
@@ -100,8 +109,13 @@ class GateActivity : SecureActivity() {
                         local.delete()
                     }
                 },
-                onError = { busy(false); toast(it) },
+                onError = {
+                    hideStartupDialog()
+                    busy(false)
+                    toast(it)
+                },
             ) { session ->
+                hideStartupDialog()
                 NodeHolder.attach(session)
                 proceed()
             }
@@ -110,6 +124,11 @@ class GateActivity : SecureActivity() {
         findViewById<android.widget.Button>(R.id.gate_settings).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
+    }
+
+    override fun onDestroy() {
+        hideStartupDialog()
+        super.onDestroy()
     }
 
     /** Corrupt settings surface at the gate instead of silently reverting. */
@@ -123,6 +142,21 @@ class GateActivity : SecureActivity() {
         findViewById<View>(R.id.gate_progress).visibility = if (on) View.VISIBLE else View.GONE
         findViewById<View>(R.id.gate_unlock).isEnabled = !on
         findViewById<View>(R.id.gate_restore).isEnabled = !on
+    }
+
+    private fun showStartupDialog() {
+        if (startupDialog?.isShowing == true) return
+        startupDialog = AlertDialog.Builder(this)
+            .setTitle(R.string.gate_starting_title)
+            .setMessage(R.string.gate_starting_message)
+            .setCancelable(false)
+            .create()
+            .also(AlertDialog::show)
+    }
+
+    private fun hideStartupDialog() {
+        startupDialog?.dismiss()
+        startupDialog = null
     }
 
     private fun proceed() {

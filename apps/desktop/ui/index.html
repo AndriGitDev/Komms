@@ -251,6 +251,12 @@
     <span>Sensitive content is hidden while this window is inactive.</span>
   </div>
 
+  <dialog id="startup-dialog" aria-labelledby="startup-dialog-title" aria-describedby="startup-dialog-message">
+    <h2 id="startup-dialog-title">Starting Komms</h2>
+    <p id="startup-dialog-message">Opening your encrypted store and starting the node can take up to 30 seconds. Keep Komms open while this finishes.</p>
+    <progress aria-label="Decrypting the store and starting the node"></progress>
+  </dialog>
+
   <!-- ══ Modals ══ -->
   <div id="modal-backdrop" hidden>
     <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">

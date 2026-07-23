@@ -33,6 +33,15 @@ class NodeService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // START_STICKY may recreate only the Service after Android reclaims the
+        // process. The passphrase is deliberately never persisted, so there is
+        // no session to keep alive in that new process. Do not leave an empty
+        // foreground service running until the user unlocks again.
+        if (NodeHolder.session == null) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+
         val open = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java),
@@ -46,11 +55,22 @@ class NodeService : Service() {
             .setOngoing(true)
             .build()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            startForeground(ID, notification, foregroundServiceType(Build.VERSION.SDK_INT))
         } else {
             startForeground(ID, notification)
         }
         return START_STICKY
+    }
+
+    /**
+     * Android 15 gives a timed-out foreground service only a few seconds to
+     * stop before raising RemoteServiceException. The active Android 14+ path
+     * uses remoteMessaging and has no six-hour dataSync limit, but keep this
+     * guard for legacy/dataSync starts and future platform policy changes.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        stopSelf(startId)
+        NodeHolder.stopAndClear()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -84,5 +104,15 @@ class NodeService : Service() {
         const val CHANNEL_ID = "komms-node"
         private const val ID = 1
         private val NEXT_NOTIFICATION = AtomicInteger(17_000)
+
+        internal fun foregroundServiceType(sdkInt: Int): Int =
+            if (sdkInt >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                // Komms keeps peer-to-peer text messaging available while the
+                // UI is backgrounded. dataSync is capped at six hours on
+                // Android 15, while remoteMessaging has no such timeout.
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING
+            } else {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            }
     }
 }
