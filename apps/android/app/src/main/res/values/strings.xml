@@ -27,6 +27,8 @@
     <string name="gate_mnemonic">24-word recovery mnemonic</string>
     <string name="gate_restore">Restore</string>
     <string name="gate_settings">Network settings</string>
+    <string name="gate_starting_title">Starting Komms</string>
+    <string name="gate_starting_message">Opening your encrypted store and starting the node can take up to 30 seconds. Keep Komms open while this finishes.</string>
 
     <!-- Main -->
     <string name="status_line">%1$s · NAT %2$s · %3$d LAN · %4$d scheduled · %5$d queued · %6$d transit</string>

@@ -389,6 +389,7 @@ pub struct Node {
     capabilities_advertised: HashSet<[u8; 32]>,
     media_reconciled: bool,
     attachment_request_at: HashMap<[u8; 16], u64>,
+    attachment_request_target: HashMap<[u8; 16], usize>,
     carrier_capabilities: HashMap<[u8; 32], CarrierCapabilitySnapshot>,
     calls: HashMap<[u8; 16], calls::ActiveCall>,
     call_queue_deadlines: HashMap<i64, u64>,
@@ -515,6 +516,7 @@ impl Node {
             capabilities_advertised: HashSet::new(),
             media_reconciled: false,
             attachment_request_at: HashMap::new(),
+            attachment_request_target: HashMap::new(),
             carrier_capabilities: HashMap::new(),
             calls: HashMap::new(),
             call_queue_deadlines: HashMap::new(),
@@ -1815,6 +1817,7 @@ impl Node {
                     self.store.delete_media_transfer_with_objects(&transfer)?;
                 }
                 self.attachment_request_at.remove(&transfer);
+                self.attachment_request_target.remove(&transfer);
             }
             self.events.push_back(Event::EphemeralRemoved {
                 conversation: record.conversation,

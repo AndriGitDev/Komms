@@ -668,13 +668,17 @@ $("#gate-dir").addEventListener("input", () => {
   probeDebounce = setTimeout(() => probeGate($("#gate-dir").value).catch(() => {}), 400);
 });
 
+$("#startup-dialog").addEventListener("cancel", (event) => event.preventDefault());
+
 $("#gate-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const btn = $("#gate-go");
   const errEl = $("#gate-error");
+  const startupDialog = $("#startup-dialog");
   errEl.hidden = true;
   btn.disabled = true;
-  btn.textContent = "Opening… (key derivation takes a moment)";
+  btn.textContent = "Opening… (up to 30 seconds)";
+  if (!startupDialog.open) startupDialog.showModal();
   try {
     const args = {
       dataDir: $("#gate-dir").value.trim(),
@@ -697,6 +701,7 @@ $("#gate-form").addEventListener("submit", async (e) => {
     errEl.textContent = String(err);
     errEl.hidden = false;
   } finally {
+    if (startupDialog.open) startupDialog.close();
     btn.disabled = false;
     probeGate($("#gate-dir").value).catch(() => {});
   }

@@ -121,4 +121,6 @@ dependencies {
     implementation(libs.camera.lifecycle)
     implementation(libs.camera.view)
     implementation(libs.zxing.core)
+
+    testImplementation(libs.junit)
 }

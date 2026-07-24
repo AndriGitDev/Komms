@@ -86,6 +86,31 @@ struct GateView: View {
             .fileImporter(isPresented: $pickingBackup, allowedContentTypes: [.data]) {
                 if case let .success(url) = $0 { backupURL = url }
             }
+            .overlay {
+                if working {
+                    ZStack {
+                        Color.black.opacity(0.45)
+                            .ignoresSafeArea()
+                        VStack(spacing: 14) {
+                            ProgressView()
+                                .controlSize(.large)
+                            Text("Starting Komms")
+                                .font(.headline)
+                            Text(
+                                "Opening your encrypted store and starting the node can take up to 30 seconds. Keep Komms open while this finishes."
+                            )
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                        }
+                        .padding(24)
+                        .frame(maxWidth: 360)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                        .padding(24)
+                        .accessibilityElement(children: .combine)
+                    }
+                }
+            }
         }
     }
 

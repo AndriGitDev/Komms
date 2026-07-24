@@ -291,6 +291,30 @@ fn desktop_ephemeral_controls_match_shared_honesty_and_block_render_bypasses() {
 }
 
 #[test]
+fn startup_wait_is_explained_and_kept_modal_across_apps() {
+    let html = include_str!("../../ui/index.html");
+    let frontend = include_str!("../../ui/main.js");
+    assert!(html.contains("id=\"startup-dialog\""));
+    assert!(html.contains("starting the node can take up to 30 seconds"));
+    assert!(html.contains("<progress aria-label=\"Decrypting the store and starting the node\""));
+    assert!(frontend.contains("startupDialog.showModal()"));
+    assert!(frontend.contains("event.preventDefault()"));
+    assert!(frontend.contains("startupDialog.close()"));
+
+    let android =
+        include_str!("../../../android/app/src/main/kotlin/komms/android/GateActivity.kt");
+    let android_strings = include_str!("../../../android/app/src/main/res/values/strings.xml");
+    assert!(android.contains(".setCancelable(false)"));
+    assert!(android.contains("showStartupDialog()"));
+    assert!(android_strings.contains("starting the node can take up to 30 seconds"));
+
+    let ios = include_str!("../../../ios/KommsApp/Sources/GateView.swift");
+    assert!(ios.contains("if working"));
+    assert!(ios.contains("Starting Komms"));
+    assert!(ios.contains("starting the node can take up to 30 seconds"));
+}
+
+#[test]
 fn desktop_poll_ui_keeps_visibility_policy_and_uses_inert_exact_text() {
     let html = include_str!("../../ui/index.html");
     let frontend = include_str!("../../ui/main.js");
