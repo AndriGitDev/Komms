@@ -1,7 +1,7 @@
-# Install and Test Komms 0.1 Alpha
+# Install and Test Komms 0.2 Alpha
 
-Komms 0.1 Alpha is a public prerelease for hands-on testing. Download it from
-the [v0.1.0 GitHub release](https://github.com/AndriGitDev/Komms/releases/tag/v0.1.0).
+Komms 0.2 Alpha is a public prerelease for hands-on testing. Download it from
+the [v0.2.0 GitHub release](https://github.com/AndriGitDev/Komms/releases/tag/v0.2.0).
 It is not an audited stable release: back up important Komms data, expect rough
 edges, and do not rely on it for emergency communication.
 
@@ -9,10 +9,10 @@ edges, and do not rely on it for emergency communication.
 
 | Platform | Release asset | Notes |
 |---|---|---|
-| Windows 10/11 x64 | `Komms-0.1.0-windows-x64.msi` or `Komms-0.1.0-windows-x64-setup.exe` | Pick one installer format; both install the same Alpha. |
-| macOS Intel or Apple silicon | `Komms-0.1.0-darwin-universal.dmg` | Universal application. The `.app.tar.gz` is also available for manual deployment. |
-| Linux x86-64 | `Komms-0.1.0-linux-amd64.AppImage`, `.deb`, or `.rpm` | Use the format native to your distribution. |
-| Android 8.0+ | `Komms-0.1.0-android-debug.apk` | Test-only, debug-signed APK for `arm64-v8a` phones and `x86_64` emulators. |
+| Windows 10/11 x64 | `Komms-0.2.0-windows-x64.msi` or `Komms-0.2.0-windows-x64-setup.exe` | Pick one installer format; both install the same Alpha. |
+| macOS Intel or Apple silicon | `Komms-0.2.0-darwin-universal.dmg` | Universal application. The `.app.tar.gz` is also available for manual deployment. |
+| Linux x86-64 | `Komms-0.2.0-linux-amd64.AppImage`, `.deb`, or `.rpm` | Use the format native to your distribution. |
+| Android 8.0+ | `Komms-0.2.0-android-debug.apk` | Test-only, debug-signed APK for `arm64-v8a` phones and `x86_64` emulators. |
 | iOS | No downloadable Alpha package | Build the unsigned Simulator app from source using the [iOS guide](../apps/ios/README.md). |
 
 The desktop packages are not production-signed or notarized, and the Android
@@ -32,15 +32,15 @@ sha256sum --check --ignore-missing SHA256SUMS
 On macOS, calculate a package hash and compare it with that file:
 
 ```sh
-shasum -a 256 Komms-0.1.0-darwin-universal.dmg
-grep 'Komms-0.1.0-darwin-universal.dmg' SHA256SUMS
+shasum -a 256 Komms-0.2.0-darwin-universal.dmg
+grep 'Komms-0.2.0-darwin-universal.dmg' SHA256SUMS
 ```
 
 On Windows PowerShell:
 
 ```powershell
-Get-FileHash .\Komms-0.1.0-windows-x64.msi -Algorithm SHA256
-Select-String -Path .\SHA256SUMS -Pattern 'Komms-0.1.0-windows-x64.msi'
+Get-FileHash .\Komms-0.2.0-windows-x64.msi -Algorithm SHA256
+Select-String -Path .\SHA256SUMS -Pattern 'Komms-0.2.0-windows-x64.msi'
 ```
 
 The two hexadecimal values must match exactly. Stop if they do not.
@@ -66,20 +66,20 @@ Privacy & Security → Open Anyway**. Do not disable Gatekeeper globally.
 For the AppImage:
 
 ```sh
-chmod +x Komms-0.1.0-linux-amd64.AppImage
-./Komms-0.1.0-linux-amd64.AppImage
+chmod +x Komms-0.2.0-linux-amd64.AppImage
+./Komms-0.2.0-linux-amd64.AppImage
 ```
 
 On Debian or Ubuntu:
 
 ```sh
-sudo apt install ./Komms-0.1.0-linux-amd64.deb
+sudo apt install ./Komms-0.2.0-linux-amd64.deb
 ```
 
 On Fedora or another RPM-based distribution:
 
 ```sh
-sudo dnf install ./Komms-0.1.0-linux-x86_64.rpm
+sudo dnf install ./Komms-0.2.0-linux-x86_64.rpm
 ```
 
 The Linux packages are not signed in this Alpha.
@@ -132,12 +132,12 @@ and repeat the checksum and backup steps before installing a future Alpha.
 The public `kultd` image supports Linux amd64 and arm64:
 
 ```sh
-docker pull ghcr.io/andrigitdev/komms-kultd:0.1.0
+docker pull ghcr.io/andrigitdev/komms-kultd:0.2.0
 ```
 
 Read the [self-hosting guide](26-self-hosting.md) before exposing ports or
-volunteering mailbox or bridge capacity. `0.1.0` is the immutable release tag;
-`0.1-alpha` and `alpha` are moving Alpha aliases. There is intentionally no
+volunteering mailbox or bridge capacity. `0.2.0` is the immutable release tag;
+`0.2-alpha` and `alpha` are moving Alpha aliases. There is intentionally no
 `latest` tag.
 
 ## 7. Build or explore from source

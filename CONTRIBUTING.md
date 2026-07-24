@@ -1,6 +1,6 @@
 # Contributing to Komms
 
-Komms 0.1 Alpha is a packaged public prerelease. Its core, transports, local
+Komms 0.2 Alpha is a packaged public prerelease. Its core, transports, local
 RPC/CLI and UniFFI surfaces, and desktop/Android/iOS shells are implemented,
 while hardware qualification, production-signed/store distribution, broader
 hardening, and explicitly design-gated programs remain. Testers can start with

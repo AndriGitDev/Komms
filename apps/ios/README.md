@@ -242,7 +242,7 @@ the cargo workspace, mirroring the other shells' posture.
 
 ## Alpha availability
 
-Komms 0.1 Alpha does not include a downloadable iOS package. The iOS shell is
+Komms 0.2 Alpha does not include a downloadable iOS package. The iOS shell is
 available for source builds and the Xcode Simulator only; there is no TestFlight
 or App Store release. Testers who need an installable package should use the
 published desktop or Android artifacts in the

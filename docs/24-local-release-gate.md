@@ -97,13 +97,13 @@ was not exercised, or one of the external gates above.
 
 ## 5. Version, packaging, and signing boundary
 
-All current build surfaces report `0.1.0`: the Cargo workspace and desktop
+All current build surfaces report `0.2.0`: the Cargo workspace and desktop
 crate, Tauri bundle, Android `versionName`, and iOS short version. CI and the
 local matrix enforce that alignment with `scripts/check-release-version.py`.
-Version `0.1.0` is now published as the **Komms 0.1 Alpha** prerelease from tag
-`v0.1.0`. Version alignment alone still does not qualify a build or make a
+Version `0.2.0` is now published as the **Komms 0.2 Alpha** prerelease from tag
+`v0.2.0`. Version alignment alone still does not qualify a build or make a
 future artifact an official release; publication applies only to the exact
-qualified tag and assets. See the [published release](https://github.com/AndriGitDev/Komms/releases/tag/v0.1.0).
+qualified tag and assets. See the [published release](https://github.com/AndriGitDev/Komms/releases/tag/v0.2.0).
 
 - `.github/workflows/release.yml` builds the configured desktop bundles on
   native Linux, macOS, and Windows runners, plus an installable Android debug

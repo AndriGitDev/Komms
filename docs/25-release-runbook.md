@@ -9,15 +9,13 @@ draft state until a maintainer explicitly publishes it as a prerelease. That
 same explicit action publishes the multi-architecture self-hosting image to
 GHCR; a tag push alone never exposes an unqualified container.
 
-The current candidate is **Komms 0.2 Alpha**. Its technical semantic version is
-`0.2.0` across Cargo, Tauri, Android, and iOS, and its release tag is `v0.2.0`.
-
-Komms 0.1 Alpha remains public as a
-[GitHub prerelease](https://github.com/AndriGitDev/Komms/releases/tag/v0.1.0),
-with Windows MSI/NSIS, universal macOS DMG/app archive, Linux
+The current public prerelease is **Komms 0.2 Alpha**. Its technical semantic
+version is `0.2.0` across Cargo, Tauri, Android, and iOS, and its release tag is
+[`v0.2.0`](https://github.com/AndriGitDev/Komms/releases/tag/v0.2.0). The release
+contains Windows MSI/NSIS, universal macOS DMG/app archive, Linux
 AppImage/DEB/RPM, a debug-signed Android APK, and `SHA256SUMS`. Its public
 [`komms-kultd` package](https://github.com/AndriGitDev/Komms/pkgs/container/komms-kultd)
-provides Linux amd64/arm64 images under `0.1.0`, `0.1-alpha`, and `alpha`.
+provides Linux amd64/arm64 images under `0.2.0`, `0.2-alpha`, and `alpha`.
 
 This makes artifacts available consistently; it does not turn the current alpha
 into an audited stable release. Platform signing, hands-on device testing, radio

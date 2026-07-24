@@ -175,7 +175,7 @@ legacy bytes.
 ## Install the published Alpha
 
 Download the package for your system from the public
-[Komms 0.1 Alpha release](https://github.com/AndriGitDev/Komms/releases/tag/v0.1.0):
+[Komms 0.2 Alpha release](https://github.com/AndriGitDev/Komms/releases/tag/v0.2.0):
 
 - Windows 10/11 x64: MSI or NSIS setup EXE;
 - macOS Intel or Apple silicon: universal DMG (or app archive); and
@@ -209,7 +209,7 @@ targets cover every desktop platform (`.deb`, `.rpm`, AppImage, `.app`,
 `.dmg`, `.msi`, NSIS); Tauri builds only the targets native to the host OS
 and skips the rest.
 
-The published `v0.1.0` prerelease was built in those formats on native Linux,
+The published `v0.2.0` prerelease was built in those formats on native Linux,
 macOS, and Windows runners with checksums. Future tag-driven candidates begin as
 drafts. Follow the [release runbook](../../docs/25-release-runbook.md); a
 successful build alone is not permission to publish or a claim that an unsigned
@@ -220,7 +220,7 @@ package is production-ready.
 The package identifier is `is.andri.komms` and the current version is `0.2.0`,
 aligned with the Rust, Android, and iOS surfaces.
 
-The 0.1 Alpha desktop packages are not release-signed or notarized: macOS and
+The 0.2 Alpha desktop packages are not release-signed or notarized: macOS and
 Windows are unsigned, and the Linux package artifacts are unsigned. Production
 signing remains scaffold-only and no certificates or keys enter the tree. When
 they exist, Tauri picks
