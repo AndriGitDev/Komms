@@ -9,14 +9,10 @@ struct MainView: View {
 
     @State private var showMyQr = false
     @State private var showAdd = false
-    @State private var showBackup = false
     @State private var showSettings = false
     @State private var showCreateGroup = false
-    @State private var showFolders = false
-    @State private var showLabels = false
-    @State private var showPins = false
-    @State private var showIcons = false
-    @State private var showDevices = false
+    @State private var showNodeDetails = false
+    @State private var showFilters = false
     @State private var renameContact: Contact?
     @State private var navigation = NavigationPath()
 
@@ -34,52 +30,13 @@ struct MainView: View {
                 }
 
                 if let status = model.status {
-                    StatusSection(status: status)
-                }
-
-                Section("Private conversation folder") {
-                    Picker("Folder", selection: Binding(
-                        get: { model.folderSelection },
-                        set: { model.selectFolder($0) })) {
-                        Text("All").tag(FolderSelection(kind: .all, id: nil))
-                        Text("Unfiled").tag(FolderSelection(kind: .unfiled, id: nil))
-                        ForEach(model.folders, id: \.id) { folder in
-                            HStack {
-                                CustomIconAvatar(
-                                    target: CustomIconTarget(kind: .folder, id: folder.id),
-                                    label: folder.name,
-                                    size: 28)
-                                Text(verbatim: folder.name)
-                            }
-                                .tag(FolderSelection(kind: .folder, id: folder.id))
-                                .accessibilityLabel(Text(verbatim: folderSummary(folder)))
+                    Section {
+                        Button {
+                            showNodeDetails = true
+                        } label: {
+                            NodeSummaryRow(status: status)
                         }
-                    }
-                    .pickerStyle(.menu)
-                    Text("Folder selection is applied first; the label filter below is then applied independently.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-
-                Section("Filter conversations by labels") {
-                    if model.labels.isEmpty {
-                        Text("No labels yet").foregroundStyle(.secondary)
-                    }
-                    ForEach(model.labels, id: \.id) { label in
-                        Toggle(isOn: Binding(
-                            get: { model.selectedLabelIds.contains(label.id) },
-                            set: { model.setLabelSelected(label.id, selected: $0) })) {
-                            LabelChip(label: label)
-                        }
-                    }
-                    Picker("Matching", selection: Binding(
-                        get: { model.labelFilterMode },
-                        set: { model.setLabelFilterMode($0) })) {
-                        Text("Match any").tag(LabelMatchMode.any)
-                        Text("Match all").tag(LabelMatchMode.all)
-                    }
-                    .pickerStyle(.segmented)
-                    if model.selectedLabelIds.isEmpty == false {
-                        Button("Clear label filter") { model.clearLabelFilter() }
+                        .buttonStyle(.plain)
                     }
                 }
 
@@ -91,7 +48,29 @@ struct MainView: View {
                     }
                 }
 
-                Section("Local") {
+                if model.contacts.isEmpty && model.groups.isEmpty {
+                    Section {
+                        VStack(spacing: 10) {
+                            Image(systemName: "bubble.left.and.bubble.right")
+                                .font(.title)
+                                .foregroundStyle(ThemePalette.accent)
+                            Text("Your private inbox starts here")
+                                .font(.headline)
+                            Text("Pair with someone you trust, or keep a private note on this device.")
+                                .font(.subheadline)
+                                .foregroundStyle(ThemePalette.textSecondary)
+                                .multilineTextAlignment(.center)
+                            Button("Pair a contact") { showAdd = true }
+                                .buttonStyle(.borderedProminent)
+                                .tint(ThemePalette.accent)
+                                .foregroundStyle(ThemePalette.onAccent)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                    }
+                }
+
+                Section("On this device") {
                     if model.targetMatchesLabelFilter(LabelTarget(kind: .noteToSelf, id: nil)) &&
                         !model.isPinned(PinTarget(kind: .noteToSelf, id: nil)) {
                       NavigationLink(value: NoteRoute(id: model.noteToSelfId())) {
@@ -109,7 +88,7 @@ struct MainView: View {
                     }
                 }
 
-                Section("Contacts") {
+                Section("Private conversations") {
                     if model.contacts.isEmpty {
                         Text("No contacts yet — pair with a friend's QR code.")
                             .foregroundStyle(.secondary)
@@ -162,6 +141,8 @@ struct MainView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(ThemePalette.background)
             .navigationTitle("Komms")
             .navigationDestination(for: String.self) { peer in
                 ChatView(peer: peer)
@@ -175,29 +156,31 @@ struct MainView: View {
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
                     Button {
+                        showFilters = true
+                    } label: {
+                        Label("Filter conversations", systemImage: filterIcon)
+                    }
+                    Button {
                         showAdd = true
                     } label: {
                         Label("Add contact", systemImage: "person.badge.plus")
                     }
                     Menu {
                         Button("New group") { showCreateGroup = true }
-                        Button("Manage pins") { showPins = true }
-                        Button("Manage private icons") { showIcons = true }
-                        Button("Linked devices") { showDevices = true }
                         Button("My pairing QR") { showMyQr = true }
-                        Button("Backup…") { showBackup = true }
-                        Button("Network settings") { showSettings = true }
-                        Button("Manage folders") { showFolders = true }
-                        Button("Manage labels") { showLabels = true }
+                        Button("Settings") { showSettings = true }
                         Button("Lock", role: .destructive) { model.lock() }
                     } label: {
                         Label("More", systemImage: "ellipsis.circle")
                     }
                 }
             }
-            .sheet(isPresented: $showPins) { PinsView() }
-            .sheet(isPresented: $showIcons) { CustomIconsView() }
-            .sheet(isPresented: $showDevices) { DevicesView() }
+            .sheet(isPresented: $showNodeDetails) {
+                if let status = model.status {
+                    NodeDetailsView(status: status)
+                }
+            }
+            .sheet(isPresented: $showFilters) { ConversationFiltersView() }
             .sheet(isPresented: $showMyQr) { MyBundleView() }
             .sheet(isPresented: $showAdd) { AddContactView() }
             .sheet(isPresented: Binding(
@@ -207,10 +190,7 @@ struct MainView: View {
                     RenameContactView(contact: contact)
                 }
             }
-            .sheet(isPresented: $showBackup) { BackupView() }
             .sheet(isPresented: $showSettings) { SettingsView() }
-            .sheet(isPresented: $showFolders) { FolderManagerView() }
-            .sheet(isPresented: $showLabels) { LabelManagerView() }
             .sheet(isPresented: $showCreateGroup) {
                 CreateGroupView { group in
                     showCreateGroup = false
@@ -218,6 +198,11 @@ struct MainView: View {
                 }
             }
         }
+    }
+
+    private var filterIcon: String {
+        let filtered = model.folderSelection.kind != .all || !model.selectedLabelIds.isEmpty
+        return filtered ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle"
     }
 
     @ViewBuilder private func pinnedLink(_ row: PinConversation) -> some View {
@@ -261,35 +246,172 @@ private struct NoteRoute: Hashable {
     let id: String
 }
 
-/// Transport indicators, rendered from the node's status verbatim.
-private struct StatusSection: View {
+/// Human-readable state first; raw transport diagnostics are one tap away.
+private struct NodeSummaryRow: View {
     let status: Status
 
-    private var natText: String {
+    private var symbol: String {
         switch status.nat {
-        case .public: return "public — directly reachable"
-        case .private: return "private — behind NAT"
-        case .unknown: return "unknown — not probed yet"
+        case .public: return "checkmark.shield.fill"
+        case .private: return "shield.lefthalf.filled"
+        case .unknown: return "hourglass"
+        }
+    }
+
+    private var summary: String {
+        switch status.nat {
+        case .public: return "Directly reachable"
+        case .private: return "Connected behind NAT"
+        case .unknown: return "Checking reachability"
         }
     }
 
     var body: some View {
-        Section("This node") {
-            LabeledContent("Address") {
-                Text(status.address)
-                    .font(.footnote.monospaced())
-                    .textSelection(.enabled)
+        HStack(spacing: 12) {
+            Image(systemName: symbol)
+                .font(.title3)
+                .foregroundStyle(status.nat == .unknown ? ThemePalette.warning : ThemePalette.success)
+                .frame(width: 34, height: 34)
+                .background(ThemePalette.surfaceRaised, in: Circle())
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Node running")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(ThemePalette.textPrimary)
+                Text("\(summary) · \(status.lanPeers.count) LAN \(status.lanPeers.count == 1 ? "peer" : "peers")")
+                    .font(.caption)
+                    .foregroundStyle(ThemePalette.textSecondary)
             }
-            LabeledContent("NAT", value: natText)
-            LabeledContent("LAN peers", value: String(status.lanPeers.count))
-            LabeledContent("Scheduled", value: String(status.scheduled))
-            LabeledContent("Queued", value: String(status.queued))
-            LabeledContent("Bridging", value: String(status.transit))
-            DisclosureGroup("Listen addresses (\(status.listen.count))") {
-                ForEach(status.listen, id: \.self) { addr in
-                    Text(addr)
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
+            Spacer()
+            if status.queued > 0 {
+                Text("\(status.queued) queued")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(ThemePalette.warning)
+            }
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ThemePalette.textSecondary)
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Shows network details")
+    }
+}
+
+private struct NodeDetailsView: View {
+    let status: Status
+    @Environment(\.dismiss) private var dismiss
+
+    private var natText: String {
+        switch status.nat {
+        case .public: return "Public — directly reachable"
+        case .private: return "Private — behind NAT"
+        case .unknown: return "Unknown — not probed yet"
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Identity") {
+                    LabeledContent("Address") {
+                        Text(status.address)
+                            .font(.footnote.monospaced())
+                            .textSelection(.enabled)
+                    }
+                }
+                Section("Reachability") {
+                    LabeledContent("NAT", value: natText)
+                    LabeledContent("LAN peers", value: String(status.lanPeers.count))
+                    LabeledContent("Listen addresses", value: String(status.listen.count))
+                    ForEach(status.listen, id: \.self) { address in
+                        Text(address)
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                    }
+                }
+                Section("Delivery") {
+                    LabeledContent("Scheduled", value: String(status.scheduled))
+                    LabeledContent("Queued", value: String(status.queued))
+                    LabeledContent("Bridging", value: String(status.transit))
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(ThemePalette.background)
+            .navigationTitle("Node details")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private struct ConversationFiltersView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Folder") {
+                    Picker("Show", selection: Binding(
+                        get: { model.folderSelection },
+                        set: { model.selectFolder($0) })) {
+                        Text("All conversations")
+                            .tag(FolderSelection(kind: .all, id: nil))
+                        Text("Unfiled")
+                            .tag(FolderSelection(kind: .unfiled, id: nil))
+                        ForEach(model.folders, id: \.id) { folder in
+                            Text(verbatim: folder.name)
+                                .tag(FolderSelection(kind: .folder, id: folder.id))
+                                .accessibilityLabel(Text(verbatim: folderSummary(folder)))
+                        }
+                    }
+                }
+
+                Section {
+                    if model.labels.isEmpty {
+                        Text("No labels yet")
+                            .foregroundStyle(ThemePalette.textSecondary)
+                    }
+                    ForEach(model.labels, id: \.id) { label in
+                        Toggle(isOn: Binding(
+                            get: { model.selectedLabelIds.contains(label.id) },
+                            set: { model.setLabelSelected(label.id, selected: $0) })) {
+                            LabelChip(label: label)
+                        }
+                    }
+                    Picker("Matching", selection: Binding(
+                        get: { model.labelFilterMode },
+                        set: { model.setLabelFilterMode($0) })) {
+                        Text("Match any").tag(LabelMatchMode.any)
+                        Text("Match all").tag(LabelMatchMode.all)
+                    }
+                    .pickerStyle(.segmented)
+                } header: {
+                    Text("Labels")
+                } footer: {
+                    Text("The folder is applied first, followed by the label filter.")
+                }
+
+                if model.folderSelection.kind != .all || !model.selectedLabelIds.isEmpty {
+                    Section {
+                        Button("Clear all filters", role: .destructive) {
+                            model.selectFolder(FolderSelection(kind: .all, id: nil))
+                            model.clearLabelFilter()
+                        }
+                    }
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(ThemePalette.background)
+            .navigationTitle("Filter conversations")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
                 }
             }
         }

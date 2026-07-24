@@ -21,9 +21,84 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content">
 
+            <LinearLayout
+                android:id="@+id/settings_unlocked_sections"
+                android:orientation="vertical"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
             <TextView
-                android:text="@string/appearance_title"
+                android:text="@string/settings_account_devices"
                 android:textStyle="bold"
+                android:textSize="18sp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+
+            <Button
+                android:id="@+id/settings_backup"
+                android:text="@string/settings_backup_title"
+                android:contentDescription="@string/settings_backup_accessibility"
+                android:layout_marginTop="8dp"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <TextView
+                android:text="@string/settings_backup_summary"
+                android:textSize="12sp"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <Button
+                android:id="@+id/settings_devices"
+                android:text="@string/settings_devices_title"
+                android:contentDescription="@string/settings_devices_accessibility"
+                android:layout_marginTop="8dp"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <TextView
+                android:text="@string/settings_devices_summary"
+                android:textSize="12sp"
+                android:layout_marginBottom="20dp"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <TextView
+                android:text="@string/settings_organization"
+                android:textStyle="bold"
+                android:textSize="18sp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+
+            <Button
+                android:id="@+id/settings_folders"
+                android:text="@string/folders_manage"
+                android:contentDescription="@string/settings_folders_accessibility"
+                android:layout_marginTop="8dp"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <Button
+                android:id="@+id/settings_labels"
+                android:text="@string/labels_manage"
+                android:contentDescription="@string/settings_labels_accessibility"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <Button
+                android:id="@+id/settings_icons"
+                android:text="@string/icons_manage"
+                android:contentDescription="@string/settings_icons_accessibility"
+                android:layout_marginBottom="20dp"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            </LinearLayout>
+
+            <TextView
+                android:text="@string/settings_privacy_appearance"
+                android:textStyle="bold"
+                android:textSize="18sp"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content" />
 
@@ -98,6 +173,20 @@
                 android:textSize="12sp"
                 android:layout_marginTop="4dp"
                 android:layout_marginBottom="20dp"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <TextView
+                android:text="@string/settings_advanced"
+                android:textStyle="bold"
+                android:textSize="18sp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+
+            <TextView
+                android:text="@string/settings_advanced_note"
+                android:textSize="12sp"
+                android:layout_marginTop="4dp"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content" />
 

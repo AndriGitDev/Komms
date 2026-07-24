@@ -30,6 +30,8 @@ struct KommsApp: App {
                 }
             }
             .preferredColorScheme(model.themePreference.colorScheme)
+            .tint(ThemePalette.accent)
+            .background(ThemePalette.background.ignoresSafeArea())
             .onAppear { screenSecurity.update(scenePhase: scenePhase) }
             .onChange(of: scenePhase) { phase in
                 screenSecurity.update(scenePhase: phase)

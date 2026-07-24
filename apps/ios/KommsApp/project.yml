@@ -19,6 +19,8 @@ targets:
     platform: iOS
     sources:
       - Sources
+      - path: Resources/Assets.xcassets
+        buildPhase: resources
     dependencies:
       - package: KommsCore
       # Symbols for the kult_ffiFFI module (the module map itself lives in
@@ -51,5 +53,6 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: is.andri.komms
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "1"

@@ -9,25 +9,55 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content">
 
-        <TextView
-            android:text="@string/app_name"
-            android:textSize="32sp"
-            android:textStyle="bold"
+        <LinearLayout
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
             android:layout_marginTop="24dp"
             android:layout_width="wrap_content"
+            android:layout_height="wrap_content">
+
+            <ImageView
+                android:src="@drawable/ic_komms_mark"
+                android:background="@drawable/bg_brand_badge"
+                android:contentDescription="@null"
+                android:layout_width="64dp"
+                android:layout_height="64dp" />
+
+            <TextView
+                android:text="@string/app_name"
+                android:textSize="32sp"
+                android:textStyle="bold"
+                android:layout_marginStart="14dp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+        </LinearLayout>
+
+        <TextView
+            android:text="@string/gate_headline"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:layout_marginTop="20dp"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content" />
 
         <TextView
             android:text="@string/gate_tagline"
-            android:layout_marginTop="4dp"
+            android:layout_marginTop="8dp"
             android:layout_width="match_parent"
             android:layout_height="wrap_content" />
+
+        <LinearLayout
+            android:orientation="vertical"
+            android:background="@drawable/bg_brand_panel"
+            android:padding="20dp"
+            android:layout_marginTop="24dp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
 
         <komms.android.IncognitoEditText
             android:id="@+id/gate_passphrase"
             android:hint="@string/gate_passphrase"
             android:inputType="textPassword"
-            android:layout_marginTop="24dp"
             android:layout_width="match_parent"
             android:layout_height="wrap_content" />
 
@@ -91,6 +121,7 @@
                 android:text="@string/gate_restore"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content" />
+        </LinearLayout>
         </LinearLayout>
 
         <Button

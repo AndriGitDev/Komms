@@ -122,7 +122,10 @@ class GateActivity : SecureActivity() {
         }
 
         findViewById<android.widget.Button>(R.id.gate_settings).setOnClickListener {
-            startActivity(Intent(this, SettingsActivity::class.java))
+            startActivity(
+                Intent(this, SettingsActivity::class.java)
+                    .putExtra(SettingsActivity.EXTRA_NETWORK_ONLY, true),
+            )
         }
     }
 

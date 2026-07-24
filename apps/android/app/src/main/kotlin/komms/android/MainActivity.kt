@@ -4,7 +4,6 @@ import android.Manifest
 import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -27,7 +26,6 @@ import android.widget.RadioButton
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import java.io.File
 import komms.core.bundleQrText
 import uniffi.kult_ffi.Contact
 import uniffi.kult_ffi.ContactNameAssessment
@@ -110,11 +108,6 @@ class MainActivity : SecureActivity() {
     private val requestNotifications =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
 
-    private val createBackup =
-        registerForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
-            if (uri != null) exportBackup(uri)
-        }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (NodeHolder.session == null) return backToGate()
@@ -127,6 +120,15 @@ class MainActivity : SecureActivity() {
             labelMode = it.mode
             folderKind = it.folderKind
             folderId = it.folderId
+        }
+
+        findViewById<View>(R.id.main_filter_toggle).setOnClickListener {
+            val panel = findViewById<View>(R.id.main_filters_panel)
+            val showing = panel.visibility != View.VISIBLE
+            panel.visibility = if (showing) View.VISIBLE else View.GONE
+            (it as Button).setText(
+                if (showing) R.string.main_filters_hide else R.string.main_filters_show,
+            )
         }
 
         findViewById<View>(R.id.main_manage_folders).setOnClickListener {
@@ -200,13 +202,8 @@ class MainActivity : SecureActivity() {
         when (item.itemId) {
             R.id.menu_add -> startActivity(Intent(this, AddContactActivity::class.java))
             R.id.menu_create_group -> showCreateGroup()
-            R.id.menu_folders -> startActivity(Intent(this, FolderManagerActivity::class.java))
-            R.id.menu_labels -> startActivity(Intent(this, LabelManagerActivity::class.java))
             R.id.menu_pins -> showPinManager()
-            R.id.menu_icons -> startActivity(Intent(this, CustomIconActivity::class.java))
-            R.id.menu_devices -> startActivity(Intent(this, DeviceActivity::class.java))
             R.id.menu_my_qr -> showMyQr()
-            R.id.menu_backup -> createBackup.launch("komms-backup.kkr")
             R.id.menu_settings -> startActivity(Intent(this, SettingsActivity::class.java))
             R.id.menu_lock -> lock()
             else -> return super.onOptionsItemSelected(item)
@@ -222,11 +219,25 @@ class MainActivity : SecureActivity() {
                 NatVerdict.PRIVATE -> getString(R.string.nat_private)
                 NatVerdict.UNKNOWN -> getString(R.string.nat_unknown)
             }
-            findViewById<TextView>(R.id.main_status).text = getString(
-                R.string.status_line,
-                s.address.take(12) + "…", nat, s.lanPeers.size, s.scheduled.toLong(),
-                s.queued.toLong(), s.transit.toLong(),
-            )
+            findViewById<TextView>(R.id.main_status).apply {
+                text = getString(
+                    R.string.status_summary, nat, s.lanPeers.size, s.queued.toLong(),
+                )
+                contentDescription = text
+                setOnClickListener {
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle(R.string.node_details_title)
+                        .setMessage(
+                            getString(
+                                R.string.status_details,
+                                s.address, nat, s.lanPeers.size, s.scheduled.toLong(),
+                                s.queued.toLong(), s.transit.toLong(),
+                            ),
+                        )
+                        .setPositiveButton(android.R.string.ok, null)
+                        .show()
+                }
+            }
         }
     }
 
@@ -687,35 +698,6 @@ class MainActivity : SecureActivity() {
                 .setTitle(R.string.my_qr_title)
                 .setView(view)
                 .setPositiveButton(android.R.string.ok, null)
-                .show()
-        }
-    }
-
-    private fun exportBackup(uri: Uri) {
-        val session = NodeHolder.session ?: return
-        runNode(
-            work = {
-                // The node writes 0600 and refuses to overwrite; SAF hands
-                // us a stream, so export to a unique temp path and copy.
-                val local = File.createTempFile("backup", ".kkr", cacheDir)
-                local.delete()
-                val mnemonic = session.exportBackup(local)
-                try {
-                    contentResolver.openOutputStream(uri)!!.use { out ->
-                        local.inputStream().use { it.copyTo(out) }
-                    }
-                } finally {
-                    local.delete()
-                }
-                mnemonic
-            },
-        ) { mnemonic ->
-            // Shown exactly once, never stored, never in the clipboard.
-            AlertDialog.Builder(this)
-                .setTitle(R.string.backup_done_title)
-                .setMessage(getString(R.string.backup_done_body, mnemonic))
-                .setCancelable(false)
-                .setPositiveButton(R.string.backup_done_ack, null)
                 .show()
         }
     }
