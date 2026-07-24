@@ -23,85 +23,98 @@
   <!-- ══ Gate: create / unlock / restore ══ -->
   <section id="gate" class="screen">
     <div class="gate-card">
-      <h1 class="brand"><span class="brand-badge" aria-hidden="true"><svg viewBox="0 0 192 192"><path d="M24 25h43v55l49-55h53l-61 66H24V25zm0 74h84l61 68h-53l-37-50-12 13v37H24V99z"/></svg></span>Komms</h1>
-      <h2 class="gate-headline">Private messaging that keeps working.</h2>
-      <p class="tagline">Your identity and conversations stay encrypted on this device. No central account required.</p>
+      <header class="gate-intro">
+        <h1 class="brand"><span class="brand-badge" aria-hidden="true"><svg viewBox="0 0 192 192"><path d="M24 25h43v55l49-55h53l-61 66H24V25zm0 74h84l61 68h-53l-37-50-12 13v37H24V99z"/></svg></span>Komms</h1>
+        <h2 class="gate-headline">Private messaging that keeps working.</h2>
+        <p class="tagline">Your identity and conversations stay encrypted on this device. No central account required.</p>
+        <div class="gate-trust">
+          <span>Encrypted locally</span>
+          <span>No central account</span>
+          <span>Your node, your keys</span>
+        </div>
+      </header>
 
-      <div class="tabs" id="gate-tabs" hidden>
-        <button class="tab active" data-tab="open">Create / Unlock</button>
-        <button class="tab" data-tab="restore">Restore backup</button>
-      </div>
-
-      <form id="gate-form" autocomplete="off">
-        <label>Data directory
-          <input type="text" id="gate-dir" data-incognito-input="technical" spellcheck="false" />
-        </label>
-
-        <div id="restore-fields" hidden>
-          <label>Backup file (.kkr)
-            <input type="text" id="gate-backup" data-incognito-input="technical" spellcheck="false" placeholder="/path/to/backup.kkr" />
-          </label>
-          <label>Recovery mnemonic (24 words)
-            <input type="password" id="gate-mnemonic" data-incognito-input="mnemonic" spellcheck="false" />
-          </label>
+      <div class="gate-panel">
+        <div class="tabs" id="gate-tabs" hidden>
+          <button class="tab active" data-tab="open">Create / Unlock</button>
+          <button class="tab" data-tab="restore">Restore backup</button>
         </div>
 
-        <label><span id="gate-pass-label">Passphrase</span>
-          <input type="password" id="gate-pass" data-incognito-input="passphrase" />
-        </label>
+        <form id="gate-form" autocomplete="off">
+          <div class="gate-fields">
+            <label class="gate-data-field">Data directory
+              <input type="text" id="gate-dir" data-incognito-input="technical" spellcheck="false" />
+            </label>
 
-        <label>Appearance
-          <select id="gate-theme">
-            <option value="system">System</option>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-          </select>
-        </label>
+            <div id="restore-fields" hidden>
+              <label>Backup file (.kkr)
+                <input type="text" id="gate-backup" data-incognito-input="technical" spellcheck="false" placeholder="/path/to/backup.kkr" />
+              </label>
+              <label>Recovery mnemonic (24 words)
+                <input type="password" id="gate-mnemonic" data-incognito-input="mnemonic" spellcheck="false" />
+              </label>
+            </div>
 
-        <aside id="screen-security-summary" class="security-summary" aria-live="polite">
-          <strong>Screen security · always on</strong>
-          <span id="screen-security-mechanism">Native content protection is starting…</span>
-          <ul id="screen-security-limitations"></ul>
-        </aside>
+            <label><span id="gate-pass-label">Passphrase</span>
+              <input type="password" id="gate-pass" data-incognito-input="passphrase" />
+            </label>
 
-        <aside id="incognito-keyboard-summary" class="security-summary" aria-live="polite">
-          <strong>Input privacy · always on</strong>
-          <span id="incognito-keyboard-mechanism">Private input controls are starting…</span>
-          <ul id="incognito-keyboard-limitations"></ul>
-        </aside>
+            <label>Appearance
+              <select id="gate-theme">
+                <option value="system">System</option>
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+              </select>
+            </label>
+          </div>
 
-        <details id="gate-advanced">
-          <summary>Network settings</summary>
-          <label class="check"><input type="checkbox" id="set-mdns" checked /> Discover peers on the local network (mDNS)</label>
-          <label>Listen addresses (one multiaddr per line; port 0 = OS-assigned)
-            <textarea id="set-listen" rows="2" data-incognito-input="technical" spellcheck="false"></textarea>
-          </label>
-          <label>Bootstrap peers (one multiaddr per line)
-            <textarea id="set-bootstrap" rows="2" data-incognito-input="technical" spellcheck="false" placeholder="/dns4/host/udp/4001/quic-v1/p2p/12D3…"></textarea>
-          </label>
-          <label>Relay (for NAT traversal; defaults to first bootstrap peer)
-            <input type="text" id="set-relay" data-incognito-input="technical" spellcheck="false" />
-          </label>
-          <label>Mailbox relays (one multiaddr per line)
-            <textarea id="set-mailboxes" rows="2" data-incognito-input="technical" spellcheck="false"></textarea>
-          </label>
-          <label class="check"><input type="checkbox" id="set-serve-mailbox" /> Volunteer mailbox service for others</label>
-          <label>Sneakernet spool directory
-            <input type="text" id="set-spool" data-incognito-input="technical" spellcheck="false" />
-          </label>
-          <label>Meshtastic radio, USB serial port
-            <input type="text" id="set-mesh-serial" data-incognito-input="technical" spellcheck="false" placeholder="/dev/ttyUSB0" />
-          </label>
-          <label>Meshtastic radio, network API (host:4403)
-            <input type="text" id="set-mesh-tcp" data-incognito-input="technical" spellcheck="false" />
-          </label>
-          <label class="check"><input type="checkbox" id="set-bridge" checked /> Bridge mesh ↔ internet traffic when a radio is attached</label>
-        </details>
+          <div class="gate-assurances">
+            <aside id="screen-security-summary" class="security-summary" aria-live="polite">
+              <strong>Screen security · always on</strong>
+              <span id="screen-security-mechanism">Native content protection is starting…</span>
+              <ul id="screen-security-limitations"></ul>
+            </aside>
 
-        <p class="error" id="gate-error" hidden></p>
-        <button type="submit" class="primary" id="gate-go">Unlock</button>
-        <p class="hint" id="gate-note"></p>
-      </form>
+            <aside id="incognito-keyboard-summary" class="security-summary" aria-live="polite">
+              <strong>Input privacy · always on</strong>
+              <span id="incognito-keyboard-mechanism">Private input controls are starting…</span>
+              <ul id="incognito-keyboard-limitations"></ul>
+            </aside>
+          </div>
+
+          <details id="gate-advanced">
+            <summary>Network settings</summary>
+            <label class="check"><input type="checkbox" id="set-mdns" checked /> Discover peers on the local network (mDNS)</label>
+            <label>Listen addresses (one multiaddr per line; port 0 = OS-assigned)
+              <textarea id="set-listen" rows="2" data-incognito-input="technical" spellcheck="false"></textarea>
+            </label>
+            <label>Bootstrap peers (one multiaddr per line)
+              <textarea id="set-bootstrap" rows="2" data-incognito-input="technical" spellcheck="false" placeholder="/dns4/host/udp/4001/quic-v1/p2p/12D3…"></textarea>
+            </label>
+            <label>Relay (for NAT traversal; defaults to first bootstrap peer)
+              <input type="text" id="set-relay" data-incognito-input="technical" spellcheck="false" />
+            </label>
+            <label>Mailbox relays (one multiaddr per line)
+              <textarea id="set-mailboxes" rows="2" data-incognito-input="technical" spellcheck="false"></textarea>
+            </label>
+            <label class="check"><input type="checkbox" id="set-serve-mailbox" /> Volunteer mailbox service for others</label>
+            <label>Sneakernet spool directory
+              <input type="text" id="set-spool" data-incognito-input="technical" spellcheck="false" />
+            </label>
+            <label>Meshtastic radio, USB serial port
+              <input type="text" id="set-mesh-serial" data-incognito-input="technical" spellcheck="false" placeholder="/dev/ttyUSB0" />
+            </label>
+            <label>Meshtastic radio, network API (host:4403)
+              <input type="text" id="set-mesh-tcp" data-incognito-input="technical" spellcheck="false" />
+            </label>
+            <label class="check"><input type="checkbox" id="set-bridge" checked /> Bridge mesh ↔ internet traffic when a radio is attached</label>
+          </details>
+
+          <p class="error" id="gate-error" hidden></p>
+          <button type="submit" class="primary" id="gate-go">Unlock</button>
+          <p class="hint" id="gate-note"></p>
+        </form>
+      </div>
     </div>
   </section>
 
@@ -199,45 +212,54 @@
       </div>
       <div id="chat-pane" hidden>
         <header id="chat-head">
-          <div>
+          <div class="chat-identity">
             <span id="chat-name"></span>
             <span id="chat-verified" class="badge" hidden>verified</span>
             <span id="chat-label-badges" class="label-badges"></span>
           </div>
-          <div>
-            <button id="btn-conversation-folder" class="ghost">Move</button>
-            <button id="btn-conversation-labels" class="ghost">Labels</button>
-            <button id="btn-conversation-pin" class="ghost" aria-pressed="false">Pin</button>
-            <button id="btn-rename-contact" class="ghost">Rename</button>
-            <button id="btn-verify" class="ghost">Verify</button>
-            <button id="btn-hints" class="ghost">Delivery</button>
+          <div class="chat-head-actions">
             <button id="btn-call" class="ghost" hidden disabled>Call</button>
-            <button id="btn-group-details" class="ghost" hidden>Members</button>
+            <details class="chat-more">
+              <summary class="ghost">Conversation</summary>
+              <div class="chat-actions-menu">
+                <button id="btn-conversation-folder" class="ghost">Move to folder</button>
+                <button id="btn-conversation-labels" class="ghost">Manage labels</button>
+                <button id="btn-conversation-pin" class="ghost" aria-pressed="false">Pin</button>
+                <button id="btn-rename-contact" class="ghost">Rename contact</button>
+                <button id="btn-verify" class="ghost">Verify identity</button>
+                <button id="btn-hints" class="ghost">Delivery settings</button>
+                <button id="btn-group-details" class="ghost" hidden>Group members</button>
+              </div>
+            </details>
           </div>
         </header>
         <p id="call-status" class="call-status" role="status" aria-live="polite" hidden></p>
         <section id="group-polls" aria-label="Group polls" hidden></section>
-        <div id="messages"></div>
+        <div id="messages" role="log" aria-label="Conversation messages"></div>
         <section id="attachment-transfers" aria-label="Attachment transfers" hidden></section>
         <form id="composer" autocomplete="off">
-          <input type="text" id="composer-input" data-incognito-input="message" placeholder="Message…" aria-describedby="mention-status" />
-          <label id="expiry-control" class="composer-select">Remove after
-            <select id="composer-expiry" aria-describedby="expiry-honesty">
-              <option value="0">Off</option>
-              <option value="60">1 minute</option>
-              <option value="3600">1 hour</option>
-              <option value="86400">1 day</option>
-              <option value="604800">7 days</option>
-              <option value="2592000">30 days</option>
-            </select>
-          </label>
-          <button type="button" id="btn-mention" class="ghost" aria-haspopup="listbox" aria-expanded="false" hidden>Mention member</button>
-          <button type="button" id="btn-poll" class="ghost" hidden>Create poll</button>
+          <div class="composer-primary">
+            <input type="text" id="composer-input" data-incognito-input="message" placeholder="Write a message…" aria-describedby="mention-status" />
+            <button type="submit" class="primary">Send</button>
+          </div>
+          <div class="composer-tools">
+            <button type="button" id="btn-mention" class="ghost" aria-haspopup="listbox" aria-expanded="false" hidden>Mention</button>
+            <button type="button" id="btn-poll" class="ghost" hidden>Poll</button>
+            <button type="button" id="btn-record" class="ghost" aria-pressed="false">Audio</button>
+            <button type="button" id="btn-attach" class="ghost">Attach</button>
+            <button type="button" id="btn-schedule" class="ghost">Schedule</button>
+            <label id="expiry-control" class="composer-select">Remove after
+              <select id="composer-expiry" aria-describedby="expiry-honesty">
+                <option value="0">Off</option>
+                <option value="60">1 minute</option>
+                <option value="3600">1 hour</option>
+                <option value="86400">1 day</option>
+                <option value="604800">7 days</option>
+                <option value="2592000">30 days</option>
+              </select>
+            </label>
+          </div>
           <div id="mention-picker" role="listbox" aria-label="Current group members" hidden></div>
-          <button type="button" id="btn-record" class="ghost" aria-pressed="false">Record audio</button>
-          <button type="button" id="btn-attach" class="ghost">Attach</button>
-          <button type="button" id="btn-schedule" class="ghost">Schedule</button>
-          <button type="submit" class="primary">Send</button>
         </form>
         <div id="mention-tokens" aria-label="Semantic mentions in this draft" hidden></div>
         <p id="mention-status" class="composer-note" role="status" aria-live="polite"></p>

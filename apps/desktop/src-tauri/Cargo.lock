@@ -2553,7 +2553,7 @@ dependencies = [
 
 [[package]]
 name = "komms-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "image",
@@ -2569,7 +2569,7 @@ dependencies = [
 
 [[package]]
 name = "kult-crypto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "blake3",
@@ -2589,7 +2589,7 @@ dependencies = [
 
 [[package]]
 name = "kult-ffi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "image",
  "kult-crypto",
@@ -2604,7 +2604,7 @@ dependencies = [
 
 [[package]]
 name = "kult-node"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "futures",
@@ -2624,7 +2624,7 @@ dependencies = [
 
 [[package]]
 name = "kult-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "hmac",
@@ -2638,7 +2638,7 @@ dependencies = [
 
 [[package]]
 name = "kult-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fs2",
  "kult-crypto",
@@ -2652,7 +2652,7 @@ dependencies = [
 
 [[package]]
 name = "kult-transport"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "futures",

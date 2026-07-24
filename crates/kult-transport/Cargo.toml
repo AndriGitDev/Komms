@@ -14,7 +14,7 @@ repository.workspace = true
 meshtastic = ["dep:meshtastic"]
 
 [dependencies]
-kult-protocol = { version = "0.1.0", path = "../kult-protocol" }
+kult-protocol = { version = "0.2.0", path = "../kult-protocol" }
 async-trait = "0.1"
 futures = "0.3"
 # The official Meshtastic Rust client: the published protobuf definitions via
@@ -63,5 +63,5 @@ tokio = { version = "1", features = ["fs", "sync", "rt", "rt-multi-thread", "mac
 tempfile = "3"
 # For the M4 acceptance pin: a real ratcheted 192-bucket message must fit in
 # ≤ 2 LoRa frames (docs/08-roadmap.md M4).
-kult-crypto = { version = "0.1.0", path = "../kult-crypto" }
+kult-crypto = { version = "0.2.0", path = "../kult-crypto" }
 rand = "0.8"
