@@ -205,15 +205,21 @@ fn percentile(observations: &[Duration], percentile: usize) -> Duration {
 #[tokio::test]
 async fn direct_quic_stream_has_a_low_loopback_baseline_but_is_ordered() {
     const STALL_AT: usize = 40;
-    let result = run_spike(false, Some((STALL_AT, Duration::from_millis(120)))).await;
+    const RECEIVER_STALL: Duration = Duration::from_millis(120);
+    const TIMER_TOLERANCE: Duration = Duration::from_millis(5);
+    let result = run_spike(false, Some((STALL_AT, RECEIVER_STALL))).await;
     let p95 = percentile(&result.observations[..STALL_AT], 95);
     let stalled = result.observations[STALL_AT];
+    // The receiver begins sleeping after frame STALL_AT - 1, while the
+    // sender timestamps frame STALL_AT one interval later. Keep a small
+    // scheduler tolerance around that expected residual stall.
+    let minimum_stall = RECEIVER_STALL.saturating_sub(FRAME_INTERVAL + TIMER_TOLERANCE);
     eprintln!(
         "direct call stream: frames={FRAME_COUNT} bytes={FRAME_BYTES} p95={p95:?} stalled={stalled:?}"
     );
     assert!(p95 < Duration::from_millis(250), "loopback p95 {p95:?}");
     assert!(
-        stalled >= Duration::from_millis(100),
+        stalled >= minimum_stall,
         "ordered stream did not expose the induced receiver stall: {stalled:?}"
     );
 }

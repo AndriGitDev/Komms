@@ -9,11 +9,10 @@ draft state until a maintainer explicitly publishes it as a prerelease. That
 same explicit action publishes the multi-architecture self-hosting image to
 GHCR; a tag push alone never exposes an unqualified container.
 
-The current user-facing release name is **Komms 0.1 Alpha**. Its technical
-semantic version remains `0.1.0` across Cargo, Tauri, Android, and iOS, and its
-release tag is `v0.1.0`.
+The current candidate is **Komms 0.2 Alpha**. Its technical semantic version is
+`0.2.0` across Cargo, Tauri, Android, and iOS, and its release tag is `v0.2.0`.
 
-That release is now public as a
+Komms 0.1 Alpha remains public as a
 [GitHub prerelease](https://github.com/AndriGitDev/Komms/releases/tag/v0.1.0),
 with Windows MSI/NSIS, universal macOS DMG/app archive, Linux
 AppImage/DEB/RPM, a debug-signed Android APK, and `SHA256SUMS`. Its public
@@ -38,7 +37,7 @@ Choose a semantic version and update every version surface:
 For the current version, verify the alignment with:
 
 ```sh
-python3 scripts/check-release-version.py v0.1.0
+python3 scripts/check-release-version.py v0.2.0
 ```
 
 Run the complete local gate. Android is mandatory for a candidate that promises
@@ -117,7 +116,7 @@ for the same tag with `publish` enabled. That explicit run verifies that the
 draft contains checksums, an APK, and every promised desktop package family,
 then builds and publishes `ghcr.io/andrigitdev/komms-kultd` for Linux amd64 and
 arm64 before publishing the existing qualified assets as a public GitHub
-prerelease. The version tag is accompanied by `0.1-alpha` and `alpha`
+prerelease. The version tag is accompanied by `0.2-alpha` and `alpha`
 for this release, never `latest`. It does not rebuild or silently replace the
 desktop/mobile artifacts that were tested.
 

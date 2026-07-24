@@ -1921,6 +1921,31 @@ $("#mention-picker").addEventListener("keydown", (event) => {
   }
 });
 
+$(".chat-more").addEventListener("click", (event) => {
+  if (event.target.closest("button")) event.currentTarget.open = false;
+});
+
+function messageDayKey(unixSecs) {
+  const date = new Date(unixSecs * 1000);
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+function messageDaySeparator(unixSecs) {
+  const date = new Date(unixSecs * 1000);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  const separator = document.createElement("div");
+  separator.className = "message-day";
+  separator.setAttribute("role", "separator");
+  separator.textContent = date.toDateString() === today.toDateString()
+    ? "Today"
+    : date.toDateString() === yesterday.toDateString()
+      ? "Yesterday"
+      : date.toLocaleDateString([], { month: "long", day: "numeric", year: "numeric" });
+  return separator;
+}
+
 function bubble(m, formatted) {
   const el = document.createElement("div");
   el.className = "msg " + (m.outbound ? "out" : "in");
@@ -2445,9 +2470,15 @@ async function renderMessages() {
     source: message.body,
     highlights: formattingHighlights(message),
   })));
+  let visibleDay = "";
   for (let index = 0; index < visibleMessages.length; index += 1) {
     const m = visibleMessages[index];
     const formatted = formattedMessages[index];
+    const day = messageDayKey(m.timestamp);
+    if (day !== visibleDay) {
+      box.append(messageDaySeparator(m.timestamp));
+      visibleDay = day;
+    }
     box.append(isNote ? noteBubble(m, formatted) : isGroup ? groupBubble(m, formatted) : bubble(m, formatted));
   }
   const visibleScheduled = scheduled

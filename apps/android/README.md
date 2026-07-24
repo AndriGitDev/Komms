@@ -290,7 +290,7 @@ names, qualification steps, and explicit publication control are in the
 ## Version and release signing (scaffold)
 
 The application id is `is.andri.komms`, the minimum Android version is API 26,
-and the current `versionName` is `0.1.0`, aligned with the Rust, desktop, and iOS
+and the current `versionName` is `0.2.0`, aligned with the Rust, desktop, and iOS
 surfaces. Release signing is optional and deliberately keyless by default.
 
 To configure a future signed release, create the git-ignored

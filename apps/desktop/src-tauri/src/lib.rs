@@ -22,7 +22,15 @@ pub mod commands;
 pub mod qr;
 pub mod session;
 
+use std::time::Duration;
+
 use tauri::{Emitter, Manager};
+
+/// Clean shutdown normally completes immediately, but a carrier operation can
+/// be inside an OS/network wait that does not observe the node's stop signal.
+/// The store is transactional, so after this grace period it is safer to let
+/// the shell exit than to strand a hidden, unresponsive process indefinitely.
+const CLOSE_GRACE_PERIOD: Duration = Duration::from_secs(5);
 
 /// Build and run the Tauri application (called from `main`).
 pub fn run() {
@@ -183,11 +191,27 @@ pub fn run() {
             if let tauri::WindowEvent::Focused(focused) = event {
                 let _ = window.emit("screen-security-focus", *focused);
             }
-            // Stop the node cleanly when the last window goes: flushes the
-            // store and unbinds transports instead of relying on exit.
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
+            // Never stop the embedded node on the native event-loop thread:
+            // transport shutdown may briefly wait on the OS, which would make
+            // the whole app appear frozen. Hide immediately, finish graceful
+            // cleanup in the background, and cap the wait so Quit always
+            // terminates even if a carrier is stuck in an uninterruptible wait.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+                let app = window.app_handle().clone();
                 if let Some(session) = window.state::<commands::AppState>().take() {
-                    session.stop();
+                    std::thread::spawn(move || {
+                        let (finished_tx, finished_rx) = std::sync::mpsc::sync_channel(0);
+                        std::thread::spawn(move || {
+                            session.stop();
+                            let _ = finished_tx.send(());
+                        });
+                        let _ = finished_rx.recv_timeout(CLOSE_GRACE_PERIOD);
+                        app.exit(0);
+                    });
+                } else {
+                    app.exit(0);
                 }
             }
         })

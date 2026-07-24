@@ -281,7 +281,7 @@ physical-device or distribution qualification.
 ## Version and distribution boundary
 
 The generated app targets iOS 16 or newer, uses bundle identifier
-`is.andri.komms`, and reports short version `0.1.0` / build `1`, aligned with the
+`is.andri.komms`, and reports short version `0.2.0` / build `2`, aligned with the
 Rust, desktop, and Android surfaces. The documented gate is an unsigned
 Simulator build. No distribution certificate, provisioning profile, App Store
 metadata, notarized artifact, or supported update channel is configured in this
