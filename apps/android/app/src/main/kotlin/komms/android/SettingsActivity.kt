@@ -1,10 +1,17 @@
 package komms.android
 
+import android.app.AlertDialog
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.view.View
+import android.widget.Button
 import android.widget.EditText
 import android.widget.RadioGroup
 import android.widget.Switch
 import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
+import java.io.File
 import komms.core.NetworkSettings
 import komms.core.SettingsException
 import komms.core.androidIncognitoKeyboardPolicy
@@ -18,12 +25,40 @@ import uniffi.kult_ffi.ThemePreference
  * lock), exactly like desktop.
  */
 class SettingsActivity : SecureActivity() {
+    companion object {
+        const val EXTRA_NETWORK_ONLY = "komms.settings.NETWORK_ONLY"
+    }
+
+    private val createBackup =
+        registerForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+            if (uri != null) exportBackup(uri)
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_settings)
         applyEdgeToEdgeInsets()
         setSupportActionBar(findViewById(R.id.settings_toolbar))
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
+        if (intent.getBooleanExtra(EXTRA_NETWORK_ONLY, false)) {
+            findViewById<View>(R.id.settings_unlocked_sections).visibility = View.GONE
+        }
+
+        findViewById<Button>(R.id.settings_backup).setOnClickListener {
+            createBackup.launch("komms-backup.kkr")
+        }
+        findViewById<Button>(R.id.settings_devices).setOnClickListener {
+            startActivity(Intent(this, DeviceActivity::class.java))
+        }
+        findViewById<Button>(R.id.settings_folders).setOnClickListener {
+            startActivity(Intent(this, FolderManagerActivity::class.java))
+        }
+        findViewById<Button>(R.id.settings_labels).setOnClickListener {
+            startActivity(Intent(this, LabelManagerActivity::class.java))
+        }
+        findViewById<Button>(R.id.settings_icons).setOnClickListener {
+            startActivity(Intent(this, CustomIconActivity::class.java))
+        }
 
         val dataDir = KommsApp.dataDir(application)
         val theme = findViewById<RadioGroup>(R.id.set_theme)
@@ -108,4 +143,30 @@ class SettingsActivity : SecureActivity() {
 
     private fun blankToNull(field: EditText): String? =
         field.text.toString().trim().ifEmpty { null }
+
+    private fun exportBackup(uri: Uri) {
+        val session = NodeHolder.session ?: return
+        runNode(
+            work = {
+                val local = File.createTempFile("backup", ".kkr", cacheDir)
+                local.delete()
+                val mnemonic = session.exportBackup(local)
+                try {
+                    contentResolver.openOutputStream(uri)!!.use { output ->
+                        local.inputStream().use { it.copyTo(output) }
+                    }
+                } finally {
+                    local.delete()
+                }
+                mnemonic
+            },
+        ) { mnemonic ->
+            AlertDialog.Builder(this)
+                .setTitle(R.string.backup_done_title)
+                .setMessage(getString(R.string.backup_done_body, mnemonic))
+                .setCancelable(false)
+                .setPositiveButton(R.string.backup_done_ack, null)
+                .show()
+        }
+    }
 }

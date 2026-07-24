@@ -23,8 +23,9 @@
   <!-- ══ Gate: create / unlock / restore ══ -->
   <section id="gate" class="screen">
     <div class="gate-card">
-      <h1 class="brand"><svg class="mark" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="12" r="2.2" fill="currentColor" stroke="none"/><path d="M11 7.5a7 7 0 0 1 0 9"/><path d="M14.8 4.5a11.5 11.5 0 0 1 0 15"/></svg>Komms</h1>
-      <p class="tagline">Serverless end-to-end encrypted messaging: internet, LAN, and LoRa mesh.</p>
+      <h1 class="brand"><span class="brand-badge" aria-hidden="true"><svg viewBox="0 0 192 192"><path d="M24 25h43v55l49-55h53l-61 66H24V25zm0 74h84l61 68h-53l-37-50-12 13v37H24V99z"/></svg></span>Komms</h1>
+      <h2 class="gate-headline">Private messaging that keeps working.</h2>
+      <p class="tagline">Your identity and conversations stay encrypted on this device. No central account required.</p>
 
       <div class="tabs" id="gate-tabs" hidden>
         <button class="tab active" data-tab="open">Create / Unlock</button>
@@ -108,19 +109,18 @@
   <section id="app" class="screen" hidden>
     <aside id="sidebar">
       <header class="me">
-        <div class="me-name"><svg class="mark" viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="12" r="2.2" fill="currentColor" stroke="none"/><path d="M11 7.5a7 7 0 0 1 0 9"/><path d="M14.8 4.5a11.5 11.5 0 0 1 0 15"/></svg>Komms</div>
+        <div class="me-name"><span class="brand-badge compact" aria-hidden="true"><svg viewBox="0 0 192 192"><path d="M24 25h43v55l49-55h53l-61 66H24V25zm0 74h84l61 68h-53l-37-50-12 13v37H24V99z"/></svg></span>Komms</div>
         <div class="me-address" id="my-address" title="Your kult address"></div>
         <div class="me-actions">
           <button id="btn-copy-address" class="ghost" title="Copy address">Copy</button>
           <button id="btn-share" class="ghost" title="Show pairing QR / bundle">Share</button>
-          <button id="btn-icon-manager" class="ghost" title="Private custom icons">Icons</button>
-          <button id="btn-theme" class="ghost" title="Appearance">Theme</button>
-          <button id="btn-backup" class="ghost" title="Export encrypted backup">Backup</button>
-          <button id="btn-devices" class="ghost" title="Linked devices">Devices</button>
+          <button id="btn-settings" class="ghost" title="Settings">Settings</button>
         </div>
       </header>
 
       <div id="conversation-lists">
+        <details class="conversation-tools">
+          <summary>Filter conversations</summary>
         <section class="conversation-section">
           <div class="contacts-head">
             <span>Folders</span>
@@ -132,11 +132,6 @@
             <div id="folder-navigation-items"></div>
           </nav>
           <p id="folder-navigation-status" class="sr-status" role="status" aria-live="polite"></p>
-        </section>
-        <section id="pinned-section" class="conversation-section" hidden>
-          <div class="contacts-head"><span>Pinned</span></div>
-          <nav id="pinned-list" aria-label="Pinned conversations"></nav>
-          <p id="pin-status" class="sr-status" role="status" aria-live="polite"></p>
         </section>
         <section class="conversation-section">
           <div class="contacts-head">
@@ -153,6 +148,12 @@
             <button id="btn-clear-label-filter" class="ghost" type="button" hidden>Clear label filter</button>
             <p id="label-filter-status" class="sr-status" role="status" aria-live="polite"></p>
           </fieldset>
+        </section>
+        </details>
+        <section id="pinned-section" class="conversation-section" hidden>
+          <div class="contacts-head"><span>Pinned</span></div>
+          <nav id="pinned-list" aria-label="Pinned conversations"></nav>
+          <p id="pin-status" class="sr-status" role="status" aria-live="polite"></p>
         </section>
         <section class="conversation-section">
           <nav aria-label="Local conversations">
@@ -192,7 +193,7 @@
     <main id="chat">
       <div id="chat-empty">
         <div class="empty-state">
-          <svg class="mark" viewBox="0 0 24 24" width="44" height="44" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="12" r="2.2" fill="currentColor" stroke="none"/><path d="M11 7.5a7 7 0 0 1 0 9"/><path d="M14.8 4.5a11.5 11.5 0 0 1 0 15"/></svg>
+          <span class="brand-badge large" aria-hidden="true"><svg viewBox="0 0 192 192"><path d="M24 25h43v55l49-55h53l-61 66H24V25zm0 74h84l61 68h-53l-37-50-12 13v37H24V99z"/></svg></span>
           <p>Select a contact, or share your bundle to pair with someone.</p>
         </div>
       </div>
@@ -252,8 +253,8 @@
   </div>
 
   <dialog id="startup-dialog" aria-labelledby="startup-dialog-title" aria-describedby="startup-dialog-message">
-    <h2 id="startup-dialog-title">Starting Komms</h2>
-    <p id="startup-dialog-message">Opening your encrypted store and starting the node can take up to 30 seconds. Keep Komms open while this finishes.</p>
+    <h2 id="startup-dialog-title">Decrypting and starting your node</h2>
+    <p id="startup-dialog-message">This can take up to 30 seconds. Keep Komms open while it securely unlocks your store and joins the network.</p>
     <progress aria-label="Decrypting the store and starting the node"></progress>
   </dialog>
 
@@ -610,6 +611,58 @@
     <p id="theme-status" class="hint" role="status" aria-live="polite">Color is never the only delivery or security cue.</p>
     <p class="error" data-f="error" hidden></p>
     <div class="row end"><button class="ghost" data-act="close">Done</button></div>
+  </template>
+
+  <template id="tpl-settings">
+    <p class="modal-note">Everyday messaging stays simple. Recovery, device, organization, and high-threat controls remain available here.</p>
+    <section class="settings-group">
+      <h3>Account &amp; devices</h3>
+      <div class="settings-grid">
+        <button type="button" class="settings-row" data-settings-action="backup">
+          <strong>Encrypted backup</strong>
+          <span>Export identity, contacts, and history</span>
+        </button>
+        <button type="button" class="settings-row" data-settings-action="devices">
+          <strong>Linked devices</strong>
+          <span>Link, sync, rename, or revoke installations</span>
+        </button>
+      </div>
+    </section>
+    <section class="settings-group">
+      <h3>Privacy &amp; appearance</h3>
+      <div class="settings-grid">
+        <button type="button" class="settings-row" data-settings-action="appearance">
+          <strong>Appearance</strong>
+          <span>System, light, or dark theme</span>
+        </button>
+        <div class="settings-row static">
+          <strong>Screen and input privacy</strong>
+          <span>Native content protection and private-input safeguards stay on automatically</span>
+        </div>
+      </div>
+    </section>
+    <section class="settings-group">
+      <h3>Conversation organization</h3>
+      <div class="settings-grid">
+        <button type="button" class="settings-row" data-settings-action="folders">
+          <strong>Folders</strong><span>Create and arrange private folders</span>
+        </button>
+        <button type="button" class="settings-row" data-settings-action="labels">
+          <strong>Labels</strong><span>Organize conversations with private labels</span>
+        </button>
+        <button type="button" class="settings-row" data-settings-action="icons">
+          <strong>Private custom icons</strong><span>Choose icons stored only on this device</span>
+        </button>
+      </div>
+    </section>
+    <section class="settings-group">
+      <h3>Advanced</h3>
+      <div class="settings-row static">
+        <strong>Network &amp; transports</strong>
+        <span>Relays, bootstrap peers, mailbox service, sneakernet, and mesh settings are available before unlock and apply when the node starts.</span>
+      </div>
+      <p class="hint">Most people never need to change these. Komms chooses safe defaults automatically.</p>
+    </section>
   </template>
 
   <template id="tpl-schedule">

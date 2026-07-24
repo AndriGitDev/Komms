@@ -3287,8 +3287,6 @@ async function openIconManager() {
   await refreshIconManager(root);
 }
 
-$("#btn-icon-manager").addEventListener("click", openIconManager);
-
 function resetFolderEditor(root) {
   root.querySelector('[data-f="folder-id"]').value = "";
   root.querySelector('[data-f="folder-name"]').value = "";
@@ -4047,7 +4045,7 @@ $("#btn-hints").addEventListener("click", () => {
 });
 
 // appearance is applied immediately and sealed through the shared F5 record
-$("#btn-theme").addEventListener("click", async () => {
+async function openAppearanceSettings() {
   const root = openModal("Appearance", "tpl-theme");
   const info = await call("theme");
   const checked = root.querySelector('input[value="' + info.preference + '"]');
@@ -4064,7 +4062,7 @@ $("#btn-theme").addEventListener("click", async () => {
   root.addEventListener("click", (event) => {
     if (event.target.matches('[data-act="close"]')) closeModal();
   });
-});
+}
 
 async function renderLinkedDevices(root) {
   const list = root.querySelector('[data-f="device-list"]');
@@ -4214,7 +4212,7 @@ function openDeviceSyncImport() {
   });
 }
 
-$("#btn-devices").addEventListener("click", async () => {
+async function openLinkedDevicesSettings() {
   const root = openModal("Linked devices", "tpl-devices");
   try { await renderLinkedDevices(root); } catch (error) { showError(root, error); }
   root.addEventListener("click", (event) => {
@@ -4222,10 +4220,10 @@ $("#btn-devices").addEventListener("click", async () => {
     if (event.target.matches('[data-act="join-link"]')) openDeviceLinkTarget();
     if (event.target.matches('[data-act="import-sync"]')) openDeviceSyncImport();
   });
-});
+}
 
 // backup modal → one-time mnemonic
-$("#btn-backup").addEventListener("click", () => {
+function openBackupSettings() {
   const root = openModal("Encrypted backup", "tpl-backup");
   const stamp = new Date().toISOString().slice(0, 10);
   root.querySelector('[data-f="path"]').value = `${state.dataDir}/komms-${stamp}.kkr`;
@@ -4248,6 +4246,19 @@ $("#btn-backup").addEventListener("click", () => {
     } catch (err) {
       showError(root, err);
     }
+  });
+}
+
+$("#btn-settings").addEventListener("click", () => {
+  const root = openModal("Settings", "tpl-settings");
+  root.addEventListener("click", (event) => {
+    const action = event.target.closest("[data-settings-action]")?.dataset.settingsAction;
+    if (action === "backup") openBackupSettings();
+    if (action === "devices") openLinkedDevicesSettings();
+    if (action === "appearance") openAppearanceSettings();
+    if (action === "folders") openFolderManager();
+    if (action === "labels") openLabelManager();
+    if (action === "icons") openIconManager();
   });
 });
 

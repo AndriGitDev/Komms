@@ -8,14 +8,6 @@
         <item name="android:windowBackground">@color/surface</item>
         <item name="android:textColorPrimary">@color/text_primary</item>
         <item name="android:textColorSecondary">@color/text_secondary</item>
-        <!-- Edge-to-edge: content is padded below the transparent status
-             bar, so its icons sit on the light window background. -->
-        <item name="android:windowLightStatusBar">true</item>
-    </style>
-
-    <style name="ThemeOverlay.Komms.Toolbar" parent="ThemeOverlay.AppCompat.ActionBar">
-        <item name="android:textColorPrimary">@color/toolbar_on_primary</item>
-        <item name="actionMenuTextColor">@color/toolbar_on_primary</item>
-        <item name="colorControlNormal">@color/toolbar_on_primary</item>
+        <item name="android:windowLightStatusBar">false</item>
     </style>
 </resources>

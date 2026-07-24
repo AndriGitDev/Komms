@@ -7,18 +7,35 @@
     <androidx.appcompat.widget.Toolbar
         android:id="@+id/main_toolbar"
         android:background="@color/primary"
-        android:theme="@style/ThemeOverlay.AppCompat.Dark.ActionBar"
+        android:theme="@style/ThemeOverlay.Komms.Toolbar"
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize" />
 
     <TextView
         android:id="@+id/main_status"
-        android:textSize="12sp"
-        android:fontFamily="monospace"
+        android:textSize="14sp"
+        android:textStyle="bold"
         android:paddingHorizontal="16dp"
-        android:paddingVertical="6dp"
+        android:paddingVertical="12dp"
         android:layout_width="match_parent"
         android:layout_height="wrap_content" />
+
+    <Button
+        android:id="@+id/main_filter_toggle"
+        style="?attr/borderlessButtonStyle"
+        android:text="@string/main_filters_show"
+        android:textAllCaps="false"
+        android:textAlignment="viewStart"
+        android:paddingHorizontal="16dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
+    <LinearLayout
+        android:id="@+id/main_filters_panel"
+        android:orientation="vertical"
+        android:visibility="gone"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
 
     <LinearLayout
         android:orientation="horizontal"
@@ -116,6 +133,8 @@
         android:accessibilityLiveRegion="polite"
         android:layout_width="match_parent"
         android:layout_height="wrap_content" />
+
+    </LinearLayout>
 
     <TextView
         android:text="@string/pins_title"

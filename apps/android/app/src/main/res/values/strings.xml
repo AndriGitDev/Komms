@@ -14,7 +14,8 @@
     <string name="notif_running">Node running — messages deliver in the background</string>
 
     <!-- Gate -->
-    <string name="gate_tagline">Sovereign messaging: end-to-end encrypted, serverless, functional off the grid.</string>
+    <string name="gate_headline">Private messaging that keeps working.</string>
+    <string name="gate_tagline">Your identity and conversations stay encrypted on this device. No central account required.</string>
     <string name="gate_passphrase">Store passphrase</string>
     <string name="gate_confirm">Confirm passphrase</string>
     <string name="gate_unlock">Unlock</string>
@@ -26,12 +27,17 @@
     <string name="gate_no_backup">no backup file chosen</string>
     <string name="gate_mnemonic">24-word recovery mnemonic</string>
     <string name="gate_restore">Restore</string>
-    <string name="gate_settings">Network settings</string>
+    <string name="gate_settings">Advanced network settings</string>
     <string name="gate_starting_title">Starting Komms</string>
     <string name="gate_starting_message">Opening your encrypted store and starting the node can take up to 30 seconds. Keep Komms open while this finishes.</string>
 
     <!-- Main -->
     <string name="status_line">%1$s · NAT %2$s · %3$d LAN · %4$d scheduled · %5$d queued · %6$d transit</string>
+    <string name="status_summary">Node running · %1$s reachability · %2$d LAN peers · %3$d queued</string>
+    <string name="status_details">Address\n%1$s\n\nNAT: %2$s\nLAN peers: %3$d\nScheduled: %4$d\nQueued: %5$d\nBridging: %6$d</string>
+    <string name="node_details_title">Node details</string>
+    <string name="main_filters_show">Filter conversations</string>
+    <string name="main_filters_hide">Hide conversation filters</string>
     <string name="nat_public">public</string>
     <string name="nat_private">private</string>
     <string name="nat_unknown">unknown</string>
@@ -389,6 +395,23 @@
 
     <!-- Settings -->
     <string name="settings_title">Settings</string>
+    <string name="settings_account_devices">Account &amp; devices</string>
+    <string name="settings_backup_title">Encrypted backup</string>
+    <string name="settings_backup_summary">Export identity, contacts, and history</string>
+    <string name="settings_backup_accessibility">Encrypted backup. Export identity, contacts, and history</string>
+    <string name="settings_devices_title">Linked devices</string>
+    <string name="settings_devices_summary">Link, sync, rename, or revoke installations</string>
+    <string name="settings_devices_accessibility">Linked devices. Link, sync, rename, or revoke installations</string>
+    <string name="settings_organization">Conversation organization</string>
+    <string name="settings_folders_summary">Create and arrange private folders</string>
+    <string name="settings_labels_summary">Organize conversations with private labels</string>
+    <string name="settings_icons_summary">Choose icons stored only on this device</string>
+    <string name="settings_folders_accessibility">Manage folders. Create and arrange private folders</string>
+    <string name="settings_labels_accessibility">Manage labels. Organize conversations with private labels</string>
+    <string name="settings_icons_accessibility">Manage private icons. Choose icons stored only on this device</string>
+    <string name="settings_privacy_appearance">Privacy &amp; appearance</string>
+    <string name="settings_advanced">Advanced network &amp; transports</string>
+    <string name="settings_advanced_note">Most people never need to change these. Komms chooses safe defaults automatically.</string>
     <string name="appearance_title">Appearance</string>
     <string name="icons_manage">Manage private icons</string>
     <string name="icons_title">Private custom icons</string>

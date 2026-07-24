@@ -1,18 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="primary">#075E49</color>
-    <color name="primary_dark">#004737</color>
-    <color name="accent">#087B59</color>
-    <color name="ok">#237332</color>
-    <color name="danger">#A72E23</color>
-    <color name="warning">#6C5700</color>
-    <color name="warning_surface">#FFF4CC</color>
+    <color name="primary">#F2B705</color>
+    <color name="primary_dark">#C89200</color>
+    <color name="accent">#B83431</color>
+    <color name="ok">#28734B</color>
+    <color name="danger">#B83431</color>
+    <color name="warning">#805900</color>
+    <color name="warning_surface">#FFF2B3</color>
     <color name="transfer_surface">#E3EFF8</color>
-    <color name="bubble_out">#D8EEE5</color>
-    <color name="bubble_in">#EDF1F3</color>
+    <color name="bubble_out">#FBE4E2</color>
+    <color name="bubble_in">#FFFFFF</color>
     <color name="surface">#FFFFFF</color>
-    <color name="surface_raised">#F8FAFB</color>
-    <color name="text_primary">#172126</color>
-    <color name="text_secondary">#4D5F68</color>
-    <color name="ic_launcher_background">#1a222d</color>
+    <color name="surface_raised">#FAFAFA</color>
+    <color name="text_primary">#1A1A1A</color>
+    <color name="text_secondary">#6B6B6B</color>
+    <color name="line">#E4E1D8</color>
+    <color name="brand">#F2B705</color>
+    <color name="deep">#0F2633</color>
+    <color name="toolbar_on_primary">#0F2633</color>
+    <color name="ic_launcher_background">#F2B705</color>
 </resources>

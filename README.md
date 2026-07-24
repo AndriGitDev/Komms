@@ -18,6 +18,16 @@ stick in a pocket.*
 **New here?** Read [Start Here](docs/00-start-here.md): the whole idea in plain
 words, with no cryptography knowledge required.
 
+## Komms 0.2 interface preview
+
+<p align="center">
+  <img src="docs/assets/screenshots/ios-unlock-preview.png" alt="Komms unlock screen with the yellow K mark and private messaging introduction" width="300">
+  &nbsp;&nbsp;
+  <img src="docs/assets/screenshots/ios-inbox-preview.png" alt="Komms conversation-first inbox showing node health, pairing, note to self, private conversations, and groups" width="300">
+</p>
+
+<p align="center"><em>Work-in-progress 0.2 interface running locally in the iOS Simulator. Android and desktop use the same brand and information hierarchy.</em></p>
+
 ## Install 0.1 Alpha for testing
 
 Open the public
