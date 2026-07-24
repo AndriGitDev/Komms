@@ -47,8 +47,8 @@ jobs:
           tags: |
             type=sha
             type=semver,pattern={{version}},value=${{ inputs.release_tag }},enable=${{ inputs.push }}
-            type=raw,value=0.1-alpha,enable=${{ inputs.push && inputs.release_tag == 'v0.1.0' }}
-            type=raw,value=alpha,enable=${{ inputs.push && inputs.release_tag == 'v0.1.0' }}
+            type=raw,value=0.2-alpha,enable=${{ inputs.push && inputs.release_tag == 'v0.2.0' }}
+            type=raw,value=alpha,enable=${{ inputs.push && inputs.release_tag == 'v0.2.0' }}
           labels: |
             org.opencontainers.image.title=Komms kultd
             org.opencontainers.image.description=Self-hosted Komms headless node

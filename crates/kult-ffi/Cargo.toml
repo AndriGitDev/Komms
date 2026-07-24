@@ -27,11 +27,11 @@ meshtastic = ["kult-transport/meshtastic"]
 bindgen = ["uniffi/cli"]
 
 [dependencies]
-kult-crypto = { version = "0.1.0", path = "../kult-crypto" }
-kult-node = { version = "0.1.0", path = "../kult-node" }
-kult-protocol = { version = "0.1.0", path = "../kult-protocol" }
-kult-store = { version = "0.1.0", path = "../kult-store" }
-kult-transport = { version = "0.1.0", path = "../kult-transport" }
+kult-crypto = { version = "0.2.0", path = "../kult-crypto" }
+kult-node = { version = "0.2.0", path = "../kult-node" }
+kult-protocol = { version = "0.2.0", path = "../kult-protocol" }
+kult-store = { version = "0.2.0", path = "../kult-store" }
+kult-transport = { version = "0.2.0", path = "../kult-transport" }
 image = { version = "=0.25.8", default-features = false, features = ["jpeg", "png"] }
 rand = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }

@@ -217,7 +217,7 @@ package is production-ready.
 
 ## Packaging and signing (scaffold)
 
-The package identifier is `is.andri.komms` and the current version is `0.1.0`,
+The package identifier is `is.andri.komms` and the current version is `0.2.0`,
 aligned with the Rust, Android, and iOS surfaces.
 
 The 0.1 Alpha desktop packages are not release-signed or notarized: macOS and
