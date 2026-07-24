@@ -239,8 +239,8 @@ by `core/gradle.lockfile`.
 
 ## Install the published Alpha
 
-Download `Komms-0.1.0-android-debug.apk` and `SHA256SUMS` from the public
-[Komms 0.1 Alpha release](https://github.com/AndriGitDev/Komms/releases/tag/v0.1.0).
+Download `Komms-0.2.0-android-debug.apk` and `SHA256SUMS` from the public
+[Komms 0.2 Alpha release](https://github.com/AndriGitDev/Komms/releases/tag/v0.2.0).
 It supports Android 8.0 (API 26) or newer on `arm64-v8a` phones and `x86_64`
 emulators. This is a test-only APK signed with a development certificate, not a
 store or production build. Verify its checksum, allow **Install unknown apps**
@@ -281,7 +281,7 @@ SDK/NDK, debug-APK assembly plus lint. Per-push CI also assembles the real debug
 APK. Neither compilation path replaces the hands-on lifecycle, accessibility,
 audio-route, background, and physical-device qualification matrix.
 
-The published `v0.1.0` prerelease includes that installable debug APK alongside
+The published `v0.2.0` prerelease includes that installable debug APK alongside
 the desktop packages and checksums. Future tagged candidates begin as drafts;
 optional keystore secrets add a signed release APK and AAB. The exact secret
 names, qualification steps, and explicit publication control are in the

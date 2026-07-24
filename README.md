@@ -26,12 +26,12 @@ words, with no cryptography knowledge required.
   <img src="docs/assets/screenshots/ios-inbox-preview.png" alt="Komms conversation-first inbox showing node health, pairing, note to self, private conversations, and groups" width="300">
 </p>
 
-<p align="center"><em>Work-in-progress 0.2 interface running locally in the iOS Simulator. Android and desktop use the same brand and information hierarchy.</em></p>
+<p align="center"><em>The Komms 0.2 Alpha interface. Android, iOS, and desktop share the same brand and conversation-first information hierarchy.</em></p>
 
-## Install 0.1 Alpha for testing
+## Install 0.2 Alpha for testing
 
 Open the public
-[Komms 0.1 Alpha release](https://github.com/AndriGitDev/Komms/releases/tag/v0.1.0)
+[Komms 0.2 Alpha release](https://github.com/AndriGitDev/Komms/releases/tag/v0.2.0)
 and download one package:
 
 | System | Choose |
@@ -47,9 +47,27 @@ verify the download before accepting an operating-system warning. The
 installation, first-test, and issue-reporting steps. No source build is
 required. iOS currently remains source/Simulator-only.
 
+## What changed in 0.2 Alpha
+
+- **A calmer, conversation-first interface.** The redesigned unlock, inbox,
+  message, and Settings surfaces now share one Komms identity across desktop,
+  Android, and iOS. Advanced actions such as backups and linked devices stay
+  available without crowding the everyday messaging path.
+- **More dependable app lifecycle behavior.** The release hardens Android
+  background-node recovery, makes desktop shutdown complete cleanly, and fixes
+  locked-window, dark-mode icon, and desktop conversation-layout rough edges.
+- **Faster large attachments.** File transfer now streams larger chunks and
+  avoids the per-chunk synchronization pattern that made a 10 MB image take
+  many minutes on some paths.
+- **Clearer startup expectations.** Unlocking explains that decrypting local
+  state and starting the node can take up to 30 seconds on slower devices.
+- **A release-shaped self-hosted node.** The public `kultd` image is available
+  for Linux amd64 and arm64 with provenance, an SBOM, and immutable `0.2.0`
+  tagging.
+
 ## Current implementation status
 
-Komms 0.1 Alpha is a packaged public prerelease for testing, not an audited
+Komms 0.2 Alpha is a packaged public prerelease for testing, not an audited
 stable release. The current repository contains the complete
 server-independent messaging core and all three application shells:
 
@@ -68,7 +86,7 @@ server-independent messaging core and all three application shells:
 | **Private custom icons** | B13 contact, group, folder, and note-to-self icons are shipped across the sealed F5 record, node, RPC/CLI, UniFFI, desktop, Android, and iOS. Generated initials are the safe fallback; eight bundled glyphs or selected local JPEG/PNG inputs become strict metadata-free 256×256 PNGs under per-icon/count/aggregate quotas. Icons create zero remote lookup, peer sync, notification, or transport work; portability is limited to `KKR7` and explicit authenticated own-device C2 sync. |
 | **Screen security** | B14 is shipped as an always-on pre-unlock policy across the shared capability contract, RPC/CLI, UniFFI, and every shell. Android applies `FLAG_SECURE` to every activity; iOS obscures inactive/app-switcher and live-captured scenes without claiming universal screenshot blocking; desktop requests best-effort native content protection, shields on focus loss, and locks immediately with `Ctrl/Cmd+Shift+L`. OS, compositor, privileged-software, and external-camera limits remain explicit. |
 | **Input privacy** | B15 is shipped as an always-on pre-unlock policy across the shared capability contract, RPC/CLI, UniFFI, and every textual field. Android requests `IME_FLAG_NO_PERSONALIZED_LEARNING` and no suggestions; iOS disables correction and uses secure passphrase/mnemonic fields; desktop disables webview autocomplete, correction, capitalization, and spellcheck. Keyboard, OS, webview, and writing-tool limits remain explicit. |
-| **Runtime and release assurance** | The headless runtime recovers poisoned synchronization locks instead of cascading a panic, emits policy-bounded structured diagnostics through `tracing`, and accepts passphrases/restore mnemonics from owner-only secret files. Rust 1.88 is the declared and tested MSRV. The source tree is aligned for the `0.2.0` candidate; `0.1.0` remains the current published GitHub prerelease until the new native Windows/macOS/Linux packages, Android test APK, checksums, and Linux amd64/arm64 `kultd` image are qualified. These are Alpha artifacts: Windows signing, store distribution, an updater, and stable support promises are not configured. Per-push CI, the complete local matrix, and a weekly advisory/macOS/coverage workflow provide complementary evidence. |
+| **Runtime and release assurance** | The headless runtime recovers poisoned synchronization locks instead of cascading a panic, emits policy-bounded structured diagnostics through `tracing`, and accepts passphrases/restore mnemonics from owner-only secret files. Rust 1.88 is the declared and tested MSRV. Version `0.2.0` is published from the qualified `v0.2.0` tag with native Windows/macOS/Linux packages, an Android test APK, `SHA256SUMS`, and a Linux amd64/arm64 `kultd` image carrying provenance and an SBOM. These remain Alpha artifacts: Windows signing, store distribution, an updater, and stable support promises are not configured. Per-push CI, the complete local matrix, and a weekly advisory/macOS/coverage workflow provide complementary evidence. |
 | **Optional mobile convenience** | ADR-0017 through ADR-0019 propose reversible post-pairing rendezvous and content-free native wake. The layer is design-only: no optional service is implemented or required by the sovereign core. |
 
 Older `KKR1` through `KKR6` backups remain restorable; current backups are
@@ -190,11 +208,11 @@ division between local checks, per-push CI, weekly audit evidence, physical
 qualification, and signing is documented in the
 [local release gate](docs/24-local-release-gate.md).
 
-The **Komms 0.1 Alpha** prerelease was built from tag `v0.1.0` on native Windows,
+The **Komms 0.2 Alpha** prerelease was built from tag `v0.2.0` on native Windows,
 macOS, Linux, and Android runners. Install it using the
 [Alpha testing guide](docs/27-alpha-testing.md). Its public Linux amd64/arm64
 self-hosting image is available as the immutable
-`ghcr.io/andrigitdev/komms-kultd:0.1.0` tag and the `0.1-alpha`/`alpha` aliases. See the
+`ghcr.io/andrigitdev/komms-kultd:0.2.0` tag and the `0.2-alpha`/`alpha` aliases. See the
 [release runbook](docs/25-release-runbook.md) for the version bump,
 APK/installer/container, signing, checksum, smoke-test, and publication process,
 or the [self-hosting guide](docs/26-self-hosting.md) to run `kultd`.

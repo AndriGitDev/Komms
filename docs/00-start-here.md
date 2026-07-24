@@ -50,7 +50,7 @@ Our full, frank list is in the [threat model](02-threat-model.md).
 
 ## Can I use it today?
 
-Yes, for Alpha testing. [Komms 0.1 Alpha](https://github.com/AndriGitDev/Komms/releases/tag/v0.1.0)
+Yes, for Alpha testing. [Komms 0.2 Alpha](https://github.com/AndriGitDev/Komms/releases/tag/v0.2.0)
 has downloadable packages for Windows, macOS, Linux, and Android. Follow the
 [Alpha testing guide](27-alpha-testing.md) to choose a package, verify its
 checksum, install it, and report what you find. The desktop packages are not
@@ -138,7 +138,7 @@ Platform build instructions:
 
 | If you want to know… | Read… |
 |---|---|
-| how to install and test the 0.1 Alpha | [Alpha Testing](27-alpha-testing.md) |
+| how to install and test the 0.2 Alpha | [Alpha Testing](27-alpha-testing.md) |
 | what Komms promises and why | [Why Komms](01-why.md) |
 | what it protects—and what it cannot | [Threat Model](02-threat-model.md) |
 | how the system is layered | [Architecture](03-architecture.md) |

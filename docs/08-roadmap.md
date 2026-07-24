@@ -330,7 +330,7 @@ held in zeroizing memory. The locked workspaces declare and compile-test MSRV
 1.88. Per-push CI now includes that MSRV gate, a real Android debug APK, and the
 currently authorized iOS Simulator build; a weekly workflow rechecks advisories
 for both Cargo workspaces, the core on macOS, and an informational coverage
-snapshot. All build surfaces identify as `0.1.0`. The public Komms 0.1 Alpha
+snapshot. All build surfaces identify as `0.2.0`. The public Komms 0.2 Alpha
 prerelease contains native desktop packages, the debug-signed Android APK, and
 checksums, but no production signing key, updater, reproducible-artifact claim,
 or store release is claimed. See [24: Local Release Gate](24-local-release-gate.md)
