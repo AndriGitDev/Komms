@@ -76,7 +76,7 @@ struct GateView: View {
                                 }
                                 .buttonStyle(.bordered)
 
-                                SecureField("24-word recovery phrase", text: $mnemonic)
+                                SecureField("24-word mnemonic", text: $mnemonic)
                                     .incognitoKeyboard()
                                     .padding(12)
                                     .background(ThemePalette.background,
