@@ -31,6 +31,7 @@ product promise merely because the file exists.
 | [0022](0022-convergent-group-polls.md) | Accepted | Visible-vote group polls, fixed electorates, deterministic vote heads, and creator closure |
 | [0023](0023-group-roles-and-owner-authority.md) | Accepted | Owner-serialized roles, signed generation-bound admin requests, and authority transfer |
 | [0024](0024-account-authorized-linked-devices.md) | Accepted | Account-authorized physical devices, confirmed linking, per-device cryptography, deterministic sync, revocation, and recovery |
+| [0025](0025-optional-freenet-carrier.md) | Proposed | Optional epoch-scoped Freenet store-and-forward carrier and metadata boundary |
 
 The attachment implementation follows ADR-0015 and its hard no-airtime rule,
 but the ADR file still carries Proposed status. This index reports that
