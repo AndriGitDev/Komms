@@ -11,11 +11,12 @@ use crate::{util, IdentityPublic, PROTOCOL_VERSION};
 const ITERATIONS: u32 = 5_200;
 const FP_INFO: &[u8] = b"KK-fingerprint";
 
-/// A comparable safety number: 60 decimal digits for humans, 32 raw bytes for
-/// QR comparison. Symmetric — both parties compute the identical value.
+/// A comparable safety number: 30 decimal digits (about 100 bits) for humans,
+/// 32 raw bytes for QR comparison. Symmetric — both parties compute the
+/// identical value.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SafetyNumber {
-    /// 60 decimal digits (12 groups of 5).
+    /// 30 decimal digits (6 groups of 5).
     pub digits: String,
     /// Raw comparison value for QR encoding.
     pub qr: [u8; 32],
@@ -24,7 +25,7 @@ pub struct SafetyNumber {
 impl SafetyNumber {
     /// The digits grouped 5-at-a-time, space-separated, for display.
     pub fn display_groups(&self) -> String {
-        let mut out = String::with_capacity(60 + 11);
+        let mut out = String::with_capacity(30 + 5);
         for (i, c) in self.digits.chars().enumerate() {
             if i > 0 && i % 5 == 0 {
                 out.push(' ');
@@ -37,9 +38,9 @@ impl SafetyNumber {
 
 /// Compute the safety number between two identities (order-independent).
 ///
-/// `digest = SHA-256^5200(version || IK_min || IK_max)`; the 60 digits are
-/// taken from `HKDF(digest, "KK-fingerprint")` expanded to 48 bytes, read as
-/// 12 big-endian u32 groups mod 100 000.
+/// `digest = SHA-256^5200(version || IK_min || IK_max)`; the 30 digits are
+/// taken from the first 24 bytes of `HKDF(digest, "KK-fingerprint")`, read as
+/// 6 big-endian u32 groups mod 100 000. The full digest remains the QR value.
 pub fn safety_number(a: &IdentityPublic, b: &IdentityPublic) -> SafetyNumber {
     let (lo, hi) = if a.ed <= b.ed { (a, b) } else { (b, a) };
 
@@ -59,8 +60,8 @@ pub fn safety_number(a: &IdentityPublic, b: &IdentityPublic) -> SafetyNumber {
     let mut okm = [0u8; 48];
     util::hkdf_expand(None, &d, FP_INFO, &mut okm);
 
-    let mut digits = String::with_capacity(60);
-    for chunk in okm.chunks_exact(4) {
+    let mut digits = String::with_capacity(30);
+    for chunk in okm[..24].chunks_exact(4) {
         let v = u32::from_be_bytes(chunk.try_into().expect("chunk of 4")) % 100_000;
         // Zero-padded 5-digit group.
         let mut buf = [b'0'; 5];

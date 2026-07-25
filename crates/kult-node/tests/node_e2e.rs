@@ -52,6 +52,158 @@ fn delivered_ids(events: &[Event]) -> Vec<[u8; 16]> {
         .collect()
 }
 
+#[test]
+fn pairing_bundle_carries_signed_first_message_routes() {
+    let mut rng = StdRng::seed_from_u64(700);
+    let dir = tempfile::tempdir().unwrap();
+    let mut node = Node::create(&dir.path().join("node.db"), b"pass", TEST_KDF, &mut rng).unwrap();
+    let hints = vec![
+        DeliveryHint::Multiaddr("/ip4/192.0.2.7/udp/4242/quic-v1/p2p/12D3KooWExample".to_owned()),
+        DeliveryHint::Relay("/ip4/198.51.100.4/tcp/443".to_owned()),
+    ];
+
+    let encoded = node
+        .handshake_bundle_with_hints(&hints, NOW, &mut rng)
+        .unwrap();
+    let bundle = PrekeyBundle::decode(&encoded).unwrap();
+    let decoded = bundle
+        .relay_hints
+        .iter()
+        .map(|bytes| postcard::from_bytes::<DeliveryHint>(bytes).unwrap())
+        .collect::<Vec<_>>();
+
+    assert_eq!(decoded, hints);
+    bundle.verify(NOW).unwrap();
+
+    let mut receiver =
+        Node::create(&dir.path().join("receiver.db"), b"pass", TEST_KDF, &mut rng).unwrap();
+    receiver
+        .add_contact("sender", &encoded, &[], NOW, &mut rng)
+        .unwrap();
+    let stored = receiver.contacts().unwrap().pop().unwrap();
+    let imported = stored
+        .hints
+        .iter()
+        .map(|bytes| postcard::from_bytes::<DeliveryHint>(bytes).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(imported, hints);
+}
+
+#[tokio::test]
+async fn rescanning_a_fresh_bundle_rekeys_and_retries_unconfirmed_messages() {
+    let mut rng = StdRng::seed_from_u64(701);
+    let dir = tempfile::tempdir().unwrap();
+    let sender_inbox = dir.path().join("sender-spool");
+    let stale_receiver_inbox = dir.path().join("stale-receiver-spool");
+    let fresh_receiver_inbox = dir.path().join("fresh-receiver-spool");
+    let mut sender =
+        Node::create(&dir.path().join("sender.db"), b"sender", TEST_KDF, &mut rng).unwrap();
+    let mut receiver = Node::create(
+        &dir.path().join("receiver.db"),
+        b"receiver",
+        TEST_KDF,
+        &mut rng,
+    )
+    .unwrap();
+    let _stale_receiver = SneakernetTransport::new(&stale_receiver_inbox).unwrap();
+    sender.add_transport(Arc::new(SneakernetTransport::new(&sender_inbox).unwrap()));
+    receiver.add_transport(Arc::new(
+        SneakernetTransport::new(&fresh_receiver_inbox).unwrap(),
+    ));
+
+    let stale_bundle = receiver.handshake_bundle(NOW, &mut rng).unwrap();
+    let receiver_id = sender
+        .add_contact(
+            "receiver",
+            &stale_bundle,
+            &[DeliveryHint::Spool(stale_receiver_inbox)],
+            NOW,
+            &mut rng,
+        )
+        .unwrap();
+    sender
+        .send_message(&receiver_id, b"first attempt", NOW, &mut rng)
+        .unwrap();
+    sender
+        .send_message(&receiver_id, b"follow-up", NOW + 1, &mut rng)
+        .unwrap();
+    sender.tick(NOW + 2, &mut rng).await.unwrap();
+    assert!(sender
+        .messages_with(&receiver_id)
+        .unwrap()
+        .iter()
+        .all(|message| message.state == DeliveryState::Sent));
+
+    // Both first-flight envelopes were handed to a transport but never
+    // reached the recipient. A new scan must abandon that unconfirmed
+    // ratchet and encrypt the pending messages against the fresh bundle.
+    let fresh_bundle = receiver.handshake_bundle(NOW + 3, &mut rng).unwrap();
+    sender
+        .add_contact(
+            "receiver",
+            &fresh_bundle,
+            &[DeliveryHint::Spool(fresh_receiver_inbox)],
+            NOW + 3,
+            &mut rng,
+        )
+        .unwrap();
+    assert!(sender
+        .messages_with(&receiver_id)
+        .unwrap()
+        .iter()
+        .all(|message| { message.state == DeliveryState::Queued && message.wire_id.is_none() }));
+
+    sender.tick(NOW + 4, &mut rng).await.unwrap();
+    let events = receiver.tick(NOW + 5, &mut rng).await.unwrap();
+    assert_eq!(count_received(&events), 2);
+}
+
+#[tokio::test]
+async fn one_way_pairing_imports_the_initiators_signed_return_route() {
+    let mut rng = StdRng::seed_from_u64(702);
+    let dir = tempfile::tempdir().unwrap();
+    let phone_inbox = dir.path().join("phone-spool");
+    let desktop_inbox = dir.path().join("desktop-spool");
+    let mut phone =
+        Node::create(&dir.path().join("phone.db"), b"phone", TEST_KDF, &mut rng).unwrap();
+    let mut desktop = Node::create(
+        &dir.path().join("desktop.db"),
+        b"desktop",
+        TEST_KDF,
+        &mut rng,
+    )
+    .unwrap();
+    phone.add_transport(Arc::new(SneakernetTransport::new(&phone_inbox).unwrap()));
+    desktop.add_transport(Arc::new(SneakernetTransport::new(&desktop_inbox).unwrap()));
+
+    // Runtime startup records the phone's current signed return route even
+    // though only the phone scans the desktop during pairing.
+    phone
+        .handshake_bundle_with_hints(&[DeliveryHint::Spool(phone_inbox.clone())], NOW, &mut rng)
+        .unwrap();
+    let desktop_bundle = desktop.handshake_bundle(NOW, &mut rng).unwrap();
+    let desktop_id = phone
+        .add_contact(
+            "desktop",
+            &desktop_bundle,
+            &[DeliveryHint::Spool(desktop_inbox)],
+            NOW,
+            &mut rng,
+        )
+        .unwrap();
+    let message = phone
+        .send_message(&desktop_id, b"one scan is bidirectional", NOW, &mut rng)
+        .unwrap();
+
+    phone.tick(NOW + 1, &mut rng).await.unwrap();
+    let events = desktop.tick(NOW + 2, &mut rng).await.unwrap();
+    assert_eq!(count_received(&events), 1);
+    assert_eq!(desktop.contacts().unwrap().len(), 1);
+    desktop.tick(NOW + 3, &mut rng).await.unwrap();
+    let events = phone.tick(NOW + 4, &mut rng).await.unwrap();
+    assert!(delivered_ids(&events).contains(&message));
+}
+
 // ---------------------------------------------------------------------------
 // 1. Full round trip over sneakernet spools: handshake, messages, receipts,
 //    restart persistence, reply on the established session.
@@ -404,6 +556,78 @@ async fn small_mtu_fragmentation_and_duplicate_dedup() {
     assert!(delivered_ids(&events).is_empty(), "no double delivery");
 }
 
+#[tokio::test]
+async fn passive_retry_replays_a_lost_end_to_end_receipt() {
+    let mut rng = StdRng::seed_from_u64(202);
+    let dir = tempfile::tempdir().unwrap();
+    let net: Net = Arc::new(Mutex::new(HashMap::new()));
+    let mut alice = Node::create(&dir.path().join("a.db"), b"a", TEST_KDF, &mut rng).unwrap();
+    let mut bob = Node::create(&dir.path().join("b.db"), b"b", TEST_KDF, &mut rng).unwrap();
+    alice.add_transport(Arc::new(MockMesh {
+        net: net.clone(),
+        me: 1,
+        mtu: 64 * 1024,
+        duplicate: false,
+    }));
+    bob.add_transport(Arc::new(MockMesh {
+        net: net.clone(),
+        me: 2,
+        mtu: 64 * 1024,
+        duplicate: false,
+    }));
+
+    let bob_bundle = bob.handshake_bundle(NOW, &mut rng).unwrap();
+    let alice_bundle = alice.handshake_bundle(NOW, &mut rng).unwrap();
+    let bob_id = alice
+        .add_contact(
+            "bob",
+            &bob_bundle,
+            &[DeliveryHint::MeshNode(2)],
+            NOW,
+            &mut rng,
+        )
+        .unwrap();
+    bob.add_contact(
+        "alice",
+        &alice_bundle,
+        &[DeliveryHint::MeshNode(1)],
+        NOW,
+        &mut rng,
+    )
+    .unwrap();
+
+    let message = alice
+        .send_message(&bob_id, b"receipt may be lost", NOW, &mut rng)
+        .unwrap();
+    alice.tick(NOW + 1, &mut rng).await.unwrap();
+    assert_eq!(
+        count_received(&bob.tick(NOW + 2, &mut rng).await.unwrap()),
+        1
+    );
+
+    // Simulate a carrier losing Bob's first receipt after Bob handed it off.
+    net.lock().unwrap().entry(1).or_default().clear();
+    assert_eq!(
+        alice
+            .messages_with(&bob_id)
+            .unwrap()
+            .iter()
+            .find(|record| record.id == message)
+            .unwrap()
+            .state,
+        DeliveryState::Sent
+    );
+
+    // The retained ciphertext retries in the passive lane. Bob recognizes
+    // the exact duplicate and replays the receipt without storing it twice.
+    alice.tick(NOW + 901, &mut rng).await.unwrap();
+    let replay_events = bob.tick(NOW + 902, &mut rng).await.unwrap();
+    assert_eq!(count_received(&replay_events), 0);
+    let alice_events = alice.tick(NOW + 903, &mut rng).await.unwrap();
+    assert!(delivered_ids(&alice_events).contains(&message));
+    assert_eq!(alice.queued().unwrap(), 0);
+}
+
 // ---------------------------------------------------------------------------
 // 3. A failing link: sends error, the item stays queued with exponential
 //    backoff, and goes out once the link recovers.
@@ -519,6 +743,149 @@ async fn retry_with_backoff_until_link_recovers() {
         .unwrap();
     assert_eq!(record.state, DeliveryState::Sent);
     assert_eq!(net.lock().unwrap().get(&9).unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn fresh_user_message_bypasses_passive_unreachable_retry() {
+    let mut rng = StdRng::seed_from_u64(303);
+    let dir = tempfile::tempdir().unwrap();
+    let net: Net = Arc::new(Mutex::new(HashMap::new()));
+    let healthy = Arc::new(AtomicBool::new(false));
+    let attempts = Arc::new(AtomicU32::new(0));
+    let mut alice = Node::create(&dir.path().join("a.db"), b"a", TEST_KDF, &mut rng).unwrap();
+    alice.add_transport(Arc::new(FlakyLink {
+        healthy: healthy.clone(),
+        attempts,
+        net: net.clone(),
+    }));
+
+    let peer_identity = Identity::generate(&mut rng);
+    let spk = SignedPrekeySecret::generate(&mut rng, 1);
+    let pqspk = PqPrekeySecret::generate(&mut rng, 1);
+    let opk = OneTimePrekeySecret::generate(&mut rng, 1);
+    let bundle = PrekeyBundle::build(
+        &peer_identity,
+        &spk,
+        &pqspk,
+        Some(&opk),
+        NOW + 86_400,
+        vec![],
+    )
+    .encode();
+    let peer = alice
+        .add_contact("peer", &bundle, &[DeliveryHint::MeshNode(9)], NOW, &mut rng)
+        .unwrap();
+
+    let old = alice
+        .send_message(&peer, b"old unreachable", NOW, &mut rng)
+        .unwrap();
+    alice.tick(NOW, &mut rng).await.unwrap();
+    alice.tick(NOW + 31, &mut rng).await.unwrap();
+    alice.tick(NOW + 92, &mut rng).await.unwrap();
+
+    // Three failed rounds demote the old envelope to the passive 15-minute
+    // lane. A new tap of Send still gets one immediate foreground attempt.
+    let fresh = alice
+        .send_message(&peer, b"fresh foreground", NOW + 100, &mut rng)
+        .unwrap();
+    healthy.store(true, Ordering::SeqCst);
+    alice.tick(NOW + 100, &mut rng).await.unwrap();
+
+    let history = alice.messages_with(&peer).unwrap();
+    assert_eq!(
+        history
+            .iter()
+            .find(|message| message.id == fresh)
+            .unwrap()
+            .state,
+        DeliveryState::Sent
+    );
+    assert_eq!(
+        history
+            .iter()
+            .find(|message| message.id == old)
+            .unwrap()
+            .state,
+        DeliveryState::Queued,
+        "the passive item remains paced instead of blocking the new action"
+    );
+    assert_eq!(net.lock().unwrap().get(&9).unwrap().len(), 1);
+
+    // Once its passive deadline arrives, the old item resumes automatically.
+    alice.tick(NOW + 992, &mut rng).await.unwrap();
+    assert_eq!(
+        alice
+            .messages_with(&peer)
+            .unwrap()
+            .iter()
+            .find(|message| message.id == old)
+            .unwrap()
+            .state,
+        DeliveryState::Sent
+    );
+}
+
+#[tokio::test]
+async fn undelivered_message_fails_and_leaves_queue_after_thirty_days() {
+    let mut rng = StdRng::seed_from_u64(304);
+    let dir = tempfile::tempdir().unwrap();
+    let net: Net = Arc::new(Mutex::new(HashMap::new()));
+    let healthy = Arc::new(AtomicBool::new(false));
+    let attempts = Arc::new(AtomicU32::new(0));
+    let mut alice = Node::create(&dir.path().join("a.db"), b"a", TEST_KDF, &mut rng).unwrap();
+    alice.add_transport(Arc::new(FlakyLink {
+        healthy,
+        attempts,
+        net,
+    }));
+
+    let peer_identity = Identity::generate(&mut rng);
+    let spk = SignedPrekeySecret::generate(&mut rng, 1);
+    let pqspk = PqPrekeySecret::generate(&mut rng, 1);
+    let opk = OneTimePrekeySecret::generate(&mut rng, 1);
+    let bundle = PrekeyBundle::build(
+        &peer_identity,
+        &spk,
+        &pqspk,
+        Some(&opk),
+        NOW + 86_400,
+        vec![],
+    )
+    .encode();
+    let peer = alice
+        .add_contact("peer", &bundle, &[DeliveryHint::MeshNode(9)], NOW, &mut rng)
+        .unwrap();
+    let message = alice
+        .send_message(&peer, b"bounded delivery", NOW, &mut rng)
+        .unwrap();
+    alice.tick(NOW, &mut rng).await.unwrap();
+
+    let events = alice.tick(NOW + 30 * 86_400, &mut rng).await.unwrap();
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            Event::DeliveryUpdated {
+                id,
+                state: DeliveryState::Failed
+            } if *id == message
+        )
+    }));
+    assert_eq!(alice.queued().unwrap(), 0);
+    assert_eq!(
+        alice
+            .messages_with(&peer)
+            .unwrap()
+            .iter()
+            .find(|record| record.id == message)
+            .unwrap()
+            .state,
+        DeliveryState::Failed
+    );
+    assert!(alice
+        .message_device_deliveries(&message)
+        .unwrap()
+        .iter()
+        .all(|delivery| delivery.state == DeliveryState::Failed));
 }
 
 // ---------------------------------------------------------------------------

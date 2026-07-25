@@ -37,7 +37,7 @@ import uniffi.kult_ffi.ScheduledMessage
 
 /**
  * One conversation. Bubbles render the node's honest delivery ladder
- * verbatim: queued → sent → delivered, `received` for inbound, and the
+ * verbatim: queued → sent → delivered (or failed after 30 days), `received` for inbound, and the
  * "held — will send when a faster link exists" verdict while the only
  * route is an airtime-budgeted mesh link.
  */
@@ -359,9 +359,10 @@ private class MessagesAdapter(
         val row = holder.itemView as LinearLayout
         row.gravity = if (outbound) Gravity.END else Gravity.START
         val context = holder.itemView.context
-        holder.itemView.findViewById<LinearLayout>(R.id.message_bubble).setBackgroundColor(
-            context.getColor(if (outbound) R.color.bubble_out else R.color.bubble_in),
-        )
+        holder.itemView.findViewById<LinearLayout>(R.id.message_bubble).backgroundTintList =
+            android.content.res.ColorStateList.valueOf(
+                context.getColor(if (outbound) R.color.bubble_out else R.color.bubble_in),
+            )
         holder.itemView.findViewById<TextView>(R.id.message_body)
             .showFormattedText(rendered.formatted)
 
@@ -370,6 +371,7 @@ private class MessagesAdapter(
             message.state == DeliveryState.QUEUED -> context.getString(R.string.state_queued)
             message.state == DeliveryState.SENT -> context.getString(R.string.state_sent)
             message.state == DeliveryState.DELIVERED -> context.getString(R.string.state_delivered)
+            message.state == DeliveryState.FAILED -> context.getString(R.string.state_failed)
             else -> "" // received: inbound rows carry no delivery caption
         }
         val time = DateFormat.getTimeInstance(DateFormat.SHORT)

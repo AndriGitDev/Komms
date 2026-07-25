@@ -11,7 +11,7 @@
 //! front doors, and a change to one almost always belongs in the other.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use rand::rngs::OsRng;
@@ -72,9 +72,6 @@ type Resp<T> = oneshot::Sender<Result<T, String>>;
 /// What the actor task is asked to do. One variant per node operation the
 /// FFI exposes — the typed equivalent of `kultd`'s wire ops.
 pub(crate) enum Msg {
-    HandshakeBundle {
-        resp: Resp<Vec<u8>>,
-    },
     DeviceId {
         resp: Resp<[u8; 32]>,
     },
@@ -613,8 +610,8 @@ pub(crate) enum Msg {
         path: PathBuf,
         resp: Resp<String>,
     },
-    Counts {
-        resp: Resp<Counts>,
+    RefreshHandshakeBundle {
+        cache: Arc<Mutex<PairingBundleCache>>,
     },
     Tokens {
         resp: oneshot::Sender<Vec<[u8; 32]>>,
@@ -623,11 +620,17 @@ pub(crate) enum Msg {
 }
 
 /// Queue depths and contact count for the status report.
+#[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Counts {
     pub queued: u64,
     pub scheduled: u64,
     pub transit: u64,
     pub contacts: u64,
+}
+
+pub(crate) struct PairingBundleCache {
+    current: Vec<u8>,
+    refresh_pending: bool,
 }
 
 /// A running embedded node. Owns its tokio runtime; every task stops on
@@ -637,6 +640,8 @@ pub(crate) struct Runtime {
     pub peer: [u8; 32],
     pub tx: mpsc::Sender<Msg>,
     pub net: Arc<Libp2pTransport>,
+    counts: Arc<Mutex<Counts>>,
+    pairing_bundle: Arc<Mutex<PairingBundleCache>>,
     rt: tokio::runtime::Runtime,
     shutdown: watch::Sender<bool>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
@@ -745,6 +750,21 @@ impl Runtime {
 
         let address = node.address();
         let peer = node.peer_id();
+        let counts = Arc::new(Mutex::new(snapshot_counts(&node).unwrap_or_default()));
+        // A scanned bundle must contain a usable first-message route. Wait
+        // for libp2p's asynchronous listener event before signing the ready
+        // bundle; failure leaves mailbox-only/off-grid configurations usable.
+        let _ = rt.block_on(net.wait_listen_addr());
+        let initial_pairing_hints = own_hints(&net, &cfg.mailboxes);
+        // Keep one fresh pairing bundle outside the actor. UI sharing must
+        // not queue behind a slow delivery retry; taking it asks the actor
+        // to replenish the next bundle in the background.
+        let pairing_bundle = Arc::new(Mutex::new(PairingBundleCache {
+            current: node
+                .handshake_bundle_with_hints(&initial_pairing_hints, now(), &mut OsRng)
+                .map_err(|error| format!("pairing bundle: {error}"))?,
+            refresh_pending: false,
+        }));
 
         let (shutdown, _) = watch::channel(false);
         let (tx, rx) = mpsc::channel::<Msg>(64);
@@ -758,16 +778,17 @@ impl Runtime {
         let actor_inputs = (
             cfg.clone(),
             Arc::clone(&net),
+            Arc::clone(&counts),
             events_tx,
             shutdown.subscribe(),
         );
         tasks.push(rt.spawn_blocking(move || {
-            let (cfg, net, events, shutdown) = actor_inputs;
+            let (cfg, net, counts, events, shutdown) = actor_inputs;
             let local = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("actor runtime");
-            local.block_on(actor(node, cfg, net, rx, events, shutdown));
+            local.block_on(actor(node, cfg, net, counts, rx, events, shutdown));
         }));
         tasks.push(rt.spawn(lifecycle(
             cfg,
@@ -789,6 +810,8 @@ impl Runtime {
             peer,
             tx,
             net,
+            counts,
+            pairing_bundle,
             rt,
             shutdown,
             tasks,
@@ -799,6 +822,44 @@ impl Runtime {
     /// Run a future on this runtime from a foreign (non-tokio) thread.
     pub(crate) fn block_on<F: std::future::Future>(&self, fut: F) -> F::Output {
         self.rt.block_on(fut)
+    }
+
+    /// Latest local queue/contact counts, never blocked behind network work.
+    pub(crate) fn counts(&self) -> Counts {
+        *self
+            .counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Return the ready pairing bundle and refresh it asynchronously.
+    ///
+    /// Repeated reads while the actor is busy return the same still-valid
+    /// bundle instead of blocking the UI or minting wasteful OPK pools.
+    pub(crate) fn pairing_bundle(&self) -> Vec<u8> {
+        let mut cache = self
+            .pairing_bundle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let bundle = cache.current.clone();
+        if cache.refresh_pending {
+            return bundle;
+        }
+        cache.refresh_pending = true;
+        drop(cache);
+        if self
+            .tx
+            .try_send(Msg::RefreshHandshakeBundle {
+                cache: Arc::clone(&self.pairing_bundle),
+            })
+            .is_err()
+        {
+            self.pairing_bundle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .refresh_pending = false;
+        }
+        bundle
     }
 
     /// Stop every task and wait for them.
@@ -886,6 +947,7 @@ async fn actor(
     mut node: Node,
     cfg: RuntimeConfig,
     net: Arc<Libp2pTransport>,
+    counts: Arc<Mutex<Counts>>,
     mut rx: mpsc::Receiver<Msg>,
     events: mpsc::UnboundedSender<Event>,
     mut shutdown: watch::Receiver<bool>,
@@ -896,7 +958,12 @@ async fn actor(
     media_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
+            biased;
             _ = shutdown.changed() => break,
+            msg = rx.recv() => match msg {
+                None => break,
+                Some(msg) => handle(&mut node, &cfg, &net, msg).await,
+            },
             _ = tick.tick() => {
                 match node.tick(now(), &mut OsRng).await {
                     Ok(batch) => {
@@ -915,12 +982,22 @@ async fn actor(
                     let _ = events.send(event);
                 }
             }
-            msg = rx.recv() => match msg {
-                None => break,
-                Some(msg) => handle(&mut node, &cfg, &net, msg).await,
-            },
+        }
+        if let Some(snapshot) = snapshot_counts(&node) {
+            *counts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot;
         }
     }
+}
+
+fn snapshot_counts(node: &Node) -> Option<Counts> {
+    Some(Counts {
+        queued: node.queued().ok()? as u64,
+        scheduled: node.scheduled_messages().ok()?.len() as u64,
+        transit: node.transit_queued() as u64,
+        contacts: node.contacts().ok()?.len() as u64,
+    })
 }
 
 /// Execute one operation against the node.
@@ -928,9 +1005,6 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
     let now = now();
     let fail = |e: kult_node::NodeError| e.to_string();
     match msg {
-        Msg::HandshakeBundle { resp } => {
-            let _ = resp.send(node.handshake_bundle(now, &mut OsRng).map_err(fail));
-        }
         Msg::DeviceId { resp } => {
             let _ = resp.send(Ok(node.device_id()));
         }
@@ -1745,21 +1819,16 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
                 });
             let _ = resp.send(result);
         }
-        Msg::Counts { resp } => {
-            let result = node
-                .queued()
-                .and_then(|queued| {
-                    node.scheduled_messages().and_then(|scheduled| {
-                        node.contacts().map(|contacts| Counts {
-                            queued: queued as u64,
-                            scheduled: scheduled.len() as u64,
-                            transit: node.transit_queued() as u64,
-                            contacts: contacts.len() as u64,
-                        })
-                    })
-                })
-                .map_err(|e| e.to_string());
-            let _ = resp.send(result);
+        Msg::RefreshHandshakeBundle { cache } => {
+            let hints = own_hints(net, &cfg.mailboxes);
+            let bundle = node.handshake_bundle_with_hints(&hints, now, &mut OsRng);
+            let mut cache = cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Ok(bundle) = bundle {
+                cache.current = bundle;
+            }
+            cache.refresh_pending = false;
         }
         Msg::Tokens { resp } => {
             let _ = resp.send(node.mailbox_tokens(now));

@@ -50,7 +50,7 @@ import/export (first working transport, needs no networking).
 
 The `kult-node` runtime is implemented per the build order in
 [09: Implementation Guide §2](09-implementation-guide.md): delivery engine
-(queued→sent→delivered on encrypted receipts, retry with backoff, dedup,
+(queued→sent→delivered on encrypted receipts, passive retry, 30-day failure, dedup,
 out-of-order stash), transport scheduler, session lifecycle, command/event API,
 running over the sneakernet carrier. The libp2p carrier's first slice is also in:
 QUIC (primary) and TCP+Noise+Yamux (fallback) with an envelope request-response
@@ -202,10 +202,12 @@ runtime (the exact surface the mobile shells consume, dogfooded on
 the desktop) with a dependency-free HTML/CSS/JS frontend (no bundler, no
 npm) behind a strict CSP with zero plugins or webview capabilities. It
 covers the M5 UX list end to end: create/unlock/restore at the gate,
-out-of-band pairing by prekey-bundle QR or pasteable hex (interoperable
-with `kult bundle`/`kult add`; large bundles ride the QR alphanumeric
-mode) or by kult address via DHT lookup, conversations with the node's
+out-of-band pairing by bounded, order-independent animated Base45
+prekey-bundle QR frames or pasteable hex (interoperable with `kult
+bundle`/`kult add`; legacy single-code Base45 and hex QRs remain accepted)
+or by kult address via DHT lookup, conversations with the node's
 honest delivery ladder rendered verbatim (`queued` → `sent` → `delivered`
+or `delivery failed after 30 days`,
 plus the mesh "held, will send when a faster link exists" verdict),
 safety-number verification with matching digits + QR on both ends and a
 visible verified badge, key-change surfacing on session re-establishment,
@@ -218,14 +220,14 @@ app is its own cargo workspace so the GUI dependency tree stays out of
 the core's lockfile and cargo-deny surface (it carries its own, equally
 strict deny config and local release gates); all shell behavior lives in a
 webview-agnostic layer pinned by a two-node end-to-end test: pairing by
-scanned-style hex, events as the webview receives them, verification,
+compact scanned QR or legacy hex, events as the webview receives them, verification,
 and the backup → mnemonic → restore flow. The Android alpha is in
 (application A2, `apps/android`): a Kotlin shell over the same `kult-ffi`
 runtime, generated bindings compiled fresh from the crate at build time
 (never committed). Its structure mirrors the desktop split: every
 behavior lives in a plain-JVM `:core` module (session layer + bindings)
 pinned by JVM tests including a two-node e2e against the host-built
-library (pairing by scanned bundle hex, verified `delivered` states via
+library (pairing by compact scanned bundle QR, verified `delivered` states via
 listener events, safety numbers, backup → restore → automatic
 re-handshake, no emulator involved); the `:app` module is UI only. It
 covers the M5 UX list: create/unlock/restore gate, pairing by camera-
@@ -330,11 +332,12 @@ held in zeroizing memory. The locked workspaces declare and compile-test MSRV
 1.88. Per-push CI now includes that MSRV gate, a real Android debug APK, and the
 currently authorized iOS Simulator build; a weekly workflow rechecks advisories
 for both Cargo workspaces, the core on macOS, and an informational coverage
-snapshot. All build surfaces identify as `0.2.0`. The public Komms 0.2 Alpha
-prerelease contains native desktop packages, the debug-signed Android APK, and
-checksums, but no production signing key, updater, reproducible-artifact claim,
-or store release is claimed. See [24: Local Release Gate](24-local-release-gate.md)
-and [27: Alpha Testing](27-alpha-testing.md).
+snapshot. All build surfaces identify as `0.3.0`. The Komms 0.3 Alpha candidate
+adds a required human visual gate for Android, iOS, macOS, and Linux alongside
+native desktop packages, the debug-signed Android APK, and checksums. No
+production signing key, updater, reproducible-artifact claim, or store release
+is claimed. See [24: Local Release Gate](24-local-release-gate.md) and
+[27: Alpha Testing](27-alpha-testing.md).
 
 C2 multi-device is shipped: the stable account signs bounded device manifests,
 every physical endpoint keeps independent pairwise/group cryptographic state,

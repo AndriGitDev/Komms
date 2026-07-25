@@ -48,7 +48,7 @@ Trust is established human-to-human, not by an authority:
 | Method | Mechanics | Assurance |
 |---|---|---|
 | **QR scan** (primary) | In person, scan each other's safety QR ([04 §9](04-cryptography.md)). | Strong: binds key to person in front of you. |
-| **Safety number compare** | Read the 60-digit number over a channel you already trust (a call, in person). | Strong if the channel is. |
+| **Safety number compare** | Read the 30-digit (~100-bit) number over a channel you already trust (a call, in person). | Strong if the channel is. |
 | **Sticker/print** | kult address printed on a poster/card/leaflet, pull-based: you contact the address you physically obtained. | Good against remote MITM; matches activist distribution reality. |
 | **TOFU** (default) | First contact pins the key; any later key change triggers a blocking warning. | Baseline: same model as SSH; honest about being unverified in the UI. |
 

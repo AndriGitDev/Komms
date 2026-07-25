@@ -1213,7 +1213,7 @@ fn group_role_str(role: FfiGroupRole) -> &'static str {
 pub struct UiGroupDelivery {
     /// Recipient peer id (hex).
     pub peer: String,
-    /// `queued`, `sent`, or `delivered`, verbatim from the node.
+    /// `queued`, `sent`, `delivered`, or `failed`, verbatim from the node.
     pub state: &'static str,
 }
 
@@ -1387,6 +1387,10 @@ pub struct UiStatus {
     pub listen: Vec<String>,
     /// Peers currently visible on the LAN via mDNS.
     pub lan_peers: Vec<String>,
+    /// Whether zero-configuration LAN discovery was enabled at unlock.
+    pub mdns_enabled: bool,
+    /// Number of user-configured peers available to bootstrap internet DHT discovery.
+    pub bootstrap_peers: u64,
     /// `public`, `private`, or `unknown`.
     pub nat: &'static str,
     /// Outbound messages not yet delivered.
@@ -1403,7 +1407,7 @@ pub struct UiStatus {
 /// the raw comparison value to scan.
 #[derive(Clone, Debug, Serialize)]
 pub struct UiSafetyNumber {
-    /// 60 decimal digits.
+    /// 30 decimal digits (about 100 bits).
     pub digits: String,
     /// The digits grouped 5-at-a-time for display.
     pub display: String,
@@ -1412,13 +1416,15 @@ pub struct UiSafetyNumber {
 }
 
 /// An exported prekey bundle: hex to paste (interoperable with
-/// `kult bundle` / `kult add`), QR carrying the same hex to scan.
+/// `kult bundle` / `kult add`) plus a compact, versioned QR to scan.
 #[derive(Clone, Debug, Serialize)]
 pub struct UiBundle {
     /// The bundle bytes, lowercase hex.
     pub hex: String,
-    /// QR carrying the same hex (uppercase, alphanumeric mode).
+    /// First QR frame, retained for older UI consumers.
     pub qr_svg: String,
+    /// Camera-friendly, order-independent QR frames carrying the bundle.
+    pub qr_svgs: Vec<String>,
 }
 
 /// One exact account-authorized physical installation.
@@ -1443,7 +1449,7 @@ pub struct UiMessageDeviceDelivery {
     pub device: String,
     /// Current signed device name, when the manifest supplies one.
     pub name: Option<String>,
-    /// `queued`, `sent`, or `delivered`.
+    /// `queued`, `sent`, `delivered`, or `failed`.
     pub state: &'static str,
 }
 
@@ -1679,7 +1685,7 @@ pub enum UiEvent {
     DeliveryUpdated {
         /// Message record id (hex).
         id: String,
-        /// The new state (`queued`/`sent`/`delivered`).
+        /// The new state (`queued`/`sent`/`delivered`/`failed`).
         state: &'static str,
     },
     /// An inbound message was decrypted and stored.
@@ -2072,6 +2078,7 @@ fn state_str(state: DeliveryState) -> &'static str {
         DeliveryState::Sent => "sent",
         DeliveryState::Delivered => "delivered",
         DeliveryState::Received => "received",
+        DeliveryState::Failed => "failed",
     }
 }
 
@@ -2256,6 +2263,7 @@ impl EventListener for Forwarder {
 /// A running node plus the shell-side conveniences the UI needs.
 pub struct Session {
     node: Arc<KultNode>,
+    network_settings: NetworkSettings,
     pending_images: Mutex<HashMap<String, PendingImageEdit>>,
     opened_attachments: Mutex<HashMap<String, PrivateTemp>>,
 }
@@ -2277,6 +2285,7 @@ impl Session {
         let node = KultNode::start(config, Box::new(Forwarder(sink))).map_err(|e| e.to_string())?;
         Ok(Self {
             node,
+            network_settings: settings.clone(),
             pending_images: Mutex::new(HashMap::new()),
             opened_attachments: Mutex::new(HashMap::new()),
         })
@@ -2299,6 +2308,7 @@ impl Session {
             .map_err(|e| e.to_string())?;
         Ok(Self {
             node,
+            network_settings: settings.clone(),
             pending_images: Mutex::new(HashMap::new()),
             opened_attachments: Mutex::new(HashMap::new()),
         })
@@ -2341,6 +2351,8 @@ impl Session {
             peer: s.peer,
             listen: s.listen,
             lan_peers: s.lan_peers,
+            mdns_enabled: self.network_settings.mdns,
+            bootstrap_peers: self.network_settings.bootstrap.len() as u64,
             nat: match s.nat {
                 NatVerdict::Public => "public",
                 NatVerdict::Private => "private",
@@ -2353,14 +2365,24 @@ impl Session {
         })
     }
 
-    /// Export a fresh prekey bundle as pasteable hex plus a QR carrying
-    /// the same hex (uppercase, so the QR stays in its compact
-    /// alphanumeric mode; decoding is case-insensitive everywhere).
+    /// Export a ready prekey bundle as pasteable hex plus compact,
+    /// camera-friendly, versioned Base45 QR frames.
     pub fn my_bundle(&self) -> Result<UiBundle, String> {
         let bytes = self.node.handshake_bundle().map_err(|e| e.to_string())?;
         let hex = hex_encode(&bytes);
-        let qr_svg = qr::svg(hex.to_uppercase().as_bytes())?;
-        Ok(UiBundle { hex, qr_svg })
+        let qr_svgs = qr::bundle_frames(&bytes)
+            .into_iter()
+            .map(|frame| qr::svg(frame.as_bytes()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let qr_svg = qr_svgs
+            .first()
+            .cloned()
+            .ok_or("pairing bundle produced no QR frames")?;
+        Ok(UiBundle {
+            hex,
+            qr_svg,
+            qr_svgs,
+        })
     }
 
     /// Exact public id for this physical installation.
@@ -2502,15 +2524,16 @@ impl Session {
             .map_err(|error| error.to_string())
     }
 
-    /// Add a contact from pasted/scanned bundle hex, with delivery hints.
-    /// Returns the new contact's peer id.
+    /// Add a contact from compact QR text or pasted/legacy hex.
     pub fn add_contact(
         &self,
         name: String,
         bundle_hex: &str,
         hints: &[UiHint],
     ) -> Result<String, String> {
-        let bundle = hex_decode(bundle_hex).ok_or("bundle must be hex")?;
+        let bundle = qr::decode_bundle_text(bundle_hex)
+            .or_else(|| hex_decode(bundle_hex))
+            .ok_or("bundle must be hex or a Komms pairing QR")?;
         let hints = hints
             .iter()
             .map(UiHint::to_ffi)

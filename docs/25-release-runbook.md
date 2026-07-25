@@ -9,13 +9,14 @@ draft state until a maintainer explicitly publishes it as a prerelease. That
 same explicit action publishes the multi-architecture self-hosting image to
 GHCR; a tag push alone never exposes an unqualified container.
 
-The current public prerelease is **Komms 0.2 Alpha**. Its technical semantic
-version is `0.2.0` across Cargo, Tauri, Android, and iOS, and its release tag is
-[`v0.2.0`](https://github.com/AndriGitDev/Komms/releases/tag/v0.2.0). The release
-contains Windows MSI/NSIS, universal macOS DMG/app archive, Linux
-AppImage/DEB/RPM, a debug-signed Android APK, and `SHA256SUMS`. Its public
+The current candidate is **Komms 0.3 Alpha**. Its technical semantic version is
+`0.3.0` across Cargo, Tauri, Android, and iOS, and its release tag is
+[`v0.3.0`](https://github.com/AndriGitDev/Komms/releases/tag/v0.3.0). Once
+qualified, the release contains Windows MSI/NSIS, universal macOS DMG/app
+archive, Linux AppImage/DEB/RPM, a debug-signed Android APK, and `SHA256SUMS`.
+Its public
 [`komms-kultd` package](https://github.com/AndriGitDev/Komms/pkgs/container/komms-kultd)
-provides Linux amd64/arm64 images under `0.2.0`, `0.2-alpha`, and `alpha`.
+provides Linux amd64/arm64 images under `0.3.0`, `0.3-alpha`, and `alpha`.
 
 This makes artifacts available consistently; it does not turn the current alpha
 into an audited stable release. Platform signing, hands-on device testing, radio
@@ -35,7 +36,7 @@ Choose a semantic version and update every version surface:
 For the current version, verify the alignment with:
 
 ```sh
-python3 scripts/check-release-version.py v0.2.0
+python3 scripts/check-release-version.py v0.3.0
 ```
 
 Run the complete local gate. Android is mandatory for a candidate that promises
@@ -48,6 +49,39 @@ KOMMS_REQUIRE_ANDROID_APP=1 scripts/local-release-matrix.sh
 Record the commit, the complete output, every external/deferred gate, and the
 hands-on smoke-test devices. A green compiler run is not a substitute for those
 records.
+
+### Required human visual gate
+
+Every release candidate must be previewed from the candidate commit in all
+mobile shells and both supported desktop environments:
+
+1. an Android emulator with the current APK;
+2. an iOS simulator with the current app build; and
+3. the local macOS desktop application; and
+4. a packaged Linux desktop build on a current distribution.
+
+Create a
+[Release visual approval](../.github/ISSUE_TEMPLATE/release-visual-approval.md)
+issue, attach current screenshots or a recording for each shell, and have a
+human reviewer complete every platform checklist and the final approval. A
+compiler, snapshot test, or automated screenshot comparison cannot approve this
+gate. Findings must be fixed and re-previewed, or left unapproved as release
+blockers.
+
+CI and the release workflow also launch the Linux desktop binary under Xvfb and
+fail if it exits during the smoke window. That catches missing native
+dependencies and immediate startup failures, but it complements rather than
+replaces the packaged Linux visual review.
+
+Komms intentionally enables platform screen-capture protection. When that
+protection redacts a simulator or desktop screenshot, review the live local
+window and record the reviewer's attestation, device/runtime, theme, and exact
+candidate instead. Do not weaken the production capture policy to manufacture
+release evidence.
+
+Configure the GitHub `release-visual-approval` environment with a required
+maintainer reviewer. The publish workflow waits on that environment and also
+requires both the explicit visual-approval checkbox and the completed issue URL.
 
 ## 2. Configure optional signing
 
@@ -97,9 +131,13 @@ Before publication:
 2. verify every download against `SHA256SUMS`;
 3. install the MSI/NSIS, DMG, AppImage or native Linux package, and APK on real
    supported systems;
-4. exercise create/unlock, pair, send/receive, backup/restore, lock, restart,
-   and upgrade behavior; and
-5. record OS versions, architectures, signing status, failures, and all external
+4. exercise create/unlock, collect every animated pairing frame from each
+   shell with a second device's camera, pair, send/receive, backup/restore,
+   lock, restart, and upgrade behavior; and
+5. complete the Android emulator, iOS simulator, local macOS, and packaged Linux
+   [visual approval](../.github/ISSUE_TEMPLATE/release-visual-approval.md),
+   including current evidence; and
+6. record OS versions, architectures, signing status, failures, and all external
    gates in the release notes.
 
 The debug APK is installable on Android 8.0 (API 26) or newer, but it uses a
@@ -110,13 +148,15 @@ build only after exporting any data that must be retained.
 ## 5. Publish deliberately
 
 Once the draft assets themselves pass qualification, manually run the workflow
-for the same tag with `publish` enabled. That explicit run verifies that the
-draft contains checksums, an APK, and every promised desktop package family,
-then builds and publishes `ghcr.io/andrigitdev/komms-kultd` for Linux amd64 and
-arm64 before publishing the existing qualified assets as a public GitHub
-prerelease. The version tag is accompanied by `0.2-alpha` and `alpha`
-for this release, never `latest`. It does not rebuild or silently replace the
-desktop/mobile artifacts that were tested.
+for the same tag with `publish` enabled, confirm the visual-approval input, and
+provide the completed Komms issue URL. A required reviewer must then approve the
+`release-visual-approval` environment. The run verifies that the draft contains
+checksums, an APK, and every promised desktop package family, then builds and
+publishes `ghcr.io/andrigitdev/komms-kultd` for Linux amd64 and arm64 before
+publishing the existing qualified assets as a public GitHub prerelease. The
+version tag is accompanied by `0.3-alpha` and `alpha` for this release, never
+`latest`. It does not rebuild or silently replace the desktop/mobile artifacts
+that were tested.
 
 The current `komms-kultd` package is public. A new package namespace may still
 default to private: if the anonymous manifest check fails after its first push,

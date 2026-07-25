@@ -194,6 +194,7 @@
       </div>
 
       <footer id="status-bar" title="Transport status">
+        <span class="stat" id="stat-discovery">Discovery: …</span>
         <span class="stat" id="stat-nat">NAT: …</span>
         <span class="stat" id="stat-lan">LAN: 0</span>
         <span class="stat" id="stat-scheduled">Scheduled: 0</span>
@@ -219,14 +220,14 @@
           </div>
           <div class="chat-head-actions">
             <button id="btn-call" class="ghost" hidden disabled>Call</button>
+            <button id="btn-verify" class="ghost">Verify identity</button>
+            <button id="btn-rename-contact" class="ghost">Rename</button>
             <details class="chat-more">
               <summary class="ghost">Conversation</summary>
               <div class="chat-actions-menu">
                 <button id="btn-conversation-folder" class="ghost">Move to folder</button>
                 <button id="btn-conversation-labels" class="ghost">Manage labels</button>
                 <button id="btn-conversation-pin" class="ghost" aria-pressed="false">Pin</button>
-                <button id="btn-rename-contact" class="ghost">Rename contact</button>
-                <button id="btn-verify" class="ghost">Verify identity</button>
                 <button id="btn-hints" class="ghost">Delivery settings</button>
                 <button id="btn-group-details" class="ghost" hidden>Group members</button>
               </div>
@@ -295,20 +296,26 @@
 
   <!-- ══ Modal templates ══ -->
   <template id="tpl-share">
-    <p class="modal-note">Someone adds you by scanning this bundle QR (or pasting the hex), or by your address if both of you can reach the DHT. A fresh bundle is exported every time this dialog opens.</p>
-    <div class="qr-tabs">
-      <button class="tab active" data-share="bundle">Bundle QR</button>
-      <button class="tab" data-share="address">Address QR</button>
-    </div>
-    <div class="qr-card" data-pane="bundle"></div>
-    <div class="qr-card" data-pane="address" hidden></div>
-    <label>Bundle (hex, paste into “Add contact” or <code>kult add</code>)
-      <textarea class="share-hex" rows="4" readonly></textarea>
-    </label>
-    <div class="row">
-      <button class="ghost" data-act="copy-hex">Copy bundle</button>
-      <button class="ghost" data-act="publish">Publish to DHT</button>
-    </div>
+    <section data-f="share-dialog">
+      <p class="modal-note">Someone adds you by scanning every bundle frame (or pasting the hex), or by your address if both of you can reach the DHT. Komms keeps a valid signed bundle ready and refreshes it in the background after sharing.</p>
+      <p class="modal-note" data-f="share-status" role="status">Preparing fresh bundle and QR codes…</p>
+      <div data-f="share-content" hidden>
+        <div class="qr-tabs">
+          <button class="tab active" data-share="bundle">Bundle QR</button>
+          <button class="tab" data-share="address">Address QR</button>
+        </div>
+        <div class="qr-card" data-pane="bundle"></div>
+        <p class="qr-progress" data-f="qr-progress" aria-live="polite"></p>
+        <div class="qr-card" data-pane="address" hidden></div>
+        <label>Bundle (hex, paste into “Add contact” or <code>kult add</code>)
+          <textarea class="share-hex" rows="4" readonly></textarea>
+        </label>
+        <div class="row">
+          <button class="ghost" data-act="copy-hex">Copy bundle</button>
+          <button class="ghost" data-act="publish">Publish to DHT</button>
+        </div>
+      </div>
+    </section>
   </template>
 
   <template id="tpl-attachment-send">
@@ -431,7 +438,7 @@
       <button class="tab" data-add="address">From address</button>
     </div>
     <div data-pane="bundle">
-      <label>Their bundle (hex, pasted or scanned)
+      <label>Their pairing QR payload or bundle hex
         <textarea data-f="bundle" rows="4" data-incognito-input="technical" spellcheck="false"></textarea>
       </label>
     </div>
@@ -452,7 +459,7 @@
   </template>
 
   <template id="tpl-verify">
-    <p class="modal-note">Compare with your contact over a channel you trust: read the digits aloud or scan each other’s QR. Identical numbers mean nobody sits between you.</p>
+    <p class="modal-note">Compare this 30-digit code over a channel you trust, or scan each other’s QR. The spoken code provides about 100 bits of comparison security; the QR compares the full 256-bit value.</p>
     <div class="safety-digits"></div>
     <div class="qr-card safety-qr"></div>
     <div class="row end">

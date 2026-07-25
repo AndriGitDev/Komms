@@ -937,7 +937,6 @@ impl Node {
         for seq in expired_queue {
             self.store.queue_ack(seq)?;
             self.call_queue_deadlines.remove(&seq);
-            self.backoff.remove(&seq);
         }
         self.trim_calls(now)
     }
@@ -981,6 +980,9 @@ impl Node {
                     msg_id: None,
                     group_msg_id: None,
                     class: QueueClass::Realtime,
+                    created_at: now,
+                    attempts: 0,
+                    next_attempt_at: now,
                     envelope: Envelope::new(EnvelopeKind::Message, token, message.encode()),
                 },
                 rng,

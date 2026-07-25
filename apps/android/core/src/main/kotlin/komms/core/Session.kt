@@ -146,12 +146,22 @@ private fun validateLabelWrite(name: String, color: String) {
 }
 
 /**
- * QR text for a prekey bundle's hex: uppercase keeps the QR in its compact
- * alphanumeric mode (hex decoding is case-insensitive everywhere), and the
- * payload is interoperable with the desktop app's pairing QR and
- * `kult bundle` / `kult add`.
+ * Compact, versioned QR text for a prekey bundle. Base45 carries two bytes
+ * in three QR-alphanumeric characters instead of four hex characters.
+ * [Session.addContact] still accepts legacy QR hex and pasteable CLI hex.
  */
-fun bundleQrText(bundleHex: String): String = bundleHex.uppercase()
+fun bundleQrText(bundleHex: String): String {
+    val bundle = hexDecode(bundleHex)
+        ?: throw IllegalArgumentException("bundle must be hex")
+    return BUNDLE_QR_PREFIX + base45Encode(bundle)
+}
+
+/** Camera-friendly animated QR frames for one post-quantum pairing bundle. */
+fun bundleQrFrames(bundleHex: String): List<String> {
+    val bundle = hexDecode(bundleHex)
+        ?: throw IllegalArgumentException("bundle must be hex")
+    return encodeBundleQrFrames(bundle)
+}
 
 /** Compact QR text for one opaque C2 link offer. */
 fun deviceLinkQrText(offerHex: String): String = offerHex.uppercase()
@@ -273,13 +283,10 @@ class Session private constructor(private val node: KultNode) {
      */
     fun myBundleHex(): String = hexEncode(node.handshakeBundle())
 
-    /**
-     * Add a contact from pasted/scanned bundle hex, with delivery hints.
-     * Returns the new contact's peer id.
-     */
+    /** Add a contact from a compact QR or pasted/legacy hex bundle. */
     fun addContact(name: String, bundleHex: String, hints: List<HintSpec>): String {
-        val bundle = hexDecode(bundleHex)
-            ?: throw IllegalArgumentException("bundle must be hex")
+        val bundle = decodeBundleInput(bundleHex)
+            ?: throw IllegalArgumentException("bundle must be hex or a Komms pairing QR")
         return node.addContact(name, bundle, hints.toFfi())
     }
 

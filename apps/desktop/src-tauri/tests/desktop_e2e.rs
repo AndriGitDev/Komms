@@ -315,6 +315,64 @@ fn startup_wait_is_explained_and_kept_modal_across_apps() {
 }
 
 #[test]
+fn desktop_macos_bundle_declares_libp2p_local_network_access() {
+    let plist = include_str!("../Info.plist");
+    assert!(plist.contains("<key>NSLocalNetworkUsageDescription</key>"));
+    assert!(plist.contains("<key>NSBonjourServices</key>"));
+    assert!(plist.contains("<string>_p2p._udp</string>"));
+}
+
+#[test]
+fn desktop_status_poll_is_bounded_and_never_leaves_loading_placeholders() {
+    let ffi = include_str!("../../../../crates/kult-ffi/src/lib.rs");
+    let frontend = include_str!("../../ui/main.js");
+    assert!(ffi.contains("rt.block_on(async {"));
+    assert!(ffi.contains("tokio::time::timeout(Duration::from_secs(1), rt.net.nat_status()).await"));
+    assert!(frontend.contains("Discovery: unavailable"));
+    assert!(frontend.contains("NAT: unavailable"));
+    assert!(frontend.contains("Node status unavailable:"));
+}
+
+#[test]
+fn desktop_share_dialog_surfaces_generation_errors_and_scopes_its_listener() {
+    let html = include_str!("../../ui/index.html");
+    let frontend = include_str!("../../ui/main.js");
+    assert!(html.contains("data-f=\"share-status\" role=\"status\""));
+    assert!(frontend.contains("Could not prepare sharing details"));
+    assert!(frontend.contains("Promise.all([invoke(\"my_bundle\"), invoke(\"address_qr\")]"));
+    assert!(frontend.contains("view.addEventListener(\"click\""));
+}
+
+#[test]
+fn android_shell_uses_the_shared_light_and_dark_brand_tokens() {
+    let light = include_str!("../../../android/app/src/main/res/values/colors.xml");
+    let dark = include_str!("../../../android/app/src/main/res/values-night/colors.xml");
+    for token in [
+        "<color name=\"background\">#FAFAFA</color>",
+        "<color name=\"surface\">#FFFFFF</color>",
+        "<color name=\"surface_raised\">#FFF8DC</color>",
+        "<color name=\"accent\">#B83431</color>",
+    ] {
+        assert!(light.contains(token), "missing light brand token: {token}");
+    }
+    for token in [
+        "<color name=\"background\">#0F2633</color>",
+        "<color name=\"surface\">#153746</color>",
+        "<color name=\"surface_raised\">#193F4F</color>",
+        "<color name=\"accent\">#F2B705</color>",
+    ] {
+        assert!(dark.contains(token), "missing dark brand token: {token}");
+    }
+
+    let main = include_str!("../../../android/app/src/main/res/layout/activity_main.xml");
+    let chat = include_str!("../../../android/app/src/main/res/layout/activity_chat.xml");
+    assert!(main.contains("@color/toolbar_background"));
+    assert!(main.contains("@drawable/bg_brand_panel"));
+    assert!(chat.contains("@drawable/bg_compose_input"));
+    assert!(chat.contains("@style/ThemeOverlay.Komms.Toolbar"));
+}
+
+#[test]
 fn desktop_poll_ui_keeps_visibility_policy_and_uses_inert_exact_text() {
     let html = include_str!("../../ui/index.html");
     let frontend = include_str!("../../ui/main.js");
@@ -749,14 +807,13 @@ fn two_desktops_pair_by_bundle_hex_and_message() {
     assert_eq!((status.queued, status.transit, status.contacts), (0, 0, 0));
     assert_eq!(status.nat, "unknown");
 
-    // Pairing exactly as the UI does it: each side renders its bundle as
-    // hex + QR (the QR carries the same hex), the other side pastes it.
+    // Pairing exactly as the UI does it: compact QR input is accepted while
+    // pasteable and legacy hex remains interoperable.
     let a_bundle = alice.my_bundle().unwrap();
     let b_bundle = bob.my_bundle().unwrap();
     assert!(a_bundle.qr_svg.contains("<svg"));
     assert!(hex_decode(&a_bundle.hex).is_some());
-    // Scanned input arrives uppercase/wrapped — decoding must not care.
-    let scanned = b_bundle.hex.to_uppercase();
+    let scanned = komms_desktop::qr::bundle_text(&hex_decode(&b_bundle.hex).unwrap());
 
     let a_addr = listen_addr(&alice);
     let b_addr = listen_addr(&bob);

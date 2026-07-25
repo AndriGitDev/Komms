@@ -7,9 +7,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import komms.core.HintSpec
 
 /**
- * Pairing: add a contact from their scanned/pasted prekey-bundle hex (with
- * optional delivery hints), or from their kult address alone via DHT
- * lookup. The same inputs `kult add` takes.
+ * Pairing: add a contact from their compact QR or pasteable/legacy bundle
+ * hex, with optional delivery hints, or from their kult address via DHT.
  */
 class AddContactActivity : SecureActivity() {
     private val scan =

@@ -221,6 +221,8 @@ pub enum DeliveryState {
     Delivered,
     /// Inbound message (no delivery tracking).
     Received,
+    /// The delivery window elapsed without an end-to-end receipt.
+    Failed,
 }
 
 /// A message record (sealed as one blob in the `messages` table).
@@ -279,6 +281,12 @@ pub struct QueueItem {
     pub group_msg_id: Option<[u8; 16]>,
     /// Durable traffic class used by schedulers independently of size.
     pub class: QueueClass,
+    /// Unix seconds when this delivery first entered the durable queue.
+    pub created_at: u64,
+    /// Failed delivery rounds already attempted for this exact envelope.
+    pub attempts: u32,
+    /// Earliest Unix second at which passive delivery may try again.
+    pub next_attempt_at: u64,
     /// The sealed envelope to deliver.
     pub envelope: Envelope,
 }
@@ -294,6 +302,9 @@ pub enum QueueClass {
     /// Transient call control; eligible only for an immediate direct QUIC
     /// route and discarded rather than resumed after process restart.
     Realtime,
+    /// A foreground user action. It is attempted ahead of maintenance and
+    /// older passive retries, but becomes passive after repeated failures.
+    Interactive,
 }
 
 /// A group member as stored: peer id plus their encoded public identity
@@ -374,7 +385,7 @@ pub struct GroupDelivery {
     /// Content id of their envelope copy (set once it could be created —
     /// creating it needs the pairwise session for the delivery token).
     pub wire_id: Option<[u8; 16]>,
-    /// `Queued` → `Sent` → `Delivered`, per member, honestly.
+    /// `Queued` → `Sent` → `Delivered`, or terminal `Failed`, per member.
     pub state: DeliveryState,
 }
 
@@ -412,6 +423,18 @@ struct QueueRowV1 {
     envelope: Vec<u8>,
 }
 const QUEUE_ROW_MAGIC_V1: &[u8; 4] = b"KQ\0\x01";
+#[derive(Serialize, Deserialize)]
+struct QueueRowV2 {
+    peer: [u8; 32],
+    msg_id: Option<[u8; 16]>,
+    group_msg_id: Option<[u8; 16]>,
+    class: QueueClass,
+    created_at: u64,
+    attempts: u32,
+    next_attempt_at: u64,
+    envelope: Vec<u8>,
+}
+const QUEUE_ROW_MAGIC_V2: &[u8; 4] = b"KQ\0\x02";
 /// One member's receiving-chain row: `(peer, opaque chain blob)`.
 type GroupChainRow = ([u8; 32], Zeroizing<Vec<u8>>);
 
@@ -424,6 +447,7 @@ CREATE TABLE IF NOT EXISTS capabilities (peer BLOB PRIMARY KEY, blob BLOB NOT NU
 CREATE TABLE IF NOT EXISTS messages (rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS queue    (seq INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS seen     (id BLOB PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS receipt_replay (id BLOB PRIMARY KEY, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS contacts (peer BLOB PRIMARY KEY, blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS prekeys  (id INTEGER PRIMARY KEY CHECK (id = 1), blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS pending  (seq INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
@@ -847,16 +871,19 @@ impl Store {
 
     /// Enqueue an envelope for delivery (sealed at rest; survives restarts).
     pub fn queue_push(&self, item: &QueueItem, rng: &mut impl CryptoRngCore) -> Result<i64> {
-        let row = QueueRowV1 {
+        let row = QueueRowV2 {
             peer: item.peer,
             msg_id: item.msg_id,
             group_msg_id: item.group_msg_id,
             class: item.class,
+            created_at: item.created_at,
+            attempts: item.attempts,
+            next_attempt_at: item.next_attempt_at,
             envelope: item.envelope.encode(),
         };
         let encoded = postcard::to_allocvec(&row).map_err(|_| StoreError::Serialization)?;
-        let mut plain = Vec::with_capacity(QUEUE_ROW_MAGIC_V1.len() + encoded.len());
-        plain.extend_from_slice(QUEUE_ROW_MAGIC_V1);
+        let mut plain = Vec::with_capacity(QUEUE_ROW_MAGIC_V2.len() + encoded.len());
+        plain.extend_from_slice(QUEUE_ROW_MAGIC_V2);
         plain.extend_from_slice(&encoded);
         let sealed = self.k_queue.seal(b"queue", &plain, rng);
         self.conn
@@ -874,28 +901,64 @@ impl Store {
         for row in rows {
             let (seq, sealed) = row?;
             let plain = self.k_queue.open(b"queue", &sealed)?;
-            let (peer, msg_id, group_msg_id, class, env_bytes) =
-                if let Some(encoded) = plain.strip_prefix(QUEUE_ROW_MAGIC_V1) {
-                    let (row, remainder): (QueueRowV1, &[u8]) = postcard::take_from_bytes(encoded)
-                        .map_err(|_| StoreError::Serialization)?;
-                    if !remainder.is_empty() {
-                        return Err(StoreError::Serialization);
-                    }
-                    (
-                        row.peer,
-                        row.msg_id,
-                        row.group_msg_id,
-                        row.class,
-                        row.envelope,
-                    )
-                } else {
-                    let (legacy, remainder): (LegacyQueueRow, &[u8]) =
-                        postcard::take_from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
-                    if !remainder.is_empty() {
-                        return Err(StoreError::Serialization);
-                    }
-                    (legacy.0, legacy.1, legacy.2, QueueClass::Normal, legacy.3)
-                };
+            let (
+                peer,
+                msg_id,
+                group_msg_id,
+                class,
+                created_at,
+                attempts,
+                next_attempt_at,
+                env_bytes,
+            ) = if let Some(encoded) = plain.strip_prefix(QUEUE_ROW_MAGIC_V2) {
+                let (row, remainder): (QueueRowV2, &[u8]) =
+                    postcard::take_from_bytes(encoded).map_err(|_| StoreError::Serialization)?;
+                if !remainder.is_empty() {
+                    return Err(StoreError::Serialization);
+                }
+                (
+                    row.peer,
+                    row.msg_id,
+                    row.group_msg_id,
+                    row.class,
+                    row.created_at,
+                    row.attempts,
+                    row.next_attempt_at,
+                    row.envelope,
+                )
+            } else if let Some(encoded) = plain.strip_prefix(QUEUE_ROW_MAGIC_V1) {
+                let (row, remainder): (QueueRowV1, &[u8]) =
+                    postcard::take_from_bytes(encoded).map_err(|_| StoreError::Serialization)?;
+                if !remainder.is_empty() {
+                    return Err(StoreError::Serialization);
+                }
+                (
+                    row.peer,
+                    row.msg_id,
+                    row.group_msg_id,
+                    row.class,
+                    0,
+                    0,
+                    0,
+                    row.envelope,
+                )
+            } else {
+                let (legacy, remainder): (LegacyQueueRow, &[u8]) =
+                    postcard::take_from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
+                if !remainder.is_empty() {
+                    return Err(StoreError::Serialization);
+                }
+                (
+                    legacy.0,
+                    legacy.1,
+                    legacy.2,
+                    QueueClass::Normal,
+                    0,
+                    0,
+                    0,
+                    legacy.3,
+                )
+            };
             out.push((
                 seq,
                 QueueItem {
@@ -903,6 +966,9 @@ impl Store {
                     msg_id,
                     group_msg_id,
                     class,
+                    created_at,
+                    attempts,
+                    next_attempt_at,
                     envelope: Envelope::decode(&env_bytes)?,
                 },
             ));
@@ -914,6 +980,36 @@ impl Store {
     pub fn queue_ack(&self, seq: i64) -> Result<()> {
         self.conn
             .execute("DELETE FROM queue WHERE seq = ?1", params![seq])?;
+        Ok(())
+    }
+
+    /// Replace one queued item's sealed scheduling metadata without changing
+    /// its FIFO sequence number.
+    pub fn queue_update(
+        &self,
+        seq: i64,
+        item: &QueueItem,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let row = QueueRowV2 {
+            peer: item.peer,
+            msg_id: item.msg_id,
+            group_msg_id: item.group_msg_id,
+            class: item.class,
+            created_at: item.created_at,
+            attempts: item.attempts,
+            next_attempt_at: item.next_attempt_at,
+            envelope: item.envelope.encode(),
+        };
+        let encoded = postcard::to_allocvec(&row).map_err(|_| StoreError::Serialization)?;
+        let mut plain = Vec::with_capacity(QUEUE_ROW_MAGIC_V2.len() + encoded.len());
+        plain.extend_from_slice(QUEUE_ROW_MAGIC_V2);
+        plain.extend_from_slice(&encoded);
+        let sealed = self.k_queue.seal(b"queue", &plain, rng);
+        self.conn.execute(
+            "UPDATE queue SET blob = ?1 WHERE seq = ?2",
+            params![sealed, seq],
+        )?;
         Ok(())
     }
 
@@ -970,6 +1066,21 @@ impl Store {
             .queue_all()?
             .into_iter()
             .filter_map(|(seq, item)| (item.group_msg_id.as_ref() == Some(id)).then_some(seq))
+            .collect();
+        for sequence in &sequences {
+            self.queue_ack(*sequence)?;
+        }
+        Ok(sequences.len())
+    }
+
+    /// Remove queued copies of one exact sealed envelope after its encrypted
+    /// end-to-end receipt returns. Matching the content id keeps other linked
+    /// devices' copies of the same logical message independently retryable.
+    pub fn queue_remove_envelope(&self, content_id: &[u8; 16]) -> Result<usize> {
+        let sequences: Vec<i64> = self
+            .queue_all()?
+            .into_iter()
+            .filter_map(|(seq, item)| (item.envelope.content_id() == *content_id).then_some(seq))
             .collect();
         for sequence in &sequences {
             self.queue_ack(*sequence)?;
@@ -1311,6 +1422,70 @@ impl Store {
             .optional()?;
         Ok(found.is_some())
     }
+
+    /// Remember where an accepted envelope's encrypted receipt must return,
+    /// allowing exact transport duplicates to replay the receipt without
+    /// decrypting or storing the message twice.
+    pub fn put_receipt_replay(
+        &self,
+        id: &[u8; 16],
+        peer: &[u8; 32],
+        received_at: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let encoded =
+            postcard::to_allocvec(&(*peer, received_at)).map_err(|_| StoreError::Serialization)?;
+        let sealed = self.k_queue.seal(b"receipt-replay", &encoded, rng);
+        self.conn.execute(
+            "INSERT OR REPLACE INTO receipt_replay (id, blob) VALUES (?1, ?2)",
+            params![id.as_slice(), sealed],
+        )?;
+        Ok(())
+    }
+
+    /// Return the physical sender route for a previously accepted envelope.
+    pub fn receipt_replay_peer(&self, id: &[u8; 16]) -> Result<Option<[u8; 32]>> {
+        let sealed: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT blob FROM receipt_replay WHERE id = ?1",
+                params![id.as_slice()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(sealed) = sealed else {
+            return Ok(None);
+        };
+        let plain = self.k_queue.open(b"receipt-replay", &sealed)?;
+        let (peer, _): ([u8; 32], u64) =
+            postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
+        Ok(Some(peer))
+    }
+
+    /// Remove duplicate-receipt routes older than the endpoint delivery
+    /// window. Seen ids remain independent and keep deduplication durable.
+    pub fn sweep_receipt_replay(&self, cutoff: u64) -> Result<usize> {
+        let mut stmt = self.conn.prepare("SELECT id, blob FROM receipt_replay")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        let mut expired = Vec::new();
+        for row in rows {
+            let (id, sealed) = row?;
+            let plain = self.k_queue.open(b"receipt-replay", &sealed)?;
+            let (_, received_at): ([u8; 32], u64) =
+                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
+            if received_at <= cutoff {
+                expired.push(id);
+            }
+        }
+        drop(stmt);
+        for id in &expired {
+            self.conn
+                .execute("DELETE FROM receipt_replay WHERE id = ?1", params![id])?;
+        }
+        Ok(expired.len())
+    }
 }
 
 #[cfg(test)]
@@ -1327,7 +1502,7 @@ mod queue_tests {
     };
 
     #[test]
-    fn queue_v1_class_round_trips_and_legacy_rows_default_normal() {
+    fn queue_v2_schedule_round_trips_and_legacy_rows_default_normal() {
         let mut rng = StdRng::seed_from_u64(0x511ce);
         let dir = tempfile::tempdir().unwrap();
         let store =
@@ -1340,6 +1515,9 @@ mod queue_tests {
                     msg_id: None,
                     group_msg_id: None,
                     class: QueueClass::Bulk,
+                    created_at: 123,
+                    attempts: 4,
+                    next_attempt_at: 456,
                     envelope: envelope.clone(),
                 },
                 &mut rng,
@@ -1361,7 +1539,27 @@ mod queue_tests {
 
         let rows = store.queue_all().unwrap();
         assert_eq!(rows[0].1.class, QueueClass::Bulk);
+        assert_eq!(rows[0].1.created_at, 123);
+        assert_eq!(rows[0].1.attempts, 4);
+        assert_eq!(rows[0].1.next_attempt_at, 456);
         assert_eq!(rows[1].1.class, QueueClass::Normal);
+        assert_eq!(rows[1].1.created_at, 0);
+        assert_eq!(rows[1].1.attempts, 0);
         assert_eq!(rows[1].1.peer, [4; 32]);
+    }
+
+    #[test]
+    fn accepted_envelope_receipt_route_is_sealed_and_expires() {
+        let mut rng = StdRng::seed_from_u64(0xacc);
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            Store::create(&dir.path().join("replay.db"), b"pass", TEST_KDF, &mut rng).unwrap();
+        let id = [7; 16];
+        let peer = [8; 32];
+        store.put_receipt_replay(&id, &peer, 123, &mut rng).unwrap();
+        assert_eq!(store.receipt_replay_peer(&id).unwrap(), Some(peer));
+        assert_eq!(store.sweep_receipt_replay(122).unwrap(), 0);
+        assert_eq!(store.sweep_receipt_replay(123).unwrap(), 1);
+        assert_eq!(store.receipt_replay_peer(&id).unwrap(), None);
     }
 }

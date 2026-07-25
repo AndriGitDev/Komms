@@ -1934,7 +1934,8 @@ fn two_nodes_message_via_ffi_only() {
     let sn_b = bob.safety_number(alice_peer.clone()).unwrap();
     assert_eq!(sn_a.digits, sn_b.digits);
     assert_eq!(sn_a.qr, sn_b.qr);
-    assert_eq!(sn_a.display.split(' ').count(), 12);
+    assert_eq!(sn_a.digits.len(), 30);
+    assert_eq!(sn_a.display.split(' ').count(), 6);
     alice.mark_verified(bob_peer.clone()).unwrap();
     let contacts = alice.contacts().unwrap();
     assert_eq!(contacts.len(), 1);

@@ -2,6 +2,7 @@
 // dependencies, no Vision/ML. Hands the decoded string back once and stops.
 
 import AVFoundation
+import KommsCore
 import SwiftUI
 import UIKit
 
@@ -22,6 +23,8 @@ final class ScannerController: UIViewController, AVCaptureMetadataOutputObjectsD
     var onScan: ((String) -> Void)?
 
     private let session = AVCaptureSession()
+    private let bundleAssembler = BundleQrAssembler()
+    private let progressLabel = UILabel()
     private var delivered = false
 
     override func viewDidLoad() {
@@ -51,6 +54,22 @@ final class ScannerController: UIViewController, AVCaptureMetadataOutputObjectsD
         preview.frame = view.layer.bounds
         preview.videoGravity = .resizeAspectFill
         view.layer.addSublayer(preview)
+
+        progressLabel.text = "Point at a Komms QR"
+        progressLabel.textColor = .white
+        progressLabel.backgroundColor = UIColor.black.withAlphaComponent(0.8)
+        progressLabel.font = .preferredFont(forTextStyle: .headline)
+        progressLabel.textAlignment = .center
+        progressLabel.layer.cornerRadius = 10
+        progressLabel.clipsToBounds = true
+        progressLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(progressLabel)
+        NSLayoutConstraint.activate([
+            progressLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            progressLabel.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -20),
+            progressLabel.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -40),
+            progressLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+        ])
     }
 
     private func showUnavailable(_ text: String) {
@@ -92,10 +111,15 @@ final class ScannerController: UIViewController, AVCaptureMetadataOutputObjectsD
             !delivered,
             let object = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
             object.type == .qr,
-            let text = object.stringValue
+            let text = object.stringValue,
+            let progress = bundleAssembler.accept(text)
         else { return }
+        guard let complete = progress.completeText else {
+            progressLabel.text = "Pairing frames \(progress.received) of \(progress.total)"
+            return
+        }
         delivered = true
         session.stopRunning()
-        onScan?(text)
+        onScan?(complete)
     }
 }

@@ -20,10 +20,10 @@ are the node's own, verbatim.
   guarantee and non-secure third-party keyboards remain best effort.
 - **Create / unlock / restore** an encrypted store at the gate; restoring
   takes a `.kkr` backup file plus its 24-word mnemonic.
-- **Pair out-of-band**: show your prekey bundle as a QR, scan a friend's
-  with the camera (or paste the hex, interoperable with the desktop and
-  Android apps and `kult bundle` / `kult add`), or add a contact from
-  their kult address alone via DHT lookup.
+- **Pair out-of-band**: show your prekey bundle as a compact, versioned
+  Base45 QR, scan a friend's with the camera, or paste the interoperable
+  hex used by the other shells and `kult bundle` / `kult add`. Legacy hex
+  QRs remain accepted. A kult address can also add a contact through DHT.
 - **Link and manage owned devices** without iCloud or another account service.
   The VoiceOver/Dynamic-Type manager lists exact physical devices, supports
   signed rename and permanently confirmed revoke, and drives both sides of the
@@ -36,9 +36,11 @@ are the node's own, verbatim.
   and requires explicit acceptance for risk. Duplicate names remain distinct;
   restart/`KKR7` preserves the local rename with zero delivery work.
 - **Message** with honest delivery states: `queued` → `sent` (handed to a
-  link) → `delivered` (end-to-end encrypted receipt came back), plus the
-  "held, will send when a faster link exists" verdict on airtime-budgeted
-  mesh links.
+  link) → `delivered` (end-to-end encrypted receipt came back). Sealed
+  ciphertext retries passively after recent failures so fresh taps remain
+  responsive; after 30 days without a receipt, history says
+  `delivery failed after 30 days`. Airtime-budgeted mesh links also expose the
+  "held, will send when a faster link exists" verdict.
 - **Make alpha live-audio calls** to paired contacts only while the shared core
   observes a fresh direct QUIC route. AVFoundation voice processing and the
   native Opus codec use 48 kHz mono, 20 ms frames at 24 kbit/s. The VoiceOver/
@@ -183,7 +185,7 @@ apps/ios/
 ```
 
 Every behavior lives in `KommsCore` and is pinned by its tests: the e2e
-drives two full nodes (pair by scanned bundle hex, verified `delivered`
+drives two full nodes (pair by compact scanned bundle QR, verified `delivered`
 states via listener events, safety numbers, backup → mnemonic → restore →
 automatic re-handshake) against the host-built `libkult_ffi`, no
 simulator required. Its group acceptance scenario adds a real offline third
@@ -242,7 +244,7 @@ the cargo workspace, mirroring the other shells' posture.
 
 ## Alpha availability
 
-Komms 0.2 Alpha does not include a downloadable iOS package. The iOS shell is
+Komms 0.3 Alpha does not include a downloadable iOS package. The iOS shell is
 available for source builds and the Xcode Simulator only; there is no TestFlight
 or App Store release. Testers who need an installable package should use the
 published desktop or Android artifacts in the
@@ -281,7 +283,7 @@ physical-device or distribution qualification.
 ## Version and distribution boundary
 
 The generated app targets iOS 16 or newer, uses bundle identifier
-`is.andri.komms`, and reports short version `0.2.0` / build `2`, aligned with the
+`is.andri.komms`, and reports short version `0.3.0` / build `3`, aligned with the
 Rust, desktop, and Android surfaces. The documented gate is an unsigned
 Simulator build. No distribution certificate, provisioning profile, App Store
 metadata, notarized artifact, or supported update channel is configured in this

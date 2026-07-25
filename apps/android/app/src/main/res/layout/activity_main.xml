@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:orientation="vertical"
+    android:background="@color/background"
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
     <androidx.appcompat.widget.Toolbar
         android:id="@+id/main_toolbar"
-        android:background="@color/primary"
+        android:background="@color/toolbar_background"
         android:theme="@style/ThemeOverlay.Komms.Toolbar"
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize" />
@@ -15,6 +16,10 @@
         android:id="@+id/main_status"
         android:textSize="14sp"
         android:textStyle="bold"
+        android:background="@drawable/bg_brand_panel"
+        android:layout_marginHorizontal="12dp"
+        android:layout_marginTop="12dp"
+        android:layout_marginBottom="4dp"
         android:paddingHorizontal="16dp"
         android:paddingVertical="12dp"
         android:layout_width="match_parent"
@@ -151,12 +156,62 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content" />
 
-    <TextView
+    <LinearLayout
         android:id="@+id/main_empty"
-        android:text="@string/main_empty"
-        android:visibility="gone"
-        android:padding="24dp"
+        android:orientation="vertical"
         android:gravity="center"
+        android:background="@drawable/bg_brand_panel"
+        android:visibility="gone"
+        android:padding="22dp"
+        android:layout_marginHorizontal="12dp"
+        android:layout_marginVertical="10dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <ImageView
+            android:src="@drawable/ic_komms_mark"
+            android:background="@drawable/bg_brand_badge"
+            android:contentDescription="@null"
+            android:layout_width="52dp"
+            android:layout_height="52dp" />
+
+        <TextView
+            android:text="@string/main_empty"
+            android:textStyle="bold"
+            android:textSize="20sp"
+            android:gravity="center"
+            android:layout_marginTop="12dp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <TextView
+            android:text="@string/main_empty_detail"
+            android:textColor="@color/text_secondary"
+            android:textSize="14sp"
+            android:gravity="center"
+            android:lineSpacingExtra="2dp"
+            android:layout_marginTop="6dp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <Button
+            android:id="@+id/main_empty_pair"
+            style="@style/Widget.Komms.Button.Primary"
+            android:text="@string/main_empty_pair"
+            android:layout_marginTop="16dp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/main_device_heading"
+        android:text="@string/main_device_heading"
+        android:textStyle="bold"
+        android:textColor="@color/text_secondary"
+        android:textSize="13sp"
+        android:paddingHorizontal="16dp"
+        android:paddingTop="10dp"
+        android:paddingBottom="2dp"
         android:layout_width="match_parent"
         android:layout_height="wrap_content" />
 
@@ -172,6 +227,7 @@
         android:layout_height="wrap_content" />
 
     <TextView
+        android:id="@+id/main_contacts_heading"
         android:text="@string/main_contacts_heading"
         android:textStyle="bold"
         android:textSize="18sp"
@@ -188,6 +244,7 @@
         android:layout_weight="1" />
 
     <TextView
+        android:id="@+id/main_groups_heading"
         android:text="@string/main_groups_heading"
         android:textStyle="bold"
         android:textSize="18sp"

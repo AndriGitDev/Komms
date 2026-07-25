@@ -662,6 +662,13 @@ async fn linked_devices_use_distinct_external_ratchet_sessions_for_one_account()
         Event::MessageReceived { body, .. } if body == b"queued until tablet bundle"
     )));
 
+    // Importing the phone's fresh bundle above repairs its unconfirmed
+    // ratchet. Capability support is deliberately tied to the authenticated
+    // replacement session, so let the phone advertise and Carol consume that
+    // control before testing safety-sensitive ephemeral fan-out.
+    phone.tick(166, &mut rng).await.unwrap();
+    carol.tick(166, &mut rng).await.unwrap();
+
     assert!(matches!(
         carol.send_disappearing_message(&account, "must reach every device", 3_600, 166, &mut rng),
         Err(NodeError::EphemeralUnsupported)

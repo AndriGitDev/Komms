@@ -154,7 +154,12 @@ clock advance activates it on the next tick; time-zone changes are display-only.
 6. **Transport scheduler** picks the best available transport(s) for this peer, possibly
    several in parallel (internet + mesh). Duplicate delivery is fine: envelopes are
    idempotent by message ID; receivers deduplicate.
-7. On receipt of an encrypted delivery receipt, state advances `queued → sent → delivered`.
+7. A transport handoff advances `queued → sent`; it does not prove receipt.
+   The exact sealed envelope retries on a passive, restart-safe cadence until
+   an encrypted end-to-end receipt advances it to `delivered`. Fresh user
+   actions bypass that passive work. If no receipt returns within 30 days, the
+   envelope is garbage-collected and retained history becomes
+   `delivery failed after 30 days`.
 
 ### Receive path
 Mirror image: transport yields envelope → reassembly → dedup by message ID → ratchet

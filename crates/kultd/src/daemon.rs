@@ -597,7 +597,10 @@ async fn handle_op(
             }))
         }
         Op::Bundle => {
-            let bundle = node.handshake_bundle(now(), &mut OsRng).map_err(fail)?;
+            let hints = own_hints(net, &cfg.mailboxes);
+            let bundle = node
+                .handshake_bundle_with_hints(&hints, now(), &mut OsRng)
+                .map_err(fail)?;
             Ok(json!({ "bundle": wire::hex_encode(&bundle) }))
         }
         Op::DeviceId => Ok(json!({ "device": wire::hex_encode(&node.device_id()) })),
@@ -625,6 +628,7 @@ async fn handle_op(
                         kult_store::DeliveryState::Sent => "sent",
                         kult_store::DeliveryState::Delivered => "delivered",
                         kult_store::DeliveryState::Received => "received",
+                        kult_store::DeliveryState::Failed => "failed",
                         },
                     })
                 })

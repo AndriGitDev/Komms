@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:background="@color/background"
+    android:fillViewport="true"
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
@@ -42,6 +44,9 @@
 
         <TextView
             android:text="@string/gate_tagline"
+            android:textColor="@color/text_secondary"
+            android:textSize="16sp"
+            android:lineSpacingExtra="3dp"
             android:layout_marginTop="8dp"
             android:layout_width="match_parent"
             android:layout_height="wrap_content" />
@@ -54,9 +59,23 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content">
 
+        <TextView
+            android:text="@string/gate_passphrase"
+            android:textStyle="bold"
+            android:textSize="16sp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+
         <komms.android.IncognitoEditText
             android:id="@+id/gate_passphrase"
             android:hint="@string/gate_passphrase"
+            android:background="@drawable/bg_form_input"
+            android:textColor="@color/text_primary"
+            android:textColorHint="@color/text_secondary"
+            android:paddingHorizontal="14dp"
+            android:paddingVertical="12dp"
+            android:layout_marginTop="8dp"
+            android:minHeight="52dp"
             android:inputType="textPassword"
             android:layout_width="match_parent"
             android:layout_height="wrap_content" />
@@ -64,14 +83,31 @@
         <komms.android.IncognitoEditText
             android:id="@+id/gate_confirm"
             android:hint="@string/gate_confirm"
+            android:background="@drawable/bg_form_input"
+            android:textColor="@color/text_primary"
+            android:textColorHint="@color/text_secondary"
+            android:paddingHorizontal="14dp"
+            android:paddingVertical="12dp"
+            android:layout_marginTop="10dp"
+            android:minHeight="52dp"
             android:inputType="textPassword"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <TextView
+            android:id="@+id/gate_passphrase_help"
+            android:text="@string/gate_passphrase_create_help"
+            android:textColor="@color/text_secondary"
+            android:textSize="13sp"
+            android:layout_marginTop="8dp"
             android:layout_width="match_parent"
             android:layout_height="wrap_content" />
 
         <Button
             android:id="@+id/gate_unlock"
+            style="@style/Widget.Komms.Button.Primary"
             android:text="@string/gate_unlock"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="16dp"
             android:layout_width="match_parent"
             android:layout_height="wrap_content" />
 
@@ -83,34 +119,57 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content" />
 
+        <Button
+            android:id="@+id/gate_restore_toggle"
+            style="@style/Widget.Komms.Button.Secondary"
+            android:text="@string/gate_restore_toggle"
+            android:layout_marginTop="14dp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
         <LinearLayout
             android:id="@+id/gate_restore_block"
             android:orientation="vertical"
-            android:layout_marginTop="24dp"
+            android:visibility="gone"
+            android:layout_marginTop="18dp"
             android:layout_width="match_parent"
             android:layout_height="wrap_content">
 
             <TextView
                 android:text="@string/gate_restore_heading"
                 android:textStyle="bold"
+                android:textSize="16sp"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content" />
 
             <Button
                 android:id="@+id/gate_pick_backup"
+                style="@style/Widget.Komms.Button.Secondary"
                 android:text="@string/gate_pick_backup"
+                android:layout_marginTop="10dp"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content" />
 
             <TextView
                 android:id="@+id/gate_backup_name"
                 android:text="@string/gate_no_backup"
+                android:textColor="@color/text_secondary"
+                android:textSize="13sp"
+                android:paddingHorizontal="4dp"
+                android:layout_marginTop="6dp"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content" />
 
             <komms.android.IncognitoEditText
                 android:id="@+id/gate_mnemonic"
                 android:hint="@string/gate_mnemonic"
+                android:background="@drawable/bg_form_input"
+                android:textColor="@color/text_primary"
+                android:textColorHint="@color/text_secondary"
+                android:paddingHorizontal="14dp"
+                android:paddingVertical="12dp"
+                android:layout_marginTop="10dp"
+                android:minHeight="52dp"
                 android:inputType="textPassword|textNoSuggestions"
                 android:importantForAutofill="no"
                 android:layout_width="match_parent"
@@ -118,7 +177,9 @@
 
             <Button
                 android:id="@+id/gate_restore"
+                style="@style/Widget.Komms.Button.Primary"
                 android:text="@string/gate_restore"
+                android:layout_marginTop="12dp"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content" />
         </LinearLayout>
@@ -128,6 +189,8 @@
             android:id="@+id/gate_settings"
             android:text="@string/gate_settings"
             style="?android:attr/borderlessButtonStyle"
+            android:textAllCaps="false"
+            android:textColor="@color/accent"
             android:layout_marginTop="16dp"
             android:layout_width="match_parent"
             android:layout_height="wrap_content" />

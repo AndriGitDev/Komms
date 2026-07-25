@@ -18,7 +18,7 @@ stick in a pocket.*
 **New here?** Read [Start Here](docs/00-start-here.md): the whole idea in plain
 words, with no cryptography knowledge required.
 
-## Komms 0.2 interface preview
+## Komms 0.3 interface preview
 
 <p align="center">
   <img src="docs/assets/screenshots/ios-unlock-preview.png" alt="Komms unlock screen with the yellow K mark and private messaging introduction" width="300">
@@ -26,12 +26,12 @@ words, with no cryptography knowledge required.
   <img src="docs/assets/screenshots/ios-inbox-preview.png" alt="Komms conversation-first inbox showing node health, pairing, note to self, private conversations, and groups" width="300">
 </p>
 
-<p align="center"><em>The Komms 0.2 Alpha interface. Android, iOS, and desktop share the same brand and conversation-first information hierarchy.</em></p>
+<p align="center"><em>The Komms 0.3 Alpha interface. Android, iOS, and desktop share the same brand and conversation-first information hierarchy.</em></p>
 
-## Install 0.2 Alpha for testing
+## Install 0.3 Alpha for testing
 
 Open the public
-[Komms 0.2 Alpha release](https://github.com/AndriGitDev/Komms/releases/tag/v0.2.0)
+[Komms 0.3 Alpha release](https://github.com/AndriGitDev/Komms/releases/tag/v0.3.0)
 and download one package:
 
 | System | Choose |
@@ -47,27 +47,33 @@ verify the download before accepting an operating-system warning. The
 installation, first-test, and issue-reporting steps. No source build is
 required. iOS currently remains source/Simulator-only.
 
-## What changed in 0.2 Alpha
+## What changed in 0.3 Alpha
 
-- **A calmer, conversation-first interface.** The redesigned unlock, inbox,
-  message, and Settings surfaces now share one Komms identity across desktop,
-  Android, and iOS. Advanced actions such as backups and linked devices stay
-  available without crowding the everyday messaging path.
-- **More dependable app lifecycle behavior.** The release hardens Android
-  background-node recovery, makes desktop shutdown complete cleanly, and fixes
-  locked-window, dark-mode icon, and desktop conversation-layout rough edges.
-- **Faster large attachments.** File transfer now streams larger chunks and
-  avoids the per-chunk synchronization pattern that made a 10 MB image take
-  many minutes on some paths.
-- **Clearer startup expectations.** Unlocking explains that decrypting local
-  state and starting the node can take up to 30 seconds on slower devices.
-- **A release-shaped self-hosted node.** The public `kultd` image is available
-  for Linux amd64 and arm64 with provenance, an SBOM, and immutable `0.2.0`
+- **Pairing that phone cameras can actually scan.** Post-quantum bundle sharing
+  now uses compact Base45 payloads and a bounded animated QR sequence on
+  desktop. Frames assemble in any order, and legacy bundle QRs and pasted hex
+  remain accepted.
+- **Fresh messages stay responsive.** New user actions bypass passive queue
+  maintenance. Unreachable sealed messages retry in the background and become
+  an honest `delivery failed after 30 days` entry if no encrypted receipt
+  arrives.
+- **A genuinely shared interface.** Android now carries the same branded,
+  conversation-first hierarchy already approved on iOS and desktop. Settings
+  keeps backup, linked-device, network, and diagnostic controls out of the
+  everyday path.
+- **Clearer identity and discovery.** Safety numbers are 30 readable digits
+  while QR verification retains the full 256-bit comparison. Desktop sharing,
+  contact rename, DHT/mDNS status, and conversation rendering are hardened.
+- **Four-platform release evidence.** Android and iOS simulators plus local
+  macOS and Linux desktop previews now require explicit human visual approval.
+  Linux desktop launch smoke also runs in CI and in the release workflow.
+- **A release-shaped self-hosted node.** The public `kultd` image is prepared
+  for Linux amd64 and arm64 with provenance, an SBOM, and immutable `0.3.0`
   tagging.
 
 ## Current implementation status
 
-Komms 0.2 Alpha is a packaged public prerelease for testing, not an audited
+Komms 0.3 Alpha is a packaged public prerelease for testing, not an audited
 stable release. The current repository contains the complete
 server-independent messaging core and all three application shells:
 
@@ -76,7 +82,7 @@ server-independent messaging core and all three application shells:
 | **Core and internet/LAN delivery** | M0–M3 are complete: hybrid PQXDH, Double Ratchet, sealed envelopes, encrypted storage, sneakernet, libp2p QUIC/TCP, Kademlia discovery, volunteer mailboxes, NAT traversal, mDNS, `kult-node`, `kultd`, local RPC, CLI, and UniFFI. |
 | **Off-grid delivery** | The M4 Meshtastic carrier, duty-cycle enforcement, selective retransmission, and token-blind internet↔mesh bridge are implemented and tested. The physical two-radio nightly bench still needs to be stood up. |
 | **Applications** | Tauri desktop packages are published for Windows x64, universal macOS, and Linux x86-64; a debug-signed Android APK supports Android 8+ on arm64 devices and x86-64 emulators. The SwiftUI iOS shell remains source/Simulator-only. Per-push CI exercises the core, desktop, generated bindings, Android APK, and iOS Simulator build. Production signing, store distribution, and hands-on device qualification remain. |
-| **Messaging features** | Pairwise and sender-key group text, authenticated immutable message edits with inspectable version history, disappearing text, view-once attachments, fixed-electorate group polls, signed owner/admin/member authority, note-to-self, scheduled text, attachments, recorded audio, still-image editing, group mentions, and B9 safe text formatting are shipped through the shared APIs and all three shells. Poll votes and voter identities are visible to members—not anonymous—and converge under offline reorder; creators close ordinarily while the current owner can commit a separately signed moderation snapshot. C6 role changes, ownership transfer, and admin requests are owner-serialized, generation-bound, and re-key the group. C4 uses exact local deadlines, coarse authenticated relay deletion hints, terminal tombstones, and KKR6 backup exclusion without promising remote erasure or screenshot prevention. Edits converge without rewriting originals; formatting remains inert. Delivery state remains the honest `queued → sent → delivered` ladder. |
+| **Messaging features** | Pairwise and sender-key group text, authenticated immutable message edits with inspectable version history, disappearing text, view-once attachments, fixed-electorate group polls, signed owner/admin/member authority, note-to-self, scheduled text, attachments, recorded audio, still-image editing, group mentions, and B9 safe text formatting are shipped through the shared APIs and all three shells. Poll votes and voter identities are visible to members—not anonymous—and converge under offline reorder; creators close ordinarily while the current owner can commit a separately signed moderation snapshot. C6 role changes, ownership transfer, and admin requests are owner-serialized, generation-bound, and re-key the group. C4 uses exact local deadlines, coarse authenticated relay deletion hints, terminal tombstones, and KKR6 backup exclusion without promising remote erasure or screenshot prevention. Edits converge without rewriting originals; formatting remains inert. Delivery state is the honest `queued → sent → delivered` ladder, with fresh user work ahead of passive retries and a visible failure after 30 days without an encrypted receipt. |
 | **Linked devices** | C2 is shipped through the shared core, strict RPC/CLI, UniFFI, and all three shells: one stable account can authorize up to eight independently keyed devices through a mutually confirmed QR/paste ceremony. Pairwise sessions, group sender chains, capability state, and delivery rows remain per physical device; encrypted explicit sync converges contacts, private organization, ordinary history, edits, polls, authority, and terminal tombstones without a cloud account. Permanent exact-device revocation and KKR7 recovery never resurrect old credentials. The published Android APK and automated iOS Simulator build provide release evidence; hands-on device qualification remains. |
 | **Live audio calls** | C7 audio is shipped through direct libp2p QUIC, transient ratcheted signaling, authenticated per-call media, RPC/CLI, UniFFI, desktop, Android, and iOS. Calls never use TCP, relay-only, mailbox, sneakernet, or LoRa paths; they create no chat history or backup state and use no coordinator, SFU, STUN/TURN, or project service. Real-NAT, handoff, battery, audio-route, and device qualification remain alpha release gates; video remains later work. |
 | **Attachment safety** | C1 safe file presentation is shipped over the unchanged sealed F3/F4 pipeline. Sender filenames/types remain untrusted hints; mismatched, active, unknown, or nameless files are export-only, recognized external opening is explicit and warns that no malware scan is promised, and no file auto-opens or creates mesh airtime. |
@@ -86,7 +92,7 @@ server-independent messaging core and all three application shells:
 | **Private custom icons** | B13 contact, group, folder, and note-to-self icons are shipped across the sealed F5 record, node, RPC/CLI, UniFFI, desktop, Android, and iOS. Generated initials are the safe fallback; eight bundled glyphs or selected local JPEG/PNG inputs become strict metadata-free 256×256 PNGs under per-icon/count/aggregate quotas. Icons create zero remote lookup, peer sync, notification, or transport work; portability is limited to `KKR7` and explicit authenticated own-device C2 sync. |
 | **Screen security** | B14 is shipped as an always-on pre-unlock policy across the shared capability contract, RPC/CLI, UniFFI, and every shell. Android applies `FLAG_SECURE` to every activity; iOS obscures inactive/app-switcher and live-captured scenes without claiming universal screenshot blocking; desktop requests best-effort native content protection, shields on focus loss, and locks immediately with `Ctrl/Cmd+Shift+L`. OS, compositor, privileged-software, and external-camera limits remain explicit. |
 | **Input privacy** | B15 is shipped as an always-on pre-unlock policy across the shared capability contract, RPC/CLI, UniFFI, and every textual field. Android requests `IME_FLAG_NO_PERSONALIZED_LEARNING` and no suggestions; iOS disables correction and uses secure passphrase/mnemonic fields; desktop disables webview autocomplete, correction, capitalization, and spellcheck. Keyboard, OS, webview, and writing-tool limits remain explicit. |
-| **Runtime and release assurance** | The headless runtime recovers poisoned synchronization locks instead of cascading a panic, emits policy-bounded structured diagnostics through `tracing`, and accepts passphrases/restore mnemonics from owner-only secret files. Rust 1.88 is the declared and tested MSRV. Version `0.2.0` is published from the qualified `v0.2.0` tag with native Windows/macOS/Linux packages, an Android test APK, `SHA256SUMS`, and a Linux amd64/arm64 `kultd` image carrying provenance and an SBOM. These remain Alpha artifacts: Windows signing, store distribution, an updater, and stable support promises are not configured. Per-push CI, the complete local matrix, and a weekly advisory/macOS/coverage workflow provide complementary evidence. |
+| **Runtime and release assurance** | The headless runtime recovers poisoned synchronization locks instead of cascading a panic, emits policy-bounded structured diagnostics through `tracing`, and accepts passphrases/restore mnemonics from owner-only secret files. Rust 1.88 is the declared and tested MSRV. Version `0.3.0` is prepared for the qualified `v0.3.0` tag with native Windows/macOS/Linux packages, an Android test APK, `SHA256SUMS`, and a Linux amd64/arm64 `kultd` image carrying provenance and an SBOM. Release publication is gated on recorded human visual approval for Android, iOS, macOS, and Linux. These remain Alpha artifacts: Windows signing, store distribution, an updater, and stable support promises are not configured. Per-push CI, the complete local matrix, and a weekly advisory/macOS/coverage workflow provide complementary evidence. |
 | **Optional mobile convenience** | ADR-0017 through ADR-0019 propose reversible post-pairing rendezvous and content-free native wake. The layer is design-only: no optional service is implemented or required by the sovereign core. |
 
 Older `KKR1` through `KKR6` backups remain restorable; current backups are
@@ -208,11 +214,11 @@ division between local checks, per-push CI, weekly audit evidence, physical
 qualification, and signing is documented in the
 [local release gate](docs/24-local-release-gate.md).
 
-The **Komms 0.2 Alpha** prerelease was built from tag `v0.2.0` on native Windows,
+The **Komms 0.3 Alpha** prerelease is built from tag `v0.3.0` on native Windows,
 macOS, Linux, and Android runners. Install it using the
 [Alpha testing guide](docs/27-alpha-testing.md). Its public Linux amd64/arm64
 self-hosting image is available as the immutable
-`ghcr.io/andrigitdev/komms-kultd:0.2.0` tag and the `0.2-alpha`/`alpha` aliases. See the
+`ghcr.io/andrigitdev/komms-kultd:0.3.0` tag and the `0.3-alpha`/`alpha` aliases. See the
 [release runbook](docs/25-release-runbook.md) for the version bump,
 APK/installer/container, signing, checksum, smoke-test, and publication process,
 or the [self-hosting guide](docs/26-self-hosting.md) to run `kultd`.

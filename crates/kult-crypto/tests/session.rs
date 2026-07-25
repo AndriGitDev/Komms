@@ -277,10 +277,10 @@ fn safety_numbers_are_symmetric_and_distinct() {
     let ab = safety_number(&a, &b);
     let ba = safety_number(&b, &a);
     assert_eq!(ab, ba);
-    assert_eq!(ab.digits.len(), 60);
+    assert_eq!(ab.digits.len(), 30);
     assert!(ab.digits.chars().all(|c| c.is_ascii_digit()));
     assert_ne!(ab, safety_number(&a, &c));
-    assert_eq!(ab.display_groups().split(' ').count(), 12);
+    assert_eq!(ab.display_groups().split(' ').count(), 6);
 }
 
 #[test]

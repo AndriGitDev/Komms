@@ -540,6 +540,7 @@ button.settings-row:hover { border-color: var(--accent-dim); background: var(--b
 }
 .msg .state-delivered { color: var(--accent); }
 .msg .state-held { color: var(--warn); }
+.msg .state-failed { color: var(--danger); font-weight: 650; }
 .msg .edited-marker { font-style: italic; }
 .msg .message-edit {
   padding: 0;
@@ -576,6 +577,7 @@ button.settings-row:hover { border-color: var(--accent-dim); background: var(--b
   color: var(--text-dim);
 }
 .msg .delivery.state-delivered { color: var(--accent); }
+.msg .delivery.state-failed { color: var(--danger); font-weight: 650; }
 .msg.scheduled {
   border: 1px dashed var(--warn);
   background: rgba(217, 164, 65, 0.09);
@@ -892,6 +894,17 @@ button.settings-row:hover { border-color: var(--accent-dim); background: var(--b
   margin: 0.8em auto;
 }
 .qr-card svg { display: block; width: 240px; height: 240px; }
+.qr-card[data-pane="bundle"] svg {
+  width: min(340px, 76vw);
+  height: min(340px, 76vw);
+}
+.qr-progress {
+  color: var(--text-dim);
+  font-size: 0.85em;
+  font-weight: 600;
+  margin: -0.25em 0 0.8em;
+  text-align: center;
+}
 
 .safety-digits {
   font-family: ui-monospace, monospace;

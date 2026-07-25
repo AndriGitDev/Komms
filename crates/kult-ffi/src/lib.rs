@@ -458,6 +458,8 @@ pub enum DeliveryState {
     Delivered,
     /// Inbound message (no delivery tracking).
     Received,
+    /// Thirty-day delivery window elapsed without an end-to-end receipt.
+    Failed,
 }
 
 impl DeliveryState {
@@ -467,6 +469,7 @@ impl DeliveryState {
             kult_store::DeliveryState::Sent => Self::Sent,
             kult_store::DeliveryState::Delivered => Self::Delivered,
             kult_store::DeliveryState::Received => Self::Received,
+            kult_store::DeliveryState::Failed => Self::Failed,
         }
     }
 }
@@ -1893,7 +1896,7 @@ pub struct GroupMessage {
 /// compute the identical value; compare out-of-band.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct SafetyNumber {
-    /// 60 decimal digits.
+    /// 30 decimal digits (about 100 bits).
     pub digits: String,
     /// The digits grouped 5-at-a-time for display.
     pub display: String,
@@ -2042,7 +2045,7 @@ pub enum Event {
         id: String,
     },
     /// A message record changed delivery state
-    /// (`Queued` → `Sent` → `Delivered`).
+    /// (`Queued` → `Sent` → `Delivered`, or `Failed` after 30 days).
     DeliveryUpdated {
         /// Message record id (hex).
         id: String,
@@ -2496,12 +2499,21 @@ impl KultNode {
     /// A point-in-time snapshot: listen addresses, LAN peers, NAT verdict,
     /// queue depths, contact count.
     pub fn status(&self) -> Result<Status, FfiError> {
-        let counts = self.call(|resp| Msg::Counts { resp })?;
         let guard = self.inner.lock_unpoisoned();
         let rt = guard.as_ref().ok_or(FfiError::Stopped)?;
-        let nat = match rt.block_on(rt.net.nat_status()) {
-            Ok(kult_transport::NatStatus::Public) => NatVerdict::Public,
-            Ok(kult_transport::NatStatus::Private) => NatVerdict::Private,
+        // Counts are cached by the sole node actor after every operation and
+        // tick. Reading them here keeps status responsive even while that
+        // actor is legitimately awaiting slow carrier work.
+        let counts = rt.counts();
+        // Status is a UI/health request and must not hang behind a slow or
+        // wedged transport command loop. This mirrors kultd's status RPC:
+        // a bounded diagnostic miss is honestly "unknown", not an excuse
+        // to strand every status indicator at its loading placeholder.
+        let nat = match rt.block_on(async {
+            tokio::time::timeout(Duration::from_secs(1), rt.net.nat_status()).await
+        }) {
+            Ok(Ok(kult_transport::NatStatus::Public)) => NatVerdict::Public,
+            Ok(Ok(kult_transport::NatStatus::Private)) => NatVerdict::Private,
             _ => NatVerdict::Unknown,
         };
         let (address, peer) = self.identity.lock_unpoisoned().clone();
@@ -2518,10 +2530,15 @@ impl KultNode {
         })
     }
 
-    /// Export a fresh signed prekey bundle for out-of-band sharing
-    /// (QR code, file, …).
+    /// Export a ready signed prekey bundle for out-of-band sharing.
+    ///
+    /// The runtime refreshes it asynchronously after each read. If delivery
+    /// work temporarily occupies the actor, repeated reads return the same
+    /// still-valid bundle rather than blocking a host application's UI.
     pub fn handshake_bundle(&self) -> Result<Vec<u8>, FfiError> {
-        self.call(|resp| Msg::HandshakeBundle { resp })
+        let guard = self.inner.lock_unpoisoned();
+        let rt = guard.as_ref().ok_or(FfiError::Stopped)?;
+        Ok(rt.pairing_bundle())
     }
 
     /// Exact separately authenticated physical-device id (hex).

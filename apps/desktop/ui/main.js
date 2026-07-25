@@ -80,6 +80,7 @@ const state = {
   callMedia: null,
   pendingCallStream: null,
   statusTimer: null,
+  messageRenderGeneration: 0,
 };
 
 // ── small utilities ─────────────────────────────────────────────────────
@@ -268,7 +269,12 @@ function dateTimeLocalValue(unixSecs) {
   return local.toISOString().slice(0, 16);
 }
 
-const STATE_GLYPH = { queued: "queued ○", sent: "sent ✓", delivered: "delivered ✓✓" };
+const STATE_GLYPH = {
+  queued: "queued ○",
+  sent: "sent ✓",
+  delivered: "delivered ✓✓",
+  failed: "delivery failed after 30 days",
+};
 
 const MIME_BY_EXTENSION = {
   txt: "text/plain",
@@ -716,6 +722,14 @@ function enterApp(address) {
   $("#my-address").textContent = address;
   $("#gate-pass").value = "";
   $("#gate-mnemonic").value = "";
+  // Transport status is essential, so start it before optional list, icon,
+  // and theme setup. A failure in any independent UI surface must not leave
+  // these indicators at the static HTML placeholders.
+  $("#stat-discovery").textContent = "Discovery: starting";
+  $("#stat-nat").textContent = "NAT: checking";
+  clearInterval(state.statusTimer);
+  refreshStatus();
+  state.statusTimer = setInterval(refreshStatus, 5000);
   refreshContacts();
   refreshGroups();
   refreshFolders();
@@ -728,8 +742,6 @@ function enterApp(address) {
     "Note to self",
   );
   syncThemeAfterUnlock();
-  refreshStatus();
-  state.statusTimer = setInterval(refreshStatus, 5000);
 }
 
 async function syncThemeAfterUnlock() {
@@ -836,8 +848,18 @@ async function refreshStatus() {
   let s;
   try {
     s = await invoke("status");
-  } catch {
-    return; // locked or shutting down — the poll just goes quiet
+  } catch (error) {
+    if ($("#app").hidden) return; // locked or shutting down
+    const message = `Node status unavailable: ${String(error)}`;
+    const discovery = $("#stat-discovery");
+    discovery.textContent = "Discovery: unavailable";
+    discovery.className = "stat warn";
+    discovery.title = message;
+    const nat = $("#stat-nat");
+    nat.textContent = "NAT: unavailable";
+    nat.className = "stat warn";
+    nat.title = message;
+    return;
   }
   state.peer = s.peer;
   state.address = s.address;
@@ -848,8 +870,21 @@ async function refreshStatus() {
   nat.title = `Listening on:\n${s.listen.join("\n") || "(binding…)"}`;
   const lan = $("#stat-lan");
   lan.textContent = `LAN: ${s.lan_peers.length}`;
-  lan.className = "stat " + (s.lan_peers.length ? "good" : "");
-  lan.title = s.lan_peers.length ? `Peers on this network:\n${s.lan_peers.join("\n")}` : "No peers found on this network";
+  lan.className = "stat " + (s.lan_peers.length ? "good" : s.mdns_enabled ? "" : "warn");
+  lan.title = s.lan_peers.length
+    ? `Peers on this network:\n${s.lan_peers.join("\n")}`
+    : s.mdns_enabled
+      ? "LAN discovery is on; no peers are visible yet"
+      : "LAN discovery is off in Network settings";
+  const discovery = $("#stat-discovery");
+  const hasDhtBootstrap = s.bootstrap_peers > 0;
+  discovery.textContent = hasDhtBootstrap
+    ? `Discovery: ${s.mdns_enabled ? "LAN + DHT" : "DHT"}`
+    : `Discovery: ${s.mdns_enabled ? "LAN only" : "local only"}`;
+  discovery.className = "stat " + (hasDhtBootstrap || s.lan_peers.length ? "good" : "warn");
+  discovery.title = hasDhtBootstrap
+    ? `${s.bootstrap_peers} trusted bootstrap peer${s.bootstrap_peers === 1 ? "" : "s"} configured for internet DHT discovery`
+    : "No bootstrap peer is configured. Internet DHT discovery starts only after adding a trusted peer in Network settings before unlock.";
   $("#stat-queued").textContent = `Queued: ${s.queued}`;
   $("#stat-scheduled").textContent = `Scheduled: ${s.scheduled}`;
   const transit = $("#stat-transit");
@@ -1184,7 +1219,8 @@ async function refreshContacts() {
 }
 
 function contactName(peer) {
-  return state.contacts.find((c) => c.peer === peer)?.name ?? peer.slice(0, 12) + "…";
+  const name = state.contacts.find((c) => c.peer === peer)?.name?.trim();
+  return name || peer.slice(0, 12) + "…";
 }
 
 function memberName(peer) {
@@ -1483,7 +1519,7 @@ function updateChatHead() {
   const isGroup = state.currentKind === "group";
   const contact = isGroup || isNote ? null : state.contacts.find((x) => x.peer === state.currentId);
   const group = isGroup ? currentGroup() : null;
-  $("#chat-name").textContent = isNote ? "Note to self" : isGroup ? (group?.name ?? "") : (contact?.name ?? "");
+  $("#chat-name").textContent = isNote ? "Note to self" : isGroup ? (group?.name ?? "") : contactName(state.currentId);
   $("#chat-verified").hidden = isGroup || isNote || !contact?.verified;
   $("#btn-verify").hidden = isGroup || isNote;
   $("#btn-rename-contact").hidden = isGroup || isNote;
@@ -1956,7 +1992,9 @@ function bubble(m, formatted) {
   appendExpiryMetadata(meta, m);
   if (m.outbound) {
     const st = document.createElement("span");
-    st.className = "state" + (m.state === "delivered" ? " state-delivered" : "");
+    st.className = "state"
+      + (m.state === "delivered" ? " state-delivered" : "")
+      + (m.state === "failed" ? " state-failed" : "");
     st.textContent = " · " + (STATE_GLYPH[m.state] ?? m.state);
     meta.append(st);
   }
@@ -1999,7 +2037,9 @@ function groupBubble(m, formatted) {
     deliveries.className = "deliveries";
     for (const delivery of m.deliveries) {
       const item = document.createElement("span");
-      item.className = "delivery" + (delivery.state === "delivered" ? " state-delivered" : "");
+      item.className = "delivery"
+        + (delivery.state === "delivered" ? " state-delivered" : "")
+        + (delivery.state === "failed" ? " state-failed" : "");
       item.dataset.peer = delivery.peer;
       item.textContent = `${memberName(delivery.peer)} · ${STATE_GLYPH[delivery.state] ?? delivery.state}`;
       deliveries.append(item);
@@ -2448,6 +2488,7 @@ function renderPolls(polls, authority) {
 }
 
 async function renderMessages() {
+  const renderGeneration = ++state.messageRenderGeneration;
   const isNote = state.currentKind === "note";
   const isGroup = state.currentKind === "group";
   const [msgs, scheduled, attachments, polls, authority] = await Promise.all([
@@ -2461,15 +2502,28 @@ async function renderMessages() {
     isGroup ? call("group_polls", { group: state.currentId }) : Promise.resolve([]),
     isGroup ? call("group_authority", { group: state.currentId }) : Promise.resolve(null),
   ]);
+  if (renderGeneration !== state.messageRenderGeneration) return;
+  const visibleMessages = msgs.filter((message) => !["attachment", "view_once_attachment"].includes(message.content_kind));
+  const visibleScheduled = scheduled
+    .filter((item) => item.destination === state.currentId
+      && item.conversation === (isGroup ? "group" : "peer"))
+    .sort((a, b) => a.not_before - b.not_before);
+  const [formattedMessages, formattedScheduled] = await Promise.all([
+    Promise.all(visibleMessages.map((message) => call("format_text", {
+      source: message.body,
+      highlights: formattingHighlights(message),
+    }))),
+    Promise.all(visibleScheduled.map((message) => call("format_text", {
+      source: message.body,
+      highlights: [],
+    }))),
+  ]);
+  if (renderGeneration !== state.messageRenderGeneration) return;
+
   state.currentAuthority = authority;
   const box = $("#messages");
   box.textContent = "";
   state.msgEls.clear();
-  const visibleMessages = msgs.filter((message) => !["attachment", "view_once_attachment"].includes(message.content_kind));
-  const formattedMessages = await Promise.all(visibleMessages.map((message) => call("format_text", {
-    source: message.body,
-    highlights: formattingHighlights(message),
-  })));
   let visibleDay = "";
   for (let index = 0; index < visibleMessages.length; index += 1) {
     const m = visibleMessages[index];
@@ -2481,14 +2535,6 @@ async function renderMessages() {
     }
     box.append(isNote ? noteBubble(m, formatted) : isGroup ? groupBubble(m, formatted) : bubble(m, formatted));
   }
-  const visibleScheduled = scheduled
-    .filter((item) => item.destination === state.currentId
-      && item.conversation === (isGroup ? "group" : "peer"))
-    .sort((a, b) => a.not_before - b.not_before);
-  const formattedScheduled = await Promise.all(visibleScheduled.map((message) => call("format_text", {
-    source: message.body,
-    highlights: [],
-  })));
   for (let index = 0; index < visibleScheduled.length; index += 1) {
     box.append(scheduledBubble(visibleScheduled[index], formattedScheduled[index]));
   }
@@ -3005,7 +3051,9 @@ listen("node-event", async ({ payload: ev }) => {
         const st = el.querySelector(".state");
         if (st) {
           st.textContent = " · " + (STATE_GLYPH[ev.state] ?? ev.state);
-          st.className = "state" + (ev.state === "delivered" ? " state-delivered" : "");
+          st.className = "state"
+            + (ev.state === "delivered" ? " state-delivered" : "")
+            + (ev.state === "failed" ? " state-failed" : "");
         }
       }
       break;
@@ -3115,7 +3163,9 @@ listen("node-event", async ({ payload: ev }) => {
       const delivery = el?.querySelector(`.delivery[data-peer="${ev.peer}"]`);
       if (delivery) {
         delivery.textContent = `${memberName(ev.peer)} · ${STATE_GLYPH[ev.state] ?? ev.state}`;
-        delivery.className = "delivery" + (ev.state === "delivered" ? " state-delivered" : "");
+        delivery.className = "delivery"
+          + (ev.state === "delivered" ? " state-delivered" : "")
+          + (ev.state === "failed" ? " state-failed" : "");
       }
       break;
     }
@@ -3719,12 +3769,47 @@ function wireHints(root) {
 // share (pairing) modal
 $("#btn-share").addEventListener("click", async () => {
   const root = openModal("Share your identity", "tpl-share");
-  const bundle = await call("my_bundle");
-  const addrSvg = await call("address_qr");
-  root.querySelector('[data-pane="bundle"]').innerHTML = bundle.qr_svg;
-  root.querySelector('[data-pane="address"]').innerHTML = addrSvg;
-  root.querySelector(".share-hex").value = bundle.hex;
-  root.addEventListener("click", async (e) => {
+  const view = root.querySelector('[data-f="share-dialog"]');
+  const status = view.querySelector('[data-f="share-status"]');
+  const content = view.querySelector('[data-f="share-content"]');
+  let bundle;
+  let addrSvg;
+  try {
+    [bundle, addrSvg] = await Promise.all([invoke("my_bundle"), invoke("address_qr")]);
+  } catch (err) {
+    if (!view.isConnected) return;
+    status.className = "error";
+    status.textContent = `Could not prepare sharing details: ${String(err)}`;
+    toast(String(err), true);
+    return;
+  }
+  if (!view.isConnected) return;
+  const bundlePane = view.querySelector('[data-pane="bundle"]');
+  const bundleFrames = bundle.qr_svgs?.length ? bundle.qr_svgs : [bundle.qr_svg];
+  const frameProgress = view.querySelector('[data-f="qr-progress"]');
+  let frameIndex = 0;
+  const renderBundleFrame = () => {
+    bundlePane.innerHTML = bundleFrames[frameIndex];
+    frameProgress.textContent = bundleFrames.length === 1
+      ? "Scan this pairing code"
+      : `Scanning frame ${frameIndex + 1} of ${bundleFrames.length} · hold the camera steady`;
+  };
+  renderBundleFrame();
+  if (bundleFrames.length > 1) {
+    const frameTimer = window.setInterval(() => {
+      if (!view.isConnected) {
+        window.clearInterval(frameTimer);
+        return;
+      }
+      frameIndex = (frameIndex + 1) % bundleFrames.length;
+      renderBundleFrame();
+    }, 1100);
+  }
+  view.querySelector('[data-pane="address"]').innerHTML = addrSvg;
+  view.querySelector(".share-hex").value = bundle.hex;
+  status.remove();
+  content.hidden = false;
+  view.addEventListener("click", async (e) => {
     const tab = e.target.closest("[data-share]");
     if (tab) {
       $$(".qr-tabs .tab", root).forEach((t) => t.classList.toggle("active", t === tab));
@@ -4046,9 +4131,21 @@ $("#btn-poll").addEventListener("click", openCreatePoll);
 $("#btn-verify").addEventListener("click", async () => {
   const peer = state.currentId;
   const root = openModal(`Verify ${contactName(peer)}`, "tpl-verify");
-  const sn = await call("safety_number", { peer });
-  root.querySelector(".safety-digits").textContent = sn.display;
-  root.querySelector(".safety-qr").innerHTML = sn.qr_svg;
+  const digits = root.querySelector(".safety-digits");
+  const qr = root.querySelector(".safety-qr");
+  const mark = root.querySelector('[data-act="verified"]');
+  digits.textContent = "Calculating verification code…";
+  mark.disabled = true;
+  try {
+    const sn = await call("safety_number", { peer });
+    digits.textContent = sn.display;
+    qr.innerHTML = sn.qr_svg;
+    mark.disabled = false;
+  } catch (error) {
+    digits.textContent = `Could not load the verification code: ${error}`;
+    qr.replaceChildren();
+    return;
+  }
   root.addEventListener("click", async (e) => {
     if (!e.target.matches('[data-act="verified"]')) return;
     await call("mark_verified", { peer });

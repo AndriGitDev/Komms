@@ -20,6 +20,7 @@ import com.google.zxing.MultiFormatReader
 import com.google.zxing.NotFoundException
 import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.common.HybridBinarizer
+import komms.core.BundleQrAssembler
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -30,6 +31,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class ScanActivity : SecureActivity() {
     private val analysisExecutor = Executors.newSingleThreadExecutor()
     private val delivered = AtomicBoolean(false)
+    private val bundleAssembler = BundleQrAssembler()
 
     private val requestCamera =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -63,9 +65,17 @@ class ScanActivity : SecureActivity() {
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
             analysis.setAnalyzer(analysisExecutor, QrAnalyzer { text ->
-                if (delivered.compareAndSet(false, true)) {
-                    runOnUiThread {
-                        setResult(RESULT_OK, Intent().putExtra(EXTRA_TEXT, text))
+                val progress = bundleAssembler.accept(text) ?: return@QrAnalyzer
+                runOnUiThread {
+                    findViewById<android.widget.TextView>(R.id.scan_progress).text =
+                        if (progress.completeText == null) {
+                            getString(R.string.scan_qr_progress, progress.received, progress.total)
+                        } else {
+                            getString(R.string.scan_qr_ready)
+                    }
+                    val complete = progress.completeText
+                    if (complete != null && delivered.compareAndSet(false, true)) {
+                        setResult(RESULT_OK, Intent().putExtra(EXTRA_TEXT, complete))
                         finish()
                     }
                 }

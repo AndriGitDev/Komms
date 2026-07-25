@@ -9,8 +9,9 @@
     <ImageView
         android:id="@+id/qr_image"
         android:adjustViewBounds="true"
-        android:layout_width="280dp"
-        android:layout_height="280dp" />
+        android:layout_width="320dp"
+        android:layout_height="320dp"
+        android:contentDescription="@string/my_qr_title" />
 
     <TextView
         android:id="@+id/qr_caption"

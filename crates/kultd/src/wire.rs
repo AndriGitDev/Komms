@@ -2224,6 +2224,7 @@ fn state_str(state: DeliveryState) -> &'static str {
         DeliveryState::Sent => "sent",
         DeliveryState::Delivered => "delivered",
         DeliveryState::Received => "received",
+        DeliveryState::Failed => "failed",
     }
 }
 

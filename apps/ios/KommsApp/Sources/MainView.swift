@@ -429,8 +429,24 @@ private struct MyBundleView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     if let bundleHex {
-                        QrCodeView(text: bundleQrText(bundleHex))
-                            .frame(width: 260, height: 260)
+                        let frames = bundleQrFrames(bundleHex)
+                        TimelineView(.periodic(from: .now, by: 1.1)) { context in
+                            let index = frames.isEmpty
+                                ? 0
+                                : Int(context.date.timeIntervalSinceReferenceDate / 1.1) % frames.count
+                            VStack(spacing: 8) {
+                                if frames.isEmpty {
+                                    Text("QR generation failed").foregroundStyle(.red)
+                                } else {
+                                    QrCodeView(text: frames[index], correctionLevel: "L")
+                                        .frame(width: 320, height: 320)
+                                    Text("Pairing frame \(index + 1) of \(frames.count) · keep the scanner pointed here")
+                                        .font(.footnote.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                        .multilineTextAlignment(.center)
+                                }
+                            }
+                        }
                         Text("Or share the hex (interoperable with the desktop app and `kult add`):")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
