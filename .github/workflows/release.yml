@@ -57,7 +57,7 @@ jobs:
         run: |
           release_row="$(
             gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-              --jq '.[] | select(.tag_name == env.RELEASE_TAG) | [.id, .draft] | @tsv' \
+              --jq ".[] | select(.tag_name == \"$RELEASE_TAG\") | [.id, .draft] | @tsv" \
               | head -n 1
           )"
           if [[ -n "$release_row" ]]; then
@@ -77,7 +77,7 @@ jobs:
               --notes-file .github/release-body.md
             release_id="$(
               gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-                --jq '.[] | select(.tag_name == env.RELEASE_TAG and .draft == true) | .id' \
+                --jq ".[] | select(.tag_name == \"$RELEASE_TAG\" and .draft == true) | .id" \
                 | head -n 1
             )"
           fi
