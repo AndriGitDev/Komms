@@ -118,6 +118,22 @@ and jitter queues have fixed frame/age caps. See
 [23: Live Audio Calls](23-live-audio-calls.md) and
 [ADR-0013](adr/0013-real-time-calls.md).
 
+### 2.4 Optional Freenet carrier (proposed)
+
+[ADR-0025](adr/0025-optional-freenet-carrier.md) proposes a desktop-first
+experimental carrier over local Freenet Core. It uses per-sending-device,
+per-receiving-device, per-direction, epoch-scoped contracts containing only
+bounded padded sealed envelopes. It is disabled by default, does not replace
+the DHT or QR first-contact paths, and treats a Freenet update acknowledgement
+only as next-hop evidence; the existing encrypted receipt remains the sole
+transition to `delivered`.
+
+The proposal deliberately makes no anonymity, remote-erasure, mobile-readiness,
+or high-threat claim. Contract activity, timing, padded sizes, volume, and
+network participation may remain observable. Freenet failure must preserve the
+durable queue and fall back to the unchanged direct, mailbox, LAN, mesh, and
+sneakernet paths. Live-call media never uses this carrier.
+
 ## 3. Proximity transports
 
 - **mDNS/LAN**: automatic discovery and direct QUIC on shared Wi-Fi. Covers the
@@ -222,6 +238,7 @@ The zero-RF, zero-network fallback and the simplest transport to implement:
 | Transport | MTU | Latency | Reach | Infrastructure needed | Milestone |
 |---|---|---|---|---|---|
 | libp2p QUIC/TCP | ~64 KiB practical | ms–s | Global | Internet access | M3 |
+| Freenet contracts | Prototype must measure | seconds–offline | Global store-and-forward | Local Freenet Core; explicit opt-in | Proposed (M6, ADR-0025) |
 | mDNS/LAN | ~64 KiB | ms | Site | Shared LAN | M3 |
 | BLE direct | ~0.2–0.5 KiB/frame | s | ~10–100 m | None | Planned (M6) |
 | Meshtastic/LoRa | ~0.2 KiB/frame | s–hours | km–100 km (multi-hop) | ~30€ radio per user | M4 |

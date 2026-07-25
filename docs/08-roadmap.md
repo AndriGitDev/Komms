@@ -319,7 +319,8 @@ delivery/security indicators. Backup/restore round-trips.
 ## M6: Hardening & reach *(in progress)*
 
 Sender-key groups polish → OpenMLS for large groups; censorship-resistant transports
-(obfuscation, arti/Tor); panic wipe; reproducible builds;
+(obfuscation, arti/Tor); an optional Freenet carrier research track; panic wipe;
+reproducible builds;
 **external security audit** of `kult-crypto` + `kult-protocol`; F-Droid and store
 distribution.
 
@@ -352,6 +353,57 @@ accepted. The track must preserve the Google-free Android artifact, keep DHT/
 QR as first-contact discovery and volunteer mailboxes as durable delivery, and
 pass a blackhole test proving that loss of every optional service leaves the
 existing direct, LAN, mesh, mailbox, and sneakernet paths intact.
+
+An **optional Freenet carrier** is also proposed as a separate M6 research and
+adoption track under
+[ADR-0025](adr/0025-optional-freenet-carrier.md). It must add Freenet's
+replicated contract network as one more store-and-forward carrier behind the
+existing `Transport` contract; it must not replace Komms identity, hybrid-PQ
+cryptography, encrypted local storage, delivery receipts, native shells,
+libp2p, LAN, mailbox, mesh, or sneakernet paths. The first implementation
+deliverable after ADR review is a desktop-only two-node spike against local
+Freenet Core instances, not a Freenet-native rewrite or a production security
+claim.
+
+The ADR must pin:
+
+- per-device, per-direction, epoch-scoped inbox contracts so a permanent
+  Freenet contract id does not become a stable Komms identity or conversation
+  handle;
+- ciphertext-only contract state containing the same padded sealed envelopes
+  transports already carry, with no plaintext, identity key, contact name,
+  message kind, ratchet state, or long-term delivery token;
+- a deterministic merge model with strict byte/count/age quotas, replay
+  deduplication, spam admission controls, bounded attachment chunks, and honest
+  handling of state that remote peers may retain after local expiry;
+- native Komms integration through the local or explicitly bundled Freenet
+  Core API, while keeping a browser-distributed Freenet UI and delegate port as
+  a separate possible future product rather than silently replacing the
+  audited native boundary;
+- reproducible contract/delegate artifacts, stable key-derived application
+  identity, a registered predecessor lineage, and a tested state/secret
+  migration path before any public Freenet contract is treated as durable;
+- an explicit metadata warning: Freenet may improve availability and
+  censorship resistance but does not by itself hide contract existence,
+  access timing, activity volume, or the user's network participation;
+- desktop-first scope while Freenet's public distribution remains
+  desktop-only; Android/iOS support waits for a supportable mobile Core,
+  background-execution qualification, and the ordinary Komms human visual
+  gate; and
+- exclusion of live-call media: Freenet may carry ordinary sealed call-control
+  messages only through the existing queue, while C7 media continues to
+  require a direct authenticated QUIC path.
+
+**Freenet carrier acceptance**: two native Komms desktop nodes using separate
+local Freenet Core instances exchange sealed text, encrypted receipts, and
+bounded attachment chunks through Freenet as their only shared carrier; offline
+store-and-forward and restart recovery pass; an observer of contract state sees
+only bounded padded ciphertext and documented coarse metadata; disabling or
+blackholing Freenet loses no queued message and falls back to the unchanged
+Komms carriers; no Freenet next-hop acknowledgement is rendered as end-to-end
+`delivered`; and the UI labels the carrier experimental until the Freenet
+network, mobile support, metadata analysis, migrations, and independent
+security review meet the Komms threat model.
 
 Sender-key groups v1 is in through the core stack (ADR-0012, construction pinned
 in [04: Cryptography §6](04-cryptography.md)): per-member forward-ratcheting
