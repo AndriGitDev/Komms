@@ -148,8 +148,8 @@ private class NoteMessagesAdapter : RecyclerView.Adapter<NoteMessagesAdapter.Hol
         val message = rendered.value
         val context = holder.itemView.context
         (holder.itemView as LinearLayout).gravity = Gravity.END
-        holder.itemView.findViewById<LinearLayout>(R.id.message_bubble)
-            .setBackgroundColor(context.getColor(R.color.bubble_out))
+        holder.itemView.findViewById<LinearLayout>(R.id.message_bubble).backgroundTintList =
+            android.content.res.ColorStateList.valueOf(context.getColor(R.color.bubble_out))
         holder.itemView.findViewById<TextView>(R.id.message_body)
             .showFormattedText(rendered.formatted)
         val time = DateFormat.getTimeInstance(DateFormat.SHORT)

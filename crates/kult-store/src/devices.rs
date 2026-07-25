@@ -140,7 +140,7 @@ pub struct MessageDeviceDeliveryRecord {
     pub device: [u8; 32],
     /// Exact encrypted envelope id, absent while no session/bundle can queue it.
     pub wire_id: Option<[u8; 16]>,
-    /// Honest queued/sent/delivered ladder for this endpoint.
+    /// Honest queued/sent/delivered/failed ladder for this endpoint.
     pub state: DeliveryState,
 }
 

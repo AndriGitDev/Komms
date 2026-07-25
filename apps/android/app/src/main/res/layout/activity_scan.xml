@@ -1,5 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.camera.view.PreviewView xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/scan_preview"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent" />
+    android:layout_height="match_parent">
+
+    <androidx.camera.view.PreviewView
+        android:id="@+id/scan_preview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <TextView
+        android:id="@+id/scan_progress"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_margin="24dp"
+        android:background="#CC111827"
+        android:paddingHorizontal="16dp"
+        android:paddingVertical="10dp"
+        android:text="@string/scan_qr_ready"
+        android:textColor="@android:color/white"
+        android:textStyle="bold" />
+</FrameLayout>

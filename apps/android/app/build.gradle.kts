@@ -61,11 +61,11 @@ android {
         applicationId = "is.andri.komms"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        // Plain 0.2.0 to match the workspace, desktop, and iOS version
+        versionCode = 3
+        // Plain 0.3.0 to match the workspace, desktop, and iOS version
         // family exactly (Apple version strings cannot carry a suffix);
         // alpha status is conveyed by the 0.x major and release notes.
-        versionName = "0.2.0"
+        versionName = "0.3.0"
     }
 
     compileOptions {

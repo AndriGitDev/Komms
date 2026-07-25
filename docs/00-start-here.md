@@ -33,7 +33,7 @@ You'll see five terms around the project. This is all you need:
 | **End-to-end encryption** | Your message is locked on your device and only your contact's device can unlock it. Everyone in between sees scrambled bytes. |
 | **Post-quantum** | The locks are designed to survive even the codebreaking computers expected in the future. Messages recorded today stay private tomorrow. |
 | **kult address** (`kk1…`) | Your ID, like a phone number you invented yourself and nobody can take away. Share it as a QR code, sticker, or text. |
-| **Safety number** | A 60-digit number you and a friend compare (in person or over a call) to be *certain* no one is impersonating either of you. |
+| **Safety number** | A 30-digit number you and a friend compare (in person or over a call) to be *certain* no one is impersonating either of you; scanning compares the full 256-bit value. |
 | **Courier file / bundle** | Your encrypted messages packed into a `.kkb` file that can travel on a USB stick or another file channel: messaging with no network at all. Animated message-bundle QR is planned; current QR flows are for pairing and verification. |
 
 ## What does it protect me from, honestly?
@@ -50,7 +50,7 @@ Our full, frank list is in the [threat model](02-threat-model.md).
 
 ## Can I use it today?
 
-Yes, for Alpha testing. [Komms 0.2 Alpha](https://github.com/AndriGitDev/Komms/releases/tag/v0.2.0)
+Yes, for Alpha testing. [Komms 0.3 Alpha](https://github.com/AndriGitDev/Komms/releases/tag/v0.3.0)
 has downloadable packages for Windows, macOS, Linux, and Android. Follow the
 [Alpha testing guide](27-alpha-testing.md) to choose a package, verify its
 checksum, install it, and report what you find. The desktop packages are not
@@ -138,7 +138,7 @@ Platform build instructions:
 
 | If you want to know… | Read… |
 |---|---|
-| how to install and test the 0.2 Alpha | [Alpha Testing](27-alpha-testing.md) |
+| how to install and test the 0.3 Alpha | [Alpha Testing](27-alpha-testing.md) |
 | what Komms promises and why | [Why Komms](01-why.md) |
 | what it protects—and what it cannot | [Threat Model](02-threat-model.md) |
 | how the system is layered | [Architecture](03-architecture.md) |

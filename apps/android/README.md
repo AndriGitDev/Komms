@@ -19,10 +19,10 @@ own, verbatim.
   the request.
 - **Create / unlock / restore** an encrypted store at the gate; restoring
   takes a `.kkr` backup file plus its 24-word mnemonic.
-- **Pair out-of-band**: show your prekey bundle as a QR, scan a friend's
-  with the camera (or paste the hex, interoperable with the desktop app
-  and `kult bundle` / `kult add`), or add a contact from their kult
-  address alone via DHT lookup.
+- **Pair out-of-band**: show your prekey bundle as a compact, versioned
+  Base45 QR, scan a friend's with the camera, or paste the interoperable
+  hex used by the desktop app and `kult bundle` / `kult add`. Legacy hex
+  QRs remain accepted. A kult address can also add a contact through DHT.
 - **Link and manage owned devices** without a cloud account. The dedicated
   TalkBack-accessible manager lists exact physical devices, offers signed rename
   and permanently confirmed revoke, and drives both sides of the time-bounded
@@ -36,9 +36,11 @@ own, verbatim.
   invisible warnings, and confirms before accepting risk. Duplicate names remain
   separate; restart/`KKR7` preserves the rename with zero delivery work.
 - **Message** with honest delivery states: `queued` → `sent` (handed to a
-  link) → `delivered` (end-to-end encrypted receipt came back), plus the
-  "held, will send when a faster link exists" verdict on airtime-budgeted
-  mesh links.
+  link) → `delivered` (end-to-end encrypted receipt came back). Sealed
+  ciphertext retries passively after recent failures so fresh taps remain
+  responsive; after 30 days without a receipt, history says
+  `delivery failed after 30 days`. Airtime-budgeted mesh links also expose the
+  "held, will send when a faster link exists" verdict.
 - **Make alpha live-audio calls** to paired contacts only while the shared core
   observes a fresh direct QUIC route. Native `AudioRecord`, `AudioTrack`, and
   MediaCodec Opus use the voice-communication path at 48 kHz mono, 20 ms, and
@@ -176,7 +178,7 @@ apps/android/
 ```
 
 Every node behavior lives in `:core` and is pinned by its JVM tests: the e2e
-drives two full nodes (pair by scanned bundle hex, verified `delivered`
+drives two full nodes (pair by compact scanned bundle QR, verified `delivered`
 states via listener events, safety numbers, backup → mnemonic → restore →
 automatic re-handshake) against the host-built `libkult_ffi`, no emulator
 required. Its group acceptance scenario adds a real offline third identity
@@ -239,8 +241,8 @@ by `core/gradle.lockfile`.
 
 ## Install the published Alpha
 
-Download `Komms-0.2.0-android-debug.apk` and `SHA256SUMS` from the public
-[Komms 0.2 Alpha release](https://github.com/AndriGitDev/Komms/releases/tag/v0.2.0).
+Download `Komms-0.3.0-android-debug.apk` and `SHA256SUMS` from the public
+[Komms 0.3 Alpha release](https://github.com/AndriGitDev/Komms/releases/tag/v0.3.0).
 It supports Android 8.0 (API 26) or newer on `arm64-v8a` phones and `x86_64`
 emulators. This is a test-only APK signed with a development certificate, not a
 store or production build. Verify its checksum, allow **Install unknown apps**
@@ -281,7 +283,7 @@ SDK/NDK, debug-APK assembly plus lint. Per-push CI also assembles the real debug
 APK. Neither compilation path replaces the hands-on lifecycle, accessibility,
 audio-route, background, and physical-device qualification matrix.
 
-The published `v0.2.0` prerelease includes that installable debug APK alongside
+The `v0.3.0` prerelease includes that installable debug APK alongside
 the desktop packages and checksums. Future tagged candidates begin as drafts;
 optional keystore secrets add a signed release APK and AAB. The exact secret
 names, qualification steps, and explicit publication control are in the
@@ -290,7 +292,7 @@ names, qualification steps, and explicit publication control are in the
 ## Version and release signing (scaffold)
 
 The application id is `is.andri.komms`, the minimum Android version is API 26,
-and the current `versionName` is `0.2.0`, aligned with the Rust, desktop, and iOS
+and the current `versionName` is `0.3.0`, aligned with the Rust, desktop, and iOS
 surfaces. Release signing is optional and deliberately keyless by default.
 
 To configure a future signed release, create the git-ignored

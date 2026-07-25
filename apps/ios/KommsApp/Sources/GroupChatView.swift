@@ -1005,6 +1005,7 @@ private struct GroupMessageBubble: View {
         case .sent: return "sent"
         case .delivered: return "delivered"
         case .received: return "received"
+        case .failed: return "delivery failed after 30 days"
         }
     }
 }

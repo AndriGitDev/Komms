@@ -1,6 +1,5 @@
-// Pairing: scan a friend's bundle QR with the camera, paste the hex, or add
-// from their kult address alone (DHT lookup). Interoperable with the desktop
-// and Android apps and `kult bundle` / `kult add`.
+// Pairing: scan a friend's compact bundle QR, paste legacy/CLI hex, or add
+// from their kult address alone (DHT lookup).
 
 import KommsCore
 import SwiftUI
@@ -46,8 +45,8 @@ struct AddContactView: View {
                         .frame(height: 260)
                     }
                 case .paste:
-                    Section("Prekey bundle hex") {
-                        TextField("Bundle hex", text: $bundleHex, axis: .vertical)
+                    Section("Pairing bundle") {
+                        TextField("QR payload or bundle hex", text: $bundleHex, axis: .vertical)
                             .lineLimit(4...8)
                             .font(.caption.monospaced())
                             .incognitoKeyboard()

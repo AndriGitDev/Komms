@@ -1,6 +1,4 @@
-// QR rendering via CoreImage — no third-party dependencies. Payloads are
-// uppercase hex, which keeps the QR in its compact alphanumeric mode
-// (interoperable with the desktop and Android apps).
+// QR rendering via CoreImage — no third-party dependencies.
 
 import CoreImage.CIFilterBuiltins
 import SwiftUI
@@ -8,9 +6,10 @@ import UIKit
 
 struct QrCodeView: View {
     let text: String
+    var correctionLevel = "M"
 
     var body: some View {
-        if let image = Self.render(text) {
+        if let image = Self.render(text, correctionLevel: correctionLevel) {
             Image(uiImage: image)
                 .interpolation(.none) // crisp modules, no smoothing
                 .resizable()
@@ -22,10 +21,10 @@ struct QrCodeView: View {
         }
     }
 
-    private static func render(_ text: String) -> UIImage? {
+    private static func render(_ text: String, correctionLevel: String) -> UIImage? {
         let filter = CIFilter.qrCodeGenerator()
         filter.message = Data(text.utf8)
-        filter.correctionLevel = "M"
+        filter.correctionLevel = correctionLevel
         guard let output = filter.outputImage else { return nil }
         // Scale up so the resizable Image has real pixels to work with.
         let scaled = output.transformed(by: CGAffineTransform(scaleX: 8, y: 8))

@@ -7,14 +7,15 @@ import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 
-/**
- * Render QR text (uppercase hex payloads stay in the compact alphanumeric
- * mode) as a bitmap. Same payloads as the desktop app's SVG QRs.
- */
-fun qrBitmap(text: String, size: Int = 720): Bitmap {
+/** Render camera-safe black-on-white QR text as a crisp bitmap. */
+fun qrBitmap(
+    text: String,
+    size: Int = 720,
+    errorCorrection: ErrorCorrectionLevel = ErrorCorrectionLevel.M,
+): Bitmap {
     val hints = mapOf(
         EncodeHintType.MARGIN to 1,
-        EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
+        EncodeHintType.ERROR_CORRECTION to errorCorrection,
     )
     val matrix = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, size, size, hints)
     val pixels = IntArray(size * size)
@@ -25,3 +26,7 @@ fun qrBitmap(text: String, size: Int = 720): Bitmap {
     }
     return Bitmap.createBitmap(pixels, size, size, Bitmap.Config.RGB_565)
 }
+
+/** Pairing bundles are already authenticated, so use capacity-first level L. */
+fun pairingQrBitmap(text: String): Bitmap =
+    qrBitmap(text, size = 1_024, errorCorrection = ErrorCorrectionLevel.L)

@@ -429,7 +429,7 @@ pub struct MessageDeviceDeliveryInfo {
     pub device: [u8; 32],
     /// Current account-authorized user-visible name, if known.
     pub name: Option<String>,
-    /// Honest queued/sent/delivered state for this copy.
+    /// Honest queued/sent/delivered/failed state for this copy.
     pub state: DeliveryState,
 }
 
@@ -1036,7 +1036,7 @@ pub enum Event {
         id: [u8; 16],
     },
     /// A message record changed delivery state
-    /// (`Queued` → `Sent` → `Delivered`).
+    /// (`Queued` → `Sent` → `Delivered`, or `Failed` after 30 days).
     DeliveryUpdated {
         /// Message record id.
         id: [u8; 16],

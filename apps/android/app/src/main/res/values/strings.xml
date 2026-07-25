@@ -19,10 +19,13 @@
     <string name="gate_passphrase">Store passphrase</string>
     <string name="gate_confirm">Confirm passphrase</string>
     <string name="gate_unlock">Unlock</string>
-    <string name="gate_create">Create identity</string>
+    <string name="gate_create">Create Komms</string>
     <string name="gate_empty">Enter a passphrase</string>
     <string name="gate_mismatch">Passphrases do not match</string>
-    <string name="gate_restore_heading">Or restore from a backup</string>
+    <string name="gate_passphrase_create_help">Choose a passphrase for the encrypted store on this device.</string>
+    <string name="gate_passphrase_unlock_help">Unlock your encrypted store on this device.</string>
+    <string name="gate_restore_toggle">Restore from encrypted backup</string>
+    <string name="gate_restore_heading">Restore encrypted backup</string>
     <string name="gate_pick_backup">Choose .kkr backup file</string>
     <string name="gate_no_backup">no backup file chosen</string>
     <string name="gate_mnemonic">24-word recovery mnemonic</string>
@@ -33,15 +36,23 @@
 
     <!-- Main -->
     <string name="status_line">%1$s · NAT %2$s · %3$d LAN · %4$d scheduled · %5$d queued · %6$d transit</string>
-    <string name="status_summary">Node running · %1$s reachability · %2$d LAN peers · %3$d queued</string>
-    <string name="status_details">Address\n%1$s\n\nNAT: %2$s\nLAN peers: %3$d\nScheduled: %4$d\nQueued: %5$d\nBridging: %6$d</string>
+    <string name="status_summary">Node running\n%1$s · %2$d LAN peers%3$s</string>
+    <string name="status_details">Address\n%1$s\n\nDirect reachability: %2$s\nLAN peers: %3$d\nLAN discovery: %7$s\nInternet DHT: %8$s\nScheduled: %4$d\nQueued: %5$d\nBridging: %6$d</string>
+    <string name="status_queued_suffix"> · %1$d queued</string>
+    <string name="discovery_mdns_enabled">enabled</string>
+    <string name="discovery_mdns_disabled">disabled in Settings</string>
+    <string name="discovery_dht_configured">%1$d trusted bootstrap peers configured</string>
+    <string name="discovery_dht_local_only">no bootstrap configured — LAN and shared delivery hints only</string>
     <string name="node_details_title">Node details</string>
     <string name="main_filters_show">Filter conversations</string>
     <string name="main_filters_hide">Hide conversation filters</string>
-    <string name="nat_public">public</string>
-    <string name="nat_private">private</string>
-    <string name="nat_unknown">unknown</string>
-    <string name="main_empty">No contacts yet. Pair by QR, pasted bundle hex, or kult address.</string>
+    <string name="nat_public">directly reachable</string>
+    <string name="nat_private">connected behind NAT</string>
+    <string name="nat_unknown">checking direct reachability</string>
+    <string name="main_empty">Your private inbox starts here</string>
+    <string name="main_empty_detail">Pair with someone you trust, or keep a private note on this device.</string>
+    <string name="main_empty_pair">Pair a contact</string>
+    <string name="main_device_heading">On this device</string>
     <string name="main_contacts_heading">Contacts</string>
     <string name="contact_rename_action">Rename</string>
     <string name="contact_rename_title">Rename contact</string>
@@ -74,6 +85,9 @@
     <string name="verified_badge">✓ verified</string>
     <string name="my_qr_title">My pairing QR</string>
     <string name="my_qr_caption">Scan on another device, or add by address:\n%1$s</string>
+    <string name="my_qr_frame">Pairing frame %1$d of %2$d · keep the scanner pointed here\n%3$s</string>
+    <string name="scan_qr_ready">Point at a Komms QR</string>
+    <string name="scan_qr_progress">Pairing frames %1$d of %2$d</string>
     <string name="key_changed_title">Security notice</string>
     <string name="key_changed_body">A new encryption session was established with %1$s. If they did not just reinstall or restore, verify safety numbers before trusting new messages.</string>
     <string name="backup_done_title">Backup written — recovery mnemonic</string>
@@ -135,7 +149,7 @@
     <!-- Add contact -->
     <string name="add_title">Add contact</string>
     <string name="add_name">Their name (what you call them)</string>
-    <string name="add_bundle">Prekey bundle (hex — scan or paste)</string>
+    <string name="add_bundle">Pairing QR payload or bundle hex</string>
     <string name="add_scan">Scan QR</string>
     <string name="add_from_bundle">Add from bundle</string>
     <string name="add_address">kult address (kk1…)</string>
@@ -244,6 +258,7 @@
     <string name="state_delivered">delivered ✓</string>
     <string name="state_held">held — will send when a faster link exists</string>
     <string name="state_received">received</string>
+    <string name="state_failed">delivery failed after 30 days</string>
     <string name="ephemeral_remove_after">Remove after</string>
     <string name="ephemeral_chip_active">Remove after %1$s</string>
     <string name="ephemeral_off">Off</string>

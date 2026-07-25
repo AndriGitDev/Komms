@@ -73,11 +73,20 @@ private func validateLabelWrite(name: String, color: String) throws {
     guard labelColors.contains(color) else { throw InputError("unsupported label color") }
 }
 
-/// QR text for a prekey bundle's hex: uppercase keeps the QR in its compact
-/// alphanumeric mode (hex decoding is case-insensitive everywhere), and the
-/// payload is interoperable with the desktop and Android pairing QRs and
-/// `kult bundle` / `kult add`.
-public func bundleQrText(_ bundleHex: String) -> String { bundleHex.uppercased() }
+/// Compact, versioned QR text for a prekey bundle. Base45 carries two bytes
+/// in three QR-alphanumeric characters instead of four hex characters.
+/// ``Session/addContact(name:bundleHex:hints:)`` still accepts legacy QR hex
+/// and pasteable CLI hex.
+public func bundleQrText(_ bundleHex: String) -> String {
+    guard let bundle = hexDecode(bundleHex) else { return bundleHex.uppercased() }
+    return bundleQrPrefix + base45Encode(bundle)
+}
+
+/// Camera-friendly animated QR frames for one post-quantum pairing bundle.
+public func bundleQrFrames(_ bundleHex: String) -> [String] {
+    guard let bundle = hexDecode(bundleHex) else { return [] }
+    return encodeBundleQrFrames(bundle)
+}
 
 /// Compact QR text for one opaque C2 device-link offer.
 public func deviceLinkQrText(_ offerHex: String) -> String { offerHex.uppercased() }
@@ -214,11 +223,10 @@ public final class Session: @unchecked Sendable {
     /// ``bundleQrText(_:)`` of it for the pairing QR.
     public func myBundleHex() throws -> String { hexEncode(try node.handshakeBundle()) }
 
-    /// Add a contact from pasted/scanned bundle hex, with delivery hints.
-    /// Returns the new contact's peer id.
+    /// Add a contact from a compact QR or pasted/legacy hex bundle.
     public func addContact(name: String, bundleHex: String, hints: [HintSpec]) throws -> String {
-        guard let bundle = hexDecode(bundleHex) else {
-            throw InputError("bundle must be hex")
+        guard let bundle = decodeBundleInput(bundleHex) else {
+            throw InputError("bundle must be hex or a Komms pairing QR")
         }
         return try node.addContact(name: name, bundle: bundle, hints: hints.toFfi())
     }

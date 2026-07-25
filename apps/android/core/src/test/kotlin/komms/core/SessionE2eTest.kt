@@ -1107,8 +1107,8 @@ class SessionE2eTest {
         assertEquals(GroupRole.OWNER, legacy.myRole)
         val upgradeGeneration = legacy.generation + 1uL
         alice.upgradeGroupAuthority(group)
-        val authorityDeadline = System.nanoTime() + 30_000_000_000L
         fun authorityAt(session: Session, generation: ULong): uniffi.kult_ffi.GroupAuthority {
+            val authorityDeadline = System.nanoTime() + 30_000_000_000L
             while (true) {
                 val authorityState = session.groupAuthority(group)
                 if (authorityState.signed && authorityState.generation >= generation) {

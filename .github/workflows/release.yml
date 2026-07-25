@@ -15,6 +15,15 @@ on:
         required: true
         default: false
         type: boolean
+      visual_approval:
+        description: I reviewed current Android, iOS, macOS, and Linux previews
+        required: true
+        default: false
+        type: boolean
+      visual_evidence:
+        description: URL of the completed Komms visual approval issue
+        required: false
+        type: string
 
 concurrency:
   group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
@@ -111,7 +120,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev libgtk-3-dev \
-            libayatana-appindicator3-dev librsvg2-dev patchelf rpm
+            libayatana-appindicator3-dev librsvg2-dev patchelf rpm \
+            dbus-x11 xvfb
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_targets }}
@@ -166,6 +176,9 @@ jobs:
           prerelease: true
           args: ${{ matrix.args }}
           releaseAssetNamePattern: Komms-[version]-[platform]-[arch][setup][ext]
+      - name: Launch packaged Linux desktop shell under Xvfb
+        if: runner.os == 'Linux'
+        run: scripts/smoke-linux-desktop.sh apps/desktop/src-tauri/target/release/komms-desktop
 
   android:
     name: Android APK
@@ -273,9 +286,32 @@ jobs:
       - name: Report draft release
         run: echo "Release $RELEASE_TAG is complete and remains a draft for maintainer review."
 
+  visual-approval:
+    name: human visual approval
+    needs: prepare
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    runs-on: ubuntu-latest
+    environment: release-visual-approval
+    steps:
+      - name: Require reviewed Android, iOS, macOS, and Linux evidence
+        env:
+          VISUAL_APPROVAL: ${{ inputs.visual_approval }}
+          VISUAL_EVIDENCE: ${{ inputs.visual_evidence }}
+        run: |
+          if [[ "$VISUAL_APPROVAL" != "true" ]]; then
+            echo "Publication requires explicit human approval of current Android, iOS, macOS, and Linux previews." >&2
+            exit 1
+          fi
+          expected="https://github.com/$GITHUB_REPOSITORY/issues/"
+          if [[ "$VISUAL_EVIDENCE" != "$expected"* ]]; then
+            echo "Visual evidence must be a Komms repository issue created from the release visual approval template." >&2
+            exit 1
+          fi
+          echo "Human visual approval recorded at $VISUAL_EVIDENCE"
+
   publish-container:
     name: publish kultd container
-    needs: prepare
+    needs: [prepare, visual-approval]
     if: github.event_name == 'workflow_dispatch' && inputs.publish
     permissions:
       contents: read
@@ -287,7 +323,7 @@ jobs:
 
   publish:
     name: publish qualified prerelease
-    needs: [prepare, publish-container]
+    needs: [prepare, visual-approval, publish-container]
     if: github.event_name == 'workflow_dispatch' && inputs.publish
     runs-on: ubuntu-latest
     permissions:

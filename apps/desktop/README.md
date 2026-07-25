@@ -22,9 +22,11 @@ security indicators are the node's own, verbatim.
   hints.
 - **Create / unlock / restore** an encrypted store at the gate; restoring
   takes a `.kkr` backup file plus its 24-word mnemonic.
-- **Pair out-of-band**: share your prekey bundle as a QR code or pasteable
-  hex (interoperable with `kult bundle` / `kult add`), or add a contact
-  from their kult address alone via DHT lookup.
+- **Pair out-of-band**: share your post-quantum prekey bundle as a short
+  animated sequence of versioned Base45 QR frames or as pasteable hex
+  (interoperable with `kult bundle` / `kult add`). Komms scanners assemble
+  the bounded frames in any order; legacy one-code Base45 and hex QRs remain
+  accepted. A kult address can also add a contact through DHT lookup.
 - **Link and manage owned devices** without a cloud account. The keyboard and
   screen-reader-accessible manager lists exact physical devices, supports signed
   rename and permanently confirmed revoke, and drives both sides of the
@@ -37,9 +39,11 @@ security indicators are the node's own, verbatim.
   accepting a warned name. Duplicate names remain separate; rename survives
   restart/`KKR7` and creates no network, notification, queue, or transport work.
 - **Message** with honest delivery states: `queued` → `sent` (handed to a
-  link) → `delivered` (end-to-end encrypted receipt came back), plus the
-  "held, will send when a faster link exists" verdict on airtime-budgeted
-  mesh links.
+  link) → `delivered` (end-to-end encrypted receipt came back). Sealed
+  ciphertext retries passively after recent failures so fresh taps remain
+  responsive; after 30 days without a receipt, history says
+  `delivery failed after 30 days`. Airtime-budgeted mesh links also expose the
+  "held, will send when a faster link exists" verdict.
 - **Make alpha live-audio calls** to paired contacts only while a fresh direct
   QUIC route is observed. The accessible call bar provides ring, answer,
   decline, cancel, and hangup state plus an explicit direct-QUIC/no-history
@@ -175,7 +179,7 @@ legacy bytes.
 ## Install the published Alpha
 
 Download the package for your system from the public
-[Komms 0.2 Alpha release](https://github.com/AndriGitDev/Komms/releases/tag/v0.2.0):
+[Komms 0.3 Alpha release](https://github.com/AndriGitDev/Komms/releases/tag/v0.3.0):
 
 - Windows 10/11 x64: MSI or NSIS setup EXE;
 - macOS Intel or Apple silicon: universal DMG (or app archive); and
@@ -209,7 +213,7 @@ targets cover every desktop platform (`.deb`, `.rpm`, AppImage, `.app`,
 `.dmg`, `.msi`, NSIS); Tauri builds only the targets native to the host OS
 and skips the rest.
 
-The published `v0.2.0` prerelease was built in those formats on native Linux,
+The `v0.3.0` prerelease is built in those formats on native Linux,
 macOS, and Windows runners with checksums. Future tag-driven candidates begin as
 drafts. Follow the [release runbook](../../docs/25-release-runbook.md); a
 successful build alone is not permission to publish or a claim that an unsigned
@@ -217,10 +221,10 @@ package is production-ready.
 
 ## Packaging and signing (scaffold)
 
-The package identifier is `is.andri.komms` and the current version is `0.2.0`,
+The package identifier is `is.andri.komms` and the current version is `0.3.0`,
 aligned with the Rust, Android, and iOS surfaces.
 
-The 0.2 Alpha desktop packages are not release-signed or notarized: macOS and
+The 0.3 Alpha desktop packages are not release-signed or notarized: macOS and
 Windows are unsigned, and the Linux package artifacts are unsigned. Production
 signing remains scaffold-only and no certificates or keys enter the tree. When
 they exist, Tauri picks

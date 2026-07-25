@@ -184,13 +184,13 @@ fn paper_contact(rng: &mut StdRng) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Priority classes (§4.2 rule 3): when one flush moves a text message, a
-//    receipt, and a handshake, they leave in exactly that order — regardless
-//    of the order they were queued in.
+// 1. Priority classes (§4.2 rule 3): foreground messages (including an
+//    anonymous first-flight handshake carrying user text) leave before
+//    maintenance receipts, regardless of queue insertion order.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn flush_sends_text_before_receipts_before_handshakes() {
+async fn flush_sends_foreground_actions_before_maintenance() {
     let mut rng = StdRng::seed_from_u64(41);
     let dir = tempfile::tempdir().unwrap();
     let net: Net = Arc::new(Mutex::new(HashMap::new()));
@@ -225,7 +225,8 @@ async fn flush_sends_text_before_receipts_before_handshakes() {
 
     // One tick: receives Bob's ping (queuing a receipt), advertises the
     // terminal content capability on the same lane, then flushes all four.
-    // On the wire: Message, both Receipts, then Handshake.
+    // On the wire: established-session Message, foreground Handshake, then
+    // both maintenance Receipts.
     sent.lock().unwrap().clear();
     alice.tick(NOW + 13, &mut rng).await.unwrap();
     let kinds = sent.lock().unwrap().clone();
@@ -233,11 +234,11 @@ async fn flush_sends_text_before_receipts_before_handshakes() {
         kinds,
         vec![
             EnvelopeKind::Message,
+            EnvelopeKind::Handshake,
             EnvelopeKind::Receipt,
-            EnvelopeKind::Receipt,
-            EnvelopeKind::Handshake
+            EnvelopeKind::Receipt
         ],
-        "flush order must follow priority classes, not queue order"
+        "fresh user work must bypass maintenance and passive queue work"
     );
 }
 

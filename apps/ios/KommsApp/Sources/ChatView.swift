@@ -1,5 +1,5 @@
 // One conversation: history bubbles with the node's honest delivery ladder
-// (`queued` → `sent` → `delivered`, plus the mesh "held" verdict as a
+// (`queued` → `sent` → `delivered` or 30-day failure, plus the mesh "held" verdict as a
 // notice), a composer, and doors to verification and the hint editor.
 
 import KommsCore
@@ -338,6 +338,7 @@ private struct MessageBubble: View {
         case .sent: return "sent"
         case .delivered: return "delivered"
         case .received: return ""
+        case .failed: return "delivery failed after 30 days"
         }
     }
 

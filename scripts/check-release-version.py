@@ -68,6 +68,20 @@ def main() -> None:
             "CFBundleShortVersionString",
         ),
     }
+    cargo_manifests = sorted((ROOT / "crates").glob("*/Cargo.toml")) + [
+        ROOT / "apps/desktop/src-tauri/Cargo.toml"
+    ]
+    for manifest in cargo_manifests:
+        source = manifest.read_text(encoding="utf-8")
+        for match in re.finditer(
+            r'(?m)^([a-z0-9_-]+)\s*=\s*\{[^}\n]*version\s*=\s*"([^"]+)"'
+            r'[^}\n]*path\s*=\s*"[^"]+"[^}\n]*\}',
+            source,
+        ):
+            dependency, version = match.groups()
+            if dependency.startswith("kult-"):
+                relative = manifest.relative_to(ROOT)
+                versions[f"{relative} dependency {dependency}"] = version
 
     mismatches = [
         f"{label} is {actual!r}, expected {expected!r}"
@@ -86,10 +100,24 @@ def main() -> None:
     )
     if version_code < 1:
         fail("Android versionCode must be positive")
+    ios_build = int(
+        regex_value(
+            ROOT / "apps/ios/KommsApp/project.yml",
+            r'^\s*CFBundleVersion:\s*"([0-9]+)"',
+            "CFBundleVersion",
+        )
+    )
+    if ios_build < 1:
+        fail("iOS CFBundleVersion must be positive")
+    if ios_build != version_code:
+        fail(
+            f"Android versionCode {version_code} and iOS CFBundleVersion "
+            f"{ios_build} must advance together"
+        )
 
     print(
         f"release version {expected} is aligned across all application surfaces "
-        f"(Android versionCode {version_code})"
+        f"and internal crates (Android/iOS build {version_code})"
     )
 
 

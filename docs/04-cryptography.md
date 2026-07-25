@@ -272,10 +272,11 @@ passphrase/biometric-unlocked keystore
 ## 9. Fingerprints & verification
 
 Safety number = SHA-256 iterated 5 200× over (version ‖ IK_min ‖ IK_max), identity keys
-sorted bytewise so both parties compute the identical value. The 60 decimal digits
-(12 groups of 5) are taken from HKDF-SHA-256(digest, info = `"KK-fingerprint"`) expanded
-to 48 bytes, read as 12 big-endian u32 words each reduced mod 100 000; the raw 32-byte
-digest is the QR comparison value. Rationale and UX:
+sorted bytewise so both parties compute the identical value. The 30 decimal digits
+(6 groups of 5, about 100 bits) are taken from the first 24 bytes of
+HKDF-SHA-256(digest, info = `"KK-fingerprint"`) expanded to 48 bytes, read as 6
+big-endian u32 words each reduced mod 100 000; the full raw 32-byte digest is the QR
+comparison value. Rationale and UX:
 [06: Identity & Trust](06-identity-trust.md).
 
 ## 10. Explicit exclusions

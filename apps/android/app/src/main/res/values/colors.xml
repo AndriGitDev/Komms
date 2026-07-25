@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="primary">#F2B705</color>
-    <color name="primary_dark">#C89200</color>
+    <color name="background">#FAFAFA</color>
+    <color name="primary">#B83431</color>
+    <color name="primary_dark">#8F2826</color>
     <color name="accent">#B83431</color>
+    <color name="on_accent">#FFFFFF</color>
     <color name="ok">#28734B</color>
     <color name="danger">#B83431</color>
     <color name="warning">#805900</color>
@@ -11,12 +13,13 @@
     <color name="bubble_out">#FBE4E2</color>
     <color name="bubble_in">#FFFFFF</color>
     <color name="surface">#FFFFFF</color>
-    <color name="surface_raised">#FAFAFA</color>
+    <color name="surface_raised">#FFF8DC</color>
     <color name="text_primary">#1A1A1A</color>
     <color name="text_secondary">#6B6B6B</color>
     <color name="line">#E4E1D8</color>
     <color name="brand">#F2B705</color>
     <color name="deep">#0F2633</color>
-    <color name="toolbar_on_primary">#0F2633</color>
+    <color name="toolbar_background">#0F2633</color>
+    <color name="toolbar_on_primary">#FAFAFA</color>
     <color name="ic_launcher_background">#F2B705</color>
 </resources>

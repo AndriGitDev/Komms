@@ -1087,9 +1087,10 @@ private class GroupMessagesAdapter(
         val row = holder.itemView as LinearLayout
         val context = holder.itemView.context
         row.gravity = if (outbound) Gravity.END else Gravity.START
-        holder.itemView.findViewById<LinearLayout>(R.id.group_message_bubble).setBackgroundColor(
-            context.getColor(if (outbound) R.color.bubble_out else R.color.bubble_in),
-        )
+        holder.itemView.findViewById<LinearLayout>(R.id.group_message_bubble).backgroundTintList =
+            android.content.res.ColorStateList.valueOf(
+                context.getColor(if (outbound) R.color.bubble_out else R.color.bubble_in),
+            )
         holder.itemView.findViewById<TextView>(R.id.group_message_sender).apply {
             visibility = if (outbound) View.GONE else View.VISIBLE
             text = memberName(message.sender)
@@ -1149,6 +1150,7 @@ private class GroupMessagesAdapter(
             DeliveryState.SENT -> context.getString(R.string.state_sent)
             DeliveryState.DELIVERED -> context.getString(R.string.state_delivered)
             DeliveryState.RECEIVED -> context.getString(R.string.state_received)
+            DeliveryState.FAILED -> context.getString(R.string.state_failed)
         }
 }
 

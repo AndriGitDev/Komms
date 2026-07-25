@@ -35,7 +35,9 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::time::Instant;
 
+use futures::future::{select, Either};
 use rand_core::CryptoRngCore;
 use subtle::ConstantTimeEq;
 
@@ -139,6 +141,7 @@ pub type Result<T> = std::result::Result<T, NodeError>;
 /// protocol; also used by the M2 acceptance tests).
 const HS_AD: &[u8] = b"KK-handshake-v1";
 const DEVICE_INITIAL_MAGIC: &[u8; 4] = b"KDI1";
+const ACCOUNT_INITIAL_MAGIC: &[u8; 4] = b"KAI1";
 
 /// Prekey bundles expire after 30 days (docs/06-identity-trust.md).
 const BUNDLE_TTL_SECS: u64 = 30 * 86_400;
@@ -163,6 +166,27 @@ fn decode_device_initial(bytes: &[u8]) -> Option<DeviceInitialFlight> {
     remainder.is_empty().then_some(flight)
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AccountInitialFlight {
+    initial: Vec<u8>,
+    return_bundle: Vec<u8>,
+}
+
+fn encode_account_initial(flight: &AccountInitialFlight) -> Result<Vec<u8>> {
+    let body = postcard::to_allocvec(flight).map_err(|_| NodeError::CorruptState)?;
+    let mut out = Vec::with_capacity(ACCOUNT_INITIAL_MAGIC.len() + body.len());
+    out.extend_from_slice(ACCOUNT_INITIAL_MAGIC);
+    out.extend_from_slice(&body);
+    Ok(out)
+}
+
+fn decode_account_initial(bytes: &[u8]) -> Option<AccountInitialFlight> {
+    let body = bytes.strip_prefix(ACCOUNT_INITIAL_MAGIC)?;
+    let (flight, remainder): (AccountInitialFlight, &[u8]) =
+        postcard::take_from_bytes(body).ok()?;
+    remainder.is_empty().then_some(flight)
+}
+
 /// How many past daily epochs of delivery tokens the receiver recognizes.
 /// Sneakernet latency is human-scale; a courier bundle a month old must
 /// still route (docs/05-transports.md §5).
@@ -183,6 +207,18 @@ const PENDING_TTL_SECS: u64 = 30 * 86_400;
 /// Retry backoff: base delay, doubling per attempt, capped.
 const RETRY_BASE_SECS: u64 = 30;
 const RETRY_CAP_SECS: u64 = 3_600;
+/// After several foreground attempts, an unreachable delivery moves to a
+/// low-frequency lane so old work cannot make the unlocked app feel stuck.
+const PASSIVE_AFTER_ATTEMPTS: u32 = 3;
+const PASSIVE_RETRY_MIN_SECS: u64 = 15 * 60;
+/// Ordinary outbound messages stop consuming queue and network resources
+/// after this durable end-to-end delivery window.
+const DELIVERY_EXPIRY_SECS: u64 = 30 * 86_400;
+const DELIVERY_SWEEP_INTERVAL_SECS: u64 = 3_600;
+/// One heartbeat must return to the receive inbox promptly even when an old
+/// direct route, attachment, or discovery lookup is stalled. Transport work
+/// is idempotent and remains durably queued, so yielding is always safe.
+const FLUSH_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// After this many failed delivery attempts for an item, its peer's stored
 /// hints are treated as possibly stale and the discovery planes are
@@ -259,11 +295,6 @@ const TRANSIT_MESH_PER_TICK: usize = 4;
 /// Missing fragment indices per in-flight message id — the NACK half of a
 /// receipt (the shape of [`ReceiptPayload::nacks`]).
 type FragNacks = Vec<([u8; 4], Vec<u16>)>;
-
-struct Backoff {
-    attempts: u32,
-    next_ok: u64,
-}
 
 /// Receiver-side bookkeeping for one in-flight partial message: enough to
 /// address the NACK requesting its missing fragments (via the delivery
@@ -383,6 +414,8 @@ pub struct Node {
     pending_device_link_source: Option<PendingDeviceLinkSource>,
     pending_device_link_target: Option<PendingDeviceLinkTarget>,
     vault: PrekeyVault,
+    /// Current signed return routes included in anonymous first flights.
+    own_hints: Vec<DeliveryHint>,
     transports: Vec<Arc<dyn Transport>>,
     discoveries: Vec<Arc<dyn Discovery>>,
     sessions: HashMap<[u8; 32], kult_crypto::Session>,
@@ -394,12 +427,12 @@ pub struct Node {
     calls: HashMap<[u8; 16], calls::ActiveCall>,
     call_queue_deadlines: HashMap<i64, u64>,
     reassembler: Reassembler,
-    backoff: HashMap<i64, Backoff>,
     /// Per-account floor on the next allowed stale-hint discovery re-lookup.
     hint_refresh: HashMap<[u8; 32], u64>,
     frag_meta: HashMap<[u8; 4], PartialMeta>,
     frag_cache: HashMap<[u8; 4], SentFragments>,
     held_notified: HashSet<i64>,
+    next_delivery_sweep: u64,
     bridge: Option<Bridge>,
     events: VecDeque<Event>,
 }
@@ -510,6 +543,7 @@ impl Node {
             pending_device_link_source: None,
             pending_device_link_target: None,
             vault,
+            own_hints: Vec::new(),
             transports: Vec::new(),
             discoveries: Vec::new(),
             sessions,
@@ -521,11 +555,11 @@ impl Node {
             calls: HashMap::new(),
             call_queue_deadlines: HashMap::new(),
             reassembler: Reassembler::new(),
-            backoff: HashMap::new(),
             hint_refresh: HashMap::new(),
             frag_meta: HashMap::new(),
             frag_cache: HashMap::new(),
             held_notified: HashSet::new(),
+            next_delivery_sweep: 0,
             bridge: None,
             events: VecDeque::new(),
         })
@@ -604,6 +638,22 @@ impl Node {
     /// dictation). Each call mints a new one-time prekey, so hand each
     /// prospective contact their own bundle.
     pub fn handshake_bundle(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<Vec<u8>> {
+        self.handshake_bundle_with_hints(&[], now, rng)
+    }
+
+    /// Export a fresh signed prekey bundle carrying this node's current
+    /// delivery routes.
+    ///
+    /// QR pairing must be sufficient to send the first message even without
+    /// an internet DHT bootstrap. mDNS discovers libp2p peers, but Komms
+    /// identities are intentionally separate from libp2p peer ids; these
+    /// signed hints bind the two without weakening that separation.
+    pub fn handshake_bundle_with_hints(
+        &mut self,
+        hints: &[DeliveryHint],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Vec<u8>> {
         let opk = self.vault.fresh_opk(rng);
         self.store.put_prekeys(&self.vault.encode(), rng)?;
         let linked = self.device_state.manifest.devices.len() > 1;
@@ -618,18 +668,20 @@ impl Node {
             &self.vault.pqspk()?,
             Some(&opk),
             now + BUNDLE_TTL_SECS,
-            vec![],
+            encode_hints(hints),
         );
-        if linked {
-            Ok(DevicePrekeyBundle::new(
+        let encoded = if linked {
+            DevicePrekeyBundle::new(
                 self.device_state.local_certificate.clone(),
                 self.device_state.manifest.clone(),
                 bundle,
             )?
-            .encode()?)
+            .encode()?
         } else {
-            Ok(bundle.encode())
-        }
+            bundle.encode()
+        };
+        self.own_hints = hints.to_vec();
+        Ok(encoded)
     }
 
     // ---- discovery (DHT prekey records, docs/05-transports.md §2) -----------
@@ -784,10 +836,11 @@ impl Node {
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 32]> {
         let name = contact_names::normalize_contact_name(name)?;
-        let (peer, identity, stored_bundle, endpoint, manifest) =
+        let (peer, identity, stored_bundle, mut endpoint, manifest, advertised_hints) =
             if DevicePrekeyBundle::is_encoded(bundle_bytes) {
                 let device_bundle = DevicePrekeyBundle::decode(bundle_bytes)?;
                 device_bundle.verify(now)?;
+                let advertised_hints = decode_hints(&device_bundle.prekey.relay_hints);
                 let peer = device_bundle.manifest.account.ed;
                 let identity = postcard::to_allocvec(&device_bundle.manifest.account)
                     .map_err(|_| NodeError::CorruptState)?;
@@ -803,7 +856,7 @@ impl Node {
                     certificate: postcard::to_allocvec(&device_bundle.certificate)
                         .map_err(|_| NodeError::CorruptState)?,
                     bundle: device_bundle.prekey.encode(),
-                    hints: encode_hints(hints),
+                    hints: Vec::new(),
                     manifest_generation: device_bundle.manifest.generation,
                     manifest_state_id: device_bundle.manifest.state_id(),
                     last_seen: now,
@@ -816,9 +869,11 @@ impl Node {
                     Vec::new(),
                     endpoint,
                     Some(device_bundle.manifest),
+                    advertised_hints,
                 )
             } else {
                 let verified = PrekeyBundle::decode(bundle_bytes)?.verify(now)?;
+                let advertised_hints = decode_hints(&verified.bundle().relay_hints);
                 let peer = verified.bundle().identity.ed;
                 let identity = postcard::to_allocvec(&verified.bundle().identity)
                     .map_err(|_| NodeError::CorruptState)?;
@@ -828,15 +883,38 @@ impl Node {
                     name: None,
                     certificate: Vec::new(),
                     bundle: bundle_bytes.to_vec(),
-                    hints: encode_hints(hints),
+                    hints: Vec::new(),
                     manifest_generation: 0,
                     manifest_state_id: [0u8; 32],
                     last_seen: now,
                     revoked_at: None,
                     revoked_after_counter: None,
                 };
-                (peer, identity, bundle_bytes.to_vec(), endpoint, None)
+                (
+                    peer,
+                    identity,
+                    bundle_bytes.to_vec(),
+                    endpoint,
+                    None,
+                    advertised_hints,
+                )
             };
+        // Explicit user-supplied routes take priority, while authenticated
+        // routes carried by the bundle make QR pairing sufficient on a LAN.
+        let mut effective_hints = hints.to_vec();
+        for advertised in advertised_hints {
+            if !effective_hints.contains(&advertised) {
+                effective_hints.push(advertised);
+            }
+        }
+        endpoint.hints = encode_hints(&effective_hints);
+        let endpoint_bundle_changed = self
+            .store
+            .contact_devices()?
+            .into_iter()
+            .find(|stored| stored.device == endpoint.device)
+            .is_some_and(|stored| stored.bundle != endpoint.bundle);
+        let endpoint_device = endpoint.device;
         if let Some(manifest) = manifest.as_ref() {
             // A rollback/fork-losing manifest must not mutate even the
             // account-level petname, verification bit, or delivery hints.
@@ -848,7 +926,7 @@ impl Node {
                 identity,
                 name,
                 bundle: stored_bundle,
-                hints: encode_hints(hints),
+                hints: encode_hints(&effective_hints),
                 verified: false,
             },
             rng,
@@ -865,7 +943,82 @@ impl Node {
         } else {
             self.store.put_contact_device(&endpoint, rng)?;
         }
+        if endpoint_bundle_changed {
+            self.reset_unconfirmed_session(&peer, &endpoint_device, rng)?;
+        }
         Ok(peer)
+    }
+
+    /// A newly scanned bundle for an existing endpoint is an explicit repair
+    /// opportunity. If messages are still awaiting a receipt, their current
+    /// ratchet may have been created from an older one-time prekey bundle that
+    /// the recipient never accepted. Drop only that unconfirmed session and
+    /// make its pending deliveries eligible for fresh first-flight encryption
+    /// on the next tick. Delivered history and other linked devices are left
+    /// untouched.
+    fn reset_unconfirmed_session(
+        &mut self,
+        account: &[u8; 32],
+        device: &[u8; 32],
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let mut affected = HashSet::new();
+        for mut message in self.store.messages_with(account)? {
+            if message.direction != Direction::Outbound
+                || matches!(
+                    message.state,
+                    DeliveryState::Delivered | DeliveryState::Failed
+                )
+            {
+                continue;
+            }
+            let mut deliveries = self.store.message_device_deliveries(&message.id)?;
+            let mut reset = false;
+            for delivery in &mut deliveries {
+                if delivery.device == *device && delivery.state != DeliveryState::Delivered {
+                    delivery.state = DeliveryState::Queued;
+                    delivery.wire_id = None;
+                    self.store.put_message_device_delivery(delivery, rng)?;
+                    reset = true;
+                }
+            }
+            if !reset {
+                continue;
+            }
+            affected.insert(message.id);
+            message.state = if deliveries
+                .iter()
+                .any(|delivery| delivery.state == DeliveryState::Delivered)
+            {
+                DeliveryState::Delivered
+            } else if deliveries
+                .iter()
+                .any(|delivery| delivery.state == DeliveryState::Sent)
+            {
+                DeliveryState::Sent
+            } else {
+                DeliveryState::Queued
+            };
+            message.wire_id = deliveries.iter().find_map(|delivery| delivery.wire_id);
+            self.store.update_message(&message, rng)?;
+            self.events.push_back(Event::DeliveryUpdated {
+                id: message.id,
+                state: message.state,
+            });
+        }
+        if affected.is_empty() {
+            return Ok(());
+        }
+
+        self.sessions.remove(device);
+        self.store.delete_session(device)?;
+        self.store.delete_capabilities(device)?;
+        for (sequence, item) in self.store.queue_all()? {
+            if item.peer == *device && item.msg_id.is_some_and(|id| affected.contains(&id)) {
+                self.store.queue_ack(sequence)?;
+            }
+        }
+        Ok(())
     }
 
     /// Validate and assess one proposed private local petname without mutation.
@@ -980,7 +1133,23 @@ impl Node {
 
     /// Number of envelopes waiting in the outbound queue.
     pub fn queued(&self) -> Result<usize> {
-        Ok(self.store.queue_all()?.len())
+        let mut queued = 0usize;
+        for (_, item) in self.store.queue_all()? {
+            let message = item.msg_id.or(item.group_msg_id);
+            let Some(message) = message else {
+                queued += 1;
+                continue;
+            };
+            let deliveries = self.store.message_device_deliveries(&message)?;
+            if deliveries.is_empty()
+                || deliveries.iter().any(|delivery| {
+                    delivery.device == item.peer && delivery.state == DeliveryState::Queued
+                })
+            {
+                queued += 1;
+            }
+        }
+        Ok(queued)
     }
 
     /// Messages waiting for an absolute UTC activation instant.
@@ -1376,7 +1545,10 @@ impl Node {
                     peer: route,
                     msg_id: Some(id),
                     group_msg_id: None,
-                    class: QueueClass::Normal,
+                    class: QueueClass::Interactive,
+                    created_at: now,
+                    attempts: 0,
+                    next_attempt_at: now,
                     envelope,
                 },
                 rng,
@@ -1567,6 +1739,10 @@ impl Node {
         // attachment request, or transport flush. A restart and a clock jump
         // therefore cannot revive or transmit already-expired plaintext.
         self.sweep_ephemeral(now, rng)?;
+        if now >= self.next_delivery_sweep {
+            self.sweep_failed_deliveries(now, rng)?;
+            self.next_delivery_sweep = now.saturating_add(DELIVERY_SWEEP_INTERVAL_SECS);
+        }
         self.sweep_calls(now)?;
         // 0. Session-reset markers (a restore happened): queue fresh
         //    handshakes so re-keyed traffic flows without waiting for the
@@ -1672,6 +1848,9 @@ impl Node {
         //    receipts, and NACK the missing fragment indices of stale
         //    partials (selective retransmission, docs/05-transports.md §4.2
         //    rule 2) — batched per peer, acks and nacks in one envelope.
+        for (peer, content_id) in &acks {
+            self.store.put_receipt_replay(content_id, peer, now, rng)?;
+        }
         let mut acks_by_peer: BTreeMap<[u8; 32], Vec<[u8; 16]>> = BTreeMap::new();
         for (peer, content_id) in acks {
             acks_by_peer.entry(peer).or_default().push(content_id);
@@ -1709,6 +1888,103 @@ impl Node {
         self.flush_transit(now).await;
 
         Ok(self.drain_events())
+    }
+
+    /// Retire outbound work that has gone a full month without an encrypted
+    /// end-to-end receipt. History is retained with an explicit terminal
+    /// state, while sealed envelopes and per-device copies stop consuming
+    /// queue, discovery, and transport resources.
+    fn sweep_failed_deliveries(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<()> {
+        let cutoff = now.saturating_sub(DELIVERY_EXPIRY_SECS);
+        self.store.sweep_receipt_replay(cutoff)?;
+
+        for contact in self.store.contacts()? {
+            for mut message in self.store.messages_with(&contact.peer)? {
+                if message.direction != Direction::Outbound || message.timestamp > cutoff {
+                    continue;
+                }
+                let mut deliveries = self.store.message_device_deliveries(&message.id)?;
+                let delivered = deliveries
+                    .iter()
+                    .any(|delivery| delivery.state == DeliveryState::Delivered);
+                for delivery in &mut deliveries {
+                    if !matches!(
+                        delivery.state,
+                        DeliveryState::Delivered | DeliveryState::Failed
+                    ) {
+                        delivery.state = DeliveryState::Failed;
+                        self.store.put_message_device_delivery(delivery, rng)?;
+                    }
+                }
+                self.store.queue_remove_message(&message.id)?;
+                if !delivered
+                    && !matches!(
+                        message.state,
+                        DeliveryState::Delivered | DeliveryState::Failed
+                    )
+                {
+                    message.state = DeliveryState::Failed;
+                    self.store.update_message(&message, rng)?;
+                    self.events.push_back(Event::DeliveryUpdated {
+                        id: message.id,
+                        state: DeliveryState::Failed,
+                    });
+                }
+            }
+        }
+
+        for mut message in self.store.all_group_messages()? {
+            if message.direction != Direction::Outbound || message.timestamp > cutoff {
+                continue;
+            }
+            let mut changed = false;
+            for delivery in &mut message.deliveries {
+                if !matches!(
+                    delivery.state,
+                    DeliveryState::Delivered | DeliveryState::Failed
+                ) {
+                    delivery.state = DeliveryState::Failed;
+                    changed = true;
+                    self.events.push_back(Event::GroupDeliveryUpdated {
+                        id: message.id,
+                        peer: delivery.peer,
+                        state: DeliveryState::Failed,
+                    });
+                }
+            }
+            for mut delivery in self.store.message_device_deliveries(&message.id)? {
+                if !matches!(
+                    delivery.state,
+                    DeliveryState::Delivered | DeliveryState::Failed
+                ) {
+                    delivery.state = DeliveryState::Failed;
+                    self.store.put_message_device_delivery(&delivery, rng)?;
+                }
+            }
+            self.store.queue_remove_group_message(&message.id)?;
+            if changed {
+                message.wire_body = None;
+                self.store.update_group_message(&message, rng)?;
+            }
+        }
+
+        // Maintenance/control rows do not have a user-visible message record.
+        // They still receive the same bounded resource lifetime when their
+        // modern queue row carries a creation time. Legacy rows keep their
+        // prior behavior because assigning them a fabricated age could drop
+        // valid work immediately after an upgrade.
+        for (sequence, item) in self.store.queue_all()? {
+            if item.msg_id.is_none()
+                && item.group_msg_id.is_none()
+                && item.created_at != 0
+                && item.created_at <= cutoff
+            {
+                self.store.queue_ack(sequence)?;
+                self.held_notified.remove(&sequence);
+                self.call_queue_deadlines.remove(&sequence);
+            }
+        }
+        Ok(())
     }
 
     /// Establish a fresh outbound session from a contact's stored prekey
@@ -1760,7 +2036,18 @@ impl Node {
                 return_bundle,
             })?
         } else {
-            init.encode()
+            let return_bundle = PrekeyBundle::build(
+                &self.identity,
+                &self.vault.spk(),
+                &self.vault.pqspk()?,
+                None,
+                now + BUNDLE_TTL_SECS,
+                encode_hints(&self.own_hints),
+            );
+            encode_account_initial(&AccountInitialFlight {
+                initial: init.encode(),
+                return_bundle: return_bundle.encode(),
+            })?
         };
         let sealed = seal_anonymous(&bundle.bundle().identity, HS_AD, &initial_bytes, rng);
         self.store.delete_capabilities(device)?;
@@ -1967,6 +2254,9 @@ impl Node {
                         msg_id: None,
                         group_msg_id: None,
                         class: QueueClass::Normal,
+                        created_at: now,
+                        attempts: 0,
+                        next_attempt_at: now,
                         envelope,
                     },
                     rng,
@@ -2069,7 +2359,7 @@ impl Node {
                     ) {
                         QueueClass::Bulk
                     } else {
-                        QueueClass::Normal
+                        QueueClass::Interactive
                     };
                     self.store.queue_push(
                         &QueueItem {
@@ -2077,6 +2367,9 @@ impl Node {
                             msg_id: Some(message.id),
                             group_msg_id: None,
                             class,
+                            created_at: message.timestamp,
+                            attempts: 0,
+                            next_attempt_at: now,
                             envelope,
                         },
                         rng,
@@ -2109,7 +2402,11 @@ impl Node {
         established: &mut bool,
     ) -> Result<Consumed> {
         // Multipath duplicates of anything already consumed are dropped here.
-        if self.store.is_seen(&env.content_id())? {
+        let content_id = env.content_id();
+        if self.store.is_seen(&content_id)? {
+            if let Some(peer) = self.store.receipt_replay_peer(&content_id)? {
+                acks.push((peer, content_id));
+            }
             return Ok(Consumed::Done);
         }
         match env.kind {
@@ -2179,24 +2476,35 @@ impl Node {
             } else {
                 return done(self);
             };
-        let (raw_initial, sender_bundle) = if let Some(flight) = decode_device_initial(&init_bytes)
-        {
-            let Ok(bundle) = DevicePrekeyBundle::decode(&flight.return_bundle) else {
-                return done(self);
+        let (raw_initial, sender_bundle, sender_account_bundle) =
+            if let Some(flight) = decode_device_initial(&init_bytes) {
+                let Ok(bundle) = DevicePrekeyBundle::decode(&flight.return_bundle) else {
+                    return done(self);
+                };
+                if bundle.verify(now).is_err() {
+                    return done(self);
+                }
+                (flight.initial, Some(bundle), None)
+            } else if let Some(flight) = decode_account_initial(&init_bytes) {
+                let Ok(bundle) = PrekeyBundle::decode(&flight.return_bundle) else {
+                    return done(self);
+                };
+                if bundle.verify(now).is_err() {
+                    return done(self);
+                }
+                (flight.initial, None, Some(bundle))
+            } else {
+                (init_bytes, None, None)
             };
-            if bundle.verify(now).is_err() {
-                return done(self);
-            }
-            (flight.initial, Some(bundle))
-        } else {
-            (init_bytes, None)
-        };
         let Ok(init) = InitialMessage::decode(&raw_initial) else {
             return done(self);
         };
         if sender_bundle
             .as_ref()
             .is_some_and(|bundle| bundle.prekey.identity != init.initiator)
+            || sender_account_bundle
+                .as_ref()
+                .is_some_and(|bundle| bundle.identity != init.initiator)
         {
             return done(self);
         }
@@ -2228,16 +2536,29 @@ impl Node {
             || (peer_device, init.initiator.clone()),
             |bundle| (bundle.manifest.account.ed, bundle.manifest.account.clone()),
         );
-        if self.store.get_contact(&peer)?.is_none() {
-            let identity =
-                postcard::to_allocvec(&account_identity).map_err(|_| NodeError::CorruptState)?;
+        let identity =
+            postcard::to_allocvec(&account_identity).map_err(|_| NodeError::CorruptState)?;
+        let account_return_bundle = sender_account_bundle
+            .as_ref()
+            .map_or_else(Vec::new, PrekeyBundle::encode);
+        let account_return_hints = sender_account_bundle
+            .as_ref()
+            .map_or_else(Vec::new, |bundle| bundle.relay_hints.clone());
+        if let Some(mut contact) = self.store.get_contact(&peer)? {
+            if sender_account_bundle.is_some() {
+                contact.identity = identity;
+                contact.bundle.clone_from(&account_return_bundle);
+                contact.hints.clone_from(&account_return_hints);
+                self.store.put_contact(&contact, rng)?;
+            }
+        } else {
             self.store.put_contact(
                 &ContactRecord {
                     peer,
                     identity,
                     name: String::new(),
-                    bundle: Vec::new(),
-                    hints: Vec::new(),
+                    bundle: account_return_bundle.clone(),
+                    hints: account_return_hints.clone(),
                     verified: false,
                 },
                 rng,
@@ -2265,6 +2586,20 @@ impl Node {
                 hints: bundle.prekey.relay_hints.clone(),
                 manifest_generation: bundle.manifest.generation,
                 manifest_state_id: bundle.manifest.state_id(),
+                last_seen: now,
+                revoked_at: None,
+                revoked_after_counter: None,
+            }
+        } else if sender_account_bundle.is_some() {
+            ContactDeviceRecord {
+                account: peer,
+                device: peer_device,
+                name: None,
+                certificate: Vec::new(),
+                bundle: account_return_bundle,
+                hints: account_return_hints,
+                manifest_generation: 0,
+                manifest_state_id: [0u8; 32],
                 last_seen: now,
                 revoked_at: None,
                 revoked_after_counter: None,
@@ -2780,6 +3115,9 @@ impl Node {
                 msg_id: None,
                 group_msg_id: None,
                 class: QueueClass::Normal,
+                created_at: now,
+                attempts: 0,
+                next_attempt_at: now,
                 envelope: Envelope::new(EnvelopeKind::Receipt, token, msg.encode()),
             },
             rng,
@@ -2796,6 +3134,19 @@ impl Node {
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
         let peer = self.account_for_device(peer_device)?;
+        for ack in &receipt.acks {
+            self.store.queue_remove_envelope(ack)?;
+        }
+        let live_sequences = self
+            .store
+            .queue_all()?
+            .into_iter()
+            .map(|(sequence, _)| sequence)
+            .collect::<HashSet<_>>();
+        self.held_notified
+            .retain(|sequence| live_sequences.contains(sequence));
+        self.call_queue_deadlines
+            .retain(|sequence, _| live_sequences.contains(sequence));
         // Selective retransmission (docs/05-transports.md §4.2 rule 2):
         // re-queue exactly the missing fragment indices, never the whole
         // message — and only if the NACK comes from the peer the fragments
@@ -2829,6 +3180,9 @@ impl Node {
                         msg_id: None,
                         group_msg_id: None,
                         class: QueueClass::Normal,
+                        created_at: now,
+                        attempts: 0,
+                        next_attempt_at: now,
                         envelope,
                     },
                     rng,
@@ -2975,6 +3329,9 @@ impl Node {
                 msg_id: None,
                 group_msg_id: None,
                 class: QueueClass::Normal,
+                created_at: now,
+                attempts: 0,
+                next_attempt_at: now,
                 envelope: Envelope::new(EnvelopeKind::Receipt, token, msg.encode()),
             },
             rng,
@@ -2986,12 +3343,16 @@ impl Node {
 
     async fn flush(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<()> {
         let transports = self.transports.clone();
+        let deadline = Instant::now() + FLUSH_BUDGET;
         // Priority classes (docs/05-transports.md §4.2 rule 3): when a
         // scarce link finally opens, text goes first, then receipts, then
         // handshakes — FIFO within each class.
         let mut queue = self.store.queue_all()?;
-        queue.sort_by_key(|(seq, item)| (flush_class(item.envelope.kind), *seq));
-        for (seq, item) in queue {
+        queue.sort_by_key(|(seq, item)| (queue_lane(item), flush_class(item.envelope.kind), *seq));
+        for (seq, mut item) in queue {
+            if Instant::now() >= deadline {
+                break;
+            }
             if item.class == QueueClass::Realtime
                 && self
                     .call_queue_deadlines
@@ -3000,7 +3361,6 @@ impl Node {
             {
                 self.store.queue_ack(seq)?;
                 self.call_queue_deadlines.remove(&seq);
-                self.backoff.remove(&seq);
                 continue;
             }
             if item
@@ -3009,22 +3369,27 @@ impl Node {
                 .is_some_and(|deadline| deadline <= now)
             {
                 self.store.queue_ack(seq)?;
-                self.backoff.remove(&seq);
                 self.held_notified.remove(&seq);
                 continue;
             }
-            if let Some(b) = self.backoff.get(&seq) {
-                if now < b.next_ok {
-                    continue;
-                }
+            if now < item.next_attempt_at {
+                continue;
             }
             // A route that keeps failing is a stale-hint suspect: re-consult
             // the discovery planes for the peer's current address.
-            let refresh = self
-                .backoff
-                .get(&seq)
-                .is_some_and(|b| b.attempts >= HINT_REFRESH_MIN_ATTEMPTS);
-            let hints = self.resolve_hints(&item.peer, now, refresh, rng).await?;
+            let refresh = item.attempts >= HINT_REFRESH_MIN_ATTEMPTS;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let hints =
+                match before_timeout(remaining, self.resolve_hints(&item.peer, now, refresh, rng))
+                    .await
+                {
+                    Some(result) => result?,
+                    None => {
+                        schedule_passive_retry(&mut item, now);
+                        self.store.queue_update(seq, &item, rng)?;
+                        break;
+                    }
+                };
             let oversize = item.envelope.encode().len() > AIRTIME_CEILING_BYTES;
             let mut held_for_airtime = false;
 
@@ -3075,7 +3440,19 @@ impl Node {
 
             let mut sent = false;
             for (_, transport, hint) in &candidates {
-                if let Ok(fragments) = send_via(transport.as_ref(), hint, &item.envelope).await {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                let Some(result) = before_timeout(
+                    remaining,
+                    send_via(transport.as_ref(), hint, &item.envelope),
+                )
+                .await
+                else {
+                    break;
+                };
+                if let Ok(fragments) = result {
                     if let Some(bodies) = fragments {
                         self.remember_fragments(
                             item.peer,
@@ -3091,10 +3468,6 @@ impl Node {
             }
 
             if sent {
-                self.store.queue_ack(seq)?;
-                self.backoff.remove(&seq);
-                self.held_notified.remove(&seq);
-                self.call_queue_deadlines.remove(&seq);
                 if let Some(msg_id) = item.msg_id {
                     let account = self.account_for_device(&item.peer)?;
                     self.mark_sent(&account, &item.peer, &msg_id, rng)?;
@@ -3102,6 +3475,19 @@ impl Node {
                 if let Some(group_msg_id) = item.group_msg_id {
                     let account = self.account_for_device(&item.peer)?;
                     self.group_mark_sent(&account, &item.peer, &group_msg_id, rng)?;
+                }
+                if item.msg_id.is_some() || item.group_msg_id.is_some() {
+                    // A transport handoff is only `Sent`, not end-to-end
+                    // delivery. Retain the exact sealed envelope and retry it
+                    // passively until its encrypted receipt arrives.
+                    schedule_after_handoff(&mut item, now);
+                    self.store.queue_update(seq, &item, rng)?;
+                } else {
+                    // Receipts, capability controls, fragments, and realtime
+                    // controls are terminal at transport handoff.
+                    self.store.queue_ack(seq)?;
+                    self.held_notified.remove(&seq);
+                    self.call_queue_deadlines.remove(&seq);
                 }
             } else if candidates.is_empty() && held_for_airtime {
                 // Held, not failed: nothing was attempted, so no backoff —
@@ -3115,13 +3501,8 @@ impl Node {
                     }
                 }
             } else {
-                let entry = self.backoff.entry(seq).or_insert(Backoff {
-                    attempts: 0,
-                    next_ok: 0,
-                });
-                let delay = (RETRY_BASE_SECS << entry.attempts.min(7)).min(RETRY_CAP_SECS);
-                entry.attempts = entry.attempts.saturating_add(1);
-                entry.next_ok = now + delay;
+                schedule_passive_retry(&mut item, now);
+                self.store.queue_update(seq, &item, rng)?;
             }
         }
         Ok(())
@@ -3398,6 +3779,22 @@ impl Node {
     }
 }
 
+/// Poll one transport operation only until this heartbeat's remaining
+/// budget expires. Dropping the waiter is safe: envelopes are content-id
+/// deduplicated and remain in the durable queue until a completed send.
+async fn before_timeout<F: std::future::Future>(
+    duration: std::time::Duration,
+    future: F,
+) -> Option<F::Output> {
+    let delay = futures_timer::Delay::new(duration);
+    futures::pin_mut!(future);
+    futures::pin_mut!(delay);
+    match select(future, delay).await {
+        Either::Left((output, _)) => Some(output),
+        Either::Right(_) => None,
+    }
+}
+
 /// Hand one envelope to a transport, fragmenting if it exceeds the link MTU.
 /// Returns the fragment bodies when fragmentation happened, so the caller
 /// can retain them for selective retransmission.
@@ -3452,6 +3849,49 @@ fn flush_class(kind: EnvelopeKind) -> u8 {
         EnvelopeKind::Receipt | EnvelopeKind::GroupControl => 1,
         EnvelopeKind::Handshake => 2,
     }
+}
+
+/// Foreground calls and fresh user messages lead; maintenance follows; an
+/// interactive item that repeatedly failed is demoted behind normal upkeep;
+/// attachment bulk remains last.
+fn queue_lane(item: &QueueItem) -> u8 {
+    match item.class {
+        QueueClass::Realtime => 0,
+        QueueClass::Interactive if item.attempts < PASSIVE_AFTER_ATTEMPTS => 1,
+        QueueClass::Normal => 2,
+        QueueClass::Interactive => 3,
+        QueueClass::Bulk => 4,
+    }
+}
+
+fn schedule_passive_retry(item: &mut QueueItem, now: u64) {
+    if item.created_at == 0 {
+        item.created_at = now;
+    }
+    item.attempts = item.attempts.saturating_add(1);
+    let delay = retry_delay(item.attempts);
+    item.next_attempt_at = now.saturating_add(delay);
+}
+
+fn schedule_after_handoff(item: &mut QueueItem, now: u64) {
+    if item.created_at == 0 {
+        item.created_at = now;
+    }
+    item.attempts = if item.attempts < PASSIVE_AFTER_ATTEMPTS {
+        PASSIVE_AFTER_ATTEMPTS
+    } else {
+        item.attempts.saturating_add(1)
+    };
+    item.next_attempt_at = now.saturating_add(retry_delay(item.attempts));
+}
+
+fn retry_delay(attempts: u32) -> u64 {
+    let exponent = attempts.saturating_sub(1).min(7);
+    let mut delay = (RETRY_BASE_SECS << exponent).min(RETRY_CAP_SECS);
+    if attempts >= PASSIVE_AFTER_ATTEMPTS {
+        delay = delay.max(PASSIVE_RETRY_MIN_SECS);
+    }
+    delay
 }
 
 fn scheduled_info(record: ScheduledMessageRecord) -> ScheduledMessageInfo {

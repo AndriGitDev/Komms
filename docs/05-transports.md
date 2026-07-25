@@ -41,6 +41,19 @@ The **transport scheduler** in `kult-node` ranks available transports per recipi
 (reachability, latency class, cost class) and may send duplicates across rungs:
 envelopes are idempotent and receivers deduplicate by message id.
 
+Foreground user work has its own durable lane. Calls and freshly submitted
+messages run before maintenance traffic and older retries. A delivery gets
+three short foreground attempts; if the peer remains unreachable, the sealed
+envelope moves to a passive cadence (at least 15 minutes, increasing to one
+hour) while the unlocked app continues serving new actions immediately.
+Transport handoff advances the visible state to `sent` but does not discard a
+message envelope: the exact ciphertext remains in the passive lane until its
+encrypted end-to-end receipt returns. Receivers remember the authenticated
+return route for accepted content ids, so an exact duplicate replays a lost
+receipt without duplicating message history. After 30 days without that
+receipt, the queue copy is removed and retained history becomes
+`delivery failed after 30 days`.
+
 ## 2. Internet transport: libp2p
 
 | Aspect | Choice |
@@ -166,9 +179,11 @@ Consequences, all normative:
 2. **Selective retransmission**: receiver NACKs missing fragment indices (in a receipt
    envelope) rather than the sender re-flooding whole messages: airtime is the scarcest
    resource in the system.
-3. **Priority classes**: text > receipts > prekey/handshake > media. Media over LoRa is
-   refused above 4 KiB with honest UI feedback ("will send when a faster link exists")
-   rather than silently hogging the mesh.
+3. **Priority classes**: realtime > fresh user messages > maintenance >
+   passive message retries > media. Within a lane, text > receipts >
+   prekey/handshake. Media over LoRa is refused above 4 KiB with honest UI
+   feedback ("will send when a faster link exists") rather than silently
+   hogging the mesh.
 4. **Addressing**: mesh delivery uses the current **delivery token** (§7 of the crypto
    spec) as the filter: radios/nodes flood within normal Meshtastic routing; Komms
    nodes pick up envelopes whose tokens they recognize. No identity appears on air.
@@ -197,9 +212,10 @@ The zero-RF, zero-network fallback and the simplest transport to implement:
 - Carried by USB stick, SD card, or any file channel; imported bundles feed the normal
   receive path (dedup makes double-import harmless). Bundles are also relay-able by
   people who can't read them: a courier learns only bundle size.
-- Animated QR sequences for small bundle transfer remain planned. Current QR
-  flows exchange pairing/prekey material; shipped message sneakernet uses `.kkb`
-  files.
+- Animated QR sequences for **message** bundle transfer remain planned.
+  Pairing already uses a bounded animated sequence because the ML-KEM-768
+  public key makes a complete post-quantum prekey bundle too dense for one
+  reliably scanned symbol; shipped message sneakernet uses `.kkb` files.
 
 ## 6. Transport comparison
 

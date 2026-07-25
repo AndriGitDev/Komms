@@ -1,6 +1,6 @@
 services:
   kultd:
-    image: ghcr.io/andrigitdev/komms-kultd:0.2-alpha
+    image: ghcr.io/andrigitdev/komms-kultd:0.3-alpha
     restart: unless-stopped
     read_only: true
     cap_drop:

@@ -26,7 +26,8 @@ import android.widget.RadioButton
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import komms.core.bundleQrText
+import komms.core.NetworkSettings
+import komms.core.bundleQrFrames
 import uniffi.kult_ffi.Contact
 import uniffi.kult_ffi.ContactNameAssessment
 import uniffi.kult_ffi.ContactNameWarning
@@ -74,6 +75,7 @@ class MainActivity : SecureActivity() {
     private var folderId: String? = null
     private var renderingLabelControls = false
     private var renderingFolderControls = false
+    private var networkSettings = NetworkSettings()
 
     private val tick = Handler(Looper.getMainLooper())
     private val refreshLoop = object : Runnable {
@@ -114,6 +116,9 @@ class MainActivity : SecureActivity() {
         setContentView(R.layout.activity_main)
         applyEdgeToEdgeInsets()
         setSupportActionBar(findViewById(R.id.main_toolbar))
+        networkSettings = runCatching {
+            NetworkSettings.load(KommsApp.dataDir(application))
+        }.getOrDefault(NetworkSettings())
         labelPreferences = LabelFilterPreferences(this)
         labelPreferences.load().also {
             selectedLabels = it.ids
@@ -156,6 +161,9 @@ class MainActivity : SecureActivity() {
                 Intent(this, NoteToSelfActivity::class.java)
                     .putExtra("conversation", conversation),
             )
+        }
+        findViewById<View>(R.id.main_empty_pair).setOnClickListener {
+            startActivity(Intent(this, AddContactActivity::class.java))
         }
 
         val list = findViewById<RecyclerView>(R.id.main_contacts)
@@ -220,11 +228,31 @@ class MainActivity : SecureActivity() {
                 NatVerdict.UNKNOWN -> getString(R.string.nat_unknown)
             }
             findViewById<TextView>(R.id.main_status).apply {
+                val queued = if (s.queued == 0uL) {
+                    ""
+                } else {
+                    getString(R.string.status_queued_suffix, s.queued.toLong())
+                }
                 text = getString(
-                    R.string.status_summary, nat, s.lanPeers.size, s.queued.toLong(),
+                    R.string.status_summary, nat, s.lanPeers.size, queued,
                 )
                 contentDescription = text
                 setOnClickListener {
+                    val mdns = getString(
+                        if (networkSettings.mdns) {
+                            R.string.discovery_mdns_enabled
+                        } else {
+                            R.string.discovery_mdns_disabled
+                        },
+                    )
+                    val dht = if (networkSettings.bootstrap.isEmpty()) {
+                        getString(R.string.discovery_dht_local_only)
+                    } else {
+                        getString(
+                            R.string.discovery_dht_configured,
+                            networkSettings.bootstrap.size,
+                        )
+                    }
                     AlertDialog.Builder(this@MainActivity)
                         .setTitle(R.string.node_details_title)
                         .setMessage(
@@ -232,6 +260,7 @@ class MainActivity : SecureActivity() {
                                 R.string.status_details,
                                 s.address, nat, s.lanPeers.size, s.scheduled.toLong(),
                                 s.queued.toLong(), s.transit.toLong(),
+                                mdns, dht,
                             ),
                         )
                         .setPositiveButton(android.R.string.ok, null)
@@ -285,8 +314,11 @@ class MainActivity : SecureActivity() {
         runNode(work = { session.contacts() }) { list ->
             knownPeers = list.map { it.peer }.toSet()
             contacts.submit(list)
-            findViewById<TextView>(R.id.main_empty).visibility =
-                if (list.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
+            if (list.isNotEmpty()) {
+                findViewById<View>(R.id.main_empty).visibility = View.GONE
+                findViewById<View>(R.id.main_contacts_heading).visibility = View.VISIBLE
+                findViewById<View>(R.id.main_contacts).visibility = View.VISIBLE
+            }
         }
     }
 
@@ -470,10 +502,19 @@ class MainActivity : SecureActivity() {
                 snapshot.groupLabels.mapValues { (_, labels) -> labelLines(labels) },
                 snapshot.groupIcons,
             )
-            findViewById<TextView>(R.id.main_empty).visibility =
-                if (visibleContacts.isEmpty()) View.VISIBLE else View.GONE
+            val emptyInbox = visibleContacts.isEmpty() && visibleGroups.isEmpty()
+            findViewById<View>(R.id.main_empty).visibility =
+                if (emptyInbox) View.VISIBLE else View.GONE
+            findViewById<View>(R.id.main_contacts_heading).visibility =
+                if (emptyInbox) View.GONE else View.VISIBLE
+            findViewById<View>(R.id.main_groups_heading).visibility =
+                if (emptyInbox) View.GONE else View.VISIBLE
+            findViewById<View>(R.id.main_contacts).visibility =
+                if (visibleContacts.isEmpty()) View.GONE else View.VISIBLE
+            findViewById<View>(R.id.main_groups).visibility =
+                if (visibleGroups.isEmpty()) View.GONE else View.VISIBLE
             findViewById<TextView>(R.id.main_groups_empty).visibility =
-                if (visibleGroups.isEmpty()) View.VISIBLE else View.GONE
+                if (!emptyInbox && visibleGroups.isEmpty()) View.VISIBLE else View.GONE
             findViewById<Button>(R.id.main_note_to_self).apply {
                 visibility = if ("note_to_self:" in snapshot.matching && "note_to_self:" !in pinnedKeys) View.VISIBLE else View.GONE
                 text = buildString {
@@ -607,6 +648,11 @@ class MainActivity : SecureActivity() {
         val session = NodeHolder.session ?: return
         runNode(work = { session.groups() }) { list ->
             groups.submit(list)
+            if (list.isNotEmpty()) {
+                findViewById<View>(R.id.main_empty).visibility = View.GONE
+                findViewById<View>(R.id.main_groups_heading).visibility = View.VISIBLE
+                findViewById<View>(R.id.main_groups).visibility = View.VISIBLE
+            }
             findViewById<TextView>(R.id.main_groups_empty).visibility =
                 if (list.isEmpty()) View.VISIBLE else View.GONE
         }
@@ -685,20 +731,43 @@ class MainActivity : SecureActivity() {
             .show()
     }
 
-    /** The pairing QR: a fresh prekey bundle, hex in alphanumeric mode —
-     *  scannable by another phone or pasteable into `kult add`. */
+    /** A ready signed prekey bundle in the compact, versioned pairing QR format. */
     private fun showMyQr() {
         val session = NodeHolder.session ?: return
         runNode(work = { session.myBundleHex() to session.address }) { (hex, address) ->
             val view = LayoutInflater.from(this).inflate(R.layout.dialog_qr, null)
-            view.findViewById<ImageView>(R.id.qr_image).setImageBitmap(qrBitmap(bundleQrText(hex)))
-            view.findViewById<TextView>(R.id.qr_caption).text =
-                getString(R.string.my_qr_caption, address)
-            AlertDialog.Builder(this)
+            val image = view.findViewById<ImageView>(R.id.qr_image)
+            val caption = view.findViewById<TextView>(R.id.qr_caption)
+            val frames = bundleQrFrames(hex)
+            var frame = 0
+            fun renderFrame() {
+                image.setImageBitmap(pairingQrBitmap(frames[frame]))
+                caption.text = if (frames.size == 1) {
+                    getString(R.string.my_qr_caption, address)
+                } else {
+                    getString(R.string.my_qr_frame, frame + 1, frames.size, address)
+                }
+            }
+            renderFrame()
+            val dialog = AlertDialog.Builder(this)
                 .setTitle(R.string.my_qr_title)
                 .setView(view)
                 .setPositiveButton(android.R.string.ok, null)
-                .show()
+                .create()
+            val handler = Handler(Looper.getMainLooper())
+            val rotate = object : Runnable {
+                override fun run() {
+                    if (!dialog.isShowing) return
+                    frame = (frame + 1) % frames.size
+                    renderFrame()
+                    handler.postDelayed(this, 1_100)
+                }
+            }
+            dialog.setOnShowListener {
+                if (frames.size > 1) handler.postDelayed(rotate, 1_100)
+            }
+            dialog.setOnDismissListener { handler.removeCallbacks(rotate) }
+            dialog.show()
         }
     }
 

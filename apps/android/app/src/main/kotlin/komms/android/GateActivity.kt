@@ -46,12 +46,28 @@ class GateActivity : SecureActivity() {
         val confirm = findViewById<android.widget.EditText>(R.id.gate_confirm)
         val unlock = findViewById<android.widget.Button>(R.id.gate_unlock)
         val restoreBlock = findViewById<View>(R.id.gate_restore_block)
+        val restoreToggle = findViewById<android.widget.Button>(R.id.gate_restore_toggle)
 
         // Unlock vs. first-run create: same call — the node creates on
         // first run — but creating asks for the passphrase twice.
         confirm.visibility = if (storeExists) View.GONE else View.VISIBLE
-        restoreBlock.visibility = if (storeExists) View.GONE else View.VISIBLE
+        restoreBlock.visibility = View.GONE
+        restoreToggle.visibility = if (storeExists) View.GONE else View.VISIBLE
         unlock.setText(if (storeExists) R.string.gate_unlock else R.string.gate_create)
+        findViewById<android.widget.TextView>(R.id.gate_passphrase_help).setText(
+            if (storeExists) {
+                R.string.gate_passphrase_unlock_help
+            } else {
+                R.string.gate_passphrase_create_help
+            },
+        )
+        restoreToggle.setOnClickListener {
+            val showing = restoreBlock.visibility == View.VISIBLE
+            restoreBlock.visibility = if (showing) View.GONE else View.VISIBLE
+            restoreToggle.setText(
+                if (showing) R.string.gate_restore_toggle else android.R.string.cancel,
+            )
+        }
 
         unlock.setOnClickListener {
             val pass = passphrase.text.toString()
