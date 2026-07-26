@@ -6,7 +6,7 @@ only when both endpoints have a fresh direct QUIC route. There is no Komms call
 server, signaling service, SFU, STUN/TURN service, or reusable call link.
 
 This document describes the implemented C7 audio contract. Video is not part of
-the shipped path. [ADR-0013](adr/0013-real-time-calls.md) is normative for the
+the implemented path. [ADR-0013](adr/0013-real-time-calls.md) is normative for the
 transport and cryptographic decisions.
 
 ## 1. Availability and honest limits

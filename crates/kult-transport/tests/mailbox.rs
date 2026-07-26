@@ -6,6 +6,7 @@
 use kult_protocol::{Envelope, EnvelopeKind};
 use kult_transport::{
     DeliveryHint, Libp2pTransport, MailboxConfig, Reachability, SendReceipt, Transport,
+    TransportError,
 };
 
 fn envelope(token: [u8; 32], body: &[u8]) -> Envelope {
@@ -36,7 +37,10 @@ async fn deposit_collect_roundtrip_gated_by_registration() {
 
     // No registration yet: the relay refuses, the sender sees a failed send
     // (and its delivery engine would keep the envelope queued).
-    assert!(sender.send(&hint, &env).await.is_err());
+    assert!(matches!(
+        sender.send(&hint, &env).await.unwrap_err(),
+        TransportError::RefusedByNextHop
+    ));
 
     // The recipient checks in — registering its filter — and the same
     // deposit now lands.
@@ -88,9 +92,12 @@ async fn node_without_mailbox_service_refuses_honestly() {
         .await
         .unwrap();
     assert!(client.mailbox_checkin(&addr, &[[1u8; 32]]).await.is_err());
-    assert!(client
-        .send(&DeliveryHint::Relay(addr), &envelope([1u8; 32], b"x"))
-        .await
-        .is_err());
+    assert!(matches!(
+        client
+            .send(&DeliveryHint::Relay(addr), &envelope([1u8; 32], b"x"))
+            .await
+            .unwrap_err(),
+        TransportError::RefusedByNextHop
+    ));
     assert!(bystander.mailbox_contents().is_none());
 }

@@ -19,17 +19,17 @@ Each item notes where it lands: which crate or milestone already covers it, or
 what it would take. Nothing here loosens a security or scope commitment in
 [01: Why](01-why.md) or the [roadmap](08-roadmap.md); where a feature touches the
 protocol, transports, or crypto, it lands only behind an ADR that shows it
-surviving the threat model and the mesh bandwidth floor (the shipped C7 audio
+surviving the threat model and the mesh bandwidth floor (the implemented C7 audio
 alpha is the current example: direct internet/LAN QUIC only under accepted
 ADR-0013, with physical-platform qualification still required).
 
 ## Build (fits the architecture as-is)
 
 These are either already carried by the core crates, stay local to a device, or
-fit the architecture without changing its security model. Their shipped/planned
+fit the architecture without changing its security model. Their implemented/planned
 status and prerequisites are tracked in the delivery plan.
 
-- **Text and audio messages.** Both are shipped. Recorded audio is an
+- **Text and audio messages.** Both are implemented. Recorded audio is an
   asynchronous encrypted F3 attachment, never a live call: every shell records
   the same bounded metadata-free mono PCM WAV profile, requires local review and
   explicit send/discard, and derives duration/waveform only on the endpoint.
@@ -43,36 +43,36 @@ status and prerequisites are tracked in the delivery plan.
   because users ask for it by name.
 - **Usernames / contact names.** Identity is a keypair and the authoritative
   human label is a local petname, never a phone number or central-registry name
-  (see [06: Identity & Trust](06-identity-trust.md)). B5 local rename is shipped
+  (see [06: Identity & Trust](06-identity-trust.md)). B5 local rename is implemented
   through every interface with NFC normalization, duplicate/confusable/bidi/
   invisible review, exact peer targeting, restart durability, and zero network
   work. An optional signed self-display name may later be advertised as a
   non-unique suggestion, but it is not implemented and could never silently
   override the recipient's petname.
-- **Secure backups.** Shipped: the `KKR7` mnemonic-sealed backup (Argon2id under a
+- **Secure backups.** Implemented: the `KKR7` mnemonic-sealed backup (Argon2id under a
   24-word BIP-39 phrase, ADR-0011/ADR-0012), including sealed local metadata and
   note-to-self history, terminal ephemeral tombstones, and signed group
   authority plus linked-device recovery state; `KKR1` through `KKR6` remain restorable. Stored locally or
   moved by sneakernet; no cloud.
-- **Note to self.** Shipped as a sealed local conversation in `kult-store`, with
+- **Note to self.** Implemented as a sealed local conversation in `kult-store`, with
   the reserved `note_to_self` identity across every shell and no peer, envelopes,
   receipts, queue entries, or transport activity. Text is supported; attachments
   follow the attachment shell work.
-- **Scheduled / queued messages.** Shipped. Ordinary queued delivery waits
+- **Scheduled / queued messages.** Implemented. Ordinary queued delivery waits
   honestly for a carrier; scheduled delivery adds a durable absolute-UTC gate
   in core storage and the node
   scheduler, plus shared RPC/CLI/UniFFI operations for create/list/edit/cancel,
   so app exit or suspension cannot send early. Desktop, Android, and iOS now
   provide local-time composer controls plus distinct editable/cancellable
   scheduled rows before the ordinary queued, sent, and delivered states.
-- **Text formatting.** Shipped through every front door and shell as one bounded
+- **Text formatting.** Implemented through every front door and shell as one bounded
   CommonMark-style source subset: emphasis, strong, inline/fenced code, quotes,
   and lists. Exact source remains the authenticated stored/transmitted value;
   shells render only the shared inert block/run model and copy a readable plain-
   text projection. Raw HTML, links, images, URL schemes, remote fetches, and
   scriptable content are never interpreted. See
   [16: Safe Text Formatting](16-safe-text-formatting.md).
-- **Conversation pins.** Shipped for pairwise contacts, groups, and note-to-self
+- **Conversation pins.** Implemented for pairwise contacts, groups, and note-to-self
   through the sealed F5 store and every wrapper and shell. Exact typed identity,
   manual order, idempotent append/unpin, complete-set reorder including stale
   targets, deterministic activity tie-breaking, cleanup, and reactivation stay
@@ -81,7 +81,7 @@ status and prerequisites are tracked in the delivery plan.
   portability paths, and every operation
   creates zero network, notification, crypto, or transport work. Message pins
   remain a separate design because they require stable message references.
-- **Dark mode.** Shipped as the exact `system` / `light` / `dark` preference
+- **Dark mode.** Implemented as the exact `system` / `light` / `dark` preference
   under the sealed F5 `appearance.theme` key, exposed through node, RPC/CLI,
   UniFFI, and every shell. System is the first-run default and follows native
   changes live; desktop uses semantic CSS roles, Android uses DayNight resources,
@@ -90,7 +90,7 @@ status and prerequisites are tracked in the delivery plan.
   is never the only security or delivery signal. `KKR7` is the authoritative
   portability path; a small non-sensitive device cache exists only to style the
   pre-unlock gate without a flash.
-- **Custom icons.** Shipped for contacts, groups, folders, and note-to-self over
+- **Custom icons.** Implemented for contacts, groups, folders, and note-to-self over
   the sealed F5 record and every wrapper/shell. Missing records render generated
   initials; eight bundled glyphs and selected local JPEG/PNG inputs become exact
   metadata-free 256×256 RGBA PNGs after orientation normalization and square
@@ -100,7 +100,7 @@ status and prerequisites are tracked in the delivery plan.
   own-device C2 sync. Icons never
   enter avatar URLs, peer sync, envelopes, capabilities, queues, notifications,
   DHT state, or transport work.
-- **Screen security.** Shipped as an always-on pre-unlock policy. The shared
+- **Screen security.** Implemented as an always-on pre-unlock policy. The shared
   node/RPC/CLI/UniFFI contract names exact native capability levels and limits;
   shells enforce them locally. Android applies `FLAG_SECURE` to every activity.
   iOS obscures inactive/app-switcher and live-captured scenes but cannot
@@ -108,7 +108,7 @@ status and prerequisites are tracked in the delivery plan.
   content protection, obscures on focus loss, and provides `Ctrl/Cmd+Shift+L`
   rapid lock. It is not stored, backed up, synchronized, notified, or sent and
   creates zero transport work. See [13: Screen Security](13-screen-security.md).
-- **Incognito keyboard.** Shipped as an always-on pre-unlock policy across the
+- **Incognito keyboard.** Implemented as an always-on pre-unlock policy across the
   shared node/RPC/CLI/UniFFI contract and every shell text editor. Android sets
   the documented no-personalized-learning request on all editors; iOS disables
   correction and uses secure passphrase/mnemonic fields; desktop applies
@@ -117,19 +117,19 @@ status and prerequisites are tracked in the delivery plan.
   classes. It is not stored, synchronized, notified, or sent and creates zero
   transport work. Keyboard/OS/webview compliance remains explicitly best effort.
   See [14: Incognito Keyboard](14-incognito-keyboard.md).
-- **Local still-image editing.** Shipped across desktop, Android, and iOS through
+- **Local still-image editing.** Implemented across desktop, Android, and iOS through
   one bounded Rust helper: JPEG/PNG orientation normalization, free/preset crop,
   90-degree rotation, and manual blur/pixelation are applied *before* encryption.
   The exact metadata-free PNG is reviewed and is the only asset sealed; protected
   originals and intermediates are cleaned locally. No protocol involvement.
-- **Mentions.** Group mentions are shipped through explicit current-roster
+- **Mentions.** Group mentions are implemented through explicit current-roster
   pickers and canonical typed content,
   with exact readable fallback text and stable encrypted peer references rather
   than ambiguous free-form `@name` parsing. Semantic send fails closed unless
   every current co-member has fresh authenticated support; an explicit plain-text
   fallback never notifies. Mention notifications are endpoint-local and
   opportunistic, with no server-push guarantee.
-- **Private labels.** Shipped for pairwise contacts, groups, and note-to-self
+- **Private labels.** Implemented for pairwise contacts, groups, and note-to-self
   through the sealed F5 metadata store and every wrapper and shell. Stable random
   IDs remain separate from exact names and canonical colors; duplicates use color
   plus deterministic order rather than raw IDs in human-facing UI. Accessible
@@ -142,7 +142,7 @@ status and prerequisites are tracked in the delivery plan.
   C2 may converge them only between authorized devices of the same account.
   Message labels and shared tags remain separate work; B11
   conversation pins compose independently after label filtering.
-- **Private conversation folders.** Shipped for pairwise contacts, groups, and
+- **Private conversation folders.** Implemented for pairwise contacts, groups, and
   note-to-self through F5 and every wrapper and shell. One stable typed
   conversation belongs to at most one folder; All and Unfiled are virtual views.
   Exact duplicate-capable names use stable random IDs plus durable manual order,
@@ -161,7 +161,7 @@ Realistic, but only if they respect carrier bandwidth or tolerate offline/delaye
 peers. The recurring rule: the app must know which carrier a peer is reachable on
 and degrade honestly, exactly as the delivery ladder already does.
 
-- **File sharing.** The bounded F3 pipeline is shipped across desktop, Android,
+- **File sharing.** The bounded F3 pipeline is implemented across desktop, Android,
   and iOS: independently sealed resumable chunks, explicit consent and lifecycle
   controls, protected export, exact progress, and pairwise/encrypt-once group
   transfer. Safe generic rows now share a fail-closed filename/media-type policy,
@@ -169,21 +169,27 @@ and degrade honestly, exactly as the delivery ladder already does.
   mismatched, unknown, or nameless files. A hard no-airtime class still holds
   every bulk object for a faster link; no scanner, remote preview, or new
   transport behavior is implied.
-- **Linked devices.** Shipped across the core, strict RPC/CLI, UniFFI, and every
+- **Linked devices.** Implemented across the core, strict RPC/CLI, UniFFI, and every
   shell. One account identity uses separately authenticated device
-  keys, per-device sessions, revocation, and deterministic sync. Linking happens
-  proximately through a mutually confirmed QR/paste ceremony, never by copying
-  live ratchet databases or depending on cloud sync. See
+  keys, per-device sessions, exact-id exclusion, and deterministic sync. Linking
+  happens proximately through a mutually confirmed QR/paste ceremony, never by
+  copying live ratchet databases or depending on cloud sync. The current Alpha
+  does copy the account root, so it cannot permanently revoke a compromised
+  former device; ADR-0026 is a P0 replacement, not an optional enhancement. See
   [22: Linked Devices](22-linked-devices.md) and
-  [ADR-0024](adr/0024-account-authorized-linked-devices.md).
-- **Message editing.** Shipped for canonical pairwise and group Text through
-  every front door and shell. Immutable authenticated events target exact
-  author/content ids, retain inspectable versions, and converge under offline
-  reorder by maximum `(revision, edit id)` without clocks. Pairwise capability
-  and complete current-group capability are required before send; legacy text,
-  attachments, mentions, and other edits remain non-editable. Editing is not
-  erasure. See [18: Authenticated Message Editing](18-message-editing.md).
-- **Disappearing messages / view-once media.** Shipped for pairwise and groups
+  [ADR-0026](adr/0026-revocable-device-authority.md).
+- **Message editing.** Implemented for canonical pairwise and group Text through
+  every front door and shell. Immutable events target exact author/content ids,
+  retain inspectable versions, and converge under offline reorder by maximum
+  `(revision, edit id)` without clocks. Pairwise authorship is authenticated;
+  current sender-key group events provide only membership-level authenticity, so
+  a malicious member can forge another member's edit until ADR-0029. Pairwise
+  capability and complete current-group capability are required before send;
+  legacy text, attachments, mentions, and other edits remain non-editable.
+  Editing is not erasure. See
+  [18: Authenticated Message Editing](18-message-editing.md) and
+  [ADR-0029](adr/0029-recipient-authenticated-groups.md).
+- **Disappearing messages / view-once media.** Implemented for pairwise and groups
   through every front door and shell. Exact authenticated local deadlines,
   terminal sealed tombstones, KKR6 plaintext/media exclusion, and first-output
   view-once consumption compose with a coarse hour-aligned envelope-v2 deletion
@@ -191,14 +197,17 @@ and degrade honestly, exactly as the delivery ladder already does.
   and recipients may retain copies, and Komms does not promise remote erasure or
   screenshot prevention. See
   [19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
-- **Group polls.** Shipped through every front door and shell as content-v1
+- **Group polls.** Implemented through every front door and shell as content-v1
   kind 6 over sender-key groups. Stable poll/option IDs, fixed creation-time
-  electorates, authenticated visible vote heads, creator-attested closure, and
-  local deterministic tallies converge after duplicate, delayed, reordered,
+  electorates, visible vote heads, creator-claimed closure, and local
+  deterministic tallies converge after duplicate, delayed, reordered,
   removed-member, restart, and restore paths. Votes are explicitly not
-  anonymous. See [20: Group Polls](20-group-polls.md) and
-  [ADR-0022](adr/0022-convergent-group-polls.md).
-- **Admin / role controls.** Shipped through every front door and shell as a
+  anonymous. Their apparent voter is not yet protected against forgery by
+  another member; ADR-0029 is required before stable. See
+  [20: Group Polls](20-group-polls.md),
+  [ADR-0022](adr/0022-convergent-group-polls.md), and
+  [ADR-0029](adr/0029-recipient-authenticated-groups.md).
+- **Admin / role controls.** Implemented through every front door and shell as a
   fixed owner/admin/member model. Canonical generation-bound full state,
   ownership-transfer certificates, admin requests, and moderation snapshots are
   identity-signed; the sole owner serializes transitions and every accepted
@@ -207,7 +216,7 @@ and degrade honestly, exactly as the delivery ladder already does.
   restore as legacy groups. See
   [21: Group Roles, Ownership, and Moderation](21-group-roles.md) and
   [ADR-0023](adr/0023-group-roles-and-owner-authority.md).
-- **Live voice and video calls.** The audio alpha is shipped across transport,
+- **Live voice and video calls.** The audio alpha is implemented across transport,
   node, RPC/CLI, UniFFI, desktop, Android, and iOS. It is strictly confined to a
   fresh direct QUIC path reached through internet libp2p or LAN discovery, never
   a relay-only, TCP, mailbox, sneakernet, or radio-mesh route. DCUtR may upgrade

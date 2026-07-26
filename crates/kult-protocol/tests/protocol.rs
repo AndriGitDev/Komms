@@ -7,7 +7,9 @@ use rand::{Rng, SeedableRng};
 
 use kult_protocol::{
     bundle_export, bundle_import, delivery_token, epoch_day, fragment, intro_token, pad, unpad,
-    Envelope, EnvelopeKind, MailboxKey, ProtocolError, Reassembler, ReceiptPayload, PAD_BUCKETS,
+    Envelope, EnvelopeKind, MailboxKey, ProtocolError, Reassembler, ReceiptPayload,
+    FRAG_HEADER_LEN, MAX_BUNDLE_BYTES, MAX_BUNDLE_ENVELOPES, MAX_ENVELOPE_BYTES, MAX_FRAGMENTS,
+    PAD_BUCKETS,
 };
 
 const NOW: u64 = 1_800_000_000;
@@ -121,7 +123,7 @@ fn bundle_roundtrip_and_strictness() {
     let envs: Vec<Envelope> = (0..5)
         .map(|i| Envelope::new(EnvelopeKind::Message, [i as u8; 32], vec![i as u8; 40 + i]))
         .collect();
-    let bytes = bundle_export(&envs);
+    let bytes = bundle_export(&envs).unwrap();
     assert_eq!(bundle_import(&bytes).unwrap(), envs);
 
     assert!(bundle_import(b"NOPE").is_err());
@@ -131,7 +133,29 @@ fn bundle_roundtrip_and_strictness() {
     // Absurd length prefix rejected.
     let mut evil = b"KKB1".to_vec();
     evil.extend_from_slice(&u32::MAX.to_le_bytes());
-    assert!(bundle_import(&evil).is_err());
+    assert_eq!(
+        bundle_import(&evil).unwrap_err(),
+        ProtocolError::EnvelopeTooLarge
+    );
+
+    let oversized = Envelope::new(EnvelopeKind::Message, [9; 32], vec![0; MAX_ENVELOPE_BYTES]);
+    assert_eq!(
+        bundle_export(&[oversized]).unwrap_err(),
+        ProtocolError::EnvelopeTooLarge
+    );
+}
+
+#[test]
+fn bundle_aggregate_limits_fail_closed() {
+    let tiny = Envelope::new(EnvelopeKind::Message, [9; 32], Vec::new());
+    assert_eq!(
+        bundle_export(&vec![tiny; MAX_BUNDLE_ENVELOPES + 1]).unwrap_err(),
+        ProtocolError::TooManyBundleEntries
+    );
+    assert_eq!(
+        bundle_import(&vec![0; MAX_BUNDLE_BYTES + 1]).unwrap_err(),
+        ProtocolError::BundleTooLarge
+    );
 }
 
 #[test]
@@ -231,6 +255,14 @@ fn mixed_fragments_fail_integrity() {
 #[test]
 fn fragment_edge_cases() {
     assert_eq!(
+        fragment(&vec![0; MAX_ENVELOPE_BYTES + 1], 180).unwrap_err(),
+        ProtocolError::EnvelopeTooLarge
+    );
+    assert_eq!(
+        fragment(&vec![0; MAX_FRAGMENTS + 1], FRAG_HEADER_LEN + 1).unwrap_err(),
+        ProtocolError::TooManyFragments
+    );
+    assert_eq!(
         fragment(&[1, 2, 3], 8).unwrap_err(),
         ProtocolError::MtuTooSmall
     );
@@ -246,4 +278,14 @@ fn fragment_edge_cases() {
         rng.fill(&mut buf[..]);
         let _ = r.insert(&buf, NOW);
     }
+}
+
+#[test]
+fn forged_fragment_count_is_bounded_before_partial_allocation() {
+    let mut forged = vec![0u8; FRAG_HEADER_LEN + 1];
+    forged[6..8].copy_from_slice(&((MAX_FRAGMENTS + 1) as u16).to_le_bytes());
+    assert_eq!(
+        Reassembler::new().insert(&forged, 0).unwrap_err(),
+        ProtocolError::TooManyFragments
+    );
 }

@@ -1,13 +1,21 @@
 # 18: Authenticated Message Editing
 
-C3 message editing is shipped for canonical pairwise and sender-key group text
+C3 message editing is implemented for canonical pairwise and sender-key group text
 across `kult-protocol`, `kult-node`, `kultd` RPC/CLI, UniFFI, desktop, Android,
 and iOS. It follows [ADR-0020](adr/0020-authenticated-message-edits.md): an edit
 is a new encrypted authenticated event, never an invisible rewrite of history.
 
+> **Alpha group-authorship limit:** pairwise edit authorship is authenticated.
+> In the current sender-key group design, every member knows the shared content
+> key and can forge another member's apparent edit. Group editing is therefore
+> security-limited until
+> [ADR-0029](adr/0029-recipient-authenticated-groups.md) is implemented.
+
 ## User promise
 
-- Only the author of a canonical Komms `Text` event can edit it.
+- In a pairwise conversation, only the authenticated author of a canonical
+  Komms `Text` event can edit it. The current Alpha cannot make that promise
+  against a malicious member inside a sender-key group.
 - A successful edit keeps the original message row, shows an **edited** marker,
   and offers the original plus every valid version for inspection.
 - Pairwise and group edits work through the ordinary queued → sent → delivered
@@ -44,9 +52,12 @@ inside the existing pairwise Double Ratchet or group sender-key ciphertext and
 the existing padding buckets. Relays, mailboxes, bridges, mesh repeaters, and
 sneakernet carriers cannot distinguish an edit from another encrypted message.
 
-An accepted edit must satisfy all of these conditions:
+An accepted edit must satisfy all of these conditions. In current groups,
+condition 1 is membership attribution rather than cryptographic proof of the
+individual origin:
 
-1. its authenticated event sender equals `target_author`;
+1. its event sender field equals `target_author` (individually authenticated
+   pairwise; only a claimed member in current groups);
 2. target author and content id identify an exact canonical `Text` in the same
    pairwise or group conversation;
 3. revision and replacement text obey the canonical bounds; and
@@ -79,10 +90,12 @@ so would make endpoints disagree.
 ## Storage, backup, search, and events
 
 The existing sealed pairwise/group history rows retain exact originals and edit
-events. No plaintext `current_body` column, mutable source row, or new backup
-format exists. `KKR7` carries those sealed history records unchanged and the
-derived winner is rebuilt after open or restore. A copied database continues to
-leak only the already accepted sealed-row count and approximate sizes.
+events. No plaintext `current_body` column, mutable source row, or new
+edit-specific equality index exists. `KKR7` carries those sealed history records
+unchanged and the derived winner is rebuilt after open or restore. The broader
+locked-database metadata and row-binding limitations are documented in
+[07: Local Storage](07-storage.md) and
+[ADR-0027](adr/0027-opaque-indexed-store.md).
 
 C2 own-device sync carries immutable originals and edit events under their exact
 conversation/content ids. Each destination recomputes the same winning tuple;
@@ -142,6 +155,11 @@ Automated coverage includes:
   session parity; and
 - proof that raw edit records remain durable while rendered histories contain
   only the resolved original row.
+
+That matrix proves deterministic processing and pairwise authorization; it does
+not establish malicious-member origin authentication for sender-key group
+events. ADR-0029 and its adversarial member-forgery tests are a stable-release
+prerequisite for the group authorship promise.
 
 Manual release qualification must still exercise screen readers, keyboard-only
 operation, Dynamic Type/font scaling, Unicode and bidirectional replacement

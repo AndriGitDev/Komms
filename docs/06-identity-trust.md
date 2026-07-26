@@ -61,7 +61,7 @@ device owned by the same account.
 
 Global usernames require a global authority, excluded by design. Instead, **petnames**:
 every contact's display name is a private, local label chosen by *you*. B5 lets the
-user rename an exact peer in every shipped interface. Names are NFC-normalized and
+user rename an exact peer in every implemented interface. Names are NFC-normalized and
 bounded; duplicates are valid because the peer key, never display text, is the
 identity. Duplicate, mixed-script/confusable, bidirectional-control, and invisible-
 character risks are shown for explicit review before a warned rename. The label is
@@ -86,31 +86,48 @@ compatibility path. See [15: Private Contact Names](15-contact-petnames.md).
 - **Revocation**: a signed revocation statement propagates through sessions and DHT;
   contacts mark the identity dead and refuse new sessions to it.
 
-## 6. Linked devices (C2, shipped)
+## 6. Linked devices (C2, Alpha with an open authority flaw)
 
 Each physical device holds its own certified device keypair. The stable account
 identity signs a bounded device manifest, while PQXDH/Double Ratchet sessions,
 capabilities, delivery rows, and group sender chains remain per physical device.
 Linking a pristine installation requires a time-bounded offer, explicit
-confirmation on both sides, and matching six-digit comparison codes. Permanent
-exact-device revocation excludes future delivery and sync.
+confirmation on both sides, and matching six-digit comparison codes. Current
+exact-id revocation excludes that known id from honest future delivery and
+sync, but every linked device currently receives the stable account private
+key. A compromised revoked device can mint a replacement certificate, so
+permanent adversarial revocation is not implemented.
 
 Authenticated explicit device-to-device bundles converge contacts and
 verification, private organization, ordinary history, edits, polls, group
 authority, and terminal expiry tombstones. Drafts, scheduled outbox rows, live
 queues/ratchets, active ephemeral content, downloaded media, and most shell
 preferences remain installation-local. See [22: Linked Devices](22-linked-devices.md)
-and [ADR-0024](adr/0024-account-authorized-linked-devices.md).
+and the required offline-root replacement in
+[ADR-0026](adr/0026-revocable-device-authority.md).
 
 ## 7. First-contact abuse controls
 
-Open reachability invites spam (threat model non-goal #4). Local, user-controlled
-mitigations (no central moderator exists):
+> **Proposed, not current Alpha behavior.** The current receive path accepts a
+> valid cryptographic introduction and creates a normal contact without a
+> request inbox, admission puzzle, or local blocking state. Do not treat the
+> controls below as implemented.
 
-- **Contact gating** (default): unknown-sender messages land in a request queue showing
-  only a size-bounded intro; the ratchet session completes only on accept.
-- **Introduction cost**: senders attach a small proof-of-work over (their `IK` ‖ recipient
-  token ‖ day) to first-contact envelopes; free for humans, expensive at spam scale.
-  Contacts-of-contacts can include a signed introduction voucher instead.
-- **Local blocklists**, exportable/shareable as signed lists users may *choose* to
-  subscribe to: community moderation without central authority.
+[ADR-0030](adr/0030-first-contact-admission.md) defines the pre-stable
+replacement:
+
+- a signed, expiring recipient policy advertises a bounded client puzzle for
+  unsolicited public-address contact;
+- authenticated QR/link/file invitations may bypass visible puzzle work;
+- carrier and node byte, item, concurrency, KEM, disk, notification, and
+  per-tick budgets reject excess work before it becomes an unbounded queue;
+- a valid stranger enters a sealed, fixed-size provisional request inbox and
+  becomes a normal contact only after explicit acceptance;
+- reject, block, group-invite consent, and optional signed reputation lists are
+  local, inspectable state transitions rather than central moderation; and
+- ordinary UI presents this as a familiar message request while technical
+  admission details remain in diagnostics.
+
+The proposal raises unsolicited-sender cost but does not claim proof-of-work can
+defeat a distributed adversary; fixed resource quotas remain the controlling
+safety boundary.

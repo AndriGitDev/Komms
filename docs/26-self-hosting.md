@@ -13,6 +13,14 @@ supports `linux/amd64` and `linux/arm64`. Pull the immutable release tag with:
 docker pull ghcr.io/andrigitdev/komms-kultd:0.3.0
 ```
 
+> **Alpha mailbox warning:** `--serve-mailbox` currently keeps accepted mailbox
+> ciphertext in process memory, and mailbox fetch removes a returned page before
+> endpoint-level acknowledgement. Restart, process loss, or a receiver that
+> cannot admit the fetched page can therefore lose that relay copy. This role is
+> suitable for interoperability testing, not durable or production mailbox
+> custody. ADR-0032 defines the leased persistent design required before that
+> claim.
+
 The `0.3-alpha` and `alpha` tags are moving Alpha aliases; the committed Compose
 file tracks `0.3-alpha`, while automation should pin `0.3.0` or an image digest.
 The image runs the daemon as numeric user/group `10001`, stores its sealed
@@ -59,6 +67,15 @@ The default disables mDNS because a bridged container does not represent the
 host LAN. Komms operates no mandatory bootstrap service: add trusted bootstrap
 or relay addresses, or distribute explicit reachable peer hints, when the node
 must discover peers beyond its container network.
+
+This `kultd` profile is **not** the proposed RAM-only reference
+discovery/rendezvous service. It is a full identity-bearing Komms endpoint with a
+persistent encrypted database and passphrase. Mounting its entire data directory
+on tmpfs would rotate or destroy endpoint state on restart and would not
+establish the least-authority claim in
+[ADR-0034](adr/0034-operator-minimized-reference-discovery.md). The reference
+service requires a dedicated daemon, container, and runbook that cannot enable
+endpoint, mailbox, or native-wake roles.
 
 To add daemon flags, replace the Compose service's command while retaining both
 listen addresses. For example, a volunteer mailbox with an explicit bootstrap

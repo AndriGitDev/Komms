@@ -32,9 +32,10 @@ repeated sorted voter_peer_id(32)
 The common content id is the stable poll id. Option ids are random and unique
 within the poll; presentation order is the encoded order. The supported local
 API snapshots the exact sorted current roster and its generation. The payload
-is creator-attested because a receiver cannot reconstruct an old roster after
-arbitrary offline membership changes. The authenticated creator must appear in
-the electorate.
+declares a creator and electorate because a receiver cannot reconstruct an old
+roster after arbitrary offline membership changes. The claimed creator must
+appear in the electorate. Under the current sender-key construction, another
+member can forge that creator claim.
 
 Vote (`operation = 2`) carries:
 
@@ -43,12 +44,14 @@ version=1 || operation=2 || reserved(2)=0
 poll_author(32) || poll_id(16) || option_id(16) || revision(8)
 ```
 
-The enclosing sender-key event authenticates the voter. A vote is valid only
-for a listed electorate member and a stable option id. For each voter, the
-current head is the maximum `(revision, vote content id)`. Revisions are
-positive; supported local authors increment their own maximum and are capped at
-64 vote events per poll. Duplicate and reordered records therefore converge
-without clocks. Votes and voter identities are visible to every member that
+The enclosing sender-key event protects the vote from outsiders and binds a
+claimed voter, but it provides only membership-level authenticity: another
+member can forge that claim. Structurally, a vote is valid only for a listed
+electorate member and a stable option id. For each apparent voter, the current
+head is the maximum `(revision, vote content id)`. Revisions are positive;
+supported local authors increment their own maximum and are capped at 64 vote
+events per poll. Duplicate and reordered records therefore converge without
+clocks. Votes and apparent voter identities are visible to every member that
 holds the poll. Polls are single-choice and explicitly **not anonymous**.
 
 Closure (`operation = 3`) carries:
@@ -59,13 +62,20 @@ poll_author(32) || poll_id(16) || head_count(1) || reserved(3)=0
 repeated sorted voter(32) || vote_event_id(16) || option_id(16) || revision(8)
 ```
 
-Only the authenticated poll creator can close. Closure is an irreversible,
-creator-attested snapshot of the visible vote heads the creator accepted at
-that moment. This makes the final tally converge even when another replica
-never received an underlying vote before a member was removed or a partition
-ended. If multiple structurally valid creator closures exist, the smallest
-closure content id wins. Closure is not proof that the creator observed every
-vote, and no server fairness claim is made.
+The sender field must claim the poll creator to close. Under the current shared
+sender key, a malicious member can forge that claim; signed owner-moderated
+closures are a distinct attributable control path. Closure is an irreversible
+snapshot of the visible vote heads the apparent creator accepted at that moment.
+This makes the final tally converge even when another replica never received an
+underlying vote before a member was removed or a partition ended. If multiple
+structurally valid creator closures exist, the smallest closure content id wins.
+Closure is not proof that the creator authored it, observed every vote, or
+counted fairly.
+
+This Accepted ADR defines deterministic replicated poll state. It does not
+satisfy individual-origin authentication under the current sender-key group
+construction. ADR-0029 must add recipient-verifiable origins before stable
+claims about authenticated voters or creator closures.
 
 Question text is exact non-empty UTF-8 up to 1,024 bytes. A poll has 2–12
 non-empty exact UTF-8 choices of at most 256 bytes each and 1–64 sorted unique
@@ -104,18 +114,19 @@ same result without a backup version or database migration.
   rewrite history and additions could vote without receiving creation.
 - **Closure marker without vote heads.** Rejected because replicas missing a
   pre-close vote could permanently disagree on the final tally.
-- **Anonymous label on authenticated votes.** Rejected as privacy theater. A
-  separate cryptographic anonymous-voting protocol would be required.
+- **Anonymous label on membership-authenticated votes.** Rejected as privacy
+  theater. A separate cryptographic anonymous-voting protocol would be required.
 - **Creator-only private votes.** Rejected for v1 because sender-key fan-out
   delivers the same group event to all current members and the product needs
   an honest, inspectable rule.
 
 ## Consequences
 
-Poll creators determine when to close and attest the final observed snapshot;
-Komms guarantees deterministic convergence, not election fairness or secret
-ballots. The fixed electorate and visible identities must be shown before
-creation and voting. Parser fuzzing, changed/duplicate/reordered vote tests,
-membership and old-client gates, closure conflicts, KKR1–KKR7 restore, C2
-owned-device convergence, strict
-RPC/CLI, UniFFI, and all shell contracts are release requirements.
+The apparent poll creator determines when to close and declares the final
+observed snapshot; Komms guarantees deterministic convergence, not
+malicious-member origin, election fairness, or secret ballots. The fixed
+electorate and visible identities must be shown before creation and voting.
+Parser fuzzing, changed/duplicate/reordered vote tests, membership and old-client
+gates, closure conflicts, KKR1–KKR7 restore, C2 owned-device convergence, strict
+RPC/CLI, UniFFI, and all shell contracts are release requirements. ADR-0029 and
+member-forgery tests are additionally required for stable origin claims.

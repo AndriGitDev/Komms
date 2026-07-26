@@ -3,8 +3,10 @@
 
 use std::time::Duration;
 
-use kult_protocol::{Envelope, EnvelopeKind};
-use kult_transport::{DeliveryHint, Libp2pTransport, Reachability, SendReceipt, Transport};
+use kult_protocol::{Envelope, EnvelopeKind, ProtocolError, MAX_ENVELOPE_BYTES};
+use kult_transport::{
+    DeliveryHint, Libp2pTransport, Reachability, SendReceipt, Transport, TransportError,
+};
 
 fn test_envelope(fill: u8) -> Envelope {
     Envelope::new(EnvelopeKind::Message, [fill; 32], vec![fill; 300])
@@ -81,5 +83,57 @@ async fn unreachable_peer_fails_honestly() {
     let ghost_id = ghost.local_peer_id();
     drop(ghost);
     let hint = DeliveryHint::Multiaddr(format!("/ip4/127.0.0.1/tcp/1/p2p/{ghost_id}"));
-    assert!(a.send(&hint, &test_envelope(4)).await.is_err());
+    assert!(matches!(
+        a.send(&hint, &test_envelope(4)).await.unwrap_err(),
+        TransportError::Io(_)
+    ));
+}
+
+#[tokio::test]
+async fn oversized_outbound_envelope_fails_with_typed_protocol_error() {
+    let sender = Libp2pTransport::new(&["/ip4/127.0.0.1/tcp/0"])
+        .await
+        .unwrap();
+    let receiver = Libp2pTransport::new(&["/ip4/127.0.0.1/tcp/0"])
+        .await
+        .unwrap();
+    let hint = DeliveryHint::Multiaddr(receiver.wait_listen_addr().await.unwrap());
+    let oversized = Envelope::new(EnvelopeKind::Message, [9; 32], vec![0; MAX_ENVELOPE_BYTES]);
+
+    assert!(matches!(
+        sender.send(&hint, &oversized).await.unwrap_err(),
+        TransportError::Protocol(ProtocolError::EnvelopeTooLarge)
+    ));
+    assert!(receiver.recv().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn saturated_direct_inbox_refuses_then_recovers_after_drain() {
+    let sender = Libp2pTransport::new(&["/ip4/127.0.0.1/tcp/0"])
+        .await
+        .unwrap();
+    let receiver = Libp2pTransport::new(&["/ip4/127.0.0.1/tcp/0"])
+        .await
+        .unwrap();
+    let hint = DeliveryHint::Multiaddr(receiver.wait_listen_addr().await.unwrap());
+    let envelope = test_envelope(10);
+
+    let mut accepted = 0usize;
+    loop {
+        match sender.send(&hint, &envelope).await {
+            Ok(SendReceipt::AckedByNextHop) => accepted += 1,
+            Ok(receipt) => panic!("unexpected send receipt: {receipt:?}"),
+            Err(TransportError::RefusedByNextHop) => break,
+            Err(error) => panic!("unexpected send failure: {error}"),
+        }
+        assert!(accepted < 1_000, "direct inbox did not apply backpressure");
+    }
+    assert!(accepted > 0);
+    assert_eq!(receiver.recv().await.unwrap().len(), accepted);
+
+    assert_eq!(
+        sender.send(&hint, &envelope).await.unwrap(),
+        SendReceipt::AckedByNextHop
+    );
+    assert_eq!(receiver.recv().await.unwrap(), vec![envelope]);
 }

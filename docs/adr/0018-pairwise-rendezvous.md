@@ -7,10 +7,13 @@
 
 Komms currently publishes signed prekey bundles under `H(IK)` in the Kademlia
 DHT. That path is necessary for first contact by kult address and remains
-self-authenticating, but the signed bundle can contain current delivery hints
-associated with the public identity. Once two peers have an authenticated
-session, they can discover each other's changing internet routes through a
-pairwise capability that a public-key scraper cannot calculate.
+self-authenticating. A public bundle may contain recipient-selected
+mailbox/relay introduction paths, but ADR-0017 no longer permits Standard or
+Private mode to publish a current direct IP route under the stable account
+lookup by default. Sovereign users may make that explicit tradeoff. Once two
+peers have an authenticated session, they can discover each other's changing
+internet routes through a pairwise capability that a public-key scraper cannot
+calculate.
 
 A naive fixed slot `H(shared_secret || "locator")` is insufficient. It remains
 linkable for the life of the relationship, lets the service correlate repeated
@@ -247,6 +250,9 @@ ADR-0017.
 
 - Established contacts gain private, rapidly expiring route discovery without
   exposing a public identity lookup to the provider.
+- Standard first contact normally reaches a recipient-selected
+  mailbox/introduction path from the signed DHT bundle; rendezvous becomes
+  available only after that first authenticated handshake.
 - Each relationship costs multiple registrations across adjacent epochs;
   clients must stagger and coalesce work rather than burst every contact at
   launch.

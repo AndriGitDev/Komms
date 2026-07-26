@@ -5,6 +5,11 @@ the poll travels only inside the sender-key group conversation; it does **not**
 mean an anonymous ballot. Every member who has the poll can see who voted and
 which choice their current vote selects.
 
+> **Alpha integrity limit:** the replicated poll state converges, but the current
+> shared sender-key construction cannot prove which member originated an event.
+> A malicious member can forge another member's apparent vote until
+> [ADR-0029](adr/0029-recipient-authenticated-groups.md) is implemented.
+
 ## Product promise
 
 - Any current member can create a poll when every current co-member supports
@@ -37,7 +42,9 @@ current owner's `Komms-group-poll-moderation-v1` signature, binding the group id
 poll author/id, generation, and heads. It is accepted only
 against a valid signed authority state. If conflicting valid closures arrive,
 the smallest close event ID wins. The tally is always derived locally from
-these authenticated immutable events, never from a server or mutable counter.
+these group-AEAD-protected immutable events, never from a server or mutable
+counter. That protection excludes outsiders but does not authenticate the
+apparent voter against another malicious group member.
 
 Limits are deliberately fixed: 1,024 UTF-8 bytes for the question, 2–12
 choices, 256 UTF-8 bytes per choice, 64 voters, and 64 locally authored vote
@@ -72,7 +79,13 @@ host-mobile bindings, signed owner moderation, exact KKR1–KKR7 restore, and C2
 owned-device convergence. Android debug-APK assembly is automated; real-device
 poll interaction remains part of the platform release gate.
 
+This evidence establishes deterministic convergence, not resistance to
+member-forged origins. ADR-0029 and adversarial member-forgery coverage must land
+before Komms claims authenticated group voters.
+
 The normative replicated-state and wire decision is
 [ADR-0022](adr/0022-convergent-group-polls.md).
 Signed moderation and owner/admin authority are specified separately in
 [ADR-0023](adr/0023-group-roles-and-owner-authority.md).
+Recipient-verifiable group event origins are specified in
+[ADR-0029](adr/0029-recipient-authenticated-groups.md).

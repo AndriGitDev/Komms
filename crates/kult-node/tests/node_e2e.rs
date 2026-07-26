@@ -16,9 +16,9 @@ use kult_crypto::{
 };
 use kult_node::{ContentStatus, Event, Node};
 use kult_protocol::{
-    decode_content, encode_text, DecodedContent, Envelope, EnvelopeKind, CONTENT_MAGIC,
+    decode_content, encode_text, fragment, DecodedContent, Envelope, EnvelopeKind, CONTENT_MAGIC,
 };
-use kult_store::DeliveryState;
+use kult_store::{DeliveryState, Store, MAX_PENDING_ENVELOPES};
 use kult_transport::{
     CostClass, DeliveryHint, LatencyClass, LinkProfile, Reachability, SendReceipt,
     SneakernetTransport, Transport, TransportError,
@@ -958,8 +958,14 @@ async fn out_of_order_arrival_survives_restart() {
     let events = bob.tick(NOW + 10, &mut rng).await.unwrap();
     assert_eq!(count_received(&events), 0);
 
-    // Bob's device restarts. The stash must survive.
+    // Bob's device restarts. The stash must survive under one stable row id:
+    // merely reading it never drains or rewrites it.
     drop(bob);
+    let store = Store::open(&bob_db, b"b").unwrap();
+    let first_read = store.pending_all().unwrap();
+    assert_eq!(first_read.len(), 1);
+    assert_eq!(store.pending_all().unwrap(), first_read);
+    drop(store);
     let mut bob = Node::open(&bob_db, b"b").unwrap();
     bob.add_transport(Arc::new(mesh(2)));
 
@@ -976,4 +982,173 @@ async fn out_of_order_arrival_survives_restart() {
         .collect();
     assert!(bodies.contains(&b"first (handshake)".to_vec()));
     assert!(bodies.contains(&b"second (session)".to_vec()));
+    drop(bob);
+    let store = Store::open(&bob_db, b"b").unwrap();
+    assert!(
+        store.pending_all().unwrap().is_empty(),
+        "consumed deferred row is explicitly acknowledged"
+    );
+}
+
+#[tokio::test]
+async fn deferred_rows_keep_their_id_until_consumed_or_expired() {
+    let mut rng = StdRng::seed_from_u64(405);
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("pending.db");
+    let node = Node::create(&db, b"pass", TEST_KDF, &mut rng).unwrap();
+    drop(node);
+
+    let store = Store::open(&db, b"pass").unwrap();
+    let retryable = Envelope::new(EnvelopeKind::Message, [7; 32], vec![8]);
+    let already_expired = Envelope::new(EnvelopeKind::Message, [9; 32], vec![10]);
+    let retryable_sequence = store.pending_push(&retryable, NOW, &mut rng).unwrap();
+    store
+        .pending_push(&already_expired, NOW - 31 * 86_400, &mut rng)
+        .unwrap();
+    drop(store);
+
+    // No session recognizes either token. The live row stays durable under
+    // the same sequence while the over-TTL row is explicitly acknowledged.
+    let mut node = Node::open(&db, b"pass").unwrap();
+    node.tick(NOW, &mut rng).await.unwrap();
+    drop(node);
+    let store = Store::open(&db, b"pass").unwrap();
+    assert_eq!(
+        store.pending_all().unwrap(),
+        vec![(retryable_sequence, retryable, NOW)]
+    );
+    drop(store);
+
+    // Once the retained row itself passes the TTL, it too is acknowledged
+    // rather than decrypted, drained, or assigned a replacement sequence.
+    let mut node = Node::open(&db, b"pass").unwrap();
+    node.tick(NOW + 31 * 86_400, &mut rng).await.unwrap();
+    drop(node);
+    let store = Store::open(&db, b"pass").unwrap();
+    assert!(store.pending_all().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn exact_unknown_duplicates_share_one_bounded_deferred_row() {
+    let mut rng = StdRng::seed_from_u64(406);
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("pending-dedup.db");
+    let net: Net = Arc::new(Mutex::new(HashMap::new()));
+    let mut node = Node::create(&db, b"pass", TEST_KDF, &mut rng).unwrap();
+    node.add_transport(Arc::new(MockMesh {
+        net: net.clone(),
+        me: 2,
+        mtu: 64 * 1024,
+        duplicate: false,
+    }));
+    let unknown = Envelope::new(EnvelopeKind::Message, [7; 32], vec![8]);
+
+    net.lock()
+        .unwrap()
+        .entry(2)
+        .or_default()
+        .extend([unknown.clone(), unknown.clone()]);
+    node.tick(NOW, &mut rng).await.unwrap();
+    drop(node);
+    let store = Store::open(&db, b"pass").unwrap();
+    let first = store.pending_all().unwrap();
+    assert_eq!(first.len(), 1);
+    let stable_sequence = first[0].0;
+    drop(store);
+
+    let mut node = Node::open(&db, b"pass").unwrap();
+    node.add_transport(Arc::new(MockMesh {
+        net: net.clone(),
+        me: 2,
+        mtu: 64 * 1024,
+        duplicate: false,
+    }));
+    net.lock()
+        .unwrap()
+        .entry(2)
+        .or_default()
+        .extend([unknown.clone(), unknown]);
+    node.tick(NOW + 1, &mut rng).await.unwrap();
+    drop(node);
+
+    let store = Store::open(&db, b"pass").unwrap();
+    let retained = store.pending_all().unwrap();
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].0, stable_sequence);
+}
+
+#[tokio::test]
+async fn fragment_retry_survives_a_full_deferred_inbox() {
+    let mut rng = StdRng::seed_from_u64(407);
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("fragment-quota.db");
+    let net: Net = Arc::new(Mutex::new(HashMap::new()));
+    let node = Node::create(&db, b"pass", TEST_KDF, &mut rng).unwrap();
+    drop(node);
+
+    let store = Store::open(&db, b"pass").unwrap();
+    let mut first_sequence = None;
+    for i in 0..MAX_PENDING_ENVELOPES {
+        let mut token = [0u8; 32];
+        token[..8].copy_from_slice(&(i as u64).to_le_bytes());
+        let filler = Envelope::new(EnvelopeKind::Message, token, vec![0x55]);
+        let sequence = store.pending_push(&filler, NOW, &mut rng).unwrap();
+        first_sequence.get_or_insert(sequence);
+    }
+    drop(store);
+
+    let inner = Envelope::new(EnvelopeKind::Message, [0xf0; 32], vec![0x33; 256]);
+    let fragment_envelopes: Vec<Envelope> = fragment(&inner.try_encode().unwrap(), 80)
+        .unwrap()
+        .into_iter()
+        .map(|body| Envelope::new(EnvelopeKind::Fragment, inner.token, body))
+        .collect();
+    net.lock()
+        .unwrap()
+        .entry(2)
+        .or_default()
+        .extend(fragment_envelopes.clone());
+    let mut node = Node::open(&db, b"pass").unwrap();
+    node.add_transport(Arc::new(MockMesh {
+        net: net.clone(),
+        me: 2,
+        mtu: 64 * 1024,
+        duplicate: false,
+    }));
+    node.tick(NOW, &mut rng).await.unwrap();
+    drop(node);
+
+    let store = Store::open(&db, b"pass").unwrap();
+    let pending = store.pending_all().unwrap();
+    assert_eq!(pending.len(), MAX_PENDING_ENVELOPES);
+    assert!(!pending
+        .iter()
+        .any(|(_, envelope, _)| envelope.content_id() == inner.content_id()));
+    for fragment in &fragment_envelopes {
+        assert!(!store.is_seen(&fragment.content_id()).unwrap());
+    }
+    store.pending_ack(first_sequence.unwrap()).unwrap();
+    drop(store);
+
+    net.lock()
+        .unwrap()
+        .entry(2)
+        .or_default()
+        .extend(fragment_envelopes);
+    let mut node = Node::open(&db, b"pass").unwrap();
+    node.add_transport(Arc::new(MockMesh {
+        net,
+        me: 2,
+        mtu: 64 * 1024,
+        duplicate: false,
+    }));
+    node.tick(NOW + 1, &mut rng).await.unwrap();
+    drop(node);
+
+    let store = Store::open(&db, b"pass").unwrap();
+    let pending = store.pending_all().unwrap();
+    assert_eq!(pending.len(), MAX_PENDING_ENVELOPES);
+    assert!(pending
+        .iter()
+        .any(|(_, envelope, _)| envelope.content_id() == inner.content_id()));
 }

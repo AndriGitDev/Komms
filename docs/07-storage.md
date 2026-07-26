@@ -2,24 +2,36 @@
 
 Local-first is a security property, an availability property, and a political statement:
 your history lives on your hardware, encrypted under your keys, exportable at will, and
-deletable for real.
+locally deletable within explicit endpoint and copy-retention limits.
 
 ## 1. Principles
 
-1. **Owned devices are the source of truth.** No cloud copy exists unless the user creates an
-   encrypted export. Shipped C2 sync is explicit device-to-device, end-to-end encrypted,
-   and accepted only between account-authorized physical devices.
-2. **Durable state at rest is sealed.** The core database never persists plaintext:
-   messages, drafts, media chunks/previews, metadata, and search terms are independently
-   sealed. Bounded protected transients required by OS picker, recording, editing,
-   playback, or explicit export workflows are temporary exceptions with lifecycle cleanup,
-   never durable sources of truth.
+1. **Owned devices are the source of truth.** There is no authoritative
+   provider-hosted history database. Optional mailbox and delayed-delivery
+   carriers may temporarily retain bounded sealed envelopes, and users may
+   create encrypted exports, but neither becomes readable message history for
+   an operator. Implemented C2 sync is explicit device-to-device,
+   end-to-end encrypted, and accepted only between account-authorized physical
+   devices.
+2. **Durable record bodies at rest are sealed.** The core database does not
+   persist message, draft, or media plaintext. The current Alpha schema still
+   has plaintext equality and ordering columns that expose some exact
+   relationship metadata in a copied database; these are documented below and
+   replaced by the proposed ADR-0027 design. Bounded protected transients
+   required by OS picker, recording, editing, playback, or explicit export
+   workflows are temporary exceptions with lifecycle cleanup, never durable
+   sources of truth.
 3. **Export is a right.** Full history exports to a documented, versioned format at any
    time. Lock-in is a bug.
-4. **Deletion is real.** Deleting a message deletes the ciphertext row and its keys;
-   retention policies (per-conversation disappearing messages) are enforced locally.
-   We are honest that the *recipient's* copy is theirs, no fake "remote delete" theater
-   beyond a polite delete-request the peer may honor.
+4. **Local deletion has a precise boundary.** Deleting a message removes the
+   live logical row and application references from that Komms history;
+   retention policies (per-conversation disappearing messages) are enforced on
+   that endpoint. SQLite cleanup can reduce remnants but does not establish
+   per-record cryptographic or forensic erasure. Komms cannot erase a
+   recipient's copy, screenshot, export, operating-system artifact, previously
+   copied backup, carrier ciphertext, filesystem snapshot, or data recovered
+   from a compromised endpoint. A deletion hint is a request another endpoint
+   may honor, not proof of remote erasure.
 
 ## 2. Layout
 
@@ -30,22 +42,30 @@ HKDF per-domain keys.
 | Domain | Contents | Notes |
 |---|---|---|
 | `identity` | Own keys (wrapped), device settings | Smallest, most sensitive; extra wrap layer |
-| `sessions` | Serialized ratchet states, skipped-key store | Rewrapped on every persist; zeroized in memory after |
-| `contacts` | Peer keys, verification state, petnames, relay hints | Sealed locally; selected fields may enter authenticated own-device sync |
+| `sessions` | Serialized ratchet states, skipped-key store | Body sealed and rewrapped on persist; current peer-key lookup column remains plaintext metadata |
+| `contacts` | Peer keys, verification state, petnames, relay hints | Body sealed; current peer-key lookup column exposes an exact identifier in a copied database; selected fields may enter authenticated own-device sync |
 | `devices` | Own and contact device certificates, signed manifests, revocation tombstones | Bounded authority state; exact physical identities |
 | `device_sync` | Per-device channels, counters, Lamport winners, terminal convergence tombstones | Direction-bound, replay-protected, never a cloud log |
 | `messages` | Envelope plaintexts post-decrypt, delivery state | Per-blob AEAD, random nonces |
 | `queue` | Outbound envelopes pending delivery per transport | Ciphertext only, survives crash/restart |
 | `scheduled_messages` | Pairwise/group text held until an absolute UTC instant | Plaintext fields exist only inside independently sealed blobs; no ratchet or envelope is created early |
 | `prekeys` | Own signed/PQ/one-time prekey secrets | One-time prekeys deleted on use |
-| `pending` | Inbound envelopes not yet readable (arrived before their session) | Ciphertext only; TTL-bounded |
+| `pending` | Inbound envelopes not yet readable (arrived before their session) | Individually sealed; stable row ids; exact-duplicate suppression in the node; 2,048-row / 64 MiB sealed-byte ceiling; TTL-bounded |
 | `media` | Attachment blobs, chunked | Each chunk sealed; keys stored in `messages` |
 | `ephemeral` | Exact local deadlines, mode, transfer references, active/terminal lifecycle | Sealed separately; terminal tombstones block resurrection after plaintext/media deletion |
 | `local_metadata` | Conversation types, folders, pins, labels, drafts, UI preferences, custom icons | Endpoint-private; only the C2 allowlist can sync to another owned device |
 
-Every blob is individually AEAD-sealed (XChaCha20-Poly1305, random 24-byte nonce, table
-name + row purpose as associated data), a copied database file leaks only row counts and
-approximate sizes; rows can't be transplanted across tables or databases.
+Every record body is individually AEAD-sealed (XChaCha20-Poly1305, random
+24-byte nonce, table name + row purpose as associated data). The current Alpha
+schema is **not** an opaque-index store: contact/device public keys, group ids,
+and related equality columns remain plaintext, so a copied locked database can
+reveal exact relationship identifiers in addition to row counts and sizes.
+Constant per-table associated data prevents cross-table/cross-key opening but
+does not bind every ciphertext to its logical row, so a writer can substitute
+some valid rows within one table without guaranteed detection.
+[ADR-0027](adr/0027-opaque-indexed-store.md) defines the keyed indexes,
+row-bound associated data, versioned migration, and deletion wording required
+before stronger at-rest metadata claims.
 
 B9 formatting creates no additional durable state. The `messages`,
 `scheduled_messages`, group history, and note-to-self rows retain exact source
@@ -56,15 +76,19 @@ the same source it already carried and needs no format or migration change.
 C3 edits also add no mutable plaintext projection. Canonical originals and edit
 events remain separate individually sealed pairwise/group history rows; derived
 history hides edit rows and returns the winning text, marker, revision, and
-ordered versions. The winner is rebuilt from authenticated rows after restart or
-restore, including edit-before-original order. `KKR7` carries those
+ordered versions. The winner is rebuilt from accepted rows after restart or
+restore, including edit-before-original order. Pairwise rows have authenticated
+individual origins; current group rows have only membership-level origin until
+ADR-0029. `KKR7` carries those
 history rows, so no backup version or migration changes. The node caps locally
-authored edits at 64 per target; it retains every authenticated inbound edit so
+authored edits at 64 per target; it retains every accepted inbound edit so
 admission order cannot change convergence. See
 [18: Authenticated Message Editing](18-message-editing.md).
 
 C4 keeps lifecycle state separate from history. Every disappearing/view-once id
-is keyed by exact conversation, authenticated author, and content id. The node
+is keyed by exact conversation, accepted author field, and content id. Pairwise
+authors are individually authenticated; current sender-key group authors are
+only membership-authenticated until ADR-0029. The node
 sweeps due rows before receive, scheduled activation, attachment work, or queue
 flush. Expiry/first reveal deletes exact history and queue rows plus every
 associated media object/chunk, then retains only a sealed terminal tombstone.
@@ -76,10 +100,11 @@ byte. See [19: Disappearing Messages and View-Once Attachments](19-ephemeral-mes
 C5 polls add no mutable tally or plaintext projection. Creation, vote, and
 closure remain separate individually sealed group-history rows. The node
 rebuilds the fixed electorate, maximum `(revision, event id)` vote per member,
-winning creator closure, and tally on read, so restart and reordered admission
-cannot change the result. Local authors are capped at 64 vote revisions per
-poll; authenticated inbound history is retained for convergence. See
-[20: Group Polls](20-group-polls.md).
+winning creator-claimed closure, and tally on read, so restart and reordered
+admission cannot change the result. Local authors are capped at 64 vote
+revisions per poll; membership-authenticated inbound history is retained for
+convergence. That retention does not repair member-forged origins; ADR-0029 is
+required before stable. See [20: Group Polls](20-group-polls.md).
 
 C7 live calls add no durable domain. Decoded call control, call/device
 arbitration, master secrets, derived media keys, replay state, Opus queues, and
@@ -174,12 +199,14 @@ unread truth, notifications, queues, cryptographic state, or transport work.
 Message pins remain deferred until stable message-reference semantics are
 designed separately.
 
-## 3. Search
+## 3. Search (planned)
 
-Full-text search runs over a **sealed local index**: tokenized terms are HMAC'd under a
-search-domain key before insertion, so the index file leaks no vocabulary. Query =
-HMAC the query terms, look up. (Trades fuzzy matching for sealed storage, the right
-trade for this project.)
+The current Alpha does not ship a durable full-text index. ADR-0027 proposes a
+separately keyed, bounded local index in which tokenized terms are HMAC'd under
+a search-domain key before insertion. That design avoids plaintext vocabulary
+at rest but still leaks repeated-term equality and access patterns inside one
+database; those trade-offs require implementation, migration, and measurement
+before search is described as available.
 
 ## 4. Backup & portability
 
@@ -219,10 +246,11 @@ trade for this project.)
   delivery queue, it is device runtime state rather than conversation history;
   it survives ordinary process/app restarts on that device but is not resurrected
   by a later identity restore.
-- **C3 edit backup behavior**: originals and authenticated edit records ride
-  with ordinary sealed history. Restore recomputes the authorized deterministic
+- **C3 edit backup behavior**: originals and accepted edit records ride with
+  ordinary sealed history. Restore recomputes the deterministic
   winner and prior-version list; it never imports a mutable current-body cache
-  or discards stale losing revisions.
+  or discards stale losing revisions. Pairwise origin authorization survives
+  restore; current group origin remains membership-level pending ADR-0029.
 - **C4 ephemeral backup behavior**: no live disappearing plaintext, view-once
   manifest, or associated media enters KKR6. Terminal tombstones do, so restore
   cannot resurrect a removed content id. Active ephemeral content is
@@ -239,8 +267,11 @@ trade for this project.)
 - **C2 linked-device backup behavior**: `KKR7` carries the stable account, signed
   manifest, local device id, certified contact endpoints, convergence winners,
   and terminal tombstones, but never exports ratchets or a reusable physical
-  device private credential. Recovery permanently revokes every device that was
-  active in the backup and mints a fresh sole active device.
+  device private credential. Current recovery excludes the known device ids
+  active in the backup and mints a fresh device. It does **not** establish
+  permanent adversarial revocation because an already linked device may retain
+  a copied account root and mint a new id. ADR-0026's offline-root authority
+  reset is required before that stronger claim.
 - **C7 call backup behavior**: no offer/answer/terminal row, call id, device
   arbitration, secret, media key, Opus packet, or decoded audio enters any KKR
   version. Restore never resumes or reveals a prior call.
@@ -252,9 +283,15 @@ trade for this project.)
 
 ## 5. What never becomes durable or remote state
 
-- Plaintext in the core database, backups, logs, analytics, crash metadata, or
-  notification metadata. Protected application transients are the narrow lifecycle-bound
-  exception described above; logs remain structured and content-free by policy.
+- Message, draft, contact-name, and media plaintext outside sealed record
+  bodies in the core database or encrypted Komms backups, or intentionally in
+  logs, analytics, crash metadata, or notification metadata. Explicit warned
+  plaintext export and protected lifecycle-bound application transients are the
+  narrow exceptions described above. The current plaintext relationship indexes
+  remain the separately disclosed Alpha limitation; logs remain structured and
+  content-free by policy.
 - Message keys after use; chain keys after advancing (zeroize-on-drop).
-- Contact graphs on any remote system. Relay queues hold only sealed envelopes under
-  rotating tokens with TTLs.
+- Plaintext contact graphs intentionally uploaded to a remote system. Optional
+  relay queues hold only sealed envelopes under rotating tokens with TTLs, but
+  their operators may still observe network and token-access metadata described
+  in the transport threat model.

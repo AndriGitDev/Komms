@@ -142,12 +142,16 @@ fits typical LoRa payloads after fragmentation into ≤2 frames.
 C3 `Edit` is content-v1 kind `0x0004` inside the plaintext described above. Its
 exact author/content reference, revision, and replacement UTF-8 are protected by
 the same Double Ratchet or group sender-key AEAD as the original. Nothing in the
-outer envelope identifies an edit. Authorization uses the authenticated content
-sender and exact target bytes; visible names and local timestamps are excluded.
-Resolution by maximum `(revision, edit_content_id)` is application convergence,
-not a new cryptographic primitive or signature. The normative encoding and
-compatibility contract are [ADR-0020](adr/0020-authenticated-message-edits.md)
-and [18: Authenticated Message Editing](18-message-editing.md).
+outer envelope identifies an edit. Pairwise authorization uses the authenticated
+content sender and exact target bytes; visible names and local timestamps are
+excluded. In sender-key groups the same check is only membership-level because
+every member holds the content key; ADR-0029 is required for individual group
+origins. Resolution by maximum `(revision, edit_content_id)` is application
+convergence, not a new cryptographic primitive or signature. The normative
+encoding and compatibility contract are
+[ADR-0020](adr/0020-authenticated-message-edits.md),
+[ADR-0029](adr/0029-recipient-authenticated-groups.md), and
+[18: Authenticated Message Editing](18-message-editing.md).
 
 ### 5.2 Authenticated ephemeral content
 
@@ -281,8 +285,10 @@ comparison value. Rationale and UX:
 
 ## 10. Explicit exclusions
 
-- No custom primitives, ever. Constructions may be composed here; primitives come from
-  audited crates pinned by exact version and checksum.
+- No custom primitives, ever. Constructions may be composed here; primitives
+  come from published, externally maintained crates pinned by exact version and
+  checksum. Dependency provenance is not a substitute for independent review of
+  Komms's composition and implementation.
 - No compression before encryption (compression-oracle class attacks).
 - No protocol-level plaintext timestamps; time lives inside the AEAD.
 - `kult-crypto` is `no_std`-compatible (alloc-only) to keep the door open for

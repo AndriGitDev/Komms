@@ -108,7 +108,7 @@ fn main() {
         .unwrap();
 
     let courier = dir.join("courier.kkb");
-    std::fs::write(&courier, bundle_export(&[hs_env, msg_env])).unwrap();
+    std::fs::write(&courier, bundle_export(&[hs_env, msg_env]).unwrap()).unwrap();
     println!(
         "[alice] 2 sealed envelopes → {} ({} bytes on the USB stick)",
         courier.display(),

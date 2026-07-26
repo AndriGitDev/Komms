@@ -254,10 +254,12 @@ payloads remain excluded from indexing.
 
 The shared node API, RPC, CLI, and UniFFI expose a decoded Mention record containing
 the ADR-0014 content id, exact fallback text, and ordered spans with `start`, `end`,
-and the full target peer id. Conversation and authenticated author remain fields
-of the surrounding group message. Raw authenticated payload bytes, group secrets,
-sender chains, capability controls, and encryption state never cross those
-render-safe APIs.
+and the full target peer id. Conversation and claimed author remain fields of
+the surrounding group message. Current sender-key protection authenticates that
+some member produced it, not which member; ADR-0029 defines the stronger origin
+required before stable. Raw protected payload bytes, group secrets, sender
+chains, capability controls, and encryption state never cross those render-safe
+APIs.
 
 Send APIs accept the group id, exact UTF-8 text, and explicit spans whose targets
 are full peer ids. RPC and CLI offsets are UTF-8 byte offsets. UniFFI uses the same

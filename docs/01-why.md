@@ -2,24 +2,35 @@
 
 ## The moment
 
-The EU's "ChatControl" legislation (the CSA Regulation's mandatory-detection provisions)
-requires communication services to scan private messages, including, in practice,
-end-to-end encrypted ones via client-side scanning. Whatever its stated aims, its
-mechanism is the same one every mass-surveillance system uses: a checkpoint between you
-and the person you're talking to, operated by someone who is not either of you.
+*Legal-status note, last checked 2026-07-26: this is project motivation, not
+legal advice.*
 
-The technical community's assessment has been consistent for decades and was repeated,
-loudly, about this bill: **there is no such thing as a scanning mechanism that only works
-for the good guys.** A backdoor is a backdoor; a scanner is a wiretap; infrastructure
-built for one purpose is repurposed by the next government, the next breach, the next
-mission-creep amendment.
+European policy commonly discussed as “Chat Control” is not one already-enacted
+law that universally requires private-message scanning. The proposed permanent
+Child Sexual Abuse Regulation remains in negotiation between EU institutions.
+Separately, on 2026-07-23 the Council gave final approval to a new temporary
+measure allowing providers to resume certain voluntary detection activity.
+The [Council's current overview](https://www.consilium.europa.eu/en/policies/prevent-child-sexual-abuse-online/)
+distinguishes those interim rules from the permanent framework still being
+negotiated. This page must be updated when that status changes.
+
+Komms is motivated by the broader and durable risk: proposals or laws that make
+private communication scannable create a checkpoint between people who are
+talking, operated by someone who is not either of them.
+
+Security experts have repeatedly warned that a privileged scanning mechanism
+creates a capability that can be abused, breached, expanded, or repurposed.
+Komms therefore treats content confidentiality as a technical boundary rather
+than a promise that a scanner will always be used as intended.
 
 Komms's answer is architectural rather than rhetorical: build a messenger with
-**no mandatory content-bearing service provider to compel**. Optional
-reachability and wake services may be pressured to log or deny their own work,
-but they never receive the message keys or plaintext needed for server-side
-scanning, and communication survives without them. See
-[02: Threat Model](02-threat-model.md), adversary A1.
+**no mandatory exclusive content-bearing provider**. DHT first contact and
+durable mailbox delivery remain core roles whose operators can be chosen or
+self-hosted. Optional post-pairing rendezvous and wake services may be pressured
+to log or deny their own work, but they must never receive message plaintext or
+identity private keys. Removing them leaves pure-core routes available, although
+an adversary may still block every usable route. See
+[02: Threat Model](02-threat-model.md), adversaries A1 and A3.
 
 ## The position
 
@@ -43,16 +54,18 @@ serverless mesh messaging is possible but stops at the phone's own radios.
 
 The empty niche Komms targets:
 
-1. **A server-independent core**, not a provider promise: DHT + friend relays +
-   mesh, with no project service required to communicate
+1. **A server-independent core**, not an exclusive-provider promise: DHT first
+   contact + chosen durable mailbox operators + direct/local/mesh paths, with no
+   optional project service required to communicate
    ([03: Architecture](03-architecture.md)).
 2. **Off-grid as a first-class transport**, not a demo: commodity Meshtastic LoRa radios
    give kilometers of range and multi-hop store-and-forward when networks are shut down
    or shut off ([05: Transports](05-transports.md)).
-3. **Bleeding-edge cryptography, conservatively assembled**: hybrid post-quantum key
+3. **Modern cryptographic constructions, conservatively assembled**: hybrid post-quantum key
    agreement (X25519 + ML-KEM-768), Double Ratchet with encrypted headers,
-   XChaCha20-Poly1305 everywhere, sealed-sender delivery: every construction from the
-   published state of the art, no invented primitives
+   XChaCha20-Poly1305, and sealed-sender delivery. The primitives and
+   constructions are published; their combination in Komms is not yet
+   independently audited or independently interoperable
    ([04: Cryptography](04-cryptography.md)).
 4. **No identifiers**: identity is a keypair you mint yourself
    ([06: Identity & Trust](06-identity-trust.md)).
@@ -68,12 +81,22 @@ and the privacy comes with it.
 
 ## The commitments
 
-1. Every line of code public, AGPLv3, forkable forever.
-2. No mandatory service, account, phone number, email, or telemetry. Optional
-   convenience services are public, replaceable, content-blind, and honest about
-   the bounded metadata they can be compelled to disclose or deny
+1. Project-owned software remains public under AGPL-3.0-only and forkable
+   forever. Qualifying modified network versions owe their interacting users a
+   Corresponding Source offer; the license does not prohibit government or
+   commercial use.
+2. No mandatory exclusive service, account, phone number, email, or telemetry.
+   Standard mode may use disclosed and replaceable bootstrap or mailbox
+   defaults. Optional post-pairing convenience services are public,
+   replaceable, content-blind, and honest about the bounded metadata they can be
+   compelled to disclose or work they can deny
    ([ADR-0017](adr/0017-optional-hybrid-modes.md)).
 3. No custom crypto primitives; published constructions only; external audit before any
    "stable" label ([08: Roadmap](08-roadmap.md), M6).
 4. Honest limits, in writing: what Komms cannot protect against is documented as
    carefully as what it can ([02: Threat Model §4](02-threat-model.md)).
+5. Official project activity and default services follow a nonprofit
+   public-benefit mission. Funding sustains access, infrastructure, security,
+   accessibility, maintenance, and development rather than data monetization or
+   private profit distribution
+   ([ADR-0033](adr/0033-nonprofit-founder-stewardship.md)).

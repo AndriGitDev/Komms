@@ -1,6 +1,6 @@
 # 16: Safe Text Formatting
 
-B9 is shipped as a local display feature across `kult-node`, strict RPC/CLI,
+B9 is implemented as a local display feature across `kult-node`, strict RPC/CLI,
 UniFFI, desktop, Android, and iOS. Komms stores and transmits the exact UTF-8
 source a person wrote. Formatting is derived only on the receiving endpoint and
 is never a second message representation.
@@ -79,7 +79,7 @@ objects in the model.
   `kult format-text TEXT...` and prints the stable JSON model.
 - Kotlin and Swift call `KultNode.formatText` through UniFFI; their `Session`
   wrappers expose the same operation.
-- Every shipped bubble path—pairwise, group, note-to-self, and scheduled—uses
+- Every implemented bubble path—pairwise, group, note-to-self, and scheduled—uses
   this model. Native selection remains enabled for scalable, plain-text copy.
 
 ## Qualification

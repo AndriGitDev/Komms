@@ -133,10 +133,11 @@ and removal notices cannot regress a newer generation or owner epoch.
 
 ### Poll moderation
 
-Ordinary poll closure remains creator-authored under ADR-0022. An admin may
-request moderation; the owner emits a separately typed owner-signed moderation
-closure containing the exact group id, poll author/id target, authority
-generation, and final visible vote-head snapshot, signed under
+Ordinary poll closure remains creator-claimed under ADR-0022 and is vulnerable
+to sender-key member forgery until ADR-0029. An admin may request moderation;
+the owner emits a separately typed owner-signed moderation closure containing
+the exact group id, poll author/id target, authority generation, and final
+visible vote-head snapshot, signed under
 `Komms-group-poll-moderation-v1`. Poll resolution accepts it only
 when the signature matches the owner in the referenced valid authority
 generation. The UI identifies it as owner moderation, never as the poll

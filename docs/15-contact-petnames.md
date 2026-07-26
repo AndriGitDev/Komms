@@ -44,7 +44,7 @@ the mutation until the caller presents the returned risks and explicitly retries
 with warning acceptance. Interfaces must retain peer-key-derived or other stable
 context wherever duplicate names could otherwise be ambiguous.
 
-## 3. Shipped interfaces
+## 3. Implemented interfaces
 
 Strict daemon operations are `contact_name_assessment` and `rename_contact`.
 Unknown fields are rejected. The CLI equivalents are:

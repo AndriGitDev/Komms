@@ -10,16 +10,20 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use crate::{ProtocolError, Result};
+use crate::{ProtocolError, Result, MAX_ENVELOPE_BYTES};
 
 /// Fragment header length in bytes.
 pub const FRAG_HEADER_LEN: usize = 4 + 2 + 2;
 /// How long an incomplete message is retained (24 h, normative).
 pub const REASSEMBLY_WINDOW_SECS: u64 = 24 * 3600;
+/// Maximum fragments in one reassembled envelope.
+///
+/// This still carries a maximum-size envelope over the smallest currently
+/// supported radio frame, while preventing an unauthenticated fragment from
+/// declaring a 65,535-entry missing-index vector.
+pub const MAX_FRAGMENTS: usize = 1024;
 /// Maximum concurrent partial messages (fail-closed cap).
 const MAX_PARTIALS: usize = 256;
-/// Maximum reassembled size (matches largest pad bucket + protocol overhead).
-const MAX_MESSAGE_BYTES: usize = 128 * 1024;
 
 fn msg_id(payload: &[u8]) -> [u8; 4] {
     blake3::hash(payload).as_bytes()[..4]
@@ -30,12 +34,15 @@ fn msg_id(payload: &[u8]) -> [u8; 4] {
 /// Split `payload` into fragment bodies of at most `mtu` bytes each
 /// (header included). Returns bodies ready to wrap in `Fragment` envelopes.
 pub fn fragment(payload: &[u8], mtu: usize) -> Result<Vec<Vec<u8>>> {
+    if payload.len() > MAX_ENVELOPE_BYTES {
+        return Err(ProtocolError::EnvelopeTooLarge);
+    }
     if mtu <= FRAG_HEADER_LEN {
         return Err(ProtocolError::MtuTooSmall);
     }
     let slice_len = mtu - FRAG_HEADER_LEN;
     let count = payload.len().div_ceil(slice_len).max(1);
-    if count > u16::MAX as usize {
+    if count > MAX_FRAGMENTS {
         return Err(ProtocolError::TooManyFragments);
     }
     let id = msg_id(payload);
@@ -92,7 +99,10 @@ impl Reassembler {
         let index = u16::from_le_bytes(frag_body[4..6].try_into().expect("length checked"));
         let count = u16::from_le_bytes(frag_body[6..8].try_into().expect("length checked"));
         let slice = &frag_body[FRAG_HEADER_LEN..];
-        if count == 0 || index >= count {
+        if count == 0 || usize::from(count) > MAX_FRAGMENTS || index >= count {
+            if usize::from(count) > MAX_FRAGMENTS {
+                return Err(ProtocolError::TooManyFragments);
+            }
             return Err(ProtocolError::Malformed);
         }
 
@@ -121,7 +131,7 @@ impl Reassembler {
         if partial.parts.contains_key(&index) {
             return Ok(None); // duplicate
         }
-        if partial.bytes + slice.len() > MAX_MESSAGE_BYTES {
+        if partial.bytes + slice.len() > MAX_ENVELOPE_BYTES {
             self.partials.remove(&id);
             return Err(ProtocolError::ReassemblyOverflow);
         }

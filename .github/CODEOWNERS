@@ -1,0 +1,17 @@
+# Current review routing. This file does not by itself provide independent review.
+* @AndriGitDev
+
+# Security- and compatibility-sensitive surfaces remain founder-owned until
+# qualified maintainers are recorded in MAINTAINERS.md.
+/crates/kult-crypto/ @AndriGitDev
+/crates/kult-protocol/ @AndriGitDev
+/crates/kult-store/ @AndriGitDev
+/docs/02-threat-model.md @AndriGitDev
+/docs/04-cryptography.md @AndriGitDev
+/docs/adr/ @AndriGitDev
+/docs/29-stabilization-program.md @AndriGitDev
+/.github/workflows/ @AndriGitDev
+/CODE_OF_CONDUCT.md @AndriGitDev
+/GOVERNANCE.md @AndriGitDev
+/MAINTAINERS.md @AndriGitDev
+/SECURITY.md @AndriGitDev

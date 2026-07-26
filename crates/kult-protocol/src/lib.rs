@@ -59,7 +59,9 @@ pub use attachment_bulk::{
     ATTACHMENT_BULK_MAGIC, ATTACHMENT_BULK_VERSION, ATTACHMENT_CHUNK_PLAINTEXT_LEN,
     ATTACHMENT_SEALED_CHUNK_LEN, MAX_ATTACHMENT_BULK_LEN, MAX_MISSING_RANGES,
 };
-pub use bundle::{bundle_export, bundle_import, BUNDLE_MAGIC};
+pub use bundle::{
+    bundle_export, bundle_import, BUNDLE_MAGIC, MAX_BUNDLE_BYTES, MAX_BUNDLE_ENVELOPES,
+};
 pub use call::{
     decode_call_control_payload, encode_call_control_payload, CallControl, CallHangupReason,
     DecodedCallControl, CALL_CONTROL_BOUND_LEN, CALL_CONTROL_HANGUP_LEN, CALL_CONTROL_HEADER_LEN,
@@ -88,7 +90,7 @@ pub use edit::{
 };
 pub use envelope::{
     Envelope, EnvelopeKind, ENVELOPE_HEADER_LEN, ENVELOPE_V1_HEADER_LEN, ENVELOPE_V2_HEADER_LEN,
-    ENVELOPE_VERSION_V1, ENVELOPE_VERSION_V2,
+    ENVELOPE_VERSION_V1, ENVELOPE_VERSION_V2, MAX_ENVELOPE_BYTES,
 };
 pub use ephemeral::{
     decode_ephemeral_payload, encode_disappearing_text_payload,
@@ -97,7 +99,9 @@ pub use ephemeral::{
     MIN_EPHEMERAL_LIFETIME_SECS, RETENTION_BUCKET_SECS,
 };
 pub use error::ProtocolError;
-pub use fragmentation::{fragment, Reassembler, FRAG_HEADER_LEN, REASSEMBLY_WINDOW_SECS};
+pub use fragmentation::{
+    fragment, Reassembler, FRAG_HEADER_LEN, MAX_FRAGMENTS, REASSEMBLY_WINDOW_SECS,
+};
 pub use group::{
     group_admin_request_signing_bytes, GroupAdminAction, GroupAdminRequest, GroupAdminResult,
     GroupAnnounce, GroupAuthorityAnnounce, GroupControlPayload, GroupMemberInfo,

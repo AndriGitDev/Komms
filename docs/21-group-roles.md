@@ -1,7 +1,7 @@
 # Group Roles, Ownership, and Moderation
 
 C6 adds private, cryptographically attributable group administration without a
-server. It is shipped through `kult-node`, RPC/CLI, UniFFI, desktop, Android,
+server. It is implemented through `kult-node`, RPC/CLI, UniFFI, desktop, Android,
 and iOS. [ADR-0023](adr/0023-group-roles-and-owner-authority.md) is the normative
 decision; this document is the product and operator contract.
 
@@ -66,11 +66,12 @@ portable live chain state.
 
 ## Poll moderation
 
-Ordinary closure remains the poll creator's visible vote-head snapshot. Owner
-moderation is a distinct operation. An admin may request it, but the owner
-sequences the authority generation and emits the closure. The exact group id,
-poll author/id target, authority generation, and final visible vote heads are
-signed under `Komms-group-poll-moderation-v1`.
+Ordinary closure remains the apparent poll creator's visible vote-head snapshot
+and is vulnerable to sender-key member forgery until ADR-0029. Owner moderation
+is a distinct operation. An admin may request it, but the owner sequences the
+authority generation and emits the closure. The exact group id, poll author/id
+target, authority generation, and final visible vote heads are signed under
+`Komms-group-poll-moderation-v1`.
 
 Resolution accepts moderation only when the signature matches the owner in the
 referenced valid authority generation. Every shell labels the result as owner

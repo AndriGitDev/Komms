@@ -12,10 +12,11 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 use rand_core::CryptoRngCore;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -77,8 +78,15 @@ pub enum StoreError {
     NotABackup,
     /// (De)serialization of a stored record failed.
     Serialization,
-    /// Filesystem operation for the private media store failed.
+    /// Filesystem operation for private store state failed.
     Io(std::io::Error),
+    /// Another live store owner already holds this database's writer lock.
+    AlreadyOpen,
+    /// A typed protocol transition did not match the durable source state it
+    /// named and was rolled back without changing the store.
+    InvalidTransition,
+    /// The bounded deferred-inbox item or sealed-byte quota is exhausted.
+    PendingQuota,
     /// Configured or protocol-hard media quota would be exceeded.
     MediaQuota,
     /// Committing a media chunk would violate the free-space reserve.
@@ -142,7 +150,10 @@ impl std::fmt::Display for StoreError {
             Self::NotAStore => f.write_str("not a Komms store"),
             Self::NotABackup => f.write_str("not a Komms backup file"),
             Self::Serialization => f.write_str("record serialization failure"),
-            Self::Io(e) => write!(f, "media filesystem error: {e}"),
+            Self::Io(e) => write!(f, "store filesystem error: {e}"),
+            Self::AlreadyOpen => f.write_str("store is already open by another process"),
+            Self::InvalidTransition => f.write_str("invalid durable protocol transition"),
+            Self::PendingQuota => f.write_str("deferred inbox quota exhausted"),
             Self::MediaQuota => f.write_str("media quota exceeded"),
             Self::LowStorage => f.write_str("insufficient reserved filesystem space"),
             Self::MediaState => f.write_str("invalid media transfer state"),
@@ -243,6 +254,28 @@ pub struct MessageRecord {
     /// Content id of the envelope this message left in (outbound only) —
     /// what encrypted delivery receipts acknowledge.
     pub wire_id: Option<[u8; 16]>,
+}
+
+/// Complete durable consequences of accepting one ordinary pairwise message.
+///
+/// The session is a candidate advanced from the last durable session. Applying
+/// this plan either commits every field in one immediate SQLite transaction or
+/// leaves the prior session and source pending row unchanged.
+pub struct PairwiseReceivePlan<'a> {
+    /// Exact physical-device ratchet route whose receiving state advanced.
+    pub peer_device: &'a [u8; 32],
+    /// Candidate session after authenticating and decrypting the envelope.
+    pub session: &'a Session,
+    /// Accepted immutable history row, or `None` for an application-level
+    /// duplicate whose envelope still needs replay and receipt state.
+    pub message: Option<&'a MessageRecord>,
+    /// Authenticated envelope content id used for durable transport dedup.
+    pub content_id: &'a [u8; 16],
+    /// Local receive time stored with the duplicate-receipt route.
+    pub received_at: u64,
+    /// Stable deferred-inbox row consumed by this transition, when the
+    /// envelope came from the pending inbox rather than a fresh carrier read.
+    pub source_pending_sequence: Option<i64>,
 }
 
 /// A contact (sealed as one blob in the `contacts` table).
@@ -439,6 +472,10 @@ const QUEUE_ROW_MAGIC_V2: &[u8; 4] = b"KQ\0\x02";
 type GroupChainRow = ([u8; 32], Zeroizing<Vec<u8>>);
 
 const WRAP_AD: &[u8] = b"KK-store-wrap-v1";
+/// Maximum number of envelopes waiting for a session or handshake.
+pub const MAX_PENDING_ENVELOPES: usize = 2_048;
+/// Maximum aggregate sealed bytes retained by the deferred inbox.
+pub const MAX_PENDING_BYTES: usize = 64 * 1024 * 1024;
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta     (k TEXT PRIMARY KEY, v BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS identity (id INTEGER PRIMARY KEY CHECK (id = 1), blob BLOB NOT NULL);
@@ -468,7 +505,90 @@ CREATE TABLE IF NOT EXISTS contact_devices (rowid_ INTEGER PRIMARY KEY AUTOINCRE
 CREATE TABLE IF NOT EXISTS message_device_delivery (rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);
 ";
 
-/// An open, unlocked Komms store.
+/// Resolve one stable sidecar name without replacing the database extension.
+///
+/// Existing database symlinks resolve to the target before the suffix is
+/// appended. For a new database, canonicalizing its parent gives relative and
+/// absolute spellings the same lock file.
+fn store_lock_path(path: &Path) -> Result<PathBuf> {
+    let file_name = path.file_name().ok_or_else(|| {
+        StoreError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "store path has no file name",
+        ))
+    })?;
+    let resolved = match std::fs::canonicalize(path) {
+        Ok(resolved) => resolved,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let parent = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            std::fs::canonicalize(parent)?.join(file_name)
+        }
+        Err(error) => return Err(StoreError::Io(error)),
+    };
+    let mut sidecar = resolved.into_os_string();
+    sidecar.push(".lock");
+    Ok(PathBuf::from(sidecar))
+}
+
+/// Acquire this database's non-blocking process-wide writer exclusion.
+///
+/// The sidecar intentionally remains after drop: unlinking a lock file can
+/// split contenders across different inodes. Dropping the returned handle
+/// releases the advisory lock.
+fn acquire_store_lock(path: &Path) -> Result<File> {
+    let lock_path = store_lock_path(path)?;
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let lock = options.open(lock_path)?;
+    match fs2::FileExt::try_lock_exclusive(&lock) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            return Err(StoreError::AlreadyOpen);
+        }
+        Err(error) => return Err(StoreError::Io(error)),
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        lock.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(lock)
+}
+
+/// Lock the opened database inode as a second writer-identity boundary.
+///
+/// On Unix, this closes the hardlink-alias gap left by a pathname sidecar.
+/// The connection opens first but performs no schema or application write
+/// before this lock succeeds. Other platforms retain the canonical sidecar
+/// boundary until an equivalent file-identity strategy is qualified.
+fn acquire_database_identity_lock(path: &Path) -> Result<Option<File>> {
+    #[cfg(unix)]
+    {
+        let database = OpenOptions::new().read(true).write(true).open(path)?;
+        match fs2::FileExt::try_lock_exclusive(&database) {
+            Ok(()) => Ok(Some(database)),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(StoreError::AlreadyOpen)
+            }
+            Err(error) => Err(StoreError::Io(error)),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(None)
+    }
+}
+
+/// An open Komms store with its encrypted domains unlocked.
 pub struct Store {
     conn: Connection,
     k_identity: StorageKey,
@@ -490,6 +610,12 @@ pub struct Store {
     k_devices: StorageKey,
     media_dir: PathBuf,
     media_limits: MediaLimits,
+    // Prevents another Unix process from bypassing the pathname sidecar via a
+    // hardlink alias to the same database inode.
+    _database_lock: Option<File>,
+    // Kept last so normal field drop order closes SQLite and clears every
+    // store field before releasing the process-wide writer exclusion.
+    _lock: File,
 }
 
 impl Store {
@@ -501,7 +627,9 @@ impl Store {
         profile: KdfProfile,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Self> {
+        let lock = acquire_store_lock(path)?;
         let conn = Connection::open(path)?;
+        let database_lock = acquire_database_identity_lock(path)?;
         conn.execute_batch(SCHEMA)?;
         let existing: Option<Vec<u8>> = conn
             .query_row("SELECT v FROM meta WHERE k = 'wrapped_sk'", [], |r| {
@@ -534,12 +662,20 @@ impl Store {
             params![wrapped],
         )?;
 
-        Self::with_master(conn, StorageKey::from_bytes(*sk_bytes), path)
+        Self::with_master(
+            conn,
+            database_lock,
+            lock,
+            StorageKey::from_bytes(*sk_bytes),
+            path,
+        )
     }
 
     /// Open and unlock an existing store.
     pub fn open(path: &Path, passphrase: &[u8]) -> Result<Self> {
+        let lock = acquire_store_lock(path)?;
         let conn = Connection::open(path)?;
+        let database_lock = acquire_database_identity_lock(path)?;
         // Idempotent: also creates any table added since this store was —
         // the only schema evolution so far is purely additive.
         conn.execute_batch(SCHEMA)?;
@@ -563,10 +699,22 @@ impl Store {
         let sk_vec = Zeroizing::new(kek_key.open(WRAP_AD, &wrapped)?); // wrong passphrase fails here
         let sk_bytes: [u8; 32] = sk_vec[..].try_into().map_err(|_| StoreError::NotAStore)?;
 
-        Self::with_master(conn, StorageKey::from_bytes(sk_bytes), path)
+        Self::with_master(
+            conn,
+            database_lock,
+            lock,
+            StorageKey::from_bytes(sk_bytes),
+            path,
+        )
     }
 
-    fn with_master(conn: Connection, master: StorageKey, path: &Path) -> Result<Self> {
+    fn with_master(
+        conn: Connection,
+        database_lock: Option<File>,
+        lock: File,
+        master: StorageKey,
+        path: &Path,
+    ) -> Result<Self> {
         let media_dir = media::prepare_media_directory(path)?;
         Ok(Self {
             k_identity: master.derive(b"KK-store-identity"),
@@ -587,6 +735,8 @@ impl Store {
             media_dir,
             media_limits: MediaLimits::default(),
             conn,
+            _database_lock: database_lock,
+            _lock: lock,
         })
     }
 
@@ -650,6 +800,95 @@ impl Store {
         match sealed {
             Some(s) => Ok(Some(Session::unseal(&s, &self.k_sessions)?)),
             None => Ok(None),
+        }
+    }
+
+    /// Atomically commit an accepted ordinary pairwise receive transition.
+    ///
+    /// Sealing and serialization complete before `BEGIN IMMEDIATE`. The
+    /// transaction advances the ratchet, appends optional history, records
+    /// envelope dedup and receipt replay state, and acknowledges the exact
+    /// deferred-inbox row together. A missing named pending row or any SQL
+    /// failure rolls back the entire transition.
+    pub fn commit_pairwise_receive(
+        &self,
+        plan: PairwiseReceivePlan<'_>,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        if plan.message.is_some_and(|message| {
+            message.direction != Direction::Inbound
+                || message.state != DeliveryState::Received
+                || message.wire_id.is_some()
+        }) {
+            return Err(StoreError::InvalidTransition);
+        }
+        if let Some(sequence) = plan.source_pending_sequence {
+            let sealed: Option<Vec<u8>> = self
+                .conn
+                .query_row(
+                    "SELECT blob FROM pending WHERE seq = ?1",
+                    params![sequence],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(sealed) = sealed else {
+                return Err(StoreError::InvalidTransition);
+            };
+            let plain = self.k_pending.open(b"pending", &sealed)?;
+            let (envelope, _): (Vec<u8>, u64) =
+                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
+            if Envelope::decode(&envelope)?.content_id() != *plan.content_id {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+
+        let sealed_session = plan.session.seal(&self.k_sessions, rng);
+        let sealed_message = if let Some(message) = plan.message {
+            let plain = postcard::to_allocvec(message).map_err(|_| StoreError::Serialization)?;
+            Some(self.k_messages.seal(b"message", &plain, rng))
+        } else {
+            None
+        };
+        let replay = postcard::to_allocvec(&(*plan.peer_device, plan.received_at))
+            .map_err(|_| StoreError::Serialization)?;
+        let sealed_replay = self.k_queue.seal(b"receipt-replay", &replay, rng);
+
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let applied = (|| -> Result<()> {
+            tx.execute(
+                "INSERT OR REPLACE INTO sessions (peer, blob) VALUES (?1, ?2)",
+                params![plan.peer_device.as_slice(), sealed_session],
+            )?;
+            if let Some(sealed) = sealed_message {
+                tx.execute("INSERT INTO messages (blob) VALUES (?1)", params![sealed])?;
+            }
+            tx.execute(
+                "INSERT INTO seen (id) VALUES (?1)",
+                params![plan.content_id.as_slice()],
+            )?;
+            tx.execute(
+                "INSERT OR REPLACE INTO receipt_replay (id, blob) VALUES (?1, ?2)",
+                params![plan.content_id.as_slice(), sealed_replay],
+            )?;
+            if let Some(sequence) = plan.source_pending_sequence {
+                let removed =
+                    tx.execute("DELETE FROM pending WHERE seq = ?1", params![sequence])?;
+                if removed != 1 {
+                    return Err(StoreError::InvalidTransition);
+                }
+            }
+            Ok(())
+        })();
+
+        match applied {
+            Ok(()) => {
+                tx.commit()?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = tx.rollback();
+                Err(error)
+            }
         }
     }
 
@@ -871,6 +1110,7 @@ impl Store {
 
     /// Enqueue an envelope for delivery (sealed at rest; survives restarts).
     pub fn queue_push(&self, item: &QueueItem, rng: &mut impl CryptoRngCore) -> Result<i64> {
+        let envelope = item.envelope.try_encode()?;
         let row = QueueRowV2 {
             peer: item.peer,
             msg_id: item.msg_id,
@@ -879,7 +1119,7 @@ impl Store {
             created_at: item.created_at,
             attempts: item.attempts,
             next_attempt_at: item.next_attempt_at,
-            envelope: item.envelope.encode(),
+            envelope,
         };
         let encoded = postcard::to_allocvec(&row).map_err(|_| StoreError::Serialization)?;
         let mut plain = Vec::with_capacity(QUEUE_ROW_MAGIC_V2.len() + encoded.len());
@@ -991,6 +1231,7 @@ impl Store {
         item: &QueueItem,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
+        let envelope = item.envelope.try_encode()?;
         let row = QueueRowV2 {
             peer: item.peer,
             msg_id: item.msg_id,
@@ -999,7 +1240,7 @@ impl Store {
             created_at: item.created_at,
             attempts: item.attempts,
             next_attempt_at: item.next_attempt_at,
-            envelope: item.envelope.encode(),
+            envelope,
         };
         let encoded = postcard::to_allocvec(&row).map_err(|_| StoreError::Serialization)?;
         let mut plain = Vec::with_capacity(QUEUE_ROW_MAGIC_V2.len() + encoded.len());
@@ -1092,36 +1333,75 @@ impl Store {
 
     /// Stash an inbound envelope that cannot be consumed yet (e.g. it arrived
     /// before the handshake that establishes its session). Survives restarts
-    /// so out-of-order arrival across carriers never loses messages.
+    /// so out-of-order arrival across carriers never loses messages. Returns
+    /// the stable sequence used for later acknowledgement.
     pub fn pending_push(
         &self,
         env: &Envelope,
         first_seen: u64,
         rng: &mut impl CryptoRngCore,
-    ) -> Result<()> {
-        let plain = postcard::to_allocvec(&(env.encode(), first_seen))
-            .map_err(|_| StoreError::Serialization)?;
+    ) -> Result<i64> {
+        let encoded = env.try_encode()?;
+        let plain =
+            postcard::to_allocvec(&(encoded, first_seen)).map_err(|_| StoreError::Serialization)?;
         let sealed = self.k_pending.seal(b"pending", &plain, rng);
-        self.conn
-            .execute("INSERT INTO pending (blob) VALUES (?1)", params![sealed])?;
-        Ok(())
+        if sealed.len() > MAX_PENDING_BYTES {
+            return Err(StoreError::PendingQuota);
+        }
+
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let (count, bytes): (i64, i64) = tx.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(length(blob)), 0) FROM pending",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let count = usize::try_from(count).map_err(|_| StoreError::Serialization)?;
+        let bytes = usize::try_from(bytes).map_err(|_| StoreError::Serialization)?;
+        if count >= MAX_PENDING_ENVELOPES
+            || bytes
+                .checked_add(sealed.len())
+                .is_none_or(|total| total > MAX_PENDING_BYTES)
+        {
+            tx.rollback()?;
+            return Err(StoreError::PendingQuota);
+        }
+        tx.execute("INSERT INTO pending (blob) VALUES (?1)", params![sealed])?;
+        let sequence = tx.last_insert_rowid();
+        tx.commit()?;
+        Ok(sequence)
     }
 
-    /// Remove and return all stashed inbound envelopes with their
-    /// first-seen timestamps (the runtime re-stashes what it still can't
-    /// consume).
-    pub fn pending_drain(&self) -> Result<Vec<(Envelope, u64)>> {
-        let mut stmt = self.conn.prepare("SELECT blob FROM pending ORDER BY seq")?;
-        let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
+    /// Return every stashed inbound envelope without removing it.
+    ///
+    /// Each tuple is `(stable sequence, envelope, first-seen timestamp)`.
+    /// The caller must explicitly [`Store::pending_ack`] a sequence only
+    /// after the envelope is consumed or has expired. This gives deferred
+    /// receive processing at-least-once crash semantics.
+    pub fn pending_all(&self) -> Result<Vec<(i64, Envelope, u64)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT seq, blob FROM pending ORDER BY seq")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
         let mut out = Vec::new();
         for row in rows {
-            let plain = self.k_pending.open(b"pending", &row?)?;
+            let (sequence, sealed) = row?;
+            let plain = self.k_pending.open(b"pending", &sealed)?;
             let (env_bytes, first_seen): (Vec<u8>, u64) =
                 postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
-            out.push((Envelope::decode(&env_bytes)?, first_seen));
+            out.push((sequence, Envelope::decode(&env_bytes)?, first_seen));
         }
-        self.conn.execute("DELETE FROM pending", [])?;
         Ok(out)
+    }
+
+    /// Acknowledge one consumed or expired inbound envelope.
+    ///
+    /// The stable sequence makes acknowledgement row-scoped: retryable and
+    /// not-yet-visited rows remain durable if processing returns an error or
+    /// the process stops between envelopes.
+    pub fn pending_ack(&self, sequence: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM pending WHERE seq = ?1", params![sequence])?;
+        Ok(())
     }
 
     // ---- groups (ADR-0012) --------------------------------------------------
@@ -1491,8 +1771,11 @@ impl Store {
 #[cfg(test)]
 mod queue_tests {
     use super::*;
-    use kult_crypto::KdfProfile;
-    use kult_protocol::EnvelopeKind;
+    use kult_crypto::{
+        initiate, respond, Identity, KdfProfile, OneTimePrekeySecret, PqPrekeySecret, PrekeyBundle,
+        RatchetMessage, SignedPrekeySecret,
+    };
+    use kult_protocol::{pad, unpad, EnvelopeKind};
     use rand::{rngs::StdRng, SeedableRng};
 
     const TEST_KDF: KdfProfile = KdfProfile {
@@ -1549,6 +1832,51 @@ mod queue_tests {
     }
 
     #[test]
+    fn queue_rejects_oversized_objects_before_insert_or_update() {
+        let mut rng = StdRng::seed_from_u64(0x511cf);
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::create(
+            &dir.path().join("queue-limit.db"),
+            b"pass",
+            TEST_KDF,
+            &mut rng,
+        )
+        .unwrap();
+        let mut item = QueueItem {
+            peer: [1; 32],
+            msg_id: None,
+            group_msg_id: None,
+            class: QueueClass::Normal,
+            created_at: 1,
+            attempts: 0,
+            next_attempt_at: 1,
+            envelope: Envelope::new(EnvelopeKind::Message, [2; 32], vec![3]),
+        };
+        let sequence = store.queue_push(&item, &mut rng).unwrap();
+        item.envelope = Envelope::new(
+            EnvelopeKind::Message,
+            [4; 32],
+            vec![5; kult_protocol::MAX_ENVELOPE_BYTES],
+        );
+        assert!(matches!(
+            store.queue_update(sequence, &item, &mut rng),
+            Err(StoreError::Protocol(
+                kult_protocol::ProtocolError::EnvelopeTooLarge
+            ))
+        ));
+        assert_eq!(store.queue_all().unwrap()[0].1.envelope.body, vec![3]);
+
+        store.queue_ack(sequence).unwrap();
+        assert!(matches!(
+            store.queue_push(&item, &mut rng),
+            Err(StoreError::Protocol(
+                kult_protocol::ProtocolError::EnvelopeTooLarge
+            ))
+        ));
+        assert!(store.queue_all().unwrap().is_empty());
+    }
+
+    #[test]
     fn accepted_envelope_receipt_route_is_sealed_and_expires() {
         let mut rng = StdRng::seed_from_u64(0xacc);
         let dir = tempfile::tempdir().unwrap();
@@ -1561,5 +1889,260 @@ mod queue_tests {
         assert_eq!(store.sweep_receipt_replay(122).unwrap(), 0);
         assert_eq!(store.sweep_receipt_replay(123).unwrap(), 1);
         assert_eq!(store.receipt_replay_peer(&id).unwrap(), None);
+    }
+
+    #[test]
+    fn pending_rows_keep_stable_ids_until_explicit_acknowledgement() {
+        let mut rng = StdRng::seed_from_u64(0x1b0);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pending.db");
+        let store = Store::create(&path, b"pass", TEST_KDF, &mut rng).unwrap();
+        let first = Envelope::new(EnvelopeKind::Message, [1; 32], vec![2]);
+        let second = Envelope::new(EnvelopeKind::Receipt, [3; 32], vec![4]);
+
+        let first_sequence = store.pending_push(&first, 100, &mut rng).unwrap();
+        let second_sequence = store.pending_push(&second, 200, &mut rng).unwrap();
+        assert_ne!(first_sequence, second_sequence);
+
+        let first_read = store.pending_all().unwrap();
+        let second_read = store.pending_all().unwrap();
+        assert_eq!(first_read, second_read);
+        assert_eq!(
+            first_read,
+            vec![
+                (first_sequence, first.clone(), 100),
+                (second_sequence, second.clone(), 200),
+            ]
+        );
+
+        drop(store);
+        let reopened = Store::open(&path, b"pass").unwrap();
+        assert_eq!(reopened.pending_all().unwrap(), first_read);
+
+        reopened.pending_ack(first_sequence).unwrap();
+        assert_eq!(
+            reopened.pending_all().unwrap(),
+            vec![(second_sequence, second, 200)]
+        );
+        reopened.pending_ack(second_sequence).unwrap();
+        assert!(reopened.pending_all().unwrap().is_empty());
+    }
+
+    #[test]
+    fn pending_inbox_enforces_item_and_sealed_byte_quotas() {
+        let mut rng = StdRng::seed_from_u64(0x1b1);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pending-quota.db");
+        let store = Store::create(&path, b"pass", TEST_KDF, &mut rng).unwrap();
+        let envelope = Envelope::new(EnvelopeKind::Message, [1; 32], vec![2]);
+        let oversized = Envelope::new(
+            EnvelopeKind::Message,
+            [3; 32],
+            vec![4; kult_protocol::MAX_ENVELOPE_BYTES],
+        );
+        assert!(matches!(
+            store.pending_push(&oversized, 100, &mut rng),
+            Err(StoreError::Protocol(
+                kult_protocol::ProtocolError::EnvelopeTooLarge
+            ))
+        ));
+        assert!(store.pending_all().unwrap().is_empty());
+
+        let tx = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate).unwrap();
+        for _ in 0..MAX_PENDING_ENVELOPES {
+            tx.execute("INSERT INTO pending (blob) VALUES (zeroblob(1))", [])
+                .unwrap();
+        }
+        tx.commit().unwrap();
+        assert!(matches!(
+            store.pending_push(&envelope, 100, &mut rng),
+            Err(StoreError::PendingQuota)
+        ));
+
+        store.conn.execute("DELETE FROM pending", []).unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO pending (blob) VALUES (zeroblob(?1))",
+                params![MAX_PENDING_BYTES as i64],
+            )
+            .unwrap();
+        assert!(matches!(
+            store.pending_push(&envelope, 100, &mut rng),
+            Err(StoreError::PendingQuota)
+        ));
+    }
+
+    #[test]
+    fn pairwise_receive_failure_rolls_back_ratchet_and_every_consequence() {
+        const NOW: u64 = 1_800_000_000;
+
+        let mut rng = StdRng::seed_from_u64(0xa70c);
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            Store::create(&dir.path().join("receive.db"), b"pass", TEST_KDF, &mut rng).unwrap();
+
+        let alice = Identity::generate(&mut rng);
+        let bob = Identity::generate(&mut rng);
+        let spk = SignedPrekeySecret::generate(&mut rng, 1);
+        let pqspk = PqPrekeySecret::generate(&mut rng, 2);
+        let opk = OneTimePrekeySecret::generate(&mut rng, 3);
+        let bundle = PrekeyBundle::build(&bob, &spk, &pqspk, Some(&opk), NOW + 86_400, vec![])
+            .verify(NOW)
+            .unwrap();
+        let (mut alice_session, initial) =
+            initiate(&alice, &bundle, &pad(b"first").unwrap(), NOW, &mut rng).unwrap();
+        let (bob_session, first) =
+            respond(&bob, &spk, &pqspk, Some(&opk), &initial, NOW, &mut rng).unwrap();
+        assert_eq!(unpad(&first).unwrap(), b"first");
+
+        let peer_device = alice.public().ed;
+        store
+            .put_session(&peer_device, &bob_session, &mut rng)
+            .unwrap();
+        let ratchet = alice_session.encrypt(&mut rng, NOW + 1, &pad(b"second").unwrap(), &[]);
+        let envelope = Envelope::new(EnvelopeKind::Message, [4; 32], ratchet.encode());
+        let content_id = envelope.content_id();
+        let pending_sequence = store.pending_push(&envelope, NOW + 1, &mut rng).unwrap();
+        let unrelated = Envelope::new(EnvelopeKind::Receipt, [6; 32], vec![7]);
+        let unrelated_sequence = store.pending_push(&unrelated, NOW + 2, &mut rng).unwrap();
+        let message = MessageRecord {
+            id: [5; 16],
+            peer: peer_device,
+            direction: Direction::Inbound,
+            state: DeliveryState::Received,
+            timestamp: NOW + 1,
+            body: b"second".to_vec(),
+            wire_id: None,
+        };
+
+        let decoded = RatchetMessage::decode(&envelope.body).unwrap();
+        let mut failed_candidate = store.get_session(&peer_device).unwrap().unwrap();
+        assert_eq!(
+            unpad(
+                &failed_candidate
+                    .decrypt(&mut rng, NOW + 1, &decoded, &[])
+                    .unwrap()
+            )
+            .unwrap(),
+            b"second"
+        );
+
+        // Force the third statement to fail after the candidate session and
+        // message insert. SQLite must roll both back and retain the source.
+        store
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER fail_pairwise_receive
+                 BEFORE INSERT ON seen
+                 BEGIN
+                   SELECT RAISE(ABORT, 'injected receive failure');
+                 END;",
+            )
+            .unwrap();
+        assert!(store
+            .commit_pairwise_receive(
+                PairwiseReceivePlan {
+                    peer_device: &peer_device,
+                    session: &failed_candidate,
+                    message: Some(&message),
+                    content_id: &content_id,
+                    received_at: NOW + 1,
+                    source_pending_sequence: Some(pending_sequence),
+                },
+                &mut rng,
+            )
+            .is_err());
+        store
+            .conn
+            .execute_batch("DROP TRIGGER fail_pairwise_receive")
+            .unwrap();
+
+        assert!(store.all_messages().unwrap().is_empty());
+        assert!(!store.is_seen(&content_id).unwrap());
+        assert_eq!(
+            store.pending_all().unwrap(),
+            vec![
+                (pending_sequence, envelope.clone(), NOW + 1),
+                (unrelated_sequence, unrelated.clone(), NOW + 2),
+            ]
+        );
+        assert_eq!(store.receipt_replay_peer(&content_id).unwrap(), None);
+
+        // The original durable ratchet still decrypts the same ciphertext,
+        // proving the failed candidate was not persisted.
+        let mut wrong_source_candidate = store.get_session(&peer_device).unwrap().unwrap();
+        assert_eq!(
+            unpad(
+                &wrong_source_candidate
+                    .decrypt(&mut rng, NOW + 1, &decoded, &[])
+                    .unwrap()
+            )
+            .unwrap(),
+            b"second"
+        );
+        assert!(matches!(
+            store.commit_pairwise_receive(
+                PairwiseReceivePlan {
+                    peer_device: &peer_device,
+                    session: &wrong_source_candidate,
+                    message: Some(&message),
+                    content_id: &content_id,
+                    received_at: NOW + 1,
+                    source_pending_sequence: Some(unrelated_sequence),
+                },
+                &mut rng,
+            ),
+            Err(StoreError::InvalidTransition)
+        ));
+        assert!(store.all_messages().unwrap().is_empty());
+        assert!(!store.is_seen(&content_id).unwrap());
+        assert_eq!(
+            store.pending_all().unwrap(),
+            vec![
+                (pending_sequence, envelope, NOW + 1),
+                (unrelated_sequence, unrelated.clone(), NOW + 2),
+            ]
+        );
+        assert_eq!(store.receipt_replay_peer(&content_id).unwrap(), None);
+
+        // A final retry from the still-unchanged durable session commits all
+        // consequences and consumes exactly the named pending source.
+        let mut retry_candidate = store.get_session(&peer_device).unwrap().unwrap();
+        assert_eq!(
+            unpad(
+                &retry_candidate
+                    .decrypt(&mut rng, NOW + 1, &decoded, &[])
+                    .unwrap()
+            )
+            .unwrap(),
+            b"second"
+        );
+        store
+            .commit_pairwise_receive(
+                PairwiseReceivePlan {
+                    peer_device: &peer_device,
+                    session: &retry_candidate,
+                    message: Some(&message),
+                    content_id: &content_id,
+                    received_at: NOW + 1,
+                    source_pending_sequence: Some(pending_sequence),
+                },
+                &mut rng,
+            )
+            .unwrap();
+
+        assert_eq!(store.all_messages().unwrap(), vec![message]);
+        assert!(store.is_seen(&content_id).unwrap());
+        assert_eq!(
+            store.pending_all().unwrap(),
+            vec![(unrelated_sequence, unrelated, NOW + 2)]
+        );
+        assert_eq!(
+            store.receipt_replay_peer(&content_id).unwrap(),
+            Some(peer_device)
+        );
+        let mut committed = store.get_session(&peer_device).unwrap().unwrap();
+        assert!(committed.decrypt(&mut rng, NOW + 1, &decoded, &[]).is_err());
     }
 }

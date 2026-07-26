@@ -4,25 +4,33 @@
 
 ## What is this?
 
-Komms is a messenger being built so that **nobody between you and the person
-you're writing to can read, scan, or block your messages**: not a company, not a
-government scanner, not the network itself. Not because a policy promises it, but
-because the messages protect themselves and no mandatory provider can open them.
+Komms is a messenger being built so that **people carrying your messages are
+not given the keys to read or scan their contents**. It also offers more than
+one route, so no mandatory exclusive provider is the only way to communicate.
+Encryption cannot promise delivery against every network block, device seizure,
+radio jammer, or compromised endpoint; the goal is to preserve useful
+alternatives when at least one supported path remains.
 
 Three things make it different from the messengers you know:
 
-1. **There is no mandatory company in the middle.** WhatsApp, Telegram, even
-   Signal depend on servers operated by one organization. Komms messages travel
-   directly between devices, through volunteers, or over radio. Optional
-   convenience services can help wake a sleeping phone or find a paired friend,
-   but they cannot read messages and communication still works without them.
-2. **It works when the internet doesn't.** Messages can travel over small,
-   ~€30 [Meshtastic](https://meshtastic.org) radios (kilometres of range, no SIM card,
-   no infrastructure), between phones nearby, or even on a USB stick carried in a
-   pocket. If someone switches the internet off, communication continues.
+1. **There is no mandatory exclusive provider.** Komms messages may travel
+   directly, through chosen volunteer mailbox operators holding sealed
+   ciphertext, or over local and radio links. A future Standard mode may offer
+   disclosed, replaceable defaults for easy setup. Optional post-pairing
+   rendezvous and phone wake services cannot read message content or hold
+   identity private keys; removing them leaves the pure-core routes available.
+2. **It is designed for more than one kind of network.** Messages can use
+   [Meshtastic](https://meshtastic.org) radios, local links, or a `.kkb` courier
+   file carried on removable media. The software paths have automated tests;
+   the physical two-radio and real-world mobile matrices remain Alpha
+   qualification work. During a shutdown, communication still needs a
+   supported route, working devices, power, configuration, and sometimes radio
+   hardware.
 3. **You are not a phone number.** No number, no email, no account, no sign-up. Your
    identity is a cryptographic key created on your own device. Nobody can ban your
-   account, because there is no account.
+   Komms account, because there is no centrally administered Komms account.
+   Networks, app stores, and device owners can still deny access to their own
+   resources.
 
 ## What do the crypto words mean?
 
@@ -31,16 +39,17 @@ You'll see five terms around the project. This is all you need:
 | Term | Plain meaning |
 |---|---|
 | **End-to-end encryption** | Your message is locked on your device and only your contact's device can unlock it. Everyone in between sees scrambled bytes. |
-| **Post-quantum** | The locks are designed to survive even the codebreaking computers expected in the future. Messages recorded today stay private tomorrow. |
-| **kult address** (`kk1…`) | Your ID, like a phone number you invented yourself and nobody can take away. Share it as a QR code, sticker, or text. |
-| **Safety number** | A 30-digit number you and a friend compare (in person or over a call) to be *certain* no one is impersonating either of you; scanning compares the full 256-bit value. |
+| **Post-quantum** | The handshake combines classical and standardized post-quantum key agreement to reduce “record now, decrypt later” risk. It is not a guarantee against endpoint compromise, implementation bugs, or future cryptanalysis. |
+| **kult address** (`kk1…`) | Your cryptographic ID, created on your device rather than assigned by a central registry. Share it as a QR code, sticker, or text. |
+| **Safety number** | A 30-digit number you and a friend compare (in person or over a trusted call) to check that the identity keys match; scanning compares the full 256-bit value. It cannot make a compromised endpoint trustworthy. |
 | **Courier file / bundle** | Your encrypted messages packed into a `.kkb` file that can travel on a USB stick or another file channel: messaging with no network at all. Animated message-bundle QR is planned; current QR flows are for pairing and verification. |
 
 ## What does it protect me from, honestly?
 
-**It protects**: the content of your messages; who you talk to (as far as
-technically possible); your message history on a lost or stolen (locked) device; your
-ability to communicate during internet shutdowns.
+**It is designed to protect**: the content of your messages; who you talk to (as
+far as the selected routes and threat model allow); your message history on a
+lost or stolen locked device; and communication options during internet
+shutdowns when a supported alternate path remains.
 
 **It cannot protect**: a phone that is already hacked or taken from you unlocked;
 the fact that a radio transmission physically happened (radio can be detected); you,
@@ -57,7 +66,10 @@ checksum, install it, and report what you find. The desktop packages are not
 production-signed or notarized, the Android APK is debug-signed, and iOS remains
 source/Simulator-only. Hands-on device qualification, signed and store
 distribution, the physical radio bench, and an external audit remain before a
-stable release.
+stable release. Fresh internet installs also need deliberate bootstrap/mailbox
+configuration today; the replaceable-default Standard journey and the
+separately demonstrated pure-core journey are P0 work, not a current
+plug-and-play claim.
 
 Messages may use a small safe formatting subset for emphasis, strong text,
 quotes, lists, and code. The exact readable source stays encrypted in history
@@ -74,8 +86,9 @@ warning and user action before operating-system handoff. See
 You can edit canonical text you authored in a pairwise or group conversation.
 Komms sends that change as a new encrypted event, keeps an **edited** marker and
 inspectable version history, and derives the same winner even when offline
-carriers deliver edits out of order. Editing does not erase what another device
-already received or copied. See
+carriers deliver edits out of order. Pairwise authorship is authenticated; in
+the current Alpha, a malicious group member can forge another member's apparent
+edit. Editing does not erase what another device already received or copied. See
 [Authenticated Message Editing](18-message-editing.md).
 
 You can also choose disappearing text or a view-once attachment. Komms removes
@@ -87,23 +100,26 @@ not the exact deadline or content. See
 [Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
 
 Groups can also create encrypted single-choice polls. Votes and voter identities
-are visible to members—Komms does not call them anonymous—and the creator closes
-the exact vote snapshot they have received. Offline, duplicate, and reordered
-events still converge locally. See [Group Polls](20-group-polls.md).
+are visible to members—Komms does not call them anonymous—and the apparent
+creator closes the exact vote snapshot they have received. Offline, duplicate,
+and reordered events still converge locally. In the current Alpha, another
+group member can forge an apparent voter or creator; ADR-0029 is required before
+stable. See [Group Polls](20-group-polls.md).
 
 Groups can upgrade to signed owner, admin, and member roles. There is always one
 owner. Admins can request common work while the owner is offline, but the owner
 still commits one ordered change and refreshes the group's encryption keys.
 Ownership can be transferred; the owner must transfer before leaving. A signed
-owner moderation close is visibly different from the poll creator's ordinary
+owner moderation close is visibly different from an apparent creator's ordinary
 close. There is no server account or hidden moderator behind these roles. See
 [Group Roles, Ownership, and Moderation](21-group-roles.md).
 
 One Komms identity can authorize up to eight independently keyed devices through
 a mutually confirmed QR or paste ceremony. Sync is explicit and encrypted
-between those devices; there is no cloud account, and revoking one exact device
-does not revoke or silently clone another. Recovery creates fresh device
-credentials rather than reviving credentials from a backup. See
+between those devices; there is no cloud account. Current Alpha revocation
+excludes one known id but cannot permanently contain a compromised device that
+retained the copied account root. Recovery creates fresh device credentials
+rather than reviving credentials from a backup. See
 [Linked Devices](22-linked-devices.md).
 
 Already paired contacts can also make alpha live-audio calls when both devices
@@ -149,9 +165,10 @@ Platform build instructions:
 | what disappearing/view-once means—and what it cannot erase | [Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md) |
 | how encrypted group polls converge and why votes are visible | [Group Polls](20-group-polls.md) |
 | how signed group roles, ownership transfer, and moderation work | [Group Roles, Ownership, and Moderation](21-group-roles.md) |
-| how one account safely authorizes, syncs, and revokes physical devices | [Linked Devices](22-linked-devices.md) |
+| how one account currently authorizes and syncs devices—and why revocation still needs redesign | [Linked Devices](22-linked-devices.md) |
 | when live audio calls work—and when they deliberately do not | [Live Audio Calls](23-live-audio-calls.md) |
 | how a release is validated locally before any hosted run | [Local Release Gate](24-local-release-gate.md) |
+| what evidence is required before stable or wire v1 | [Stabilization Program](29-stabilization-program.md) |
 | why a technical decision was made | [ADR Index](adr/README.md) |
 
 ## How can I help?
@@ -167,6 +184,7 @@ Platform build instructions:
 
 ## Why does this exist?
 
-Because private conversation is a human right, and rights need infrastructure, not
-just arguments. The longer version (including our answer to the EU's ChatControl
-law) is in [Why Komms](01-why.md).
+Because private conversation is a human right, and rights need infrastructure,
+not just arguments. The longer version—including Komms's position on European
+policy proposals and temporary rules commonly discussed as
+“Chat Control”—is in [Why Komms](01-why.md).
