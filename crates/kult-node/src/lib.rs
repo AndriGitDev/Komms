@@ -2531,8 +2531,7 @@ impl Node {
                             rng,
                             acks,
                             established,
-                        )?
-                        {
+                        )? {
                             // Reassembled before its session exists — stash
                             // the inner envelope for later ticks.
                             match self.store.pending_push(&inner, now, rng) {
@@ -2546,14 +2545,7 @@ impl Node {
             }
             EnvelopeKind::Handshake => self.consume_handshake(env, now, rng, acks, established),
             EnvelopeKind::Message | EnvelopeKind::Receipt | EnvelopeKind::GroupControl => {
-                self.consume_ratchet(
-                    env,
-                    origin.pending_sequence,
-                    now,
-                    rng,
-                    acks,
-                    established,
-                )
+                self.consume_ratchet(env, origin.pending_sequence, now, rng, acks, established)
             }
             EnvelopeKind::GroupMessage => self.consume_group_message(env, now, rng, acks),
         }
