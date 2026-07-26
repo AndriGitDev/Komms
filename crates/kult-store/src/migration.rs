@@ -1,6 +1,6 @@
 //! Released-schema migration into the ADR-0027 opaque store.
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 use rand_core::OsRng;
@@ -1021,7 +1021,11 @@ pub(crate) fn sync_database_for_replacement(conn: &Connection) -> Result<()> {
 }
 
 pub(crate) fn sync_file(path: &Path) -> Result<()> {
-    File::open(path)?.sync_all()?;
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?
+        .sync_all()?;
     Ok(())
 }
 
