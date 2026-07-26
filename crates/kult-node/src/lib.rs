@@ -331,6 +331,12 @@ enum Consumed {
     Later,
 }
 
+#[derive(Clone, Copy)]
+struct ConsumeOrigin {
+    depth: u8,
+    pending_sequence: Option<i64>,
+}
+
 /// One third-party envelope in transit across the bridge (ADR-0009).
 struct TransitItem {
     envelope: Envelope,
@@ -1856,8 +1862,10 @@ impl Node {
 
                 match self.consume(
                     &env,
-                    0,
-                    pending_sequence,
+                    ConsumeOrigin {
+                        depth: 0,
+                        pending_sequence,
+                    },
                     now,
                     rng,
                     &mut acks,
@@ -2470,8 +2478,7 @@ impl Node {
     fn consume(
         &mut self,
         env: &Envelope,
-        depth: u8,
-        pending_sequence: Option<i64>,
+        origin: ConsumeOrigin,
         now: u64,
         rng: &mut impl CryptoRngCore,
         acks: &mut Vec<([u8; 32], [u8; 16])>,
@@ -2489,7 +2496,7 @@ impl Node {
             EnvelopeKind::Fragment => {
                 // Fragments never nest (we only fragment whole envelopes);
                 // treat nested ones as malformed.
-                if depth > 0 {
+                if origin.depth > 0 {
                     self.store.mark_seen(&env.content_id())?;
                     return Ok(Consumed::Done);
                 }
@@ -2514,8 +2521,17 @@ impl Node {
                 // bounded, so exact fragment retries are safe.
                 if let Ok(Some(payload)) = completed {
                     if let Ok(inner) = Envelope::decode(&payload) {
-                        if let Consumed::Later =
-                            self.consume(&inner, 1, None, now, rng, acks, established)?
+                        if let Consumed::Later = self.consume(
+                            &inner,
+                            ConsumeOrigin {
+                                depth: 1,
+                                pending_sequence: None,
+                            },
+                            now,
+                            rng,
+                            acks,
+                            established,
+                        )?
                         {
                             // Reassembled before its session exists — stash
                             // the inner envelope for later ticks.
@@ -2530,7 +2546,14 @@ impl Node {
             }
             EnvelopeKind::Handshake => self.consume_handshake(env, now, rng, acks, established),
             EnvelopeKind::Message | EnvelopeKind::Receipt | EnvelopeKind::GroupControl => {
-                self.consume_ratchet(env, pending_sequence, now, rng, acks, established)
+                self.consume_ratchet(
+                    env,
+                    origin.pending_sequence,
+                    now,
+                    rng,
+                    acks,
+                    established,
+                )
             }
             EnvelopeKind::GroupMessage => self.consume_group_message(env, now, rng, acks),
         }
@@ -2863,7 +2886,7 @@ impl Node {
                     }
                     _ => unreachable!("ordinary text variants matched above"),
                 };
-                let message = (!duplicate).then(|| MessageRecord {
+                let message = (!duplicate).then_some(MessageRecord {
                     id,
                     peer,
                     direction: Direction::Inbound,
@@ -3485,9 +3508,7 @@ impl Node {
                 if miss.is_empty() {
                     return None;
                 }
-                let Some(meta) = self.frag_meta.get(&id) else {
-                    return None;
-                };
+                let meta = self.frag_meta.get(&id)?;
                 let due = now.saturating_sub(meta.first_seen) >= NACK_AFTER_SECS
                     && meta
                         .last_nack
