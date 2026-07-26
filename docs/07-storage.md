@@ -17,10 +17,11 @@ locally deletable within explicit endpoint and copy-retention limits.
    persist message, draft, or media plaintext. The current Alpha schema still
    has plaintext equality and ordering columns that expose some exact
    relationship metadata in a copied database; these are documented below and
-   replaced by the proposed ADR-0027 design. Bounded protected transients
-   required by OS picker, recording, editing, playback, or explicit export
-   workflows are temporary exceptions with lifecycle cleanup, never durable
-   sources of truth.
+   are not yet replaced. ADR-0027 now has an inactive, independently testable
+   v2 destination foundation, but no current user table enters that format.
+   Bounded protected transients required by OS picker, recording, editing,
+   playback, or explicit export workflows are temporary exceptions with
+   lifecycle cleanup, never durable sources of truth.
 3. **Export is a right.** Full history exports to a documented, versioned format at any
    time. Lock-in is a bug.
 4. **Local deletion has a precise boundary.** Deleting a message removes the
@@ -65,7 +66,11 @@ does not bind every ciphertext to its logical row, so a writer can substitute
 some valid rows within one table without guaranteed detection.
 [ADR-0027](adr/0027-opaque-indexed-store.md) defines the keyed indexes,
 row-bound associated data, versioned migration, and deletion wording required
-before stronger at-rest metadata claims.
+before stronger at-rest metadata claims. Its implemented foundation exercises
+the destination metadata, index, record, and row-binding formats behind an
+inactive migration boundary. The complete all-table migration and replacement
+protocol remains open, so these protections do not describe current user
+databases.
 
 B9 formatting creates no additional durable state. The `messages`,
 `scheduled_messages`, group history, and note-to-self rows retain exact source
