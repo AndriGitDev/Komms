@@ -9,6 +9,9 @@
 **Baseline automated run:** [`a02b064`, CI run 197](https://github.com/AndriGitDev/Komms/actions/runs/30199264838);
 this successful PR-head tree is the tree merged by PR #77
 
+**Release-control run:** [`25daa69`, CI run 199](https://github.com/AndriGitDev/Komms/actions/runs/30202463092);
+all nine jobs passed on draft PR #78
+
 **Accountable release owner:** Andri (`@AndriGitDev`)
 
 **Stable release decision:** not authorized; all P0 gates remain open
@@ -30,7 +33,7 @@ accepts it and the assignment is recorded in
 
 | Gate | Accountable owner | Current control evidence | Status and open gaps | Revision / artifacts | Next review |
 |---|---|---|---|---|---|
-| **P0-01 Honest claims and evidence ledger** | Andri (FND; interim SEC/PROD) | Designed: vocabulary, frozen claim register, and this ledger exist; the repository documentation check passes locally. | **Open.** Pull-request CI is pending. External website and repository-description corrections remain; no stable release evidence bundle exists. | [Stabilization vocabulary](29-stabilization-program.md#2-evidence-vocabulary); [stable-v1 profile](30-stable-v1-product-profile.md); this ledger; [public-copy follow-up](#4-public-copy-audit) | 2026-08-09 |
+| **P0-01 Honest claims and evidence ledger** | Andri (FND; interim SEC/PROD) | Designed: vocabulary, frozen claim register, and this ledger exist; the repository documentation check passed in release-control CI. | **Open.** External website and repository-description corrections remain; no stable release evidence bundle exists. | [Stabilization vocabulary](29-stabilization-program.md#2-evidence-vocabulary); [stable-v1 profile](30-stable-v1-product-profile.md); [CI run 199](https://github.com/AndriGitDev/Komms/actions/runs/30202463092); this ledger; [public-copy follow-up](#4-public-copy-audit) | 2026-08-09 |
 | **P0-02 Name-risk assessment and recorded decision** | Andri (FND and project risk owner); qualified trademark counsel: **Unassigned** | Designed: dated founder decision, observed overlap, migration cost, cadence, and escalation triggers recorded. | **Open.** This is not legal clearance. No qualified similarity/class/jurisdiction opinion or trademark/asset policy exists. | [Name-risk decision](32-name-risk-decision.md); [brand system](28-brand-system.md) | 2026-10-26, or trigger event |
 | **P0-03 Stabilized core product profile** | Andri (FND; interim PROD/SEC) | Designed: product boundary, bounds, supported-system rule, services, and exclusions frozen. | **Open.** ADR-0026 through ADR-0032 remain proposed; atomic paths beyond ordinary pairwise receive remain incomplete; profile has not passed field or independent review. | [Stable-v1 profile](30-stable-v1-product-profile.md); [P0 ADR index](adr/README.md) | 2026-08-09 |
 | **P0-04 Clean-install and real-network golden path** | Andri (interim NET/PROD); independent field evaluator: **Unassigned** | Implemented with local/CI evidence for internet components and shells. | **Open.** No qualified default bootstrap/mailbox, clean-device distinct-NAT matrix, default-blackhole journey, replacement operator, or pure-core journey. | [Internet tests](../crates/kult-node/tests/internet_e2e.rs); [Alpha guide](27-alpha-testing.md); [ADR-0034](adr/0034-operator-minimized-reference-discovery.md) | 2026-08-09 |
