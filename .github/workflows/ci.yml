@@ -64,6 +64,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: qualify storage host
+        shell: pwsh
+        run: |
+          $volume = Get-Volume -DriveLetter (Get-Location).Drive.Name
+          if ($volume.FileSystemType -ne "NTFS") {
+            throw "Storage tests require an explicitly identified NTFS volume"
+          }
+          Write-Output "OS: $([System.Runtime.InteropServices.RuntimeInformation]::OSDescription)"
+          Write-Output "Filesystem: $($volume.FileSystemType)"
       - name: kult-store tests
         run: cargo test -p kult-store --all-features -- --test-threads=1
 
