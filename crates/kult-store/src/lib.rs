@@ -30,6 +30,8 @@ mod local_metadata;
 mod media;
 mod note;
 mod scheduled;
+#[doc(hidden)]
+pub mod store_v2;
 
 pub use backup::BACKUP_MAGIC;
 pub use devices::{
@@ -139,6 +141,24 @@ pub enum StoreError {
     PinActive,
     /// A note-to-self text record is empty or exceeds its documented bound.
     NoteBounds,
+    /// A database or metadata record declares a schema newer than this build.
+    FutureSchema,
+    /// Authenticated metadata and the physical SQLite schema disagree.
+    SchemaMismatch,
+    /// A migration ledger contains a migration that did not complete.
+    IncompleteMigration,
+    /// A migration ledger repeats one stable migration identifier.
+    DuplicateMigration,
+    /// A migration ledger does not form one complete monotonic version chain.
+    InvalidMigrationLedger,
+    /// More than one row carries the same table-scoped opaque locator.
+    DuplicateIndex,
+    /// A decrypted record's logical key does not match its opaque locator or lookup key.
+    LogicalKeyMismatch,
+    /// A decrypted logical record uses a version this build cannot interpret.
+    UnsupportedRecordVersion,
+    /// A versioned logical record exceeds the internal migration bound.
+    RecordBounds,
 }
 
 impl std::fmt::Display for StoreError {
@@ -182,6 +202,21 @@ impl std::fmt::Display for StoreError {
             Self::InvalidPinOrder => f.write_str("invalid complete pin order"),
             Self::PinActive => f.write_str("conversation pin is active or absent"),
             Self::NoteBounds => f.write_str("note-to-self text bounds exceeded"),
+            Self::FutureSchema => f.write_str("store schema is newer than this build"),
+            Self::SchemaMismatch => {
+                f.write_str("authenticated metadata and physical schema disagree")
+            }
+            Self::IncompleteMigration => f.write_str("store migration is incomplete"),
+            Self::DuplicateMigration => f.write_str("store migration id is duplicated"),
+            Self::InvalidMigrationLedger => f.write_str("store migration ledger is invalid"),
+            Self::DuplicateIndex => f.write_str("opaque row locator is duplicated"),
+            Self::LogicalKeyMismatch => {
+                f.write_str("sealed record logical key does not match its locator")
+            }
+            Self::UnsupportedRecordVersion => {
+                f.write_str("sealed logical record version is unsupported")
+            }
+            Self::RecordBounds => f.write_str("sealed logical record exceeds its bound"),
         }
     }
 }
@@ -630,6 +665,9 @@ impl Store {
         let lock = acquire_store_lock(path)?;
         let conn = Connection::open(path)?;
         let database_lock = acquire_database_identity_lock(path)?;
+        if store_v2::is_inactive_migration_target(&conn)? {
+            return Err(StoreError::SchemaMismatch);
+        }
         conn.execute_batch(SCHEMA)?;
         let existing: Option<Vec<u8>> = conn
             .query_row("SELECT v FROM meta WHERE k = 'wrapped_sk'", [], |r| {
@@ -676,6 +714,9 @@ impl Store {
         let lock = acquire_store_lock(path)?;
         let conn = Connection::open(path)?;
         let database_lock = acquire_database_identity_lock(path)?;
+        if store_v2::is_inactive_migration_target(&conn)? {
+            return Err(StoreError::SchemaMismatch);
+        }
         // Idempotent: also creates any table added since this store was —
         // the only schema evolution so far is purely additive.
         conn.execute_batch(SCHEMA)?;
