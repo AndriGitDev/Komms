@@ -87,8 +87,9 @@ target.
 **Defense (bounded)**: at-rest encryption under an Argon2id-derived key protects a
 powered-off/locked device's sealed record bodies. The current Alpha database
 still exposes contact/group identifiers in plaintext lookup columns and does
-not bind every ciphertext to its logical row; ADR-0027 is an open P0 storage
-migration. Forward secrecy means a captured device does not reveal
+not bind every ciphertext to its logical row. ADR-0027 has an inactive v2
+destination foundation, but the complete all-table migration remains open P0
+work. Forward secrecy means a captured device does not reveal
 messages deleted before capture; post-compromise security means a *transient* compromise is
 healed by the next DH ratchet step. A persistently compromised endpoint sees everything its
 user sees; no messenger can prevent that (§5).
