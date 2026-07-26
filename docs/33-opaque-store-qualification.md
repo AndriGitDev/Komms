@@ -143,8 +143,8 @@ The budgets are:
 | 100,000 | 180 s | 30 s | 250 ms | 250 ms | 250 ms | 512 MiB | 64 MiB + 1,024 B/row |
 | 1,000,000 | 1,800 s | 180 s | 500 ms | 500 ms | 500 ms | 768 MiB | 64 MiB + 1,024 B/row |
 
-The 2026-07-26 Linux qualification ran on x86_64, kernel 6.12.13, ext4, and
-Rust 1.88.0. Both sizes passed:
+The 2026-07-26 Linux qualification measured commit `23c423c` on x86_64,
+kernel 6.12.13, ext4, and Rust 1.88.0. Both sizes passed:
 
 | Rows | Migration | Unlock | Page | Exact edit | Exact delete | Peak RSS increase | Database + WAL |
 |---:|---:|---:|---:|---:|---:|---:|---:|
