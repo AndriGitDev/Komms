@@ -20,8 +20,8 @@ private keys belonging to Komms users.*
 
 Komms has a nonprofit public-benefit mission: private, resilient communication
 should be useful to ordinary people without surveillance or exclusive-provider
-lock-in. The project is founder-directed and intentionally uses automated
-implementation assistance; accountability remains with the human maintainer.
+lock-in. The project is founder-directed, and accountability remains with the
+human maintainer.
 
 **New here?** Read [Start Here](docs/00-start-here.md): the whole idea in plain
 words, with no cryptography knowledge required.
@@ -72,9 +72,10 @@ required. iOS currently remains source/Simulator-only.
 - **Clearer identity and discovery.** Safety numbers are 30 readable digits
   while QR verification retains the full 256-bit comparison. Desktop sharing,
   contact rename, DHT/mDNS status, and conversation rendering are hardened.
-- **Four-platform release evidence.** Android and iOS simulators plus local
-  macOS and Linux desktop previews now require explicit human visual approval.
-  Linux desktop launch smoke also runs in CI and in the release workflow.
+- **Four-platform preview evidence.** Android and iOS simulators plus local
+  macOS and Linux desktop previews now require explicit visual approval. Linux
+  desktop launch smoke also runs in CI and in the release workflow. This is not
+  physical-device or stable-platform qualification.
 - **A release-shaped self-hosted node.** The public `kultd` image is prepared
   for Linux amd64 and arm64 with provenance, an SBOM, and immutable `0.3.0`
   tagging.
@@ -95,7 +96,7 @@ independent interoperability.
 | **Applications and messaging** | Desktop, Android, and iOS shells expose pairwise/group text and a broad Alpha feature set, including attachments, local organization, linked devices, ephemeral content, polls, roles, and direct audio-call paths. CI and simulator evidence exist; hands-on device, background lifecycle, NAT, accessibility, and localization qualification remain. |
 | **Distribution** | Unsigned desktop packages and a debug-signed Android APK are published for Alpha testing; iOS is source/Simulator-only. Production signing, authenticated updates, reproducibility measurements, store distribution, upgrade/rollback qualification, and stable support are not configured. |
 | **Optional mobile convenience** | ADR-0017 through ADR-0019 propose reversible post-pairing rendezvous and content-free native wake. The layer is design-only: no optional service is implemented or required by the sovereign core. |
-| **Trust and governance** | The project is founder-directed by design during construction and stabilization under a nonprofit public-benefit mission. The founder retains product and release authority. Independent security and interoperability evidence is still missing; automated assistance is not presented as independent review. The [stabilization program](docs/29-stabilization-program.md) defines the evidence required before stable claims. |
+| **Trust and governance** | The project is founder-directed by design during construction and stabilization under a nonprofit public-benefit mission. The founder retains product and release authority. Independent security and interoperability evidence is still missing. The [stabilization program](docs/29-stabilization-program.md) defines the evidence required before stable claims. |
 
 Older `KKR1` through `KKR6` backups remain restorable; current backups are
 `KKR7`. KKR6 added signed group authority state and consumed admin-request ids.
@@ -111,7 +112,12 @@ gates, and the first 90 days. The [roadmap](docs/08-roadmap.md) remains the
 engineering inventory, the [feature delivery plan](docs/12-feature-delivery-plan.md)
 remains the product backlog, and the
 [local release gate](docs/24-local-release-gate.md) describes existing build
-checks.
+checks. The [stable-v1 product profile](docs/30-stable-v1-product-profile.md)
+freezes the release target, the
+[release evidence ledger](docs/31-release-evidence-ledger.md) records every P0
+gate and stable claim, and the
+[name-risk decision](docs/32-name-risk-decision.md) records the founder's
+keep-and-monitor decision without claiming legal clearance.
 
 Komms is built on four principles:
 
@@ -171,6 +177,9 @@ status of any particular proposal.
 | [27: Alpha Testing](docs/27-alpha-testing.md) | Download verification, installation, smoke testing, issue reporting, and self-hosted image quick start |
 | [28: Brand System](docs/28-brand-system.md) | Cross-shell product character, tokens, hierarchy, and pragmatic name-risk monitoring |
 | [29: Stabilization Program](docs/29-stabilization-program.md) | Canonical evidence vocabulary, trust gates, owners, and 90-day sequence |
+| [30: Stable-v1 Product Profile](docs/30-stable-v1-product-profile.md) | Frozen install, messaging, bounds, recovery, delivery, platform, service, and exclusion contract |
+| [31: Release Evidence Ledger](docs/31-release-evidence-ledger.md) | P0 and stable-claim owners, evidence, revisions, gaps, and review dates |
+| [32: Name-risk Decision](docs/32-name-risk-decision.md) | Dated keep-and-monitor decision, observed overlap, migration cost, cadence, and advice triggers |
 | [ADRs](docs/adr/README.md) | Decision index, status, and the alternatives each decision beat |
 
 ## Stack
@@ -179,8 +188,9 @@ Rust workspace (`kult-crypto` / `kult-protocol` / `kult-transport` / `kult-store
 `kult-node` / `kultd` / `kult-ffi`), UniFFI bindings, Tauri desktop app, native
 mobile shells.
 Layout in [Architecture §7](docs/03-architecture.md). Implemented so far:
-`kult-crypto` (hybrid PQXDH, Double Ratchet with encrypted headers, anonymous sealed
-boxes, sealed state, sender-key group chains), `kult-protocol` (envelopes, padding
+`kult-crypto` (hybrid PQXDH, Double Ratchet with encrypted headers,
+sender-anonymous sealed envelopes, sealed state, sender-key group chains),
+`kult-protocol` (envelopes, padding
 buckets, fragmentation + NACKs, delivery tokens, sealed group headers, `.kkb`
 bundles), and `kult-store` (encrypted SQLite, key
 hierarchy, persistent queue), `kult-transport` (the `Transport` contract, the

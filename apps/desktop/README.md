@@ -14,7 +14,7 @@ security indicators are the node's own, verbatim.
   lock path. Capture protection remains honestly best effort because desktop OS,
   window-server, compositor, privileged-software, and external-camera behavior
   cannot be controlled universally.
-- **Reduce input retention on every editable text control.** All audited controls are
+- **Reduce input retention on every inventoried editable text control.** Those controls are
   semantically classified and receive disabled autocomplete, autocorrect,
   autocapitalization, and spellcheck at startup and after modal cloning.
   Passphrases and recovery mnemonics are password inputs. The unlock screen
@@ -81,7 +81,7 @@ security indicators are the node's own, verbatim.
   JPEG/PNG selections enter the shared bounded Rust editor for orientation
   normalization, free/preset crop, 90-degree rotation, and user-positioned blur
   or pixelation; the keyboard/screen-reader-accessible dialog reviews the exact
-  metadata-free final PNG, and only that asset enters F3. Protected originals
+  final PNG re-encoded without source metadata, and only that asset enters F3. Protected originals
   and intermediates are cleared on send, discard, failure, hide/lock, shutdown,
   and restart. Completed edited images render only through validated protected
   transients. Transfers continue while Komms is open or minimized and resume
@@ -89,7 +89,8 @@ security indicators are the node's own, verbatim.
 - **Record pairwise or group audio messages** only while Komms is visible, stop
   into a no-autoplay review with duration/waveform and the current F4 carrier
   explanation, then explicitly send or discard. The shell rewrites every clip
-  to the shared metadata-free mono 16-bit PCM WAV / 16 kHz / 60-second profile
+  to the shared source-metadata-omitting mono 16-bit PCM WAV / 16 kHz /
+  60-second profile
   before the existing F3 import. Hiding, locking, interruption, failure, or
   shutdown stops capture and clears review/plaintext transients; received audio
   is validated and materialized only for explicit protected local playback.
@@ -136,8 +137,9 @@ security indicators are the node's own, verbatim.
 - **Manage private custom icons** for contacts, groups, folders, and note-to-self.
   Every row renders the sealed icon or generated initials; the accessible manager
   offers eight bundled glyphs, local JPEG/PNG selection with centered-square crop,
-  clear-to-fallback, and quota usage. The shared core emits only metadata-free
-  256×256 RGBA PNGs, enforces 512 KiB/1,024-record/64 MiB limits, and safely falls
+  clear-to-fallback, and quota usage. The shared core emits only 256×256 RGBA
+  PNGs re-encoded without source metadata, enforces
+  512 KiB/1,024-record/64 MiB limits, and safely falls
   back after corrupt bytes. Icons travel only in `KKR7` or authenticated
   own-device C2 sync, never URLs, peer sync,
   envelopes, capabilities, queues, notifications, or transports.
@@ -170,7 +172,8 @@ its own `deny.toml`, same posture). The core is reached only through the
 path dependency on `kult-ffi`.
 
 Custom-icon acceptance consumes the shared B13 fixture through the same session
-surface the Tauri commands wrap: canonical metadata-free local data URLs, exact
+surface the Tauri commands wrap: canonical local data URLs whose PNG omits
+source metadata, exact
 folder/note targets, bundled and selected-image paths, quota accounting,
 restart/`KKR7`, safe fallback, local events, and zero delivery work. Rust node
 acceptance independently covers contact and group identities plus corrupt sealed
@@ -255,7 +258,7 @@ must never depend on. Store/package-manager channels will carry updates.
 
 - The webview is locked down: strict CSP, no Tauri plugins, no filesystem /
   shell / network capabilities: the frontend reaches the world only
-  through the audited command surface in `commands.rs`.
+  through the bounded command surface in `commands.rs`.
 - The store passphrase exists in the webview only inside the unlock form
   and crosses IPC once per unlock; it is never persisted by the shell.
 - QR codes render black-on-white on their own card regardless of theme;

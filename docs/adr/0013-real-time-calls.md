@@ -39,7 +39,7 @@ audio/video **clips** are unaffected and remain ordinary payloads on every carri
 
 **Signaling** is the fixed content-v1 kind `0x0008` `CallControl`, encrypted as an
 ordinary pairwise ratchet message. It does not add a cleartext
-`EnvelopeKind::CallSignal`: envelope kind is relay-visible in the shipped wire
+`EnvelopeKind::CallSignal`: envelope kind is relay-visible in the current Alpha wire
 format, so a dedicated kind would unnecessarily identify call attempts. The
 fixed operations are offer, answer, decline, busy, cancel, and hangup. They bind
 one random call id, the exact physical sender device, an expiry, and the
@@ -69,7 +69,8 @@ late sequence numbers rather than growing latency without bound. Once bytes
 enter the reliable stream, packet loss can still cause head-of-line delay, which
 is an explicit alpha limitation and a measured release criterion.
 
-The shipped audio implementation therefore requires a fresh direct `/quic-v1` route.
+The current Alpha audio implementation therefore requires a fresh direct
+`/quic-v1` route.
 TCP/Yamux, Circuit Relay, mailbox, sneakernet, and every airtime carrier do not
 qualify as `realtime`. AutoNAT, relay reservation, and DCUtR may establish and
 upgrade connectivity, but the call button remains unavailable until the
@@ -82,7 +83,7 @@ selection, and interruption integration use the native platform audio stack;
 the core owns canonical frame bounds, encryption, replay state, jitter policy,
 and transport. Video remains out of scope until the audio release matrix passes.
 WebRTC is not the automatic fallback: without third-party STUN/TURN it cannot
-reuse the shipped libp2p relay path, and adding it would create a second NAT and
+reuse the current Alpha libp2p relay path, and adding it would create a second NAT and
 dependency surface without solving Komms' constrained-connectivity requirement.
 
 ## Transport spike evidence

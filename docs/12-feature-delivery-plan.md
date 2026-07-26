@@ -482,7 +482,8 @@ generated initials. Users can instead choose one of eight bundled glyphs
 content-verified local JPEG/PNG. The shared node normalizes EXIF orientation,
 rejects animated PNG and oversized/decompression-heavy inputs, applies a
 centered-square or explicit oriented-pixel square crop, resizes to 256×256, and
-emits a metadata-free non-interlaced RGBA8 PNG containing only IHDR/IDAT/IEND.
+emits a non-interlaced RGBA8 PNG containing only IHDR/IDAT/IEND, with no source
+metadata copied.
 
 The existing F5 record is now enforced as one icon per exact target, at most
 512 KiB each, 1,024 records, and 64 MiB aggregate encoded bytes. Reads verify the
@@ -565,7 +566,7 @@ keyboard qualification follows [14: Incognito Keyboard](14-incognito-keyboard.md
 One path-based Rust/UniFFI helper performs content-verified bounded decoding
 (32 MiB encoded, 4096 per edge, 12 megapixels), EXIF-orientation normalization,
 exact integer crop then quarter-turn rotation, ordered user-positioned blur or
-pixelation, and deterministic metadata-free RGBA PNG encoding. Output is
+pixelation, and deterministic RGBA PNG encoding that omits source metadata. Output is
 create-new and re-probed before F3 import; malformed, spoofed, truncated,
 animated, unsupported, over-dimension, decompression-bomb-like, and overwrite
 cases fail closed.

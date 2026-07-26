@@ -12,7 +12,7 @@ own, verbatim.
   before each activity draws. Compliant screenshots, screen recordings, and
   recent-task previews are blocked. Settings show the shared B14 policy and its
   compromised-device, overlay/accessibility-abuse, and external-camera limits.
-- **Request private keyboard behavior on every text editor.** Every audited XML
+- **Request private keyboard behavior on every inventoried text editor.** Every covered XML
   and programmatic field uses `IncognitoEditText`, which sets Android's
   no-personalized-learning and no-suggestions metadata. Passphrases and recovery
   mnemonics are masked. Settings state honestly that third-party IMEs may ignore
@@ -81,13 +81,15 @@ own, verbatim.
   used. Generic files show and recheck F4 before explicit send/discard. JPEG/PNG
   selections use the shared Rust editor for orientation normalization,
   free/preset crop, 90-degree rotation, and user-positioned blur/pixelation, then
-  review and send only the exact metadata-free PNG. Originals, intermediates,
+  review and send only the exact PNG re-encoded without source metadata.
+  Originals, intermediates,
   and protected receiver previews are deleted on send, discard, denial, failure,
   activity stop/lock, low storage, and restart orphan recovery.
 - **Record pairwise or group audio messages** with runtime microphone consent,
   a foreground-only stop/review flow, no autoplay, locally derived
   duration/waveform, and explicit send/discard. Every native capture is rewritten
-  to the shared metadata-free mono 16-bit PCM WAV / 16 kHz / 60-second profile
+  to the shared source-metadata-omitting mono 16-bit PCM WAV / 16 kHz /
+  60-second profile
   and enters the existing F3 pipeline. Audio-focus loss, activity stop, lock,
   failure, discard, and restart remove plaintext cache files; completed clips are
   probed and exported only into short-lived app-private playback files. F4 is
@@ -141,7 +143,8 @@ own, verbatim.
   Native rows and pins render the sealed icon or generated initials; the manager
   offers all eight bundled glyphs, Android SAF JPEG/PNG selection, clear-to-
   fallback, and quota usage. Selected content is copied only into a short-lived
-  app-private file before the shared core emits a metadata-free 256×256 RGBA PNG.
+  app-private file before the shared core emits a 256×256 RGBA PNG re-encoded
+  without source metadata.
   The 512 KiB/1,024-record/64 MiB limits and corrupt fallback are shared with
   every shell; `KKR7` and authenticated own-device C2 sync are the only
   portability paths, and no icon creates network,
@@ -226,7 +229,8 @@ and Swift: exact vocabulary/roles, first-run System, idempotency, restart,
 preference cache carries no identity, message, contact, or network data.
 
 Custom-icon acceptance drives the shared B13 fixture through Rust RPC, UniFFI,
-Kotlin, and Swift: all four exact target types, canonical metadata-free output,
+Kotlin, and Swift: all four exact target types, canonical PNG output that omits
+source metadata,
 quota accounting, restart/`KKR7`, generated-initials fallback, local events, and
 zero delivery work. The Android manager uses SAF access only for the explicit
 selection and deletes its app-private transient after the blocking core call.

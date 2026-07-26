@@ -292,7 +292,7 @@ chunk-based.
 
 This rule is origin-enforced because intermediaries remain metadata-blind. An
 old opaque relay cannot identify a small manifest it received over another
-carrier, but chunk and bulk-control size floors exceed the shipped bridge
+carrier, but chunk and bulk-control size floors exceed the current Alpha bridge
 airtime ceiling. The unavoidable residual is at most the ordinary padded
 manifest envelope, never media bytes. Acceptance tests measure the updated
 origin and require an attachment attempt under a fresh `mesh_only` verdict to

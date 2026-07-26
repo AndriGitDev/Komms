@@ -14,12 +14,12 @@ It is the canonical source for stabilization priority. The
 [feature delivery plan](12-feature-delivery-plan.md) remain useful inventories,
 but a completion label there does not override a gate here.
 
-Founder-directed, tool-assisted implementation may continue throughout
-stabilization. It is a means of production, not independent evidence.
-Stabilization freezes what qualifies for a stable release; it does not prevent
+Founder-directed implementation may continue throughout stabilization.
+Implementation authorship is not independent evidence. Stabilization freezes
+what qualifies for a stable release; it does not prevent
 isolated roadmap work needed to make Komms broadly capable, reliable,
 accessible, and polished. Experimental breadth must not silently expand the
-audited v1 profile or block closure of its trust gates.
+stable-v1 profile or block closure of its trust gates.
 
 ## 1. Product and architecture contract
 
@@ -108,6 +108,13 @@ communication-infrastructure project. That observation is a monitoring input,
 not a legal conclusion or engineering veto. Work continues while the founder
 records a proportionate keep, adjust, or rename decision before stable brand
 and wire identifiers are frozen.
+
+The current founder decision is to continue using Komms with monthly
+monitoring; the limits and escalation triggers are in the
+[name-risk decision](32-name-risk-decision.md). The frozen scope is the
+[stable-v1 product profile](30-stable-v1-product-profile.md), and every P0 gate
+and stable claim is tracked in the
+[release evidence ledger](31-release-evidence-ledger.md).
 
 | Gate | Owner | Required evidence | Unlocks |
 |---|---|---|---|

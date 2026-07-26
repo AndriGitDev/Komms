@@ -1,15 +1,12 @@
 # Komms product brand system
 
 **Name status:** `Komms` is the current project and product name. The project
-does not represent it as a registered or legally cleared trademark. Potential
-overlap—including `komms.app`—is monitored and documented, but an observed
-similar name is not by itself a legal conclusion, automatic rename requirement,
-or engineering stop. Under
-[stabilization gate P0-02](29-stabilization-program.md), the founder records a
-keep, adjust, or rename decision before stable brand and wire identifiers are
-frozen, using qualified advice when actual confusion or expansion makes it
-proportionate. The product character and accessibility tokens remain reusable
-if that decision ever changes.
+does not represent it as a registered or legally cleared trademark. The
+founder's dated decision is to continue using Komms for now, monitor the
+observed `komms.app` overlap monthly, and seek qualified advice on the triggers
+in the [name-risk decision](32-name-risk-decision.md). That is a project risk
+decision, not legal clearance. The product character and accessibility tokens
+remain reusable if the decision changes.
 
 The application shells use the same visual language as the public Komms site.
 The light theme follows `komms.org`; the dark theme follows the technical

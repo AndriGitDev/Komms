@@ -582,7 +582,7 @@ private struct AttachmentReviewSheet: View {
             } else {
                 Label("Preview unavailable", systemImage: "photo")
             }
-            Text("\(image.width) × \(image.height) pixels · \(image.encodedBytes) bytes · exact metadata-free PNG")
+            Text("\(image.width) × \(image.height) pixels · \(image.encodedBytes) bytes · PNG re-encoded without source metadata")
                 .font(.footnote).foregroundStyle(.secondary)
             TextField("Display filename", text: $filename)
                 .incognitoKeyboard()

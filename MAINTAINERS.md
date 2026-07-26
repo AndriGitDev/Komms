@@ -15,6 +15,29 @@ The lead maintainer is accountable for final decisions under
 [GOVERNANCE.md](GOVERNANCE.md). Being listed as code owner or maintainer does
 not make self-review independent.
 
+## Stabilization ownership
+
+Andri temporarily carries every internal category in the stabilization program.
+This records accountability; it does not claim equal expertise or independent
+review in every category.
+
+| Category | Current accountable person | Independence / limit |
+|---|---|---|
+| FND — founder and release accountability | Andri | Founder authority |
+| SEC — core security | Andri (interim) | Self-review is not independent security evidence |
+| NET — network and services | Andri (interim) | External operator/field evidence remains unassigned |
+| PROD — product and clients | Andri (interim) | External accessibility/field evidence remains unassigned |
+| REL — release engineering | Andri (interim) | External reproducibility/release evaluation remains unassigned |
+| COM — community and governance | Andri (interim) | No unconflicted backup steward currently exists |
+| LEG — legal and brand | Andri (project risk owner only) | Qualified trademark and licensing counsel is unassigned |
+| EXT — independent evidence | **Unassigned** | A named external person must accept each scoped assignment |
+
+The exact P0 assignments, evidence gaps, and next review dates are in the
+[release evidence ledger](docs/31-release-evidence-ledger.md). Independent
+cryptography review, interoperability implementation, field/accessibility
+evaluation, operator review, release verification, trademark advice, and backup
+stewardship remain unassigned until a real person accepts the documented scope.
+
 ## Contribution and review needs
 
 The project welcomes implementation help and qualified evidence in these areas.
@@ -34,13 +57,6 @@ sustained, dependable participation:
 An interested contributor should open a public issue describing the area,
 relevant experience, and work they would like to contribute. Security-sensitive
 background details may be sent privately using [SECURITY.md](SECURITY.md).
-
-## Implementation assistance
-
-The founder intentionally uses automated analysis and implementation tools.
-Those tools are not maintainers, reviewers, or independent evidence providers.
-Every accepted change remains attributable to and the responsibility of the
-human maintainer who approves it.
 
 ## Appointment and expectations
 

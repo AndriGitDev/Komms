@@ -58,16 +58,19 @@ The empty niche Komms targets:
    contact + chosen durable mailbox operators + direct/local/mesh paths, with no
    optional project service required to communicate
    ([03: Architecture](03-architecture.md)).
-2. **Off-grid as a first-class transport**, not a demo: commodity Meshtastic LoRa radios
-   give kilometers of range and multi-hop store-and-forward when networks are shut down
-   or shut off ([05: Transports](05-transports.md)).
+2. **Off-grid as an implemented Alpha transport**, not yet a field-qualified
+   claim: Komms supports Meshtastic LoRa adapters and bounded multi-hop
+   store-and-forward. Actual range, background behavior, and two-radio operation
+   remain environment- and hardware-dependent release evidence
+   ([05: Transports](05-transports.md)).
 3. **Modern cryptographic constructions, conservatively assembled**: hybrid post-quantum key
    agreement (X25519 + ML-KEM-768), Double Ratchet with encrypted headers,
    XChaCha20-Poly1305, and sealed-sender delivery. The primitives and
    constructions are published; their combination in Komms is not yet
    independently audited or independently interoperable
    ([04: Cryptography](04-cryptography.md)).
-4. **No identifiers**: identity is a keypair you mint yourself
+4. **No mandatory registration identifiers**: identity is a keypair you mint
+   yourself, without a required phone number, email address, or real name
    ([06: Identity & Trust](06-identity-trust.md)).
 
 ## Who it's for

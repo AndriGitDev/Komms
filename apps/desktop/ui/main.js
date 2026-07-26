@@ -2732,7 +2732,7 @@ function renderImageReview(root) {
   const draft = state.imageDraft;
   root.querySelector('[data-f="image-review"]').src = draft.review.data_url;
   root.querySelector('[data-f="image-info"]').textContent =
-    `${draft.review.width} × ${draft.review.height} pixels · ${Number(draft.review.encoded_bytes).toLocaleString()} bytes · exact metadata-free PNG`;
+    `${draft.review.width} × ${draft.review.height} pixels · ${Number(draft.review.encoded_bytes).toLocaleString()} bytes · PNG re-encoded without source metadata`;
   const regions = root.querySelector('[data-f="regions"]');
   regions.replaceChildren();
   draft.recipe.regions.forEach((region, index) => {

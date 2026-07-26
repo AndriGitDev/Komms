@@ -23,6 +23,40 @@ These are targets rather than a 24/7 support guarantee. If you receive no
 acknowledgment, resend with `[Komms security]` in the subject. There is currently
 no bounty program; do not incur expense in expectation of payment.
 
+## Incident handling
+
+The founder is the current security coordinator and incident decision owner.
+There is no 24/7 team or accepted backup security steward. That continuity gap
+is tracked in [MAINTAINERS.md](MAINTAINERS.md) and the
+[release evidence ledger](docs/31-release-evidence-ledger.md).
+
+For a confirmed vulnerability or operational incident, the coordinator:
+
+1. opens a private, access-limited incident record with discovery time, affected
+   revisions/services, reporter preference, known impact, and evidence custody;
+2. classifies urgency and decides containment without exposing report details
+   through public issues, logs, or ordinary diagnostics;
+3. identifies affected releases, protocol versions, operators, credentials, and
+   user actions, including whether signing, service, domain, or notification
+   channels remain trustworthy;
+4. prepares and validates the smallest safe correction, key/service rotation,
+   rollback, or disabling action, recording every deferred platform or external
+   dependency;
+5. coordinates disclosure with the reporter and publishes an advisory with
+   affected versions, impact, fixes, workarounds, credits, and residual risk;
+6. notifies known official operators and users through authenticated project
+   release/advisory channels when action is required; and
+7. publishes a post-incident process summary when doing so will not expose
+   reporters, users, credentials, or still-exploitable detail.
+
+The incident owner may make an emergency release or disable an official
+project-operated service within the authority in
+[GOVERNANCE.md](GOVERNANCE.md). Emergency action does not waive release
+evidence: missing checks and independent review remain explicit, and the
+evidence ledger records follow-up and closure. If the founder has a conflict,
+the project seeks an unconflicted external reviewer; none is currently assigned
+in advance.
+
 ## Ground rules
 
 - Coordinated disclosure: please allow the initial assessment window and agree

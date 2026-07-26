@@ -483,26 +483,26 @@ B2 recorded audio is implemented end to end on top of that unchanged F3/F4 path.
 Desktop, Android, and iOS record only while foregrounded, stop into a local review
 with no autoplay, show locally derived duration/waveform and the current carrier
 explanation, and require explicit send or discard. All three canonicalize to one
-metadata-free profile—mono signed 16-bit little-endian PCM WAV at 16 kHz, bounded
-to 60 seconds / 1,920,044 bytes—and deliver exact bytes pairwise or through the
-encrypt-once sender-key group flow. Protected playback and failure, interruption,
-lock, restart, and orphan cleanup are covered. The ADR-0015 invariant remains
-absolute: mesh-only recorded audio waits for a faster link and emits zero bulk
-airtime frames.
+source-metadata-omitting profile—mono signed 16-bit little-endian PCM WAV at
+16 kHz, bounded to 60 seconds / 1,920,044 bytes—and deliver exact bytes pairwise
+or through the encrypt-once sender-key group flow. Protected playback and
+failure, interruption, lock, restart, and orphan cleanup are covered. The
+ADR-0015 invariant remains absolute: mesh-only recorded audio waits for a faster
+link and emits zero bulk airtime frames.
 
 B16 still-image editing is implemented end to end without changing F3, F4, wire
 metadata, crypto, or transport behavior. One path-based Rust/UniFFI helper owns
 the 32 MiB / 4096-edge / 12-megapixel decode limits, EXIF-orientation
-normalization, integer crop/quarter-turn/region semantics, metadata-free RGBA
-PNG output, and create-new protection. Desktop, Android SAF, and iOS
+normalization, integer crop/quarter-turn/region semantics, RGBA PNG output that
+omits source metadata, and create-new protection. Desktop, Android SAF, and iOS
 security-scoped pickers all stage protected app-private originals, show the exact
 final asset, support free/preset crop, rotation, and user-positioned blur or
 pixelation, and require explicit send or discard. Only the canonical final enters
 F3; cleanup covers denial, cancellation, failure, low storage, background/lock,
 shutdown, and restart orphans. Generic non-image files now show and atomically
 recheck the same authoritative F4 explanation. Pairwise and sender-key group
-acceptance proves exact bytes, metadata removal, wrapper determinism, protected
-receiver rendering/export, and zero manifest/chunk/range or other bulk mesh
+acceptance proves exact bytes, source metadata omission, wrapper determinism,
+protected receiver rendering/export, and zero manifest/chunk/range or other bulk mesh
 airtime. Video, cloud/generative editing, filters, face recognition, project
 files, and protocol changes remain out of scope.
 
@@ -547,9 +547,10 @@ The F5 sealed local-metadata foundation is implemented in `kult-store`: typed an
 bounded conversation, folder, pin, label, draft, preference, and custom-icon
 records use an isolated storage key and reveal no local organization keys in a
 copied database. User-authored metadata and sealed note-to-self history are
-included in current `KKR7` backups. Note-to-self text is implemented through every shell under one
-reserved identity; folders, conversation pins, labels, appearance, and bounded
-metadata-free custom icons now ship as separate local experiences.
+included in current `KKR7` backups. Note-to-self text is implemented through
+every shell under one reserved identity; folders, conversation pins, labels,
+appearance, and bounded custom icons re-encoded without source metadata are
+implemented as separate local experiences.
 
 B5 private contact rename is implemented end to end through `kult-node`, strict
 RPC/CLI, UniFFI, desktop, Android, and iOS. The peer key remains the only identity
@@ -566,10 +567,11 @@ B13 private custom icons are implemented end to end across the existing F5 recor
 `kult-node`, RPC/CLI, UniFFI, desktop, Android, and iOS. Exact contact, group,
 folder, and note-to-self targets render generated initials when absent or after a
 safe read failure. Eight bundled glyphs and selected local JPEG/PNG inputs become
-strict 256×256 RGBA PNGs after bounded orientation/crop/resize and metadata-free
-re-encoding. Per-record, count, and 64 MiB aggregate quotas are enforced at the
-sealed-store boundary; `KKR7` preserves canonical records. Icons create no remote
-lookup, peer sync, envelope, capability, queue, notification, or transport work.
+strict 256×256 RGBA PNGs after bounded orientation/crop/resize and re-encoding
+that omits source metadata. Per-record, count, and 64 MiB aggregate quotas are
+enforced at the sealed-store boundary; `KKR7` preserves canonical records. Icons
+create no remote lookup, peer sync, envelope, capability, queue, notification,
+or transport work.
 
 B10 private local conversation folders are implemented end to end across the
 unchanged F5 record contract, `kult-node`, RPC/CLI, UniFFI, desktop, Android,
