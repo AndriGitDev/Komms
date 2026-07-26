@@ -3,7 +3,9 @@
 
 use alloc::vec::Vec;
 
+use hmac::{Hmac, Mac};
 use rand_core::CryptoRngCore;
+use sha2::Sha256;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::{ratchet::Session, util, CryptoError, Result};
@@ -38,6 +40,18 @@ impl StorageKey {
         StorageKey(*util::hkdf32(None, &self.0, label))
     }
 
+    /// Compute HMAC-SHA-256 without exposing this key's bytes.
+    ///
+    /// Higher layers use this for keyed at-rest indexes after deriving a
+    /// dedicated index subkey. Callers remain responsible for supplying a
+    /// canonical, domain-separated input.
+    pub fn hmac_sha256(&self, input: &[u8]) -> [u8; 32] {
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(&self.0).expect("HMAC accepts every key length");
+        mac.update(input);
+        mac.finalize().into_bytes().into()
+    }
+
     /// AEAD-seal arbitrary bytes under this key (random 24-byte nonce,
     /// caller-chosen associated data). Output: `nonce || ciphertext+tag`.
     pub fn seal(&self, ad: &[u8], plaintext: &[u8], rng: &mut impl CryptoRngCore) -> Vec<u8> {
@@ -64,4 +78,18 @@ pub(crate) fn seal_session(
 pub(crate) fn unseal_session(bytes: &[u8], key: &StorageKey) -> Result<Session> {
     let plain = Zeroizing::new(util::aead_open(key.as_bytes(), SEAL_AD, bytes)?);
     postcard::from_bytes(&plain).map_err(|_| CryptoError::Serialization)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StorageKey;
+
+    #[test]
+    fn hmac_sha256_matches_known_answer() {
+        let key = StorageKey::from_bytes([0x0b; 32]);
+        let expected =
+            hex::decode("198a607eb44bfbc69903a0f1cf2bbdc5ba0aa3f3d9ae3c1c7a3b1696a0b68cf7")
+                .unwrap();
+        assert_eq!(key.hmac_sha256(b"Hi There").as_slice(), expected);
+    }
 }
