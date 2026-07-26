@@ -161,12 +161,13 @@ latency promises.
 |---|---|---|
 | Linux/ext4 | Owner-only database, WAL, SHM, lock, and media-directory mode tests; index/privacy tests; all migration and restore interruption points; real file and directory sync calls; atomic same-directory replacement; both scale sizes | Sudden-power-loss rig, controller/cache faults, snapshots, backup-exclusion integration, and forensic examination |
 | macOS/APFS | Shared Unix permission, sync, and replacement implementation; scheduled macOS core test is configured | A result for this revision, power-loss behavior, app-container/backup exclusion, snapshots, and forensic examination |
-| Windows/NTFS | Windows atomic replacement path is implemented with replace-existing and write-through semantics; desktop release builds compile the storage dependency graph | A core migration/restore result for this revision, owner-only ACL enforcement, directory durability evidence, power-loss behavior, backup integration, and forensic examination |
+| Windows Server 2025/NTFS (hosted) | [CI run 30225556928](https://github.com/AndriGitDev/Komms/actions/runs/30225556928) on commit `d8b328e` explicitly identified the checkout volume as NTFS, then passed the complete storage suite: released-schema migration, logical backup/restore, every replacement interruption point, opaque-index and privacy checks, exact history operations, and cross-process writer exclusion. The replacement path uses replace-existing and write-through semantics. | Owner-only ACL enforcement, directory durability under sudden power loss, physical storage behavior, backup integration, snapshots, and forensic examination |
 | Android/iOS app filesystems | The Rust storage path is shared with the Unix implementation | Physical-device migration/restore, lifecycle interruption, app-private permissions, cloud-backup exclusion, free-space behavior, power-loss behavior, and forensic examination |
 
-No unsupported cell is promoted by inference. Hosted macOS and Windows results
-may establish code-path compatibility for an exact revision, but they do not
-close physical filesystem, backup, power-loss, permissions, or forensic cells.
+No unsupported cell is promoted by inference. The hosted Windows result
+establishes code-path compatibility for that exact revision and identified
+filesystem. It does not close physical filesystem, backup, power-loss,
+permissions, snapshot, or forensic cells. A hosted macOS result remains open.
 
 ## 7. Repeatable commands
 
