@@ -38,14 +38,16 @@ The script runs:
 
 1. workspace formatting, all-target/all-feature warnings-as-errors clippy, all
    tests, `no_std` crypto/protocol builds, and `cargo-deny`;
-2. the desktop workspace's independent format, clippy, test, and deny gates;
-3. generated Kotlin UniFFI bindings plus the Android JVM/core two-node suite;
-4. generated Swift UniFFI bindings plus the iOS/macOS host two-node suite;
-5. Android APK/lint and the unsigned iOS Simulator application build when their
+2. the ADR-0027 100,000- and 1,000,000-message migration, unlock, indexed page,
+   exact edit/delete, memory, and database-growth budgets;
+3. the desktop workspace's independent format, clippy, test, and deny gates;
+4. generated Kotlin UniFFI bindings plus the Android JVM/core two-node suite;
+5. generated Swift UniFFI bindings plus the iOS/macOS host two-node suite;
+6. Android APK/lint and the unsigned iOS Simulator application build when their
    complete SDKs are installed;
-6. every crypto and protocol fuzz target for 60 seconds, including C2 device
+7. every crypto and protocol fuzz target for 60 seconds, including C2 device
    records and C7 call-control/call-media parsers; and
-7. final Git whitespace and worktree review.
+8. final Git whitespace and worktree review.
 
 Run from the repository root:
 
@@ -84,12 +86,12 @@ Hosted automation complements the local checkpoint:
 
 - `.github/workflows/ci.yml` repeats core/desktop format, lint, tests,
   `no_std`, dependency policy, fuzz smoke, generated Android/iOS host suites,
-  MSRV 1.88, and Android debug-APK assembly;
+  MSRV 1.88, Windows core-storage tests, and Android debug-APK assembly;
 - the iOS Simulator job remains gated by the `IOS_APP_CI=1` repository variable;
   it is enabled for the current per-push release evidence;
 - `.github/workflows/audit.yml` runs weekly and on demand: advisories for both
-  Cargo workspaces, core tests on macOS, and an informational coverage snapshot;
-  and
+  Cargo workspaces, core tests on macOS, the opaque-store scale gate on Linux,
+  and an informational coverage snapshot; and
 - `.github/workflows/hil-nightly.yml` remains dormant until a trusted
   `meshtastic-hil` bench is online and `HIL_BENCH=armed`.
 

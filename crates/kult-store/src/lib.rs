@@ -16,7 +16,9 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 use rand_core::CryptoRngCore;
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+#[cfg(test)]
+use rusqlite::params;
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -27,11 +29,16 @@ mod backup;
 mod devices;
 mod ephemeral;
 mod local_metadata;
+mod maintenance;
 mod media;
+mod migration;
 mod note;
+#[cfg(test)]
+mod opaque_tests;
+#[cfg(test)]
+mod scale_bench;
 mod scheduled;
-#[doc(hidden)]
-pub mod store_v2;
+mod store_v2;
 
 pub use backup::BACKUP_MAGIC;
 pub use devices::{
@@ -53,6 +60,10 @@ pub use local_metadata::{
     MAX_FOLDER_ASSIGNMENTS, MAX_LABELS, MAX_LABELS_PER_CONVERSATION, MAX_LABEL_ASSIGNMENTS,
     MAX_LOCAL_METADATA_STRING_BYTES, MAX_PINS, MAX_UI_PREFERENCE_VALUE_BYTES, THEME_PREFERENCES,
     THEME_PREFERENCE_KEY, THEME_SEMANTIC_ROLES,
+};
+pub use maintenance::{
+    StorageMaintenanceOptions, StorageMaintenanceReport, MAX_MAINTENANCE_VACUUM_PAGES,
+    MAX_MAINTENANCE_WAL_BYTES,
 };
 pub use media::{
     MediaDirection, MediaLimits, MediaObjectRecord, MediaReconciliation, MediaRecord, MediaScope,
@@ -159,6 +170,21 @@ pub enum StoreError {
     UnsupportedRecordVersion,
     /// A versioned logical record exceeds the internal migration bound.
     RecordBounds,
+    /// An opaque history cursor is malformed, forged, stale, or belongs to
+    /// another database or conversation.
+    InvalidCursor,
+    /// The legacy database does not match a released schema fixture.
+    UnsupportedLegacySchema,
+    /// A migration or restore does not have enough same-filesystem workspace.
+    InsufficientMigrationSpace,
+    /// A sibling migration checkpoint no longer matches its source database.
+    MigrationSourceChanged,
+    /// Atomic replacement recovery found an ambiguous set of sibling files.
+    ReplacementRecovery,
+    /// A bounded migration count or referential check failed.
+    MigrationValidation,
+    /// A requested maintenance bound exceeds the supported per-call limit.
+    MaintenanceBounds,
 }
 
 impl std::fmt::Display for StoreError {
@@ -217,6 +243,21 @@ impl std::fmt::Display for StoreError {
                 f.write_str("sealed logical record version is unsupported")
             }
             Self::RecordBounds => f.write_str("sealed logical record exceeds its bound"),
+            Self::InvalidCursor => f.write_str("invalid or stale opaque history cursor"),
+            Self::UnsupportedLegacySchema => {
+                f.write_str("legacy store schema is not a released Komms schema")
+            }
+            Self::InsufficientMigrationSpace => {
+                f.write_str("insufficient temporary space for store replacement")
+            }
+            Self::MigrationSourceChanged => {
+                f.write_str("migration source changed after its checkpoint")
+            }
+            Self::ReplacementRecovery => {
+                f.write_str("store replacement requires explicit recovery")
+            }
+            Self::MigrationValidation => f.write_str("store migration validation failed"),
+            Self::MaintenanceBounds => f.write_str("store maintenance bound exceeded"),
         }
     }
 }
@@ -246,6 +287,25 @@ impl From<std::io::Error> for StoreError {
 
 /// Convenience alias.
 pub type Result<T> = std::result::Result<T, StoreError>;
+
+fn decode_exact<T>(bytes: &[u8]) -> Result<T>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let (value, remainder) =
+        postcard::take_from_bytes(bytes).map_err(|_| StoreError::Serialization)?;
+    if !remainder.is_empty() {
+        return Err(StoreError::Serialization);
+    }
+    Ok(value)
+}
+
+fn direction_code(direction: Direction) -> u8 {
+    match direction {
+        Direction::Outbound => 0,
+        Direction::Inbound => 1,
+    }
+}
 
 /// Direction of a stored message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -289,6 +349,43 @@ pub struct MessageRecord {
     /// Content id of the envelope this message left in (outbound only) —
     /// what encrypted delivery receipts acknowledge.
     pub wire_id: Option<[u8; 16]>,
+}
+
+/// Stable opaque continuation token for one database and conversation.
+///
+/// The bytes reveal neither a logical identifier nor a usable SQLite row
+/// number and fail closed if replayed against another store or conversation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryCursor(Vec<u8>);
+
+impl HistoryCursor {
+    /// Reconstruct a cursor received through an RPC or FFI boundary.
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
+    /// Opaque bytes suitable for persistence by a caller.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+/// One bounded page of pairwise message history.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MessagePage {
+    /// Records in stable insertion order.
+    pub records: Vec<MessageRecord>,
+    /// Continuation after the final returned row, when more rows may exist.
+    pub next: Option<HistoryCursor>,
+}
+
+/// One bounded page of group message history.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupMessagePage {
+    /// Records in stable insertion order.
+    pub records: Vec<GroupMessageRecord>,
+    /// Continuation after the final returned row, when more rows may exist.
+    pub next: Option<HistoryCursor>,
 }
 
 /// Complete durable consequences of accepting one ordinary pairwise message.
@@ -511,7 +608,8 @@ const WRAP_AD: &[u8] = b"KK-store-wrap-v1";
 pub const MAX_PENDING_ENVELOPES: usize = 2_048;
 /// Maximum aggregate sealed bytes retained by the deferred inbox.
 pub const MAX_PENDING_BYTES: usize = 64 * 1024 * 1024;
-const SCHEMA: &str = "
+#[cfg(test)]
+pub(crate) const LEGACY_SCHEMA_CURRENT: &str = "
 CREATE TABLE IF NOT EXISTS meta     (k TEXT PRIMARY KEY, v BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS identity (id INTEGER PRIMARY KEY CHECK (id = 1), blob BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS sessions (peer BLOB PRIMARY KEY, blob BLOB NOT NULL);
@@ -626,23 +724,14 @@ fn acquire_database_identity_lock(path: &Path) -> Result<Option<File>> {
 /// An open Komms store with its encrypted domains unlocked.
 pub struct Store {
     conn: Connection,
-    k_identity: StorageKey,
-    k_sessions: StorageKey,
-    k_capabilities: StorageKey,
-    k_messages: StorageKey,
-    k_queue: StorageKey,
-    k_contacts: StorageKey,
-    k_prekeys: StorageKey,
-    k_pending: StorageKey,
-    /// One key for the three group tables; the associated-data strings
-    /// (`group` / `group-chain` / `group-msg`) keep the domains disjoint.
-    k_groups: StorageKey,
+    metadata: store_v2::DatabaseMetadata,
+    metadata_key: StorageKey,
+    index_root: StorageKey,
+    row_root: StorageKey,
+    cursor_root: StorageKey,
+    path: PathBuf,
+    kdf_profile: KdfProfile,
     k_media: StorageKey,
-    k_local_metadata: StorageKey,
-    k_notes: StorageKey,
-    k_scheduled: StorageKey,
-    k_ephemeral: StorageKey,
-    k_devices: StorageKey,
     media_dir: PathBuf,
     media_limits: MediaLimits,
     // Prevents another Unix process from bypassing the pathname sidecar via a
@@ -663,20 +752,19 @@ impl Store {
         rng: &mut impl CryptoRngCore,
     ) -> Result<Self> {
         let lock = acquire_store_lock(path)?;
+        if path.exists() {
+            return Err(StoreError::NotAStore);
+        }
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(path)?;
         let conn = Connection::open(path)?;
         let database_lock = acquire_database_identity_lock(path)?;
-        if store_v2::is_inactive_migration_target(&conn)? {
-            return Err(StoreError::SchemaMismatch);
-        }
-        conn.execute_batch(SCHEMA)?;
-        let existing: Option<Vec<u8>> = conn
-            .query_row("SELECT v FROM meta WHERE k = 'wrapped_sk'", [], |r| {
-                r.get(0)
-            })
-            .optional()?;
-        if existing.is_some() {
-            return Err(StoreError::NotAStore); // refuse to clobber
-        }
 
         let mut salt = [0u8; 16];
         rng.fill_bytes(&mut salt);
@@ -686,67 +774,68 @@ impl Store {
         let mut sk_bytes = Zeroizing::new([0u8; 32]);
         rng.fill_bytes(sk_bytes.as_mut());
         let wrapped = kek_key.seal(WRAP_AD, sk_bytes.as_ref(), rng);
+        let master = StorageKey::from_bytes(*sk_bytes);
+        let metadata = store_v2::DatabaseMetadata::fresh(store_v2::random_database_id(rng)?);
+        let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
+        store_v2::create_schema(&tx)?;
+        store_v2::write_bootstrap(&tx, &salt, profile, &wrapped)?;
+        store_v2::write_metadata(&tx, &master, &metadata, rng)?;
+        tx.commit()?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        store_v2::configure_connection(&conn)?;
+        store_v2::protect_sqlite_files(path)?;
 
-        conn.execute("INSERT INTO meta (k, v) VALUES ('salt', ?1)", params![salt])?;
-        conn.execute(
-            "INSERT INTO meta (k, v) VALUES ('kdf', ?1)",
-            params![
-                postcard::to_allocvec(&(profile.m_cost_kib, profile.t_cost, profile.p_cost))
-                    .map_err(|_| StoreError::Serialization)?
-            ],
-        )?;
-        conn.execute(
-            "INSERT INTO meta (k, v) VALUES ('wrapped_sk', ?1)",
-            params![wrapped],
-        )?;
-
-        Self::with_master(
-            conn,
-            database_lock,
-            lock,
-            StorageKey::from_bytes(*sk_bytes),
-            path,
-        )
+        Self::with_master(conn, database_lock, lock, master, metadata, profile, path)
     }
 
     /// Open and unlock an existing store.
     pub fn open(path: &Path, passphrase: &[u8]) -> Result<Self> {
         let lock = acquire_store_lock(path)?;
+        migration::recover_missing_source(path)?;
+        if !path.is_file() {
+            return Err(StoreError::NotAStore);
+        }
         let conn = Connection::open(path)?;
         let database_lock = acquire_database_identity_lock(path)?;
-        if store_v2::is_inactive_migration_target(&conn)? {
-            return Err(StoreError::SchemaMismatch);
+        if !store_v2::is_v2(&conn)? {
+            drop(conn);
+            return migration::migrate_legacy(path, passphrase, lock, database_lock);
         }
-        // Idempotent: also creates any table added since this store was —
-        // the only schema evolution so far is purely additive.
-        conn.execute_batch(SCHEMA)?;
-        let get = |k: &str| -> Result<Vec<u8>> {
-            conn.query_row("SELECT v FROM meta WHERE k = ?1", params![k], |r| r.get(0))
-                .optional()?
-                .ok_or(StoreError::NotAStore)
-        };
-        let salt: [u8; 16] = get("salt")?.try_into().map_err(|_| StoreError::NotAStore)?;
-        let (m, t, p): (u32, u32, u32) =
-            postcard::from_bytes(&get("kdf")?).map_err(|_| StoreError::NotAStore)?;
-        let wrapped = get("wrapped_sk")?;
+        let store = Self::open_v2_with_parts(path, passphrase, conn, database_lock, lock, false)?;
+        migration::cleanup_completed_replacement(path)?;
+        backup::cleanup_completed_restore(path)?;
+        Ok(store)
+    }
 
-        let profile = KdfProfile {
-            m_cost_kib: m,
-            t_cost: t,
-            p_cost: p,
-        };
+    fn open_v2_with_parts(
+        path: &Path,
+        passphrase: &[u8],
+        conn: Connection,
+        database_lock: Option<File>,
+        lock: File,
+        allow_incomplete: bool,
+    ) -> Result<Self> {
+        store_v2::validate_physical_schema(&conn)?;
+        store_v2::configure_connection(&conn)?;
+        let (salt, profile, wrapped) = store_v2::read_bootstrap(&conn)?;
         let kek = derive_kek(passphrase, &salt, profile)?;
         let kek_key = StorageKey::from_bytes(*kek);
         let sk_vec = Zeroizing::new(kek_key.open(WRAP_AD, &wrapped)?); // wrong passphrase fails here
         let sk_bytes: [u8; 32] = sk_vec[..].try_into().map_err(|_| StoreError::NotAStore)?;
+        let master = StorageKey::from_bytes(sk_bytes);
+        let metadata = store_v2::read_metadata(&conn, &master, allow_incomplete)?;
+        let store = Self::with_master(conn, database_lock, lock, master, metadata, profile, path)?;
+        store.validate_open_state()?;
+        store.conn.pragma_update(None, "journal_mode", "WAL")?;
+        store_v2::protect_sqlite_files(path)?;
+        Ok(store)
+    }
 
-        Self::with_master(
-            conn,
-            database_lock,
-            lock,
-            StorageKey::from_bytes(sk_bytes),
-            path,
-        )
+    fn open_incomplete(path: &Path, passphrase: &[u8]) -> Result<Self> {
+        let lock = acquire_store_lock(path)?;
+        let conn = Connection::open(path)?;
+        let database_lock = acquire_database_identity_lock(path)?;
+        Self::open_v2_with_parts(path, passphrase, conn, database_lock, lock, true)
     }
 
     fn with_master(
@@ -754,25 +843,22 @@ impl Store {
         database_lock: Option<File>,
         lock: File,
         master: StorageKey,
+        metadata: store_v2::DatabaseMetadata,
+        profile: KdfProfile,
         path: &Path,
     ) -> Result<Self> {
         let media_dir = media::prepare_media_directory(path)?;
+        let keys = store_v2::derive_store_keys(&master);
+        let metadata_key = master.derive(b"KK-store-v2-metadata");
         Ok(Self {
-            k_identity: master.derive(b"KK-store-identity"),
-            k_sessions: master.derive(b"KK-store-sessions"),
-            k_capabilities: master.derive(b"KK-store-capabilities"),
-            k_messages: master.derive(b"KK-store-messages"),
-            k_queue: master.derive(b"KK-store-queue"),
-            k_contacts: master.derive(b"KK-store-contacts"),
-            k_prekeys: master.derive(b"KK-store-prekeys"),
-            k_pending: master.derive(b"KK-store-pending"),
-            k_groups: master.derive(b"KK-store-groups"),
-            k_media: master.derive(b"KK-store-media"),
-            k_local_metadata: master.derive(b"KK-store-local-metadata"),
-            k_notes: master.derive(b"KK-store-notes"),
-            k_scheduled: master.derive(b"KK-store-scheduled"),
-            k_ephemeral: master.derive(b"KK-store-ephemeral"),
-            k_devices: master.derive(b"KK-store-devices"),
+            metadata,
+            metadata_key,
+            index_root: keys.index_root,
+            row_root: keys.row_root,
+            cursor_root: keys.cursor_root,
+            path: path.to_path_buf(),
+            kdf_profile: profile,
+            k_media: keys.media,
             media_dir,
             media_limits: MediaLimits::default(),
             conn,
@@ -781,31 +867,136 @@ impl Store {
         })
     }
 
+    fn validate_open_state(&self) -> Result<()> {
+        store_v2::validate_physical_schema(&self.conn)?;
+        self.validate_all_opaque_rows()?;
+        migration::validate_checkpoint_state(self)?;
+        self.validate_core_logical_rows()?;
+        self.validate_media_logical_rows()?;
+        self.validate_local_metadata_logical_rows()?;
+        self.validate_note_logical_rows()?;
+        self.validate_scheduled_logical_rows()?;
+        self.validate_ephemeral_logical_rows()?;
+        self.validate_device_logical_rows()
+    }
+
+    fn validate_core_logical_rows(&self) -> Result<()> {
+        self.validate_rows::<store_v2::IdentityRows, _>(|row| {
+            row.verify_key(&store_v2::SingletonKey)?;
+            row.verify_indexes(&store_v2::IndexKeys::none())?;
+            let bytes: [u8; 64] = row.payload[..]
+                .try_into()
+                .map_err(|_| StoreError::Serialization)?;
+            let _ = Identity::from_bytes(&bytes);
+            Ok(())
+        })?;
+        self.validate_rows::<store_v2::SessionRows, _>(|row| {
+            let _ = store_v2::AccountKey::decode(&row.logical_key)?;
+            row.verify_indexes(&store_v2::IndexKeys::none())?;
+            let _: Session = decode_exact(&row.payload)?;
+            Ok(())
+        })?;
+        self.validate_rows::<store_v2::CapabilityRows, _>(|row| {
+            let _ = store_v2::AccountKey::decode(&row.logical_key)?;
+            row.verify_indexes(&store_v2::IndexKeys::none())?;
+            let _ = CapabilityControl::decode(&row.payload)?;
+            Ok(())
+        })?;
+        self.validate_rows::<store_v2::MessageRows, _>(|row| {
+            let record = self.decode_message_row_ref(row, None)?;
+            row.verify_indexes(&store_v2::IndexKeys::message(
+                &store_v2::ContentKey::new(record.id),
+                &store_v2::AccountKey::new(record.peer),
+            ))
+        })?;
+        self.validate_rows::<store_v2::QueueRows, _>(|row| {
+            let item = Self::decode_queue_item(&row.payload)?;
+            row.verify_indexes(&Self::queue_indexes(&item))
+        })?;
+        self.validate_rows::<store_v2::SeenRows, _>(|row| {
+            let key = store_v2::ContentKey::decode(&row.logical_key)?;
+            row.verify_indexes(&store_v2::IndexKeys::none())?;
+            if row.payload.as_slice() != key.value() {
+                return Err(StoreError::LogicalKeyMismatch);
+            }
+            Ok(())
+        })?;
+        self.validate_rows::<store_v2::ReceiptReplayRows, _>(|row| {
+            let _ = store_v2::ContentKey::decode(&row.logical_key)?;
+            row.verify_indexes(&store_v2::IndexKeys::none())?;
+            let _: ([u8; 32], u64) = decode_exact(&row.payload)?;
+            Ok(())
+        })?;
+        self.validate_rows::<store_v2::ContactRows, _>(|row| {
+            let record: ContactRecord = decode_exact(&row.payload)?;
+            row.verify_key(&store_v2::AccountKey::new(record.peer))?;
+            row.verify_indexes(&store_v2::IndexKeys::none())
+        })?;
+        self.validate_rows::<store_v2::PrekeyRows, _>(|row| {
+            row.verify_key(&store_v2::SingletonKey)?;
+            row.verify_indexes(&store_v2::IndexKeys::none())
+        })?;
+        self.validate_rows::<store_v2::PendingRows, _>(|row| {
+            row.verify_indexes(&store_v2::IndexKeys::none())?;
+            let (encoded, _): (Vec<u8>, u64) = decode_exact(&row.payload)?;
+            let _ = Envelope::decode(&encoded)?;
+            Ok(())
+        })?;
+        self.validate_rows::<store_v2::ResetRows, _>(|row| {
+            let key = store_v2::AccountKey::decode(&row.logical_key)?;
+            row.verify_indexes(&store_v2::IndexKeys::none())?;
+            if row.payload.as_slice() != key.value() {
+                return Err(StoreError::LogicalKeyMismatch);
+            }
+            Ok(())
+        })?;
+        self.validate_rows::<store_v2::GroupRows, _>(|row| {
+            let record: GroupRecord = decode_exact(&row.payload)?;
+            let key = store_v2::GroupKey::decode(&row.logical_key)?;
+            if key.value() != &record.id {
+                return Err(StoreError::LogicalKeyMismatch);
+            }
+            row.verify_indexes(&store_v2::IndexKeys::none())
+        })?;
+        self.validate_rows::<store_v2::GroupAuthorityRows, _>(|row| {
+            let record: GroupAuthorityRecord = decode_exact(&row.payload)?;
+            row.verify_key(&store_v2::GroupKey::new(record.group))?;
+            row.verify_indexes(&store_v2::IndexKeys::none())
+        })?;
+        self.validate_rows::<store_v2::GroupChainRows, _>(|row| {
+            let key = store_v2::GroupMemberKey::decode(&row.logical_key)?;
+            row.verify_indexes(&store_v2::IndexKeys::group_chain(&store_v2::GroupKey::new(
+                *key.group(),
+            )))
+        })?;
+        self.validate_rows::<store_v2::GroupMessageRows, _>(|row| {
+            let record = self.decode_group_message_row(row)?;
+            row.verify_indexes(&store_v2::IndexKeys::group_message(
+                &store_v2::ContentKey::new(record.id),
+                &store_v2::GroupKey::new(record.group),
+            ))
+        })
+    }
+
     // ---- identity ---------------------------------------------------------
 
     /// Persist the device identity (sealed).
     pub fn put_identity(&self, id: &Identity, rng: &mut impl CryptoRngCore) -> Result<()> {
-        let sealed = self
-            .k_identity
-            .seal(b"identity", id.to_bytes().as_ref(), rng);
-        self.conn.execute(
-            "INSERT OR REPLACE INTO identity (id, blob) VALUES (1, ?1)",
-            params![sealed],
-        )?;
-        Ok(())
+        self.put_equality::<store_v2::IdentityRows>(
+            &store_v2::SingletonKey,
+            id.to_bytes().as_ref(),
+            store_v2::IndexKeys::none(),
+            rng,
+        )
     }
 
     /// Load the device identity, if one was stored.
     pub fn get_identity(&self) -> Result<Option<Identity>> {
-        let sealed: Option<Vec<u8>> = self
-            .conn
-            .query_row("SELECT blob FROM identity WHERE id = 1", [], |r| r.get(0))
-            .optional()?;
-        let Some(sealed) = sealed else {
+        let Some(row) = self.get_equality::<store_v2::IdentityRows>(&store_v2::SingletonKey)?
+        else {
             return Ok(None);
         };
-        let plain = Zeroizing::new(self.k_identity.open(b"identity", &sealed)?);
-        let bytes: [u8; 64] = plain[..]
+        let bytes: [u8; 64] = row.payload[..]
             .try_into()
             .map_err(|_| StoreError::Serialization)?;
         Ok(Some(Identity::from_bytes(&bytes)))
@@ -820,28 +1011,21 @@ impl Store {
         session: &Session,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
-        let sealed = session.seal(&self.k_sessions, rng);
-        self.conn.execute(
-            "INSERT OR REPLACE INTO sessions (peer, blob) VALUES (?1, ?2)",
-            params![peer.as_slice(), sealed],
-        )?;
-        Ok(())
+        let payload =
+            Zeroizing::new(postcard::to_allocvec(session).map_err(|_| StoreError::Serialization)?);
+        self.put_equality::<store_v2::SessionRows>(
+            &store_v2::AccountKey::new(*peer),
+            &payload,
+            store_v2::IndexKeys::none(),
+            rng,
+        )
     }
 
     /// Load the session for a peer.
     pub fn get_session(&self, peer: &[u8; 32]) -> Result<Option<Session>> {
-        let sealed: Option<Vec<u8>> = self
-            .conn
-            .query_row(
-                "SELECT blob FROM sessions WHERE peer = ?1",
-                params![peer.as_slice()],
-                |r| r.get(0),
-            )
-            .optional()?;
-        match sealed {
-            Some(s) => Ok(Some(Session::unseal(&s, &self.k_sessions)?)),
-            None => Ok(None),
-        }
+        self.get_equality::<store_v2::SessionRows>(&store_v2::AccountKey::new(*peer))?
+            .map(|row| decode_exact(&row.payload))
+            .transpose()
     }
 
     /// Atomically commit an accepted ordinary pairwise receive transition.
@@ -864,57 +1048,67 @@ impl Store {
             return Err(StoreError::InvalidTransition);
         }
         if let Some(sequence) = plan.source_pending_sequence {
-            let sealed: Option<Vec<u8>> = self
-                .conn
-                .query_row(
-                    "SELECT blob FROM pending WHERE seq = ?1",
-                    params![sequence],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let Some(sealed) = sealed else {
+            let Some(row) = self.row_by_rowid::<store_v2::PendingRows>(sequence)? else {
                 return Err(StoreError::InvalidTransition);
             };
-            let plain = self.k_pending.open(b"pending", &sealed)?;
-            let (envelope, _): (Vec<u8>, u64) =
-                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
+            let (envelope, _): (Vec<u8>, u64) = decode_exact(&row.payload)?;
             if Envelope::decode(&envelope)?.content_id() != *plan.content_id {
                 return Err(StoreError::InvalidTransition);
             }
         }
 
-        let sealed_session = plan.session.seal(&self.k_sessions, rng);
-        let sealed_message = if let Some(message) = plan.message {
-            let plain = postcard::to_allocvec(message).map_err(|_| StoreError::Serialization)?;
-            Some(self.k_messages.seal(b"message", &plain, rng))
+        let session_payload = Zeroizing::new(
+            postcard::to_allocvec(plan.session).map_err(|_| StoreError::Serialization)?,
+        );
+        let message_payload = if let Some(message) = plan.message {
+            Some(postcard::to_allocvec(message).map_err(|_| StoreError::Serialization)?)
         } else {
             None
         };
         let replay = postcard::to_allocvec(&(*plan.peer_device, plan.received_at))
             .map_err(|_| StoreError::Serialization)?;
-        let sealed_replay = self.k_queue.seal(b"receipt-replay", &replay, rng);
 
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let applied = (|| -> Result<()> {
-            tx.execute(
-                "INSERT OR REPLACE INTO sessions (peer, blob) VALUES (?1, ?2)",
-                params![plan.peer_device.as_slice(), sealed_session],
+            self.put_equality_on::<store_v2::SessionRows>(
+                &tx,
+                &store_v2::AccountKey::new(*plan.peer_device),
+                &session_payload,
+                store_v2::IndexKeys::none(),
+                rng,
             )?;
-            if let Some(sealed) = sealed_message {
-                tx.execute("INSERT INTO messages (blob) VALUES (?1)", params![sealed])?;
+            if let (Some(message), Some(payload)) = (plan.message, message_payload.as_deref()) {
+                self.append_on::<store_v2::MessageRows>(
+                    &tx,
+                    Some(&store_v2::MessageKey::new(
+                        message.peer,
+                        direction_code(message.direction),
+                        message.id,
+                    )),
+                    payload,
+                    store_v2::IndexKeys::message(
+                        &store_v2::ContentKey::new(message.id),
+                        &store_v2::AccountKey::new(message.peer),
+                    ),
+                    rng,
+                )?;
             }
-            tx.execute(
-                "INSERT INTO seen (id) VALUES (?1)",
-                params![plan.content_id.as_slice()],
+            self.put_equality_on::<store_v2::SeenRows>(
+                &tx,
+                &store_v2::ContentKey::new(*plan.content_id),
+                plan.content_id,
+                store_v2::IndexKeys::none(),
+                rng,
             )?;
-            tx.execute(
-                "INSERT OR REPLACE INTO receipt_replay (id, blob) VALUES (?1, ?2)",
-                params![plan.content_id.as_slice(), sealed_replay],
+            self.put_equality_on::<store_v2::ReceiptReplayRows>(
+                &tx,
+                &store_v2::ContentKey::new(*plan.content_id),
+                &replay,
+                store_v2::IndexKeys::none(),
+                rng,
             )?;
             if let Some(sequence) = plan.source_pending_sequence {
-                let removed =
-                    tx.execute("DELETE FROM pending WHERE seq = ?1", params![sequence])?;
-                if removed != 1 {
+                if !self.delete_rowid_on::<store_v2::PendingRows>(&tx, sequence)? {
                     return Err(StoreError::InvalidTransition);
                 }
             }
@@ -935,10 +1129,7 @@ impl Store {
 
     /// Delete one exact physical-endpoint ratchet session.
     pub fn delete_session(&self, peer: &[u8; 32]) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM sessions WHERE peer = ?1",
-            params![peer.as_slice()],
-        )?;
+        self.delete_equality::<store_v2::SessionRows>(&store_v2::AccountKey::new(*peer))?;
         Ok(())
     }
 
@@ -952,42 +1143,26 @@ impl Store {
         capabilities: &CapabilityControl,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
-        let encoded = capabilities.encode()?;
-        let sealed = self.k_capabilities.seal(b"capability", &encoded, rng);
-        self.conn.execute(
-            "INSERT OR REPLACE INTO capabilities (peer, blob) VALUES (?1, ?2)",
-            params![peer.as_slice(), sealed],
-        )?;
-        Ok(())
+        self.put_equality::<store_v2::CapabilityRows>(
+            &store_v2::AccountKey::new(*peer),
+            &capabilities.encode()?,
+            store_v2::IndexKeys::none(),
+            rng,
+        )
     }
 
     /// Load the authenticated content-capability snapshot for a peer's
     /// current ratchet session.
     pub fn get_capabilities(&self, peer: &[u8; 32]) -> Result<Option<CapabilityControl>> {
-        let sealed: Option<Vec<u8>> = self
-            .conn
-            .query_row(
-                "SELECT blob FROM capabilities WHERE peer = ?1",
-                params![peer.as_slice()],
-                |row| row.get(0),
-            )
-            .optional()?;
-        match sealed {
-            Some(sealed) => {
-                let plain = self.k_capabilities.open(b"capability", &sealed)?;
-                Ok(Some(CapabilityControl::decode(&plain)?))
-            }
-            None => Ok(None),
-        }
+        self.get_equality::<store_v2::CapabilityRows>(&store_v2::AccountKey::new(*peer))?
+            .map(|row| CapabilityControl::decode(&row.payload).map_err(StoreError::from))
+            .transpose()
     }
 
     /// Clear a peer capability snapshot when its ratchet session is reset or
     /// replaced. Capability state is re-creatable and never backed up.
     pub fn delete_capabilities(&self, peer: &[u8; 32]) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM capabilities WHERE peer = ?1",
-            params![peer.as_slice()],
-        )?;
+        self.delete_equality::<store_v2::CapabilityRows>(&store_v2::AccountKey::new(*peer))?;
         Ok(())
     }
 
@@ -996,49 +1171,112 @@ impl Store {
     /// Append a message record (sealed).
     pub fn put_message(&self, rec: &MessageRecord, rng: &mut impl CryptoRngCore) -> Result<()> {
         let plain = postcard::to_allocvec(rec).map_err(|_| StoreError::Serialization)?;
-        let sealed = self.k_messages.seal(b"message", &plain, rng);
-        self.conn
-            .execute("INSERT INTO messages (blob) VALUES (?1)", params![sealed])?;
+        let key = store_v2::MessageKey::new(rec.peer, direction_code(rec.direction), rec.id);
+        let indexes = store_v2::IndexKeys::message(
+            &store_v2::ContentKey::new(rec.id),
+            &store_v2::AccountKey::new(rec.peer),
+        );
+        self.append::<store_v2::MessageRows>(&key, &plain, indexes, rng)?;
         Ok(())
     }
 
     /// All messages for a peer, in insertion order.
     pub fn messages_with(&self, peer: &[u8; 32]) -> Result<Vec<MessageRecord>> {
-        Ok(self
-            .all_messages()?
+        let rows = self.rows_by_index::<store_v2::MessageConversationIndex>(
+            &store_v2::AccountKey::new(*peer),
+        )?;
+        rows.into_iter()
+            .map(|row| self.decode_message_row(row, Some(peer)))
+            .collect()
+    }
+
+    /// Return one bounded pairwise history page without scanning another
+    /// conversation or decrypting rows beyond the requested page.
+    pub fn messages_page(
+        &self,
+        peer: &[u8; 32],
+        after: Option<&HistoryCursor>,
+        limit: usize,
+    ) -> Result<MessagePage> {
+        if limit == 0 || limit > store_v2::MAX_PAGE_SIZE {
+            return Err(StoreError::RecordBounds);
+        }
+        let conversation = store_v2::AccountKey::new(*peer);
+        let after_rowid = after
+            .map(|cursor| {
+                self.decode_cursor::<store_v2::MessageConversationIndex>(
+                    &conversation,
+                    cursor.as_bytes(),
+                )
+            })
+            .transpose()?;
+        let rows = self.rows_by_index_after::<store_v2::MessageConversationIndex>(
+            &conversation,
+            after_rowid,
+            limit + 1,
+        )?;
+        let has_more = rows.len() > limit;
+        let selected = rows.into_iter().take(limit).collect::<Vec<_>>();
+        let next = if has_more {
+            selected.last().map(|row| {
+                HistoryCursor(
+                    self.encode_cursor::<store_v2::MessageConversationIndex>(&conversation, row),
+                )
+            })
+        } else {
+            None
+        };
+        let records = selected
             .into_iter()
-            .filter(|record| &record.peer == peer)
-            .collect())
+            .map(|row| self.decode_message_row(row, Some(peer)))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(MessagePage { records, next })
+    }
+
+    fn decode_message_row(
+        &self,
+        row: store_v2::RawRow,
+        expected_peer: Option<&[u8; 32]>,
+    ) -> Result<MessageRecord> {
+        self.decode_message_row_ref(&row, expected_peer)
+    }
+
+    fn decode_message_row_ref(
+        &self,
+        row: &store_v2::RawRow,
+        expected_peer: Option<&[u8; 32]>,
+    ) -> Result<MessageRecord> {
+        let record: MessageRecord = decode_exact(&row.payload)?;
+        if expected_peer.is_some_and(|peer| peer != &record.peer) {
+            return Err(StoreError::LogicalKeyMismatch);
+        }
+        row.verify_key(&store_v2::MessageKey::new(
+            record.peer,
+            direction_code(record.direction),
+            record.id,
+        ))?;
+        Ok(record)
     }
 
     /// Replace the stored record with the same `id` as `rec`. Returns `true`
-    /// if a record was found and updated. (Records are sealed individually,
-    /// so lookup is a scan — fine at local-history scale.)
+    /// if a record was found and updated.
     pub fn update_message(
         &self,
         rec: &MessageRecord,
         rng: &mut impl CryptoRngCore,
     ) -> Result<bool> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT rowid_, blob FROM messages ORDER BY rowid_")?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
-        for row in rows {
-            let (rowid, sealed) = row?;
-            let plain = self.k_messages.open(b"message", &sealed)?;
-            let stored: MessageRecord =
-                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
-            if stored.id == rec.id {
-                let plain = postcard::to_allocvec(rec).map_err(|_| StoreError::Serialization)?;
-                let sealed = self.k_messages.seal(b"message", &plain, rng);
-                self.conn.execute(
-                    "UPDATE messages SET blob = ?2 WHERE rowid_ = ?1",
-                    params![rowid, sealed],
-                )?;
-                return Ok(true);
-            }
+        let id = store_v2::ContentKey::new(rec.id);
+        let Some(row) = self.row_by_unique::<store_v2::MessageIdIndex>(&id)? else {
+            return Ok(false);
+        };
+        let stored = self.decode_message_row_ref(&row, None)?;
+        if stored.peer != rec.peer || stored.direction != rec.direction {
+            return Err(StoreError::InvalidTransition);
         }
-        Ok(false)
+        let key = store_v2::MessageKey::new(rec.peer, direction_code(rec.direction), rec.id);
+        let indexes = store_v2::IndexKeys::message(&id, &store_v2::AccountKey::new(rec.peer));
+        let plain = postcard::to_allocvec(rec).map_err(|_| StoreError::Serialization)?;
+        self.update_row::<store_v2::MessageRows>(&row.locator, &key, &plain, indexes, rng)
     }
 
     /// Delete one exact pairwise history row after an expiry tombstone is durable.
@@ -1048,24 +1286,16 @@ impl Store {
         direction: Direction,
         id: &[u8; 16],
     ) -> Result<bool> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT rowid_, blob FROM messages ORDER BY rowid_")?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })?;
-        for row in rows {
-            let (rowid, sealed) = row?;
-            let plain = self.k_messages.open(b"message", &sealed)?;
-            let record: MessageRecord =
-                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
-            if &record.peer == peer && record.direction == direction && &record.id == id {
-                self.conn
-                    .execute("DELETE FROM messages WHERE rowid_ = ?1", params![rowid])?;
-                return Ok(true);
-            }
+        let Some(row) =
+            self.row_by_unique::<store_v2::MessageIdIndex>(&store_v2::ContentKey::new(*id))?
+        else {
+            return Ok(false);
+        };
+        let record = self.decode_message_row_ref(&row, Some(peer))?;
+        if record.direction != direction || &record.id != id {
+            return Ok(false);
         }
-        Ok(false)
+        self.delete_row::<store_v2::MessageRows>(&row.locator)
     }
 
     // ---- contacts ----------------------------------------------------------
@@ -1073,53 +1303,42 @@ impl Store {
     /// Insert or replace a contact (sealed).
     pub fn put_contact(&self, rec: &ContactRecord, rng: &mut impl CryptoRngCore) -> Result<()> {
         let plain = postcard::to_allocvec(rec).map_err(|_| StoreError::Serialization)?;
-        let sealed = self.k_contacts.seal(b"contact", &plain, rng);
-        self.conn.execute(
-            "INSERT OR REPLACE INTO contacts (peer, blob) VALUES (?1, ?2)",
-            params![rec.peer.as_slice(), sealed],
-        )?;
-        Ok(())
+        self.put_equality::<store_v2::ContactRows>(
+            &store_v2::AccountKey::new(rec.peer),
+            &plain,
+            store_v2::IndexKeys::none(),
+            rng,
+        )
     }
 
     /// Load one contact.
     pub fn get_contact(&self, peer: &[u8; 32]) -> Result<Option<ContactRecord>> {
-        let sealed: Option<Vec<u8>> = self
-            .conn
-            .query_row(
-                "SELECT blob FROM contacts WHERE peer = ?1",
-                params![peer.as_slice()],
-                |r| r.get(0),
-            )
-            .optional()?;
-        match sealed {
-            Some(s) => {
-                let plain = self.k_contacts.open(b"contact", &s)?;
-                Ok(Some(
-                    postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?,
-                ))
-            }
-            None => Ok(None),
-        }
+        self.get_equality::<store_v2::ContactRows>(&store_v2::AccountKey::new(*peer))?
+            .map(|row| {
+                let record: ContactRecord = decode_exact(&row.payload)?;
+                if record.peer != *peer {
+                    return Err(StoreError::LogicalKeyMismatch);
+                }
+                Ok(record)
+            })
+            .transpose()
     }
 
     /// All contacts.
     pub fn contacts(&self) -> Result<Vec<ContactRecord>> {
-        let mut stmt = self.conn.prepare("SELECT blob FROM contacts")?;
-        let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
-        let mut out = Vec::new();
-        for row in rows {
-            let plain = self.k_contacts.open(b"contact", &row?)?;
-            out.push(postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?);
-        }
-        Ok(out)
+        self.rows::<store_v2::ContactRows>()?
+            .into_iter()
+            .map(|row| {
+                let record: ContactRecord = decode_exact(&row.payload)?;
+                row.verify_key(&store_v2::AccountKey::new(record.peer))?;
+                Ok(record)
+            })
+            .collect()
     }
 
     /// Delete one exact sealed contact. Missing peers are an honest no-op.
     pub fn delete_contact(&self, peer: &[u8; 32]) -> Result<bool> {
-        Ok(self.conn.execute(
-            "DELETE FROM contacts WHERE peer = ?1",
-            params![peer.as_slice()],
-        )? == 1)
+        self.delete_equality::<store_v2::ContactRows>(&store_v2::AccountKey::new(*peer))
     }
 
     // ---- own prekey secrets -------------------------------------------------
@@ -1127,140 +1346,42 @@ impl Store {
     /// Persist this device's prekey secrets as one opaque sealed blob (the
     /// runtime owns the serialization; the store interprets nothing).
     pub fn put_prekeys(&self, blob: &[u8], rng: &mut impl CryptoRngCore) -> Result<()> {
-        let sealed = self.k_prekeys.seal(b"prekeys", blob, rng);
-        self.conn.execute(
-            "INSERT OR REPLACE INTO prekeys (id, blob) VALUES (1, ?1)",
-            params![sealed],
-        )?;
-        Ok(())
+        self.put_equality::<store_v2::PrekeyRows>(
+            &store_v2::SingletonKey,
+            blob,
+            store_v2::IndexKeys::none(),
+            rng,
+        )
     }
 
     /// Load this device's prekey secrets blob, if stored.
     pub fn get_prekeys(&self) -> Result<Option<Zeroizing<Vec<u8>>>> {
-        let sealed: Option<Vec<u8>> = self
-            .conn
-            .query_row("SELECT blob FROM prekeys WHERE id = 1", [], |r| r.get(0))
-            .optional()?;
-        match sealed {
-            Some(s) => Ok(Some(Zeroizing::new(self.k_prekeys.open(b"prekeys", &s)?))),
-            None => Ok(None),
-        }
+        Ok(self
+            .get_equality::<store_v2::PrekeyRows>(&store_v2::SingletonKey)?
+            .map(|row| row.payload))
     }
 
     // ---- outbound queue ---------------------------------------------------
 
     /// Enqueue an envelope for delivery (sealed at rest; survives restarts).
     pub fn queue_push(&self, item: &QueueItem, rng: &mut impl CryptoRngCore) -> Result<i64> {
-        let envelope = item.envelope.try_encode()?;
-        let row = QueueRowV2 {
-            peer: item.peer,
-            msg_id: item.msg_id,
-            group_msg_id: item.group_msg_id,
-            class: item.class,
-            created_at: item.created_at,
-            attempts: item.attempts,
-            next_attempt_at: item.next_attempt_at,
-            envelope,
-        };
-        let encoded = postcard::to_allocvec(&row).map_err(|_| StoreError::Serialization)?;
-        let mut plain = Vec::with_capacity(QUEUE_ROW_MAGIC_V2.len() + encoded.len());
-        plain.extend_from_slice(QUEUE_ROW_MAGIC_V2);
-        plain.extend_from_slice(&encoded);
-        let sealed = self.k_queue.seal(b"queue", &plain, rng);
-        self.conn
-            .execute("INSERT INTO queue (blob) VALUES (?1)", params![sealed])?;
-        Ok(self.conn.last_insert_rowid())
+        let payload = Self::encode_queue_item(item)?;
+        let row =
+            self.append_opaque::<store_v2::QueueRows>(&payload, Self::queue_indexes(item), rng)?;
+        Ok(row.rowid)
     }
 
     /// All queued items with their sequence numbers.
     pub fn queue_all(&self) -> Result<Vec<(i64, QueueItem)>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT seq, blob FROM queue ORDER BY seq")?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
-        let mut out = Vec::new();
-        for row in rows {
-            let (seq, sealed) = row?;
-            let plain = self.k_queue.open(b"queue", &sealed)?;
-            let (
-                peer,
-                msg_id,
-                group_msg_id,
-                class,
-                created_at,
-                attempts,
-                next_attempt_at,
-                env_bytes,
-            ) = if let Some(encoded) = plain.strip_prefix(QUEUE_ROW_MAGIC_V2) {
-                let (row, remainder): (QueueRowV2, &[u8]) =
-                    postcard::take_from_bytes(encoded).map_err(|_| StoreError::Serialization)?;
-                if !remainder.is_empty() {
-                    return Err(StoreError::Serialization);
-                }
-                (
-                    row.peer,
-                    row.msg_id,
-                    row.group_msg_id,
-                    row.class,
-                    row.created_at,
-                    row.attempts,
-                    row.next_attempt_at,
-                    row.envelope,
-                )
-            } else if let Some(encoded) = plain.strip_prefix(QUEUE_ROW_MAGIC_V1) {
-                let (row, remainder): (QueueRowV1, &[u8]) =
-                    postcard::take_from_bytes(encoded).map_err(|_| StoreError::Serialization)?;
-                if !remainder.is_empty() {
-                    return Err(StoreError::Serialization);
-                }
-                (
-                    row.peer,
-                    row.msg_id,
-                    row.group_msg_id,
-                    row.class,
-                    0,
-                    0,
-                    0,
-                    row.envelope,
-                )
-            } else {
-                let (legacy, remainder): (LegacyQueueRow, &[u8]) =
-                    postcard::take_from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
-                if !remainder.is_empty() {
-                    return Err(StoreError::Serialization);
-                }
-                (
-                    legacy.0,
-                    legacy.1,
-                    legacy.2,
-                    QueueClass::Normal,
-                    0,
-                    0,
-                    0,
-                    legacy.3,
-                )
-            };
-            out.push((
-                seq,
-                QueueItem {
-                    peer,
-                    msg_id,
-                    group_msg_id,
-                    class,
-                    created_at,
-                    attempts,
-                    next_attempt_at,
-                    envelope: Envelope::decode(&env_bytes)?,
-                },
-            ));
-        }
-        Ok(out)
+        self.rows::<store_v2::QueueRows>()?
+            .into_iter()
+            .map(|row| Ok((row.rowid, Self::decode_queue_item(&row.payload)?)))
+            .collect()
     }
 
     /// Remove a delivered/acked envelope from the queue.
     pub fn queue_ack(&self, seq: i64) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM queue WHERE seq = ?1", params![seq])?;
+        self.delete_rowid::<store_v2::QueueRows>(seq)?;
         Ok(())
     }
 
@@ -1272,40 +1393,32 @@ impl Store {
         item: &QueueItem,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
-        let envelope = item.envelope.try_encode()?;
-        let row = QueueRowV2 {
-            peer: item.peer,
-            msg_id: item.msg_id,
-            group_msg_id: item.group_msg_id,
-            class: item.class,
-            created_at: item.created_at,
-            attempts: item.attempts,
-            next_attempt_at: item.next_attempt_at,
-            envelope,
+        let Some(row) = self.row_by_rowid::<store_v2::QueueRows>(seq)? else {
+            return Ok(());
         };
-        let encoded = postcard::to_allocvec(&row).map_err(|_| StoreError::Serialization)?;
-        let mut plain = Vec::with_capacity(QUEUE_ROW_MAGIC_V2.len() + encoded.len());
-        plain.extend_from_slice(QUEUE_ROW_MAGIC_V2);
-        plain.extend_from_slice(&encoded);
-        let sealed = self.k_queue.seal(b"queue", &plain, rng);
-        self.conn.execute(
-            "UPDATE queue SET blob = ?1 WHERE seq = ?2",
-            params![sealed, seq],
+        let locator: [u8; 16] = row
+            .locator
+            .as_slice()
+            .try_into()
+            .map_err(|_| StoreError::SchemaMismatch)?;
+        self.update_row::<store_v2::QueueRows>(
+            &row.locator,
+            &store_v2::OpaqueRowKey::from_locator(locator),
+            &Self::encode_queue_item(item)?,
+            Self::queue_indexes(item),
+            rng,
         )?;
         Ok(())
     }
 
     /// Remove every queued envelope addressed to one revoked physical endpoint.
     pub fn queue_remove_peer(&self, peer: &[u8; 32]) -> Result<usize> {
-        let sequences: Vec<i64> = self
-            .queue_all()?
-            .into_iter()
-            .filter_map(|(seq, item)| (&item.peer == peer).then_some(seq))
-            .collect();
-        for sequence in &sequences {
-            self.queue_ack(*sequence)?;
+        let rows =
+            self.rows_by_index::<store_v2::QueuePeerIndex>(&store_v2::AccountKey::new(*peer))?;
+        for row in &rows {
+            self.delete_row::<store_v2::QueueRows>(&row.locator)?;
         }
-        Ok(sequences.len())
+        Ok(rows.len())
     }
 
     /// Retarget durable queue ownership after a legacy endpoint is bound to
@@ -1316,58 +1429,61 @@ impl Store {
         new_peer: &[u8; 32],
         rng: &mut impl CryptoRngCore,
     ) -> Result<usize> {
-        let rows: Vec<(i64, QueueItem)> = self
-            .queue_all()?
-            .into_iter()
-            .filter(|(_, item)| &item.peer == old_peer)
-            .collect();
-        for (sequence, mut item) in rows.iter().cloned() {
-            self.queue_ack(sequence)?;
+        let rows =
+            self.rows_by_index::<store_v2::QueuePeerIndex>(&store_v2::AccountKey::new(*old_peer))?;
+        for row in &rows {
+            let mut item = Self::decode_queue_item(&row.payload)?;
+            if item.peer != *old_peer {
+                return Err(StoreError::LogicalKeyMismatch);
+            }
             item.peer = *new_peer;
-            self.queue_push(&item, rng)?;
+            let locator: [u8; 16] = row
+                .locator
+                .as_slice()
+                .try_into()
+                .map_err(|_| StoreError::SchemaMismatch)?;
+            self.update_row::<store_v2::QueueRows>(
+                &row.locator,
+                &store_v2::OpaqueRowKey::from_locator(locator),
+                &Self::encode_queue_item(&item)?,
+                Self::queue_indexes(&item),
+                rng,
+            )?;
         }
         Ok(rows.len())
     }
 
     /// Remove every queued envelope associated with one expired pairwise message.
     pub fn queue_remove_message(&self, id: &[u8; 16]) -> Result<usize> {
-        let sequences: Vec<i64> = self
-            .queue_all()?
-            .into_iter()
-            .filter_map(|(seq, item)| (item.msg_id.as_ref() == Some(id)).then_some(seq))
-            .collect();
-        for sequence in &sequences {
-            self.queue_ack(*sequence)?;
+        let rows =
+            self.rows_by_index::<store_v2::QueueMessageIndex>(&store_v2::ContentKey::new(*id))?;
+        for row in &rows {
+            self.delete_row::<store_v2::QueueRows>(&row.locator)?;
         }
-        Ok(sequences.len())
+        Ok(rows.len())
     }
 
     /// Remove every queued member copy associated with one expired group message.
     pub fn queue_remove_group_message(&self, id: &[u8; 16]) -> Result<usize> {
-        let sequences: Vec<i64> = self
-            .queue_all()?
-            .into_iter()
-            .filter_map(|(seq, item)| (item.group_msg_id.as_ref() == Some(id)).then_some(seq))
-            .collect();
-        for sequence in &sequences {
-            self.queue_ack(*sequence)?;
+        let rows = self
+            .rows_by_index::<store_v2::QueueGroupMessageIndex>(&store_v2::ContentKey::new(*id))?;
+        for row in &rows {
+            self.delete_row::<store_v2::QueueRows>(&row.locator)?;
         }
-        Ok(sequences.len())
+        Ok(rows.len())
     }
 
     /// Remove queued copies of one exact sealed envelope after its encrypted
     /// end-to-end receipt returns. Matching the content id keeps other linked
     /// devices' copies of the same logical message independently retryable.
     pub fn queue_remove_envelope(&self, content_id: &[u8; 16]) -> Result<usize> {
-        let sequences: Vec<i64> = self
-            .queue_all()?
-            .into_iter()
-            .filter_map(|(seq, item)| (item.envelope.content_id() == *content_id).then_some(seq))
-            .collect();
-        for sequence in &sequences {
-            self.queue_ack(*sequence)?;
+        let rows = self.rows_by_index::<store_v2::QueueEnvelopeIndex>(
+            &store_v2::ContentKey::new(*content_id),
+        )?;
+        for row in &rows {
+            self.delete_row::<store_v2::QueueRows>(&row.locator)?;
         }
-        Ok(sequences.len())
+        Ok(rows.len())
     }
 
     // ---- inbound pending (envelopes that cannot be processed yet) ---------
@@ -1385,29 +1501,29 @@ impl Store {
         let encoded = env.try_encode()?;
         let plain =
             postcard::to_allocvec(&(encoded, first_seen)).map_err(|_| StoreError::Serialization)?;
-        let sealed = self.k_pending.seal(b"pending", &plain, rng);
-        if sealed.len() > MAX_PENDING_BYTES {
+        if plain.len() > MAX_PENDING_BYTES {
             return Err(StoreError::PendingQuota);
         }
 
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
-        let (count, bytes): (i64, i64) = tx.query_row(
-            "SELECT COUNT(*), COALESCE(SUM(length(blob)), 0) FROM pending",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        let count = usize::try_from(count).map_err(|_| StoreError::Serialization)?;
-        let bytes = usize::try_from(bytes).map_err(|_| StoreError::Serialization)?;
-        if count >= MAX_PENDING_ENVELOPES
-            || bytes
-                .checked_add(sealed.len())
-                .is_none_or(|total| total > MAX_PENDING_BYTES)
-        {
+        let count = usize::try_from(self.count_rows_on::<store_v2::PendingRows>(&tx)?)
+            .map_err(|_| StoreError::Serialization)?;
+        if count >= MAX_PENDING_ENVELOPES {
             tx.rollback()?;
             return Err(StoreError::PendingQuota);
         }
-        tx.execute("INSERT INTO pending (blob) VALUES (?1)", params![sealed])?;
-        let sequence = tx.last_insert_rowid();
+        let row = self.append_on::<store_v2::PendingRows>(
+            &tx,
+            None,
+            &plain,
+            store_v2::IndexKeys::none(),
+            rng,
+        )?;
+        if self.sealed_bytes_on::<store_v2::PendingRows>(&tx)? > MAX_PENDING_BYTES as u64 {
+            tx.rollback()?;
+            return Err(StoreError::PendingQuota);
+        }
+        let sequence = row.rowid;
         tx.commit()?;
         Ok(sequence)
     }
@@ -1419,19 +1535,13 @@ impl Store {
     /// after the envelope is consumed or has expired. This gives deferred
     /// receive processing at-least-once crash semantics.
     pub fn pending_all(&self) -> Result<Vec<(i64, Envelope, u64)>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT seq, blob FROM pending ORDER BY seq")?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
-        let mut out = Vec::new();
-        for row in rows {
-            let (sequence, sealed) = row?;
-            let plain = self.k_pending.open(b"pending", &sealed)?;
-            let (env_bytes, first_seen): (Vec<u8>, u64) =
-                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
-            out.push((sequence, Envelope::decode(&env_bytes)?, first_seen));
-        }
-        Ok(out)
+        self.rows::<store_v2::PendingRows>()?
+            .into_iter()
+            .map(|row| {
+                let (env_bytes, first_seen): (Vec<u8>, u64) = decode_exact(&row.payload)?;
+                Ok((row.rowid, Envelope::decode(&env_bytes)?, first_seen))
+            })
+            .collect()
     }
 
     /// Acknowledge one consumed or expired inbound envelope.
@@ -1440,9 +1550,88 @@ impl Store {
     /// not-yet-visited rows remain durable if processing returns an error or
     /// the process stops between envelopes.
     pub fn pending_ack(&self, sequence: i64) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM pending WHERE seq = ?1", params![sequence])?;
+        self.delete_rowid::<store_v2::PendingRows>(sequence)?;
         Ok(())
+    }
+
+    fn encode_queue_item(item: &QueueItem) -> Result<Vec<u8>> {
+        let row = QueueRowV2 {
+            peer: item.peer,
+            msg_id: item.msg_id,
+            group_msg_id: item.group_msg_id,
+            class: item.class,
+            created_at: item.created_at,
+            attempts: item.attempts,
+            next_attempt_at: item.next_attempt_at,
+            envelope: item.envelope.try_encode()?,
+        };
+        let encoded = postcard::to_allocvec(&row).map_err(|_| StoreError::Serialization)?;
+        let mut plain = Vec::with_capacity(QUEUE_ROW_MAGIC_V2.len() + encoded.len());
+        plain.extend_from_slice(QUEUE_ROW_MAGIC_V2);
+        plain.extend_from_slice(&encoded);
+        Ok(plain)
+    }
+
+    fn decode_queue_item(plain: &[u8]) -> Result<QueueItem> {
+        let (peer, msg_id, group_msg_id, class, created_at, attempts, next_attempt_at, envelope) =
+            if let Some(encoded) = plain.strip_prefix(QUEUE_ROW_MAGIC_V2) {
+                let row: QueueRowV2 = decode_exact(encoded)?;
+                (
+                    row.peer,
+                    row.msg_id,
+                    row.group_msg_id,
+                    row.class,
+                    row.created_at,
+                    row.attempts,
+                    row.next_attempt_at,
+                    row.envelope,
+                )
+            } else if let Some(encoded) = plain.strip_prefix(QUEUE_ROW_MAGIC_V1) {
+                let row: QueueRowV1 = decode_exact(encoded)?;
+                (
+                    row.peer,
+                    row.msg_id,
+                    row.group_msg_id,
+                    row.class,
+                    0,
+                    0,
+                    0,
+                    row.envelope,
+                )
+            } else {
+                let legacy: LegacyQueueRow = decode_exact(plain)?;
+                (
+                    legacy.0,
+                    legacy.1,
+                    legacy.2,
+                    QueueClass::Normal,
+                    0,
+                    0,
+                    0,
+                    legacy.3,
+                )
+            };
+        Ok(QueueItem {
+            peer,
+            msg_id,
+            group_msg_id,
+            class,
+            created_at,
+            attempts,
+            next_attempt_at,
+            envelope: Envelope::decode(&envelope)?,
+        })
+    }
+
+    fn queue_indexes(item: &QueueItem) -> store_v2::IndexKeys {
+        let message = item.msg_id.map(store_v2::ContentKey::new);
+        let group_message = item.group_msg_id.map(store_v2::ContentKey::new);
+        store_v2::IndexKeys::queue(
+            &store_v2::AccountKey::new(item.peer),
+            message.as_ref(),
+            group_message.as_ref(),
+            &store_v2::ContentKey::new(item.envelope.content_id()),
+        )
     }
 
     // ---- groups (ADR-0012) --------------------------------------------------
@@ -1451,43 +1640,36 @@ impl Store {
     pub fn put_group(&self, rec: &GroupRecord, rng: &mut impl CryptoRngCore) -> Result<()> {
         let plain =
             Zeroizing::new(postcard::to_allocvec(rec).map_err(|_| StoreError::Serialization)?);
-        let sealed = self.k_groups.seal(b"group", &plain, rng);
-        self.conn.execute(
-            "INSERT OR REPLACE INTO groups (gid, blob) VALUES (?1, ?2)",
-            params![rec.id.as_slice(), sealed],
+        self.put_equality::<store_v2::GroupRows>(
+            &store_v2::GroupKey::new(rec.id),
+            &plain,
+            store_v2::IndexKeys::none(),
+            rng,
         )?;
         Ok(())
     }
 
     /// Load one group.
     pub fn get_group(&self, id: &[u8; 32]) -> Result<Option<GroupRecord>> {
-        let sealed: Option<Vec<u8>> = self
-            .conn
-            .query_row(
-                "SELECT blob FROM groups WHERE gid = ?1",
-                params![id.as_slice()],
-                |r| r.get(0),
-            )
-            .optional()?;
-        match sealed {
-            Some(s) => {
-                let plain = Zeroizing::new(self.k_groups.open(b"group", &s)?);
-                Ok(Some(
-                    postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?,
-                ))
-            }
-            None => Ok(None),
+        let key = store_v2::GroupKey::new(*id);
+        let Some(row) = self.get_equality::<store_v2::GroupRows>(&key)? else {
+            return Ok(None);
+        };
+        row.verify_key(&key)?;
+        let record: GroupRecord = decode_exact(&row.payload)?;
+        if record.id != *id {
+            return Err(StoreError::LogicalKeyMismatch);
         }
+        Ok(Some(record))
     }
 
     /// All groups.
     pub fn groups(&self) -> Result<Vec<GroupRecord>> {
-        let mut stmt = self.conn.prepare("SELECT blob FROM groups")?;
-        let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
         let mut out = Vec::new();
-        for row in rows {
-            let plain = Zeroizing::new(self.k_groups.open(b"group", &row?)?);
-            out.push(postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?);
+        for row in self.rows::<store_v2::GroupRows>()? {
+            let record: GroupRecord = decode_exact(&row.payload)?;
+            row.verify_key(&store_v2::GroupKey::new(record.id))?;
+            out.push(record);
         }
         Ok(out)
     }
@@ -1495,16 +1677,15 @@ impl Store {
     /// Remove a group and every receiving chain under it (leaving keeps the
     /// message history — that is this device's data).
     pub fn delete_group(&self, id: &[u8; 32]) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM groups WHERE gid = ?1", params![id.as_slice()])?;
-        self.conn.execute(
-            "DELETE FROM group_chains WHERE gid = ?1",
-            params![id.as_slice()],
-        )?;
-        self.conn.execute(
-            "DELETE FROM group_authority WHERE gid = ?1",
-            params![id.as_slice()],
-        )?;
+        let group = store_v2::GroupKey::new(*id);
+        let chains = self.rows_by_index::<store_v2::GroupChainGroupIndex>(&group)?;
+        let tx = self.conn.unchecked_transaction()?;
+        self.delete_equality_on::<store_v2::GroupRows>(&tx, &group)?;
+        self.delete_equality_on::<store_v2::GroupAuthorityRows>(&tx, &group)?;
+        for chain in chains {
+            self.delete_rowid_on::<store_v2::GroupChainRows>(&tx, chain.rowid)?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -1516,43 +1697,36 @@ impl Store {
     ) -> Result<()> {
         let plain =
             Zeroizing::new(postcard::to_allocvec(rec).map_err(|_| StoreError::Serialization)?);
-        let sealed = self.k_groups.seal(b"group-authority", &plain, rng);
-        self.conn.execute(
-            "INSERT OR REPLACE INTO group_authority (gid, blob) VALUES (?1, ?2)",
-            params![rec.group.as_slice(), sealed],
+        self.put_equality::<store_v2::GroupAuthorityRows>(
+            &store_v2::GroupKey::new(rec.group),
+            &plain,
+            store_v2::IndexKeys::none(),
+            rng,
         )?;
         Ok(())
     }
 
     /// Load one group's sealed signed authority state.
     pub fn get_group_authority(&self, group: &[u8; 32]) -> Result<Option<GroupAuthorityRecord>> {
-        let sealed: Option<Vec<u8>> = self
-            .conn
-            .query_row(
-                "SELECT blob FROM group_authority WHERE gid = ?1",
-                params![group.as_slice()],
-                |row| row.get(0),
-            )
-            .optional()?;
-        match sealed {
-            Some(sealed) => {
-                let plain = Zeroizing::new(self.k_groups.open(b"group-authority", &sealed)?);
-                Ok(Some(
-                    postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?,
-                ))
-            }
-            None => Ok(None),
+        let key = store_v2::GroupKey::new(*group);
+        let Some(row) = self.get_equality::<store_v2::GroupAuthorityRows>(&key)? else {
+            return Ok(None);
+        };
+        row.verify_key(&key)?;
+        let record: GroupAuthorityRecord = decode_exact(&row.payload)?;
+        if record.group != *group {
+            return Err(StoreError::LogicalKeyMismatch);
         }
+        Ok(Some(record))
     }
 
     /// All sealed C6 authority records for backup and audit.
     pub fn group_authorities(&self) -> Result<Vec<GroupAuthorityRecord>> {
-        let mut stmt = self.conn.prepare("SELECT blob FROM group_authority")?;
-        let rows = stmt.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
         let mut out = Vec::new();
-        for row in rows {
-            let plain = Zeroizing::new(self.k_groups.open(b"group-authority", &row?)?);
-            out.push(postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?);
+        for row in self.rows::<store_v2::GroupAuthorityRows>()? {
+            let record: GroupAuthorityRecord = decode_exact(&row.payload)?;
+            row.verify_key(&store_v2::GroupKey::new(record.group))?;
+            out.push(record);
         }
         Ok(out)
     }
@@ -1566,10 +1740,12 @@ impl Store {
         blob: &[u8],
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
-        let sealed = self.k_groups.seal(b"group-chain", blob, rng);
-        self.conn.execute(
-            "INSERT OR REPLACE INTO group_chains (gid, peer, blob) VALUES (?1, ?2, ?3)",
-            params![group.as_slice(), peer.as_slice(), sealed],
+        let key = store_v2::GroupMemberKey::new(*group, *peer);
+        self.put_equality::<store_v2::GroupChainRows>(
+            &key,
+            blob,
+            store_v2::IndexKeys::group_chain(&store_v2::GroupKey::new(*group)),
+            rng,
         )?;
         Ok(())
     }
@@ -1580,38 +1756,24 @@ impl Store {
         group: &[u8; 32],
         peer: &[u8; 32],
     ) -> Result<Option<Zeroizing<Vec<u8>>>> {
-        let sealed: Option<Vec<u8>> = self
-            .conn
-            .query_row(
-                "SELECT blob FROM group_chains WHERE gid = ?1 AND peer = ?2",
-                params![group.as_slice(), peer.as_slice()],
-                |r| r.get(0),
-            )
-            .optional()?;
-        match sealed {
-            Some(s) => Ok(Some(Zeroizing::new(
-                self.k_groups.open(b"group-chain", &s)?,
-            ))),
-            None => Ok(None),
-        }
+        let key = store_v2::GroupMemberKey::new(*group, *peer);
+        let Some(row) = self.get_equality::<store_v2::GroupChainRows>(&key)? else {
+            return Ok(None);
+        };
+        row.verify_key(&key)?;
+        Ok(Some(row.payload))
     }
 
     /// All receiving chains for a group, as `(peer, blob)`.
     pub fn group_chains(&self, group: &[u8; 32]) -> Result<Vec<GroupChainRow>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT peer, blob FROM group_chains WHERE gid = ?1")?;
-        let rows = stmt.query_map(params![group.as_slice()], |r| {
-            Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
-        })?;
+        let group_key = store_v2::GroupKey::new(*group);
         let mut out = Vec::new();
-        for row in rows {
-            let (peer, sealed) = row?;
-            let peer: [u8; 32] = peer.try_into().map_err(|_| StoreError::Serialization)?;
-            out.push((
-                peer,
-                Zeroizing::new(self.k_groups.open(b"group-chain", &sealed)?),
-            ));
+        for row in self.rows_by_index::<store_v2::GroupChainGroupIndex>(&group_key)? {
+            let key = store_v2::GroupMemberKey::decode(&row.logical_key)?;
+            if key.group() != group {
+                return Err(StoreError::LogicalKeyMismatch);
+            }
+            out.push((*key.peer(), row.payload));
         }
         Ok(out)
     }
@@ -1619,10 +1781,9 @@ impl Store {
     /// Drop one member's receiving chain (they were removed or rotated to a
     /// new chain that replaces this one).
     pub fn delete_group_chain(&self, group: &[u8; 32], peer: &[u8; 32]) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM group_chains WHERE gid = ?1 AND peer = ?2",
-            params![group.as_slice(), peer.as_slice()],
-        )?;
+        self.delete_equality::<store_v2::GroupChainRows>(&store_v2::GroupMemberKey::new(
+            *group, *peer,
+        ))?;
         Ok(())
     }
 
@@ -1632,10 +1793,21 @@ impl Store {
         rec: &GroupMessageRecord,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
-        let plain = postcard::to_allocvec(rec).map_err(|_| StoreError::Serialization)?;
-        let sealed = self.k_groups.seal(b"group-msg", &plain, rng);
-        self.conn
-            .execute("INSERT INTO group_msgs (blob) VALUES (?1)", params![sealed])?;
+        let plain =
+            Zeroizing::new(postcard::to_allocvec(rec).map_err(|_| StoreError::Serialization)?);
+        let id = store_v2::ContentKey::new(rec.id);
+        let group = store_v2::GroupKey::new(rec.group);
+        self.append::<store_v2::GroupMessageRows>(
+            &store_v2::GroupMessageKey::new(
+                rec.group,
+                rec.sender,
+                direction_code(rec.direction),
+                rec.id,
+            ),
+            &plain,
+            store_v2::IndexKeys::group_message(&id, &group),
+            rng,
+        )?;
         Ok(())
     }
 
@@ -1646,26 +1818,26 @@ impl Store {
         rec: &GroupMessageRecord,
         rng: &mut impl CryptoRngCore,
     ) -> Result<bool> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT rowid_, blob FROM group_msgs ORDER BY rowid_")?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
-        for row in rows {
-            let (rowid, sealed) = row?;
-            let plain = self.k_groups.open(b"group-msg", &sealed)?;
-            let stored: GroupMessageRecord =
-                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
-            if stored.id == rec.id {
-                let plain = postcard::to_allocvec(rec).map_err(|_| StoreError::Serialization)?;
-                let sealed = self.k_groups.seal(b"group-msg", &plain, rng);
-                self.conn.execute(
-                    "UPDATE group_msgs SET blob = ?2 WHERE rowid_ = ?1",
-                    params![rowid, sealed],
-                )?;
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        let id = store_v2::ContentKey::new(rec.id);
+        let Some(row) = self.row_by_unique::<store_v2::GroupMessageIdIndex>(&id)? else {
+            return Ok(false);
+        };
+        let expected = store_v2::GroupMessageKey::new(
+            rec.group,
+            rec.sender,
+            direction_code(rec.direction),
+            rec.id,
+        );
+        row.verify_key(&expected)?;
+        let plain =
+            Zeroizing::new(postcard::to_allocvec(rec).map_err(|_| StoreError::Serialization)?);
+        self.update_row::<store_v2::GroupMessageRows>(
+            &row.locator,
+            &expected,
+            &plain,
+            store_v2::IndexKeys::group_message(&id, &store_v2::GroupKey::new(rec.group)),
+            rng,
+        )
     }
 
     /// Delete one exact group history row after an expiry tombstone is durable.
@@ -1675,48 +1847,83 @@ impl Store {
         sender: &[u8; 32],
         id: &[u8; 16],
     ) -> Result<bool> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT rowid_, blob FROM group_msgs ORDER BY rowid_")?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })?;
-        for row in rows {
-            let (rowid, sealed) = row?;
-            let plain = self.k_groups.open(b"group-msg", &sealed)?;
-            let record: GroupMessageRecord =
-                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
-            if &record.group == group && &record.sender == sender && &record.id == id {
-                self.conn
-                    .execute("DELETE FROM group_msgs WHERE rowid_ = ?1", params![rowid])?;
-                return Ok(true);
-            }
+        let id_key = store_v2::ContentKey::new(*id);
+        let Some(row) = self.row_by_unique::<store_v2::GroupMessageIdIndex>(&id_key)? else {
+            return Ok(false);
+        };
+        let record = self.decode_group_message_row(&row)?;
+        if record.group != *group || record.sender != *sender || record.id != *id {
+            return Err(StoreError::LogicalKeyMismatch);
         }
-        Ok(false)
+        self.delete_row::<store_v2::GroupMessageRows>(&row.locator)
     }
 
     /// All messages for a group, in insertion order.
     pub fn group_messages(&self, group: &[u8; 32]) -> Result<Vec<GroupMessageRecord>> {
-        Ok(self
-            .all_group_messages()?
-            .into_iter()
-            .filter(|r| &r.group == group)
-            .collect())
+        let mut out = Vec::new();
+        for row in self.rows_by_index::<store_v2::GroupMessageConversationIndex>(
+            &store_v2::GroupKey::new(*group),
+        )? {
+            out.push(self.decode_group_message_row(&row)?);
+        }
+        Ok(out)
+    }
+
+    /// One bounded page of group history in stable insertion order.
+    pub fn group_messages_page(
+        &self,
+        group: &[u8; 32],
+        after: Option<&HistoryCursor>,
+        limit: usize,
+    ) -> Result<GroupMessagePage> {
+        if limit == 0 || limit > store_v2::MAX_PAGE_SIZE {
+            return Err(StoreError::RecordBounds);
+        }
+        let group_key = store_v2::GroupKey::new(*group);
+        let after_rowid = after
+            .map(|cursor| {
+                self.decode_cursor::<store_v2::GroupMessageConversationIndex>(
+                    &group_key,
+                    cursor.as_bytes(),
+                )
+            })
+            .transpose()?;
+        let rows = self.rows_by_index_after::<store_v2::GroupMessageConversationIndex>(
+            &group_key,
+            after_rowid,
+            limit,
+        )?;
+        let next = rows.last().map(|row| {
+            HistoryCursor(
+                self.encode_cursor::<store_v2::GroupMessageConversationIndex>(&group_key, row),
+            )
+        });
+        let records = rows
+            .iter()
+            .map(|row| self.decode_group_message_row(row))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(GroupMessagePage { records, next })
     }
 
     /// Every stored group message across all groups, in insertion order
     /// (receipt application scans this; local history stays small).
     pub fn all_group_messages(&self) -> Result<Vec<GroupMessageRecord>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT blob FROM group_msgs ORDER BY rowid_")?;
-        let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
         let mut out = Vec::new();
-        for row in rows {
-            let plain = self.k_groups.open(b"group-msg", &row?)?;
-            out.push(postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?);
+        for row in self.rows::<store_v2::GroupMessageRows>()? {
+            out.push(self.decode_group_message_row(&row)?);
         }
         Ok(out)
+    }
+
+    fn decode_group_message_row(&self, row: &store_v2::RawRow) -> Result<GroupMessageRecord> {
+        let record: GroupMessageRecord = decode_exact(&row.payload)?;
+        row.verify_key(&store_v2::GroupMessageKey::new(
+            record.group,
+            record.sender,
+            direction_code(record.direction),
+            record.id,
+        ))?;
+        Ok(record)
     }
 
     // ---- dedup ------------------------------------------------------------
@@ -1724,24 +1931,31 @@ impl Store {
     /// Record an envelope content id; returns `true` if it was new
     /// (multipath duplicates return `false` and must be dropped).
     pub fn mark_seen(&self, content_id: &[u8; 16]) -> Result<bool> {
-        let n = self.conn.execute(
-            "INSERT OR IGNORE INTO seen (id) VALUES (?1)",
-            params![content_id.as_slice()],
+        let key = store_v2::ContentKey::new(*content_id);
+        if self.get_equality::<store_v2::SeenRows>(&key)?.is_some() {
+            return Ok(false);
+        }
+        let mut rng = rand_core::OsRng;
+        self.put_equality::<store_v2::SeenRows>(
+            &key,
+            content_id,
+            store_v2::IndexKeys::none(),
+            &mut rng,
         )?;
-        Ok(n == 1)
+        Ok(true)
     }
 
     /// Has this envelope content id been consumed before?
     pub fn is_seen(&self, content_id: &[u8; 16]) -> Result<bool> {
-        let found: Option<i64> = self
-            .conn
-            .query_row(
-                "SELECT 1 FROM seen WHERE id = ?1",
-                params![content_id.as_slice()],
-                |r| r.get(0),
-            )
-            .optional()?;
-        Ok(found.is_some())
+        let key = store_v2::ContentKey::new(*content_id);
+        let Some(row) = self.get_equality::<store_v2::SeenRows>(&key)? else {
+            return Ok(false);
+        };
+        row.verify_key(&key)?;
+        if row.payload.as_slice() != content_id {
+            return Err(StoreError::LogicalKeyMismatch);
+        }
+        Ok(true)
     }
 
     /// Remember where an accepted envelope's encrypted receipt must return,
@@ -1756,55 +1970,41 @@ impl Store {
     ) -> Result<()> {
         let encoded =
             postcard::to_allocvec(&(*peer, received_at)).map_err(|_| StoreError::Serialization)?;
-        let sealed = self.k_queue.seal(b"receipt-replay", &encoded, rng);
-        self.conn.execute(
-            "INSERT OR REPLACE INTO receipt_replay (id, blob) VALUES (?1, ?2)",
-            params![id.as_slice(), sealed],
+        self.put_equality::<store_v2::ReceiptReplayRows>(
+            &store_v2::ContentKey::new(*id),
+            &encoded,
+            store_v2::IndexKeys::none(),
+            rng,
         )?;
         Ok(())
     }
 
     /// Return the physical sender route for a previously accepted envelope.
     pub fn receipt_replay_peer(&self, id: &[u8; 16]) -> Result<Option<[u8; 32]>> {
-        let sealed: Option<Vec<u8>> = self
-            .conn
-            .query_row(
-                "SELECT blob FROM receipt_replay WHERE id = ?1",
-                params![id.as_slice()],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let Some(sealed) = sealed else {
+        let key = store_v2::ContentKey::new(*id);
+        let Some(row) = self.get_equality::<store_v2::ReceiptReplayRows>(&key)? else {
             return Ok(None);
         };
-        let plain = self.k_queue.open(b"receipt-replay", &sealed)?;
-        let (peer, _): ([u8; 32], u64) =
-            postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
+        row.verify_key(&key)?;
+        let (peer, _): ([u8; 32], u64) = decode_exact(&row.payload)?;
         Ok(Some(peer))
     }
 
     /// Remove duplicate-receipt routes older than the endpoint delivery
     /// window. Seen ids remain independent and keep deduplication durable.
     pub fn sweep_receipt_replay(&self, cutoff: u64) -> Result<usize> {
-        let mut stmt = self.conn.prepare("SELECT id, blob FROM receipt_replay")?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })?;
         let mut expired = Vec::new();
-        for row in rows {
-            let (id, sealed) = row?;
-            let plain = self.k_queue.open(b"receipt-replay", &sealed)?;
-            let (_, received_at): ([u8; 32], u64) =
-                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
+        for row in self.rows::<store_v2::ReceiptReplayRows>()? {
+            let (_, received_at): ([u8; 32], u64) = decode_exact(&row.payload)?;
             if received_at <= cutoff {
-                expired.push(id);
+                expired.push(row.rowid);
             }
         }
-        drop(stmt);
-        for id in &expired {
-            self.conn
-                .execute("DELETE FROM receipt_replay WHERE id = ?1", params![id])?;
+        let tx = self.conn.unchecked_transaction()?;
+        for rowid in &expired {
+            self.delete_rowid_on::<store_v2::ReceiptReplayRows>(&tx, *rowid)?;
         }
+        tx.commit()?;
         Ok(expired.len())
     }
 }
@@ -1855,10 +2055,22 @@ mod queue_tests {
             envelope.encode(),
         ))
         .unwrap();
-        let sealed = store.k_queue.seal(b"queue", &legacy, &mut rng);
+        let legacy_item = QueueItem {
+            peer: [4; 32],
+            msg_id: None,
+            group_msg_id: None,
+            class: QueueClass::Normal,
+            created_at: 0,
+            attempts: 0,
+            next_attempt_at: 0,
+            envelope: envelope.clone(),
+        };
         store
-            .conn
-            .execute("INSERT INTO queue (blob) VALUES (?1)", params![sealed])
+            .append_opaque::<store_v2::QueueRows>(
+                &legacy,
+                Store::queue_indexes(&legacy_item),
+                &mut rng,
+            )
             .unwrap();
 
         let rows = store.queue_all().unwrap();
@@ -1970,6 +2182,22 @@ mod queue_tests {
     }
 
     #[test]
+    fn wrong_passphrase_does_not_rewrite_the_database() {
+        let mut rng = StdRng::seed_from_u64(0xbad5ea);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wrong-pass.db");
+        let store = Store::create(&path, b"right", TEST_KDF, &mut rng).unwrap();
+        drop(store);
+        let before = std::fs::read(&path).unwrap();
+
+        assert!(matches!(
+            Store::open(&path, b"wrong"),
+            Err(StoreError::Crypto(_))
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
     fn pending_inbox_enforces_item_and_sealed_byte_quotas() {
         let mut rng = StdRng::seed_from_u64(0x1b1);
         let dir = tempfile::tempdir().unwrap();
@@ -1991,8 +2219,12 @@ mod queue_tests {
 
         let tx = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate).unwrap();
         for _ in 0..MAX_PENDING_ENVELOPES {
-            tx.execute("INSERT INTO pending (blob) VALUES (zeroblob(1))", [])
-                .unwrap();
+            tx.execute(
+                "INSERT INTO store_records (table_domain, locator, blob)
+                 VALUES (10, randomblob(16), zeroblob(1))",
+                [],
+            )
+            .unwrap();
         }
         tx.commit().unwrap();
         assert!(matches!(
@@ -2000,11 +2232,15 @@ mod queue_tests {
             Err(StoreError::PendingQuota)
         ));
 
-        store.conn.execute("DELETE FROM pending", []).unwrap();
+        store
+            .conn
+            .execute("DELETE FROM store_records WHERE table_domain = 10", [])
+            .unwrap();
         store
             .conn
             .execute(
-                "INSERT INTO pending (blob) VALUES (zeroblob(?1))",
+                "INSERT INTO store_records (table_domain, locator, blob)
+                 VALUES (10, randomblob(16), zeroblob(?1))",
                 params![MAX_PENDING_BYTES as i64],
             )
             .unwrap();
@@ -2075,7 +2311,8 @@ mod queue_tests {
             .conn
             .execute_batch(
                 "CREATE TRIGGER fail_pairwise_receive
-                 BEFORE INSERT ON seen
+                 BEFORE INSERT ON store_records
+                 WHEN NEW.table_domain = 6
                  BEGIN
                    SELECT RAISE(ABORT, 'injected receive failure');
                  END;",

@@ -2,20 +2,20 @@
 //!
 //! These records never enter envelopes, DHT records, group state, or transport
 //! hints. The SQLite table contains only an insertion-order row id and one
-//! independently sealed blob, so copied databases reveal neither record keys
-//! nor organization relationships.
+//! independently row-bound sealed blob plus keyed opaque indexes, so copied
+//! databases reveal neither record keys nor organization relationships.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use rand_core::CryptoRngCore;
-use rusqlite::params;
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
-use crate::{Result, Store, StoreError};
+use crate::{decode_exact, store_v2, Result, Store, StoreError};
 
 const RECORD_MAGIC_V1: &[u8; 4] = b"KLM1";
-const RECORD_AD: &[u8] = b"local-metadata";
 
 /// Maximum UTF-8 bytes in a folder name, label name, color token, media type,
 /// preference key, or similar local-metadata string.
@@ -620,24 +620,7 @@ impl Store {
         if let LocalMetadataRecord::CustomIcon(icon) = record {
             self.validate_custom_icon_quota(icon)?;
         }
-        let key = record.key();
-        let existing = self
-            .local_metadata_rows()?
-            .into_iter()
-            .find_map(|(rowid, stored)| (stored.key() == key).then_some(rowid));
-        let sealed = self.seal_local_metadata(record, rng)?;
-        if let Some(rowid) = existing {
-            self.conn.execute(
-                "UPDATE local_metadata SET blob = ?2 WHERE rowid_ = ?1",
-                params![rowid, sealed],
-            )?;
-        } else {
-            self.conn.execute(
-                "INSERT INTO local_metadata (blob) VALUES (?1)",
-                params![sealed],
-            )?;
-        }
-        Ok(())
+        self.put_local_metadata_on(&self.conn, record, rng)
     }
 
     /// Read one local metadata record by its stable logical key.
@@ -645,10 +628,16 @@ impl Store {
         &self,
         key: &LocalMetadataKey,
     ) -> Result<Option<LocalMetadataRecord>> {
-        Ok(self
-            .local_metadata_rows()?
-            .into_iter()
-            .find_map(|(_, record)| (&record.key() == key).then_some(record)))
+        let physical_key = local_metadata_key(key)?;
+        let Some(row) = self.get_equality::<store_v2::LocalMetadataRows>(&physical_key)? else {
+            return Ok(None);
+        };
+        row.verify_key(&physical_key)?;
+        let record = decode_local_metadata_payload(&row.payload)?;
+        if &record.key() != key {
+            return Err(StoreError::LogicalKeyMismatch);
+        }
+        Ok(Some(record))
     }
 
     /// Read every local metadata record in stable insertion order.
@@ -662,17 +651,7 @@ impl Store {
 
     /// Delete one local metadata record. Returns whether it existed.
     pub fn delete_local_metadata(&self, key: &LocalMetadataKey) -> Result<bool> {
-        let rowid = self
-            .local_metadata_rows()?
-            .into_iter()
-            .find_map(|(rowid, record)| (&record.key() == key).then_some(rowid));
-        let Some(rowid) = rowid else {
-            return Ok(false);
-        };
-        Ok(self.conn.execute(
-            "DELETE FROM local_metadata WHERE rowid_ = ?1",
-            params![rowid],
-        )? == 1)
+        self.delete_equality::<store_v2::LocalMetadataRows>(&local_metadata_key(key)?)
     }
 
     /// Create a folder with a cryptographically random stable id.
@@ -724,24 +703,16 @@ impl Store {
 
         let mut updates = Vec::new();
         if compact {
-            for (position, (rowid, mut record)) in existing.into_iter().enumerate() {
+            for (position, (_, mut record)) in existing.into_iter().enumerate() {
                 record.order = u32::try_from(position).map_err(|_| StoreError::FolderLimit)?;
-                let sealed = self.seal_local_metadata(&LocalMetadataRecord::Folder(record), rng)?;
-                updates.push((rowid, sealed));
+                updates.push(LocalMetadataRecord::Folder(record));
             }
         }
-        let sealed = self.seal_local_metadata(&LocalMetadataRecord::Folder(folder.clone()), rng)?;
         let tx = self.conn.unchecked_transaction()?;
-        for (rowid, sealed) in updates {
-            tx.execute(
-                "UPDATE local_metadata SET blob = ?2 WHERE rowid_ = ?1",
-                params![rowid, sealed],
-            )?;
+        for record in updates {
+            self.put_local_metadata_on(&tx, &record, rng)?;
         }
-        tx.execute(
-            "INSERT INTO local_metadata (blob) VALUES (?1)",
-            params![sealed],
-        )?;
+        self.put_local_metadata_on(&tx, &LocalMetadataRecord::Folder(folder.clone()), rng)?;
         tx.commit()?;
         Ok(folder)
     }
@@ -781,21 +752,17 @@ impl Store {
         rng: &mut impl CryptoRngCore,
     ) -> Result<FolderRecord> {
         validate_new_folder(name)?;
-        let (rowid, mut folder) = self
+        let mut folder = self
             .local_metadata_rows()?
             .into_iter()
-            .find_map(|(rowid, record)| match record {
-                LocalMetadataRecord::Folder(folder) if folder.id == *id => Some((rowid, folder)),
+            .find_map(|(_, record)| match record {
+                LocalMetadataRecord::Folder(folder) if folder.id == *id => Some(folder),
                 _ => None,
             })
             .ok_or(StoreError::UnknownFolder)?;
         folder.name = name.to_owned();
-        let sealed = self.seal_local_metadata(&LocalMetadataRecord::Folder(folder.clone()), rng)?;
         let tx = self.conn.unchecked_transaction()?;
-        tx.execute(
-            "UPDATE local_metadata SET blob = ?2 WHERE rowid_ = ?1",
-            params![rowid, sealed],
-        )?;
+        self.put_local_metadata_on(&tx, &LocalMetadataRecord::Folder(folder.clone()), rng)?;
         tx.commit()?;
         Ok(folder)
     }
@@ -827,22 +794,17 @@ impl Store {
         let mut reordered = Vec::with_capacity(ordered.len());
         let mut updates = Vec::with_capacity(ordered.len());
         for (position, id) in ordered.iter().enumerate() {
-            let (rowid, mut folder) = existing
+            let (_, mut folder) = existing
                 .get(id)
                 .cloned()
                 .ok_or(StoreError::InvalidFolderOrder)?;
             folder.order = u32::try_from(position).map_err(|_| StoreError::InvalidFolderOrder)?;
-            let sealed =
-                self.seal_local_metadata(&LocalMetadataRecord::Folder(folder.clone()), rng)?;
-            updates.push((rowid, sealed));
+            updates.push(LocalMetadataRecord::Folder(folder.clone()));
             reordered.push(folder);
         }
         let tx = self.conn.unchecked_transaction()?;
-        for (rowid, sealed) in updates {
-            tx.execute(
-                "UPDATE local_metadata SET blob = ?2 WHERE rowid_ = ?1",
-                params![rowid, sealed],
-            )?;
+        for record in updates {
+            self.put_local_metadata_on(&tx, &record, rng)?;
         }
         tx.commit()?;
         Ok(reordered)
@@ -865,42 +827,36 @@ impl Store {
     /// Atomically delete a folder and every assignment that points to it.
     pub fn delete_folder(&self, id: &[u8; 16]) -> Result<usize> {
         let rows = self.local_metadata_rows()?;
-        let mut folder_row = None;
-        let mut assignment_rows = Vec::new();
-        let mut icon_row = None;
-        for (rowid, record) in rows {
+        let mut folder_found = false;
+        let mut assignment_keys = Vec::new();
+        let mut icon_key = None;
+        for (_, record) in rows {
             match record {
-                LocalMetadataRecord::Folder(folder) if folder.id == *id => folder_row = Some(rowid),
+                LocalMetadataRecord::Folder(folder) if folder.id == *id => folder_found = true,
                 LocalMetadataRecord::FolderAssignment(assignment) if assignment.folder == *id => {
-                    assignment_rows.push(rowid)
+                    assignment_keys
+                        .push(LocalMetadataKey::FolderAssignment(assignment.conversation))
                 }
                 LocalMetadataRecord::CustomIcon(icon)
                     if icon.target == CustomIconTarget::Folder(*id) =>
                 {
-                    icon_row = Some(rowid)
+                    icon_key = Some(LocalMetadataKey::CustomIcon(icon.target))
                 }
                 _ => {}
             }
         }
-        let folder_row = folder_row.ok_or(StoreError::UnknownFolder)?;
-        let count = assignment_rows.len();
+        if !folder_found {
+            return Err(StoreError::UnknownFolder);
+        }
+        let count = assignment_keys.len();
         let tx = self.conn.unchecked_transaction()?;
-        for rowid in assignment_rows {
-            tx.execute(
-                "DELETE FROM local_metadata WHERE rowid_ = ?1",
-                params![rowid],
-            )?;
+        for key in assignment_keys {
+            self.delete_local_metadata_on(&tx, &key)?;
         }
-        if let Some(rowid) = icon_row {
-            tx.execute(
-                "DELETE FROM local_metadata WHERE rowid_ = ?1",
-                params![rowid],
-            )?;
+        if let Some(key) = icon_key {
+            self.delete_local_metadata_on(&tx, &key)?;
         }
-        tx.execute(
-            "DELETE FROM local_metadata WHERE rowid_ = ?1",
-            params![folder_row],
-        )?;
+        self.delete_local_metadata_on(&tx, &LocalMetadataKey::Folder(*id))?;
         tx.commit()?;
         Ok(count)
     }
@@ -948,19 +904,8 @@ impl Store {
             conversation: conversation.clone(),
             folder: *folder,
         });
-        let sealed = self.seal_local_metadata(&record, rng)?;
         let tx = self.conn.unchecked_transaction()?;
-        if let Some((rowid, _)) = existing {
-            tx.execute(
-                "UPDATE local_metadata SET blob = ?2 WHERE rowid_ = ?1",
-                params![rowid, sealed],
-            )?;
-        } else {
-            tx.execute(
-                "INSERT INTO local_metadata (blob) VALUES (?1)",
-                params![sealed],
-            )?;
-        }
+        self.put_local_metadata_on(&tx, &record, rng)?;
         tx.commit()?;
         Ok(true)
     }
@@ -1115,27 +1060,7 @@ impl Store {
     }
 
     fn remove_folder_assignment(&self, conversation: &ConversationId) -> Result<bool> {
-        let rowid =
-            self.local_metadata_rows()?
-                .into_iter()
-                .find_map(|(rowid, record)| match record {
-                    LocalMetadataRecord::FolderAssignment(assignment)
-                        if assignment.conversation == *conversation =>
-                    {
-                        Some(rowid)
-                    }
-                    _ => None,
-                });
-        let Some(rowid) = rowid else {
-            return Ok(false);
-        };
-        let tx = self.conn.unchecked_transaction()?;
-        tx.execute(
-            "DELETE FROM local_metadata WHERE rowid_ = ?1",
-            params![rowid],
-        )?;
-        tx.commit()?;
-        Ok(true)
+        self.delete_local_metadata(&LocalMetadataKey::FolderAssignment(conversation.clone()))
     }
 
     /// Idempotently pin one exact available typed conversation.
@@ -1180,28 +1105,20 @@ impl Store {
 
         let mut updates = Vec::new();
         if compact {
-            for (position, (rowid, mut pin)) in pins.into_iter().enumerate() {
+            for (position, (_, mut pin)) in pins.into_iter().enumerate() {
                 pin.order = u32::try_from(position).map_err(|_| StoreError::PinLimit)?;
-                let sealed = self.seal_local_metadata(&LocalMetadataRecord::Pin(pin), rng)?;
-                updates.push((rowid, sealed));
+                updates.push(LocalMetadataRecord::Pin(pin));
             }
         }
         let record = PinRecord {
             conversation: conversation.clone(),
             order,
         };
-        let sealed = self.seal_local_metadata(&LocalMetadataRecord::Pin(record), rng)?;
         let tx = self.conn.unchecked_transaction()?;
-        for (rowid, sealed) in updates {
-            tx.execute(
-                "UPDATE local_metadata SET blob = ?2 WHERE rowid_ = ?1",
-                params![rowid, sealed],
-            )?;
+        for record in updates {
+            self.put_local_metadata_on(&tx, &record, rng)?;
         }
-        tx.execute(
-            "INSERT INTO local_metadata (blob) VALUES (?1)",
-            params![sealed],
-        )?;
+        self.put_local_metadata_on(&tx, &LocalMetadataRecord::Pin(record), rng)?;
         tx.commit()?;
         Ok(true)
     }
@@ -1275,20 +1192,16 @@ impl Store {
         }
         let mut updates = Vec::with_capacity(ordered.len());
         for (position, conversation) in ordered.iter().enumerate() {
-            let (rowid, mut pin) = current
+            let (_, mut pin) = current
                 .get(conversation)
                 .cloned()
                 .ok_or(StoreError::InvalidPinOrder)?;
             pin.order = u32::try_from(position).map_err(|_| StoreError::PinLimit)?;
-            let sealed = self.seal_local_metadata(&LocalMetadataRecord::Pin(pin), rng)?;
-            updates.push((rowid, sealed));
+            updates.push(LocalMetadataRecord::Pin(pin));
         }
         let tx = self.conn.unchecked_transaction()?;
-        for (rowid, sealed) in updates {
-            tx.execute(
-                "UPDATE local_metadata SET blob = ?2 WHERE rowid_ = ?1",
-                params![rowid, sealed],
-            )?;
+        for record in updates {
+            self.put_local_metadata_on(&tx, &record, rng)?;
         }
         tx.commit()?;
         self.pins()
@@ -1354,25 +1267,7 @@ impl Store {
     }
 
     fn remove_pin(&self, conversation: &ConversationId) -> Result<bool> {
-        let rowid =
-            self.local_metadata_rows()?
-                .into_iter()
-                .find_map(|(rowid, record)| match record {
-                    LocalMetadataRecord::Pin(pin) if pin.conversation == *conversation => {
-                        Some(rowid)
-                    }
-                    _ => None,
-                });
-        let Some(rowid) = rowid else {
-            return Ok(false);
-        };
-        let tx = self.conn.unchecked_transaction()?;
-        tx.execute(
-            "DELETE FROM local_metadata WHERE rowid_ = ?1",
-            params![rowid],
-        )?;
-        tx.commit()?;
-        Ok(true)
+        self.delete_local_metadata(&LocalMetadataKey::Pin(conversation.clone()))
     }
 
     /// Create a label with a cryptographically random stable id.
@@ -1409,13 +1304,8 @@ impl Store {
                 name: name.to_owned(),
                 color: color.to_owned(),
             };
-            let sealed =
-                self.seal_local_metadata(&LocalMetadataRecord::Label(label.clone()), rng)?;
             let tx = self.conn.unchecked_transaction()?;
-            tx.execute(
-                "INSERT INTO local_metadata (blob) VALUES (?1)",
-                params![sealed],
-            )?;
+            self.put_local_metadata_on(&tx, &LocalMetadataRecord::Label(label.clone()), rng)?;
             tx.commit()?;
             return Ok(label);
         }
@@ -1455,25 +1345,16 @@ impl Store {
         rng: &mut impl CryptoRngCore,
     ) -> Result<LabelRecord> {
         validate_new_label(name, color)?;
-        let rowid = self
-            .local_metadata_rows()?
-            .into_iter()
-            .find_map(|(rowid, record)| match record {
-                LocalMetadataRecord::Label(label) if label.id == *id => Some(rowid),
-                _ => None,
-            })
-            .ok_or(StoreError::UnknownLabel)?;
+        if self.label(id)?.is_none() {
+            return Err(StoreError::UnknownLabel);
+        }
         let label = LabelRecord {
             id: *id,
             name: name.to_owned(),
             color: color.to_owned(),
         };
-        let sealed = self.seal_local_metadata(&LocalMetadataRecord::Label(label.clone()), rng)?;
         let tx = self.conn.unchecked_transaction()?;
-        tx.execute(
-            "UPDATE local_metadata SET blob = ?2 WHERE rowid_ = ?1",
-            params![rowid, sealed],
-        )?;
+        self.put_local_metadata_on(&tx, &LocalMetadataRecord::Label(label.clone()), rng)?;
         tx.commit()?;
         Ok(label)
     }
@@ -1498,30 +1379,29 @@ impl Store {
     /// complete cascade back, so restart cannot expose half-deleted state.
     pub fn delete_label(&self, id: &[u8; 16]) -> Result<usize> {
         let rows = self.local_metadata_rows()?;
-        let mut label_row = None;
-        let mut assignment_rows = Vec::new();
-        for (rowid, record) in rows {
+        let mut label_found = false;
+        let mut assignment_keys = Vec::new();
+        for (_, record) in rows {
             match record {
-                LocalMetadataRecord::Label(label) if label.id == *id => label_row = Some(rowid),
+                LocalMetadataRecord::Label(label) if label.id == *id => label_found = true,
                 LocalMetadataRecord::LabelAssignment(assignment) if assignment.label == *id => {
-                    assignment_rows.push(rowid);
+                    assignment_keys.push(LocalMetadataKey::LabelAssignment(
+                        assignment.label,
+                        assignment.conversation,
+                    ));
                 }
                 _ => {}
             }
         }
-        let label_row = label_row.ok_or(StoreError::UnknownLabel)?;
-        let assignment_count = assignment_rows.len();
-        let tx = self.conn.unchecked_transaction()?;
-        for rowid in assignment_rows {
-            tx.execute(
-                "DELETE FROM local_metadata WHERE rowid_ = ?1",
-                params![rowid],
-            )?;
+        if !label_found {
+            return Err(StoreError::UnknownLabel);
         }
-        tx.execute(
-            "DELETE FROM local_metadata WHERE rowid_ = ?1",
-            params![label_row],
-        )?;
+        let assignment_count = assignment_keys.len();
+        let tx = self.conn.unchecked_transaction()?;
+        for key in assignment_keys {
+            self.delete_local_metadata_on(&tx, &key)?;
+        }
+        self.delete_local_metadata_on(&tx, &LocalMetadataKey::Label(*id))?;
         tx.commit()?;
         Ok(assignment_count)
     }
@@ -1571,12 +1451,8 @@ impl Store {
             label: *label,
             conversation: conversation.clone(),
         });
-        let sealed = self.seal_local_metadata(&assignment, rng)?;
         let tx = self.conn.unchecked_transaction()?;
-        tx.execute(
-            "INSERT INTO local_metadata (blob) VALUES (?1)",
-            params![sealed],
-        )?;
+        self.put_local_metadata_on(&tx, &assignment, rng)?;
         tx.commit()?;
         Ok(true)
     }
@@ -1586,28 +1462,10 @@ impl Store {
     /// Returns `true` when a row was deleted and `false` for the honest absent
     /// no-op. Target availability is deliberately not required for cleanup.
     pub fn unassign_label(&self, label: &[u8; 16], conversation: &ConversationId) -> Result<bool> {
-        let rowid =
-            self.local_metadata_rows()?
-                .into_iter()
-                .find_map(|(rowid, record)| match record {
-                    LocalMetadataRecord::LabelAssignment(assignment)
-                        if assignment.label == *label
-                            && assignment.conversation == *conversation =>
-                    {
-                        Some(rowid)
-                    }
-                    _ => None,
-                });
-        let Some(rowid) = rowid else {
-            return Ok(false);
-        };
-        let tx = self.conn.unchecked_transaction()?;
-        tx.execute(
-            "DELETE FROM local_metadata WHERE rowid_ = ?1",
-            params![rowid],
-        )?;
-        tx.commit()?;
-        Ok(true)
+        self.delete_local_metadata(&LocalMetadataKey::LabelAssignment(
+            *label,
+            conversation.clone(),
+        ))
     }
 
     /// Active conversation membership for one label in durable insertion order.
@@ -1839,42 +1697,61 @@ impl Store {
         Ok(activity)
     }
 
-    fn seal_local_metadata(
+    fn put_local_metadata_on(
         &self,
+        conn: &Connection,
         record: &LocalMetadataRecord,
         rng: &mut impl CryptoRngCore,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<()> {
+        record.validate()?;
         let encoded = postcard::to_allocvec(record).map_err(|_| StoreError::Serialization)?;
         let mut versioned = Vec::with_capacity(RECORD_MAGIC_V1.len() + encoded.len());
         versioned.extend_from_slice(RECORD_MAGIC_V1);
         versioned.extend_from_slice(&encoded);
-        Ok(self.k_local_metadata.seal(RECORD_AD, &versioned, rng))
+        let versioned = Zeroizing::new(versioned);
+        self.put_equality_on::<store_v2::LocalMetadataRows>(
+            conn,
+            &local_metadata_key(&record.key())?,
+            &versioned,
+            store_v2::IndexKeys::none(),
+            rng,
+        )
+    }
+
+    fn delete_local_metadata_on(&self, conn: &Connection, key: &LocalMetadataKey) -> Result<bool> {
+        self.delete_equality_on::<store_v2::LocalMetadataRows>(conn, &local_metadata_key(key)?)
     }
 
     fn local_metadata_rows(&self) -> Result<Vec<(i64, LocalMetadataRecord)>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT rowid_, blob FROM local_metadata ORDER BY rowid_")?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })?;
         let mut records = Vec::new();
-        for row in rows {
-            let (rowid, sealed) = row?;
-            let plain = self.k_local_metadata.open(RECORD_AD, &sealed)?;
-            let encoded = plain
-                .strip_prefix(RECORD_MAGIC_V1)
-                .ok_or(StoreError::Serialization)?;
-            let (record, remainder): (LocalMetadataRecord, &[u8]) =
-                postcard::take_from_bytes(encoded).map_err(|_| StoreError::Serialization)?;
-            if !remainder.is_empty() {
-                return Err(StoreError::Serialization);
-            }
-            record.validate()?;
-            records.push((rowid, record));
+        for row in self.rows::<store_v2::LocalMetadataRows>()? {
+            let record = decode_local_metadata_payload(&row.payload)?;
+            row.verify_key(&local_metadata_key(&record.key())?)?;
+            records.push((row.rowid, record));
         }
         Ok(records)
     }
+
+    pub(crate) fn validate_local_metadata_logical_rows(&self) -> Result<()> {
+        self.validate_rows::<store_v2::LocalMetadataRows, _>(|row| {
+            let record = decode_local_metadata_payload(&row.payload)?;
+            row.verify_key(&local_metadata_key(&record.key())?)?;
+            row.verify_indexes(&store_v2::IndexKeys::none())
+        })
+    }
+}
+
+fn local_metadata_key(key: &LocalMetadataKey) -> Result<store_v2::MetadataKey> {
+    store_v2::MetadataKey::new(postcard::to_allocvec(key).map_err(|_| StoreError::Serialization)?)
+}
+
+fn decode_local_metadata_payload(payload: &[u8]) -> Result<LocalMetadataRecord> {
+    let encoded = payload
+        .strip_prefix(RECORD_MAGIC_V1)
+        .ok_or(StoreError::Serialization)?;
+    let record: LocalMetadataRecord = decode_exact(encoded)?;
+    record.validate()?;
+    Ok(record)
 }
 
 fn compare_pins(
@@ -2020,12 +1897,7 @@ mod label_tests {
         let tx = store.conn.unchecked_transaction().unwrap();
         for record in records {
             record.validate().unwrap();
-            let sealed = store.seal_local_metadata(&record, rng).unwrap();
-            tx.execute(
-                "INSERT INTO local_metadata (blob) VALUES (?1)",
-                params![sealed],
-            )
-            .unwrap();
+            store.put_local_metadata_on(&tx, &record, rng).unwrap();
         }
         tx.commit().unwrap();
     }
@@ -2403,14 +2275,16 @@ mod label_tests {
 
         let raw = Connection::open(&db).unwrap();
         raw.execute_batch(
-            "CREATE TRIGGER fail_folder_create BEFORE INSERT ON local_metadata BEGIN SELECT RAISE(FAIL, 'injected folder create'); END;",
+            "CREATE TRIGGER fail_folder_create BEFORE INSERT ON store_records
+             BEGIN SELECT RAISE(FAIL, 'injected folder create'); END;",
         )
         .unwrap();
         drop(raw);
-        assert!(matches!(
-            store.create_folder("create fails", &mut rng),
-            Err(StoreError::Db(_))
-        ));
+        let result = store.create_folder("create fails", &mut rng);
+        assert!(
+            matches!(result, Err(StoreError::Db(_))),
+            "unexpected result: {result:?}"
+        );
         let raw = Connection::open(&db).unwrap();
         raw.execute_batch("DROP TRIGGER fail_folder_create")
             .unwrap();
@@ -2426,13 +2300,16 @@ mod label_tests {
         let raw = Connection::open(&db).unwrap();
         let first_row: i64 = raw
             .query_row(
-                "SELECT rowid_ FROM local_metadata ORDER BY rowid_ LIMIT 1",
+                "SELECT rowid_ FROM store_records
+                 WHERE table_domain = 18 ORDER BY rowid_ LIMIT 1",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
         raw.execute_batch(
-            "CREATE TRIGGER fail_folder_rename BEFORE UPDATE ON local_metadata BEGIN SELECT RAISE(FAIL, 'injected folder rename'); END;",
+            "CREATE TRIGGER fail_folder_rename BEFORE UPDATE ON store_records
+             WHEN NEW.table_domain = 18
+             BEGIN SELECT RAISE(FAIL, 'injected folder rename'); END;",
         )
         .unwrap();
         drop(raw);
@@ -2444,7 +2321,9 @@ mod label_tests {
         raw.execute_batch("DROP TRIGGER fail_folder_rename")
             .unwrap();
         raw.execute_batch(&format!(
-            "CREATE TRIGGER fail_folder_reorder BEFORE UPDATE ON local_metadata WHEN OLD.rowid_ = {first_row} BEGIN SELECT RAISE(FAIL, 'injected folder reorder'); END;"
+            "CREATE TRIGGER fail_folder_reorder BEFORE UPDATE ON store_records
+             WHEN OLD.table_domain = 18 AND OLD.rowid_ = {first_row}
+             BEGIN SELECT RAISE(FAIL, 'injected folder reorder'); END;"
         ))
         .unwrap();
         drop(raw);
@@ -2456,7 +2335,9 @@ mod label_tests {
         raw.execute_batch("DROP TRIGGER fail_folder_reorder")
             .unwrap();
         raw.execute_batch(&format!(
-            "CREATE TRIGGER fail_folder_cascade BEFORE DELETE ON local_metadata WHEN OLD.rowid_ = {first_row} BEGIN SELECT RAISE(FAIL, 'injected folder cascade'); END;"
+            "CREATE TRIGGER fail_folder_cascade BEFORE DELETE ON store_records
+             WHEN OLD.table_domain = 18 AND OLD.rowid_ = {first_row}
+             BEGIN SELECT RAISE(FAIL, 'injected folder cascade'); END;"
         ))
         .unwrap();
         drop(raw);
@@ -2832,14 +2713,16 @@ mod label_tests {
 
         let raw = Connection::open(&db).unwrap();
         raw.execute_batch(
-            "CREATE TRIGGER fail_create BEFORE INSERT ON local_metadata BEGIN SELECT RAISE(FAIL, 'injected create'); END;",
+            "CREATE TRIGGER fail_create BEFORE INSERT ON store_records
+             BEGIN SELECT RAISE(FAIL, 'injected create'); END;",
         )
         .unwrap();
         drop(raw);
-        assert!(matches!(
-            store.create_label("create fails", "red", &mut rng),
-            Err(StoreError::Db(_))
-        ));
+        let result = store.create_label("create fails", "red", &mut rng);
+        assert!(
+            matches!(result, Err(StoreError::Db(_))),
+            "unexpected result: {result:?}"
+        );
         let raw = Connection::open(&db).unwrap();
         raw.execute_batch("DROP TRIGGER fail_create").unwrap();
         drop(raw);
@@ -2851,7 +2734,9 @@ mod label_tests {
             .unwrap();
         let raw = Connection::open(&db).unwrap();
         raw.execute_batch(
-            "CREATE TRIGGER fail_update BEFORE UPDATE ON local_metadata BEGIN SELECT RAISE(FAIL, 'injected update'); END;",
+            "CREATE TRIGGER fail_update BEFORE UPDATE ON store_records
+             WHEN NEW.table_domain = 18
+             BEGIN SELECT RAISE(FAIL, 'injected update'); END;",
         )
         .unwrap();
         drop(raw);
@@ -2866,7 +2751,9 @@ mod label_tests {
 
         let raw = Connection::open(&db).unwrap();
         raw.execute_batch(
-            "CREATE TRIGGER fail_cascade BEFORE DELETE ON local_metadata WHEN OLD.rowid_ = 1 BEGIN SELECT RAISE(FAIL, 'injected cascade'); END;",
+            "CREATE TRIGGER fail_cascade BEFORE DELETE ON store_records
+             WHEN OLD.table_domain = 18
+             BEGIN SELECT RAISE(FAIL, 'injected cascade'); END;",
         )
         .unwrap();
         drop(raw);
@@ -2895,13 +2782,16 @@ mod label_tests {
         drop(store);
         let raw = Connection::open(&db).unwrap();
         raw.execute(
-            "UPDATE local_metadata SET blob = zeroblob(length(blob))",
+            "UPDATE store_records SET blob = zeroblob(length(blob))
+             WHERE table_domain = 18",
             [],
         )
         .unwrap();
         drop(raw);
-        let reopened = Store::open(&db, b"pass").unwrap();
-        assert!(matches!(reopened.labels(), Err(StoreError::Crypto(_))));
+        assert!(matches!(
+            Store::open(&db, b"pass"),
+            Err(StoreError::Crypto(_))
+        ));
     }
 
     #[test]
@@ -3063,7 +2953,9 @@ mod label_tests {
         let (append, mut rng) = store_at(&append_db, 0xb111);
         let raw = Connection::open(&append_db).unwrap();
         raw.execute_batch(
-            "CREATE TRIGGER fail_pin_append BEFORE INSERT ON local_metadata BEGIN SELECT RAISE(FAIL, 'injected pin append'); END;",
+            "CREATE TRIGGER fail_pin_append BEFORE INSERT ON store_records
+             WHEN NEW.table_domain = 18
+             BEGIN SELECT RAISE(FAIL, 'injected pin append'); END;",
         )
         .unwrap();
         assert!(append
@@ -3089,7 +2981,9 @@ mod label_tests {
         );
         let raw = Connection::open(&compact_db).unwrap();
         raw.execute_batch(
-            "CREATE TRIGGER fail_pin_compact_insert BEFORE INSERT ON local_metadata BEGIN SELECT RAISE(FAIL, 'injected pin compact insert'); END;",
+            "CREATE TRIGGER fail_pin_compact_insert BEFORE INSERT ON store_records
+             WHEN NEW.table_domain = 18
+             BEGIN SELECT RAISE(FAIL, 'injected pin compact insert'); END;",
         )
         .unwrap();
         assert!(compact
@@ -3123,7 +3017,9 @@ mod label_tests {
         let before = mutations.pins().unwrap();
         let raw = Connection::open(&mutation_db).unwrap();
         raw.execute_batch(
-            "CREATE TRIGGER fail_pin_reorder BEFORE UPDATE ON local_metadata BEGIN SELECT RAISE(FAIL, 'injected pin reorder'); END;",
+            "CREATE TRIGGER fail_pin_reorder BEFORE UPDATE ON store_records
+             WHEN NEW.table_domain = 18
+             BEGIN SELECT RAISE(FAIL, 'injected pin reorder'); END;",
         )
         .unwrap();
         assert!(mutations
@@ -3135,7 +3031,9 @@ mod label_tests {
         assert_eq!(mutations.pins().unwrap(), before);
         raw.execute_batch("DROP TRIGGER fail_pin_reorder").unwrap();
         raw.execute_batch(
-            "CREATE TRIGGER fail_pin_delete BEFORE DELETE ON local_metadata BEGIN SELECT RAISE(FAIL, 'injected pin delete'); END;",
+            "CREATE TRIGGER fail_pin_delete BEFORE DELETE ON store_records
+             WHEN OLD.table_domain = 18
+             BEGIN SELECT RAISE(FAIL, 'injected pin delete'); END;",
         )
         .unwrap();
         assert!(mutations

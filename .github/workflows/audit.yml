@@ -42,6 +42,18 @@ jobs:
       - name: tests
         run: cargo test --workspace --all-features
 
+  opaque-store-scale:
+    name: opaque storage scale budgets
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 100k and 1m messages
+        run: scripts/store-scale-gate.sh
+
   # Informational only: a failing coverage run must never block the
   # advisory signal this workflow exists for.
   coverage:

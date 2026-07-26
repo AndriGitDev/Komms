@@ -39,8 +39,12 @@
 //! corrupted file are deliberately indistinguishable — uniform AEAD
 //! failure, no oracle.
 
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+
 use rand_core::CryptoRngCore;
-use rusqlite::params;
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -51,10 +55,11 @@ use kult_crypto::{
 use kult_protocol::DeviceSyncEvent;
 
 use crate::{
-    ContactDeviceRecord, ContactRecord, DeviceStateRecord, EphemeralConversation, EphemeralRecord,
-    EphemeralState, GroupAuthorityRecord, GroupMember, GroupMessageRecord, GroupRecord,
-    LocalMetadataRecord, MessageRecord, NoteMessageRecord, PendingAnnounce, Result, Store,
-    StoreError,
+    acquire_database_identity_lock, acquire_store_lock, decode_exact as decode_store_exact,
+    migration, store_v2, ContactDeviceRecord, ContactRecord, DeviceStateRecord,
+    EphemeralConversation, EphemeralRecord, EphemeralState, GroupAuthorityRecord, GroupMember,
+    GroupMessageRecord, GroupRecord, LocalMetadataRecord, MessageRecord, NoteMessageRecord,
+    PendingAnnounce, Result, Store, StoreError,
 };
 
 /// Backup file magic: Komms recovery file, format 7 (linked-device authority).
@@ -74,6 +79,10 @@ pub const BACKUP_MAGIC_V1: [u8; 4] = *b"KKR1";
 
 const BACKUP_AD: &[u8] = b"KK-backup-v1";
 const HEADER_LEN: usize = 4 + 12 + 16;
+const MAX_BACKUP_FILE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+const MAX_BACKUP_RECORDS: u64 = 50_000_000;
+const RESTORE_SPACE_RESERVE: u64 = 64 * 1024 * 1024;
+const ESTIMATED_RESTORED_ROW_BYTES: u64 = 2_048;
 
 /// A group's durable identity in a backup: everything but the chains.
 #[derive(Serialize, Deserialize)]
@@ -337,7 +346,9 @@ impl Store {
         profile: KdfProfile,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Self> {
-        if backup.len() <= HEADER_LEN {
+        if backup.len() <= HEADER_LEN
+            || u64::try_from(backup.len()).map_or(true, |length| length > MAX_BACKUP_FILE_BYTES)
+        {
             return Err(StoreError::NotABackup);
         }
         let version = match <[u8; 4]>::try_from(&backup[..4]).expect("length checked") {
@@ -364,7 +375,7 @@ impl Store {
         let kek = derive_kek(&entropy[..], &salt, file_profile)?;
         let key = StorageKey::from_bytes(*kek);
         let plain = Zeroizing::new(key.open(BACKUP_AD, &backup[HEADER_LEN..])?);
-        let mut payload: BackupPayload = match version {
+        let payload: BackupPayload = match version {
             1 => {
                 let v1: BackupPayloadV1 = decode_exact(&plain)?;
                 BackupPayload {
@@ -488,139 +499,65 @@ impl Store {
             7 => decode_exact(&plain)?,
             _ => unreachable!("version matched above"),
         };
-        let identity_bytes: Zeroizing<[u8; 64]> = Zeroizing::new(
-            payload.identity[..]
-                .try_into()
-                .map_err(|_| StoreError::NotABackup)?,
-        );
-        payload.identity.zeroize();
-        let identity = Identity::from_bytes(&identity_bytes);
-        let me = identity.public().ed;
-
-        let store = Store::create(path, passphrase, profile, rng)?;
-        store.put_identity(&identity, rng)?;
-        for contact in &payload.contacts {
-            store.put_contact(contact, rng)?;
+        let record_count = validate_backup_payload(&payload)?;
+        let lock = acquire_store_lock(path)?;
+        if path.exists() {
+            return Err(StoreError::NotAStore);
         }
-        for endpoint in &payload.contact_devices {
-            store.put_contact_device(endpoint, rng)?;
+        let temporary = restore_temporary_path(path)?;
+        if temporary.exists() {
+            cleanup_restore_temporary(&temporary)?;
         }
-        for message in &payload.messages {
-            store.put_message(message, rng)?;
-        }
-        for peer in &payload.reset_peers {
-            store.put_reset_marker(peer)?;
-        }
-        for group in payload.groups {
-            // Fresh chain, announced to the full roster: the old chains died
-            // with the old device (module docs). Receiving chains rebuild as
-            // co-members redistribute over the re-handshaken sessions.
-            let chain = GroupSenderChain::generate(rng);
-            let (key_id, chain_key, iteration) = chain.snapshot();
-            let pending = group
-                .members
-                .iter()
-                .filter(|m| m.peer != me)
-                .map(|m| PendingAnnounce {
-                    peer: m.peer,
-                    key_id,
-                    chain_key: *chain_key,
-                    iteration,
-                    wire_id: None,
-                    last_sent: 0,
-                })
-                .collect();
-            store.put_group(
-                &GroupRecord {
-                    id: group.id,
-                    name: group.name,
-                    creator: group.creator,
-                    members: group.members,
-                    secret: group.secret,
-                    prev_secret: None,
-                    generation: group.generation,
-                    sender_chain: postcard::to_allocvec(&chain)
-                        .map_err(|_| StoreError::Serialization)?,
-                    sent_since_rotation: 0,
-                    pending,
-                },
-                rng,
-            )?;
-        }
-        for message in &payload.group_messages {
-            store.put_group_message(message, rng)?;
-        }
-        for authority in &payload.group_authorities {
-            store.put_group_authority(authority, rng)?;
-        }
-        for record in &payload.local_metadata {
-            store.put_local_metadata(record, rng)?;
-        }
-        for message in &payload.note_messages {
-            store.put_note_message(message, rng)?;
-        }
-        for record in &payload.ephemeral {
-            store.put_ephemeral_record(record, rng)?;
-        }
-        for event in &payload.device_sync_events {
-            let decoded = DeviceSyncEvent::decode(event)?;
-            if let Some(manifest) = &payload.device_manifest {
-                decoded.verify(manifest)?;
-            } else {
-                return Err(StoreError::NotABackup);
+        ensure_restore_workspace(path, plain.len(), record_count)?;
+        let restored = populate_restored_store(&temporary, passphrase, profile, payload, rng);
+        let store = match restored {
+            Ok(store) => store,
+            Err(error) => {
+                cleanup_restore_temporary(&temporary)?;
+                return Err(error);
             }
-            store.put_device_sync_event(event, rng)?;
+        };
+        store.validate_open_state()?;
+        migration::sync_database_for_replacement(&store.conn)?;
+        drop(store);
+        migration::sync_file(&temporary)?;
+        store_v2::sync_directory(migration::parent_directory(path))?;
+        restore_failpoint(1)?;
+        if path.exists() {
+            return Err(StoreError::NotAStore);
         }
-        restore_device_state(
-            &store,
-            &identity,
-            payload.device_manifest,
-            payload.local_device,
-            &payload.device_sync_events,
-            payload.created_at,
-            rng,
-        )?;
+        migration::atomic_replace(&temporary, path)?;
+        restore_failpoint(2)?;
+        store_v2::sync_directory(migration::parent_directory(path))?;
+        restore_failpoint(3)?;
+        let conn = Connection::open(path)?;
+        let database_lock = acquire_database_identity_lock(path)?;
+        let store = Store::open_v2_with_parts(path, passphrase, conn, database_lock, lock, false)?;
+        migration::cleanup_obsolete_siblings(&temporary)?;
         Ok(store)
     }
 
     /// The Argon2id profile this store was created with.
     fn kdf_profile(&self) -> Result<KdfProfile> {
-        let blob: Vec<u8> = self
-            .conn
-            .query_row("SELECT v FROM meta WHERE k = 'kdf'", [], |r| r.get(0))
-            .map_err(|_| StoreError::NotAStore)?;
-        let (m, t, p): (u32, u32, u32) =
-            postcard::from_bytes(&blob).map_err(|_| StoreError::NotAStore)?;
-        Ok(KdfProfile {
-            m_cost_kib: m,
-            t_cost: t,
-            p_cost: p,
-        })
+        Ok(self.kdf_profile)
     }
 
     /// Every stored message, in insertion order.
     pub(crate) fn all_messages(&self) -> Result<Vec<MessageRecord>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT blob FROM messages ORDER BY rowid_")?;
-        let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
         let mut out = Vec::new();
-        for row in rows {
-            let plain = self.k_messages.open(b"message", &row?)?;
-            out.push(postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?);
+        for row in self.rows::<store_v2::MessageRows>()? {
+            out.push(self.decode_message_row_ref(&row, None)?);
         }
         Ok(out)
     }
 
     /// Peers with a persisted ratchet session.
     fn session_peers(&self) -> Result<Vec<[u8; 32]>> {
-        let mut stmt = self.conn.prepare("SELECT peer FROM sessions")?;
-        let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
         let mut out = Vec::new();
-        for row in rows {
-            if let Ok(peer) = <[u8; 32]>::try_from(row?) {
-                out.push(peer);
-            }
+        for row in self.rows::<store_v2::SessionRows>()? {
+            let peer = *store_v2::AccountKey::decode(&row.logical_key)?.value();
+            let _: kult_crypto::Session = decode_store_exact(&row.payload)?;
+            out.push(peer);
         }
         Ok(out)
     }
@@ -630,34 +567,330 @@ impl Store {
     /// Record that any pre-restore session with this peer is dead and must
     /// be re-established (docs/07-storage.md §4).
     pub fn put_reset_marker(&self, peer: &[u8; 32]) -> Result<()> {
-        self.conn.execute(
-            "INSERT OR IGNORE INTO resets (peer) VALUES (?1)",
-            params![peer.as_slice()],
+        let mut rng = rand_core::OsRng;
+        self.put_equality::<store_v2::ResetRows>(
+            &store_v2::AccountKey::new(*peer),
+            peer,
+            store_v2::IndexKeys::none(),
+            &mut rng,
         )?;
         Ok(())
     }
 
     /// All pending session-reset markers.
     pub fn reset_markers(&self) -> Result<Vec<[u8; 32]>> {
-        let mut stmt = self.conn.prepare("SELECT peer FROM resets")?;
-        let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
         let mut out = Vec::new();
-        for row in rows {
-            if let Ok(peer) = <[u8; 32]>::try_from(row?) {
-                out.push(peer);
+        for row in self.rows::<store_v2::ResetRows>()? {
+            let peer = *store_v2::AccountKey::decode(&row.logical_key)?.value();
+            if row.payload.as_slice() != peer {
+                return Err(StoreError::LogicalKeyMismatch);
             }
+            out.push(peer);
         }
         Ok(out)
     }
 
     /// Remove a session-reset marker (the re-handshake was queued).
     pub fn clear_reset_marker(&self, peer: &[u8; 32]) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM resets WHERE peer = ?1",
-            params![peer.as_slice()],
-        )?;
+        self.delete_equality::<store_v2::ResetRows>(&store_v2::AccountKey::new(*peer))?;
         Ok(())
     }
+}
+
+fn populate_restored_store(
+    path: &Path,
+    passphrase: &[u8],
+    profile: KdfProfile,
+    mut payload: BackupPayload,
+    rng: &mut impl CryptoRngCore,
+) -> Result<Store> {
+    let identity_bytes: Zeroizing<[u8; 64]> = Zeroizing::new(
+        payload.identity[..]
+            .try_into()
+            .map_err(|_| StoreError::NotABackup)?,
+    );
+    payload.identity.zeroize();
+    let identity = Identity::from_bytes(&identity_bytes);
+    let me = identity.public().ed;
+    let store = Store::create(path, passphrase, profile, rng)?;
+    store.put_identity(&identity, rng)?;
+    for contact in &payload.contacts {
+        store.put_contact(contact, rng)?;
+    }
+    for endpoint in &payload.contact_devices {
+        store.put_contact_device(endpoint, rng)?;
+    }
+    for message in &payload.messages {
+        store.put_message(message, rng)?;
+    }
+    for peer in &payload.reset_peers {
+        store.put_reset_marker(peer)?;
+    }
+    for group in payload.groups {
+        let chain = GroupSenderChain::generate(rng);
+        let (key_id, chain_key, iteration) = chain.snapshot();
+        let pending = group
+            .members
+            .iter()
+            .filter(|member| member.peer != me)
+            .map(|member| PendingAnnounce {
+                peer: member.peer,
+                key_id,
+                chain_key: *chain_key,
+                iteration,
+                wire_id: None,
+                last_sent: 0,
+            })
+            .collect();
+        store.put_group(
+            &GroupRecord {
+                id: group.id,
+                name: group.name,
+                creator: group.creator,
+                members: group.members,
+                secret: group.secret,
+                prev_secret: None,
+                generation: group.generation,
+                sender_chain: postcard::to_allocvec(&chain)
+                    .map_err(|_| StoreError::Serialization)?,
+                sent_since_rotation: 0,
+                pending,
+            },
+            rng,
+        )?;
+    }
+    for message in &payload.group_messages {
+        store.put_group_message(message, rng)?;
+    }
+    for authority in &payload.group_authorities {
+        store.put_group_authority(authority, rng)?;
+    }
+    for record in &payload.local_metadata {
+        store.put_local_metadata(record, rng)?;
+    }
+    for message in &payload.note_messages {
+        store.put_note_message(message, rng)?;
+    }
+    for record in &payload.ephemeral {
+        store.put_ephemeral_record(record, rng)?;
+    }
+    for event in &payload.device_sync_events {
+        let decoded = DeviceSyncEvent::decode(event)?;
+        if let Some(manifest) = &payload.device_manifest {
+            decoded.verify(manifest)?;
+        } else {
+            return Err(StoreError::NotABackup);
+        }
+        store.put_device_sync_event(event, rng)?;
+    }
+    restore_device_state(
+        &store,
+        &identity,
+        payload.device_manifest,
+        payload.local_device,
+        &payload.device_sync_events,
+        payload.created_at,
+        rng,
+    )?;
+    Ok(store)
+}
+
+fn validate_backup_payload(payload: &BackupPayload) -> Result<u64> {
+    if payload.identity.len() != 64
+        || payload.contacts.len() > 100_000
+        || payload.messages.len() > 10_000_000
+        || payload.reset_peers.len() > 100_000
+        || payload.groups.len() > 100_000
+        || payload.group_messages.len() > 10_000_000
+        || payload.group_authorities.len() > 100_000
+        || payload.local_metadata.len() > 100_000
+        || payload.note_messages.len() > 10_000_000
+        || payload.ephemeral.len() > 10_000_000
+        || payload.device_sync_events.len() > crate::MAX_DEVICE_SYNC_EVENTS
+        || payload.contact_devices.len() > 1_000_000
+    {
+        return Err(StoreError::RecordBounds);
+    }
+    let total = [
+        payload.contacts.len(),
+        payload.messages.len(),
+        payload.reset_peers.len(),
+        payload.groups.len(),
+        payload.group_messages.len(),
+        payload.group_authorities.len(),
+        payload.local_metadata.len(),
+        payload.note_messages.len(),
+        payload.ephemeral.len(),
+        payload.device_sync_events.len(),
+        payload.contact_devices.len(),
+    ]
+    .into_iter()
+    .try_fold(0u64, |total, count| {
+        total
+            .checked_add(u64::try_from(count).map_err(|_| StoreError::RecordBounds)?)
+            .ok_or(StoreError::RecordBounds)
+    })?;
+    if total > MAX_BACKUP_RECORDS {
+        return Err(StoreError::RecordBounds);
+    }
+
+    let mut contacts = BTreeSet::new();
+    for record in &payload.contacts {
+        if !contacts.insert(record.peer) {
+            return Err(StoreError::MigrationValidation);
+        }
+        validate_backup_record(record)?;
+    }
+    let mut message_ids = BTreeSet::new();
+    for record in &payload.messages {
+        if !message_ids.insert(record.id) {
+            return Err(StoreError::MigrationValidation);
+        }
+        validate_backup_record(record)?;
+    }
+    if payload
+        .reset_peers
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .len()
+        != payload.reset_peers.len()
+    {
+        return Err(StoreError::MigrationValidation);
+    }
+    let mut groups = BTreeSet::new();
+    for record in &payload.groups {
+        if !groups.insert(record.id) {
+            return Err(StoreError::MigrationValidation);
+        }
+        validate_backup_record(record)?;
+    }
+    let mut group_message_ids = BTreeSet::new();
+    for record in &payload.group_messages {
+        if record.wire_body.is_some() || !group_message_ids.insert(record.id) {
+            return Err(StoreError::MigrationValidation);
+        }
+        validate_backup_record(record)?;
+    }
+    let mut authorities = BTreeSet::new();
+    for record in &payload.group_authorities {
+        if !authorities.insert(record.group) {
+            return Err(StoreError::MigrationValidation);
+        }
+        validate_backup_record(record)?;
+    }
+    let mut metadata_keys = BTreeSet::new();
+    for record in &payload.local_metadata {
+        let key = postcard::to_allocvec(&record.key()).map_err(|_| StoreError::Serialization)?;
+        if !metadata_keys.insert(key) {
+            return Err(StoreError::MigrationValidation);
+        }
+        validate_backup_record(record)?;
+    }
+    let mut note_ids = BTreeSet::new();
+    for record in &payload.note_messages {
+        if !note_ids.insert(record.id) {
+            return Err(StoreError::MigrationValidation);
+        }
+        validate_backup_record(record)?;
+    }
+    let mut ephemeral_keys = BTreeSet::new();
+    for record in &payload.ephemeral {
+        if record.state == EphemeralState::Active || !record.transfer_ids.is_empty() {
+            return Err(StoreError::MigrationValidation);
+        }
+        let key = postcard::to_allocvec(&(record.conversation, record.author, record.content_id))
+            .map_err(|_| StoreError::Serialization)?;
+        if !ephemeral_keys.insert(key) {
+            return Err(StoreError::MigrationValidation);
+        }
+        validate_backup_record(record)?;
+    }
+    let mut devices = BTreeSet::new();
+    for record in &payload.contact_devices {
+        if !contacts.contains(&record.account) || !devices.insert((record.account, record.device)) {
+            return Err(StoreError::MigrationValidation);
+        }
+        validate_backup_record(record)?;
+    }
+    for event in &payload.device_sync_events {
+        if event.is_empty() || event.len() > crate::MAX_DEVICE_SYNC_EVENT_BYTES {
+            return Err(StoreError::RecordBounds);
+        }
+    }
+    if payload.device_manifest.is_some() != payload.local_device.is_some()
+        || (payload.device_manifest.is_none() && !payload.device_sync_events.is_empty())
+    {
+        return Err(StoreError::MigrationValidation);
+    }
+    Ok(total)
+}
+
+fn validate_backup_record<T: Serialize>(record: &T) -> Result<()> {
+    let encoded = postcard::to_allocvec(record).map_err(|_| StoreError::Serialization)?;
+    if encoded.len() > store_v2::MAX_RECORD_BYTES {
+        return Err(StoreError::RecordBounds);
+    }
+    Ok(())
+}
+
+fn restore_temporary_path(path: &Path) -> Result<PathBuf> {
+    let name = path.file_name().ok_or(StoreError::NotAStore)?;
+    let mut temporary = name.to_os_string();
+    temporary.push(".restore-v2-sibling");
+    Ok(path.with_file_name(temporary))
+}
+
+fn ensure_restore_workspace(path: &Path, logical_bytes: usize, record_count: u64) -> Result<()> {
+    let logical_bytes =
+        u64::try_from(logical_bytes).map_err(|_| StoreError::InsufficientMigrationSpace)?;
+    let required = logical_bytes
+        .checked_mul(2)
+        .and_then(|bytes| {
+            record_count
+                .checked_mul(ESTIMATED_RESTORED_ROW_BYTES)
+                .and_then(|overhead| bytes.checked_add(overhead))
+        })
+        .and_then(|bytes| bytes.checked_add(RESTORE_SPACE_RESERVE))
+        .ok_or(StoreError::InsufficientMigrationSpace)?;
+    if fs2::available_space(migration::parent_directory(path))? < required {
+        return Err(StoreError::InsufficientMigrationSpace);
+    }
+    Ok(())
+}
+
+fn cleanup_restore_temporary(path: &Path) -> Result<()> {
+    if path.exists() {
+        fs::remove_file(path)?;
+    }
+    migration::cleanup_obsolete_siblings(path)?;
+    store_v2::sync_directory(migration::parent_directory(path))
+}
+
+pub(crate) fn cleanup_completed_restore(path: &Path) -> Result<()> {
+    let temporary = restore_temporary_path(path)?;
+    if temporary.exists() {
+        return Err(StoreError::ReplacementRecovery);
+    }
+    migration::cleanup_obsolete_siblings(&temporary)
+}
+
+#[cfg(test)]
+static RESTORE_FAILPOINT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+#[cfg(test)]
+fn set_restore_failpoint(phase: u8) {
+    RESTORE_FAILPOINT.store(phase, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn restore_failpoint(phase: u8) -> Result<()> {
+    #[cfg(test)]
+    if RESTORE_FAILPOINT.load(std::sync::atomic::Ordering::SeqCst) == phase {
+        RESTORE_FAILPOINT.store(0, std::sync::atomic::Ordering::SeqCst);
+        return Err(StoreError::MigrationValidation);
+    }
+    let _ = phase;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -746,4 +979,114 @@ fn restore_device_state(
         rng,
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store_v2::TableSpec;
+    use rand::{rngs::StdRng, SeedableRng};
+    use rusqlite::params;
+
+    const TEST_KDF: KdfProfile = KdfProfile {
+        m_cost_kib: 8,
+        t_cost: 1,
+        p_cost: 1,
+    };
+
+    #[test]
+    fn restore_restarts_safely_at_every_replacement_phase() {
+        for phase in 1..=3 {
+            let directory = tempfile::tempdir().unwrap();
+            let source_path = directory.path().join(format!("source-{phase}.db"));
+            let target_path = directory.path().join(format!("target-{phase}.db"));
+            let mut rng = StdRng::seed_from_u64(0x7000 + phase as u64);
+            let source = Store::create(&source_path, b"source-pass", TEST_KDF, &mut rng).unwrap();
+            let identity = Identity::generate(&mut rng);
+            let expected = identity.public();
+            source.put_identity(&identity, &mut rng).unwrap();
+            let (backup, mnemonic) = source.export_backup(123, &mut rng).unwrap();
+            drop(source);
+
+            set_restore_failpoint(phase);
+            assert!(matches!(
+                Store::restore_backup(
+                    &target_path,
+                    &backup,
+                    &mnemonic,
+                    b"target-pass",
+                    TEST_KDF,
+                    &mut rng,
+                ),
+                Err(StoreError::MigrationValidation)
+            ));
+            let restored = if phase == 1 {
+                Store::restore_backup(
+                    &target_path,
+                    &backup,
+                    &mnemonic,
+                    b"target-pass",
+                    TEST_KDF,
+                    &mut rng,
+                )
+                .unwrap()
+            } else {
+                Store::open(&target_path, b"target-pass").unwrap()
+            };
+            assert_eq!(restored.get_identity().unwrap().unwrap().public(), expected);
+            assert!(!restore_temporary_path(&target_path).unwrap().exists());
+        }
+    }
+
+    #[test]
+    fn backup_plaintext_contains_logical_records_not_store_artifacts() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logical-backup.db");
+        let mut rng = StdRng::seed_from_u64(0x7004);
+        let store = Store::create(&path, b"source-pass", TEST_KDF, &mut rng).unwrap();
+        let identity = Identity::generate(&mut rng);
+        store.put_identity(&identity, &mut rng).unwrap();
+        let message = MessageRecord {
+            id: [3; 16],
+            peer: [4; 32],
+            direction: crate::Direction::Inbound,
+            state: crate::DeliveryState::Received,
+            timestamp: 5,
+            body: b"logical backup record".to_vec(),
+            wire_id: None,
+        };
+        store.put_message(&message, &mut rng).unwrap();
+        let (locator, opaque_index, wrapped_row): (Vec<u8>, Vec<u8>, Vec<u8>) = store
+            .conn
+            .query_row(
+                "SELECT locator, unique_index, blob FROM store_records
+                 WHERE table_domain = ?1",
+                params![store_v2::MessageRows::DOMAIN],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        let database_id = store.metadata.database_id;
+
+        let (backup, mnemonic) = store.export_backup(6, &mut rng).unwrap();
+        let entropy = mnemonic_to_entropy(&mnemonic).unwrap();
+        let salt: [u8; 16] = backup[16..32].try_into().unwrap();
+        let kek = derive_kek(&entropy[..], &salt, TEST_KDF).unwrap();
+        let plain = StorageKey::from_bytes(*kek)
+            .open(BACKUP_AD, &backup[HEADER_LEN..])
+            .unwrap();
+        let decoded: BackupPayload = decode_exact(&plain).unwrap();
+        assert_eq!(decoded.messages, vec![message]);
+        assert_eq!(decoded.identity, identity.to_bytes().to_vec());
+        assert!(!plain.starts_with(b"SQLite format 3"));
+        for artifact in [
+            database_id.as_slice(),
+            locator.as_slice(),
+            opaque_index.as_slice(),
+            wrapped_row.as_slice(),
+        ] {
+            assert!(!plain
+                .windows(artifact.len())
+                .any(|candidate| candidate == artifact));
+        }
+    }
 }

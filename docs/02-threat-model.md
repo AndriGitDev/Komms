@@ -85,11 +85,14 @@ Malware, forensic seizure of an unlocked device, or a coerced unlock, against a 
 target.
 
 **Defense (bounded)**: at-rest encryption under an Argon2id-derived key protects a
-powered-off/locked device's sealed record bodies. The current Alpha database
-still exposes contact/group identifiers in plaintext lookup columns and does
-not bind every ciphertext to its logical row. ADR-0027 has an inactive v2
-destination foundation, but the complete all-table migration remains open P0
-work. Forward secrecy means a captured device does not reveal
+powered-off/locked device's sealed record bodies. ADR-0027 replaces sensitive
+plaintext SQLite lookup values with database- and domain-separated keyed
+indexes, and binds each ciphertext to its final database, schema, table, and
+locator identity. A locked copy still exposes approximate row counts/sizes,
+insertion order, within-domain equality, access patterns, and change timing.
+The implementation has Linux/ext4 test evidence, while independent review and
+physical filesystem, power-loss, backup-exclusion, and forensic qualification
+remain open. Forward secrecy means a captured device does not reveal
 messages deleted before capture; post-compromise security means a *transient* compromise is
 healed by the next DH ratchet step. A persistently compromised endpoint sees everything its
 user sees; no messenger can prevent that (§5).

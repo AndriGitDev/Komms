@@ -1,12 +1,10 @@
 //! Sealed local expiry markers and durable tombstones (ADR-0021).
 
 use rand_core::CryptoRngCore;
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
-use crate::{Result, Store, StoreError};
-
-const EPHEMERAL_AD: &[u8] = b"ephemeral-v1";
+use crate::{decode_exact, store_v2, Result, Store, StoreError};
 
 /// Conversation scope for one ephemeral content id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,19 +67,14 @@ impl Store {
         {
             return Err(StoreError::Serialization);
         }
-        let plain = postcard::to_allocvec(record).map_err(|_| StoreError::Serialization)?;
-        let sealed = self.k_ephemeral.seal(EPHEMERAL_AD, &plain, rng);
-        if let Some(rowid) =
-            self.ephemeral_rowid(&record.conversation, &record.author, &record.content_id)?
-        {
-            self.conn.execute(
-                "UPDATE ephemeral SET blob = ?2 WHERE rowid_ = ?1",
-                params![rowid, sealed],
-            )?;
-        } else {
-            self.conn
-                .execute("INSERT INTO ephemeral (blob) VALUES (?1)", params![sealed])?;
-        }
+        let plain =
+            Zeroizing::new(postcard::to_allocvec(record).map_err(|_| StoreError::Serialization)?);
+        self.put_equality::<store_v2::EphemeralRows>(
+            &ephemeral_key(&record.conversation, &record.author, &record.content_id)?,
+            &plain,
+            store_v2::IndexKeys::none(),
+            rng,
+        )?;
         Ok(())
     }
 
@@ -92,51 +85,63 @@ impl Store {
         author: &[u8; 32],
         content_id: &[u8; 16],
     ) -> Result<Option<EphemeralRecord>> {
-        Ok(self.ephemeral_records()?.into_iter().find(|record| {
-            &record.conversation == conversation
-                && &record.author == author
-                && &record.content_id == content_id
-        }))
+        let key = ephemeral_key(conversation, author, content_id)?;
+        let Some(row) = self.get_equality::<store_v2::EphemeralRows>(&key)? else {
+            return Ok(None);
+        };
+        row.verify_key(&key)?;
+        let record: EphemeralRecord = decode_exact(&row.payload)?;
+        if record.conversation != *conversation
+            || record.author != *author
+            || record.content_id != *content_id
+        {
+            return Err(StoreError::LogicalKeyMismatch);
+        }
+        Ok(Some(record))
     }
 
     /// Every sealed marker, including durable consumed/expired tombstones.
     pub fn ephemeral_records(&self) -> Result<Vec<EphemeralRecord>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT blob FROM ephemeral ORDER BY rowid_")?;
-        let rows = stmt.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
         let mut out = Vec::new();
-        for row in rows {
-            let plain = self.k_ephemeral.open(EPHEMERAL_AD, &row?)?;
-            out.push(postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?);
+        for row in self.rows::<store_v2::EphemeralRows>()? {
+            let record: EphemeralRecord = decode_exact(&row.payload)?;
+            row.verify_key(&ephemeral_key(
+                &record.conversation,
+                &record.author,
+                &record.content_id,
+            )?)?;
+            out.push(record);
         }
         Ok(out)
     }
 
-    fn ephemeral_rowid(
-        &self,
-        conversation: &EphemeralConversation,
-        author: &[u8; 32],
-        content_id: &[u8; 16],
-    ) -> Result<Option<i64>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT rowid_, blob FROM ephemeral ORDER BY rowid_")?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })?;
-        for row in rows {
-            let (rowid, sealed) = row?;
-            let plain = self.k_ephemeral.open(EPHEMERAL_AD, &sealed)?;
-            let record: EphemeralRecord =
-                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
-            if &record.conversation == conversation
-                && &record.author == author
-                && &record.content_id == content_id
+    pub(crate) fn validate_ephemeral_logical_rows(&self) -> Result<()> {
+        self.validate_rows::<store_v2::EphemeralRows, _>(|row| {
+            let record: EphemeralRecord = decode_exact(&row.payload)?;
+            if record.expires_at == 0
+                || (record.mode == EphemeralMode::DisappearingText
+                    && !record.transfer_ids.is_empty())
             {
-                return Ok(Some(rowid));
+                return Err(StoreError::Serialization);
             }
-        }
-        Ok(None)
+            row.verify_key(&ephemeral_key(
+                &record.conversation,
+                &record.author,
+                &record.content_id,
+            )?)?;
+            row.verify_indexes(&store_v2::IndexKeys::none())
+        })
     }
+}
+
+fn ephemeral_key(
+    conversation: &EphemeralConversation,
+    author: &[u8; 32],
+    content_id: &[u8; 16],
+) -> Result<store_v2::EphemeralKey> {
+    let (kind, conversation) = match conversation {
+        EphemeralConversation::Pairwise(id) => (0, *id),
+        EphemeralConversation::Group(id) => (1, *id),
+    };
+    store_v2::EphemeralKey::new(kind, conversation, *author, *content_id)
 }

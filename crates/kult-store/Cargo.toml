@@ -11,12 +11,15 @@ repository.workspace = true
 kult-crypto = { version = "0.3.0", path = "../kult-crypto" }
 kult-protocol = { version = "0.3.0", path = "../kult-protocol" }
 rusqlite = { version = "0.31", features = ["bundled"] }
-rand_core = "0.6"
+rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 zeroize = "1"
 fs2 = "0.4"
 libc = "0.2"
+
+[target.'cfg(any(unix, windows))'.dependencies]
+atomicwrites = "0.4.4"
 
 [dev-dependencies]
 proptest = "1"

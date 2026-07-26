@@ -1,21 +1,21 @@
 # ADR-0027: Versioned opaque indexes and row-bound sealed storage
 
-- **Status**: Proposed; inactive v2 foundation implemented
+- **Status**: Accepted; implemented
 - **Date**: 2026-07-26
 
 ## Context
 
-Komms seals record bodies, but the current SQLite schema uses plaintext account
-public keys and group ids as primary keys. A copied locked database therefore
-reveals exact contact and group relationships. Several tables also seal every
-row under constant associated data, so a local database writer can transplant
-valid ciphertext between identifiers without the store proving that the inner
-record belongs to the requested row.
+The released pre-v2 SQLite schemas used plaintext account public keys, group
+ids, delivery tokens, message ids, media ids, and other guessable equality
+identifiers. A copied locked database therefore revealed exact relationships.
+Several tables also sealed every row under constant associated data, so a local
+database writer could transplant valid ciphertext between identifiers without
+the store proving that the inner record belonged to the requested row.
 
-The schema has no versioned migration ledger. Additive `CREATE TABLE IF NOT
-EXISTS` calls cannot safely express index replacement, authenticated row
-identity, or large-history query plans. Updating or deleting a message scans
-and decrypts the full history.
+Those schemas had no versioned migration ledger. Additive `CREATE TABLE IF NOT
+EXISTS` calls could not safely express index replacement, authenticated row
+identity, or large-history query plans. Updating or deleting a message scanned
+and decrypted the full history.
 
 SQLite row deletion and flash storage do not support an honest guarantee that
 deleted bytes are physically unrecoverable. The design must protect a locked
@@ -172,8 +172,9 @@ offer stronger local guarantees, but it must be measured and narrowly stated.
   social-graph indexes.
 - Every store operation and backup/restore path must handle explicit record and
   schema versions.
-- Migration requires temporary space approximately equal to another database
-  and must surface that requirement before starting.
+- Migration requires space for the source, sibling destination, rollback copy,
+  row overhead, and a fixed reserve; it must surface that requirement before
+  starting.
 - Database replacement and old-file cleanup need platform-specific
   qualification.
 - Marketing loses an absolute deletion slogan and gains a claim the
@@ -181,23 +182,40 @@ implementation can defend.
 
 ## Implementation status
 
-The first independently safe slice is implemented as an inactive v2 migration
-destination in `kult-store`. It provides authenticated metadata with a fresh
-database id, an explicit physical and authenticated schema version, and a
-completed migration ledger. Its typed contact, capability, and message fixture
-domains exercise table- and database-separated HMAC-SHA-256 equality indexes,
-random append-row locators, versioned logical records, and the canonical
-database/schema/table/locator AEAD binding above.
+`kult-store` now uses one generic physical record table for all 25 sensitive
+logical domains. SQLite sees only domain numbers, random or keyed locators,
+domain-separated keyed indexes, insertion order, and sealed bytes. Opening
+validates the exact physical schema, metadata ledger, every row's canonical
+AEAD identity, decoded logical key, and authenticated secondary indexes.
+Unknown record versions and any inner-key, locator, or index disagreement fail
+closed.
 
-Opening that destination validates the complete physical schema and every row.
-Fixtures cover future or disagreeing schemas, incomplete or duplicate
-migrations, invalid inner logical keys and record versions, duplicate indexes,
-cross-database/table/row transplantation, wrong keys, and locked-copy
-inspection. The legacy `Store` entry points refuse a v2 destination before
-running legacy schema statements.
+Pairwise and group history have keyed message-id and conversation indexes,
+bounded opaque cursor pages, and exact indexed update/delete. Query-plan tests
+verify the intended SQLite indexes, and locked-copy tests check that known
+contact, group, message, media, and delivery identifiers do not occur in raw
+schema or index columns.
 
-This slice does **not** convert any current user table or activate a mixed
-format. The all-table logical mapping, backup/restore integration, sibling-file
-fsync and atomic replacement, rollback-copy lifecycle, private history query
-indexes, large-history benchmarks, remnant reduction, and supported-platform
-qualification remain required before ADR-0027 can be accepted.
+Opening a released legacy schema runs the sibling-database migration. Released
+fixtures cover `v0.1.0`, `v0.2.0`, and `v0.3.0`; row and total-count limits,
+logical-key and referential checks, a source fingerprint, 256-row transactions,
+a sealed restart checkpoint, count validation, full reopen validation, explicit
+space checks, file and directory sync, a rollback copy, atomic replacement,
+and phase-by-phase restart tests cover the replacement lifecycle. Restore uses
+the same sibling-file discipline. Encrypted backups carry validated logical
+records only, never a database id, opaque index, SQLite page, or wrapped v2 row
+ciphertext.
+
+Bounded maintenance enables SQLite secure-delete behavior, incremental vacuum,
+and WAL checkpoint/truncation where supported. Its result explicitly reports
+that forensic erasure is not guaranteed. The 100,000- and 1,000,000-message
+qualification gates enforce budgets for migration, unlock, page lookup, exact
+edit/delete, peak resident-memory growth, and database growth.
+
+The exact implementation, measurements, replacement phase matrix, and
+remaining filesystem evidence are recorded in
+[33: Opaque Store Qualification](../33-opaque-store-qualification.md).
+Independent storage review, physical power-loss testing, platform backup
+exclusion, Windows owner-only ACL enforcement, and real macOS, Windows, Android,
+and iOS filesystem qualification remain open. Those gaps limit platform and
+forensic claims; they do not leave the legacy plaintext-index schema active.

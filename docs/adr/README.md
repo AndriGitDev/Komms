@@ -33,7 +33,7 @@ product promise merely because the file exists.
 | [0024](0024-account-authorized-linked-devices.md) | Accepted Alpha; security-limited | Confirmed linking, per-device cryptography, sync, exact-id exclusion, and recovery; permanent-revocation claim withdrawn |
 | [0025](0025-optional-freenet-carrier.md) | Proposed | Optional epoch-scoped Freenet store-and-forward carrier and metadata boundary |
 | [0026](0026-revocable-device-authority.md) | Proposed (P0) | Required offline account-root recovery and quorum-authorized manifests replacing ADR-0024 authority before stable |
-| [0027](0027-opaque-indexed-store.md) | Proposed; inactive v2 foundation implemented | Versioned keyed indexes, row-bound sealing, transactional migration, and honest local deletion limits |
+| [0027](0027-opaque-indexed-store.md) | Accepted; implemented | Versioned keyed indexes, row-bound sealing, transactional migration, and honest local deletion limits |
 | [0028](0028-atomic-protocol-commits.md) | Proposed | Transactional ratchet, handshake, group-chain, queue, replay, and deferred-inbox state transitions |
 | [0029](0029-recipient-authenticated-groups.md) | Proposed | Per-recipient origin authentication for sender-key group messages and author-sensitive state |
 | [0030](0030-first-contact-admission.md) | Proposed | Bounded public introductions, provisional message requests, blocking, and group-invite consent |

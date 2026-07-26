@@ -3,7 +3,6 @@
 //! copied SQLite database.
 
 use rand::{rngs::StdRng, SeedableRng};
-use rusqlite::Connection;
 
 use kult_crypto::KdfProfile;
 use kult_store::{
@@ -127,16 +126,7 @@ fn every_record_round_trips_across_restart_and_stays_sealed() {
     assert_eq!(store.local_metadata().unwrap(), records);
     drop(store);
 
-    let raw = Connection::open(&db).unwrap();
-    let mut statement = raw
-        .prepare("SELECT blob FROM local_metadata ORDER BY rowid_")
-        .unwrap();
-    let blobs = statement
-        .query_map([], |row| row.get::<_, Vec<u8>>(0))
-        .unwrap()
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .unwrap();
-    let joined = blobs.concat();
+    let joined = std::fs::read(&db).unwrap();
     for secret in [
         &b"Expedition plans"[..],
         &b"Needs reply"[..],
@@ -151,9 +141,6 @@ fn every_record_round_trips_across_restart_and_stays_sealed() {
             "local metadata plaintext leaked into SQLite"
         );
     }
-    drop(statement);
-    drop(raw);
-
     let reopened = Store::open(&db, b"pass").unwrap();
     assert_eq!(reopened.local_metadata().unwrap(), records);
 }

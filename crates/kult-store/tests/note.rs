@@ -40,22 +40,28 @@ fn note_history_survives_restart_without_plaintext_or_peer_columns() {
 
     let raw = Connection::open(&database).unwrap();
     let columns = raw
-        .prepare("PRAGMA table_info(note_messages)")
+        .prepare("PRAGMA table_info(store_records)")
         .unwrap()
         .query_map([], |row| row.get::<_, String>(1))
         .unwrap()
         .collect::<rusqlite::Result<Vec<_>>>()
         .unwrap();
-    assert_eq!(columns, vec!["rowid_", "blob"]);
-    let blobs = raw
-        .prepare("SELECT blob FROM note_messages ORDER BY rowid_")
+    assert_eq!(
+        columns,
+        vec![
+            "rowid_",
+            "table_domain",
+            "locator",
+            "unique_index",
+            "index_a",
+            "index_b",
+            "index_c",
+            "index_d",
+            "blob",
+        ]
+    );
+    assert!(!std::fs::read(&database)
         .unwrap()
-        .query_map([], |row| row.get::<_, Vec<u8>>(0))
-        .unwrap()
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .unwrap()
-        .concat();
-    assert!(!blobs
         .windows(b"Remember the paper map".len())
         .any(|window| window == b"Remember the paper map"));
     drop(raw);
