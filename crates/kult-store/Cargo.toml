@@ -16,6 +16,7 @@ serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 zeroize = "1"
 fs2 = "0.4"
+libc = "0.2"
 
 [dev-dependencies]
 proptest = "1"

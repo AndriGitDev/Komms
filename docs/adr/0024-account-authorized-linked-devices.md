@@ -1,7 +1,15 @@
 # ADR-0024: Account-authorized linked devices and convergent local sync
 
-- **Status**: Accepted
+- **Status**: Accepted for Alpha data/sync mechanics; permanent-revocation
+  claim withdrawn
 - **Date**: 2026-07-16
+
+> **Security correction (2026-07-26):** distributing the account private key
+> to every linked device lets a compromised revoked device mint a new
+> certificate and higher manifest. Exact known-id exclusion works among honest
+> participants, but the “permanent revocation” statements below are not a
+> security guarantee. [ADR-0026](0026-revocable-device-authority.md) specifies
+> the required offline-root and majority-authorized replacement before stable.
 
 ## Context
 
@@ -29,8 +37,9 @@ certificate containing the complete account/device public keys, a random
 
 The account also signs a complete, monotonically generated device manifest.
 Each row contains the immutable certificate, a bounded signed display name, a
-coarse last-seen hint, and optional permanent revocation plus its last accepted
-sync counter. Rows sort by device id. At most eight devices may be active and at
+coarse last-seen hint, and optional exact-id exclusion plus its last accepted
+sync counter. This is not permanent adversarial revocation while devices retain
+the account root. Rows sort by device id. At most eight devices may be active and at
 most 64 lifetime certificate/tombstone rows are retained. A revoked certificate
 can never be rewritten, deleted, or made active again.
 
@@ -118,10 +127,11 @@ every device active in the backup at the backup creation time. The recovered
 installation is the sole active row until another device is explicitly linked.
 `KKR1` through `KKR7` remain readable and migrate to the same model.
 
-Revocation is permanent, exact-id targeted, explicitly confirmed in every
-shell, and cannot revoke the current or last active device. A lost device may
-retain plaintext it already saw; revocation protects future delivery and sync,
-not retrospective erasure.
+Revocation is exact-id targeted, explicitly confirmed in every shell, and
+cannot revoke the current or last active device. Among honest participants it
+excludes that known id from future delivery and sync. It is not permanent
+against a device that retained the account root, and it never erases plaintext
+already seen.
 
 ## Consequences
 
@@ -131,10 +141,10 @@ not retrospective erasure.
   online account service.
 - Initial history transfer and later sync are bounded explicit operations; the
   current UI does not claim continuous background cloud sync.
-- Account private-key availability on each linked device is a deliberate
-  authority tradeoff: it permits offline manifest progress and stable message
-  authorship. Independent device credentials still make delivery separation,
-  revocation, and ratchet safety enforceable.
+- Account private-key availability on each linked device was an unsafe Alpha
+  authority tradeoff. Independent device credentials still separate delivery
+  and ratchets, but cannot make adversarial revocation enforceable while every
+  device can mint a replacement credential.
 - Same-generation manifest forks converge deterministically, not fairly. A
   malicious account-authorized device can race authority changes until revoked.
 - Last-seen, sync completion, and per-device delivery indicators must retain

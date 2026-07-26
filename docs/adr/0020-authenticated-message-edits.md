@@ -52,11 +52,14 @@ local scheduled-message operation until activation creates an ordinary message.
 
 ### Authorization and resolution
 
-The authenticated event sender must equal `target_author`. Resolution is scoped
-to the same exact pairwise or group conversation. The target must decode as
-canonical v1 `Text` and have that author and content id. A cross-author,
-cross-conversation, self-referential, or wrong-kind edit is retained as an
-invalid edit event for diagnostics but never changes presentation.
+The event's sender field must equal `target_author`. In a pairwise lane that
+sender has an authenticated individual origin. In the current shared sender-key
+group lane it proves only that some member produced the event, so another member
+can forge the claimed author. Resolution is scoped to the same exact pairwise or
+group conversation. The target must decode as canonical v1 `Text` and have that
+author and content id. A cross-author, cross-conversation, self-referential, or
+wrong-kind edit is retained as an invalid edit event for diagnostics but never
+changes presentation.
 
 An edit may arrive before its original. Clients store it durably, acknowledge
 it after storage, and resolve it if the exact target later arrives. Duplicate
@@ -76,6 +79,11 @@ capability control. Pairwise send is refused until the peer advertises the exact
 kind. Group edit is refused until every current co-member advertises it and the
 author is still a current member. One canonical edit plaintext is encrypted
 once through the existing sender-key fan-out.
+
+This Accepted ADR defines the immutable edit state machine and pairwise
+authorization. Its original individual-authorship goal is not met for groups by
+the current sender-key construction. ADR-0029 must add recipient-verifiable
+group origins before stable group-edit authorship is claimed.
 
 A pre-edit client never receives an edit through the supported send path. If a
 capability race or future source delivers one anyway, ADR-0014 requires durable
@@ -117,13 +125,15 @@ and prior-version inspection. Display names never authorize or resolve edits.
 ## Consequences
 
 Edits converge under loss, duplication, reordering, partitions, restore, and
-linked-device concurrency while retaining exact provenance. Storage grows
-with edit count, so node APIs enforce at most 64 locally authored edit events per
-target and reject further local sends. Every authenticated edit received from a
-peer remains durable and participates in the same deterministic maximum; a local
-admission limit cannot change convergence based on arrival order. History
-derivation scans sealed local conversation records at alpha scale and can later
-gain a sealed rebuildable index without changing the wire rule.
+linked-device concurrency while retaining exact event history. Pairwise records
+retain individual provenance; current sender-key group records retain only
+membership-level provenance. Storage grows with edit count, so node APIs enforce
+at most 64 locally authored edit events per target and reject further local
+sends. Every accepted edit received from a peer remains durable and participates
+in the same deterministic maximum; a local admission limit cannot change
+convergence based on arrival order. History derivation scans sealed local
+conversation records at alpha scale and can later gain a sealed rebuildable
+index without changing the wire rule.
 
 Acceptance requires golden/fuzz/proptest coverage; edit-before-original,
 duplicate, stale, same-revision tie, cross-author, wrong-kind, removed-member,

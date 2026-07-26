@@ -45,7 +45,10 @@ session and advertised support.
 Content format v1 kind `0x0005` contains a random content id, mode, exact UTC
 `expires_at`, canonical coarse `retention_until`, and either UTF-8 text or an
 attachment manifest. `retention_until` is the one-hour ceiling of `expires_at`.
-Both values are inside the Double Ratchet or sender-key authenticated plaintext.
+Both values are inside Double Ratchet authenticated plaintext or sender-key
+membership-authenticated plaintext. The latter excludes outsiders but does not
+prove an individual group origin against another member; ADR-0029 is required
+for that stronger property.
 
 Envelope v2 adds the same hour-aligned `retention_until` in cleartext. Mailboxes,
 bridges, queues, and fragments treat it only as a bounded deletion hint: they

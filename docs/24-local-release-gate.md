@@ -1,13 +1,15 @@
 # 24: Local Release Gate
 
-Komms development uses one long-lived local branch and one complete local
-release matrix. Feature work is not pushed merely to ask hosted CI whether it
-compiles. Publication, a draft pull request, and any hosted repetition happen
-only after the roadmap implementation is complete, local evidence is green, and
-the maintainer explicitly authorizes the remote action.
+Komms uses one complete local release matrix for publication candidates.
+Ordinary contributions may open a focused pull request after the scoped checks
+in [CONTRIBUTING.md](../CONTRIBUTING.md); CI is a verifier, not a substitute for
+running the relevant local check. Publishing binaries, containers, or a stable
+claim requires the full matrix, explicit maintainer authorization, and the
+applicable P0 evidence in the
+[stabilization program](29-stabilization-program.md).
 
-This policy reduces private-repository runner cost without weakening the test
-bar. The commands are pinned in
+This keeps the publication bar high without making every documentation or
+bounded code contribution reproduce every platform. The commands are pinned in
 [`scripts/local-release-matrix.sh`](../scripts/local-release-matrix.sh).
 
 ## 1. Toolchains and platform prerequisites

@@ -9,11 +9,19 @@
 ![Server-independent core](https://img.shields.io/badge/core_server-required_no-success)
 ![Post-quantum](https://img.shields.io/badge/key_agreement-X25519_%2B_ML--KEM--768-blueviolet)
 
-**Sovereign messaging: end-to-end encrypted, server-independent at its core, and functional on & off the grid.**
+**Private messaging that keeps working.**
 
-*Messages no carrier or optional convenience service can read or scan. The core
-needs no provider and works over the internet, commodity LoRa radios, or a USB
-stick in a pocket.*
+*Komms aims to make ordinary conversations feel familiar while user-owned
+identity, strong end-to-end encryption, and resilient internet, local, radio,
+and sneakernet paths stay underneath. Its pure core has no mandatory exclusive
+provider. A future Standard mode may offer replaceable optional defaults for
+easy first use; those services must never receive message plaintext or identity
+private keys belonging to Komms users.*
+
+Komms has a nonprofit public-benefit mission: private, resilient communication
+should be useful to ordinary people without surveillance or exclusive-provider
+lock-in. The project is founder-directed and intentionally uses automated
+implementation assistance; accountability remains with the human maintainer.
 
 **New here?** Read [Start Here](docs/00-start-here.md): the whole idea in plain
 words, with no cryptography knowledge required.
@@ -73,59 +81,61 @@ required. iOS currently remains source/Simulator-only.
 
 ## Current implementation status
 
-Komms 0.3 Alpha is a packaged public prerelease for testing, not an audited
-stable release. The current repository contains the complete
-server-independent messaging core and all three application shells:
+Komms 0.3 Alpha is a public prerelease for testing, not an independently
+audited or stable release. The repository contains a broad implemented core and
+three application shells, with substantial automated evidence. Simulator
+builds and self-round-trip tests are not physical-device qualification or
+independent interoperability.
 
 | Area | Current state |
 |---|---|
-| **Core and internet/LAN delivery** | M0–M3 are complete: hybrid PQXDH, Double Ratchet, sealed envelopes, encrypted storage, sneakernet, libp2p QUIC/TCP, Kademlia discovery, volunteer mailboxes, NAT traversal, mDNS, `kult-node`, `kultd`, local RPC, CLI, and UniFFI. |
-| **Off-grid delivery** | The M4 Meshtastic carrier, duty-cycle enforcement, selective retransmission, and token-blind internet↔mesh bridge are implemented and tested. The physical two-radio nightly bench still needs to be stood up. |
-| **Applications** | Tauri desktop packages are published for Windows x64, universal macOS, and Linux x86-64; a debug-signed Android APK supports Android 8+ on arm64 devices and x86-64 emulators. The SwiftUI iOS shell remains source/Simulator-only. Per-push CI exercises the core, desktop, generated bindings, Android APK, and iOS Simulator build. Production signing, store distribution, and hands-on device qualification remain. |
-| **Messaging features** | Pairwise and sender-key group text, authenticated immutable message edits with inspectable version history, disappearing text, view-once attachments, fixed-electorate group polls, signed owner/admin/member authority, note-to-self, scheduled text, attachments, recorded audio, still-image editing, group mentions, and B9 safe text formatting are shipped through the shared APIs and all three shells. Poll votes and voter identities are visible to members—not anonymous—and converge under offline reorder; creators close ordinarily while the current owner can commit a separately signed moderation snapshot. C6 role changes, ownership transfer, and admin requests are owner-serialized, generation-bound, and re-key the group. C4 uses exact local deadlines, coarse authenticated relay deletion hints, terminal tombstones, and KKR6 backup exclusion without promising remote erasure or screenshot prevention. Edits converge without rewriting originals; formatting remains inert. Delivery state is the honest `queued → sent → delivered` ladder, with fresh user work ahead of passive retries and a visible failure after 30 days without an encrypted receipt. |
-| **Linked devices** | C2 is shipped through the shared core, strict RPC/CLI, UniFFI, and all three shells: one stable account can authorize up to eight independently keyed devices through a mutually confirmed QR/paste ceremony. Pairwise sessions, group sender chains, capability state, and delivery rows remain per physical device; encrypted explicit sync converges contacts, private organization, ordinary history, edits, polls, authority, and terminal tombstones without a cloud account. Permanent exact-device revocation and KKR7 recovery never resurrect old credentials. The published Android APK and automated iOS Simulator build provide release evidence; hands-on device qualification remains. |
-| **Live audio calls** | C7 audio is shipped through direct libp2p QUIC, transient ratcheted signaling, authenticated per-call media, RPC/CLI, UniFFI, desktop, Android, and iOS. Calls never use TCP, relay-only, mailbox, sneakernet, or LoRa paths; they create no chat history or backup state and use no coordinator, SFU, STUN/TURN, or project service. Real-NAT, handoff, battery, audio-route, and device qualification remain alpha release gates; video remains later work. |
-| **Attachment safety** | C1 safe file presentation is shipped over the unchanged sealed F3/F4 pipeline. Sender filenames/types remain untrusted hints; mismatched, active, unknown, or nameless files are export-only, recognized external opening is explicit and warns that no malware scan is promised, and no file auto-opens or creates mesh airtime. |
-| **Private contact names** | B5 contact rename is shipped across node, RPC/CLI, UniFFI, desktop, Android, and iOS. Petnames are NFC-normalized, duplicate-capable private local labels; spoofing-risk warnings require explicit review, exact peer keys remain authoritative, and rename creates no protocol or transport work. Optional signed self-display suggestions remain deferred. |
-| **Private local organization** | B10 folders, B11 conversation pins, and B18 contact/conversation labels are shipped across storage, node, RPC/CLI, UniFFI, desktop, Android, and iOS. They remain sealed endpoint-private metadata, compose as folder → labels → pins/activity, create zero peer or transport work, are preserved by `KKR7`, and may converge only through explicit authenticated own-device C2 sync. Message pins and message labels remain separate work. |
-| **Appearance and accessibility** | B12 system/light/dark appearance is shipped across the sealed F5 preference, node, RPC/CLI, UniFFI, desktop, Android, and iOS. Native system changes apply live, semantic palettes meet the shared WCAG targets, high-contrast/reduced-motion preferences remain native, and security/delivery meaning always retains text or icon cues. |
-| **Private custom icons** | B13 contact, group, folder, and note-to-self icons are shipped across the sealed F5 record, node, RPC/CLI, UniFFI, desktop, Android, and iOS. Generated initials are the safe fallback; eight bundled glyphs or selected local JPEG/PNG inputs become strict metadata-free 256×256 PNGs under per-icon/count/aggregate quotas. Icons create zero remote lookup, peer sync, notification, or transport work; portability is limited to `KKR7` and explicit authenticated own-device C2 sync. |
-| **Screen security** | B14 is shipped as an always-on pre-unlock policy across the shared capability contract, RPC/CLI, UniFFI, and every shell. Android applies `FLAG_SECURE` to every activity; iOS obscures inactive/app-switcher and live-captured scenes without claiming universal screenshot blocking; desktop requests best-effort native content protection, shields on focus loss, and locks immediately with `Ctrl/Cmd+Shift+L`. OS, compositor, privileged-software, and external-camera limits remain explicit. |
-| **Input privacy** | B15 is shipped as an always-on pre-unlock policy across the shared capability contract, RPC/CLI, UniFFI, and every textual field. Android requests `IME_FLAG_NO_PERSONALIZED_LEARNING` and no suggestions; iOS disables correction and uses secure passphrase/mnemonic fields; desktop disables webview autocomplete, correction, capitalization, and spellcheck. Keyboard, OS, webview, and writing-tool limits remain explicit. |
-| **Runtime and release assurance** | The headless runtime recovers poisoned synchronization locks instead of cascading a panic, emits policy-bounded structured diagnostics through `tracing`, and accepts passphrases/restore mnemonics from owner-only secret files. Rust 1.88 is the declared and tested MSRV. Version `0.3.0` is prepared for the qualified `v0.3.0` tag with native Windows/macOS/Linux packages, an Android test APK, `SHA256SUMS`, and a Linux amd64/arm64 `kultd` image carrying provenance and an SBOM. Release publication is gated on recorded human visual approval for Android, iOS, macOS, and Linux. These remain Alpha artifacts: Windows signing, store distribution, an updater, and stable support promises are not configured. Per-push CI, the complete local matrix, and a weekly advisory/macOS/coverage workflow provide complementary evidence. |
+| **Core security and storage** | Hybrid PQXDH, Double Ratchet sessions, sealed envelopes, sealed local record bodies, backup/recovery, RPC/CLI, and UniFFI paths are implemented with automated tests. The current SQLite schema still exposes exact contact/group identifiers in plaintext indexes and lacks universal row binding; ADR-0027 is required before stronger locked-database metadata claims. The combined implementation has not yet passed independent security review or independent interoperability gates. |
+| **Internet, LAN, and delayed delivery** | libp2p QUIC/TCP, Kademlia discovery, NAT traversal, mDNS, and volunteer mailbox roles are implemented. Fresh app installs do not yet have a qualified distinct-NAT golden path: bootstrap and mailbox defaults require deliberate configuration, and mailbox persistence/operator behavior remains a stabilization gate. [ADR-0034](docs/adr/0034-operator-minimized-reference-discovery.md) proposes an initial founder-operated Hetzner Standard-mode bootstrap/DHT/rendezvous default with RAM-backed mutable state; it is not implemented or a durable mailbox. |
+| **Off-grid delivery** | Sneakernet and the Meshtastic carrier, duty-cycle controls, retransmission, and internet↔mesh bridge paths are implemented with automated evidence. The physical two-radio bench is not yet field-qualified. |
+| **Applications and messaging** | Desktop, Android, and iOS shells expose pairwise/group text and a broad Alpha feature set, including attachments, local organization, linked devices, ephemeral content, polls, roles, and direct audio-call paths. CI and simulator evidence exist; hands-on device, background lifecycle, NAT, accessibility, and localization qualification remain. |
+| **Distribution** | Unsigned desktop packages and a debug-signed Android APK are published for Alpha testing; iOS is source/Simulator-only. Production signing, authenticated updates, reproducibility measurements, store distribution, upgrade/rollback qualification, and stable support are not configured. |
 | **Optional mobile convenience** | ADR-0017 through ADR-0019 propose reversible post-pairing rendezvous and content-free native wake. The layer is design-only: no optional service is implemented or required by the sovereign core. |
+| **Trust and governance** | The project is founder-directed by design during construction and stabilization under a nonprofit public-benefit mission. The founder retains product and release authority. Independent security and interoperability evidence is still missing; automated assistance is not presented as independent review. The [stabilization program](docs/29-stabilization-program.md) defines the evidence required before stable claims. |
 
 Older `KKR1` through `KKR6` backups remain restorable; current backups are
 `KKR7`. KKR6 added signed group authority state and consumed admin-request ids.
 KKR7 adds linked-device authority, convergence state, and recovery semantics;
 all current backups exclude live ephemeral plaintext/media and carry terminal
-tombstones so restore cannot resurrect removed content. The principal release
-gaps are the physical radio bench, hands-on mobile qualification, reproducible
-signed/store distribution work, remaining M6 hardening, and
-an external security audit. See the [roadmap](docs/08-roadmap.md) for engineering
-milestones, the [feature delivery plan](docs/12-feature-delivery-plan.md) for
-the product backlog, and the [local release gate](docs/24-local-release-gate.md)
-for the no-hosted-compiler workflow.
+tombstones so restore does not recreate those records in Komms. This is
+automated implementation evidence, not a promise to erase copies retained by
+peers, screenshots, exported backups, or compromised endpoints.
 
-Komms is a decentralized messenger built on four principles:
+The [stabilization program](docs/29-stabilization-program.md) now takes priority
+over feature expansion. It defines exact evidence levels, owners, P0/P1/P2
+gates, and the first 90 days. The [roadmap](docs/08-roadmap.md) remains the
+engineering inventory, the [feature delivery plan](docs/12-feature-delivery-plan.md)
+remains the product backlog, and the
+[local release gate](docs/24-local-release-gate.md) describes existing build
+checks.
 
-1. **No mandatory middle.** No account or project-operated service is required
-   to communicate. Peers talk directly, via volunteer relays holding only sealed
-   ciphertext, or over radio. Optional rendezvous and native-wake services may
-   improve convenience, but they receive no message plaintext or identity keys
-   and their loss never disables the core.
-2. **Cryptography at the state of the art.** Hybrid post-quantum key agreement
-   (X25519 + ML-KEM-768), Double Ratchet sessions with encrypted headers, and
-   XChaCha20-Poly1305 everywhere, assembled strictly from published, audited designs.
-3. **Off-grid is a first-class citizen.** When networks are down or shut off, the same
-   sealed messages travel over commodity Meshtastic LoRa radios (kilometers of range,
-   multi-hop, ~€30 hardware), local links, or `.kkb` file sneakernet.
-4. **Your keys, your data, your hardware.** Identity is a keypair you mint yourself: no
-   phone number, no email. History is stored locally, encrypted, exportable, and
-   deletable for real.
+Komms is built on four principles:
 
-Why this project exists, including its answer to the EU's ChatControl regime, is set
-out plainly in [Why Komms](docs/01-why.md).
+1. **Everyday messenger first.** Installation, pairing, sending, recovery, and
+   delivery state should make sense without transport or cryptography knowledge.
+2. **No mandatory exclusive provider.** Peers may communicate directly, through
+   chosen volunteer mailbox operators holding sealed ciphertext, or over local,
+   radio, and sneakernet paths. Standard mode may use disclosed, replaceable
+   defaults. Optional rendezvous and native wake receive no message plaintext or
+   identity private keys and remain removable.
+3. **Strong cryptographic building blocks, honestly qualified.** The
+   implementation combines published constructions including X25519 +
+   ML-KEM-768, Double Ratchet sessions with encrypted headers, and
+   XChaCha20-Poly1305. That combination still requires independent review and
+   interoperability evidence before it can be called audited or stable.
+4. **Your keys and local data stay yours.** Identity needs no phone number or
+   email. Komms can delete its local encrypted history and exclude expiring
+   content from its own current backups, but it cannot erase copies another
+   person, export, screenshot, operating system, or compromised device retains.
+
+[Why Komms](docs/01-why.md) explains the social motivation, including concern
+about policy proposals and laws that seek or allow private communications to be
+scanned. It distinguishes that position from claims about the current legal
+status of any particular proposal.
 
 ## Design documents
 
@@ -149,16 +159,18 @@ out plainly in [Why Komms](docs/01-why.md).
 | [15: Private Contact Names](docs/15-contact-petnames.md) | B5 local petname rename contract, warnings, privacy boundary, and qualification matrix |
 | [16: Safe Text Formatting](docs/16-safe-text-formatting.md) | B9 source subset, active-content boundary, limits, compatibility, and qualification matrix |
 | [17: Safe File Presentation](docs/17-safe-file-presentation.md) | C1 filename/type policy, open/export boundary, lifecycle, and qualification matrix |
-| [18: Authenticated Message Editing](docs/18-message-editing.md) | C3 immutable edit events, authorship, convergence, retained versions, compatibility, and qualification |
+| [18: Authenticated Message Editing](docs/18-message-editing.md) | C3 immutable edit events, pairwise authorship, group Alpha limit, convergence, retained versions, compatibility, and qualification |
 | [19: Disappearing Messages and View-Once Attachments](docs/19-ephemeral-messages.md) | C4 exact local expiry, coarse relay retention, tombstones, KKR6 exclusion, honest limits, and qualification |
-| [20: Group Polls](docs/20-group-polls.md) | C5 visible authenticated votes, fixed electorate, deterministic convergence, creator closure, and qualification |
+| [20: Group Polls](docs/20-group-polls.md) | C5 visible votes, current member-forgery limit, fixed electorate, deterministic convergence, creator closure, and qualification |
 | [21: Group Roles, Ownership, and Moderation](docs/21-group-roles.md) | C6 signed owner/admin/member authority, transfer, rotation, moderation, backup, and qualification |
-| [22: Linked Devices](docs/22-linked-devices.md) | C2 device certificates, confirmed linking, per-device delivery, deterministic sync, revocation, recovery, and qualification |
+| [22: Linked Devices](docs/22-linked-devices.md) | C2 device certificates, confirmed linking, per-device delivery, sync, recovery, and the open permanent-revocation flaw |
 | [23: Live Audio Calls](docs/23-live-audio-calls.md) | C7 direct-QUIC gating, transient signaling, authenticated Opus media, platform behavior, privacy limits, and qualification |
-| [24: Local Release Gate](docs/24-local-release-gate.md) | Toolchains, complete local validation, CI/audit evidence, SDK deferrals, signing boundary, and publication discipline |
+| [24: Local Release Gate](docs/24-local-release-gate.md) | Toolchains, complete local validation, CI/advisory evidence, SDK deferrals, signing boundary, and publication discipline |
 | [25: Release Runbook](docs/25-release-runbook.md) | Versioning, native desktop/APK artifact builds, signing inputs, qualification, and explicit publication |
 | [26: Self-hosting](docs/26-self-hosting.md) | Hardened Docker Compose deployment, ports, secret initialization, node modes, and Alpha limits |
 | [27: Alpha Testing](docs/27-alpha-testing.md) | Download verification, installation, smoke testing, issue reporting, and self-hosted image quick start |
+| [28: Brand System](docs/28-brand-system.md) | Cross-shell product character, tokens, hierarchy, and pragmatic name-risk monitoring |
+| [29: Stabilization Program](docs/29-stabilization-program.md) | Canonical evidence vocabulary, trust gates, owners, and 90-day sequence |
 | [ADRs](docs/adr/README.md) | Decision index, status, and the alternatives each decision beat |
 
 ## Stack
@@ -210,7 +222,7 @@ cd crates/kult-crypto && cargo +nightly fuzz run envelope_decode -- -max_total_t
 
 Before a publication candidate, run `scripts/local-release-matrix.sh` from the
 repository root and record every explicit `DEFERRED` platform gate. The exact
-division between local checks, per-push CI, weekly audit evidence, physical
+division between local checks, per-push CI, weekly advisory evidence, physical
 qualification, and signing is documented in the
 [local release gate](docs/24-local-release-gate.md).
 
@@ -227,10 +239,17 @@ or the [self-hosting guide](docs/26-self-hosting.md) to run `kultd`.
 
 Security review, hands-on platform testing, and focused implementation of the
 remaining roadmap are especially valuable; see [CONTRIBUTING.md](CONTRIBUTING.md).
-Security issues: [SECURITY.md](SECURITY.md).
+Project decisions and ownership: [GOVERNANCE.md](GOVERNANCE.md) and
+[MAINTAINERS.md](MAINTAINERS.md). Security issues: [SECURITY.md](SECURITY.md).
+Participation follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 
-[AGPLv3](LICENSE). Anyone may run, study, modify, and share every component, and
-modified network services must publish their source. Rationale:
-[ADR-0006](docs/adr/0006-agplv3.md).
+Komms software is licensed under [AGPL-3.0-only](LICENSE). Under AGPLv3 section
+13, a modified covered version that supports remote network interaction must
+prominently offer its remote users an opportunity to receive that version's
+Corresponding Source. The AGPL permits commercial use; Komms's nonprofit
+mission governs official project activity, not independent licensees. See
+[ADR-0006](docs/adr/0006-agplv3.md) and
+[ADR-0033](docs/adr/0033-nonprofit-founder-stewardship.md). This summary is not
+legal advice.

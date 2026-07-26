@@ -60,7 +60,7 @@ use kult_store::{
     ContactDeviceRecord, ContactRecord, ConversationId, ConversationMetadata, DeliveryState,
     DeviceStateRecord, Direction, EphemeralConversation, EphemeralMode, EphemeralRecord,
     EphemeralState, LocalMetadataKey, LocalMetadataRecord, MessageDeviceDeliveryRecord,
-    MessageRecord, NoteMessageRecord, QueueClass, QueueItem,
+    MessageRecord, NoteMessageRecord, PairwiseReceivePlan, QueueClass, QueueItem,
     ScheduledConversation as StoreScheduledConversation, ScheduledMessageRecord, Store,
 };
 use kult_transport::{CostClass, DeliveryHint, Discovery, Reachability, Transport};
@@ -295,6 +295,11 @@ const TRANSIT_MESH_PER_TICK: usize = 4;
 /// Missing fragment indices per in-flight message id — the NACK half of a
 /// receipt (the shape of [`ReceiptPayload::nacks`]).
 type FragNacks = Vec<([u8; 4], Vec<u16>)>;
+/// Bound one receipt's selective-retransmission work independently of the
+/// reassembler's aggregate partial-message cap.
+const MAX_NACK_PARTIALS_PER_TICK: usize = 32;
+/// Missing indices carried in one tick across all partial messages.
+const MAX_NACK_INDICES_PER_TICK: usize = 4_096;
 
 /// Receiver-side bookkeeping for one in-flight partial message: enough to
 /// address the NACK requesting its missing fragments (via the delivery
@@ -319,6 +324,9 @@ struct SentFragments {
 enum Consumed {
     /// Fully handled (or permanently unprocessable) — never seen again.
     Done,
+    /// Fully handled by a transaction that also acknowledged its named
+    /// deferred-inbox source row, when one existed.
+    DoneAtomic,
     /// Cannot be processed *yet* (no matching session) — stash and retry.
     Later,
 }
@@ -1764,6 +1772,9 @@ impl Node {
         self.advertise_capabilities(now, rng)?;
 
         // 1. Gather: previously-stashed envelopes first, then fresh arrivals.
+        //    A present sequence means the envelope already has a durable
+        //    pending-inbox row. It remains there until this tick explicitly
+        //    acknowledges successful consumption or expiry.
         //    When bridging, fresh arrivals with tokens this node does not
         //    recognize also enter the transit queue (ADR-0009): mesh-heard
         //    foreignness heads for the internet, carrier-surfaced transit
@@ -1771,7 +1782,18 @@ impl Node {
         //    still joins the normal receive path — "foreign" and "ours, but
         //    the unlocking handshake hasn't arrived yet" are indistinguishable
         //    by design, and downstream dedup absorbs the overlap.
-        let mut work: Vec<(Envelope, u64)> = self.store.pending_drain()?;
+        let mut work: Vec<(Option<i64>, Envelope, u64)> = Vec::new();
+        let mut gathered = HashSet::new();
+        for (sequence, envelope, first_seen) in self.store.pending_all()? {
+            if gathered.insert(envelope.content_id()) {
+                work.push((Some(sequence), envelope, first_seen));
+            } else {
+                // Older builds could persist exact multipath duplicates.
+                // Keep the first stable row and remove only redundant copies.
+                self.store.pending_ack(sequence)?;
+            }
+        }
+        let mut bridge_seen = HashSet::new();
         let transports = self.transports.clone();
         for transport in &transports {
             let airtime = transport.profile().cost == CostClass::Airtime;
@@ -1779,24 +1801,35 @@ impl Node {
             // arrive via retry or another path.
             if let Ok(envelopes) = transport.recv().await {
                 for envelope in envelopes {
-                    if airtime && self.bridge.is_some() && !self.token_is_mine(&envelope.token, now)
+                    let content_id = envelope.content_id();
+                    if airtime
+                        && self.bridge.is_some()
+                        && !self.token_is_mine(&envelope.token, now)
+                        && bridge_seen.insert((true, content_id))
                     {
                         if let Some(bridge) = &mut self.bridge {
                             bridge.admit(&envelope, true, now);
                         }
                     }
-                    work.push((envelope, now));
+                    if gathered.insert(content_id) {
+                        work.push((None, envelope, now));
+                    }
                 }
             }
             if self.bridge.is_some() {
                 if let Ok(envelopes) = transport.recv_transit().await {
                     for envelope in envelopes {
-                        if !self.token_is_mine(&envelope.token, now) {
+                        let content_id = envelope.content_id();
+                        if !self.token_is_mine(&envelope.token, now)
+                            && bridge_seen.insert((false, content_id))
+                        {
                             if let Some(bridge) = &mut self.bridge {
                                 bridge.admit(&envelope, false, now);
                             }
                         }
-                        work.push((envelope, now));
+                        if gathered.insert(content_id) {
+                            work.push((None, envelope, now));
+                        }
                     }
                 }
             }
@@ -1807,26 +1840,65 @@ impl Node {
         //    earlier in it). Each pass consumes at least one envelope, so
         //    this terminates.
         let mut acks: Vec<([u8; 32], [u8; 16])> = Vec::new();
+        let mut pending_acks: Vec<i64> = Vec::new();
         loop {
             let mut stash = Vec::new();
             let mut established = false;
-            for (env, first_seen) in work {
-                match self.consume(&env, 0, now, rng, &mut acks, &mut established)? {
-                    Consumed::Done => {}
-                    Consumed::Later => stash.push((env, first_seen)),
+            for (pending_sequence, env, first_seen) in work {
+                let expired = now.saturating_sub(first_seen) > PENDING_TTL_SECS
+                    || env.retention_until.is_some_and(|deadline| deadline <= now);
+                if expired {
+                    if let Some(sequence) = pending_sequence {
+                        self.store.pending_ack(sequence)?;
+                    }
+                    continue;
+                }
+
+                match self.consume(
+                    &env,
+                    0,
+                    pending_sequence,
+                    now,
+                    rng,
+                    &mut acks,
+                    &mut established,
+                )? {
+                    Consumed::Done => {
+                        if let Some(sequence) = pending_sequence {
+                            // Keep the row until receipts and other durable
+                            // consequences of this receive pass are queued.
+                            // Any intervening error can then safely replay it
+                            // through the seen-envelope path.
+                            pending_acks.push(sequence);
+                        }
+                    }
+                    Consumed::DoneAtomic => {}
+                    Consumed::Later => {
+                        let sequence = match pending_sequence {
+                            Some(sequence) => sequence,
+                            None => match self.store.pending_push(&env, first_seen, rng) {
+                                Ok(sequence) => sequence,
+                                Err(kult_store::StoreError::PendingQuota) => {
+                                    // Interim overload containment. The
+                                    // interactive admission protocol in
+                                    // ADR-0030 must move this refusal before
+                                    // the carrier's accepted response.
+                                    continue;
+                                }
+                                Err(error) => return Err(error.into()),
+                            },
+                        };
+                        stash.push((Some(sequence), env, first_seen));
+                    }
                 }
             }
             if established && !stash.is_empty() {
                 work = stash;
                 continue;
             }
-            for (env, first_seen) in stash {
-                if now.saturating_sub(first_seen) <= PENDING_TTL_SECS
-                    && env.retention_until.is_none_or(|deadline| deadline > now)
-                {
-                    self.store.pending_push(&env, first_seen, rng)?;
-                }
-            }
+            // Every entry in `stash` is already durable. Leaving it in place
+            // is the retry action; no delete/reinsert cycle or new sequence
+            // number is needed.
             break;
         }
 
@@ -1880,6 +1952,9 @@ impl Node {
             let acks = acks_by_peer.remove(&peer).unwrap_or_default();
             let nacks = nacks_by_peer.remove(&peer).unwrap_or_default();
             self.queue_receipt(&peer, acks, nacks, now, rng)?;
+        }
+        for sequence in pending_acks {
+            self.store.pending_ack(sequence)?;
         }
 
         // 4. Flush the outbound queue, then — only with whatever airtime and
@@ -2396,6 +2471,7 @@ impl Node {
         &mut self,
         env: &Envelope,
         depth: u8,
+        pending_sequence: Option<i64>,
         now: u64,
         rng: &mut impl CryptoRngCore,
         acks: &mut Vec<([u8; 32], [u8; 16])>,
@@ -2430,15 +2506,23 @@ impl Node {
                     });
                 }
                 let completed = self.reassembler.insert(&env.body, now);
-                self.store.mark_seen(&env.content_id())?;
+                // Top-level fragments are deliberately not persisted in the
+                // seen set. A completed inner envelope may still be refused
+                // by the bounded deferred inbox; retaining retryability of
+                // the full fragment set is then the only lossless outcome.
+                // Reassembly and inner-envelope dedup remain independently
+                // bounded, so exact fragment retries are safe.
                 if let Ok(Some(payload)) = completed {
                     if let Ok(inner) = Envelope::decode(&payload) {
                         if let Consumed::Later =
-                            self.consume(&inner, 1, now, rng, acks, established)?
+                            self.consume(&inner, 1, None, now, rng, acks, established)?
                         {
                             // Reassembled before its session exists — stash
                             // the inner envelope for later ticks.
-                            self.store.pending_push(&inner, now, rng)?;
+                            match self.store.pending_push(&inner, now, rng) {
+                                Ok(_) | Err(kult_store::StoreError::PendingQuota) => {}
+                                Err(error) => return Err(error.into()),
+                            }
                         }
                     }
                 }
@@ -2446,7 +2530,7 @@ impl Node {
             }
             EnvelopeKind::Handshake => self.consume_handshake(env, now, rng, acks, established),
             EnvelopeKind::Message | EnvelopeKind::Receipt | EnvelopeKind::GroupControl => {
-                self.consume_ratchet(env, now, rng, acks, established)
+                self.consume_ratchet(env, pending_sequence, now, rng, acks, established)
             }
             EnvelopeKind::GroupMessage => self.consume_group_message(env, now, rng, acks),
         }
@@ -2677,6 +2761,7 @@ impl Node {
     fn consume_ratchet(
         &mut self,
         env: &Envelope,
+        pending_sequence: Option<i64>,
         now: u64,
         rng: &mut impl CryptoRngCore,
         acks: &mut Vec<([u8; 32], [u8; 16])>,
@@ -2695,18 +2780,127 @@ impl Node {
         let Ok(msg) = RatchetMessage::decode(&env.body) else {
             return done(self);
         };
-        let Some(session) = self.sessions.get_mut(&peer_device) else {
-            return Ok(Consumed::Later);
+        // Durable state is authoritative. Decrypt into a detached candidate
+        // so a failed store transition cannot advance the live ratchet.
+        let Some(mut candidate_session) = self.store.get_session(&peer_device)? else {
+            return Err(NodeError::CorruptState);
         };
-        let Ok(plaintext) = session.decrypt(rng, now, &msg, &[]) else {
+        let Ok(plaintext) = candidate_session.decrypt(rng, now, &msg, &[]) else {
             // Tampered, or outside the skipped-key window — a permanent,
             // honest failure per the ratchet contract.
             return done(self);
         };
-        self.store.put_session(&peer_device, session, rng)?;
         let Ok(body) = unpad(&plaintext) else {
+            self.store
+                .put_session(&peer_device, &candidate_session, rng)?;
+            self.sessions.insert(peer_device, candidate_session);
             return done(self);
         };
+
+        // First bounded ADR-0028 vertical slice: ordinary pairwise text
+        // commits the receiving ratchet, history, seen/replay markers, and
+        // exact pending-row acknowledgement as one durable transition.
+        //
+        // More stateful content kinds deliberately stay on the legacy path
+        // until their attachment/ephemeral/control consequences have typed
+        // plans of their own.
+        if env.kind == EnvelopeKind::Message && env.retention_until.is_none() {
+            let decoded = decode_content(&body);
+            if matches!(
+                decoded,
+                DecodedContent::LegacyText(_) | DecodedContent::Text { .. }
+            ) {
+                let (id, event_body, content, duplicate) = match decoded {
+                    DecodedContent::LegacyText(text) => {
+                        let mut id = [0u8; 16];
+                        rng.fill_bytes(&mut id);
+                        (
+                            id,
+                            text.as_bytes().to_vec(),
+                            ContentStatus::LegacyText,
+                            false,
+                        )
+                    }
+                    DecodedContent::Text { id, text } => {
+                        let conversation = EphemeralConversation::Pairwise(peer);
+                        let expired_duplicate = self
+                            .store
+                            .get_ephemeral_record(&conversation, &peer, &id)?
+                            .is_some();
+                        let history_duplicate =
+                            self.store.messages_with(&peer)?.iter().any(|record| {
+                                record.direction == Direction::Inbound
+                                    && matches!(
+                                        decode_content(&record.body),
+                                        DecodedContent::Text { id: stored_id, .. }
+                                            | DecodedContent::Attachment {
+                                                id: stored_id,
+                                                ..
+                                            }
+                                            | DecodedContent::Mention {
+                                                id: stored_id,
+                                                ..
+                                            }
+                                            | DecodedContent::Edit { id: stored_id, .. }
+                                            | DecodedContent::Ephemeral {
+                                                id: stored_id,
+                                                ..
+                                            }
+                                            | DecodedContent::Poll { id: stored_id, .. }
+                                            | DecodedContent::GroupAuthority {
+                                                id: stored_id,
+                                                ..
+                                            }
+                                            if stored_id == id
+                                    )
+                            });
+                        (
+                            id,
+                            text.as_bytes().to_vec(),
+                            ContentStatus::Text { id },
+                            expired_duplicate || history_duplicate,
+                        )
+                    }
+                    _ => unreachable!("ordinary text variants matched above"),
+                };
+                let message = (!duplicate).then(|| MessageRecord {
+                    id,
+                    peer,
+                    direction: Direction::Inbound,
+                    state: DeliveryState::Received,
+                    timestamp: now,
+                    body,
+                    wire_id: None,
+                });
+                self.store.commit_pairwise_receive(
+                    PairwiseReceivePlan {
+                        peer_device: &peer_device,
+                        session: &candidate_session,
+                        message: message.as_ref(),
+                        content_id: &env.content_id(),
+                        received_at: now,
+                        source_pending_sequence: pending_sequence,
+                    },
+                    rng,
+                )?;
+                self.sessions.insert(peer_device, candidate_session);
+                if !duplicate {
+                    self.events.push_back(Event::MessageReceived {
+                        peer,
+                        id,
+                        timestamp: now,
+                        body: event_body,
+                        content,
+                    });
+                }
+                acks.push((peer_device, env.content_id()));
+                return Ok(Consumed::DoneAtomic);
+            }
+        }
+
+        self.store
+            .put_session(&peer_device, &candidate_session, rng)?;
+        self.sessions.insert(peer_device, candidate_session);
 
         match env.kind {
             EnvelopeKind::Message => {
@@ -3284,20 +3478,28 @@ impl Node {
         let missing = self.reassembler.missing(now);
         let live: HashSet<[u8; 4]> = missing.iter().map(|(id, _)| *id).collect();
         self.frag_meta.retain(|id, _| live.contains(id));
+        let mut indices_left = MAX_NACK_INDICES_PER_TICK;
         missing
             .into_iter()
-            .filter(|(id, miss)| {
+            .filter_map(|(id, mut miss)| {
                 if miss.is_empty() {
-                    return false;
+                    return None;
                 }
-                let Some(meta) = self.frag_meta.get(id) else {
-                    return false;
+                let Some(meta) = self.frag_meta.get(&id) else {
+                    return None;
                 };
-                now.saturating_sub(meta.first_seen) >= NACK_AFTER_SECS
+                let due = now.saturating_sub(meta.first_seen) >= NACK_AFTER_SECS
                     && meta
                         .last_nack
-                        .is_none_or(|t| now.saturating_sub(t) >= NACK_INTERVAL_SECS)
+                        .is_none_or(|t| now.saturating_sub(t) >= NACK_INTERVAL_SECS);
+                if !due || indices_left == 0 {
+                    return None;
+                }
+                miss.truncate(indices_left);
+                indices_left -= miss.len();
+                Some((id, miss))
             })
+            .take(MAX_NACK_PARTIALS_PER_TICK)
             .collect()
     }
 
@@ -3804,7 +4006,7 @@ async fn send_via(
     envelope: &Envelope,
 ) -> Result<Option<Vec<Vec<u8>>>> {
     let mtu = transport.profile().mtu;
-    let encoded = envelope.encode();
+    let encoded = envelope.try_encode()?;
     if encoded.len() <= mtu {
         transport.send(hint, envelope).await?;
         return Ok(None);

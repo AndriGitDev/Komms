@@ -8,6 +8,12 @@ use core::fmt;
 pub enum ProtocolError {
     /// Wire bytes could not be parsed (bad magic, length, version, or kind).
     Malformed,
+    /// A complete encoded envelope exceeds the project-wide wire limit.
+    EnvelopeTooLarge,
+    /// A courier bundle exceeds the aggregate file-size limit.
+    BundleTooLarge,
+    /// A courier bundle contains more envelopes than one import may admit.
+    TooManyBundleEntries,
     /// Payload exceeds the largest padding bucket; chunk it first.
     TooLarge,
     /// Padding was structurally invalid on removal.
@@ -26,6 +32,9 @@ impl fmt::Display for ProtocolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
             Self::Malformed => "malformed protocol bytes",
+            Self::EnvelopeTooLarge => "encoded envelope exceeds project wire limit",
+            Self::BundleTooLarge => "courier bundle exceeds aggregate size limit",
+            Self::TooManyBundleEntries => "courier bundle contains too many envelopes",
             Self::TooLarge => "payload exceeds largest padding bucket",
             Self::BadPadding => "invalid padding",
             Self::MtuTooSmall => "mtu too small for fragmentation",

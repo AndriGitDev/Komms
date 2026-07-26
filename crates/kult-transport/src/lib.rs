@@ -32,7 +32,9 @@ mod mesh;
 mod sneakernet;
 
 pub use internet::{CallStream, Libp2pTransport, NatStatus, TransportOptions};
-pub use mailbox::{MailboxConfig, MailboxContents};
+pub use mailbox::{
+    MailboxConfig, MailboxContents, MAX_MAILBOX_CHECKIN_ENVELOPES, MAX_MAILBOX_CHECKIN_TOKENS,
+};
 #[cfg(feature = "meshtastic")]
 #[doc(hidden)]
 pub use mesh::testutil as mesh_testutil;
@@ -50,6 +52,9 @@ pub enum TransportError {
     Protocol(kult_protocol::ProtocolError),
     /// The delivery hint is not addressable by this transport.
     UnsupportedHint,
+    /// The addressed hop was reached but explicitly refused to retain the
+    /// envelope, for example because its bounded receive queue is full.
+    RefusedByNextHop,
     /// The link's shared-medium budget (LoRa duty cycle) is exhausted;
     /// retrying after the given duration can succeed. An honest refusal
     /// (docs/05-transports.md §4.2 rule 3) — the envelope was not sent.
@@ -65,6 +70,7 @@ impl std::fmt::Display for TransportError {
             Self::Io(e) => write!(f, "link i/o error: {e}"),
             Self::Protocol(e) => write!(f, "link protocol error: {e}"),
             Self::UnsupportedHint => f.write_str("delivery hint not supported by this transport"),
+            Self::RefusedByNextHop => f.write_str("next hop refused the envelope"),
             Self::AirtimeExhausted { retry_after } => write!(
                 f,
                 "airtime duty-cycle budget exhausted; retry in {retry_after:?}"

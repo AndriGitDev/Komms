@@ -7,7 +7,7 @@ protocol capability, or remote promise.
 
 ## 1. Exact user promise
 
-Komms marks every shipped text-entry surface for the strongest relevant input
+Komms marks every implemented text-entry surface for the strongest relevant input
 privacy the platform exposes. Passphrases and recovery mnemonics use masked
 secret fields. Message composers, scheduled text, names, filenames, addresses,
 and other technical text disable personalized learning, correction, prediction,
@@ -36,7 +36,7 @@ trait or web attribute without an enforcement API. `unavailable` means no honest
 per-field control exists. These levels must not be upgraded in shell copy.
 
 The shared contract covers semantic field classes `message`, `search`,
-`passphrase`, `mnemonic`, and `name`. There is no search box in the shipped
+`passphrase`, `mnemonic`, and `name`. There is no search box in the implemented
 shells today; the class is included so a future search field cannot silently
 bypass the policy.
 
@@ -55,7 +55,8 @@ from the shared B15 policy.
 
 ### iOS
 
-Every `TextField`, `TextEditor`, and `SecureField` uses one audited SwiftUI
+Every `TextField`, `TextEditor`, and `SecureField` uses one shared,
+inventory-tested SwiftUI
 modifier that disables autocorrection and selects explicit capitalization
 semantics. Passphrases and recovery mnemonics use `SecureField`; iOS substitutes
 the system keyboard for secure text entry. Non-secure fields remain best effort:

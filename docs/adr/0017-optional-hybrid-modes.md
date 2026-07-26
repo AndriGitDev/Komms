@@ -2,6 +2,8 @@
 
 - **Status**: Proposed
 - **Date**: 2026-07-15
+- **Reference deployment**:
+  [ADR-0034](0034-operator-minimized-reference-discovery.md)
 
 ## Context
 
@@ -39,22 +41,48 @@ optional discovery privacy and wake-up behavior:
 
 | Mode | Pairwise rendezvous | Native wake | Intended disclosure |
 |---|---|---|---|
-| **Sovereign** | Disabled; existing DHT, out-of-band, LAN, mailbox, mesh, and sneakernet paths only | Disabled | No optional Komms-operated service |
-| **Private** | Recipient-selected rendezvous through Tor or a non-colluding [Oblivious HTTP](https://www.rfc-editor.org/rfc/rfc9458.html) relay | Optional native wake through anonymized ingress | Wake gateway and APNs/FCM still learn the destination and delivery time |
 | **Standard** | Direct HTTPS to recipient-selected rendezvous providers | APNs on Apple platforms; FCM in the Google Play Android flavor | Provider sees the connecting address, opaque target, timing, and volume |
+| **Private** | Recipient-selected rendezvous through Tor or a non-colluding [Oblivious HTTP](https://www.rfc-editor.org/rfc/rfc9458.html) relay | Optional native wake through anonymized ingress | Wake gateway and APNs/FCM still learn the destination and delivery time |
+| **Sovereign** | Disabled; existing DHT, out-of-band, LAN, mailbox, mesh, and sneakernet paths only | Disabled | No optional Komms-operated service |
 
-Enabling Private or Standard mode requires an explicit, reversible choice with
-a concise disclosure. A build may recommend a mode during onboarding, but it
-must not silently enable a convenience service, and the applications must show
-which mode is active. Changing mode never rotates or replaces the user's Komms
+The official consumer distribution recommends and may preselect **Standard**:
+an everyday user should complete onboarding without understanding DHTs, relays,
+or mobile operating-system scheduling. Before the first optional-service
+registration it presents one concise, reversible disclosure: message content
+and identity keys stay end-to-end protected, while convenience providers and
+APNs/FCM can observe limited connection/timing metadata. One confirmation
+activates the recommended setup.
+
+Private and Sovereign are available from the same onboarding review and later
+under an advanced privacy/network control. They are not framed as “expert
+mode” or as more virtuous choices; each has a clear reliability/privacy
+tradeoff. The conversation screen shows useful state such as **Private**,
+**Connected**, **Waiting for a route**, and **Fallback ready**, not internal
+service names. Changing mode never rotates or replaces the user's Komms
 identity.
+
+### 1a. Public first-contact records do not publish a direct route by default
+
+The DHT remains the self-authenticating first-contact index. In Standard and
+Private modes its signed bundle carries prekeys, capabilities, and one or more
+bounded introduction paths such as recipient-selected mailbox/relay
+descriptors. It does not publish a current direct IP multiaddress under the
+stable public account lookup by default.
+
+After pairing, ADR-0018 supplies rotating pairwise reachability. QR/file
+invites, LAN discovery, mesh, and sneakernet may carry context-specific direct
+hints because they are not a globally polled identity record. Sovereign mode
+may explicitly publish a direct DHT route when the user or operator needs
+internet reachability without a mailbox/relay; the UI warns that anyone holding
+the public address can poll that route.
 
 ### 2. Optional services are accelerators, never authorities
 
 No optional service may:
 
 - receive message plaintext, attachment keys, ratchet state, sender-key state,
-  identity private keys, contact petnames, group membership, or local metadata;
+  user Komms identity private keys, contact petnames, group membership, or local
+  metadata;
 - authenticate a peer, establish trust, mint a Komms identity, decide message
   ordering, or advance a delivery state;
 - make a message depend on service availability after it has entered the
@@ -66,6 +94,11 @@ Native push carries a static content-free or generic wake indication. A sender
 emits a wake request only after a direct peer or mailbox relay has accepted the
 sealed envelope. The encrypted delivery receipt remains the only transition to
 `delivered`; a push-provider acknowledgement is never a message receipt.
+
+Service operation still requires narrowly scoped service credentials such as a
+libp2p identity, TLS key, or native-provider credential. Those keys grant no
+user identity or message authority, remain separate from offline directory and
+release-signing keys, and require explicit rotation and compromise procedures.
 
 ### 3. The threat model distinguishes content safety from metadata exposure
 
@@ -91,6 +124,19 @@ route or wake target. They do not make a peer, a service operator, or a global
 observer incapable of traffic analysis. Registrations made together may also
 be correlated operationally unless the client separates and anonymizes them.
 
+The guarantees and controls must be labelled by their enforcement source:
+
+| Property | Enforced by | Residual operator ability |
+|---|---|---|
+| No message plaintext or user identity keys | End-to-end formats and APIs that never transmit those secrets | Observe network metadata and bounded ciphertext |
+| No accepted message or user-record forgery | Client-side AEAD and account/device signature verification | Suppress, replay still-valid state, return garbage, or deny service |
+| Bounded content leakage | Fixed-size records and capability-derived identifiers | Observe opaque slots/locators, timing, volume, and addresses |
+| Reduced retention | RAM-backed state, disabled logs, short TTLs, and aggregate metrics | Change the deployment, inspect live memory, or be compelled at the host/network layer |
+
+Project control of client signing and updates is a separate supply-chain
+boundary. A content-blind service cannot protect a user running a malicious
+client build.
+
 ### 4. Rendezvous is federated; native push egress has platform limits
 
 Recipients choose zero or more rendezvous providers and convey provider
@@ -98,6 +144,14 @@ descriptors inside the existing authenticated pairwise channel. Providers are
 self-hostable, use provider-specific capabilities, and are never placed in a
 mandatory global list. Clients retain static/out-of-band and signed DHT hints
 alongside expiring rendezvous hints and may query redundant providers.
+
+The official Standard profile ships a signed, versioned, user-editable
+directory containing multiple bootstrap, mailbox, relay, and rendezvous
+operators under different administrative domains. Directory signatures prove
+configuration provenance, not trustworthiness or message authenticity. A
+client retains the last valid directory, supports user-supplied providers, and
+never deletes sovereign routes when a directory changes. No one listed
+provider is required for identity, history, or protocol validity.
 
 Native push is different. APNs and FCM credentials are bound to the distributed
 application identity and cannot safely be handed to arbitrary community
@@ -121,6 +175,13 @@ capture are disabled; clean shutdown performs best-effort zeroization. Abrupt
 termination, kernel buffers, allocator copies, and a hostile host remain outside
 that guarantee. Native push state follows ADR-0019 and may use durable protected
 gateway keys or encrypted token mappings where availability requires it.
+
+The initial founder-operated Hetzner pilot is limited to Standard-mode
+bootstrap/DHT caching and ADR-0018 rendezvous under
+[ADR-0034](0034-operator-minimized-reference-discovery.md). It is not a durable
+mailbox, native-wake gateway, Private-mode non-colluding deployment, or
+plural-operator proof. Its administrative domain, provider, source revision,
+image digest, configuration, retention policy, and incidents are public.
 
 ### 6. Failure always collapses toward the sovereign core
 

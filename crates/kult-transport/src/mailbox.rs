@@ -8,10 +8,10 @@
 //! (docs/04-cryptography.md §7) and draining anything queued under them.
 //! Senders **deposit** sealed envelopes; a deposit is accepted only for a
 //! registered token. The relay sees rotating 32-byte tokens and sealed
-//! envelopes — no identities, no plaintext, no conversation graph — and
-//! collection deletes, which is only safe because tokens are
-//! recipient-scoped (ADR-0007): a check-in can never drain mail addressed
-//! to someone else.
+//! envelopes — no identities, no plaintext, no conversation graph. Tokens are
+//! recipient-scoped (ADR-0007), so a check-in cannot drain another recipient's
+//! mail. Mailbox-v1 still deletes before endpoint acknowledgement and is not
+//! crash-safe; ADR-0032 defines the leased replacement.
 
 use std::collections::HashMap;
 
@@ -58,13 +58,23 @@ pub type MailboxContents = Vec<([u8; 32], Vec<Vec<u8>>)>;
 /// Byte budget per check-in response, kept comfortably under the
 /// request-response codec's response cap. A backlog larger than this is
 /// drained across successive check-ins.
-const CHECKIN_BATCH_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const CHECKIN_BATCH_BYTES: usize = 2 * 1024 * 1024;
+/// Maximum delivery-token filters accepted in one check-in request.
+///
+/// Registrations can span repeated check-ins. Bounding one request prevents a
+/// remote peer from forcing an unbounded token walk before mailbox admission.
+pub const MAX_MAILBOX_CHECKIN_TOKENS: usize = 4_096;
+/// Maximum envelope rows returned by one mailbox-v1 check-in page.
+///
+/// This is an interim compatibility bound. ADR-0032 replaces destructive v1
+/// collection with leased pages acknowledged after durable endpoint staging.
+pub const MAX_MAILBOX_CHECKIN_ENVELOPES: usize = 512;
 
 /// Wire request on `/komms/mailbox/1`.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum MailboxRequest {
     /// Register these tokens as accept-filters (refreshing their TTL) and
-    /// drain everything queued under them.
+    /// return one count/byte-bounded destructive v1 page queued under them.
     Checkin { tokens: Vec<[u8; 32]> },
     /// Deposit one sealed envelope; its delivery token must be registered.
     Deposit { envelope: Vec<u8> },
@@ -118,7 +128,11 @@ impl MailboxStore {
         let expiry = now + self.config.registration_ttl_secs;
         let mut out = Vec::new();
         let mut budget = CHECKIN_BATCH_BYTES;
-        for token in tokens {
+        let mut items_left = MAX_MAILBOX_CHECKIN_ENVELOPES;
+        for token in tokens.iter().take(MAX_MAILBOX_CHECKIN_TOKENS) {
+            if items_left == 0 {
+                break;
+            }
             if let Some(current) = self.registered.get_mut(token) {
                 *current = expiry;
             } else if self.registered.len() < self.config.max_tokens {
@@ -133,6 +147,7 @@ impl MailboxStore {
             };
             let take = queue
                 .iter()
+                .take(items_left)
                 .scan(0usize, |used, q| {
                     *used += q.bytes.len();
                     (*used <= budget).then_some(())
@@ -143,6 +158,7 @@ impl MailboxStore {
                 self.total_bytes -= q.bytes.len();
                 out.push(q.bytes);
             }
+            items_left -= take;
             if queue.is_empty() {
                 self.queued.remove(token);
             }
@@ -322,10 +338,29 @@ mod tests {
         });
         s.checkin(&[[1; 32]], NOW);
         for i in 0..3 {
-            assert!(s.deposit([1; 32], vec![i; 2 * 1024 * 1024], NOW));
+            assert!(s.deposit([1; 32], vec![i; 1024 * 1024], NOW));
         }
-        // 6 MiB queued, 4 MiB budget: two now, one on the next check-in.
+        // 3 MiB queued, 2 MiB budget: two now, one on the next check-in.
         assert_eq!(s.checkin(&[[1; 32]], NOW).len(), 2);
         assert_eq!(s.checkin(&[[1; 32]], NOW).len(), 1);
+    }
+
+    #[test]
+    fn checkin_pages_are_bounded_by_row_count() {
+        let mut s = MailboxStore::new(MailboxConfig {
+            max_total_bytes: 32 * 1024 * 1024,
+            max_per_token: MAX_MAILBOX_CHECKIN_ENVELOPES + 100,
+            ..MailboxConfig::default()
+        });
+        let token = [2; 32];
+        s.checkin(&[token], NOW);
+        for i in 0..(MAX_MAILBOX_CHECKIN_ENVELOPES + 100) {
+            assert!(s.deposit(token, (i as u64).to_le_bytes().to_vec(), NOW));
+        }
+        assert_eq!(
+            s.checkin(&[token], NOW).len(),
+            MAX_MAILBOX_CHECKIN_ENVELOPES
+        );
+        assert_eq!(s.checkin(&[token], NOW).len(), 100);
     }
 }

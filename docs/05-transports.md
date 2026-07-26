@@ -24,8 +24,10 @@ pub trait Transport: Send + Sync {
 Rules every implementation must obey:
 
 1. **Ciphertext only.** A transport never sees plaintext or key material.
-2. **No identity leakage.** Transports address peers by `DeliveryHint` (multiaddr, mesh
-   node id, mailbox token), never by Komms identity keys.
+2. **No Komms identity in transport addressing.** Transports address peers by
+   `DeliveryHint` (multiaddr, mesh node id, mailbox token), never by Komms
+   identity keys. The link or its operator may still observe network addresses,
+   libp2p PeerIds, multiaddrs, opaque tokens, timing, sizes, and volume.
 3. **Link encryption is additive, not load-bearing.** Noise/TLS on the link protects
    against A2/A3 traffic tampering, but all security guarantees hold even over a
    plaintext link: the envelope is self-protecting.
@@ -62,12 +64,65 @@ receipt, the queue copy is removed and retained history becomes
 | Link protocols | QUIC (primary), TCP+Noise+Yamux (fallback) |
 | Discovery | Kademlia DHT; bootstrap from a *user-editable* list of community nodes + manual peer addresses + rendezvous points shared out-of-band (QR) |
 | NAT traversal | AutoNAT + Circuit Relay v2 + DCUtR hole punching |
-| Prekey bundles | Signed bundles ([06: Identity & Trust](06-identity-trust.md)) published as DHT records under `H(IK_pub)`; signatures make records self-authenticating regardless of which DHT node serves them |
+| Prekey bundles | Current Alpha: signed bundles ([06: Identity & Trust](06-identity-trust.md)) published under stable `H(IK_pub)` locators. This authenticates contents but exposes a polling and route-correlation oracle; [ADR-0031](adr/0031-capability-scoped-dht-discovery.md) proposes capability-scoped rotating locators before wire v1. |
 | Mailbox relays | Ordinary nodes advertising a relay protocol; recipients pick relays and list them (as hints) in their bundle |
 
-Bootstrap deserves emphasis: hardcoded bootstrap nodes are a seizure target (A4), so the
-list ships as *defaults, not dependencies*: any reachable peer can bootstrap the DHT, and
-two users who exchange a QR code need no bootstrap at all.
+Bootstrap deserves emphasis: a fresh internet-only install still needs one
+reachable bootstrap peer or explicit hint to join the DHT. The current Alpha
+ships with no default bootstrap peers, so internet discovery requires deliberate
+configuration. Any future default nodes would be censorship points for the
+first attempt and must therefore remain user-editable and replaceable rather
+than becoming a protocol dependency. Any reachable peer can bootstrap the DHT,
+and two users who exchange a QR code need no project bootstrap at all. Before
+stable, release tests must blackhole every configured default and exercise an
+alternate peer and an out-of-band path.
+
+Direct sealed-envelope delivery negotiates `/komms/envelope/2`. One encoded
+envelope is capped at **128 KiB** across carriers. The receiver keeps at most
+256 unsolicited direct envelopes and 8 MiB of their encoded bytes between
+delivery-engine drains. Its response has only two meanings:
+
+- `accepted`: the bounded in-process next-hop inbox retained the envelope for
+  the delivery engine;
+- `refused`: the request was understood but the next hop did not retain it,
+  for example because that inbox was full.
+
+A timeout, dial error, malformed response, or response-write failure is neither
+answer and never becomes an acknowledgement. The sender keeps the durable
+envelope retryable and may try another supported path. Version 2 deliberately
+does not negotiate the older `/komms/envelope/1` unit response, which could not
+distinguish retention from refusal; Alpha peers must be upgraded together.
+These bounds protect one ingress surface. They do not replace first-contact
+admission, identity blocking, mailbox durability, or operator abuse controls in
+the [stabilization program](29-stabilization-program.md). In particular, the
+current `accepted` boundary is volatile RAM rather than ADR-0030's target
+transactional admission boundary, so it is Alpha next-hop evidence—not a
+durability or end-to-end receipt.
+
+The libp2p swarm also caps pending inbound/outbound connections at 32 each,
+established inbound connections at 64, established connections at 96 total,
+and connections per peer at 8. Envelope and mailbox protocols independently
+cap active streams per connection. These are memory/concurrency containment,
+not first-contact rate limits or Sybil resistance.
+
+Unknown-token envelopes that survive that volatile boundary enter an encrypted
+deferred inbox only when their exact content id is not already present. The
+interim store ceiling is 2,048 envelopes and 64 MiB of sealed rows, with the
+older of exact multipath duplicates retained under one stable row id. Reaching
+that ceiling prevents further persistence, but current `/komms/envelope/2`
+cannot relay the late refusal back after it has already answered `accepted`.
+That semantic gap is why these quotas are containment rather than closure of
+ADR-0030.
+
+Mailbox-v1 collection is likewise bounded while its crash-safe replacement is
+designed: one check-in carries at most 4,096 token filters and returns at most
+512 envelopes / 2 MiB; the daemon rotates larger token sets, rotates beyond
+eight configured mailboxes across later lifecycle ticks, and admits at most
+eight pages (4,096 rows / 16 MiB) before the node drains the carrier. These
+bounds prevent honest large contact or relay sets from failing or starving.
+They do **not** make v1 durable: the relay still removes a page before the
+endpoint transactionally stages and acknowledges it. [ADR-0032](adr/0032-leased-mailbox-delivery.md)
+replaces that delete-before-response behavior with leased pages.
 
 **Censorship posture (A3)**: QUIC-on-443 blends adequately against casual blocking. Full
 DPI resistance (pluggable obfuscated transports, arti/Tor onion services as a transport)
@@ -89,6 +144,12 @@ envelope or conversation data, and provider acknowledgement never changes
 delivery state. Sovereign mode registers with neither service. Private mode
 uses Tor or a non-colluding Oblivious HTTP ingress; Standard mode uses direct
 HTTPS. Complete failure falls back to the unchanged transports in this document.
+
+[ADR-0034](adr/0034-operator-minimized-reference-discovery.md) proposes the
+initial founder-operated Hetzner profile: Standard-mode bootstrap/DHT caching
+and post-pairing rendezvous with RAM-backed mutable state. It is not a mailbox
+or wake gateway and cannot claim zero metadata, Private-mode non-collusion, or
+plural operation.
 
 ### 2.2 Ephemeral retention at intermediaries
 
@@ -169,7 +230,7 @@ flowchart LR
 ```
 
 - The Meshtastic client API is standardized over BLE, serial, and TCP. The
-  shipped Komms carrier attaches over USB-serial or the radio's TCP API to a
+  implemented Komms carrier attaches over USB-serial or the radio's TCP API to a
   stock Meshtastic device: **no custom firmware required**. Owning any supported
   ~30€ board is the only hardware requirement.
 - Komms envelopes are carried as Meshtastic packets on a **dedicated private app
@@ -191,7 +252,12 @@ Consequences, all normative:
 
 1. **Fragmentation**: envelopes above the frame budget split into type-`0x04` fragments
    ([04: Cryptography §5](04-cryptography.md)); a padded 192 B-bucket text message =
-   **≤ 2 LoRa frames**. Reassembly window: 24 h, per-peer cap, fail-closed on overflow.
+   **≤ 2 LoRa frames**. Reassembly window: 24 h, 1,024 fragments per envelope,
+   256 concurrent partials, fail-closed on overflow. One receipt requests at
+   most 4,096 missing indices across 32 partials so hostile fragment metadata
+   cannot create an oversized NACK. Outer fragments are not made permanently
+   seen before their completed inner envelope clears bounded admission, so a
+   sender's full retry remains recoverable when the deferred inbox was full.
 2. **Selective retransmission**: receiver NACKs missing fragment indices (in a receipt
    envelope) rather than the sender re-flooding whole messages: airtime is the scarcest
    resource in the system.
@@ -223,23 +289,30 @@ includes knowing your exposure.
 
 The zero-RF, zero-network fallback and the simplest transport to implement:
 
-- Any set of queued envelopes exports as a **bundle file** (`.kkb`): magic, version, then
-  concatenated envelopes: already sealed, already padded; the bundle adds no metadata.
+- Up to 4,096 queued envelopes and 16 MiB export as a **bundle file** (`.kkb`):
+  magic, version, then concatenated envelopes: already sealed, already padded;
+  the bundle format adds no identity or routing fields. The filesystem or
+  courier channel may still expose filename, size, timestamps, handling, and
+  location. Each envelope retains the canonical 128 KiB limit.
 - Carried by USB stick, SD card, or any file channel; imported bundles feed the normal
   receive path (dedup makes double-import harmless). Bundles are also relay-able by
-  people who can't read them: a courier learns only bundle size.
+  people who can't read them: a courier learns only bundle size. One receive
+  pass scans at most 1,024 candidate directory entries, processes at most 256
+  regular bundle files and 16 MiB, and leaves remaining work for the next pass.
+  Oversized files and non-regular `.kkb` entries are moved out of the candidate
+  namespace so they cannot starve valid bundles.
 - Animated QR sequences for **message** bundle transfer remain planned.
   Pairing already uses a bounded animated sequence because the ML-KEM-768
   public key makes a complete post-quantum prekey bundle too dense for one
-  reliably scanned symbol; shipped message sneakernet uses `.kkb` files.
+  reliably scanned symbol; implemented message sneakernet uses `.kkb` files.
 
 ## 6. Transport comparison
 
 | Transport | MTU | Latency | Reach | Infrastructure needed | Milestone |
 |---|---|---|---|---|---|
-| libp2p QUIC/TCP | ~64 KiB practical | ms–s | Global | Internet access | M3 |
+| libp2p QUIC/TCP | 128 KiB/envelope | ms–s | Global | Internet access | M3 |
 | Freenet contracts | Prototype must measure | seconds–offline | Global store-and-forward | Local Freenet Core; explicit opt-in | Proposed (M6, ADR-0025) |
-| mDNS/LAN | ~64 KiB | ms | Site | Shared LAN | M3 |
+| mDNS/LAN | 128 KiB/envelope | ms | Site | Shared LAN | M3 |
 | BLE direct | ~0.2–0.5 KiB/frame | s | ~10–100 m | None | Planned (M6) |
 | Meshtastic/LoRa | ~0.2 KiB/frame | s–hours | km–100 km (multi-hop) | ~30€ radio per user | M4 |
-| Sneakernet file / animated QR | Unbounded / ~2 KiB target | Human-scale | Anywhere humans go | None | M2 files shipped; animated QR planned |
+| Sneakernet file / animated QR | 128 KiB/envelope; 16 MiB bundle / ~2 KiB target | Human-scale | Anywhere humans go | None | M2 files implemented; animated QR planned |

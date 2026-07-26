@@ -2,7 +2,7 @@
 //! as the primary link protocol and TCP+Noise+Yamux as the fallback.
 //!
 //! Envelopes travel over a dedicated request-response protocol
-//! (`/komms/envelope/1`); the response is an empty acknowledgment, so a
+//! (`/komms/envelope/2`); the response is an acceptance acknowledgment, so a
 //! successful send honestly reports [`SendReceipt::AckedByNextHop`] — never
 //! end-to-end delivery (only encrypted receipts prove that).
 //!
@@ -64,13 +64,17 @@ use libp2p::request_response::{self, ProtocolSupport};
 use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
 use libp2p::swarm::{ConnectionId, DialError, NetworkBehaviour, SwarmEvent};
 use libp2p::{
-    autonat, dcutr, identify, noise, relay, tcp, yamux, Multiaddr, PeerId, StreamProtocol,
+    autonat, connection_limits, dcutr, identify, noise, relay, tcp, yamux, Multiaddr, PeerId,
+    StreamProtocol,
 };
 use tokio::sync::{mpsc, oneshot, watch, Mutex as AsyncMutex};
 
-use kult_protocol::Envelope;
+use kult_protocol::{Envelope, MAX_ENVELOPE_BYTES};
 
-use crate::mailbox::{MailboxContents, MailboxRequest, MailboxResponse, MailboxStore};
+use crate::mailbox::{
+    MailboxContents, MailboxRequest, MailboxResponse, MailboxStore, MAX_MAILBOX_CHECKIN_ENVELOPES,
+    MAX_MAILBOX_CHECKIN_TOKENS,
+};
 use crate::mdns::{self, DiscoveredPeer};
 use crate::{
     CostClass, DeliveryHint, Discovery, LatencyClass, LinkProfile, MailboxConfig, Reachability,
@@ -108,9 +112,46 @@ const CALL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// transport; authentication and encryption live in `kult-crypto`.
 const CALL_PROTOCOL: StreamProtocol = StreamProtocol::new("/komms/call/1");
 
+/// Direct-envelope v2 adds an explicit acceptance bit so a full receiver can
+/// refuse work without acknowledging an envelope it did not retain.
+const ENVELOPE_PROTOCOL: StreamProtocol = StreamProtocol::new("/komms/envelope/2");
+
 /// Bound unauthenticated inbound media handshakes. A caller must consume and
 /// prove the call-media hello before accepting any audio.
 const CALL_INBOX_MAX: usize = 16;
+
+/// Maximum unsolicited direct envelopes retained until the delivery engine
+/// drains the internet carrier.
+const DIRECT_INBOX_MAX_ITEMS: usize = 256;
+
+/// Maximum encoded bytes of unsolicited direct envelopes retained in memory.
+/// Item and byte axes are independent: neither many tiny envelopes nor a few
+/// maximal envelopes can grow the queue without bound.
+const DIRECT_INBOX_MAX_BYTES: usize = 8 * 1024 * 1024;
+/// One daemon lifecycle pass checks at most eight relays. Matching that
+/// aggregate of count-bounded v1 pages prevents honest relays from overflowing
+/// the local collection queue before the node task drains it.
+const COLLECTED_INBOX_MAX_ITEMS: usize = 8 * MAX_MAILBOX_CHECKIN_ENVELOPES;
+const COLLECTED_INBOX_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+/// CBOR currently represents `Vec<u8>` as an integer array, so the carrier
+/// frame can take just over twice the encoded-envelope bytes.
+const ENVELOPE_CBOR_REQUEST_MAX_BYTES: u64 = (2 * MAX_ENVELOPE_BYTES + 64) as u64;
+/// A v2 envelope response is one CBOR boolean.
+const ENVELOPE_CBOR_RESPONSE_MAX_BYTES: u64 = 16;
+/// Mailbox deposits and bounded token check-ins fit below this ceiling.
+const MAILBOX_CBOR_REQUEST_MAX_BYTES: u64 = 320 * 1024;
+/// A 2 MiB raw check-in batch can approach 4 MiB in the current CBOR array
+/// representation; leave bounded framing overhead without retaining the
+/// library's 10 MiB default.
+const MAILBOX_CBOR_RESPONSE_MAX_BYTES: u64 = 5 * 1024 * 1024;
+const ENVELOPE_MAX_CONCURRENT_STREAMS: usize = 16;
+const MAILBOX_MAX_CONCURRENT_STREAMS: usize = 8;
+const MAX_PENDING_INCOMING_CONNECTIONS: u32 = 32;
+const MAX_PENDING_OUTGOING_CONNECTIONS: u32 = 32;
+const MAX_ESTABLISHED_INCOMING_CONNECTIONS: u32 = 64;
+const MAX_ESTABLISHED_CONNECTIONS_PER_PEER: u32 = 8;
+const MAX_ESTABLISHED_CONNECTIONS: u32 = 96;
 
 /// Idle connections linger briefly so a message burst reuses one connection.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -160,7 +201,8 @@ pub enum NatStatus {
 
 #[derive(NetworkBehaviour)]
 struct KultBehaviour {
-    envelopes: request_response::cbor::Behaviour<Vec<u8>, ()>,
+    limits: connection_limits::Behaviour,
+    envelopes: request_response::cbor::Behaviour<Vec<u8>, bool>,
     mailbox: request_response::cbor::Behaviour<MailboxRequest, MailboxResponse>,
     kad: kad::Behaviour<MemoryStore>,
     identify: identify::Behaviour,
@@ -171,12 +213,22 @@ struct KultBehaviour {
     streams: libp2p_stream::Behaviour,
 }
 
+/// Internal settlement of an envelope request. This deliberately preserves
+/// the distinction between an explicit remote refusal and failure to obtain
+/// any response from the hop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HopOutcome {
+    Accepted,
+    Refused,
+    LinkFailed,
+}
+
 /// A request aimed at a specific peer, parked while its connection dials.
 enum PendingOp {
     /// Direct envelope delivery; reports next-hop ack.
-    Envelope(Vec<u8>, oneshot::Sender<bool>),
+    Envelope(Vec<u8>, oneshot::Sender<HopOutcome>),
     /// Mailbox deposit of encoded envelope bytes; reports acceptance.
-    Deposit(Vec<u8>, oneshot::Sender<bool>),
+    Deposit(Vec<u8>, oneshot::Sender<HopOutcome>),
     /// Mailbox check-in; reports collected-envelope count, `None` on
     /// refusal or link failure.
     Checkin(Vec<[u8; 32]>, oneshot::Sender<Option<usize>>),
@@ -187,7 +239,7 @@ impl PendingOp {
     fn fail(self) {
         match self {
             Self::Envelope(_, ack) | Self::Deposit(_, ack) => {
-                let _ = ack.send(false);
+                let _ = ack.send(HopOutcome::LinkFailed);
             }
             Self::Checkin(_, done) => {
                 let _ = done.send(None);
@@ -238,7 +290,7 @@ enum Cmd {
 
 /// In-flight mailbox requests awaiting their response.
 enum MailboxWaiter {
-    Deposit(oneshot::Sender<bool>),
+    Deposit(oneshot::Sender<HopOutcome>),
     Checkin(oneshot::Sender<Option<usize>>),
 }
 
@@ -247,7 +299,7 @@ impl MailboxWaiter {
     fn fail(self) {
         match self {
             Self::Deposit(ack) => {
-                let _ = ack.send(false);
+                let _ = ack.send(HopOutcome::LinkFailed);
             }
             Self::Checkin(done) => {
                 let _ = done.send(None);
@@ -320,6 +372,73 @@ impl BridgeBuffer {
 
     fn drain(&mut self) -> Vec<Envelope> {
         self.bytes = 0;
+        std::mem::take(&mut self.queue)
+    }
+}
+
+/// Internet receive queue with independent direct and collected-mail budgets.
+/// Mailbox collection is locally initiated and bounded per response as well
+/// as across responses retained before the delivery engine drains this queue.
+struct InternetInbox {
+    queue: Vec<Envelope>,
+    direct_items: usize,
+    direct_bytes: usize,
+    collected_items: usize,
+    collected_bytes: usize,
+}
+
+impl InternetInbox {
+    fn new() -> Self {
+        Self {
+            queue: Vec::new(),
+            direct_items: 0,
+            direct_bytes: 0,
+            collected_items: 0,
+            collected_bytes: 0,
+        }
+    }
+
+    /// Admit an unsolicited direct envelope or refuse it without mutation.
+    fn push_direct(&mut self, envelope: Envelope) -> bool {
+        let encoded_len = envelope.encoded_len();
+        if encoded_len > MAX_ENVELOPE_BYTES {
+            return false;
+        }
+        let Some(next_bytes) = self.direct_bytes.checked_add(encoded_len) else {
+            return false;
+        };
+        if self.direct_items >= DIRECT_INBOX_MAX_ITEMS || next_bytes > DIRECT_INBOX_MAX_BYTES {
+            return false;
+        }
+        self.direct_items += 1;
+        self.direct_bytes = next_bytes;
+        self.queue.push(envelope);
+        true
+    }
+
+    /// Add a solicited mailbox result without allowing repeated local
+    /// check-ins to grow the shared receive queue without bound.
+    fn push_collected(&mut self, envelope: Envelope) -> bool {
+        let encoded_len = envelope.encoded_len();
+        let Some(next_bytes) = self.collected_bytes.checked_add(encoded_len) else {
+            return false;
+        };
+        if self.collected_items >= COLLECTED_INBOX_MAX_ITEMS
+            || next_bytes > COLLECTED_INBOX_MAX_BYTES
+        {
+            return false;
+        }
+        self.collected_items += 1;
+        self.collected_bytes = next_bytes;
+        self.queue.push(envelope);
+        true
+    }
+
+    fn drain(&mut self) -> Vec<Envelope> {
+        self.direct_items = 0;
+        self.direct_bytes = 0;
+        self.collected_items = 0;
+        self.collected_bytes = 0;
         std::mem::take(&mut self.queue)
     }
 }
@@ -411,7 +530,7 @@ impl AsyncWrite for CallStream {
 /// Internet carrier: QUIC (primary) and TCP (fallback) via rust-libp2p.
 pub struct Libp2pTransport {
     cmds: mpsc::UnboundedSender<Cmd>,
-    inbox: Arc<Mutex<Vec<Envelope>>>,
+    inbox: Arc<Mutex<InternetInbox>>,
     shared: Arc<Shared>,
     mailbox: Option<Arc<Mutex<MailboxStore>>>,
     bridge: Option<Arc<Mutex<BridgeBuffer>>>,
@@ -468,19 +587,30 @@ impl Libp2pTransport {
             .with_relay_client(noise::Config::new, yamux::Config::default)
             .map_err(io_other)?
             .with_behaviour(|key, relay_client| {
-                let envelopes = request_response::cbor::Behaviour::new(
-                    [(
-                        StreamProtocol::new("/komms/envelope/1"),
-                        ProtocolSupport::Full,
-                    )],
-                    request_response::Config::default(),
+                let envelope_codec =
+                    request_response::cbor::codec::Codec::<Vec<u8>, bool>::default()
+                        .set_request_size_maximum(ENVELOPE_CBOR_REQUEST_MAX_BYTES)
+                        .set_response_size_maximum(ENVELOPE_CBOR_RESPONSE_MAX_BYTES);
+                let envelopes = request_response::Behaviour::with_codec(
+                    envelope_codec,
+                    [(ENVELOPE_PROTOCOL, ProtocolSupport::Full)],
+                    request_response::Config::default()
+                        .with_max_concurrent_streams(ENVELOPE_MAX_CONCURRENT_STREAMS),
                 );
-                let mailbox = request_response::cbor::Behaviour::new(
+                let mailbox_codec = request_response::cbor::codec::Codec::<
+                    MailboxRequest,
+                    MailboxResponse,
+                >::default()
+                .set_request_size_maximum(MAILBOX_CBOR_REQUEST_MAX_BYTES)
+                .set_response_size_maximum(MAILBOX_CBOR_RESPONSE_MAX_BYTES);
+                let mailbox = request_response::Behaviour::with_codec(
+                    mailbox_codec,
                     [(
                         StreamProtocol::new("/komms/mailbox/1"),
                         ProtocolSupport::Full,
                     )],
-                    request_response::Config::default(),
+                    request_response::Config::default()
+                        .with_max_concurrent_streams(MAILBOX_MAX_CONCURRENT_STREAMS),
                 );
                 let peer_id = key.public().to_peer_id();
                 let kad = kad::Behaviour::with_config(
@@ -516,7 +646,16 @@ impl Libp2pTransport {
                 let relay = relay::Behaviour::new(peer_id, relay::Config::default());
                 let dcutr = dcutr::Behaviour::new(peer_id);
                 let streams = libp2p_stream::Behaviour::new();
+                let limits = connection_limits::Behaviour::new(
+                    connection_limits::ConnectionLimits::default()
+                        .with_max_pending_incoming(Some(MAX_PENDING_INCOMING_CONNECTIONS))
+                        .with_max_pending_outgoing(Some(MAX_PENDING_OUTGOING_CONNECTIONS))
+                        .with_max_established_incoming(Some(MAX_ESTABLISHED_INCOMING_CONNECTIONS))
+                        .with_max_established_per_peer(Some(MAX_ESTABLISHED_CONNECTIONS_PER_PEER))
+                        .with_max_established(Some(MAX_ESTABLISHED_CONNECTIONS)),
+                );
                 Ok(KultBehaviour {
+                    limits,
                     envelopes,
                     mailbox,
                     kad,
@@ -555,7 +694,7 @@ impl Libp2pTransport {
             connections: Mutex::new(HashMap::new()),
             lan_peers: Mutex::new(HashMap::new()),
         });
-        let inbox = Arc::new(Mutex::new(Vec::new()));
+        let inbox = Arc::new(Mutex::new(InternetInbox::new()));
         let mailbox = mailbox.map(|config| Arc::new(Mutex::new(MailboxStore::new(config))));
         let bridge = bridge_deposits.then(|| Arc::new(Mutex::new(BridgeBuffer::new())));
         let (cmds, cmd_rx) = mpsc::unbounded_channel();
@@ -692,16 +831,20 @@ impl Libp2pTransport {
     }
 
     /// Check in with a mailbox relay (a multiaddr with `/p2p/…`): register
-    /// `tokens` as this node's accept-filters and collect everything queued
-    /// under them into the normal receive path ([`Transport::recv`]).
-    /// Returns how many envelopes were collected; a large backlog may take
-    /// several check-ins, so call until it returns 0. Errors are honest: the
-    /// relay was unreachable, or does not serve mailboxes.
+    /// `tokens` as this node's accept-filters and collect one bounded page
+    /// queued under them into the normal receive path ([`Transport::recv`]).
+    /// Returns how many envelopes were collected in one bounded v1 page.
+    /// Callers schedule later pages instead of looping in one lifecycle pass.
+    /// Errors are honest: the relay was unreachable, or does not serve
+    /// mailboxes.
     ///
     /// Build the token set with `kult-node`'s `mailbox_tokens` — every token
     /// in it is scoped to the caller as recipient (ADR-0007), which is what
     /// makes collect-and-delete safe on relays shared with one's peers.
     pub async fn mailbox_checkin(&self, relay: &str, tokens: &[[u8; 32]]) -> Result<usize> {
+        if tokens.len() > MAX_MAILBOX_CHECKIN_TOKENS {
+            return Err(io_other("mailbox check-in token limit exceeded"));
+        }
         let (addr, peer) = parse_addr(relay).ok_or(TransportError::UnsupportedHint)?;
         let (done, rx) = oneshot::channel();
         self.cmds
@@ -1003,6 +1146,7 @@ impl Transport for Libp2pTransport {
             _ => return Err(TransportError::UnsupportedHint),
         };
         let (addr, peer) = parse_addr(s).ok_or(TransportError::UnsupportedHint)?;
+        let encoded = envelope.try_encode()?;
         // A deposit aimed at our own mailbox goes straight into the local
         // store instead of self-dialing — how a bridge that serves the
         // community mailbox hands mesh-heard transit to its internet-side
@@ -1012,36 +1156,37 @@ impl Transport for Libp2pTransport {
             let Some(store) = &self.mailbox else {
                 return Err(io_other("own relay hint but no mailbox service"));
             };
-            let accepted =
-                store
-                    .lock_unpoisoned()
-                    .deposit(envelope.token, envelope.encode(), unix_now());
+            let accepted = store
+                .lock_unpoisoned()
+                .deposit(envelope.token, encoded, unix_now());
             return if accepted {
                 Ok(SendReceipt::AckedByNextHop)
             } else {
-                Err(io_other("local mailbox refused the deposit"))
+                Err(TransportError::RefusedByNextHop)
             };
         }
         let (ack_tx, ack_rx) = oneshot::channel();
         let op = if deposit {
-            PendingOp::Deposit(envelope.encode(), ack_tx)
+            PendingOp::Deposit(encoded, ack_tx)
         } else {
-            PendingOp::Envelope(envelope.encode(), ack_tx)
+            PendingOp::Envelope(encoded, ack_tx)
         };
         self.cmds
             .send(Cmd::Op { peer, addr, op })
             .map_err(|_| io_other("transport task stopped"))?;
         match tokio::time::timeout(SEND_TIMEOUT, ack_rx).await {
-            // Both outcomes are the same honest signal: the next hop — the
-            // peer itself, or its mailbox relay — acknowledged receipt.
-            Ok(Ok(true)) => Ok(SendReceipt::AckedByNextHop),
-            Ok(_) => Err(io_other("peer unreachable or refused the envelope")),
+            // Only explicit acceptance means the peer or mailbox relay
+            // retained the envelope. Refusal is typed for retry scheduling.
+            Ok(Ok(HopOutcome::Accepted)) => Ok(SendReceipt::AckedByNextHop),
+            Ok(Ok(HopOutcome::Refused)) => Err(TransportError::RefusedByNextHop),
+            Ok(Ok(HopOutcome::LinkFailed)) => Err(io_other("next-hop request failed")),
+            Ok(Err(_)) => Err(io_other("transport task stopped")),
             Err(_) => Err(io_other("send timed out")),
         }
     }
 
     async fn recv(&self) -> Result<Vec<Envelope>> {
-        Ok(self.inbox.lock_unpoisoned().drain(..).collect())
+        Ok(self.inbox.lock_unpoisoned().drain())
     }
 
     async fn recv_transit(&self) -> Result<Vec<Envelope>> {
@@ -1088,7 +1233,7 @@ struct Services {
 /// by the request id it gets back.
 fn issue_op(
     swarm: &mut libp2p::Swarm<KultBehaviour>,
-    inflight: &mut HashMap<request_response::OutboundRequestId, oneshot::Sender<bool>>,
+    inflight: &mut HashMap<request_response::OutboundRequestId, oneshot::Sender<HopOutcome>>,
     mb_inflight: &mut HashMap<request_response::OutboundRequestId, MailboxWaiter>,
     peer: &PeerId,
     op: PendingOp,
@@ -1168,7 +1313,7 @@ fn dial_call(
 async fn run_swarm(
     mut swarm: libp2p::Swarm<KultBehaviour>,
     mut cmd_rx: mpsc::UnboundedReceiver<Cmd>,
-    inbox: Arc<Mutex<Vec<Envelope>>>,
+    inbox: Arc<Mutex<InternetInbox>>,
     shared: Arc<Shared>,
     services: Services,
     addr_tx: watch::Sender<Vec<Multiaddr>>,
@@ -1180,7 +1325,7 @@ async fn run_swarm(
     let mut mdns_open = true;
     // Requests waiting for a connection to come up, then for the response.
     let mut pending: Parked = HashMap::new();
-    let mut inflight: HashMap<request_response::OutboundRequestId, oneshot::Sender<bool>> =
+    let mut inflight: HashMap<request_response::OutboundRequestId, oneshot::Sender<HopOutcome>> =
         HashMap::new();
     let mut mb_inflight: HashMap<request_response::OutboundRequestId, MailboxWaiter> =
         HashMap::new();
@@ -1476,22 +1621,34 @@ async fn run_swarm(
                 SwarmEvent::Behaviour(KultBehaviourEvent::Envelopes(ev)) => match ev {
                     request_response::Event::Message { message, .. } => match message {
                         request_response::Message::Request { request, channel, .. } => {
-                            // Parse failures are dropped silently: transports
-                            // carry sealed envelopes, nothing else.
-                            if let Ok(env) = Envelope::decode(&request) {
-                                inbox.lock_unpoisoned().push(env);
-                            }
-                            let _ = swarm.behaviour_mut().envelopes.send_response(channel, ());
+                            // Decode enforces the project wire cap before it
+                            // allocates the envelope body. A valid request is
+                            // acknowledged only when the bounded inbox kept
+                            // it; malformed or overflow work is an explicit
+                            // refusal that the sender can retry elsewhere.
+                            let accepted = Envelope::decode(&request)
+                                .is_ok_and(|env| inbox.lock_unpoisoned().push_direct(env));
+                            let _ = swarm
+                                .behaviour_mut()
+                                .envelopes
+                                .send_response(channel, accepted);
                         }
-                        request_response::Message::Response { request_id, .. } => {
+                        request_response::Message::Response {
+                            request_id,
+                            response,
+                        } => {
                             if let Some(ack) = inflight.remove(&request_id) {
-                                let _ = ack.send(true);
+                                let _ = ack.send(if response {
+                                    HopOutcome::Accepted
+                                } else {
+                                    HopOutcome::Refused
+                                });
                             }
                         }
                     },
                     request_response::Event::OutboundFailure { request_id, .. } => {
                         if let Some(ack) = inflight.remove(&request_id) {
-                            let _ = ack.send(false);
+                            let _ = ack.send(HopOutcome::LinkFailed);
                         }
                     }
                     _ => {}
@@ -1538,12 +1695,20 @@ async fn run_swarm(
                                     tracing::debug!(accepted, "mailbox deposit");
                                     MailboxResponse::Deposit { accepted }
                                 }
-                                (MailboxRequest::Checkin { tokens }, Some(store)) => {
+                                (MailboxRequest::Checkin { tokens }, Some(store))
+                                    if tokens.len() <= MAX_MAILBOX_CHECKIN_TOKENS =>
+                                {
                                     MailboxResponse::Checkin {
                                         serving: true,
                                         envelopes: store
                                             .lock_unpoisoned()
                                             .checkin(&tokens, unix_now()),
+                                    }
+                                }
+                                (MailboxRequest::Checkin { .. }, Some(_)) => {
+                                    MailboxResponse::Checkin {
+                                        serving: false,
+                                        envelopes: Vec::new(),
                                     }
                                 }
                                 // Not serving: honest refusals.
@@ -1562,7 +1727,11 @@ async fn run_swarm(
                                     Some(MailboxWaiter::Deposit(ack)),
                                     MailboxResponse::Deposit { accepted },
                                 ) => {
-                                    let _ = ack.send(accepted);
+                                    let _ = ack.send(if accepted {
+                                        HopOutcome::Accepted
+                                    } else {
+                                        HopOutcome::Refused
+                                    });
                                 }
                                 (
                                     Some(MailboxWaiter::Checkin(done)),
@@ -1572,14 +1741,29 @@ async fn run_swarm(
                                     // path; parse failures are dropped, as on
                                     // any link.
                                     let mut count = 0;
+                                    let mut admitted_all = true;
                                     let mut inbox = inbox.lock_unpoisoned();
                                     for bytes in envelopes {
-                                        if let Ok(env) = Envelope::decode(&bytes) {
-                                            inbox.push(env);
-                                            count += 1;
+                                        match Envelope::decode(&bytes) {
+                                            Ok(env) => {
+                                                if inbox.push_collected(env) {
+                                                    count += 1;
+                                                } else {
+                                                    admitted_all = false;
+                                                    tracing::warn!(
+                                                        "mailbox-v1 page was not fully admitted"
+                                                    );
+                                                }
+                                            }
+                                            Err(_) => {
+                                                admitted_all = false;
+                                                tracing::warn!(
+                                                    "mailbox-v1 page was not fully admitted"
+                                                );
+                                            }
                                         }
                                     }
-                                    let _ = done.send(serving.then_some(count));
+                                    let _ = done.send((serving && admitted_all).then_some(count));
                                 }
                                 // A response of the wrong shape: fail the
                                 // waiter rather than hang its caller.
@@ -1640,5 +1824,61 @@ async fn run_swarm(
                 _ => {}
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kult_protocol::{EnvelopeKind, ENVELOPE_V1_HEADER_LEN};
+
+    fn small_envelope(fill: u8) -> Envelope {
+        Envelope::new(EnvelopeKind::Message, [fill; 32], vec![fill; 8])
+    }
+
+    #[test]
+    fn direct_inbox_item_cap_refuses_without_mutation_and_recovers_after_drain() {
+        let mut inbox = InternetInbox::new();
+        for i in 0..DIRECT_INBOX_MAX_ITEMS {
+            assert!(inbox.push_direct(small_envelope(i as u8)));
+        }
+        let items = inbox.direct_items;
+        let bytes = inbox.direct_bytes;
+        assert!(!inbox.push_direct(small_envelope(255)));
+        assert_eq!(inbox.direct_items, items);
+        assert_eq!(inbox.direct_bytes, bytes);
+
+        assert_eq!(inbox.drain().len(), DIRECT_INBOX_MAX_ITEMS);
+        assert!(inbox.push_direct(small_envelope(1)));
+    }
+
+    #[test]
+    fn direct_inbox_byte_cap_bounds_maximal_envelopes() {
+        let mut inbox = InternetInbox::new();
+        let oversized = Envelope::new(EnvelopeKind::Message, [6; 32], vec![0; MAX_ENVELOPE_BYTES]);
+        assert!(!inbox.push_direct(oversized));
+
+        let maximal = Envelope::new(
+            EnvelopeKind::Message,
+            [7; 32],
+            vec![0; MAX_ENVELOPE_BYTES - ENVELOPE_V1_HEADER_LEN],
+        );
+        let count = DIRECT_INBOX_MAX_BYTES / MAX_ENVELOPE_BYTES;
+        for _ in 0..count {
+            assert!(inbox.push_direct(maximal.clone()));
+        }
+        assert_eq!(inbox.direct_bytes, DIRECT_INBOX_MAX_BYTES);
+        assert!(!inbox.push_direct(small_envelope(8)));
+    }
+
+    #[test]
+    fn collected_inbox_has_independent_item_cap_and_recovers_after_drain() {
+        let mut inbox = InternetInbox::new();
+        for i in 0..COLLECTED_INBOX_MAX_ITEMS {
+            assert!(inbox.push_collected(small_envelope(i as u8)));
+        }
+        assert!(!inbox.push_collected(small_envelope(3)));
+        assert_eq!(inbox.drain().len(), COLLECTED_INBOX_MAX_ITEMS);
+        assert!(inbox.push_collected(small_envelope(4)));
     }
 }

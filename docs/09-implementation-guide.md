@@ -1,7 +1,7 @@
 # 09: Implementation Guide
 
 The implementation handoff and maintenance contract. M1–M5 now have substantial
-shipped implementations, so this guide applies both to new features and to changes
+working implementations, so this guide applies both to new features and to changes
 that must preserve existing boundaries. The design documents say *what*; this says
 *how to build it without drifting*. When this guide and a design doc conflict, the
 design doc wins and the conflict is a bug—file it.
@@ -241,7 +241,10 @@ resolver hides edit events, retains ordered versions, and selects maximum
 `edit_message` and `group_edit_message`; CLI commands are `edit` and
 `group-edit`; UniFFI mirrors them and the typed refresh events. The complete
 wire, storage, shell, and qualification contract is
-[18: Authenticated Message Editing](18-message-editing.md).
+[18: Authenticated Message Editing](18-message-editing.md). Do not describe the
+current group sender field as individual-origin authentication: a member can
+forge another member's apparent edit until
+[ADR-0029](adr/0029-recipient-authenticated-groups.md) is implemented.
 
 C4 is a replicated lifecycle feature, not a timer implemented by each shell.
 Only the dedicated pair/group disappearing and view-once APIs may create
@@ -260,13 +263,14 @@ C5 polls are replicated immutable group content, never a shell-owned counter.
 Only the dedicated create/vote/close APIs may emit content-v1 kind `0x0006`;
 generic pairwise and group send reject it. Resolve each open voter head by
 maximum `(revision, event id)`, then replace the open view with the winning
-creator-attested close snapshot. The electorate is the fixed sorted creation
+creator-claimed close snapshot. The electorate is the fixed sorted creation
 list and votes are visible, not anonymous. RPC uses `group_poll_create`,
 `group_polls`, `group_poll_vote`, and `group_poll_close`; the CLI uses matching
 hyphenated commands; UniFFI exposes `GroupPoll` and `PollUpdated`. Shells render
 the node snapshot and never resolve raw events. The complete contract is
 [20: Group Polls](20-group-polls.md) and
-[ADR-0022](adr/0022-convergent-group-polls.md).
+[ADR-0022](adr/0022-convergent-group-polls.md). These rules prove convergence,
+not malicious-member origin; ADR-0029 is required for that property.
 
 C6 authority is a signed control plane over the existing sender-key group, not
 mutable role flags in a shell. Use only content-v1 kind `0x0007` for canonical

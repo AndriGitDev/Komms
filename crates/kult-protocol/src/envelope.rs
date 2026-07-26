@@ -25,6 +25,12 @@ pub const ENVELOPE_HEADER_LEN: usize = 1 + 1 + 32 + 8;
 pub const ENVELOPE_V1_HEADER_LEN: usize = 1 + 1 + 32;
 /// v2 header length.
 pub const ENVELOPE_V2_HEADER_LEN: usize = ENVELOPE_HEADER_LEN;
+/// Maximum bytes in one complete encoded envelope on any carrier.
+///
+/// Larger messages must be split by their higher-level format or fragmented
+/// for a carrier before they cross a wire boundary. Keeping this limit in the
+/// protocol crate gives every decoder the same allocation ceiling.
+pub const MAX_ENVELOPE_BYTES: usize = 128 * 1024;
 
 /// What an envelope carries (byte 1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,9 +121,26 @@ impl Envelope {
         }
     }
 
+    /// Exact number of bytes this envelope occupies in the wire format.
+    pub fn encoded_len(&self) -> usize {
+        self.header_len().saturating_add(self.body.len())
+    }
+
+    /// Serialize to the wire format after enforcing [`MAX_ENVELOPE_BYTES`].
+    ///
+    /// Network and other externally supplied carrier boundaries should use
+    /// this fallible form. [`Self::encode`] remains available for established
+    /// in-memory callers that construct already-bounded protocol values.
+    pub fn try_encode(&self) -> Result<Vec<u8>> {
+        if self.encoded_len() > MAX_ENVELOPE_BYTES {
+            return Err(ProtocolError::EnvelopeTooLarge);
+        }
+        Ok(self.encode())
+    }
+
     /// Serialize to the wire format.
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.header_len() + self.body.len());
+        let mut out = Vec::with_capacity(self.encoded_len());
         out.push(if self.retention_until.is_some() {
             ENVELOPE_VERSION_V2
         } else {
@@ -134,6 +157,9 @@ impl Envelope {
 
     /// Parse from the wire format. Never panics on arbitrary input.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() > MAX_ENVELOPE_BYTES {
+            return Err(ProtocolError::EnvelopeTooLarge);
+        }
         if bytes.len() < ENVELOPE_V1_HEADER_LEN {
             return Err(ProtocolError::Malformed);
         }
@@ -202,5 +228,24 @@ mod tests {
         assert!(Envelope::decode(&v2).is_err());
         v2[0] = 3;
         assert!(Envelope::decode(&v2).is_err());
+    }
+
+    #[test]
+    fn project_wire_limit_is_enforced_before_body_allocation() {
+        let max_v1_body = MAX_ENVELOPE_BYTES - ENVELOPE_V1_HEADER_LEN;
+        let envelope = Envelope::new(EnvelopeKind::Message, [1; 32], vec![0; max_v1_body]);
+        let encoded = envelope.try_encode().unwrap();
+        assert_eq!(encoded.len(), MAX_ENVELOPE_BYTES);
+        assert_eq!(Envelope::decode(&encoded).unwrap(), envelope);
+
+        let oversized = Envelope::new(EnvelopeKind::Message, [2; 32], vec![0; max_v1_body + 1]);
+        assert_eq!(
+            oversized.try_encode().unwrap_err(),
+            ProtocolError::EnvelopeTooLarge
+        );
+        assert_eq!(
+            Envelope::decode(&vec![0; MAX_ENVELOPE_BYTES + 1]).unwrap_err(),
+            ProtocolError::EnvelopeTooLarge
+        );
     }
 }

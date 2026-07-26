@@ -26,12 +26,21 @@ product promise merely because the file exists.
 | [0017](0017-optional-hybrid-modes.md) | Proposed | Optional service modes and trust boundary |
 | [0018](0018-pairwise-rendezvous.md) | Proposed | Rotating pairwise rendezvous |
 | [0019](0019-native-wake-gateway.md) | Proposed | Capability-gated native wake |
-| [0020](0020-authenticated-message-edits.md) | Accepted | Immutable authenticated message-edit events and deterministic convergence |
+| [0020](0020-authenticated-message-edits.md) | Accepted | Immutable edit events, pairwise authorization, and deterministic convergence; group origin awaits ADR-0029 |
 | [0021](0021-ephemeral-retention.md) | Accepted | Authenticated local expiry, view-once consumption, and coarse relay retention |
-| [0022](0022-convergent-group-polls.md) | Accepted | Visible-vote group polls, fixed electorates, deterministic vote heads, and creator closure |
+| [0022](0022-convergent-group-polls.md) | Accepted | Visible-vote group polls and deterministic convergence; member origin awaits ADR-0029 |
 | [0023](0023-group-roles-and-owner-authority.md) | Accepted | Owner-serialized roles, signed generation-bound admin requests, and authority transfer |
-| [0024](0024-account-authorized-linked-devices.md) | Accepted | Account-authorized physical devices, confirmed linking, per-device cryptography, deterministic sync, revocation, and recovery |
+| [0024](0024-account-authorized-linked-devices.md) | Accepted Alpha; security-limited | Confirmed linking, per-device cryptography, sync, exact-id exclusion, and recovery; permanent-revocation claim withdrawn |
 | [0025](0025-optional-freenet-carrier.md) | Proposed | Optional epoch-scoped Freenet store-and-forward carrier and metadata boundary |
+| [0026](0026-revocable-device-authority.md) | Proposed (P0) | Required offline account-root recovery and quorum-authorized manifests replacing ADR-0024 authority before stable |
+| [0027](0027-opaque-indexed-store.md) | Proposed | Versioned keyed indexes, row-bound sealing, transactional migration, and honest local deletion limits |
+| [0028](0028-atomic-protocol-commits.md) | Proposed | Transactional ratchet, handshake, group-chain, queue, replay, and deferred-inbox state transitions |
+| [0029](0029-recipient-authenticated-groups.md) | Proposed | Per-recipient origin authentication for sender-key group messages and author-sensitive state |
+| [0030](0030-first-contact-admission.md) | Proposed | Bounded public introductions, provisional message requests, blocking, and group-invite consent |
+| [0031](0031-capability-scoped-dht-discovery.md) | Proposed | Capability-scoped, encrypted DHT first contact with mailbox-only public routes |
+| [0032](0032-leased-mailbox-delivery.md) | Proposed | Durable deposits, leased collection pages, and acknowledgement-after-endpoint-commit |
+| [0033](0033-nonprofit-founder-stewardship.md) | Accepted | Nonprofit public-benefit mission, founder-directed incubation, AGPL reciprocity limits, and adoption-triggered governance evolution |
+| [0034](0034-operator-minimized-reference-discovery.md) | Proposed | RAM-backed, content-blind, replaceable reference bootstrap/DHT/rendezvous deployment with explicit operator limits |
 
 The attachment implementation follows ADR-0015 and its hard no-airtime rule,
 but the ADR file still carries Proposed status. This index reports that

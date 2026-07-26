@@ -23,6 +23,8 @@ kult-store = { version = "0.3.0", path = "../kult-store" }
 # The daemon always ships the Meshtastic carrier: attaching a ~30€ radio to
 # the box the daemon runs on is exactly the off-grid deployment M4 targets.
 kult-transport = { version = "0.3.0", path = "../kult-transport", features = ["meshtastic"] }
+fs2 = "0.4"
+libc = "0.2"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -1,18 +1,24 @@
 # 08: Roadmap
 
-Milestones express dependency order, not a rule that all work in an earlier
-milestone must stop before a later foundation can land. M0–M3 are complete;
-M4, M5, and M6 each have shipped slices plus explicit remaining acceptance
-work. Build order details per crate: [09: Implementation Guide](09-implementation-guide.md).
+Milestones express dependency order and implementation history. They are not a
+stable-release scorecard. The
+[stabilization program](29-stabilization-program.md) is now authoritative for
+priority, evidence language, and P0/P1/P2 gates; it freezes nonessential feature
+expansion until the everyday messaging path and trust gates are proven.
+“Implemented” below means a production path exists, usually with automated
+evidence. It does not mean field-qualified, independently interoperable,
+independently reviewed, or stable. Build order details per crate:
+[09: Implementation Guide](09-implementation-guide.md).
 
 | Milestone | Status | Principal remaining gate |
 |---|---|---|
-| M0–M3 | Complete | Permanent regression and assurance work only |
-| M4 | In progress | Stand up the physical two-radio nightly bench |
-| M5 | In progress | Hands-on mobile qualification and installable distribution |
-| M6 | In progress | Remaining runtime hardening, reproducible signed artifacts, store delivery, and external audit |
+| M0–M2 | Implemented + automated evidence | Independent vectors/review and stabilization regressions |
+| M3 | Implemented + partial automated evidence | Clean-install distinct-NAT journey, first-contact abuse admission, durable mailbox qualification |
+| M4 | Implemented + partial automated evidence | Physical two-radio field qualification |
+| M5 | Implemented Alpha surfaces | Hands-on mobile, lifecycle, accessibility, localization, and install qualification |
+| M6 | Partial | Signed/reproducible updates, external review, operator readiness; expansion work deferred |
 
-## M0: Design framework *(done)*
+## M0: Design framework *(implemented; review remains)*
 
 **Deliverable**: the documentation set in `docs/`: threat model, architecture, crypto
 spec, transport spec, identity model, storage model, ADRs, implementation guide.
@@ -21,7 +27,7 @@ spec, transport spec, identity model, storage model, ADRs, implementation guide.
 implementation guide sufficient for a competent Rust developer (or coding agent) to start
 M1 without design questions.
 
-## M1: Cryptographic core (`kult-crypto`) *(done)*
+## M1: Cryptographic core (`kult-crypto`) *(implemented; assurance open)*
 
 Workspace scaffolding + the full crypto layer: primitives wiring, hybrid PQXDH handshake,
 Double Ratchet with header encryption, fingerprints, key serialization.
@@ -33,7 +39,7 @@ Double Ratchet with header encryption, fingerprints, key serialization.
 - Two in-memory parties complete handshake and exchange 10 000 messages under random
   loss/reorder within `MAX_SKIP`.
 
-## M2: Protocol & storage (`kult-protocol`, `kult-store`) *(done)*
+## M2: Protocol & storage (`kult-protocol`, `kult-store`) *(implemented; assurance open)*
 
 Envelope codec, padding buckets, fragmentation/reassembly, delivery tokens, sealed
 sender; encrypted SQLite storage with the full key hierarchy; sneakernet bundle
@@ -46,7 +52,7 @@ import/export (first working transport, needs no networking).
 - Fuzzers on envelope + bundle parsers; storage passes "copied DB file leaks nothing but
   sizes" review checklist.
 
-## M3: Internet transport & headless node (`kult-transport`, `kult-node`) *(done)*
+## M3: Internet transport & headless node (`kult-transport`, `kult-node`) *(implemented; stabilization open)*
 
 The `kult-node` runtime is implemented per the build order in
 [09: Implementation Guide §2](09-implementation-guide.md): delivery engine
@@ -90,7 +96,13 @@ publish/lookup) with zero bootstrap configuration and no internet at all.
 libp2p integration (QUIC, TCP fallback, Kademlia, relay v2, DCUtR), prekey bundles on
 DHT, mailbox relays, transport scheduler, headless daemon with local RPC.
 
-**Acceptance**:
+The existing localhost, LAN, configured-peer, and automated NAT/relay evidence
+does not close the everyday clean-install claim. Fresh application defaults
+currently require deliberate bootstrap/mailbox configuration, mailbox
+persistence is not operator-qualified, and first-contact abuse admission remains
+a P0 gate.
+
+**Stable acceptance (open)**:
 - Two nodes behind distinct NATs exchange messages with no manual configuration beyond
   sharing kult addresses.
 - Recipient offline → message deposited at relay → delivered on reconnect; relay
@@ -242,7 +254,7 @@ delivery alive in the background. Native libraries cross-compile via
 cargo-ndk; the local release matrix runs the `:core` e2e and assembles/lints the
 debug APK when the SDK/NDK is installed, while per-push CI assembles a real debug
 APK in addition to the SDK-free host suite. Android
-sender-key group UX is also shipped: a distinct group list/create flow,
+sender-key group UX is also implemented: a distinct group list/create flow,
 dedicated history/chat/member surface, truthful per-recipient outbound
 delivery rows, and a JVM acceptance scenario with a real offline member.
 The iOS alpha is in (application A2, `apps/ios`): a Swift shell over the same
@@ -262,7 +274,7 @@ key-change surfacing, transport indicators, hint editing, secret-free
 `settings.json` (same file format as the other shells), and
 mnemonic-shown-once backup export via the share sheet with the data
 directory excluded from iCloud backup. The sender-key group front door is
-also shipped: a distinct group list/create flow, dedicated history/chat and
+also implemented: a distinct group list/create flow, dedicated history/chat and
 member-management surfaces, truthful per-recipient outbound delivery rows,
 and a host acceptance scenario with a real offline member. QR rendering is
 CoreImage and scanning is AVFoundation. The app has zero third-party dependencies;
@@ -277,7 +289,7 @@ SwiftUI initializer and
 build. Remaining: a full hands-on SwiftUI messaging pass and an on-device run;
 background delivery and store distribution stay M6.
 
-B14 screen security is shipped across the shared capability contract and all
+B14 screen security is implemented across the shared capability contract and all
 three shells. Protection starts before unlock and is not user-disableable:
 Android applies `FLAG_SECURE` to every activity, iOS obscures inactive snapshots
 and live-captured scenes while documenting the still-screenshot limit, and
@@ -287,7 +299,7 @@ gates are in; the remaining M5 hands-on qualification records real device,
 OS, window-server, and compositor results per
 [13: Screen Security](13-screen-security.md).
 
-B15 incognito keyboard behavior is shipped across the shared capability
+B15 incognito keyboard behavior is implemented across the shared capability
 contract and every textual input. Android applies the documented
 no-personalized-learning request to every editor; iOS disables correction on all
 SwiftUI editors and uses secure passphrase/mnemonic entry; desktop applies the
@@ -296,7 +308,7 @@ field inventories and native build gates are in. Manual first-/third-party
 keyboard evidence follows [14: Incognito Keyboard](14-incognito-keyboard.md)
 without treating absence of later suggestions as proof of non-retention.
 
-C7 live audio calls are shipped through the bounded content-v1 `CallControl`
+C7 live audio calls are implemented through the bounded content-v1 `CallControl`
 shape, transient account/device-aware node state, and one authenticated
 `/komms/call/1` substream on an observed fresh direct QUIC connection. The
 transport and every shell refuse TCP, relay-only, mailbox, sneakernet, and
@@ -312,7 +324,7 @@ M5 release qualification; video begins only after the audio matrix passes. See
 [23: Live Audio Calls](23-live-audio-calls.md) and
 [ADR-0013](adr/0013-real-time-calls.md).
 
-**Acceptance**: a non-technical user can install desktop + mobile builds, exchange QR
+**Stable acceptance (open)**: a non-technical user can install desktop + mobile builds, exchange QR
 verification with a friend, and message over internet, LAN, and mesh with truthful
 delivery/security indicators. Backup/restore round-trips.
 
@@ -324,7 +336,7 @@ reproducible builds;
 **external security audit** of `kult-crypto` + `kult-protocol`; F-Droid and store
 distribution.
 
-A production-readiness slice is shipped. Runtime synchronization in
+A production-readiness slice is implemented with automated evidence. Runtime synchronization in
 `kult-transport` and `kult-ffi` recovers poisoned locks rather than cascading a
 panic. `kultd` owns structured `tracing` output under the content-free logging
 policy in [09 §4b](09-implementation-guide.md), and passphrases/restore mnemonics
@@ -340,10 +352,13 @@ production signing key, updater, reproducible-artifact claim, or store release
 is claimed. See [24: Local Release Gate](24-local-release-gate.md) and
 [27: Alpha Testing](27-alpha-testing.md).
 
-C2 multi-device is shipped: the stable account signs bounded device manifests,
+C2 multi-device is implemented with automated evidence: the stable account signs bounded device manifests,
 every physical endpoint keeps independent pairwise/group cryptographic state,
 and explicit authenticated bundles converge an allowlisted set of owned-device
-state without cloud infrastructure. See [22: Linked Devices](22-linked-devices.md).
+state without cloud infrastructure. The current Alpha copies the account root
+to linked devices, so revoking a known device id is not permanent against a
+compromised former device; ADR-0026's offline-root authority redesign is a P0
+stable-release requirement. See [22: Linked Devices](22-linked-devices.md).
 
 The optional Hybrid Infrastructure Layer is proposed as an independent M6
 adoption track under ADR-0017 through ADR-0019: explicit Sovereign/Private/
@@ -379,7 +394,7 @@ The ADR must pin:
 - native Komms integration through the local or explicitly bundled Freenet
   Core API, while keeping a browser-distributed Freenet UI and delegate port as
   a separate possible future product rather than silently replacing the
-  audited native boundary;
+  reviewable native boundary;
 - reproducible contract/delegate artifacts, stable key-derived application
   identity, a registered predecessor lineage, and a tested state/secret
   migration path before any public Freenet contract is treated as durable;
@@ -428,11 +443,11 @@ per-member delivery ladders, newcomer-reads-no-history, and removed-member
 exclusion. The shared front door is also in: `kultd` RPC, the `kult` CLI, and
 `kult-ffi` expose group records, history, events, membership operations, and
 honest per-member delivery state, pinned by `rpc_e2e.rs` and `ffi_e2e.rs`.
-Desktop, Android, and iOS group UX are shipped, including truthful
+Desktop, Android, and iOS group UX are implemented, including truthful
 per-recipient partial-delivery rows and shell-level acceptance coverage.
 Remaining for groups is the M6 list above.
 
-The versioned message-content foundation is shipped:
+The versioned message-content foundation is implemented:
 [ADR-0014](adr/0014-versioned-message-content.md) is accepted and implemented
 with a permanent legacy-text decode path, encrypted capability negotiation,
 bounded typed `Text` frames, stable encrypted content ids, scoped deduplication,
@@ -454,7 +469,8 @@ native caller-selected paths, Android uses Storage Access Framework streams,
 and iOS uses security-scoped document-provider URLs; both mobile shells stage
 only bounded app-private copies. All three expose pairwise/group send,
 per-object verified-byte progress and state, lifecycle controls, and protected
-caller-selected export. F3 shell delivery is complete: generic files use explicit
+caller-selected export. F3 shell delivery is implemented across the three
+Alpha surfaces: generic files use explicit
 local confirmation, older sealed previews remain renderable, and canonical
 edited PNG primaries are validated and rendered only through protected transient
 paths. Each shell exposes its actual interruption/resume policy.
@@ -463,7 +479,7 @@ foreground service continues data-sync work while backgrounded, desktop
 continues while open or minimized, and iOS resumes on foreground without
 claiming unsupported continuous execution.
 
-B2 recorded audio is shipped end to end on top of that unchanged F3/F4 path.
+B2 recorded audio is implemented end to end on top of that unchanged F3/F4 path.
 Desktop, Android, and iOS record only while foregrounded, stop into a local review
 with no autoplay, show locally derived duration/waveform and the current carrier
 explanation, and require explicit send or discard. All three canonicalize to one
@@ -474,7 +490,7 @@ lock, restart, and orphan cleanup are covered. The ADR-0015 invariant remains
 absolute: mesh-only recorded audio waits for a faster link and emits zero bulk
 airtime frames.
 
-B16 still-image editing is shipped end to end without changing F3, F4, wire
+B16 still-image editing is implemented end to end without changing F3, F4, wire
 metadata, crypto, or transport behavior. One path-based Rust/UniFFI helper owns
 the 32 MiB / 4096-edge / 12-megapixel decode limits, EXIF-orientation
 normalization, integer crop/quarter-turn/region semantics, metadata-free RGBA
@@ -490,7 +506,7 @@ receiver rendering/export, and zero manifest/chunk/range or other bulk mesh
 airtime. Video, cloud/generative editing, filters, face recognition, project
 files, and protocol changes remain out of scope.
 
-C1 generic non-image presentation is now shipped without changing ADR-0015's
+C1 generic non-image presentation is now implemented without changing ADR-0015's
 wire or carrier contract. One shared Rust policy classifies untrusted filename
 and media-type hints, forces active, mismatched, unknown, or nameless objects to
 export-only, and permits only explicit warned OS handoff for reviewed matching
@@ -500,7 +516,7 @@ resume, no auto-open, protected temporary cleanup, and zero new delivery work.
 Hands-on Android/iOS interaction remains an M5 qualification gate. See
 [17: Safe File Presentation](17-safe-file-presentation.md).
 
-B17 group mentions are shipped end to end under
+B17 group mentions are implemented end to end under
 [ADR-0016](adr/0016-group-mention-content.md). The immutable kind `0x0003`
 preserves exact fallback UTF-8 plus canonical sorted, non-overlapping UTF-8 byte
 ranges targeting stable group peers; the whole shape remains authenticated,
@@ -516,7 +532,7 @@ There is no server push or online-delivery guarantee, and no mention data was
 added to envelopes, transports, DHT records, delivery tokens, or public OS
 previews.
 
-B9 safe text formatting is shipped without changing ADR-0014 content, storage,
+B9 safe text formatting is implemented without changing ADR-0014 content, storage,
 backups, capabilities, envelopes, or transports. One bounded `kult-node`
 formatter derives emphasis, strong, inline/fenced code, quote, and list blocks
 from exact authenticated source and composes B17 mention ranges as inert
@@ -527,15 +543,15 @@ remote fetches stay literal. The shared corpus pins malicious input, bidi,
 complexity fallback, readable old-client source, and plain-text copy. See
 [16: Safe Text Formatting](16-safe-text-formatting.md).
 
-The F5 sealed local-metadata foundation is shipped in `kult-store`: typed and
+The F5 sealed local-metadata foundation is implemented in `kult-store`: typed and
 bounded conversation, folder, pin, label, draft, preference, and custom-icon
 records use an isolated storage key and reveal no local organization keys in a
 copied database. User-authored metadata and sealed note-to-self history are
-included in current `KKR7` backups. Note-to-self text is shipped through every shell under one
+included in current `KKR7` backups. Note-to-self text is implemented through every shell under one
 reserved identity; folders, conversation pins, labels, appearance, and bounded
 metadata-free custom icons now ship as separate local experiences.
 
-B5 private contact rename is shipped end to end through `kult-node`, strict
+B5 private contact rename is implemented end to end through `kult-node`, strict
 RPC/CLI, UniFFI, desktop, Android, and iOS. The peer key remains the only identity
 and mutation target. Petnames are private local contact-record fields,
 NFC-normalized and bounded to 256 UTF-8 bytes; duplicate names are permitted.
@@ -546,7 +562,7 @@ survives restart and `KKR7`, and produces zero discovery, notification, queue,
 envelope, capability, or transport work. Optional signed self-display
 suggestions remain a separate unimplemented bundle-format/compatibility program.
 
-B13 private custom icons are shipped end to end across the existing F5 record,
+B13 private custom icons are implemented end to end across the existing F5 record,
 `kult-node`, RPC/CLI, UniFFI, desktop, Android, and iOS. Exact contact, group,
 folder, and note-to-self targets render generated initials when absent or after a
 safe read failure. Eight bundled glyphs and selected local JPEG/PNG inputs become
@@ -555,7 +571,7 @@ re-encoding. Per-record, count, and 64 MiB aggregate quotas are enforced at the
 sealed-store boundary; `KKR7` preserves canonical records. Icons create no remote
 lookup, peer sync, envelope, capability, queue, notification, or transport work.
 
-B10 private local conversation folders are shipped end to end across the
+B10 private local conversation folders are implemented end to end across the
 unchanged F5 record contract, `kult-node`, RPC/CLI, UniFFI, desktop, Android,
 and iOS. Cryptorandom stable IDs remain separate from exact duplicate-capable
 UTF-8 names and durable manual order. Pairwise, group, and note-to-self targets
@@ -567,7 +583,7 @@ UTF-8 bytes per name. `KKR7` preserves exact identity, order, membership, and
 stale behavior. Folders never synchronize to contacts or services; C2 can
 converge them only between authorized devices of the same account.
 
-B11 private local conversation pins are shipped end to end across the unchanged
+B11 private local conversation pins are implemented end to end across the unchanged
 F5 record contract, `kult-node`, RPC/CLI, UniFFI, desktop, Android, and iOS.
 Pins use exact typed pairwise, group, and note-to-self identities, with one pin
 per conversation and a fixed limit of 8,192. Idempotent append/unpin, atomic
@@ -579,7 +595,7 @@ Every operation creates zero network, transport, notification, or cryptographic
 work. Portability is limited to `KKR7` and authenticated own-device C2 sync;
 message pins remain separate work.
 
-B12 private appearance is shipped end to end across the unchanged F5 UI
+B12 private appearance is implemented end to end across the unchanged F5 UI
 preference record, `kult-node`, strict RPC/CLI, UniFFI, desktop, Android, and
 iOS. The exact `system`, `light`, and `dark` vocabulary defaults safely to System,
 persists at `appearance.theme`, emits one local change event only on mutation,
@@ -590,7 +606,7 @@ resources, and iOS adaptive system colors. Native high-contrast/reduced-motion
 signals remain live, shared reference palettes meet WCAG text contrast, and
 security or delivery meaning always retains non-color cues.
 
-B18 private labels are shipped end to end across the unchanged F5 record
+B18 private labels are implemented end to end across the unchanged F5 record
 contract, `kult-node`, RPC/CLI, UniFFI, desktop, Android, and iOS. Labels target
 stable pairwise, group, and note-to-self conversation IDs; message labels remain
 deferred. Definitions use cryptorandom 16-byte IDs, exact bounded UTF-8 names,
@@ -604,14 +620,14 @@ work. `KKR7` preserves exact identity, ordering, and membership. There is no
 shared taxonomy or contact/service synchronization; C2 can converge labels only
 between authorized devices of the same account.
 
-Durable scheduled pairwise and group text is shipped end to end. The sealed
+Durable scheduled pairwise and group text is implemented end to end. The sealed
 scheduled outbox does not advance a ratchet or create transport work early;
 RPC/CLI, UniFFI, desktop, Android, and iOS expose create/list/edit/cancel and
 the activation lifecycle. Every shell renders scheduled rows separately from
 the ordinary queued, sent, and delivered ladder while converting only the
 display/editor to local time.
 
-C4 disappearing text and view-once attachments are shipped for pairwise and
+C4 disappearing text and view-once attachments are implemented for pairwise and
 sender-key groups across protocol, sealed lifecycle storage, node, relay/bridge/
 queue/fragment retention, strict RPC/CLI, UniFFI, desktop, Android, and iOS.
 ADR-0021 binds an exact local deadline to an hour-aligned envelope-v2 relay
@@ -623,14 +639,17 @@ prevention. Automated Android APK and iOS simulator builds cover compilation;
 real-device interaction on both platforms remains part of the hands-on M5 gate. See
 [19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
 
-C5 fixed-electorate group polls are shipped across protocol, node, RPC/CLI,
-UniFFI, desktop, Android, and iOS. Authenticated immutable creation, visible vote
-heads, and creator closure converge deterministically after delay, duplicates,
-reorder, membership change, restart, and KKR1–KKR7 restore. Poll events render as
-cards rather than empty chat rows and never claim anonymity. See
-[20: Group Polls](20-group-polls.md).
+C5 fixed-electorate group polls are implemented across protocol, node, RPC/CLI,
+UniFFI, desktop, Android, and iOS. Group-AEAD-protected immutable creation,
+visible vote heads, and creator-claimed closure converge deterministically after
+delay, duplicates, reorder, membership change, restart, and KKR1–KKR7 restore.
+Current sender-key groups do not resist member-forged voter or creator origins;
+ADR-0029 is required before stable. Poll events render as cards rather than
+empty chat rows and never claim anonymity. See
+[20: Group Polls](20-group-polls.md) and
+[ADR-0029](adr/0029-recipient-authenticated-groups.md).
 
-C6 owner/admin/member authority is shipped across the same complete surface.
+C6 owner/admin/member authority is implemented across the same complete surface.
 Capability-gated legacy upgrade creates a canonical signed full state; one owner
 serializes direct actions and generation-bound signed admin requests. Ownership
 certificates form a verified chain, conflicting same-generation states use the
@@ -644,10 +663,10 @@ and consumed request ids while KKR1-KKR5 restore as legacy groups. See
 **Acceptance**: audit findings triaged with public report; reproducible-build attestation
 for all release artifacts.
 
-## Shipped alpha: real-time audio calls
+## Alpha implementation: real-time audio calls
 
-The C7 audio implementation is complete across the shared core and all shipped
-front doors under the strict direct-QUIC and transient-state contract above.
+The C7 audio path is implemented across the shared core and Alpha application
+surfaces under the strict direct-QUIC and transient-state contract above.
 Video remains unimplemented until real-network and physical-device audio
 qualification passes. Details and constraints:
 [11: Feature Scope](11-feature-scope.md) and
@@ -656,7 +675,7 @@ qualification passes. Details and constraints:
 ## Explicitly not scheduled
 
 Cryptocurrency anything, federation with other networks, and any feature that
-requires mandatory project-operated infrastructure. Optional, replaceable,
+requires mandatory exclusive project-operated infrastructure. Optional, replaceable,
 content-blind convenience services remain subject to ADR-0017 through ADR-0019.
 Each broader exception would need a compelling ADR.
 

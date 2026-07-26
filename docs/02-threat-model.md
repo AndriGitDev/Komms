@@ -85,7 +85,10 @@ Malware, forensic seizure of an unlocked device, or a coerced unlock, against a 
 target.
 
 **Defense (bounded)**: at-rest encryption under an Argon2id-derived key protects a
-powered-off/locked device. Forward secrecy means a captured device does not reveal
+powered-off/locked device's sealed record bodies. The current Alpha database
+still exposes contact/group identifiers in plaintext lookup columns and does
+not bind every ciphertext to its logical row; ADR-0027 is an open P0 storage
+migration. Forward secrecy means a captured device does not reveal
 messages deleted before capture; post-compromise security means a *transient* compromise is
 healed by the next DH ratchet step. A persistently compromised endpoint sees everything its
 user sees; no messenger can prevent that (§5).
@@ -136,20 +139,20 @@ viewer, or defeat A7. Exact behavior is in
 | Goal | Meaning | Mechanism |
 |---|---|---|
 | **Confidentiality** | Only intended recipients read content. | XChaCha20-Poly1305 AEAD under Double Ratchet keys. |
-| **Integrity & authenticity** | Messages cannot be altered or forged. | AEAD tags; identity-key-signed handshakes. |
+| **Integrity & authenticity** | Pairwise messages and signed authority state cannot be altered or forged by an outsider. | AEAD tags and identity-key-signed handshakes protect pairwise lanes; signed group authority state is attributable. Current sender-key group content has only membership-level authenticity, so a malicious member can impersonate another member until [ADR-0029](adr/0029-recipient-authenticated-groups.md) is implemented. |
 | **Forward secrecy** | Key compromise doesn't expose past messages. | Symmetric + DH ratchets; keys zeroized after use. |
 | **Post-compromise security** | Security self-heals after transient compromise. | DH ratchet steps on every round trip. |
 | **Post-quantum confidentiality** | A6 resistance for content. | Hybrid PQXDH-style handshake (ML-KEM-768). |
 | **Metadata minimization** | Network learns as little as possible about who/when/how much. | Sealed sender, encrypted headers, size-bucket padding, no mandatory identity-indexed rendezvous; optional pairwise capabilities. |
 | **Deniability** | Transcripts are not cryptographic proof of authorship to third parties. | No signatures over message content; authentication via shared MAC keys (Signal-style). |
 | **No mandatory identifiers** | No phone number, email, or real name, ever. | Keypair-as-identity ([06: Identity & Trust](06-identity-trust.md)). |
-| **Availability off-grid** | Communication survives infrastructure loss. | Transport abstraction with LoRa mesh + sneakernet fallbacks. |
+| **Availability off-grid** | Communication may continue when ordinary infrastructure is lost and at least one supported alternate path remains usable. | Transport abstraction with LoRa mesh + sneakernet fallbacks; no guarantee against simultaneous blocking, jamming, device loss, or power loss. |
 | **Local display minimization** | Reduce accidental disclosure from capture and task/app-switcher previews where native APIs permit. | Always-on B14 shell protections and explicit unsupported states; not an endpoint-compromise defense. |
 | **Local input minimization** | Reduce keyboard learning, correction, spellcheck, autofill, and secret-field exposure where native APIs permit. | Always-on B15 field controls and explicit best-effort/unavailable states; not an endpoint-compromise defense. |
 | **Identity-text safety** | Keep mutable human labels from becoming identity or silently hiding spoofing risk. | Exact peer-key targeting, NFC normalization, duplicate/confusable/bidi/invisible warnings, and explicit review for warned B5 renames. |
 | **Active-content isolation** | Authenticated message text must not become executable or network-active content. | B9 keeps exact source, applies a bounded local parser, exports only inert block/run tokens, literal-falls back on complexity, and never interprets HTML, links, images, or URL schemes. |
-| **Edit provenance** | A peer must not rewrite another author's message or make offline endpoints disagree about the visible version. | C3 immutable edit events bind exact author/content ids inside authenticated content; wrong-author/wrong-scope events never apply, and maximum `(revision, edit id)` converges without clocks. |
-| **Poll convergence and honesty** | A peer must not cast another member's vote or make replicas tally the same received events differently. | C5 binds each vote to the authenticated group sender, fixes the creator-attested electorate, selects maximum `(revision, event id)`, and freezes a creator-authenticated close snapshot; the UI says votes are visible and never claims anonymity or election fairness. |
+| **Edit provenance** | A pairwise peer must not rewrite another author's message, and offline endpoints must agree about the visible version. | C3 immutable edit events bind exact author/content ids inside authenticated content; wrong-author/wrong-scope events never apply, and maximum `(revision, edit id)` converges without clocks. Current group edits still inherit sender-key member impersonation until ADR-0029. |
+| **Poll convergence and honesty** | Replicas must tally the same received events; stable release must also prevent one member from casting another member's vote. | C5 fixes the creation-declared electorate, selects maximum `(revision, event id)`, and freezes a close snapshot claimed by the creator. Convergence is implemented, but voter, creator, and close-origin authentication remain open under ADR-0029; the UI says votes are visible and never claims anonymity or election fairness. |
 | **Group authority convergence** | A stale admin or losing ownership fork must not regain authority or future group secrets. | C6 signs canonical full role state and transfer certificates, binds admin requests to one generation, serializes mutations at one owner, rejects non-extending transfer chains, and re-keys every accepted transition. |
 | **Sovereignty** | Users hold their own keys and data; anyone can run every component. | Local-first storage, AGPLv3, no privileged nodes. |
 
@@ -163,15 +166,18 @@ non-colluding OHTTP relay, but it does not promise anonymity against collusion
 or a global passive observer. Service compromise can suppress convenience work
 but cannot decrypt or forge an accepted Komms message.
 
-Message editing does not erase evidence or extend sender authority. The original
-and accepted versions remain sealed locally and in backups; only the exact
-authenticated author can target canonical text in the same conversation.
-Display names, local timestamps, and arrival order cannot authorize or select a
-winner. A malicious peer can send many authenticated attempts and consume its
-own conversation storage, so local authors are capped at 64 edits per target;
-authenticated inbound events remain durable to preserve convergence. Recipients
-may retain, copy, capture, or export any prior version, and the UI never describes
-editing as remote deletion. Exact limits are in
+Message editing does not erase evidence or extend pairwise sender authority. The
+original and accepted versions remain sealed locally and in backups; in a
+pairwise conversation only the exact authenticated author can target canonical
+text in that conversation. Current sender-key groups validate the claimed author
+against membership but cannot stop a malicious member from forging another
+member's edit; ADR-0029 is required before extending the pairwise authorship
+claim to groups. Display names, local timestamps, and arrival order cannot
+authorize or select a winner. A malicious peer can send many authenticated
+attempts and consume its own conversation storage, so local authors are capped
+at 64 edits per target; authenticated inbound events remain durable to preserve
+convergence. Recipients may retain, copy, capture, or export any prior version,
+and the UI never describes editing as remote deletion. Exact limits are in
 [18: Authenticated Message Editing](18-message-editing.md).
 
 C4 ephemeral content narrows local retention; it does not create remote
@@ -185,17 +191,19 @@ Komms's ordinary preview/export/playback paths but is not DRM or universal
 screenshot prevention. See
 [19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
 
-C5 group polls protect content from intermediaries and authenticate which group
-identity authored each event; they do not provide secret ballots. Every holder
-of the poll can inspect current voter identities and choices. The creator
-attests the fixed electorate and final observed vote-head snapshot, so a
-malicious creator can close before an offline vote arrives or omit an observed
-head in a forged close event; deterministic convergence is not proof of fair or
-complete counting. A voter cannot impersonate another member, and outsider,
-unknown-option, duplicate, delayed, and reordered events do not change the
-defined result. Removed members retain what they already received. See
-[20: Group Polls](20-group-polls.md) and
-[ADR-0022](adr/0022-convergent-group-polls.md).
+C5 group polls protect content from intermediaries and deterministically converge,
+but the current shared sender-key construction authenticates only that an event
+came from some member. A malicious member can therefore forge another member's
+apparent vote until ADR-0029 adds recipient-verifiable origin authentication.
+Every holder of the poll can inspect current apparent voter identities and
+choices. The creator attests the fixed electorate and final observed vote-head
+snapshot, so a malicious creator can close before an offline vote arrives or
+omit an observed head in a forged close event; deterministic convergence is not
+proof of fair or complete counting. Outsider, unknown-option, duplicate,
+delayed, and reordered events do not change the defined result. Removed members
+retain what they already received. See [20: Group Polls](20-group-polls.md),
+[ADR-0022](adr/0022-convergent-group-polls.md), and
+[ADR-0029](adr/0029-recipient-authenticated-groups.md).
 
 C6 group authority is attributable rather than deniable durable state. This is
 an intentional exception to ordinary deniable message content: identity
@@ -215,13 +223,15 @@ but it does not make an authorized device harmless. Every physical endpoint has
 an account-signed certificate and independent delivery cryptography; manifests,
 link transcripts, sync events, counters, and revocations are authenticated and
 rollback/replay checked. A compromised authorized device can retain plaintext,
-emit account-authorized events, or race a same-generation manifest fork until
-another surviving device permanently revokes it. Revocation protects future
-delivery and accepted sync, not content already seen. Explicit bounded sync has
-no server log and excludes live queues/ratchets, active ephemeral content,
-downloaded media, drafts, and scheduled outbox rows. See
+emit account-authorized events, race manifests, or—because ADR-0024 currently
+copies the account root—mint a fresh certificate even after its known device id
+is revoked. Current revocation excludes that exact id from honest future
+delivery and sync; it is not permanent containment of a compromised device.
+ADR-0026 moves the root offline and requires prior-device majority authority.
+Explicit bounded sync has no server log and excludes live queues/ratchets,
+active ephemeral content, downloaded media, drafts, and scheduled outbox rows. See
 [22: Linked Devices](22-linked-devices.md) and
-[ADR-0024](adr/0024-account-authorized-linked-devices.md).
+[ADR-0026](adr/0026-revocable-device-authority.md).
 
 Private folders, conversation pins, and labels are endpoint organization, never
 communications metadata. Their definitions, single-folder assignments,
@@ -298,8 +308,8 @@ Honesty here is a security feature. Komms does **not** claim to provide:
 |---|---|
 | A1 | No server-side content-scanning point exists; malicious or compelled endpoint software remains A7. |
 | A2 | Coarse traffic patterns on internet transport and enabled convenience services until cover-traffic/Tor mitigations apply. |
-| A3 | Determined national censor can degrade internet transport; off-grid transports remain. |
-| A4 | Regional mesh partitions until a bridge node appears; optional-service outage loses convenience, not core communication. |
+| A3 | Determined national censor can degrade or block internet transport; off-grid options still require usable hardware, power, configuration, and an unjammed path. |
+| A4 | Regional mesh partitions until a bridge node appears; optional-service outage leaves pure-core capabilities available but may still prevent delivery when no core path is currently reachable. |
 | A5 | Targeted denial and service-use correlation by a well-placed component; denial is mitigated by multipath core fallback. |
-| A6 | Broken only if *both* X25519 and ML-KEM-768 fail. |
+| A6 | The hybrid handshake is intended to retain key-agreement security if either X25519 or ML-KEM-768 remains secure under the composition's assumptions; protocol, implementation, endpoint, and future-cryptanalysis failures remain possible. |
 | A7 | Persistent endpoint compromise is out of scope; transient compromise is healed. |

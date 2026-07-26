@@ -1,6 +1,6 @@
 # 13: Screen Security
 
-B14 is shipped as an **always-on application-shell boundary**. It reduces
+B14 is implemented as an **always-on application-shell boundary**. It reduces
 accidental disclosure through screenshots, recordings, app-switcher snapshots,
 and recent/task previews where the operating system offers a relevant API. It is
 not DRM and does not change Komms' end-to-end encryption or endpoint-compromise

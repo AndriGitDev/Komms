@@ -14,8 +14,9 @@
 //! - **RPC server**: newline-delimited JSON on a mode-0600 Unix socket
 //!   (see [`crate::wire`]).
 
+use std::fs::{File, OpenOptions};
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -30,10 +31,31 @@ use kult_crypto::KdfProfile;
 use kult_node::{DeviceLinkSelection, FolderSelection, LabelMatchMode, Node, NodeError};
 use kult_transport::{
     DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, MeshtasticOptions,
-    MeshtasticTransport, NatStatus, Transport, TransportOptions,
+    MeshtasticTransport, NatStatus, Transport, TransportOptions, MAX_MAILBOX_CHECKIN_TOKENS,
 };
 
 use crate::wire::{self, Hint, Op, Request};
+
+/// Bound one lifecycle pass even when an operator configures many or hostile
+/// mailbox endpoints. Remaining work waits for the next check-in interval.
+const MAX_MAILBOXES_PER_CHECKIN_TICK: usize = 8;
+
+/// Return one contiguous bounded page and advance a persistent cursor.
+///
+/// The final short page resets to the front for the following call. This
+/// avoids both front-of-list starvation and needless duplicates while a full
+/// mailbox/token set is being refreshed over multiple lifecycle intervals.
+fn rotating_batch<T: Clone>(items: &[T], cursor: &mut usize, limit: usize) -> Vec<T> {
+    if items.is_empty() || limit == 0 {
+        *cursor = 0;
+        return Vec::new();
+    }
+    *cursor %= items.len();
+    let end = cursor.saturating_add(limit).min(items.len());
+    let batch = items[*cursor..end].to_vec();
+    *cursor = if end == items.len() { 0 } else { end };
+    batch
+}
 
 /// Everything the daemon needs to run. Built by the CLI in `bin/kultd.rs`,
 /// or directly by tests.
@@ -223,6 +245,7 @@ pub struct Daemon {
     pub net: Arc<Libp2pTransport>,
     shutdown: watch::Sender<bool>,
     tasks: Vec<JoinHandle<()>>,
+    socket_guard: RpcSocketGuard,
 }
 
 impl Daemon {
@@ -323,14 +346,18 @@ impl Daemon {
         let (node_tx, node_rx) = mpsc::channel::<NodeMsg>(64);
         let (events_tx, _) = broadcast::channel::<String>(256);
 
-        // Replace a stale socket from an unclean shutdown; a live daemon on
-        // the same path would have to be stopped first anyway.
-        let _ = std::fs::remove_file(&cfg.socket_path);
-        let listener = UnixListener::bind(&cfg.socket_path)?;
+        // Refuse to displace a live daemon. Only a socket that cannot accept
+        // a connection is treated as stale and removed.
+        let (listener, socket_guard) = bind_rpc_socket(&cfg.socket_path).await?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&cfg.socket_path, std::fs::Permissions::from_mode(0o600))?;
+            if let Err(error) =
+                std::fs::set_permissions(&cfg.socket_path, std::fs::Permissions::from_mode(0o600))
+            {
+                socket_guard.remove_owned();
+                return Err(DaemonError::Io(error));
+            }
         }
 
         let mut tasks = Vec::new();
@@ -398,7 +425,7 @@ impl Daemon {
             for task in tasks {
                 let _ = task.await;
             }
-            let _ = std::fs::remove_file(&cfg.socket_path);
+            socket_guard.remove_owned();
             return Err(DaemonError::Io(error));
         }
 
@@ -409,6 +436,7 @@ impl Daemon {
             net,
             shutdown,
             tasks,
+            socket_guard,
         })
     }
 
@@ -418,7 +446,149 @@ impl Daemon {
         for task in self.tasks {
             let _ = task.await;
         }
-        let _ = std::fs::remove_file(&self.socket_path);
+        self.socket_guard.remove_owned();
+    }
+}
+
+#[derive(Debug)]
+struct RpcSocketGuard {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+    _lock: File,
+}
+
+impl RpcSocketGuard {
+    /// Remove only the socket inode this daemon originally bound.
+    fn remove_owned(&self) {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+
+        let Ok(metadata) = std::fs::symlink_metadata(&self.path) else {
+            return;
+        };
+        if metadata.file_type().is_socket()
+            && metadata.dev() == self.device
+            && metadata.ino() == self.inode
+        {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn rpc_lock_path(path: &Path) -> io::Result<PathBuf> {
+    let file_name = path.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "RPC socket path has no file name",
+        )
+    })?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut lock_name = file_name.to_os_string();
+    lock_name.push(".lock");
+    Ok(std::fs::canonicalize(parent)?.join(lock_name))
+}
+
+fn acquire_rpc_lock(path: &Path) -> io::Result<File> {
+    let lock_path = rpc_lock_path(path)?;
+    if std::fs::symlink_metadata(&lock_path).is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("RPC lock path is a symlink: {}", lock_path.display()),
+        ));
+    }
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    let lock = options.open(lock_path)?;
+    lock.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    match fs2::FileExt::try_lock_exclusive(&lock) {
+        Ok(()) => Ok(lock),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            format!("another daemon owns RPC socket {}", path.display()),
+        )),
+        Err(error) => Err(error),
+    }
+}
+
+fn socket_identity(path: &Path) -> io::Result<(u64, u64)> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_socket() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("refusing to replace non-socket path {}", path.display()),
+        ));
+    }
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+fn guarded_listener(
+    path: &Path,
+    lock: File,
+    listener: UnixListener,
+) -> io::Result<(UnixListener, RpcSocketGuard)> {
+    let (device, inode) = socket_identity(path)?;
+    Ok((
+        listener,
+        RpcSocketGuard {
+            path: path.to_path_buf(),
+            device,
+            inode,
+            _lock: lock,
+        },
+    ))
+}
+
+/// Bind the RPC socket without unlinking a live daemon's pathname.
+///
+/// A no-follow socket-specific sidecar lock serializes cooperative stale
+/// probing, unlink, bind, and the daemon lifetime. Observed non-socket path
+/// replacements fail closed. Deployment still requires a daemon-owned parent
+/// directory because portable Unix APIs cannot atomically recheck and unlink a
+/// hostile replacement.
+async fn bind_rpc_socket(path: &Path) -> io::Result<(UnixListener, RpcSocketGuard)> {
+    let lock = acquire_rpc_lock(path)?;
+    match UnixListener::bind(path) {
+        Ok(listener) => guarded_listener(path, lock, listener),
+        Err(bind_error) if bind_error.kind() == io::ErrorKind::AddrInUse => {
+            let stale_identity = socket_identity(path)?;
+            match tokio::time::timeout(Duration::from_millis(500), UnixStream::connect(path)).await
+            {
+                Err(_) => Err(bind_error),
+                Ok(Ok(_)) => Err(io::Error::new(
+                    io::ErrorKind::AddrInUse,
+                    format!("another daemon is listening on {}", path.display()),
+                )),
+                Ok(Err(connect_error))
+                    if matches!(
+                        connect_error.kind(),
+                        io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+                    ) =>
+                {
+                    match socket_identity(path) {
+                        Ok(current) if current == stale_identity => {}
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                        _ => return Err(bind_error),
+                    }
+                    match std::fs::remove_file(path) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error),
+                    }
+                    let listener = UnixListener::bind(path)?;
+                    guarded_listener(path, lock, listener)
+                }
+                Ok(Err(_)) => Err(bind_error),
+            }
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -1831,6 +2001,9 @@ async fn lifecycle(
     // Kept in lockstep with kult-ffi's lifecycle.
     let mut lan_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut lan_tick = tokio::time::interval(Duration::from_secs(15));
+    let mut mailbox_cursor = 0usize;
+    let mut mailbox_token_cursors: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
 
     loop {
         tokio::select! {
@@ -1869,17 +2042,27 @@ async fn lifecycle(
                     break;
                 }
                 let Ok(tokens) = rx.await else { break };
-                for mailbox in &cfg.mailboxes {
-                    // Drain the backlog: a check-in returns at most one
-                    // batch; repeat until empty.
-                    loop {
-                        match net.mailbox_checkin(mailbox, &tokens).await {
-                            Ok(0) => break,
-                            Ok(_) => continue,
-                            Err(e) => {
-                                tracing::warn!(error = %e, %mailbox, "mailbox check-in failed");
-                                break;
-                            }
+                let mailboxes = rotating_batch(
+                    &cfg.mailboxes,
+                    &mut mailbox_cursor,
+                    MAX_MAILBOXES_PER_CHECKIN_TICK,
+                );
+                for mailbox in mailboxes {
+                    let token_cursor = mailbox_token_cursors
+                        .entry(mailbox.clone())
+                        .or_default();
+                    let token_batch =
+                        rotating_batch(&tokens, token_cursor, MAX_MAILBOX_CHECKIN_TOKENS);
+                    // One bounded page per mailbox and lifecycle interval.
+                    // A relay that never returns empty cannot monopolize this
+                    // task or grow the local receive queue without a limit.
+                    match net.mailbox_checkin(&mailbox, &token_batch).await {
+                        Ok(count) if count > 0 => {
+                            tracing::debug!(count, %mailbox, "mailbox page collected");
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::warn!(error = %e, %mailbox, "mailbox check-in failed");
                         }
                     }
                 }
@@ -1978,5 +2161,127 @@ async fn recv_event(subscription: &mut Option<broadcast::Receiver<String>>) -> O
             Err(broadcast::error::RecvError::Closed) => std::future::pending().await,
         },
         None => std::future::pending().await,
+    }
+}
+
+#[cfg(test)]
+mod socket_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn live_rpc_socket_is_never_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kultd.sock");
+        let (listener, guard) = bind_rpc_socket(&path).await.unwrap();
+
+        let error = bind_rpc_socket(&path).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+
+        // The original listener remains reachable at the same pathname.
+        let client = UnixStream::connect(&path).await.unwrap();
+        drop(client);
+        drop(listener);
+        guard.remove_owned();
+    }
+
+    #[tokio::test]
+    async fn stale_rpc_socket_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kultd.sock");
+        let stale = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        drop(stale);
+        assert!(path.exists());
+
+        let (listener, guard) = bind_rpc_socket(&path).await.unwrap();
+        let client = UnixStream::connect(&path).await.unwrap();
+        drop(client);
+        drop(listener);
+        guard.remove_owned();
+    }
+
+    #[tokio::test]
+    async fn regular_file_at_rpc_path_is_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kultd.sock");
+        std::fs::write(&path, b"operator-owned").unwrap();
+
+        assert!(bind_rpc_socket(&path).await.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"operator-owned");
+    }
+
+    #[tokio::test]
+    async fn concurrent_stale_recovery_has_one_reachable_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kultd.sock");
+        let stale = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        drop(stale);
+
+        let (left, right) = tokio::join!(bind_rpc_socket(&path), bind_rpc_socket(&path));
+        assert_eq!(usize::from(left.is_ok()) + usize::from(right.is_ok()), 1);
+        let (listener, guard) = left.or(right).unwrap();
+        let client = UnixStream::connect(&path).await.unwrap();
+        drop(client);
+        drop(listener);
+        guard.remove_owned();
+    }
+
+    #[test]
+    fn rpc_lock_refuses_a_symlink_and_normalizes_existing_permissions() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("kultd.sock");
+        let lock_path = dir.path().join("kultd.sock.lock");
+        let target = dir.path().join("unrelated");
+        std::fs::write(&target, b"preserve").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+        symlink(&target, &lock_path).unwrap();
+        assert!(acquire_rpc_lock(&socket).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"preserve");
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+
+        std::fs::remove_file(&lock_path).unwrap();
+        std::fs::write(&lock_path, b"").unwrap();
+        std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o666)).unwrap();
+        let lock = acquire_rpc_lock(&socket).unwrap();
+        assert_eq!(lock.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn rotating_batches_cover_large_mailbox_and_token_sets_without_starvation() {
+        let mailboxes: Vec<usize> = (0..10).collect();
+        let mut mailbox_cursor = 0;
+        assert_eq!(
+            rotating_batch(
+                &mailboxes,
+                &mut mailbox_cursor,
+                MAX_MAILBOXES_PER_CHECKIN_TICK
+            ),
+            (0..8).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            rotating_batch(
+                &mailboxes,
+                &mut mailbox_cursor,
+                MAX_MAILBOXES_PER_CHECKIN_TICK
+            ),
+            vec![8, 9]
+        );
+
+        let tokens: Vec<usize> = (0..(MAX_MAILBOX_CHECKIN_TOKENS + 17)).collect();
+        let mut token_cursor = 0;
+        let first = rotating_batch(&tokens, &mut token_cursor, MAX_MAILBOX_CHECKIN_TOKENS);
+        let second = rotating_batch(&tokens, &mut token_cursor, MAX_MAILBOX_CHECKIN_TOKENS);
+        assert_eq!(first.len(), MAX_MAILBOX_CHECKIN_TOKENS);
+        assert_eq!(second, tokens[MAX_MAILBOX_CHECKIN_TOKENS..]);
+        assert_eq!(token_cursor, 0);
     }
 }

@@ -97,13 +97,16 @@ choices and honest local-only language. See
 [19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
 
 C5 polls follow the immutable replicated-state shape: `kult-protocol` owns
-content-v1 kind 6 create/vote/close frames; `kult-node` authenticates the group
-sender and derives fixed-electorate vote heads and final tallies; existing
+content-v1 kind 6 create/vote/close frames; `kult-node` validates the claimed
+group member and derives fixed-electorate vote heads and final tallies; existing
 sealed group rows and `KKR7` carry the source events; RPC/UniFFI expose typed
 snapshots; shells render and refresh cards without resolving votes. The
 sender-key path hides poll content from transports, while authenticated
-capability intersection keeps old clients off the typed send path. See
-[20: Group Polls](20-group-polls.md).
+capability intersection keeps old clients off the typed send path. Because
+sender keys are shared, another member can forge the claimed voter until
+ADR-0029 adds recipient-verifiable origins. See
+[20: Group Polls](20-group-polls.md) and
+[ADR-0029](adr/0029-recipient-authenticated-groups.md).
 
 C6 authority adds a deliberately separate signed control plane without moving
 policy into shells. `kult-protocol` owns content-v1 kind 7, the canonical full
@@ -123,11 +126,13 @@ cryptography. `kult-crypto` owns certificates, manifests, link transcripts, and
 sync sealing; `kult-protocol` owns bounded endpoint bundles and sync events;
 `kult-store` seals device authority, per-endpoint delivery state, sync counters,
 and deterministic winners; `kult-node` enforces fan-out, capability intersection,
-revocation, convergence, and recovery. RPC/UniFFI expose opaque ceremony bytes
+known-id exclusion, convergence, and recovery. Current Alpha authority still
+copies the account root and cannot permanently contain a compromised device;
+ADR-0026 replaces that boundary. RPC/UniFFI expose opaque ceremony bytes
 and strict render-safe device models; shells compare codes and collect explicit
 approvals without implementing authority rules. See
 [22: Linked Devices](22-linked-devices.md) and
-[ADR-0024](adr/0024-account-authorized-linked-devices.md).
+[ADR-0026](adr/0026-revocable-device-authority.md).
 
 ## 3. Message lifecycle
 
@@ -140,8 +145,12 @@ what makes pre-activation edit/cancel safe. Clock rollback keeps the row held;
 clock advance activates it on the next tick; time-zone changes are display-only.
 
 1. **App** calls `send(conversation, content)` through `kult-ffi`.
-2. **kult-node** persists the outbound message locally (`kult-store`) with state `queued`:
-   the UI is truthful about delivery, and nothing is lost on crash.
+2. **kult-node** persists the outbound message locally (`kult-store`) with state
+   `queued`, so ordinary restart preserves the durable queue and the UI can
+   report delivery honestly. Current Alpha outbound ratchet, history, and queue
+   writes are not yet one universal atomic transition; the remaining crash
+   windows are tracked by [ADR-0028](adr/0028-atomic-protocol-commits.md) and
+   must close before a general “nothing is lost on crash” claim.
 3. **kult-protocol** serializes content, pads it to the next size bucket, and hands it to
    the conversation's ratchet.
 4. **kult-crypto** advances the sending chain, encrypts with XChaCha20-Poly1305, and
@@ -237,13 +246,18 @@ decrypting it. The exact deadline and whether the content is text or view-once
 media remain encrypted. The bucket is a bounded deletion hint, not proof that a
 relay erased every copy.
 
-No sender identity, no recipient identity, no exact content deadline beyond arrival time, no
-conversation linkage. This is the **sealed sender** property; the construction is specified
-in [04: Cryptography §7](04-cryptography.md).
+The envelope encodes no sender identity, recipient identity, exact content
+deadline beyond the coarse bucket, or conversation identifier. This is the
+**sealed sender** content property; it does not hide network addresses, opaque
+delivery tokens, timing, sizes, volume, or cross-request correlation from every
+carrier or observer. The construction is specified in
+[04: Cryptography §7](04-cryptography.md).
 
 This paragraph does not describe an enabled optional rendezvous or native-wake
 service. Their bounded but non-zero metadata surfaces are listed in
-[02: Threat Model](02-threat-model.md) and ADR-0017.
+[02: Threat Model](02-threat-model.md),
+[ADR-0017](adr/0017-optional-hybrid-modes.md), and
+[ADR-0034](adr/0034-operator-minimized-reference-discovery.md).
 
 ## 6. Groups
 

@@ -156,7 +156,7 @@ fn sneakernet_end_to_end_with_restart() {
         let queued = alice.queue_all().unwrap();
         assert_eq!(queued.len(), 2, "queue must survive restart");
         let envs: Vec<Envelope> = queued.iter().map(|(_, i)| i.envelope.clone()).collect();
-        std::fs::write(&bundle_a_to_b, bundle_export(&envs)).unwrap();
+        std::fs::write(&bundle_a_to_b, bundle_export(&envs).unwrap()).unwrap();
         for (seq, _) in queued {
             alice.queue_ack(seq).unwrap(); // handed to the courier
         }
@@ -265,7 +265,7 @@ fn sneakernet_end_to_end_with_restart() {
         let queued = bob.queue_all().unwrap();
         assert_eq!(queued.len(), 1);
         let envs: Vec<Envelope> = queued.iter().map(|(_, i)| i.envelope.clone()).collect();
-        std::fs::write(&bundle_b_to_a, bundle_export(&envs)).unwrap();
+        std::fs::write(&bundle_b_to_a, bundle_export(&envs).unwrap()).unwrap();
     }
     {
         let alice = Store::open(&alice_db, b"alice-pass").unwrap();

@@ -191,14 +191,17 @@ payload(payload_len)
 The complete unpadded bulk body is at most 65,535 bytes and must be consumed
 exactly. Unknown versions, operations, flags, or scopes are terminally ignored
 after authentication; malformed lengths are rejected before allocation. The
-session peer, scope, author, manifest id, and object id must resolve to one
-stored Attachment manifest before any operation changes state.
+session peer, scope, claimed author, manifest id, and object id must resolve to
+one stored Attachment manifest before any operation changes state.
 
 An inbound `Chunk` or `Cancel` that acts as the serving side is accepted only
-from the manifest author's pairwise session. In a group, `RequestMissing`,
-`Complete`, `Cancel`, or `Reject` from a receiver is accepted only from a member
-who was entitled to the manifest when it was sent. These checks are durable
-transfer metadata, not inferred from the current roster alone.
+from the apparent manifest author's pairwise session. In a group,
+`RequestMissing`, `Complete`, `Cancel`, or `Reject` from a receiver is accepted
+only from a member who was entitled to the manifest when it was sent. These
+checks are durable transfer metadata, not inferred from the current roster
+alone. Current sender-key group manifests do not prove their individual origin:
+a malicious member can forge another member as the apparent author and misroute
+chunk requests until ADR-0029 is implemented.
 
 For a pairwise scope, `scope_id` is
 `BLAKE3("KAT-pairwise-scope-v1" || min(IK_A, IK_B) || max(IK_A, IK_B))`, with
@@ -250,12 +253,12 @@ group message and fanned out under
 [ADR-0012](0012-sender-key-groups.md). The attachment key is therefore
 available to every member entitled to that group message, just like its text.
 Each member consents and requests missing chunks independently over its pairwise
-ratchet with the original manifest author. The author reuses the exact same
-sealed chunk bytes for every member; neither the file nor a chunk is encrypted
-again per recipient. Pairwise wrappers, delivery tokens, and retry state differ,
-but the bulk ciphertext does not.
+ratchet with the apparent manifest author. An honest author reuses the exact
+same sealed chunk bytes for every member; neither the file nor a chunk is
+encrypted again per recipient. Pairwise wrappers, delivery tokens, and retry
+state differ, but the bulk ciphertext does not.
 
-Only the original manifest author serves v1 chunks. Peer-assisted group seeding
+Only the apparent manifest author serves v1 chunks. Peer-assisted group seeding
 would reveal possession and needs a separate authorization and abuse design.
 Adding a member does not replay old manifests or attachment keys. Removing a
 member cannot revoke bytes or keys already delivered to that member; a member
@@ -458,9 +461,9 @@ Implementation is not accepted until it includes:
   encryptions and N distinct stores. Pairwise request wrappers are small;
   sealed chunk bytes remain identical.
 - **Automatic download based only on MIME or filename.** Rejected: both are
-  authenticated sender claims, not safety verdicts, and carrier/storage state
-  can change immediately. Consent, byte caps, sandboxing, and F4 gating remain
-  authoritative.
+  pairwise-authenticated or group-membership-protected sender claims, not safety
+  verdicts, and carrier/storage state can change immediately. Consent, byte
+  caps, sandboxing, and F4 gating remain authoritative.
 - **Store media as SQLite BLOBs or plaintext files.** Rejected: large BLOBs
   amplify database copies and backups; plaintext files violate the storage
   promise. Sealed files plus transactional sealed metadata bound both risks.
@@ -481,9 +484,10 @@ Implementation is not accepted until it includes:
   chunk carries fixed-record and double-encryption overhead and small control
   records use a 4 KiB padding bucket; this intentionally trades bandwidth on
   bulk-capable links for restart safety, metadata protection, and a mesh guard.
-- Group manifests and file bytes are encrypted once, but the original author
+- Group manifests and file bytes are encrypted once, but the apparent author
   maintains independent per-member request/progress state and must remain
-  available to serve v1 downloads.
+  available to serve v1 downloads. ADR-0029 is required to make that group
+  attribution resistant to another member.
 - The store gains filesystem lifecycle and crash-consistency obligations beyond
   SQLite. Backups remain small and compatible at the cost of media being
   re-downloadable rather than restored.

@@ -6,6 +6,15 @@ a cloud account or a promise that every device is continuously online.
 
 The normative design is [ADR-0024](adr/0024-account-authorized-linked-devices.md).
 
+> **Alpha authority warning:** the current implementation copies the stable
+> account private key to every linked device. A known device id can be excluded
+> from honest future delivery and sync, but a compromised former device still
+> has authority to mint a new certificate and higher manifest. Permanent
+> adversarial revocation is therefore **not** implemented. Do not rely on the
+> current linked-device feature after device compromise. The required
+> offline-root and majority-authorized replacement is
+> [ADR-0026](adr/0026-revocable-device-authority.md).
+
 ## What users can rely on
 
 - Every physical device has its own certified identity, PQXDH/Double Ratchet
@@ -16,9 +25,10 @@ The normative design is [ADR-0024](adr/0024-account-authorized-linked-devices.md
   private organization, and non-ephemeral history.
 - Up to eight devices can be active. Names are account-signed; last-seen is a
   coarse observation, not presence.
-- Revocation targets one exact device, is permanent, requires a destructive
-  confirmation, excludes future delivery/sync, and rotates surviving group
-  sender chains.
+- Revocation targets one exact known device, requires a destructive
+  confirmation, excludes that id from honest future delivery/sync, and rotates
+  surviving group sender chains. It is not yet permanent against a holder of
+  the copied account root.
 - Pairwise delivery exposes honest per-device queued/sent/delivered state. The
   account-level state remains an aggregate and never implies every device is
   online.
@@ -66,9 +76,12 @@ recipient.
 
 ## Loss and recovery
 
-If one linked device is lost, revoke it from another active device as soon as
-possible. The lost device can retain content already decrypted; revocation
-prevents new delivery and accepted sync.
+If one linked device is lost, revoke its known id from another active device as
+soon as possible and treat the account as needing an Alpha authority reset.
+The lost device can retain content already decrypted and, because it received
+the current account root, can create a new authorized-looking device. Current
+revocation prevents honest peers from delivering or syncing to the named id; it
+does not contain a compromised root holder.
 
 `KKR7` recovery intentionally does not resurrect any backed-up device
 credential. Restore keeps the stable account and ordinary data, revokes every
@@ -83,4 +96,7 @@ convergence, malformed/replay/rollback rejection, revocation, restart, KKR7
 recovery, strict RPC/CLI, UniFFI, desktop, Android host-core source parity, and
 iOS host-core source parity. Per-push CI assembles the Android debug APK; full
 SwiftUI app type-check/simulator testing requires full Xcode. Real-device
-ceremony, revocation, and recovery behaviors remain hands-on qualification.
+ceremony and recovery behaviors remain hands-on qualification. Those tests
+exercise cooperative exact-id exclusion only; stolen-root, permanent
+revocation, manifest-fork, and authority-reset acceptance remain open under
+ADR-0026.
