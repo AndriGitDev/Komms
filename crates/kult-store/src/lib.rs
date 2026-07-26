@@ -671,6 +671,12 @@ fn store_lock_path(path: &Path) -> Result<PathBuf> {
 /// The sidecar intentionally remains after drop: unlinking a lock file can
 /// split contenders across different inodes. Dropping the returned handle
 /// releases the advisory lock.
+fn is_lock_contention(error: &std::io::Error) -> bool {
+    let expected = fs2::lock_contended_error();
+    error.kind() == std::io::ErrorKind::WouldBlock
+        || (expected.raw_os_error().is_some() && error.raw_os_error() == expected.raw_os_error())
+}
+
 fn acquire_store_lock(path: &Path) -> Result<File> {
     let lock_path = store_lock_path(path)?;
     let mut options = OpenOptions::new();
@@ -683,7 +689,7 @@ fn acquire_store_lock(path: &Path) -> Result<File> {
     let lock = options.open(lock_path)?;
     match fs2::FileExt::try_lock_exclusive(&lock) {
         Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+        Err(error) if is_lock_contention(&error) => {
             return Err(StoreError::AlreadyOpen);
         }
         Err(error) => return Err(StoreError::Io(error)),
@@ -708,9 +714,7 @@ fn acquire_database_identity_lock(path: &Path) -> Result<Option<File>> {
         let database = OpenOptions::new().read(true).write(true).open(path)?;
         match fs2::FileExt::try_lock_exclusive(&database) {
             Ok(()) => Ok(Some(database)),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                Err(StoreError::AlreadyOpen)
-            }
+            Err(error) if is_lock_contention(&error) => Err(StoreError::AlreadyOpen),
             Err(error) => Err(StoreError::Io(error)),
         }
     }
