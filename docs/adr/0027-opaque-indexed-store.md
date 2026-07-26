@@ -1,6 +1,6 @@
 # ADR-0027: Versioned opaque indexes and row-bound sealed storage
 
-- **Status**: Proposed
+- **Status**: Proposed; inactive v2 foundation implemented
 - **Date**: 2026-07-26
 
 ## Context
@@ -177,4 +177,27 @@ offer stronger local guarantees, but it must be measured and narrowly stated.
 - Database replacement and old-file cleanup need platform-specific
   qualification.
 - Marketing loses an absolute deletion slogan and gains a claim the
-  implementation can defend.
+implementation can defend.
+
+## Implementation status
+
+The first independently safe slice is implemented as an inactive v2 migration
+destination in `kult-store`. It provides authenticated metadata with a fresh
+database id, an explicit physical and authenticated schema version, and a
+completed migration ledger. Its typed contact, capability, and message fixture
+domains exercise table- and database-separated HMAC-SHA-256 equality indexes,
+random append-row locators, versioned logical records, and the canonical
+database/schema/table/locator AEAD binding above.
+
+Opening that destination validates the complete physical schema and every row.
+Fixtures cover future or disagreeing schemas, incomplete or duplicate
+migrations, invalid inner logical keys and record versions, duplicate indexes,
+cross-database/table/row transplantation, wrong keys, and locked-copy
+inspection. The legacy `Store` entry points refuse a v2 destination before
+running legacy schema statements.
+
+This slice does **not** convert any current user table or activate a mixed
+format. The all-table logical mapping, backup/restore integration, sibling-file
+fsync and atomic replacement, rollback-copy lifecycle, private history query
+indexes, large-history benchmarks, remnant reduction, and supported-platform
+qualification remain required before ADR-0027 can be accepted.
