@@ -50,11 +50,10 @@ migration plan, and evidence required for acceptance. Rough consensus is
 preferred; the lead maintainer makes the final decision and records the
 reason when consensus is not possible.
 
-Founder-directed automated assistance is an intentional implementation method.
-Automated systems are tools, not maintainers, reviewers, or decision-makers.
-The human maintainer remains accountable for provenance, scope, review, testing,
-acceptance, and public claims. Tool-assisted output is not independent review or
-release evidence by itself.
+Implementation method does not change accountability. The human maintainer who
+approves a change remains accountable for provenance, scope, review, testing,
+acceptance, and public claims. Only evidence meeting the published independence
+criteria counts as independent review.
 
 ## Review and release
 
@@ -79,7 +78,9 @@ and cannot be represented as closed, audited, or independently approved.
 The lead maintainer currently authorizes releases. A stable release also
 requires all applicable P0 gates in the
 [stabilization program](docs/29-stabilization-program.md) to be closed with
-published evidence.
+published evidence. The current owners, unassigned independent roles, claim
+register, gaps, and review dates are recorded in the
+[release evidence ledger](docs/31-release-evidence-ledger.md).
 
 ## Conflicts, conduct, and appeals
 
@@ -110,6 +111,12 @@ should have documented recovery and at least one authorized backup steward
 before a stable release. A temporary steward may maintain security and release
 continuity when the lead maintainer cannot act; permanent authority changes
 must be publicly recorded.
+
+No backup steward currently exists. The role remains visibly unassigned in
+[MAINTAINERS.md](MAINTAINERS.md), and stable release authority remains blocked
+until a real person accepts the scope and the credential-recovery procedure is
+rehearsed. Repository access or a platform role alone does not confer project
+or release authority.
 
 Governance evolution is not automatic. When sustained adoption has produced a
 real community of users, contributors, reviewers, and operators, the founder may

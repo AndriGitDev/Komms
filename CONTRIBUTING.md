@@ -9,10 +9,9 @@ Testers can start with the [Alpha testing guide](docs/27-alpha-testing.md);
 current priorities and evidence language are in the
 [stabilization program](docs/29-stabilization-program.md).
 
-Komms is currently founder-directed, including intentional use of automated
-implementation assistance. Contributions provide ideas, implementation,
-testing, and evidence; product and release authority remains with the founder
-unless explicitly delegated.
+Komms is currently founder-directed. Contributions provide ideas,
+implementation, testing, and evidence; product and release authority remains
+with the founder unless explicitly delegated.
 
 ## Where contributions help
 
@@ -56,11 +55,10 @@ fix does not require advance permission.
   release gate changes. Documentation claims must distinguish automated build
   evidence from hands-on device or hardware qualification.
 - Keep PRs scoped to one concern; cite the spec section your change implements.
-- Automated assistance is permitted. The human submitter must understand and
-  take responsibility for the diff, verify that they have the right to submit
-  it, check license and provenance concerns, run the applicable tests, and be
-  able to explain and revise the result. Automated output is not independent
-  review.
+- The human submitter must understand and take responsibility for the diff,
+  verify that they have the right to submit it, check license and provenance
+  concerns, run the applicable tests, and be able to explain and revise the
+  result.
 
 ## Process
 

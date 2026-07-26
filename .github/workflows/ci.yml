@@ -29,6 +29,8 @@ jobs:
         run: cargo fmt --all --check
       - name: release version alignment
         run: python3 scripts/check-release-version.py
+      - name: documentation controls
+        run: python3 scripts/check-docs.py
       - name: clippy
         run: cargo clippy --workspace --all-targets --all-features
       - name: tests

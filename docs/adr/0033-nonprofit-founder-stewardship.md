@@ -8,7 +8,7 @@
 Komms is being built as public-benefit communications infrastructure rather
 than as a venture-backed service or a data business. During the construction
 and stabilization phase, Andri is the sole maintainer and directs a broad,
-tool-assisted implementation program. Contributions and criticism are welcome,
+implementation program. Contributions and criticism are welcome,
 but a governance structure should reflect the community that actually exists
 rather than simulate plural ownership before adoption.
 
@@ -41,10 +41,9 @@ charity, tax-exempt entity, or legally incorporated nonprofit.
 ### 2. Founder direction is the intentional incubation model
 
 The founder holds final product, protocol, merge, release, delegation, and
-roadmap authority during construction and stabilization. Automated research and
-implementation systems are tools, not maintainers, reviewers, copyright holders
-represented by the project, or decision-makers. The human maintainer remains
-accountable for provenance, scope, testing, acceptance, and public claims.
+roadmap authority during construction and stabilization. The human maintainer
+remains accountable for provenance, scope, testing, acceptance, and public
+claims. Implementation authorship does not provide independent review.
 
 External reviewers may publish findings and decline to support an assurance
 claim. Their work is evidence, not shared product governance or an automatic

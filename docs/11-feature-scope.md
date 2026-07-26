@@ -31,8 +31,9 @@ status and prerequisites are tracked in the delivery plan.
 
 - **Text and audio messages.** Both are implemented. Recorded audio is an
   asynchronous encrypted F3 attachment, never a live call: every shell records
-  the same bounded metadata-free mono PCM WAV profile, requires local review and
-  explicit send/discard, and derives duration/waveform only on the endpoint.
+  the same bounded mono PCM WAV profile that omits source metadata, requires
+  local review and explicit send/discard, and derives duration/waveform only on
+  the endpoint.
   F4 explains the current carrier at confirmation. Under ADR-0015's hard rule,
   a mesh-only route holds every audio clip for a faster link and emits zero bulk
   airtime frames.
@@ -93,7 +94,7 @@ status and prerequisites are tracked in the delivery plan.
 - **Custom icons.** Implemented for contacts, groups, folders, and note-to-self over
   the sealed F5 record and every wrapper/shell. Missing records render generated
   initials; eight bundled glyphs and selected local JPEG/PNG inputs become exact
-  metadata-free 256×256 RGBA PNGs after orientation normalization and square
+  256×256 RGBA PNGs that omit source metadata after orientation normalization and square
   crop. Animated/decompression-heavy inputs fail closed. Limits are 512 KiB per
   icon, 1,024 records, and 64 MiB aggregate; reads safely fall back after corrupt
   or legacy non-canonical bytes. Portability is limited to `KKR7` and authenticated
@@ -120,7 +121,8 @@ status and prerequisites are tracked in the delivery plan.
 - **Local still-image editing.** Implemented across desktop, Android, and iOS through
   one bounded Rust helper: JPEG/PNG orientation normalization, free/preset crop,
   90-degree rotation, and manual blur/pixelation are applied *before* encryption.
-  The exact metadata-free PNG is reviewed and is the only asset sealed; protected
+  The exact PNG re-encoded without source metadata is reviewed and is the only
+  asset sealed; protected
   originals and intermediates are cleaned locally. No protocol involvement.
 - **Mentions.** Group mentions are implemented through explicit current-roster
   pickers and canonical typed content,

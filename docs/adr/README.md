@@ -2,7 +2,7 @@
 
 ADRs record decisions that constrain Komms across implementations. An accepted
 ADR is normative until another ADR explicitly supersedes it. A proposed ADR is
-design work under review: it may guide experiments, but it is not a shipped
+design work under review: it may guide experiments, but it is not a stable
 product promise merely because the file exists.
 
 | ADR | Status | Decision area |

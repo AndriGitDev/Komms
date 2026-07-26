@@ -27,10 +27,10 @@ Three things make it different from the messengers you know:
    supported route, working devices, power, configuration, and sometimes radio
    hardware.
 3. **You are not a phone number.** No number, no email, no account, no sign-up. Your
-   identity is a cryptographic key created on your own device. Nobody can ban your
-   Komms account, because there is no centrally administered Komms account.
-   Networks, app stores, and device owners can still deny access to their own
-   resources.
+   identity is a cryptographic key created on your own device. There is no
+   centrally administered Komms account for one operator to deactivate.
+   Contacts can block an identity, and networks, app stores, service operators,
+   and device owners can deny access to their own resources.
 
 ## What do the crypto words mean?
 
@@ -54,7 +54,8 @@ shutdowns when a supported alternate path remains.
 **It cannot protect**: a phone that is already hacked or taken from you unlocked;
 the fact that a radio transmission physically happened (radio can be detected); you,
 if the person you message shares your messages; or all timing/network metadata
-when you enable an optional convenience service. No honest tool claims otherwise.
+when you enable an optional convenience service. No honest privacy claim says
+otherwise.
 Our full, frank list is in the [threat model](02-threat-model.md).
 
 ## Can I use it today?

@@ -13,8 +13,9 @@ are the node's own, verbatim.
   inactive/background transitions, and responds to UIKit capture notifications.
   Settings explicitly state that iOS cannot universally block still screenshots
   and that capture notification is not retroactive.
-- **Reduce keyboard retention on every SwiftUI editor.** Every audited text editor
-  disable autocorrection through one audited modifier; message/name fields keep
+- **Reduce keyboard retention on every inventoried SwiftUI editor.** Every
+  covered text editor disables autocorrection through one shared modifier;
+  message/name fields keep
   only explicit capitalization semantics. Passphrases and recovery mnemonics use
   `SecureField`. Settings state that iOS has no per-field personalized-learning
   guarantee and non-secure third-party keyboards remain best effort.
@@ -81,7 +82,8 @@ are the node's own, verbatim.
   permission is required. Generic files show and recheck F4 before explicit
   send/discard. JPEG/PNG selections use the shared Rust editor for orientation
   normalization, free/preset crop, 90-degree rotation, and user-positioned blur
-  or pixelation, then review and send only the exact metadata-free PNG.
+  or pixelation, then review and send only the exact PNG re-encoded without
+  source metadata.
   Originals, intermediates, receiver previews, and protected export sources are
   cleaned on send, discard, denial, failure, background/lock, low storage, and
   restart. The UI states iOS's actual lifecycle contract: work continues only
@@ -90,7 +92,7 @@ are the node's own, verbatim.
   and foreground-only capture, then stop into a no-autoplay review with locally
   derived duration/waveform and an F4 carrier explanation before explicit send
   or discard. AVFoundation's native recording is canonicalized to the shared
-  metadata-free mono 16-bit PCM WAV / 16 kHz / 60-second profile before F3
+  source-metadata-omitting mono 16-bit PCM WAV / 16 kHz / 60-second profile before F3
   import. Interruption, route change, background, lock, view teardown, failure,
   discard, and restart clean the Data-Protection-complete transient; received
   clips are validated and materialized only for explicit protected playback.
@@ -143,7 +145,8 @@ are the node's own, verbatim.
   SwiftUI rows and pins render the sealed icon or generated initials; the
   VoiceOver/Dynamic-Type manager offers all eight bundled glyphs, security-
   scoped Files JPEG/PNG selection, clear-to-fallback, and quota usage. The shared
-  core produces only metadata-free 256×256 RGBA PNGs and enforces the 512 KiB,
+  core produces only 256×256 RGBA PNGs re-encoded without source metadata and
+  enforces the 512 KiB,
   1,024-record, and 64 MiB caps with safe corrupt fallback. Portability is limited
   to `KKR7` and authenticated own-device C2 sync; icons never enter iCloud sync,
   URLs, peers, envelopes,
@@ -233,7 +236,8 @@ non-synchronizing `UserDefaults` cache contains only the pre-unlock theme token;
 it is not a portability or backup channel.
 
 Custom-icon acceptance uses the same B13 fixture as Rust RPC, UniFFI, and
-Kotlin, covering all exact target kinds, canonical metadata-free PNG output,
+Kotlin, covering all exact target kinds, canonical PNG output that omits source
+metadata,
 quota accounting, restart/`KKR7`, safe initials fallback, local events, and zero
 delivery work. Security-scoped Files access lasts only for the explicit blocking
 import call; no selected path or plaintext image becomes synchronized state.

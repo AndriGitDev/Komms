@@ -93,7 +93,7 @@ cannot reopen content; cleanup resumes on the next tick.
 
 An original arriving after an `Expired`/`Consumed` marker is acknowledged but
 never stored. Duplicates cannot rehydrate it. Edits cannot target ephemeral
-content. Quotes and replies are not yet a shipped structured content type; a
+content. Quotes and replies are not yet an implemented structured content type; a
 future design must render a non-plaintext expired placeholder rather than copy
 ephemeral text into permanent content.
 
@@ -108,7 +108,7 @@ an erasure promise.
 
 Each linked installation applies the authenticated deadline and first-open rule
 to its own local copy. First open is per installation, not a synchronized claim
-that every device or recipient deleted. Shipped C2 linked-device sync carries
+that every device or recipient deleted. Implemented Alpha C2 linked-device sync carries
 tombstones but not active ephemeral content; an active copy may disappear earlier after receiving one, never
 later or by resurrecting plaintext.
 
