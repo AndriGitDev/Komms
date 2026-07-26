@@ -5,10 +5,12 @@ use kult_protocol::{Envelope, EnvelopeKind};
 use rand::{rngs::StdRng, SeedableRng};
 use rusqlite::params;
 
+#[cfg(unix)]
+use crate::store_lock_path;
 use crate::store_v2::TableSpec;
 use crate::{
-    store_lock_path, store_v2, ContactRecord, DeliveryState, Direction, GroupMessageRecord,
-    GroupRecord, MessageRecord, QueueClass, QueueItem, Store, StoreError,
+    store_v2, ContactRecord, DeliveryState, Direction, GroupMessageRecord, GroupRecord,
+    MessageRecord, QueueClass, QueueItem, Store, StoreError,
 };
 
 const TEST_KDF: KdfProfile = KdfProfile {

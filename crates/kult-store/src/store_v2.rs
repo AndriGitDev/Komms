@@ -4,6 +4,7 @@
 //! Callers select tables and lookup indexes through marker types; raw table,
 //! index, key-derivation, and associated-data domains remain private here.
 
+#[cfg(unix)]
 use std::fs::File;
 use std::path::Path;
 
