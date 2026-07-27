@@ -33,6 +33,8 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+#[cfg(feature = "test-failpoints")]
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
@@ -44,7 +46,7 @@ use subtle::ConstantTimeEq;
 use kult_crypto::{
     initiate, open_anonymous, respond, safety_number, seal_anonymous, DevicePrekeyBundle, Identity,
     IdentityPublic, InitialMessage, KdfProfile, PendingDeviceLinkSource, PendingDeviceLinkTarget,
-    PrekeyBundle, RatchetMessage, SafetyNumber,
+    PrekeyBundle, RatchetMessage, SafetyNumber, Session,
 };
 use kult_protocol::{
     decode_content, delivery_token, encode_disappearing_text_payload, encode_edit,
@@ -57,15 +59,23 @@ use kult_protocol::{
     MIN_EPHEMERAL_LIFETIME_SECS, REASSEMBLY_WINDOW_SECS,
 };
 use kult_store::{
-    ContactDeviceRecord, ContactRecord, ConversationId, ConversationMetadata, DeliveryState,
-    DeviceStateRecord, Direction, EphemeralConversation, EphemeralMode, EphemeralRecord,
-    EphemeralState, LocalMetadataKey, LocalMetadataRecord, MessageDeviceDeliveryRecord,
-    MessageRecord, NoteMessageRecord, PairwiseReceivePlan, QueueClass, QueueItem,
-    ScheduledConversation as StoreScheduledConversation, ScheduledMessageRecord, Store,
+    CommitPlan, CommitReceipt, ContactDeviceDelete, ContactDeviceRecord, ContactRecord,
+    ConversationId, ConversationMetadata, DeferredControlKind, DeferredControlRecord,
+    DeliveryState, DeliveryTransition, DeviceStateRecord, Direction, EphemeralConversation,
+    EphemeralMode, EphemeralRecord, EphemeralState, EphemeralTransition, GroupMessageDelete,
+    GroupMessageRecord, GroupMessageTransition, GroupRecord, GroupTransition, HandshakeReceivePlan,
+    LocalMetadataKey, LocalMetadataRecord, MaintenancePlan, MediaDelete, MediaObjectRecord,
+    MediaTransferRecord, MessageDelete, MessageDeviceDeliveryRecord, MessageRecord,
+    MessageTransition, NoteMessageRecord, PairwiseReceivePlan, PairwiseSendPlan, PendingDelete,
+    PrekeyTransition, QueueClass, QueueDelete, QueueItem, QueueTransition, ReceiptReceivePlan,
+    ScheduledConversation as StoreScheduledConversation, ScheduledMessageRecord, SessionTransition,
+    Store,
 };
 use kult_transport::{CostClass, DeliveryHint, Discovery, Reachability, Transport};
 
 mod api;
+#[cfg(all(test, feature = "test-failpoints"))]
+mod atomic_tests;
 mod attachment;
 mod authority;
 mod calls;
@@ -114,6 +124,9 @@ pub use incognito_keyboard::{
     IncognitoKeyboardPolicy, INCOGNITO_KEYBOARD_PROTECTED_FIELDS,
 };
 pub use kult_protocol::GroupRole;
+#[cfg(feature = "test-failpoints")]
+#[doc(hidden)]
+pub use kult_store::{CommitFailpoint, CommitFailure};
 pub use kult_store::{
     ConversationId as LabelConversationId, CustomIconTarget, ThemePreference,
     CUSTOM_ICON_BUNDLED_GLYPHS, CUSTOM_ICON_DIMENSION, CUSTOM_ICON_MEDIA_TYPE,
@@ -136,6 +149,24 @@ use vault::PrekeyVault;
 
 /// Convenience alias.
 pub type Result<T> = std::result::Result<T, NodeError>;
+
+/// Deterministic process-interruption checkpoints for transition crash tests.
+#[cfg(feature = "test-failpoints")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransitionFailpoint {
+    /// Before the numbered candidate cryptographic operation.
+    BeforeCryptoStep(usize),
+    /// After the numbered candidate cryptographic operation.
+    AfterCryptoStep(usize),
+    /// After commit and before live candidate state replaces memory.
+    BeforeMemoryReplacement,
+    /// Immediately after live candidate state replaces memory.
+    AfterMemoryReplacement,
+    /// Before queued presentation events leave the node.
+    BeforeEventDelivery,
+    /// Immediately after queued presentation events leave the node.
+    AfterEventDelivery,
+}
 
 /// Associated data for anonymous-boxed handshake flights (fixed across the
 /// protocol; also used by the M2 acceptance tests).
@@ -300,6 +331,14 @@ type FragNacks = Vec<([u8; 4], Vec<u16>)>;
 const MAX_NACK_PARTIALS_PER_TICK: usize = 32;
 /// Missing indices carried in one tick across all partial messages.
 const MAX_NACK_INDICES_PER_TICK: usize = 4_096;
+const MAX_DEFERRED_CONTROLS_PER_TICK: usize = 16;
+const MAX_MAINTENANCE_MESSAGES_PER_TICK: usize = 8;
+const MAX_MAINTENANCE_QUEUE_ROWS_PER_TICK: usize = 32;
+const MAX_MAINTENANCE_REPLAY_ROWS_PER_TICK: usize = 16;
+const MAX_EPHEMERAL_EXPIRIES_PER_TICK: usize = 4;
+const MAX_PENDING_WORK_PER_TICK: usize = 64;
+const MAX_PENDING_DEVICE_DELIVERIES_PER_TICK: usize = 8;
+const MAX_RESET_MARKERS_PER_TICK: usize = 8;
 
 /// Receiver-side bookkeeping for one in-flight partial message: enough to
 /// address the NACK requesting its missing fragments (via the delivery
@@ -319,6 +358,45 @@ struct SentFragments {
     retention_until: Option<u64>,
     bodies: Vec<Vec<u8>>,
     sent_at: u64,
+}
+
+struct PreparedPairwiseRoute {
+    route: [u8; 32],
+    before: Option<Session>,
+    after: Session,
+    envelope: Envelope,
+    resets_capabilities: bool,
+}
+
+pub(crate) struct CommittedPairwiseEnvelope {
+    pub(crate) sequence: i64,
+}
+
+struct PreparedInbound {
+    message: Option<MessageRecord>,
+    ephemeral: Option<EphemeralRecord>,
+    media_transfers: Vec<MediaTransferRecord>,
+    media_objects: Vec<MediaObjectRecord>,
+    events: Vec<Event>,
+    attachment_updates: Vec<[u8; 16]>,
+}
+
+struct PreparedReceipt {
+    delete_queue: Vec<QueueDelete>,
+    queue: Vec<QueueItem>,
+    messages: Vec<(MessageRecord, MessageRecord)>,
+    deliveries: Vec<(MessageDeviceDeliveryRecord, MessageDeviceDeliveryRecord)>,
+    group_messages: Vec<(GroupMessageRecord, GroupMessageRecord)>,
+    groups: Vec<(GroupRecord, GroupRecord)>,
+    events: Vec<Event>,
+}
+
+#[derive(Default)]
+pub(crate) struct PreparedDeliveryUpdate {
+    pub(crate) messages: Vec<(MessageRecord, MessageRecord)>,
+    pub(crate) deliveries: Vec<(MessageDeviceDeliveryRecord, MessageDeviceDeliveryRecord)>,
+    pub(crate) group_messages: Vec<(GroupMessageRecord, GroupMessageRecord)>,
+    pub(crate) events: Vec<Event>,
 }
 
 enum Consumed {
@@ -449,10 +527,127 @@ pub struct Node {
     next_delivery_sweep: u64,
     bridge: Option<Bridge>,
     events: VecDeque<Event>,
+    presentation_marker: Option<[u8; 16]>,
+    delivered_presentation_marker: Option<[u8; 16]>,
+    #[cfg(feature = "test-failpoints")]
+    transition_failpoint: RefCell<Option<TransitionFailpoint>>,
+    #[cfg(feature = "test-failpoints")]
+    transition_failpoint_fired: Cell<bool>,
+    #[cfg(feature = "test-failpoints")]
+    crypto_step: Cell<usize>,
 }
 
 impl Node {
     // ---- lifecycle ---------------------------------------------------------
+
+    /// Arm one process-interruption checkpoint and reset crypto numbering.
+    #[cfg(feature = "test-failpoints")]
+    #[doc(hidden)]
+    pub fn arm_transition_failpoint(&self, point: TransitionFailpoint) {
+        self.transition_failpoint.replace(Some(point));
+        self.transition_failpoint_fired.set(false);
+        self.crypto_step.set(0);
+    }
+
+    /// Arm one store transaction checkpoint.
+    #[cfg(feature = "test-failpoints")]
+    #[doc(hidden)]
+    pub fn arm_commit_failpoint(&self, point: CommitFailpoint, failure: CommitFailure) {
+        self.store.arm_commit_failpoint(point, failure);
+    }
+
+    /// Whether the currently armed process-interruption checkpoint fired.
+    #[cfg(feature = "test-failpoints")]
+    #[doc(hidden)]
+    pub fn transition_failpoint_fired(&self) -> bool {
+        self.transition_failpoint_fired.get()
+    }
+
+    #[cfg(feature = "test-failpoints")]
+    fn check_transition_failpoint(&self, point: TransitionFailpoint) -> Result<()> {
+        if *self.transition_failpoint.borrow() == Some(point) {
+            self.transition_failpoint.replace(None);
+            self.transition_failpoint_fired.set(true);
+            return Err(NodeError::Store(kult_store::StoreError::Io(
+                std::io::Error::from(std::io::ErrorKind::Interrupted),
+            )));
+        }
+        Ok(())
+    }
+
+    fn begin_crypto_step(&self) -> Result<usize> {
+        #[cfg(feature = "test-failpoints")]
+        {
+            let step = self.crypto_step.get();
+            self.check_transition_failpoint(TransitionFailpoint::BeforeCryptoStep(step))?;
+            self.crypto_step.set(step + 1);
+            Ok(step)
+        }
+        #[cfg(not(feature = "test-failpoints"))]
+        {
+            Ok(0)
+        }
+    }
+
+    fn finish_crypto_step(&self, step: usize) -> Result<()> {
+        #[cfg(feature = "test-failpoints")]
+        {
+            self.check_transition_failpoint(TransitionFailpoint::AfterCryptoStep(step))
+        }
+        #[cfg(not(feature = "test-failpoints"))]
+        {
+            let _ = step;
+            Ok(())
+        }
+    }
+
+    pub(crate) fn candidate_encrypt(
+        &self,
+        session: &mut Session,
+        rng: &mut impl CryptoRngCore,
+        now: u64,
+        plaintext: &[u8],
+    ) -> Result<RatchetMessage> {
+        let step = self.begin_crypto_step()?;
+        let message = session.encrypt(rng, now, plaintext, &[]);
+        self.finish_crypto_step(step)?;
+        Ok(message)
+    }
+
+    fn candidate_decrypt(
+        &self,
+        session: &mut Session,
+        rng: &mut impl CryptoRngCore,
+        now: u64,
+        message: &RatchetMessage,
+    ) -> Result<std::result::Result<Vec<u8>, kult_crypto::CryptoError>> {
+        let step = self.begin_crypto_step()?;
+        let plaintext = session.decrypt(rng, now, message, &[]);
+        self.finish_crypto_step(step)?;
+        Ok(plaintext)
+    }
+
+    fn before_memory_replacement(&self) -> Result<()> {
+        #[cfg(feature = "test-failpoints")]
+        {
+            self.check_transition_failpoint(TransitionFailpoint::BeforeMemoryReplacement)
+        }
+        #[cfg(not(feature = "test-failpoints"))]
+        {
+            Ok(())
+        }
+    }
+
+    fn after_memory_replacement(&self) -> Result<()> {
+        #[cfg(feature = "test-failpoints")]
+        {
+            self.check_transition_failpoint(TransitionFailpoint::AfterMemoryReplacement)
+        }
+        #[cfg(not(feature = "test-failpoints"))]
+        {
+            Ok(())
+        }
+    }
 
     /// Create a brand-new node: fresh store, fresh identity, fresh prekeys.
     pub fn create(
@@ -519,13 +714,8 @@ impl Node {
 
     fn assemble(store: Store, identity: Identity, vault: PrekeyVault) -> Result<Self> {
         // Call controls are transient and their in-memory state and secrets
-        // deliberately do not survive a process restart. Drop any sealed
-        // realtime queue entries before normal delivery resumes.
-        for (seq, item) in store.queue_all()? {
-            if item.class == QueueClass::Realtime {
-                store.queue_ack(seq)?;
-            }
-        }
+        // deliberately do not survive a process restart. The first bounded
+        // flush retires any sealed realtime rows through Maintenance.
         let (device_identity, device_state, device_state_dirty) =
             devices::load_or_migrate_device(&store, &identity)?;
         let mut sessions = HashMap::new();
@@ -547,6 +737,11 @@ impl Node {
                     sessions.insert(contact.peer, session);
                 }
             }
+        }
+        let presentation_marker = store.presentation_resync_marker()?;
+        let mut events = VecDeque::new();
+        if presentation_marker.is_some() {
+            events.push_back(Event::StateResyncRequired);
         }
         Ok(Self {
             store,
@@ -575,7 +770,15 @@ impl Node {
             held_notified: HashSet::new(),
             next_delivery_sweep: 0,
             bridge: None,
-            events: VecDeque::new(),
+            events,
+            presentation_marker,
+            delivered_presentation_marker: None,
+            #[cfg(feature = "test-failpoints")]
+            transition_failpoint: RefCell::new(None),
+            #[cfg(feature = "test-failpoints")]
+            transition_failpoint_fired: Cell::new(false),
+            #[cfg(feature = "test-failpoints")]
+            crypto_step: Cell::new(0),
         })
     }
 
@@ -668,8 +871,8 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Vec<u8>> {
-        let opk = self.vault.fresh_opk(rng);
-        self.store.put_prekeys(&self.vault.encode(), rng)?;
+        let mut candidate_vault = self.vault.clone();
+        let opk = candidate_vault.fresh_opk(rng);
         let linked = self.device_state.manifest.devices.len() > 1;
         let signing_identity = if linked {
             &self.device_identity
@@ -678,8 +881,8 @@ impl Node {
         };
         let bundle = PrekeyBundle::build(
             signing_identity,
-            &self.vault.spk(),
-            &self.vault.pqspk()?,
+            &candidate_vault.spk(),
+            &candidate_vault.pqspk()?,
             Some(&opk),
             now + BUNDLE_TTL_SECS,
             encode_hints(hints),
@@ -694,7 +897,11 @@ impl Node {
         } else {
             bundle.encode()
         };
+        self.store.put_prekeys(&candidate_vault.encode(), rng)?;
+        self.before_memory_replacement()?;
+        self.vault = candidate_vault;
         self.own_hints = hints.to_vec();
+        self.after_memory_replacement()?;
         Ok(encoded)
     }
 
@@ -977,30 +1184,38 @@ impl Node {
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
         let mut affected = HashSet::new();
-        for mut message in self.store.messages_with(account)? {
-            if message.direction != Direction::Outbound
+        let mut message_candidates = Vec::new();
+        let mut delivery_candidates = Vec::new();
+        let mut events = Vec::new();
+        for message_before in self.store.messages_with(account)? {
+            if message_before.direction != Direction::Outbound
                 || matches!(
-                    message.state,
+                    message_before.state,
                     DeliveryState::Delivered | DeliveryState::Failed
                 )
             {
                 continue;
             }
-            let mut deliveries = self.store.message_device_deliveries(&message.id)?;
+            let mut deliveries = self.store.message_device_deliveries(&message_before.id)?;
             let mut reset = false;
             for delivery in &mut deliveries {
-                if delivery.device == *device && delivery.state != DeliveryState::Delivered {
+                if delivery.device == *device
+                    && delivery.state != DeliveryState::Delivered
+                    && (delivery.state != DeliveryState::Queued || delivery.wire_id.is_some())
+                {
+                    let before = delivery.clone();
                     delivery.state = DeliveryState::Queued;
                     delivery.wire_id = None;
-                    self.store.put_message_device_delivery(delivery, rng)?;
+                    delivery_candidates.push((before, delivery.clone()));
                     reset = true;
                 }
             }
             if !reset {
                 continue;
             }
-            affected.insert(message.id);
-            message.state = if deliveries
+            affected.insert(message_before.id);
+            let mut message_after = message_before.clone();
+            message_after.state = if deliveries
                 .iter()
                 .any(|delivery| delivery.state == DeliveryState::Delivered)
             {
@@ -1013,25 +1228,91 @@ impl Node {
             } else {
                 DeliveryState::Queued
             };
-            message.wire_id = deliveries.iter().find_map(|delivery| delivery.wire_id);
-            self.store.update_message(&message, rng)?;
-            self.events.push_back(Event::DeliveryUpdated {
-                id: message.id,
-                state: message.state,
+            message_after.wire_id = deliveries.iter().find_map(|delivery| delivery.wire_id);
+            events.push(Event::DeliveryUpdated {
+                id: message_after.id,
+                state: message_after.state,
             });
+            if message_after != message_before {
+                message_candidates.push((message_before, message_after));
+            }
         }
         if affected.is_empty() {
             return Ok(());
         }
 
+        let delete_queue = self
+            .store
+            .queue_all()?
+            .into_iter()
+            .filter_map(|(sequence, item)| {
+                (item.peer == *device && item.msg_id.is_some_and(|id| affected.contains(&id)))
+                    .then_some(QueueDelete {
+                        sequence,
+                        content_id: item.envelope.content_id(),
+                    })
+            })
+            .collect::<Vec<_>>();
+        let delete_sessions = self
+            .store
+            .get_session(device)?
+            .is_some()
+            .then_some(*device)
+            .into_iter()
+            .collect::<Vec<_>>();
+        let delete_capabilities = self
+            .store
+            .get_capabilities(device)?
+            .is_some()
+            .then_some(*device)
+            .into_iter()
+            .collect::<Vec<_>>();
+        let messages = message_candidates
+            .iter()
+            .map(|(before, after)| MessageTransition { before, after })
+            .collect::<Vec<_>>();
+        let deliveries = delivery_candidates
+            .iter()
+            .map(|(before, after)| DeliveryTransition { before, after })
+            .collect::<Vec<_>>();
+        let receipt = self.store.commit_plan(
+            CommitPlan::Maintenance(MaintenancePlan {
+                seen: &[],
+                delete_pending: &[],
+                delete_queue: &delete_queue,
+                update_queue: &[],
+                delete_replay: &[],
+                messages: &messages,
+                deliveries: &deliveries,
+                group_messages: &[],
+                groups: &[],
+                ephemeral: &[],
+                delete_messages: &[],
+                delete_group_messages: &[],
+                delete_media: &[],
+                delete_scheduled: &[],
+                delete_sessions: &delete_sessions,
+                delete_capabilities: &delete_capabilities,
+                clear_reset_markers: &[],
+                delete_controls: &[],
+                acknowledge_presentation: None,
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.before_memory_replacement()?;
         self.sessions.remove(device);
-        self.store.delete_session(device)?;
-        self.store.delete_capabilities(device)?;
-        for (sequence, item) in self.store.queue_all()? {
-            if item.peer == *device && item.msg_id.is_some_and(|id| affected.contains(&id)) {
-                self.store.queue_ack(sequence)?;
-            }
-        }
+        self.capabilities_advertised.remove(device);
+        self.after_memory_replacement()?;
+        let deleted = delete_queue
+            .iter()
+            .map(|delete| delete.sequence)
+            .collect::<HashSet<_>>();
+        self.held_notified
+            .retain(|sequence| !deleted.contains(sequence));
+        self.call_queue_deadlines
+            .retain(|sequence, _| !deleted.contains(sequence));
+        self.accept_commit_receipt(receipt, events);
         Ok(())
     }
 
@@ -1394,20 +1675,16 @@ impl Node {
         rng.fill_bytes(&mut id);
         let payload = encode_disappearing_text_payload(expires_at, text)?;
         let wire = encode_ephemeral(id, &payload)?;
-        let me = self.identity.public().ed;
-        self.store.put_ephemeral_record(
-            &EphemeralRecord {
-                conversation: EphemeralConversation::Pairwise(*peer),
-                author: me,
-                content_id: id,
-                expires_at,
-                mode: EphemeralMode::DisappearingText,
-                state: EphemeralState::Active,
-                transfer_ids: Vec::new(),
-            },
+        self.send_message_with_id_retention(
+            peer,
+            &wire,
+            id,
+            now,
+            now,
+            Some(retention_until),
+            None,
             rng,
-        )?;
-        self.send_message_with_id_retention(peer, &wire, id, now, now, Some(retention_until), rng)
+        )
     }
 
     fn send_message_with_id(
@@ -1419,10 +1696,10 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 16]> {
-        self.send_message_with_id_retention(peer, body, id, timestamp, now, None, rng)
+        self.send_message_with_id_retention(peer, body, id, timestamp, now, None, None, rng)
     }
 
-    #[allow(clippy::too_many_arguments)] // canonical pair send plus optional relay hint
+    #[allow(clippy::too_many_arguments)] // canonical pair send plus retention/schedule sources
     fn send_message_with_id_retention(
         &mut self,
         peer: &[u8; 32],
@@ -1431,6 +1708,7 @@ impl Node {
         timestamp: u64,
         now: u64,
         retention_until: Option<u64>,
+        scheduled: Option<&ScheduledMessageRecord>,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 16]> {
         // Mention is permanently group-only. Reject a canonical frame before
@@ -1465,6 +1743,9 @@ impl Node {
         }
         routes.sort_by_key(|endpoint| endpoint.device);
         routes.dedup_by_key(|endpoint| endpoint.device);
+        if routes.len() > kult_store::MAX_PAIRWISE_COMMIT_DEVICES {
+            return Err(NodeError::CorruptState);
+        }
         if !routes.iter().any(|endpoint| {
             self.sessions.contains_key(&endpoint.device)
                 || (!endpoint.bundle.is_empty()
@@ -1492,25 +1773,20 @@ impl Node {
             body: wire_body.clone(),
             wire_id: None,
         };
-        self.store.put_message(&record, rng)?;
-        self.events.push_back(Event::DeliveryUpdated {
-            id,
-            state: DeliveryState::Queued,
-        });
-
         let padded = pad(&wire_body)?;
-        let mut queued = 0usize;
-        for endpoint in routes {
+        let mut prepared = Vec::new();
+        let mut deliveries = Vec::with_capacity(routes.len());
+        for endpoint in &routes {
             let route = endpoint.device;
-            let envelope = if let Some(session) = self.sessions.get_mut(&route) {
-                let msg = session.encrypt(rng, now, &padded, &[]);
+            let route_state = if let Some(before) = self.sessions.get(&route).cloned() {
+                let mut after = before.clone();
+                let msg = self.candidate_encrypt(&mut after, rng, now, &padded)?;
                 let token = delivery_token(
-                    &MailboxKey::from_bytes(*session.mailbox_key()),
+                    &MailboxKey::from_bytes(*after.mailbox_key()),
                     epoch_day(now),
                     &route,
                 );
-                self.store.put_session(&route, session, rng)?;
-                match retention_until {
+                let envelope = match retention_until {
                     Some(deadline) => Envelope::new_retained(
                         EnvelopeKind::Message,
                         token,
@@ -1518,65 +1794,139 @@ impl Node {
                         msg.encode(),
                     )?,
                     None => Envelope::new(EnvelopeKind::Message, token, msg.encode()),
-                }
-            } else {
-                if retention_until.is_some()
-                    || endpoint.bundle.is_empty()
-                    || PrekeyBundle::decode(&endpoint.bundle)
-                        .and_then(|bundle| bundle.verify(now))
-                        .is_err()
-                {
-                    self.store.put_message_device_delivery(
-                        &MessageDeviceDeliveryRecord {
-                            message: id,
-                            account: *peer,
-                            device: route,
-                            wire_id: None,
-                            state: DeliveryState::Queued,
-                        },
-                        rng,
-                    )?;
-                    continue;
-                }
-                self.initiate_session(peer, &route, &endpoint.bundle, &padded, now, rng)?
-            };
-            let wire_id = envelope.content_id();
-            if record.wire_id.is_none() {
-                record.wire_id = Some(wire_id);
-            }
-            self.store.put_message_device_delivery(
-                &MessageDeviceDeliveryRecord {
-                    message: id,
-                    account: *peer,
-                    device: route,
-                    wire_id: Some(wire_id),
-                    state: DeliveryState::Queued,
-                },
-                rng,
-            )?;
-            self.store.queue_push(
-                &QueueItem {
-                    peer: route,
-                    msg_id: Some(id),
-                    group_msg_id: None,
-                    class: QueueClass::Interactive,
-                    created_at: now,
-                    attempts: 0,
-                    next_attempt_at: now,
+                };
+                Some(PreparedPairwiseRoute {
+                    route,
+                    before: Some(before),
+                    after,
                     envelope,
-                },
-                rng,
-            )?;
-            queued += 1;
+                    resets_capabilities: false,
+                })
+            } else if retention_until.is_some()
+                || endpoint.bundle.is_empty()
+                || PrekeyBundle::decode(&endpoint.bundle)
+                    .and_then(|bundle| bundle.verify(now))
+                    .is_err()
+            {
+                None
+            } else {
+                let (after, envelope) =
+                    self.prepare_session(peer, &route, &endpoint.bundle, &padded, now, rng)?;
+                Some(PreparedPairwiseRoute {
+                    route,
+                    before: None,
+                    after,
+                    envelope,
+                    resets_capabilities: true,
+                })
+            };
+            let wire_id = route_state
+                .as_ref()
+                .map(|prepared| prepared.envelope.content_id());
+            if record.wire_id.is_none() {
+                record.wire_id = wire_id;
+            }
+            deliveries.push(MessageDeviceDeliveryRecord {
+                message: id,
+                account: *peer,
+                device: route,
+                wire_id,
+                state: DeliveryState::Queued,
+            });
+            if let Some(route_state) = route_state {
+                prepared.push(route_state);
+            }
         }
-        if queued == 0 {
+        if prepared.is_empty() {
             return Err(if retention_until.is_some() {
                 NodeError::EphemeralUnsupported
             } else {
                 NodeError::NoSession
             });
         }
-        self.store.update_message(&record, rng)?;
+        let queue = prepared
+            .iter()
+            .map(|prepared| QueueItem {
+                peer: prepared.route,
+                msg_id: Some(id),
+                group_msg_id: None,
+                class: QueueClass::Interactive,
+                created_at: now,
+                attempts: 0,
+                next_attempt_at: now,
+                envelope: prepared.envelope.clone(),
+            })
+            .collect::<Vec<_>>();
+        let transitions = prepared
+            .iter()
+            .map(|prepared| SessionTransition {
+                peer_device: prepared.route,
+                before: prepared.before.as_ref(),
+                after: &prepared.after,
+            })
+            .collect::<Vec<_>>();
+        let clear_capabilities = prepared
+            .iter()
+            .filter(|prepared| prepared.resets_capabilities)
+            .map(|prepared| prepared.route)
+            .collect::<Vec<_>>();
+        let prepared_routes = prepared
+            .iter()
+            .map(|prepared| prepared.route)
+            .collect::<HashSet<_>>();
+        let clear_reset_markers = self
+            .store
+            .reset_markers()?
+            .into_iter()
+            .filter(|marker| marker == peer || prepared_routes.contains(marker))
+            .collect::<Vec<_>>();
+        let ephemeral = match decode_content(&wire_body) {
+            DecodedContent::Ephemeral {
+                id: content_id,
+                ephemeral: Ephemeral::DisappearingText { expires_at, .. },
+            } => Some(EphemeralRecord {
+                conversation: EphemeralConversation::Pairwise(*peer),
+                author: self.identity.public().ed,
+                content_id,
+                expires_at,
+                mode: EphemeralMode::DisappearingText,
+                state: EphemeralState::Active,
+                transfer_ids: Vec::new(),
+            }),
+            _ => None,
+        };
+        let receipt = self.store.commit_plan(
+            CommitPlan::PairwiseSend(PairwiseSendPlan {
+                sessions: &transitions,
+                message: Some(&record),
+                message_update: None,
+                deliveries: &deliveries,
+                delivery_updates: &[],
+                queue: &queue,
+                scheduled,
+                clear_capabilities: &clear_capabilities,
+                clear_reset_markers: &clear_reset_markers,
+                ephemeral: ephemeral.as_ref(),
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.before_memory_replacement()?;
+        for route in prepared {
+            self.sessions.insert(route.route, route.after);
+            if route.resets_capabilities {
+                self.capabilities_advertised.remove(&route.route);
+            }
+        }
+        self.after_memory_replacement()?;
+        let mut events = vec![Event::DeliveryUpdated {
+            id,
+            state: DeliveryState::Queued,
+        }];
+        if scheduled.is_some() {
+            events.push(Event::ScheduledMessageActivated { id });
+        }
+        self.accept_commit_receipt(receipt, events);
         Ok(id)
     }
 
@@ -1731,7 +2081,76 @@ impl Node {
 
     /// Events emitted since the last drain (also returned by [`Node::tick`]).
     pub fn drain_events(&mut self) -> Vec<Event> {
-        self.events.drain(..).collect()
+        #[cfg(feature = "test-failpoints")]
+        if self
+            .check_transition_failpoint(TransitionFailpoint::BeforeEventDelivery)
+            .is_err()
+        {
+            return Vec::new();
+        }
+        let events = self.events.drain(..).collect::<Vec<_>>();
+        if !events.is_empty() {
+            self.delivered_presentation_marker = self.presentation_marker;
+        }
+        #[cfg(feature = "test-failpoints")]
+        let _ = self.check_transition_failpoint(TransitionFailpoint::AfterEventDelivery);
+        events
+    }
+
+    fn accept_commit_receipt(
+        &mut self,
+        receipt: CommitReceipt,
+        events: impl IntoIterator<Item = Event>,
+    ) {
+        if let Some(marker) = receipt.presentation_marker {
+            self.presentation_marker = Some(marker);
+        }
+        self.events.extend(events);
+    }
+
+    fn acknowledge_presentation(&mut self, rng: &mut impl CryptoRngCore) -> Result<()> {
+        let Some(delivered) = self.delivered_presentation_marker.take() else {
+            return Ok(());
+        };
+        match self.store.presentation_resync_marker()? {
+            Some(current) if current == delivered => {
+                self.store.commit_plan(
+                    CommitPlan::Maintenance(MaintenancePlan {
+                        seen: &[],
+                        delete_pending: &[],
+                        delete_queue: &[],
+                        update_queue: &[],
+                        delete_replay: &[],
+                        messages: &[],
+                        deliveries: &[],
+                        group_messages: &[],
+                        groups: &[],
+                        ephemeral: &[],
+                        delete_messages: &[],
+                        delete_group_messages: &[],
+                        delete_media: &[],
+                        delete_scheduled: &[],
+                        delete_sessions: &[],
+                        delete_capabilities: &[],
+                        clear_reset_markers: &[],
+                        delete_controls: &[],
+                        acknowledge_presentation: Some(delivered),
+                        presentation_changed: false,
+                    }),
+                    rng,
+                )?;
+                if self.presentation_marker == Some(delivered) {
+                    self.presentation_marker = None;
+                }
+            }
+            Some(current) => {
+                self.presentation_marker = Some(current);
+            }
+            None => {
+                self.presentation_marker = None;
+            }
+        }
+        Ok(())
     }
 
     // ---- the heartbeat -----------------------------------------------------
@@ -1741,6 +2160,7 @@ impl Node {
     /// receipts for consumed messages, then flush the outbound queue through
     /// the transport scheduler. Returns all events produced.
     pub async fn tick(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<Vec<Event>> {
+        self.acknowledge_presentation(rng)?;
         if self.device_state_dirty {
             self.store.put_device_state(&self.device_state, rng)?;
             self.device_state_dirty = false;
@@ -1749,6 +2169,7 @@ impl Node {
             self.store.reconcile_media(rng)?;
             self.media_reconciled = true;
         }
+        self.apply_deferred_controls(now, rng)?;
         // Expiry is core-owned and runs before any queue activation, receive,
         // attachment request, or transport flush. A restart and a clock jump
         // therefore cannot revive or transmit already-expired plaintext.
@@ -1757,7 +2178,7 @@ impl Node {
             self.sweep_failed_deliveries(now, rng)?;
             self.next_delivery_sweep = now.saturating_add(DELIVERY_SWEEP_INTERVAL_SECS);
         }
-        self.sweep_calls(now)?;
+        self.sweep_calls(now, rng)?;
         // 0. Session-reset markers (a restore happened): queue fresh
         //    handshakes so re-keyed traffic flows without waiting for the
         //    user to send first.
@@ -1778,9 +2199,12 @@ impl Node {
         self.advertise_capabilities(now, rng)?;
 
         // 1. Gather: previously-stashed envelopes first, then fresh arrivals.
-        //    A present sequence means the envelope already has a durable
-        //    pending-inbox row. It remains there until this tick explicitly
-        //    acknowledges successful consumption or expiry.
+        //    Every complete fresh envelope is staged under a stable pending
+        //    row before parsing or cryptographic work. Top-level fragments are
+        //    the bounded exception: no ratchet state advances while assembling
+        //    them, and the completed inner envelope is staged before it can be
+        //    deferred. Refused assembly therefore leaves every fragment unseen
+        //    and carrier retry remains lossless.
         //    When bridging, fresh arrivals with tokens this node does not
         //    recognize also enter the transit queue (ADR-0009): mesh-heard
         //    foreignness heads for the internet, carrier-surfaced transit
@@ -1790,16 +2214,51 @@ impl Node {
         //    by design, and downstream dedup absorbs the overlap.
         let mut work: Vec<(Option<i64>, Envelope, u64)> = Vec::new();
         let mut gathered = HashSet::new();
-        for (sequence, envelope, first_seen) in self.store.pending_all()? {
+        let mut redundant_pending = Vec::new();
+        for (sequence, envelope, first_seen) in self
+            .store
+            .pending_all()?
+            .into_iter()
+            .take(MAX_PENDING_WORK_PER_TICK)
+        {
             if gathered.insert(envelope.content_id()) {
                 work.push((Some(sequence), envelope, first_seen));
             } else {
-                // Older builds could persist exact multipath duplicates.
-                // Keep the first stable row and remove only redundant copies.
-                self.store.pending_ack(sequence)?;
+                redundant_pending.push(PendingDelete {
+                    sequence,
+                    content_id: envelope.content_id(),
+                });
             }
         }
+        if !redundant_pending.is_empty() {
+            self.store.commit_plan(
+                CommitPlan::Maintenance(MaintenancePlan {
+                    seen: &[],
+                    delete_pending: &redundant_pending,
+                    delete_queue: &[],
+                    update_queue: &[],
+                    delete_replay: &[],
+                    messages: &[],
+                    deliveries: &[],
+                    group_messages: &[],
+                    groups: &[],
+                    ephemeral: &[],
+                    delete_messages: &[],
+                    delete_group_messages: &[],
+                    delete_media: &[],
+                    delete_scheduled: &[],
+                    delete_sessions: &[],
+                    delete_capabilities: &[],
+                    clear_reset_markers: &[],
+                    delete_controls: &[],
+                    acknowledge_presentation: None,
+                    presentation_changed: false,
+                }),
+                rng,
+            )?;
+        }
         let mut bridge_seen = HashSet::new();
+        let mut fresh_fragments = 0usize;
         let transports = self.transports.clone();
         for transport in &transports {
             let airtime = transport.profile().cost == CostClass::Airtime;
@@ -1817,8 +2276,22 @@ impl Node {
                             bridge.admit(&envelope, true, now);
                         }
                     }
-                    if gathered.insert(content_id) {
-                        work.push((None, envelope, now));
+                    if !gathered.insert(content_id) {
+                        continue;
+                    }
+                    if envelope.kind == EnvelopeKind::Fragment {
+                        if fresh_fragments < MAX_PENDING_WORK_PER_TICK {
+                            fresh_fragments += 1;
+                            work.push((None, envelope, now));
+                        }
+                        continue;
+                    }
+                    match self.store.pending_push(&envelope, now, rng) {
+                        Ok(sequence) if work.len() < MAX_PENDING_WORK_PER_TICK => {
+                            work.push((Some(sequence), envelope, now));
+                        }
+                        Ok(_) | Err(kult_store::StoreError::PendingQuota) => {}
+                        Err(error) => return Err(error.into()),
                     }
                 }
             }
@@ -1833,12 +2306,71 @@ impl Node {
                                 bridge.admit(&envelope, false, now);
                             }
                         }
-                        if gathered.insert(content_id) {
-                            work.push((None, envelope, now));
+                        if !gathered.insert(content_id) {
+                            continue;
+                        }
+                        if envelope.kind == EnvelopeKind::Fragment {
+                            if fresh_fragments < MAX_PENDING_WORK_PER_TICK {
+                                fresh_fragments += 1;
+                                work.push((None, envelope, now));
+                            }
+                            continue;
+                        }
+                        match self.store.pending_push(&envelope, now, rng) {
+                            Ok(sequence) if work.len() < MAX_PENDING_WORK_PER_TICK => {
+                                work.push((Some(sequence), envelope, now));
+                            }
+                            Ok(_) | Err(kult_store::StoreError::PendingQuota) => {}
+                            Err(error) => return Err(error.into()),
                         }
                     }
                 }
             }
+        }
+
+        let mut expired_seen = Vec::new();
+        let mut expired_pending = Vec::new();
+        work.retain(|(pending_sequence, env, first_seen)| {
+            let expired = now.saturating_sub(*first_seen) > PENDING_TTL_SECS
+                || env.retention_until.is_some_and(|deadline| deadline <= now);
+            if expired {
+                let content_id = env.content_id();
+                expired_seen.push(content_id);
+                if let Some(sequence) = pending_sequence {
+                    expired_pending.push(PendingDelete {
+                        sequence: *sequence,
+                        content_id,
+                    });
+                }
+            }
+            !expired
+        });
+        if !expired_seen.is_empty() {
+            self.store.commit_plan(
+                CommitPlan::Maintenance(MaintenancePlan {
+                    seen: &expired_seen,
+                    delete_pending: &expired_pending,
+                    delete_queue: &[],
+                    update_queue: &[],
+                    delete_replay: &[],
+                    messages: &[],
+                    deliveries: &[],
+                    group_messages: &[],
+                    groups: &[],
+                    ephemeral: &[],
+                    delete_messages: &[],
+                    delete_group_messages: &[],
+                    delete_media: &[],
+                    delete_scheduled: &[],
+                    delete_sessions: &[],
+                    delete_capabilities: &[],
+                    clear_reset_markers: &[],
+                    delete_controls: &[],
+                    acknowledge_presentation: None,
+                    presentation_changed: false,
+                }),
+                rng,
+            )?;
         }
 
         // 2. Consume, re-running over the stash whenever a new session was
@@ -1846,20 +2378,11 @@ impl Node {
         //    earlier in it). Each pass consumes at least one envelope, so
         //    this terminates.
         let mut acks: Vec<([u8; 32], [u8; 16])> = Vec::new();
-        let mut pending_acks: Vec<i64> = Vec::new();
+        let mut pending_acks: Vec<PendingDelete> = Vec::new();
         loop {
             let mut stash = Vec::new();
             let mut established = false;
             for (pending_sequence, env, first_seen) in work {
-                let expired = now.saturating_sub(first_seen) > PENDING_TTL_SECS
-                    || env.retention_until.is_some_and(|deadline| deadline <= now);
-                if expired {
-                    if let Some(sequence) = pending_sequence {
-                        self.store.pending_ack(sequence)?;
-                    }
-                    continue;
-                }
-
                 match self.consume(
                     &env,
                     ConsumeOrigin {
@@ -1877,7 +2400,10 @@ impl Node {
                             // consequences of this receive pass are queued.
                             // Any intervening error can then safely replay it
                             // through the seen-envelope path.
-                            pending_acks.push(sequence);
+                            pending_acks.push(PendingDelete {
+                                sequence,
+                                content_id: env.content_id(),
+                            });
                         }
                     }
                     Consumed::DoneAtomic => {}
@@ -1900,7 +2426,7 @@ impl Node {
                     }
                 }
             }
-            if established && !stash.is_empty() {
+            if !stash.is_empty() && (established || self.apply_deferred_controls(now, rng)?) {
                 work = stash;
                 continue;
             }
@@ -1909,6 +2435,11 @@ impl Node {
             // number is needed.
             break;
         }
+
+        // Accepted authenticated controls are durable before their follow-up
+        // work runs. A second bounded pass lets same-tick attachment windows
+        // advance without coupling filesystem or group work to ratchet commit.
+        self.apply_deferred_controls(now, rng)?;
 
         // 2b. Group upkeep (ADR-0012): flush due announces (initiating
         //     pairwise sessions where possible) and serve late fan-out to
@@ -1961,8 +2492,32 @@ impl Node {
             let nacks = nacks_by_peer.remove(&peer).unwrap_or_default();
             self.queue_receipt(&peer, acks, nacks, now, rng)?;
         }
-        for sequence in pending_acks {
-            self.store.pending_ack(sequence)?;
+        if !pending_acks.is_empty() {
+            self.store.commit_plan(
+                CommitPlan::Maintenance(MaintenancePlan {
+                    seen: &[],
+                    delete_pending: &pending_acks,
+                    delete_queue: &[],
+                    update_queue: &[],
+                    delete_replay: &[],
+                    messages: &[],
+                    deliveries: &[],
+                    group_messages: &[],
+                    groups: &[],
+                    ephemeral: &[],
+                    delete_messages: &[],
+                    delete_group_messages: &[],
+                    delete_media: &[],
+                    delete_scheduled: &[],
+                    delete_sessions: &[],
+                    delete_capabilities: &[],
+                    clear_reset_markers: &[],
+                    delete_controls: &[],
+                    acknowledge_presentation: None,
+                    presentation_changed: false,
+                }),
+                rng,
+            )?;
         }
 
         // 4. Flush the outbound queue, then — only with whatever airtime and
@@ -1979,112 +2534,186 @@ impl Node {
     /// queue, discovery, and transport resources.
     fn sweep_failed_deliveries(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<()> {
         let cutoff = now.saturating_sub(DELIVERY_EXPIRY_SECS);
-        self.store.sweep_receipt_replay(cutoff)?;
-
+        let delete_replay = self
+            .store
+            .expired_receipt_replay_ids(cutoff, MAX_MAINTENANCE_REPLAY_ROWS_PER_TICK)?;
+        let queue_snapshot = self.store.queue_all()?;
+        let mut message_pairs = Vec::new();
+        let mut delivery_pairs = Vec::new();
+        let mut group_message_pairs = Vec::new();
+        let mut delete_queue = Vec::new();
+        let mut events = Vec::new();
+        let mut selected_messages = HashSet::new();
         for contact in self.store.contacts()? {
-            for mut message in self.store.messages_with(&contact.peer)? {
-                if message.direction != Direction::Outbound || message.timestamp > cutoff {
+            for before_message in self.store.messages_with(&contact.peer)? {
+                if selected_messages.len() == MAX_MAINTENANCE_MESSAGES_PER_TICK {
+                    break;
+                }
+                if before_message.direction != Direction::Outbound
+                    || before_message.timestamp > cutoff
+                {
                     continue;
                 }
-                let mut deliveries = self.store.message_device_deliveries(&message.id)?;
+                selected_messages.insert(before_message.id);
+                let deliveries = self.store.message_device_deliveries(&before_message.id)?;
                 let delivered = deliveries
                     .iter()
                     .any(|delivery| delivery.state == DeliveryState::Delivered);
-                for delivery in &mut deliveries {
+                for before_delivery in deliveries {
                     if !matches!(
-                        delivery.state,
+                        before_delivery.state,
                         DeliveryState::Delivered | DeliveryState::Failed
                     ) {
-                        delivery.state = DeliveryState::Failed;
-                        self.store.put_message_device_delivery(delivery, rng)?;
+                        let mut after_delivery = before_delivery.clone();
+                        after_delivery.state = DeliveryState::Failed;
+                        delivery_pairs.push((before_delivery, after_delivery));
                     }
                 }
-                self.store.queue_remove_message(&message.id)?;
                 if !delivered
                     && !matches!(
-                        message.state,
+                        before_message.state,
                         DeliveryState::Delivered | DeliveryState::Failed
                     )
                 {
-                    message.state = DeliveryState::Failed;
-                    self.store.update_message(&message, rng)?;
-                    self.events.push_back(Event::DeliveryUpdated {
-                        id: message.id,
+                    let mut after_message = before_message.clone();
+                    after_message.state = DeliveryState::Failed;
+                    events.push(Event::DeliveryUpdated {
+                        id: before_message.id,
                         state: DeliveryState::Failed,
                     });
+                    message_pairs.push((before_message, after_message));
                 }
+            }
+            if selected_messages.len() == MAX_MAINTENANCE_MESSAGES_PER_TICK {
+                break;
             }
         }
 
-        for mut message in self.store.all_group_messages()? {
-            if message.direction != Direction::Outbound || message.timestamp > cutoff {
+        for before_message in self.store.all_group_messages()? {
+            if selected_messages.len() == MAX_MAINTENANCE_MESSAGES_PER_TICK {
+                break;
+            }
+            if before_message.direction != Direction::Outbound || before_message.timestamp > cutoff
+            {
                 continue;
             }
+            selected_messages.insert(before_message.id);
+            let mut after_message = before_message.clone();
             let mut changed = false;
-            for delivery in &mut message.deliveries {
+            for delivery in &mut after_message.deliveries {
                 if !matches!(
                     delivery.state,
                     DeliveryState::Delivered | DeliveryState::Failed
                 ) {
                     delivery.state = DeliveryState::Failed;
                     changed = true;
-                    self.events.push_back(Event::GroupDeliveryUpdated {
-                        id: message.id,
+                    events.push(Event::GroupDeliveryUpdated {
+                        id: before_message.id,
                         peer: delivery.peer,
                         state: DeliveryState::Failed,
                     });
                 }
             }
-            for mut delivery in self.store.message_device_deliveries(&message.id)? {
+            for before_delivery in self.store.message_device_deliveries(&before_message.id)? {
                 if !matches!(
-                    delivery.state,
+                    before_delivery.state,
                     DeliveryState::Delivered | DeliveryState::Failed
                 ) {
-                    delivery.state = DeliveryState::Failed;
-                    self.store.put_message_device_delivery(&delivery, rng)?;
+                    let mut after_delivery = before_delivery.clone();
+                    after_delivery.state = DeliveryState::Failed;
+                    delivery_pairs.push((before_delivery, after_delivery));
                 }
             }
-            self.store.queue_remove_group_message(&message.id)?;
             if changed {
-                message.wire_body = None;
-                self.store.update_group_message(&message, rng)?;
+                after_message.wire_body = None;
+                group_message_pairs.push((before_message, after_message));
             }
         }
 
-        // Maintenance/control rows do not have a user-visible message record.
-        // They still receive the same bounded resource lifetime when their
-        // modern queue row carries a creation time. Legacy rows keep their
-        // prior behavior because assigning them a fabricated age could drop
-        // valid work immediately after an upgrade.
-        for (sequence, item) in self.store.queue_all()? {
-            if item.msg_id.is_none()
+        for (sequence, item) in queue_snapshot {
+            let selected_history = item
+                .msg_id
+                .or(item.group_msg_id)
+                .is_some_and(|id| selected_messages.contains(&id));
+            let expired_control = item.msg_id.is_none()
                 && item.group_msg_id.is_none()
                 && item.created_at != 0
-                && item.created_at <= cutoff
+                && item.created_at <= cutoff;
+            if (selected_history || expired_control)
+                && delete_queue.len() < MAX_MAINTENANCE_QUEUE_ROWS_PER_TICK
             {
-                self.store.queue_ack(sequence)?;
-                self.held_notified.remove(&sequence);
-                self.call_queue_deadlines.remove(&sequence);
+                delete_queue.push(QueueDelete {
+                    sequence,
+                    content_id: item.envelope.content_id(),
+                });
             }
         }
+        let message_transitions = message_pairs
+            .iter()
+            .map(|(before, after)| MessageTransition { before, after })
+            .collect::<Vec<_>>();
+        let delivery_transitions = delivery_pairs
+            .iter()
+            .map(|(before, after)| DeliveryTransition { before, after })
+            .collect::<Vec<_>>();
+        let group_message_transitions = group_message_pairs
+            .iter()
+            .map(|(before, after)| GroupMessageTransition { before, after })
+            .collect::<Vec<_>>();
+        if delete_replay.is_empty()
+            && delete_queue.is_empty()
+            && message_transitions.is_empty()
+            && delivery_transitions.is_empty()
+            && group_message_transitions.is_empty()
+        {
+            return Ok(());
+        }
+        let receipt = self.store.commit_plan(
+            CommitPlan::Maintenance(MaintenancePlan {
+                seen: &[],
+                delete_pending: &[],
+                delete_queue: &delete_queue,
+                update_queue: &[],
+                delete_replay: &delete_replay,
+                messages: &message_transitions,
+                deliveries: &delivery_transitions,
+                group_messages: &group_message_transitions,
+                groups: &[],
+                ephemeral: &[],
+                delete_messages: &[],
+                delete_group_messages: &[],
+                delete_media: &[],
+                delete_scheduled: &[],
+                delete_sessions: &[],
+                delete_capabilities: &[],
+                clear_reset_markers: &[],
+                delete_controls: &[],
+                acknowledge_presentation: None,
+                presentation_changed: !events.is_empty(),
+            }),
+            rng,
+        )?;
+        let deleted = delete_queue
+            .iter()
+            .map(|delete| delete.sequence)
+            .collect::<HashSet<_>>();
+        self.held_notified
+            .retain(|sequence| !deleted.contains(sequence));
+        self.call_queue_deadlines
+            .retain(|sequence, _| !deleted.contains(sequence));
+        self.accept_commit_receipt(receipt, events);
         Ok(())
     }
 
-    /// Establish a fresh outbound session from a contact's stored prekey
-    /// bundle, sealing the (already padded) first payload into the
-    /// anonymous handshake flight. A reset-marked peer (post-restore) gets
-    /// the OPK-less mode: the old device consumed the archived bundle's
-    /// one-time prekey, so referencing it again would only get the flight
-    /// dropped by the peer's vault.
-    fn initiate_session(
-        &mut self,
+    fn prepare_session(
+        &self,
         account: &[u8; 32],
         device: &[u8; 32],
         bundle_bytes: &[u8],
         padded: &[u8],
         now: u64,
         rng: &mut impl CryptoRngCore,
-    ) -> Result<Envelope> {
+    ) -> Result<(Session, Envelope)> {
         let mut bundle = PrekeyBundle::decode(bundle_bytes)?.verify(now)?;
         let reset_markers = self.store.reset_markers()?;
         if (reset_markers.contains(account) || reset_markers.contains(device))
@@ -2098,7 +2727,10 @@ impl Node {
         } else {
             &self.identity
         };
-        let (session, init) = initiate(initiator, &bundle, padded, now, rng)?;
+        let step = self.begin_crypto_step()?;
+        let initiated = initiate(initiator, &bundle, padded, now, rng);
+        self.finish_crypto_step(step)?;
+        let (session, init) = initiated?;
         let initial_bytes = if linked {
             let return_prekey = PrekeyBundle::build(
                 &self.device_identity,
@@ -2132,15 +2764,16 @@ impl Node {
                 return_bundle: return_bundle.encode(),
             })?
         };
+        let step = self.begin_crypto_step()?;
         let sealed = seal_anonymous(&bundle.bundle().identity, HS_AD, &initial_bytes, rng);
-        self.store.delete_capabilities(device)?;
-        self.capabilities_advertised.remove(device);
-        self.store.put_session(device, &session, rng)?;
-        self.sessions.insert(*device, session);
-        Ok(Envelope::new(
-            EnvelopeKind::Handshake,
-            intro_token(device, epoch_day(now)),
-            sealed,
+        self.finish_crypto_step(step)?;
+        Ok((
+            session,
+            Envelope::new(
+                EnvelopeKind::Handshake,
+                intro_token(device, epoch_day(now)),
+                sealed,
+            ),
         ))
     }
 
@@ -2150,52 +2783,149 @@ impl Node {
             .ephemeral_records()?
             .into_iter()
             .filter(|record| record.state == EphemeralState::Active && now >= record.expires_at)
+            .take(MAX_EPHEMERAL_EXPIRIES_PER_TICK)
             .collect();
+        if due.is_empty() {
+            return Ok(());
+        }
         let me = self.identity.public().ed;
-        for mut record in due {
-            // Tombstone first. If the process stops between this write and
-            // physical cleanup, every public read/open path sees the record
-            // as terminal and cleanup resumes on the next tick.
-            record.state = EphemeralState::Expired;
-            self.store.put_ephemeral_record(&record, rng)?;
-            match record.conversation {
+        let queue = self.store.queue_all()?;
+        let mut tombstones = Vec::new();
+        let mut pairwise_deletes = Vec::new();
+        let mut group_deletes = Vec::new();
+        let mut media_rows = Vec::new();
+        let mut queue_deletes = Vec::new();
+        let mut events = Vec::new();
+        let mut transfer_ids = Vec::new();
+        for before in due {
+            let mut after = before.clone();
+            after.state = EphemeralState::Expired;
+            match before.conversation {
                 EphemeralConversation::Pairwise(peer) => {
-                    let direction = if record.author == me {
+                    let direction = if before.author == me {
                         Direction::Outbound
                     } else {
                         Direction::Inbound
                     };
-                    self.store
-                        .delete_message_record(&peer, direction, &record.content_id)?;
+                    if let Some(message) =
+                        self.store
+                            .messages_with(&peer)?
+                            .into_iter()
+                            .find(|message| {
+                                message.id == before.content_id && message.direction == direction
+                            })
+                    {
+                        pairwise_deletes.push(message);
+                    }
                     if direction == Direction::Outbound {
-                        self.store.queue_remove_message(&record.content_id)?;
+                        for (sequence, item) in &queue {
+                            if item.msg_id == Some(before.content_id) {
+                                queue_deletes.push(QueueDelete {
+                                    sequence: *sequence,
+                                    content_id: item.envelope.content_id(),
+                                });
+                            }
+                        }
                     }
                 }
                 EphemeralConversation::Group(group) => {
-                    self.store.delete_group_message_record(
-                        &group,
-                        &record.author,
-                        &record.content_id,
-                    )?;
-                    if record.author == me {
-                        self.store.queue_remove_group_message(&record.content_id)?;
+                    if let Some(message) =
+                        self.store
+                            .group_messages(&group)?
+                            .into_iter()
+                            .find(|message| {
+                                message.id == before.content_id && message.sender == before.author
+                            })
+                    {
+                        group_deletes.push(message);
+                    }
+                    if before.author == me {
+                        for (sequence, item) in &queue {
+                            if item.group_msg_id == Some(before.content_id) {
+                                queue_deletes.push(QueueDelete {
+                                    sequence: *sequence,
+                                    content_id: item.envelope.content_id(),
+                                });
+                            }
+                        }
                     }
                 }
             }
-            for transfer in record.transfer_ids {
-                if self.store.get_media_transfer(&transfer)?.is_some() {
-                    self.store.delete_media_transfer_with_objects(&transfer)?;
+            for transfer in &before.transfer_ids {
+                if self.store.get_media_transfer(transfer)?.is_some() {
+                    let objects = self
+                        .store
+                        .media_objects_for_transfer(transfer)?
+                        .into_iter()
+                        .map(|object| object.local_id)
+                        .collect::<Vec<_>>();
+                    media_rows.push((*transfer, objects));
                 }
-                self.attachment_request_at.remove(&transfer);
-                self.attachment_request_target.remove(&transfer);
+                transfer_ids.push(*transfer);
             }
-            self.events.push_back(Event::EphemeralRemoved {
-                conversation: record.conversation,
-                author: record.author,
-                content_id: record.content_id,
+            events.push(Event::EphemeralRemoved {
+                conversation: before.conversation,
+                author: before.author,
+                content_id: before.content_id,
                 reason: EphemeralState::Expired,
             });
+            tombstones.push((before, after));
         }
+        queue_deletes.sort_by_key(|delete| delete.sequence);
+        queue_deletes.dedup_by_key(|delete| delete.sequence);
+        let ephemeral = tombstones
+            .iter()
+            .map(|(before, after)| EphemeralTransition {
+                before: Some(before),
+                after,
+            })
+            .collect::<Vec<_>>();
+        let delete_messages = pairwise_deletes
+            .iter()
+            .map(|before| MessageDelete { before })
+            .collect::<Vec<_>>();
+        let delete_group_messages = group_deletes
+            .iter()
+            .map(|before| GroupMessageDelete { before })
+            .collect::<Vec<_>>();
+        let delete_media = media_rows
+            .iter()
+            .map(|(transfer_id, object_ids)| MediaDelete {
+                transfer_id: *transfer_id,
+                object_ids,
+            })
+            .collect::<Vec<_>>();
+        let receipt = self.store.commit_plan(
+            CommitPlan::Maintenance(MaintenancePlan {
+                seen: &[],
+                delete_pending: &[],
+                delete_queue: &queue_deletes,
+                update_queue: &[],
+                delete_replay: &[],
+                messages: &[],
+                deliveries: &[],
+                group_messages: &[],
+                groups: &[],
+                ephemeral: &ephemeral,
+                delete_messages: &delete_messages,
+                delete_group_messages: &delete_group_messages,
+                delete_media: &delete_media,
+                delete_scheduled: &[],
+                delete_sessions: &[],
+                delete_capabilities: &[],
+                clear_reset_markers: &[],
+                delete_controls: &[],
+                acknowledge_presentation: None,
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        for transfer in transfer_ids {
+            self.attachment_request_at.remove(&transfer);
+            self.attachment_request_target.remove(&transfer);
+        }
+        self.store.collect_media_garbage()?;
+        self.accept_commit_receipt(receipt, events);
         Ok(())
     }
 
@@ -2208,7 +2938,7 @@ impl Node {
             if now < scheduled.not_before {
                 continue;
             }
-            let activation = (|| -> Result<()> {
+            let activation = (|| -> Result<bool> {
                 match scheduled.conversation {
                     StoreScheduledConversation::Peer(peer) => {
                         // Validate a first-flight bundle before the ordinary
@@ -2243,14 +2973,17 @@ impl Node {
                                 }
                             }
                         }
-                        self.send_message_with_id(
+                        self.send_message_with_id_retention(
                             &peer,
                             &scheduled.body,
                             scheduled.id,
                             scheduled.not_before,
                             now,
+                            None,
+                            Some(&scheduled),
                             rng,
                         )?;
+                        Ok(true)
                     }
                     StoreScheduledConversation::Group(group) => {
                         self.group_send_with_id(
@@ -2261,16 +2994,19 @@ impl Node {
                             now,
                             rng,
                         )?;
+                        Ok(false)
                     }
                 }
-                Ok(())
             })();
-            if activation.is_err() {
-                continue;
+            match activation {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.store.delete_scheduled_message(&scheduled.id)?;
+                    self.events
+                        .push_back(Event::ScheduledMessageActivated { id: scheduled.id });
+                }
+                Err(_) => continue,
             }
-            self.store.delete_scheduled_message(&scheduled.id)?;
-            self.events
-                .push_back(Event::ScheduledMessageActivated { id: scheduled.id });
         }
         Ok(())
     }
@@ -2284,7 +3020,12 @@ impl Node {
     /// marker: peers whose bundle is missing or expired fall back to the
     /// send-path auto-handshake once the user has a fresh bundle for them.
     fn rekey_reset_peers(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<()> {
-        for marker in self.store.reset_markers()? {
+        for marker in self
+            .store
+            .reset_markers()?
+            .into_iter()
+            .take(MAX_RESET_MARKERS_PER_TICK)
+        {
             let all_endpoints = self.store.contact_devices()?;
             let physical = all_endpoints
                 .iter()
@@ -2314,14 +3055,13 @@ impl Node {
                 }
             }
 
-            // Keep the marker until every attempted first flight is built:
-            // it selects OPK-less restore mode for both legacy accounts and
-            // exact C2 physical endpoints.
+            let mut prepared = Vec::new();
+            let mut queue = Vec::new();
             for endpoint in routes {
                 if self.sessions.contains_key(&endpoint.device) || endpoint.bundle.is_empty() {
                     continue;
                 }
-                let Ok(envelope) = self.initiate_session(
+                let Ok((after, envelope)) = self.prepare_session(
                     &account,
                     &endpoint.device,
                     &endpoint.bundle,
@@ -2331,21 +3071,83 @@ impl Node {
                 ) else {
                     continue; // e.g. the archived bundle has expired
                 };
-                self.store.queue_push(
-                    &QueueItem {
-                        peer: endpoint.device,
-                        msg_id: None,
-                        group_msg_id: None,
-                        class: QueueClass::Normal,
-                        created_at: now,
-                        attempts: 0,
-                        next_attempt_at: now,
-                        envelope,
-                    },
+                queue.push(QueueItem {
+                    peer: endpoint.device,
+                    msg_id: None,
+                    group_msg_id: None,
+                    class: QueueClass::Normal,
+                    created_at: now,
+                    attempts: 0,
+                    next_attempt_at: now,
+                    envelope: envelope.clone(),
+                });
+                prepared.push(PreparedPairwiseRoute {
+                    route: endpoint.device,
+                    before: None,
+                    after,
+                    envelope,
+                    resets_capabilities: true,
+                });
+            }
+            if prepared.is_empty() {
+                self.store.commit_plan(
+                    CommitPlan::Maintenance(MaintenancePlan {
+                        seen: &[],
+                        delete_pending: &[],
+                        delete_queue: &[],
+                        update_queue: &[],
+                        delete_replay: &[],
+                        messages: &[],
+                        deliveries: &[],
+                        group_messages: &[],
+                        groups: &[],
+                        ephemeral: &[],
+                        delete_messages: &[],
+                        delete_group_messages: &[],
+                        delete_media: &[],
+                        delete_scheduled: &[],
+                        delete_sessions: &[],
+                        delete_capabilities: &[],
+                        clear_reset_markers: &[marker],
+                        delete_controls: &[],
+                        acknowledge_presentation: None,
+                        presentation_changed: false,
+                    }),
                     rng,
                 )?;
+                continue;
             }
-            self.store.clear_reset_marker(&marker)?;
+            let transitions = prepared
+                .iter()
+                .map(|route| SessionTransition {
+                    peer_device: route.route,
+                    before: None,
+                    after: &route.after,
+                })
+                .collect::<Vec<_>>();
+            let clear_capabilities = prepared.iter().map(|route| route.route).collect::<Vec<_>>();
+            self.store.commit_plan(
+                CommitPlan::PairwiseSend(PairwiseSendPlan {
+                    sessions: &transitions,
+                    message: None,
+                    message_update: None,
+                    deliveries: &[],
+                    delivery_updates: &[],
+                    queue: &queue,
+                    scheduled: None,
+                    clear_capabilities: &clear_capabilities,
+                    clear_reset_markers: &[marker],
+                    ephemeral: None,
+                    presentation_changed: false,
+                }),
+                rng,
+            )?;
+            self.before_memory_replacement()?;
+            for route in prepared {
+                self.sessions.insert(route.route, route.after);
+                self.capabilities_advertised.remove(&route.route);
+            }
+            self.after_memory_replacement()?;
         }
         Ok(())
     }
@@ -2378,16 +3180,27 @@ impl Node {
             .filter(|record| record.state == EphemeralState::Active)
             .map(|record| record.content_id)
             .collect();
+        let mut transitions_left = MAX_PENDING_DEVICE_DELIVERIES_PER_TICK;
 
         for contact in self.store.contacts()? {
-            for mut message in self.store.messages_with(&contact.peer)? {
+            for message in self.store.messages_with(&contact.peer)? {
+                if transitions_left == 0 {
+                    return Ok(());
+                }
                 if message.direction != Direction::Outbound
                     || active_ephemeral.contains(&message.id)
                 {
                     continue;
                 }
-                let mut message_changed = false;
-                for mut delivery in self.store.message_device_deliveries(&message.id)? {
+                let message_before = message;
+                let mut message_after = message_before.clone();
+                let mut prepared = Vec::new();
+                let mut queue = Vec::new();
+                let mut delivery_pairs = Vec::new();
+                for delivery in self.store.message_device_deliveries(&message_before.id)? {
+                    if transitions_left == 0 {
+                        break;
+                    }
                     if delivery.account != contact.peer
                         || delivery.state != DeliveryState::Queued
                         || delivery.wire_id.is_some()
@@ -2395,26 +3208,33 @@ impl Node {
                         continue;
                     }
                     let route = delivery.device;
-                    if let Some(wire_id) = queued.get(&(message.id, route)).copied() {
-                        delivery.wire_id = Some(wire_id);
-                        self.store.put_message_device_delivery(&delivery, rng)?;
-                        if message.wire_id.is_none() {
-                            message.wire_id = Some(wire_id);
-                            message_changed = true;
+                    let mut delivery_after = delivery.clone();
+                    if let Some(wire_id) = queued.get(&(message_before.id, route)).copied() {
+                        delivery_after.wire_id = Some(wire_id);
+                        if message_after.wire_id.is_none() {
+                            message_after.wire_id = Some(wire_id);
                         }
+                        delivery_pairs.push((delivery, delivery_after));
+                        transitions_left -= 1;
                         continue;
                     }
 
-                    let padded = pad(&message.body)?;
-                    let envelope = if let Some(session) = self.sessions.get_mut(&route) {
-                        let ratchet = session.encrypt(rng, now, &padded, &[]);
+                    let padded = pad(&message_before.body)?;
+                    let route_state = if let Some(before) = self.sessions.get(&route).cloned() {
+                        let mut after = before.clone();
+                        let ratchet = self.candidate_encrypt(&mut after, rng, now, &padded)?;
                         let token = delivery_token(
-                            &MailboxKey::from_bytes(*session.mailbox_key()),
+                            &MailboxKey::from_bytes(*after.mailbox_key()),
                             epoch_day(now),
                             &route,
                         );
-                        self.store.put_session(&route, session, rng)?;
-                        Envelope::new(EnvelopeKind::Message, token, ratchet.encode())
+                        PreparedPairwiseRoute {
+                            route,
+                            before: Some(before),
+                            after,
+                            envelope: Envelope::new(EnvelopeKind::Message, token, ratchet.encode()),
+                            resets_capabilities: false,
+                        }
                     } else {
                         let Some(endpoint) = endpoints.get(&route) else {
                             continue;
@@ -2426,54 +3246,270 @@ impl Node {
                         {
                             continue;
                         }
-                        self.initiate_session(
+                        let (after, envelope) = self.prepare_session(
                             &contact.peer,
                             &route,
                             &endpoint.bundle,
                             &padded,
                             now,
                             rng,
-                        )?
+                        )?;
+                        PreparedPairwiseRoute {
+                            route,
+                            before: None,
+                            after,
+                            envelope,
+                            resets_capabilities: true,
+                        }
                     };
-                    let wire_id = envelope.content_id();
+                    let wire_id = route_state.envelope.content_id();
                     let class = if matches!(
-                        decode_content(&message.body),
+                        decode_content(&message_before.body),
                         DecodedContent::Attachment { .. }
                     ) {
                         QueueClass::Bulk
                     } else {
                         QueueClass::Interactive
                     };
-                    self.store.queue_push(
-                        &QueueItem {
-                            peer: route,
-                            msg_id: Some(message.id),
-                            group_msg_id: None,
-                            class,
-                            created_at: message.timestamp,
-                            attempts: 0,
-                            next_attempt_at: now,
-                            envelope,
-                        },
+                    queue.push(QueueItem {
+                        peer: route,
+                        msg_id: Some(message_before.id),
+                        group_msg_id: None,
+                        class,
+                        created_at: message_before.timestamp,
+                        attempts: 0,
+                        next_attempt_at: now,
+                        envelope: route_state.envelope.clone(),
+                    });
+                    queued.insert((message_before.id, route), wire_id);
+                    delivery_after.wire_id = Some(wire_id);
+                    delivery_pairs.push((delivery, delivery_after));
+                    if message_after.wire_id.is_none() {
+                        message_after.wire_id = Some(wire_id);
+                    }
+                    prepared.push(route_state);
+                    transitions_left -= 1;
+                }
+                if delivery_pairs.is_empty() {
+                    continue;
+                }
+                let delivery_updates = delivery_pairs
+                    .iter()
+                    .map(|(before, after)| DeliveryTransition { before, after })
+                    .collect::<Vec<_>>();
+                let message_update =
+                    (message_after != message_before).then_some(MessageTransition {
+                        before: &message_before,
+                        after: &message_after,
+                    });
+                if prepared.is_empty() {
+                    self.store.commit_plan(
+                        CommitPlan::Maintenance(MaintenancePlan {
+                            seen: &[],
+                            delete_pending: &[],
+                            delete_queue: &[],
+                            update_queue: &[],
+                            delete_replay: &[],
+                            messages: message_update.as_slice(),
+                            deliveries: &delivery_updates,
+                            group_messages: &[],
+                            groups: &[],
+                            ephemeral: &[],
+                            delete_messages: &[],
+                            delete_group_messages: &[],
+                            delete_media: &[],
+                            delete_scheduled: &[],
+                            delete_sessions: &[],
+                            delete_capabilities: &[],
+                            clear_reset_markers: &[],
+                            delete_controls: &[],
+                            acknowledge_presentation: None,
+                            presentation_changed: false,
+                        }),
                         rng,
                     )?;
-                    queued.insert((message.id, route), wire_id);
-                    delivery.wire_id = Some(wire_id);
-                    self.store.put_message_device_delivery(&delivery, rng)?;
-                    if message.wire_id.is_none() {
-                        message.wire_id = Some(wire_id);
-                        message_changed = true;
+                    continue;
+                }
+                let session_transitions = prepared
+                    .iter()
+                    .map(|route| SessionTransition {
+                        peer_device: route.route,
+                        before: route.before.as_ref(),
+                        after: &route.after,
+                    })
+                    .collect::<Vec<_>>();
+                let clear_capabilities = prepared
+                    .iter()
+                    .filter(|route| route.resets_capabilities)
+                    .map(|route| route.route)
+                    .collect::<Vec<_>>();
+                self.store.commit_plan(
+                    CommitPlan::PairwiseSend(PairwiseSendPlan {
+                        sessions: &session_transitions,
+                        message: None,
+                        message_update: Some(MessageTransition {
+                            before: &message_before,
+                            after: &message_after,
+                        }),
+                        deliveries: &[],
+                        delivery_updates: &delivery_updates,
+                        queue: &queue,
+                        scheduled: None,
+                        clear_capabilities: &clear_capabilities,
+                        clear_reset_markers: &[],
+                        ephemeral: None,
+                        presentation_changed: false,
+                    }),
+                    rng,
+                )?;
+                self.before_memory_replacement()?;
+                for route in prepared {
+                    self.sessions.insert(route.route, route.after);
+                    if route.resets_capabilities {
+                        self.capabilities_advertised.remove(&route.route);
                     }
                 }
-                if message_changed {
-                    self.store.update_message(&message, rng)?;
-                }
+                self.after_memory_replacement()?;
             }
         }
         Ok(())
     }
 
     // ---- receive path ------------------------------------------------------
+
+    fn apply_deferred_controls(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<bool> {
+        let mut made_progress = false;
+        for control in self
+            .store
+            .deferred_controls(MAX_DEFERRED_CONTROLS_PER_TICK)?
+        {
+            let applied = match control.kind {
+                DeferredControlKind::AttachmentBulk => {
+                    self.apply_attachment_bulk(
+                        control.peer,
+                        control.peer_device,
+                        &control.body,
+                        now,
+                        rng,
+                    )?;
+                    true
+                }
+                DeferredControlKind::GroupControl => {
+                    let mut established = false;
+                    self.apply_group_control(
+                        control.peer,
+                        control.peer_device,
+                        &control.body,
+                        now,
+                        rng,
+                        &mut established,
+                    )?
+                }
+            };
+            if !applied {
+                continue;
+            }
+            made_progress = true;
+            let receipt = self.store.commit_plan(
+                CommitPlan::Maintenance(MaintenancePlan {
+                    seen: &[],
+                    delete_pending: &[],
+                    delete_queue: &[],
+                    update_queue: &[],
+                    delete_replay: &[],
+                    messages: &[],
+                    deliveries: &[],
+                    group_messages: &[],
+                    groups: &[],
+                    ephemeral: &[],
+                    delete_messages: &[],
+                    delete_group_messages: &[],
+                    delete_media: &[],
+                    delete_scheduled: &[],
+                    delete_sessions: &[],
+                    delete_capabilities: &[],
+                    clear_reset_markers: &[],
+                    delete_controls: &[control],
+                    acknowledge_presentation: None,
+                    presentation_changed: true,
+                }),
+                rng,
+            )?;
+            self.accept_commit_receipt(receipt, []);
+        }
+        Ok(made_progress)
+    }
+
+    fn pending_delete(
+        pending_sequence: Option<i64>,
+        content_id: [u8; 16],
+    ) -> Option<PendingDelete> {
+        pending_sequence.map(|sequence| PendingDelete {
+            sequence,
+            content_id,
+        })
+    }
+
+    fn prepare_control_queue(
+        &self,
+        session: &mut Session,
+        peer: [u8; 32],
+        payload: &[u8],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<QueueItem> {
+        let message = self.candidate_encrypt(session, rng, now, &pad(payload)?)?;
+        let token = delivery_token(
+            &MailboxKey::from_bytes(*session.mailbox_key()),
+            epoch_day(now),
+            &peer,
+        );
+        Ok(QueueItem {
+            peer,
+            msg_id: None,
+            group_msg_id: None,
+            class: QueueClass::Normal,
+            created_at: now,
+            attempts: 0,
+            next_attempt_at: now,
+            envelope: Envelope::new(EnvelopeKind::Receipt, token, message.encode()),
+        })
+    }
+
+    fn commit_terminal_input(
+        &mut self,
+        content_id: [u8; 16],
+        pending_sequence: Option<i64>,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Consumed> {
+        let pending = Self::pending_delete(pending_sequence, content_id);
+        self.store.commit_plan(
+            CommitPlan::Maintenance(MaintenancePlan {
+                seen: &[content_id],
+                delete_pending: pending.as_slice(),
+                delete_queue: &[],
+                update_queue: &[],
+                delete_replay: &[],
+                messages: &[],
+                deliveries: &[],
+                group_messages: &[],
+                groups: &[],
+                ephemeral: &[],
+                delete_messages: &[],
+                delete_group_messages: &[],
+                delete_media: &[],
+                delete_scheduled: &[],
+                delete_sessions: &[],
+                delete_capabilities: &[],
+                clear_reset_markers: &[],
+                delete_controls: &[],
+                acknowledge_presentation: None,
+                presentation_changed: false,
+            }),
+            rng,
+        )?;
+        Ok(Consumed::DoneAtomic)
+    }
 
     fn consume(
         &mut self,
@@ -2488,7 +3524,44 @@ impl Node {
         let content_id = env.content_id();
         if self.store.is_seen(&content_id)? {
             if let Some(peer) = self.store.receipt_replay_peer(&content_id)? {
-                acks.push((peer, content_id));
+                if let Some(before) = self.store.get_session(&peer)? {
+                    let mut after = before.clone();
+                    let receipt = ReceiptPayload {
+                        acks: vec![content_id],
+                        nacks: Vec::new(),
+                    }
+                    .encode();
+                    let queue = self.prepare_control_queue(&mut after, peer, &receipt, now, rng)?;
+                    let source_pending = Self::pending_delete(origin.pending_sequence, content_id);
+                    self.store.commit_plan(
+                        CommitPlan::PairwiseReceive(PairwiseReceivePlan {
+                            session: SessionTransition {
+                                peer_device: peer,
+                                before: Some(&before),
+                                after: &after,
+                            },
+                            message: None,
+                            ephemeral: None,
+                            media_transfers: &[],
+                            media_objects: &[],
+                            capabilities: None,
+                            queue: &[queue],
+                            content_id,
+                            received_at: now,
+                            receipt_replay: true,
+                            source_pending,
+                            presentation_changed: false,
+                        }),
+                        rng,
+                    )?;
+                    self.before_memory_replacement()?;
+                    self.sessions.insert(peer, after);
+                    self.after_memory_replacement()?;
+                    return Ok(Consumed::DoneAtomic);
+                }
+            }
+            if origin.pending_sequence.is_some() {
+                return self.commit_terminal_input(content_id, origin.pending_sequence, rng);
             }
             return Ok(Consumed::Done);
         }
@@ -2543,7 +3616,9 @@ impl Node {
                 }
                 Ok(Consumed::Done)
             }
-            EnvelopeKind::Handshake => self.consume_handshake(env, now, rng, acks, established),
+            EnvelopeKind::Handshake => {
+                self.consume_handshake(env, origin.pending_sequence, now, rng, acks, established)
+            }
             EnvelopeKind::Message | EnvelopeKind::Receipt | EnvelopeKind::GroupControl => {
                 self.consume_ratchet(env, origin.pending_sequence, now, rng, acks, established)
             }
@@ -2554,49 +3629,52 @@ impl Node {
     fn consume_handshake(
         &mut self,
         env: &Envelope,
+        pending_sequence: Option<i64>,
         now: u64,
         rng: &mut impl CryptoRngCore,
-        acks: &mut Vec<([u8; 32], [u8; 16])>,
+        _acks: &mut [([u8; 32], [u8; 16])],
         established: &mut bool,
     ) -> Result<Consumed> {
         // Every failure below is permanent for this envelope (it cannot
         // become decryptable later), so it is marked seen and dropped —
         // parsers never panic, dropped flights never wedge the queue.
-        let done = |node: &mut Self| -> Result<Consumed> {
-            node.store.mark_seen(&env.content_id())?;
-            Ok(Consumed::Done)
-        };
-
-        let (recipient, init_bytes) =
-            if let Ok(bytes) = open_anonymous(&self.device_identity, HS_AD, &env.body) {
-                (&self.device_identity, bytes)
-            } else if let Ok(bytes) = open_anonymous(&self.identity, HS_AD, &env.body) {
+        let step = self.begin_crypto_step()?;
+        let device_open = open_anonymous(&self.device_identity, HS_AD, &env.body);
+        self.finish_crypto_step(step)?;
+        let (recipient, init_bytes) = if let Ok(bytes) = device_open {
+            (&self.device_identity, bytes)
+        } else {
+            let step = self.begin_crypto_step()?;
+            let account_open = open_anonymous(&self.identity, HS_AD, &env.body);
+            self.finish_crypto_step(step)?;
+            if let Ok(bytes) = account_open {
                 (&self.identity, bytes)
             } else {
-                return done(self);
-            };
+                return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+            }
+        };
         let (raw_initial, sender_bundle, sender_account_bundle) =
             if let Some(flight) = decode_device_initial(&init_bytes) {
                 let Ok(bundle) = DevicePrekeyBundle::decode(&flight.return_bundle) else {
-                    return done(self);
+                    return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
                 };
                 if bundle.verify(now).is_err() {
-                    return done(self);
+                    return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
                 }
                 (flight.initial, Some(bundle), None)
             } else if let Some(flight) = decode_account_initial(&init_bytes) {
                 let Ok(bundle) = PrekeyBundle::decode(&flight.return_bundle) else {
-                    return done(self);
+                    return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
                 };
                 if bundle.verify(now).is_err() {
-                    return done(self);
+                    return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
                 }
                 (flight.initial, None, Some(bundle))
             } else {
                 (init_bytes, None, None)
             };
         let Ok(init) = InitialMessage::decode(&raw_initial) else {
-            return done(self);
+            return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
         };
         if sender_bundle
             .as_ref()
@@ -2605,31 +3683,35 @@ impl Node {
                 .as_ref()
                 .is_some_and(|bundle| bundle.identity != init.initiator)
         {
-            return done(self);
+            return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
         }
         if init.spk_id != self.vault.spk_id || init.pqspk_id != self.vault.pqspk_id {
-            return done(self); // references prekeys we no longer hold
+            return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
         }
         let opk = match init.opk_id {
             Some(id) => match self.vault.opk(id) {
                 Some(opk) => Some(opk),
-                None => return done(self), // one-time prekey already consumed
+                None => {
+                    return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                }
             },
             None => None,
         };
         let spk = self.vault.spk();
         let pqspk = self.vault.pqspk()?;
-        let Ok((session, first_payload)) =
-            respond(recipient, &spk, &pqspk, opk.as_ref(), &init, now, rng)
-        else {
-            return done(self);
+        let step = self.begin_crypto_step()?;
+        let responded = respond(recipient, &spk, &pqspk, opk.as_ref(), &init, now, rng);
+        self.finish_crypto_step(step)?;
+        let Ok((mut session, first_payload)) = responded else {
+            return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
         };
 
-        // Success: consume the one-time prekey, persist everything.
+        let before_vault = self.vault.encode();
+        let mut candidate_vault = self.vault.clone();
         if let Some(id) = init.opk_id {
-            self.vault.remove_opk(id);
-            self.store.put_prekeys(&self.vault.encode(), rng)?;
+            candidate_vault.remove_opk(id);
         }
+        let after_vault = candidate_vault.encode();
         let peer_device = init.initiator.ed;
         let (peer, account_identity) = sender_bundle.as_ref().map_or_else(
             || (peer_device, init.initiator.clone()),
@@ -2643,54 +3725,110 @@ impl Node {
         let account_return_hints = sender_account_bundle
             .as_ref()
             .map_or_else(Vec::new, |bundle| bundle.relay_hints.clone());
-        if let Some(mut contact) = self.store.get_contact(&peer)? {
+        let existing_contact = self.store.get_contact(&peer)?;
+        let was_new_contact = existing_contact.is_none();
+        let contact = if let Some(mut contact) = existing_contact {
             if sender_account_bundle.is_some() {
                 contact.identity = identity;
                 contact.bundle.clone_from(&account_return_bundle);
                 contact.hints.clone_from(&account_return_hints);
-                self.store.put_contact(&contact, rng)?;
+            }
+            contact
+        } else {
+            ContactRecord {
+                peer,
+                identity,
+                name: String::new(),
+                bundle: account_return_bundle.clone(),
+                hints: account_return_hints.clone(),
+                verified: false,
+            }
+        };
+
+        let existing_endpoints = self.store.contact_devices_for(&peer)?;
+        let mut endpoints = Vec::new();
+        let mut delete_endpoint_records = Vec::new();
+        let mut cleanup_devices = Vec::new();
+        if let Some(bundle) = sender_bundle.as_ref() {
+            self.validate_contact_device_manifest(&bundle.manifest)?;
+            let state_id = bundle.manifest.state_id();
+            let legacy_alias = existing_endpoints
+                .iter()
+                .find(|endpoint| endpoint.device == peer && endpoint.manifest_generation == 0);
+            let mut active_by_issuance = bundle
+                .manifest
+                .devices
+                .iter()
+                .filter(|entry| entry.revoked_at.is_none())
+                .collect::<Vec<_>>();
+            active_by_issuance
+                .sort_by_key(|entry| (entry.certificate.issued_at, entry.certificate.device_id()));
+            let legacy_replacement = legacy_alias.and_then(|_| {
+                let first = active_by_issuance.first()?;
+                let unique_earliest = active_by_issuance.get(1).is_none_or(|second| {
+                    second.certificate.issued_at > first.certificate.issued_at
+                });
+                unique_earliest.then_some(first.certificate.device_id())
+            });
+            for entry in &bundle.manifest.devices {
+                let device = entry.certificate.device_id();
+                let prior = existing_endpoints
+                    .iter()
+                    .find(|endpoint| endpoint.device == device)
+                    .or_else(|| {
+                        (legacy_replacement == Some(device))
+                            .then_some(legacy_alias)
+                            .flatten()
+                    });
+                let advertised = device == peer_device;
+                let mut endpoint_bundle =
+                    prior.map_or_else(Vec::new, |endpoint| endpoint.bundle.clone());
+                let mut hints = prior.map_or_else(Vec::new, |endpoint| endpoint.hints.clone());
+                if advertised {
+                    endpoint_bundle = bundle.prekey.encode();
+                    if !bundle.prekey.relay_hints.is_empty() || hints.is_empty() {
+                        hints = bundle.prekey.relay_hints.clone();
+                    }
+                }
+                let endpoint = ContactDeviceRecord {
+                    account: peer,
+                    device,
+                    name: Some(entry.name.clone()),
+                    certificate: postcard::to_allocvec(&entry.certificate)
+                        .map_err(|_| NodeError::CorruptState)?,
+                    bundle: endpoint_bundle,
+                    hints,
+                    manifest_generation: bundle.manifest.generation,
+                    manifest_state_id: state_id,
+                    last_seen: entry
+                        .last_seen
+                        .max(prior.map_or(0, |endpoint| endpoint.last_seen))
+                        .max(if advertised { now } else { 0 }),
+                    revoked_at: entry.revoked_at,
+                    revoked_after_counter: entry.revoked_after_counter,
+                };
+                if endpoint.revoked_at.is_some() && endpoint.device != peer_device {
+                    cleanup_devices.push(endpoint.device);
+                }
+                endpoints.push(endpoint);
+            }
+            let manifest_devices = endpoints
+                .iter()
+                .map(|endpoint| endpoint.device)
+                .collect::<HashSet<_>>();
+            for legacy in existing_endpoints.iter().filter(|endpoint| {
+                endpoint.manifest_generation == 0
+                    && !manifest_devices.contains(&endpoint.device)
+                    && endpoint.device != peer_device
+            }) {
+                delete_endpoint_records.push(legacy.clone());
+                cleanup_devices.push(legacy.device);
             }
         } else {
-            self.store.put_contact(
-                &ContactRecord {
-                    peer,
-                    identity,
-                    name: String::new(),
-                    bundle: account_return_bundle.clone(),
-                    hints: account_return_hints.clone(),
-                    verified: false,
-                },
-                rng,
-            )?;
-            self.events.push_back(Event::ContactAdded { peer });
-        }
-        let prior_endpoint = self
-            .store
-            .contact_devices_for(&peer)?
-            .into_iter()
-            .find(|endpoint| endpoint.device == peer_device);
-        let mut endpoint = if let Some(bundle) = sender_bundle.as_ref() {
-            ContactDeviceRecord {
-                account: peer,
-                device: peer_device,
-                name: bundle
-                    .manifest
-                    .devices
-                    .iter()
-                    .find(|entry| entry.certificate == bundle.certificate)
-                    .map(|entry| entry.name.clone()),
-                certificate: postcard::to_allocvec(&bundle.certificate)
-                    .map_err(|_| NodeError::CorruptState)?,
-                bundle: bundle.prekey.encode(),
-                hints: bundle.prekey.relay_hints.clone(),
-                manifest_generation: bundle.manifest.generation,
-                manifest_state_id: bundle.manifest.state_id(),
-                last_seen: now,
-                revoked_at: None,
-                revoked_after_counter: None,
-            }
-        } else if sender_account_bundle.is_some() {
-            ContactDeviceRecord {
+            let prior = existing_endpoints
+                .iter()
+                .find(|endpoint| endpoint.device == peer_device);
+            let mut endpoint = ContactDeviceRecord {
                 account: peer,
                 device: peer_device,
                 name: None,
@@ -2702,75 +3840,148 @@ impl Node {
                 last_seen: now,
                 revoked_at: None,
                 revoked_after_counter: None,
-            }
-        } else {
-            ContactDeviceRecord {
-                account: peer,
-                device: peer_device,
-                name: None,
-                certificate: Vec::new(),
-                bundle: Vec::new(),
-                hints: Vec::new(),
-                manifest_generation: 0,
-                manifest_state_id: [0u8; 32],
-                last_seen: now,
-                revoked_at: None,
-                revoked_after_counter: None,
-            }
-        };
-        if let Some(bundle) = sender_bundle {
-            self.apply_contact_device_manifest(
-                &bundle.manifest,
-                endpoint.device,
-                endpoint.bundle,
-                endpoint.hints,
-                now,
-                rng,
-            )?;
-        } else {
-            if let Some(prior) = prior_endpoint {
+            };
+            if let Some(prior) = prior {
                 if endpoint.bundle.is_empty() {
-                    endpoint.bundle = prior.bundle;
+                    endpoint.bundle.clone_from(&prior.bundle);
                 }
                 if endpoint.hints.is_empty() {
-                    endpoint.hints = prior.hints;
+                    endpoint.hints.clone_from(&prior.hints);
                 }
                 if endpoint.certificate.is_empty() {
-                    endpoint.certificate = prior.certificate;
+                    endpoint.certificate.clone_from(&prior.certificate);
                 }
                 if endpoint.name.is_none() {
-                    endpoint.name = prior.name;
+                    endpoint.name.clone_from(&prior.name);
                 }
                 endpoint.last_seen = endpoint.last_seen.max(prior.last_seen);
             }
-            self.store.put_contact_device(&endpoint, rng)?;
+            endpoints.push(endpoint);
         }
-        self.store.put_session(&peer_device, &session, rng)?;
-        self.store.delete_capabilities(&peer_device)?;
+
+        cleanup_devices.sort_unstable();
+        cleanup_devices.dedup();
+        let mut delete_sessions = Vec::new();
+        for device in &cleanup_devices {
+            if self.store.get_session(device)?.is_some() {
+                delete_sessions.push(*device);
+            }
+        }
+        let mut delete_capabilities = cleanup_devices.clone();
+        delete_capabilities.push(peer_device);
+        delete_capabilities.sort_unstable();
+        delete_capabilities.dedup();
+        let cleanup_set = cleanup_devices.iter().copied().collect::<HashSet<_>>();
+        let delete_queue = self
+            .store
+            .queue_all()?
+            .into_iter()
+            .filter_map(|(sequence, item)| {
+                cleanup_set.contains(&item.peer).then_some(QueueDelete {
+                    sequence,
+                    content_id: item.envelope.content_id(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let group_candidates = self.prepare_groups_on_session_established(&peer)?;
+        let group_transitions = group_candidates
+            .iter()
+            .map(|(before, after)| GroupTransition { before, after })
+            .collect::<Vec<_>>();
+
+        let prepared_inbound = match unpad(&first_payload) {
+            Ok(body)
+                if !body.is_empty()
+                    && !matches!(decode_content(&body), DecodedContent::CallControl { .. }) =>
+            {
+                Some(self.prepare_inbound(peer, body, None, now, rng)?)
+            }
+            _ => None,
+        };
+        let needs_receipt = prepared_inbound.is_some();
+        let receipt_queue = if needs_receipt {
+            let payload = ReceiptPayload {
+                acks: vec![env.content_id()],
+                nacks: Vec::new(),
+            }
+            .encode();
+            Some(self.prepare_control_queue(&mut session, peer_device, &payload, now, rng)?)
+        } else {
+            None
+        };
+        let prior_session = self.store.get_session(&peer_device)?;
+        let delete_devices = delete_endpoint_records
+            .iter()
+            .map(|before| ContactDeviceDelete { before })
+            .collect::<Vec<_>>();
+        let source_pending = Self::pending_delete(pending_sequence, env.content_id());
+        let mut events = Vec::new();
+        if was_new_contact {
+            events.push(Event::ContactAdded { peer });
+        }
+        events.push(Event::SessionEstablished { peer });
+        if let Some(prepared) = prepared_inbound.as_ref() {
+            events.extend(prepared.events.clone());
+        }
+        let prekeys = init.opk_id.map(|_| PrekeyTransition {
+            before: before_vault.as_ref(),
+            after: after_vault.as_ref(),
+        });
+        let receipt = self.store.commit_plan(
+            CommitPlan::HandshakeReceive(HandshakeReceivePlan {
+                prekeys,
+                session: SessionTransition {
+                    peer_device,
+                    before: prior_session.as_ref(),
+                    after: &session,
+                },
+                contact: &contact,
+                devices: &endpoints,
+                delete_devices: &delete_devices,
+                delete_sessions: &delete_sessions,
+                delete_capabilities: &delete_capabilities,
+                delete_queue: &delete_queue,
+                groups: &group_transitions,
+                message: prepared_inbound
+                    .as_ref()
+                    .and_then(|prepared| prepared.message.as_ref()),
+                ephemeral: prepared_inbound
+                    .as_ref()
+                    .and_then(|prepared| prepared.ephemeral.as_ref()),
+                media_transfers: prepared_inbound
+                    .as_ref()
+                    .map_or(&[], |prepared| prepared.media_transfers.as_slice()),
+                media_objects: prepared_inbound
+                    .as_ref()
+                    .map_or(&[], |prepared| prepared.media_objects.as_slice()),
+                queue: receipt_queue.as_slice(),
+                content_id: env.content_id(),
+                received_at: now,
+                receipt_replay: needs_receipt,
+                source_pending,
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.before_memory_replacement()?;
+        if init.opk_id.is_some() {
+            self.vault = candidate_vault;
+        }
+        for device in cleanup_devices {
+            self.sessions.remove(&device);
+            self.capabilities_advertised.remove(&device);
+        }
         self.capabilities_advertised.remove(&peer_device);
         self.sessions.insert(peer_device, session);
         *established = true;
-        self.events.push_back(Event::SessionEstablished { peer });
-        // A re-established session may mean the peer restored from backup
-        // and lost every group receiving chain: make sure any group we
-        // share owes them an announce (ADR-0012).
-        self.groups_on_session_established(&peer, rng)?;
-
-        // An empty first flight is session maintenance (a re-handshake
-        // after restore), not a message — nothing to record or receipt.
-        if let Ok(body) = unpad(&first_payload) {
-            if !body.is_empty() {
-                // A call requires an already authenticated live session and
-                // fresh capability/route checks. It can never ride an
-                // anonymous first flight or enter history.
-                if !matches!(decode_content(&body), DecodedContent::CallControl { .. }) {
-                    self.record_inbound(peer, body, None, now, rng)?;
-                    acks.push((peer_device, env.content_id()));
-                }
+        self.after_memory_replacement()?;
+        self.accept_commit_receipt(receipt, events);
+        if let Some(prepared) = prepared_inbound {
+            for transfer in prepared.attachment_updates {
+                self.emit_attachment_update(&transfer)?;
             }
         }
-        self.store.mark_seen(&env.content_id())?;
-        Ok(Consumed::Done)
+        Ok(Consumed::DoneAtomic)
     }
 
     fn consume_ratchet(
@@ -2779,198 +3990,367 @@ impl Node {
         pending_sequence: Option<i64>,
         now: u64,
         rng: &mut impl CryptoRngCore,
-        acks: &mut Vec<([u8; 32], [u8; 16])>,
-        established: &mut bool,
+        _acks: &mut [([u8; 32], [u8; 16])],
+        _established: &mut bool,
     ) -> Result<Consumed> {
-        // No session recognizes this token yet → it may be for a session a
-        // later handshake establishes. Stash, don't drop.
         let Some(peer_device) = self.match_session(&env.token, now) else {
             return Ok(Consumed::Later);
         };
         let peer = self.account_for_device(&peer_device)?;
-        let done = |node: &mut Self| -> Result<Consumed> {
-            node.store.mark_seen(&env.content_id())?;
-            Ok(Consumed::Done)
-        };
         let Ok(msg) = RatchetMessage::decode(&env.body) else {
-            return done(self);
+            return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
         };
-        // Durable state is authoritative. Decrypt into a detached candidate
-        // so a failed store transition cannot advance the live ratchet.
-        let Some(mut candidate_session) = self.store.get_session(&peer_device)? else {
+        let Some(before) = self.store.get_session(&peer_device)? else {
             return Err(NodeError::CorruptState);
         };
-        let Ok(plaintext) = candidate_session.decrypt(rng, now, &msg, &[]) else {
-            // Tampered, or outside the skipped-key window — a permanent,
-            // honest failure per the ratchet contract.
-            return done(self);
+        let mut after = before.clone();
+        let Ok(plaintext) = self.candidate_decrypt(&mut after, rng, now, &msg)? else {
+            return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
         };
         let Ok(body) = unpad(&plaintext) else {
-            self.store
-                .put_session(&peer_device, &candidate_session, rng)?;
-            self.sessions.insert(peer_device, candidate_session);
-            return done(self);
-        };
-
-        // First bounded ADR-0028 vertical slice: ordinary pairwise text
-        // commits the receiving ratchet, history, seen/replay markers, and
-        // exact pending-row acknowledgement as one durable transition.
-        //
-        // More stateful content kinds deliberately stay on the legacy path
-        // until their attachment/ephemeral/control consequences have typed
-        // plans of their own.
-        if env.kind == EnvelopeKind::Message && env.retention_until.is_none() {
-            let decoded = decode_content(&body);
-            if matches!(
-                decoded,
-                DecodedContent::LegacyText(_) | DecodedContent::Text { .. }
-            ) {
-                let (id, event_body, content, duplicate) = match decoded {
-                    DecodedContent::LegacyText(text) => {
-                        let mut id = [0u8; 16];
-                        rng.fill_bytes(&mut id);
-                        (
-                            id,
-                            text.as_bytes().to_vec(),
-                            ContentStatus::LegacyText,
-                            false,
-                        )
-                    }
-                    DecodedContent::Text { id, text } => {
-                        let conversation = EphemeralConversation::Pairwise(peer);
-                        let expired_duplicate = self
-                            .store
-                            .get_ephemeral_record(&conversation, &peer, &id)?
-                            .is_some();
-                        let history_duplicate =
-                            self.store.messages_with(&peer)?.iter().any(|record| {
-                                record.direction == Direction::Inbound
-                                    && matches!(
-                                        decode_content(&record.body),
-                                        DecodedContent::Text { id: stored_id, .. }
-                                            | DecodedContent::Attachment {
-                                                id: stored_id,
-                                                ..
-                                            }
-                                            | DecodedContent::Mention {
-                                                id: stored_id,
-                                                ..
-                                            }
-                                            | DecodedContent::Edit { id: stored_id, .. }
-                                            | DecodedContent::Ephemeral {
-                                                id: stored_id,
-                                                ..
-                                            }
-                                            | DecodedContent::Poll { id: stored_id, .. }
-                                            | DecodedContent::GroupAuthority {
-                                                id: stored_id,
-                                                ..
-                                            }
-                                            if stored_id == id
-                                    )
-                            });
-                        (
-                            id,
-                            text.as_bytes().to_vec(),
-                            ContentStatus::Text { id },
-                            expired_duplicate || history_duplicate,
-                        )
-                    }
-                    _ => unreachable!("ordinary text variants matched above"),
-                };
-                let message = (!duplicate).then_some(MessageRecord {
-                    id,
-                    peer,
-                    direction: Direction::Inbound,
-                    state: DeliveryState::Received,
-                    timestamp: now,
-                    body,
-                    wire_id: None,
-                });
-                self.store.commit_pairwise_receive(
-                    PairwiseReceivePlan {
-                        peer_device: &peer_device,
-                        session: &candidate_session,
-                        message: message.as_ref(),
-                        content_id: &env.content_id(),
-                        received_at: now,
-                        source_pending_sequence: pending_sequence,
+            let source_pending = Self::pending_delete(pending_sequence, env.content_id());
+            self.store.commit_plan(
+                CommitPlan::PairwiseReceive(PairwiseReceivePlan {
+                    session: SessionTransition {
+                        peer_device,
+                        before: Some(&before),
+                        after: &after,
                     },
-                    rng,
-                )?;
-                self.sessions.insert(peer_device, candidate_session);
-                if !duplicate {
-                    self.events.push_back(Event::MessageReceived {
-                        peer,
-                        id,
-                        timestamp: now,
-                        body: event_body,
-                        content,
-                    });
-                }
-                acks.push((peer_device, env.content_id()));
-                return Ok(Consumed::DoneAtomic);
-            }
-        }
-
-        self.store
-            .put_session(&peer_device, &candidate_session, rng)?;
-        self.sessions.insert(peer_device, candidate_session);
+                    message: None,
+                    ephemeral: None,
+                    media_transfers: &[],
+                    media_objects: &[],
+                    capabilities: None,
+                    queue: &[],
+                    content_id: env.content_id(),
+                    received_at: now,
+                    receipt_replay: false,
+                    source_pending,
+                    presentation_changed: false,
+                }),
+                rng,
+            )?;
+            self.before_memory_replacement()?;
+            self.sessions.insert(peer_device, after);
+            self.after_memory_replacement()?;
+            return Ok(Consumed::DoneAtomic);
+        };
 
         match env.kind {
             EnvelopeKind::Message => {
                 if let DecodedContent::CallControl { control, .. } = decode_content(&body) {
-                    // Transient signaling is already protected by the exact
-                    // physical-device ratchet. It is not history and is not
-                    // receipted, preventing a fallback receipt from emitting
-                    // mesh or store-and-forward traffic for a call attempt.
+                    let source_pending = Self::pending_delete(pending_sequence, env.content_id());
+                    self.store.commit_plan(
+                        CommitPlan::PairwiseReceive(PairwiseReceivePlan {
+                            session: SessionTransition {
+                                peer_device,
+                                before: Some(&before),
+                                after: &after,
+                            },
+                            message: None,
+                            ephemeral: None,
+                            media_transfers: &[],
+                            media_objects: &[],
+                            capabilities: None,
+                            queue: &[],
+                            content_id: env.content_id(),
+                            received_at: now,
+                            receipt_replay: false,
+                            source_pending,
+                            presentation_changed: env.retention_until.is_none(),
+                        }),
+                        rng,
+                    )?;
+                    self.before_memory_replacement()?;
+                    self.sessions.insert(peer_device, after);
+                    self.after_memory_replacement()?;
                     if env.retention_until.is_none() {
                         self.apply_call_control(peer, peer_device, control, now, rng)?;
                     }
+                    Ok(Consumed::DoneAtomic)
                 } else {
-                    self.record_inbound(peer, body, env.retention_until, now, rng)?;
-                    acks.push((peer_device, env.content_id()));
+                    let prepared =
+                        self.prepare_inbound(peer, body, env.retention_until, now, rng)?;
+                    let receipt_payload = ReceiptPayload {
+                        acks: vec![env.content_id()],
+                        nacks: Vec::new(),
+                    }
+                    .encode();
+                    let receipt_queue = self.prepare_control_queue(
+                        &mut after,
+                        peer_device,
+                        &receipt_payload,
+                        now,
+                        rng,
+                    )?;
+                    let source_pending = Self::pending_delete(pending_sequence, env.content_id());
+                    let presentation_changed = !prepared.events.is_empty()
+                        || !prepared.attachment_updates.is_empty()
+                        || prepared.ephemeral.is_some();
+                    let receipt = self.store.commit_plan(
+                        CommitPlan::PairwiseReceive(PairwiseReceivePlan {
+                            session: SessionTransition {
+                                peer_device,
+                                before: Some(&before),
+                                after: &after,
+                            },
+                            message: prepared.message.as_ref(),
+                            ephemeral: prepared.ephemeral.as_ref(),
+                            media_transfers: &prepared.media_transfers,
+                            media_objects: &prepared.media_objects,
+                            capabilities: None,
+                            queue: &[receipt_queue],
+                            content_id: env.content_id(),
+                            received_at: now,
+                            receipt_replay: true,
+                            source_pending,
+                            presentation_changed,
+                        }),
+                        rng,
+                    )?;
+                    self.before_memory_replacement()?;
+                    self.sessions.insert(peer_device, after);
+                    self.after_memory_replacement()?;
+                    self.accept_commit_receipt(receipt, prepared.events);
+                    for transfer in prepared.attachment_updates {
+                        self.emit_attachment_update(&transfer)?;
+                    }
+                    Ok(Consumed::DoneAtomic)
                 }
             }
             EnvelopeKind::Receipt => {
-                // Receipts are terminal: they are not themselves receipted.
                 if kult_protocol::is_attachment_bulk_record(&body) {
-                    self.apply_attachment_bulk(peer, peer_device, &body, now, rng)?;
+                    let control = DeferredControlRecord {
+                        content_id: env.content_id(),
+                        peer,
+                        peer_device,
+                        kind: DeferredControlKind::AttachmentBulk,
+                        body,
+                        received_at: now,
+                    };
+                    let source_pending = Self::pending_delete(pending_sequence, env.content_id());
+                    self.store.commit_plan(
+                        CommitPlan::ReceiptReceive(ReceiptReceivePlan {
+                            session: SessionTransition {
+                                peer_device,
+                                before: Some(&before),
+                                after: &after,
+                            },
+                            delete_queue: &[],
+                            queue: &[],
+                            messages: &[],
+                            deliveries: &[],
+                            group_messages: &[],
+                            groups: &[],
+                            media_transfers: &[],
+                            media_objects: &[],
+                            capabilities: None,
+                            deferred_control: Some(&control),
+                            content_id: env.content_id(),
+                            source_pending,
+                            presentation_changed: false,
+                        }),
+                        rng,
+                    )?;
+                    self.before_memory_replacement()?;
+                    self.sessions.insert(peer_device, after);
+                    self.after_memory_replacement()?;
                 } else if is_capability_control(&body) {
                     if let Ok(capabilities) = CapabilityControl::decode(&body) {
-                        self.store
-                            .put_capabilities(&peer_device, &capabilities, rng)?;
-                        if !self.capabilities_advertised.contains(&peer_device) {
-                            self.queue_capabilities(&peer_device, now, rng)?;
+                        let advertise = !self.capabilities_advertised.contains(&peer_device);
+                        let response = advertise
+                            .then(|| {
+                                self.prepare_control_queue(
+                                    &mut after,
+                                    peer_device,
+                                    &Self::local_capabilities().encode()?,
+                                    now,
+                                    rng,
+                                )
+                            })
+                            .transpose()?;
+                        let source_pending =
+                            Self::pending_delete(pending_sequence, env.content_id());
+                        self.store.commit_plan(
+                            CommitPlan::ReceiptReceive(ReceiptReceivePlan {
+                                session: SessionTransition {
+                                    peer_device,
+                                    before: Some(&before),
+                                    after: &after,
+                                },
+                                delete_queue: &[],
+                                queue: response.as_slice(),
+                                messages: &[],
+                                deliveries: &[],
+                                group_messages: &[],
+                                groups: &[],
+                                media_transfers: &[],
+                                media_objects: &[],
+                                capabilities: Some(&capabilities),
+                                deferred_control: None,
+                                content_id: env.content_id(),
+                                source_pending,
+                                presentation_changed: false,
+                            }),
+                            rng,
+                        )?;
+                        self.before_memory_replacement()?;
+                        self.sessions.insert(peer_device, after);
+                        if advertise {
+                            self.capabilities_advertised.insert(peer_device);
                         }
+                        self.after_memory_replacement()?;
+                    } else {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
                     }
                 } else if let Ok(receipt) = ReceiptPayload::decode(&body) {
-                    self.apply_receipt(&peer_device, &receipt, now, rng)?;
+                    let prepared = self.prepare_receipt(&peer_device, &receipt, now)?;
+                    let message_transitions = prepared
+                        .messages
+                        .iter()
+                        .map(|(before, after)| MessageTransition { before, after })
+                        .collect::<Vec<_>>();
+                    let delivery_transitions = prepared
+                        .deliveries
+                        .iter()
+                        .map(|(before, after)| kult_store::DeliveryTransition { before, after })
+                        .collect::<Vec<_>>();
+                    let group_message_transitions = prepared
+                        .group_messages
+                        .iter()
+                        .map(|(before, after)| GroupMessageTransition { before, after })
+                        .collect::<Vec<_>>();
+                    let group_transitions = prepared
+                        .groups
+                        .iter()
+                        .map(|(before, after)| GroupTransition { before, after })
+                        .collect::<Vec<_>>();
+                    let source_pending = Self::pending_delete(pending_sequence, env.content_id());
+                    let committed = self.store.commit_plan(
+                        CommitPlan::ReceiptReceive(ReceiptReceivePlan {
+                            session: SessionTransition {
+                                peer_device,
+                                before: Some(&before),
+                                after: &after,
+                            },
+                            delete_queue: &prepared.delete_queue,
+                            queue: &prepared.queue,
+                            messages: &message_transitions,
+                            deliveries: &delivery_transitions,
+                            group_messages: &group_message_transitions,
+                            groups: &group_transitions,
+                            media_transfers: &[],
+                            media_objects: &[],
+                            capabilities: None,
+                            deferred_control: None,
+                            content_id: env.content_id(),
+                            source_pending,
+                            presentation_changed: !prepared.events.is_empty(),
+                        }),
+                        rng,
+                    )?;
+                    self.before_memory_replacement()?;
+                    self.sessions.insert(peer_device, after);
+                    self.after_memory_replacement()?;
+                    let deleted = prepared
+                        .delete_queue
+                        .iter()
+                        .map(|delete| delete.sequence)
+                        .collect::<HashSet<_>>();
+                    self.held_notified
+                        .retain(|sequence| !deleted.contains(sequence));
+                    self.call_queue_deadlines
+                        .retain(|sequence, _| !deleted.contains(sequence));
+                    self.accept_commit_receipt(committed, prepared.events);
+                } else {
+                    let source_pending = Self::pending_delete(pending_sequence, env.content_id());
+                    self.store.commit_plan(
+                        CommitPlan::ReceiptReceive(ReceiptReceivePlan {
+                            session: SessionTransition {
+                                peer_device,
+                                before: Some(&before),
+                                after: &after,
+                            },
+                            delete_queue: &[],
+                            queue: &[],
+                            messages: &[],
+                            deliveries: &[],
+                            group_messages: &[],
+                            groups: &[],
+                            media_transfers: &[],
+                            media_objects: &[],
+                            capabilities: None,
+                            deferred_control: None,
+                            content_id: env.content_id(),
+                            source_pending,
+                            presentation_changed: false,
+                        }),
+                        rng,
+                    )?;
+                    self.before_memory_replacement()?;
+                    self.sessions.insert(peer_device, after);
+                    self.after_memory_replacement()?;
                 }
+                Ok(Consumed::DoneAtomic)
             }
             EnvelopeKind::GroupControl => {
-                // Applied controls are acknowledged like messages;
-                // not-applicable-yet ones (a co-member's announce racing
-                // the creator's invite) are dropped *unacked* so the
-                // sender's paced resend arrives after the missing context.
-                if self.apply_group_control(peer, peer_device, &body, now, rng, established)? {
-                    acks.push((peer_device, env.content_id()));
-                }
+                let control = DeferredControlRecord {
+                    content_id: env.content_id(),
+                    peer,
+                    peer_device,
+                    kind: DeferredControlKind::GroupControl,
+                    body,
+                    received_at: now,
+                };
+                let source_pending = Self::pending_delete(pending_sequence, env.content_id());
+                self.store.commit_plan(
+                    CommitPlan::ReceiptReceive(ReceiptReceivePlan {
+                        session: SessionTransition {
+                            peer_device,
+                            before: Some(&before),
+                            after: &after,
+                        },
+                        delete_queue: &[],
+                        queue: &[],
+                        messages: &[],
+                        deliveries: &[],
+                        group_messages: &[],
+                        groups: &[],
+                        media_transfers: &[],
+                        media_objects: &[],
+                        capabilities: None,
+                        deferred_control: Some(&control),
+                        content_id: env.content_id(),
+                        source_pending,
+                        presentation_changed: false,
+                    }),
+                    rng,
+                )?;
+                self.before_memory_replacement()?;
+                self.sessions.insert(peer_device, after);
+                self.after_memory_replacement()?;
+                Ok(Consumed::DoneAtomic)
             }
             _ => unreachable!("consume() routes only Message/Receipt/GroupControl here"),
         }
-        self.store.mark_seen(&env.content_id())?;
-        Ok(Consumed::Done)
     }
 
-    fn record_inbound(
-        &mut self,
+    fn prepare_inbound(
+        &self,
         peer: [u8; 32],
         body: Vec<u8>,
         envelope_retention: Option<u64>,
         now: u64,
         rng: &mut impl CryptoRngCore,
-    ) -> Result<()> {
+    ) -> Result<PreparedInbound> {
+        let empty = || PreparedInbound {
+            message: None,
+            ephemeral: None,
+            media_transfers: Vec::new(),
+            media_objects: Vec::new(),
+            events: Vec::new(),
+            attachment_updates: Vec::new(),
+        };
         let decoded = decode_content(&body);
         let authenticated_retention = match decoded {
             DecodedContent::Ephemeral { ephemeral, .. } => Some(match ephemeral {
@@ -2983,11 +4363,8 @@ impl Node {
             }),
             _ => None,
         };
-        // A relay-visible hint is accepted only when the decrypted content
-        // binds the exact same canonical bucket. v1 ephemeral content and
-        // v2 ordinary content both fail closed without entering history.
         if envelope_retention != authenticated_retention {
-            return Ok(());
+            return Ok(empty());
         }
         let decoded_is_edit = matches!(decoded, DecodedContent::Edit { .. });
         if let DecodedContent::Text { id, .. }
@@ -3004,7 +4381,7 @@ impl Node {
                 .get_ephemeral_record(&conversation, &peer, &id)?
                 .is_some()
             {
-                return Ok(());
+                return Ok(empty());
             }
             let duplicate = self.store.messages_with(&peer)?.iter().any(|record| {
                 record.direction == Direction::Inbound
@@ -3021,23 +4398,48 @@ impl Node {
                     )
             });
             if duplicate {
-                return Ok(());
+                return Ok(empty());
             }
         }
-        let (id, event_body, content) = match decoded {
+
+        let mut ephemeral = None;
+        let mut media_transfers = Vec::new();
+        let mut media_objects = Vec::new();
+        let mut events = Vec::new();
+        let mut attachment_updates = Vec::new();
+        let (id, event_body, content, retain_message) = match decoded {
             DecodedContent::LegacyText(text) => {
                 let mut id = [0u8; 16];
                 rng.fill_bytes(&mut id);
-                (id, text.as_bytes().to_vec(), ContentStatus::LegacyText)
+                (
+                    id,
+                    text.as_bytes().to_vec(),
+                    ContentStatus::LegacyText,
+                    true,
+                )
             }
-            DecodedContent::Text { id, text } => {
-                (id, text.as_bytes().to_vec(), ContentStatus::Text { id })
-            }
+            DecodedContent::Text { id, text } => (
+                id,
+                text.as_bytes().to_vec(),
+                ContentStatus::Text { id },
+                true,
+            ),
             DecodedContent::Attachment { id, manifest } => {
-                let transfer =
-                    self.record_pairwise_attachment_offer(peer, id, &manifest, now, rng)?;
-                self.emit_attachment_update(&transfer)?;
-                (id, Vec::new(), ContentStatus::Attachment { id, transfer })
+                let (transfer, objects) =
+                    self.prepare_pairwise_attachment_offer(peer, id, &manifest, now, rng)?;
+                let transfer_id = transfer.local_id;
+                media_transfers.push(transfer);
+                media_objects.extend(objects);
+                attachment_updates.push(transfer_id);
+                (
+                    id,
+                    Vec::new(),
+                    ContentStatus::Attachment {
+                        id,
+                        transfer: transfer_id,
+                    },
+                    true,
+                )
             }
             DecodedContent::Edit { id, edit } if edit.target_author == peer => (
                 id,
@@ -3048,8 +4450,9 @@ impl Node {
                     target_content_id: edit.target_content_id,
                     revision: edit.revision,
                 },
+                true,
             ),
-            DecodedContent::Edit { id, .. } => (id, Vec::new(), ContentStatus::Malformed),
+            DecodedContent::Edit { id, .. } => (id, Vec::new(), ContentStatus::Malformed, true),
             DecodedContent::Ephemeral {
                 id,
                 ephemeral:
@@ -3062,32 +4465,31 @@ impl Node {
                 } else {
                     EphemeralState::Active
                 };
-                self.store.put_ephemeral_record(
-                    &EphemeralRecord {
-                        conversation: EphemeralConversation::Pairwise(peer),
-                        author: peer,
-                        content_id: id,
-                        expires_at,
-                        mode: EphemeralMode::DisappearingText,
-                        state,
-                        transfer_ids: Vec::new(),
-                    },
-                    rng,
-                )?;
+                ephemeral = Some(EphemeralRecord {
+                    conversation: EphemeralConversation::Pairwise(peer),
+                    author: peer,
+                    content_id: id,
+                    expires_at,
+                    mode: EphemeralMode::DisappearingText,
+                    state,
+                    transfer_ids: Vec::new(),
+                });
                 if state == EphemeralState::Expired {
-                    self.events.push_back(Event::EphemeralRemoved {
+                    events.push(Event::EphemeralRemoved {
                         conversation: EphemeralConversation::Pairwise(peer),
                         author: peer,
                         content_id: id,
                         reason: state,
                     });
-                    return Ok(());
+                    (id, Vec::new(), ContentStatus::Malformed, false)
+                } else {
+                    (
+                        id,
+                        text.as_bytes().to_vec(),
+                        ContentStatus::DisappearingText { id, expires_at },
+                        true,
+                    )
                 }
-                (
-                    id,
-                    text.as_bytes().to_vec(),
-                    ContentStatus::DisappearingText { id, expires_at },
-                )
             }
             DecodedContent::Ephemeral {
                 id,
@@ -3099,75 +4501,58 @@ impl Node {
                     },
             } => {
                 if now >= expires_at {
-                    self.store.put_ephemeral_record(
-                        &EphemeralRecord {
-                            conversation: EphemeralConversation::Pairwise(peer),
-                            author: peer,
-                            content_id: id,
-                            expires_at,
-                            mode: EphemeralMode::ViewOnceAttachment,
-                            state: EphemeralState::Expired,
-                            transfer_ids: Vec::new(),
-                        },
-                        rng,
-                    )?;
-                    self.events.push_back(Event::EphemeralRemoved {
+                    ephemeral = Some(EphemeralRecord {
+                        conversation: EphemeralConversation::Pairwise(peer),
+                        author: peer,
+                        content_id: id,
+                        expires_at,
+                        mode: EphemeralMode::ViewOnceAttachment,
+                        state: EphemeralState::Expired,
+                        transfer_ids: Vec::new(),
+                    });
+                    events.push(Event::EphemeralRemoved {
                         conversation: EphemeralConversation::Pairwise(peer),
                         author: peer,
                         content_id: id,
                         reason: EphemeralState::Expired,
                     });
-                    return Ok(());
-                }
-                let transfer =
-                    self.record_pairwise_attachment_offer(peer, id, &manifest, now, rng)?;
-                self.store.put_ephemeral_record(
-                    &EphemeralRecord {
+                    (id, Vec::new(), ContentStatus::Malformed, false)
+                } else {
+                    let (transfer, objects) =
+                        self.prepare_pairwise_attachment_offer(peer, id, &manifest, now, rng)?;
+                    let transfer_id = transfer.local_id;
+                    media_transfers.push(transfer);
+                    media_objects.extend(objects);
+                    ephemeral = Some(EphemeralRecord {
                         conversation: EphemeralConversation::Pairwise(peer),
                         author: peer,
                         content_id: id,
                         expires_at,
                         mode: EphemeralMode::ViewOnceAttachment,
                         state: EphemeralState::Active,
-                        transfer_ids: vec![transfer],
-                    },
-                    rng,
-                )?;
-                // The first offer event must already carry the view-once
-                // restriction; briefly surfacing an ordinary attachment
-                // would expose preview/export actions before the marker.
-                self.emit_attachment_update(&transfer)?;
-                (
-                    id,
-                    Vec::new(),
-                    ContentStatus::ViewOnceAttachment {
+                        transfer_ids: vec![transfer_id],
+                    });
+                    attachment_updates.push(transfer_id);
+                    (
                         id,
-                        transfer,
-                        expires_at,
-                    },
-                )
+                        Vec::new(),
+                        ContentStatus::ViewOnceAttachment {
+                            id,
+                            transfer: transfer_id,
+                            expires_at,
+                        },
+                        true,
+                    )
+                }
             }
-            // Mention is group-only. Retain exact authenticated bytes as a
-            // malformed pairwise record and never surface spans or notify.
-            DecodedContent::Mention { .. } => {
+            DecodedContent::Mention { .. }
+            | DecodedContent::Poll { .. }
+            | DecodedContent::GroupAuthority { .. } => {
                 let mut id = [0u8; 16];
                 rng.fill_bytes(&mut id);
-                (id, Vec::new(), ContentStatus::Malformed)
+                (id, Vec::new(), ContentStatus::Malformed, true)
             }
-            // Polls are group-only and never become pairwise application state.
-            DecodedContent::Poll { .. } => {
-                let mut id = [0u8; 16];
-                rng.fill_bytes(&mut id);
-                (id, Vec::new(), ContentStatus::Malformed)
-            }
-            DecodedContent::GroupAuthority { .. } => {
-                let mut id = [0u8; 16];
-                rng.fill_bytes(&mut id);
-                (id, Vec::new(), ContentStatus::Malformed)
-            }
-            // Call controls are transient and are applied before ordinary
-            // history insertion once the call state machine is attached.
-            DecodedContent::CallControl { .. } => return Ok(()),
+            DecodedContent::CallControl { .. } => return Ok(empty()),
             DecodedContent::Unsupported {
                 format_version,
                 kind,
@@ -3181,43 +4566,50 @@ impl Node {
                         format_version,
                         kind,
                     },
+                    true,
                 )
             }
             DecodedContent::Malformed => {
                 let mut id = [0u8; 16];
                 rng.fill_bytes(&mut id);
-                (id, Vec::new(), ContentStatus::Malformed)
+                (id, Vec::new(), ContentStatus::Malformed, true)
             }
         };
-        self.store.put_message(
-            &MessageRecord {
-                id,
-                peer,
-                direction: Direction::Inbound,
-                state: DeliveryState::Received,
-                timestamp: now,
-                body,
-                wire_id: None,
-            },
-            rng,
-        )?;
-        match content {
-            ContentStatus::Edit {
-                target_content_id, ..
-            } => self.events.push_back(Event::MessageEdited {
-                peer,
-                target_content_id,
-            }),
-            ContentStatus::Malformed if decoded_is_edit => {}
-            _ => self.events.push_back(Event::MessageReceived {
-                peer,
-                id,
-                timestamp: now,
-                body: event_body,
-                content,
-            }),
+        let message = retain_message.then_some(MessageRecord {
+            id,
+            peer,
+            direction: Direction::Inbound,
+            state: DeliveryState::Received,
+            timestamp: now,
+            body,
+            wire_id: None,
+        });
+        if message.is_some() {
+            match content {
+                ContentStatus::Edit {
+                    target_content_id, ..
+                } => events.push(Event::MessageEdited {
+                    peer,
+                    target_content_id,
+                }),
+                ContentStatus::Malformed if decoded_is_edit => {}
+                _ => events.push(Event::MessageReceived {
+                    peer,
+                    id,
+                    timestamp: now,
+                    body: event_body,
+                    content,
+                }),
+            }
         }
-        Ok(())
+        Ok(PreparedInbound {
+            message,
+            ephemeral,
+            media_transfers,
+            media_objects,
+            events,
+            attachment_updates,
+        })
     }
 
     fn peer_supports_kind(&self, peer: &[u8; 32], kind: u16) -> Result<bool> {
@@ -3307,55 +4699,161 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
-        let Some(session) = self.sessions.get_mut(peer) else {
-            return Ok(());
-        };
-        let payload = Self::local_capabilities().encode()?;
-        let msg = session.encrypt(rng, now, &pad(&payload)?, &[]);
-        let token = delivery_token(
-            &MailboxKey::from_bytes(*session.mailbox_key()),
-            epoch_day(now),
+        if !self.commit_pairwise_control_send(
             peer,
-        );
-        self.store.put_session(peer, session, rng)?;
-        self.store.queue_push(
-            &QueueItem {
-                peer: *peer,
-                msg_id: None,
-                group_msg_id: None,
-                class: QueueClass::Normal,
-                created_at: now,
-                attempts: 0,
-                next_attempt_at: now,
-                envelope: Envelope::new(EnvelopeKind::Receipt, token, msg.encode()),
-            },
+            &Self::local_capabilities().encode()?,
+            now,
             rng,
-        )?;
+        )? {
+            return Ok(());
+        }
         self.capabilities_advertised.insert(*peer);
         Ok(())
     }
 
-    fn apply_receipt(
+    fn commit_pairwise_control_send(
         &mut self,
+        peer: &[u8; 32],
+        payload: &[u8],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<bool> {
+        if !self.sessions.contains_key(peer) {
+            return Ok(false);
+        }
+        self.commit_pairwise_envelopes(
+            &[*peer],
+            &pad(payload)?,
+            EnvelopeKind::Receipt,
+            QueueClass::Normal,
+            None,
+            now,
+            rng,
+        )?;
+        Ok(true)
+    }
+
+    #[allow(clippy::too_many_arguments)] // bounded sealed-control fan-out inputs
+    pub(crate) fn commit_pairwise_envelopes(
+        &mut self,
+        devices: &[[u8; 32]],
+        padded: &[u8],
+        kind: EnvelopeKind,
+        class: QueueClass,
+        retention_until: Option<u64>,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Vec<CommittedPairwiseEnvelope>> {
+        let mut routes = devices.to_vec();
+        routes.sort_unstable();
+        routes.dedup();
+        if routes.is_empty() || routes.len() > kult_store::MAX_PAIRWISE_COMMIT_DEVICES {
+            return Err(NodeError::NoSession);
+        }
+        let mut prepared = Vec::with_capacity(routes.len());
+        let mut queue = Vec::with_capacity(routes.len());
+        for device in routes {
+            let before = self
+                .sessions
+                .get(&device)
+                .cloned()
+                .ok_or(NodeError::NoSession)?;
+            let mut after = before.clone();
+            let message = self.candidate_encrypt(&mut after, rng, now, padded)?;
+            let token = delivery_token(
+                &MailboxKey::from_bytes(*after.mailbox_key()),
+                epoch_day(now),
+                &device,
+            );
+            let envelope = match retention_until {
+                Some(deadline) => Envelope::new_retained(kind, token, deadline, message.encode())?,
+                None => Envelope::new(kind, token, message.encode()),
+            };
+            queue.push(QueueItem {
+                peer: device,
+                msg_id: None,
+                group_msg_id: None,
+                class,
+                created_at: now,
+                attempts: 0,
+                next_attempt_at: now,
+                envelope: envelope.clone(),
+            });
+            prepared.push(PreparedPairwiseRoute {
+                route: device,
+                before: Some(before),
+                after,
+                envelope,
+                resets_capabilities: false,
+            });
+        }
+        let transitions = prepared
+            .iter()
+            .map(|route| SessionTransition {
+                peer_device: route.route,
+                before: route.before.as_ref(),
+                after: &route.after,
+            })
+            .collect::<Vec<_>>();
+        let receipt = self.store.commit_plan(
+            CommitPlan::PairwiseSend(PairwiseSendPlan {
+                sessions: &transitions,
+                message: None,
+                message_update: None,
+                deliveries: &[],
+                delivery_updates: &[],
+                queue: &queue,
+                scheduled: None,
+                clear_capabilities: &[],
+                clear_reset_markers: &[],
+                ephemeral: None,
+                presentation_changed: false,
+            }),
+            rng,
+        )?;
+        let committed = receipt
+            .records
+            .queue_sequences
+            .iter()
+            .map(|sequence| CommittedPairwiseEnvelope {
+                sequence: *sequence,
+            })
+            .collect::<Vec<_>>();
+        self.before_memory_replacement()?;
+        for route in prepared {
+            self.sessions.insert(route.route, route.after);
+        }
+        self.after_memory_replacement()?;
+        self.accept_commit_receipt(receipt, []);
+        Ok(committed)
+    }
+
+    fn prepare_receipt(
+        &self,
         peer_device: &[u8; 32],
         receipt: &ReceiptPayload,
         now: u64,
-        rng: &mut impl CryptoRngCore,
-    ) -> Result<()> {
+    ) -> Result<PreparedReceipt> {
         let peer = self.account_for_device(peer_device)?;
-        for ack in &receipt.acks {
-            self.store.queue_remove_envelope(ack)?;
-        }
-        let live_sequences = self
+        let acked = |wire_id: &[u8; 16]| {
+            receipt
+                .acks
+                .iter()
+                .any(|ack| bool::from(ack.ct_eq(wire_id)))
+        };
+        let delete_queue = self
             .store
             .queue_all()?
             .into_iter()
-            .map(|(sequence, _)| sequence)
-            .collect::<HashSet<_>>();
-        self.held_notified
-            .retain(|sequence| live_sequences.contains(sequence));
-        self.call_queue_deadlines
-            .retain(|sequence, _| live_sequences.contains(sequence));
+            .filter_map(|(sequence, item)| {
+                let content_id = item.envelope.content_id();
+                (item.peer == *peer_device && acked(&content_id)).then_some(QueueDelete {
+                    sequence,
+                    content_id,
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut queue = Vec::new();
         // Selective retransmission (docs/05-transports.md §4.2 rule 2):
         // re-queue exactly the missing fragment indices, never the whole
         // message — and only if the NACK comes from the peer the fragments
@@ -3383,62 +4881,110 @@ impl Node {
                     Some(_) => continue,
                     None => Envelope::new(EnvelopeKind::Fragment, cached.token, body.clone()),
                 };
-                self.store.queue_push(
-                    &QueueItem {
-                        peer: *peer_device,
-                        msg_id: None,
-                        group_msg_id: None,
-                        class: QueueClass::Normal,
-                        created_at: now,
-                        attempts: 0,
-                        next_attempt_at: now,
-                        envelope,
-                    },
-                    rng,
-                )?;
+                if queue.len() == kult_store::MAX_COMMIT_QUEUE_ROWS {
+                    break;
+                }
+                queue.push(QueueItem {
+                    peer: *peer_device,
+                    msg_id: None,
+                    group_msg_id: None,
+                    class: QueueClass::Normal,
+                    created_at: now,
+                    attempts: 0,
+                    next_attempt_at: now,
+                    envelope,
+                });
             }
         }
 
+        let mut messages = Vec::new();
+        let mut deliveries = Vec::new();
+        let mut group_messages = Vec::new();
+        let mut groups = Vec::new();
+        let mut events = Vec::new();
         let records = self.store.messages_with(&peer)?;
         for record in records {
             let mut device_acked = false;
-            for mut delivery in self.store.message_device_deliveries(&record.id)? {
-                let acked = delivery.wire_id.is_some_and(|wire_id| {
-                    receipt
-                        .acks
-                        .iter()
-                        .any(|ack| bool::from(ack.ct_eq(&wire_id)))
-                });
-                if acked && delivery.device == *peer_device {
-                    delivery.state = DeliveryState::Delivered;
-                    self.store.put_message_device_delivery(&delivery, rng)?;
+            for before_delivery in self.store.message_device_deliveries(&record.id)? {
+                if before_delivery.device == *peer_device
+                    && before_delivery.wire_id.as_ref().is_some_and(acked)
+                    && before_delivery.state != DeliveryState::Delivered
+                {
+                    let mut after_delivery = before_delivery.clone();
+                    after_delivery.state = DeliveryState::Delivered;
+                    deliveries.push((before_delivery, after_delivery));
                     device_acked = true;
                 }
             }
-            let legacy_acked = record.wire_id.is_some_and(|wire_id| {
-                receipt
-                    .acks
-                    .iter()
-                    .any(|ack| bool::from(ack.ct_eq(&wire_id)))
-            });
+            let legacy_acked = record.wire_id.as_ref().is_some_and(acked);
             if (device_acked || legacy_acked)
                 && record.direction == Direction::Outbound
                 && record.state != DeliveryState::Delivered
             {
-                let mut updated = record;
-                updated.state = DeliveryState::Delivered;
-                self.store.update_message(&updated, rng)?;
-                self.events.push_back(Event::DeliveryUpdated {
-                    id: updated.id,
+                let mut after_record = record.clone();
+                after_record.state = DeliveryState::Delivered;
+                events.push(Event::DeliveryUpdated {
+                    id: after_record.id,
                     state: DeliveryState::Delivered,
                 });
+                messages.push((record, after_record));
             }
         }
 
-        // The same acks may retire pending group announces and advance
-        // per-member group deliveries (ADR-0012).
-        self.apply_group_receipt(&peer, peer_device, &receipt.acks, rng)?;
-        Ok(())
+        if !receipt.acks.is_empty() {
+            for before_group in self.store.groups()? {
+                let mut after_group = before_group.clone();
+                after_group.pending.retain(|pending| {
+                    !(pending.peer == peer && pending.wire_id.as_ref().is_some_and(acked))
+                });
+                if after_group != before_group {
+                    groups.push((before_group, after_group));
+                }
+            }
+            for before_message in self.store.all_group_messages()? {
+                let mut device_acked = false;
+                for before_delivery in self.store.message_device_deliveries(&before_message.id)? {
+                    if before_delivery.account == peer
+                        && before_delivery.device == *peer_device
+                        && before_delivery.wire_id.as_ref().is_some_and(acked)
+                        && before_delivery.state != DeliveryState::Delivered
+                    {
+                        let mut after_delivery = before_delivery.clone();
+                        after_delivery.state = DeliveryState::Delivered;
+                        deliveries.push((before_delivery, after_delivery));
+                        device_acked = true;
+                    }
+                }
+                let mut after_message = before_message.clone();
+                let mut changed = false;
+                for delivery in &mut after_message.deliveries {
+                    if delivery.peer == peer
+                        && delivery.state != DeliveryState::Delivered
+                        && (device_acked || delivery.wire_id.as_ref().is_some_and(acked))
+                    {
+                        delivery.state = DeliveryState::Delivered;
+                        changed = true;
+                    }
+                }
+                if changed {
+                    events.push(Event::GroupDeliveryUpdated {
+                        id: before_message.id,
+                        peer,
+                        state: DeliveryState::Delivered,
+                    });
+                    group_messages.push((before_message, after_message));
+                }
+            }
+        }
+        Ok(PreparedReceipt {
+            delete_queue,
+            queue,
+            messages,
+            deliveries,
+            group_messages,
+            groups,
+            events,
+        })
     }
 
     /// Which session (if any) recognizes this delivery token, scanning a
@@ -3527,34 +5073,77 @@ impl Node {
         if acks.is_empty() && nacks.is_empty() {
             return Ok(());
         }
-        let Some(session) = self.sessions.get_mut(peer) else {
-            return Ok(()); // session vanished — the sender will retry
-        };
         let payload = ReceiptPayload { acks, nacks }.encode();
-        let msg = session.encrypt(rng, now, &pad(&payload)?, &[]);
-        let token = delivery_token(
-            &MailboxKey::from_bytes(*session.mailbox_key()),
-            epoch_day(now),
-            peer,
-        );
-        self.store.put_session(peer, session, rng)?;
-        self.store.queue_push(
-            &QueueItem {
-                peer: *peer,
-                msg_id: None,
-                group_msg_id: None,
-                class: QueueClass::Normal,
-                created_at: now,
-                attempts: 0,
-                next_attempt_at: now,
-                envelope: Envelope::new(EnvelopeKind::Receipt, token, msg.encode()),
-            },
-            rng,
-        )?;
+        self.commit_pairwise_control_send(peer, &payload, now, rng)?;
         Ok(())
     }
 
     // ---- send path (delivery engine + scheduler) ----------------------------
+
+    fn commit_queue_maintenance(
+        &mut self,
+        sequence: i64,
+        before: &QueueItem,
+        after: Option<&QueueItem>,
+        prepared: PreparedDeliveryUpdate,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let delete = after.is_none().then_some(QueueDelete {
+            sequence,
+            content_id: before.envelope.content_id(),
+        });
+        let update = after.map(|after| QueueTransition {
+            sequence,
+            before,
+            after,
+        });
+        let messages = prepared
+            .messages
+            .iter()
+            .map(|(before, after)| MessageTransition { before, after })
+            .collect::<Vec<_>>();
+        let deliveries = prepared
+            .deliveries
+            .iter()
+            .map(|(before, after)| DeliveryTransition { before, after })
+            .collect::<Vec<_>>();
+        let group_messages = prepared
+            .group_messages
+            .iter()
+            .map(|(before, after)| GroupMessageTransition { before, after })
+            .collect::<Vec<_>>();
+        let receipt = self.store.commit_plan(
+            CommitPlan::Maintenance(MaintenancePlan {
+                seen: &[],
+                delete_pending: &[],
+                delete_queue: delete.as_slice(),
+                update_queue: update.as_slice(),
+                delete_replay: &[],
+                messages: &messages,
+                deliveries: &deliveries,
+                group_messages: &group_messages,
+                groups: &[],
+                ephemeral: &[],
+                delete_messages: &[],
+                delete_group_messages: &[],
+                delete_media: &[],
+                delete_scheduled: &[],
+                delete_sessions: &[],
+                delete_capabilities: &[],
+                clear_reset_markers: &[],
+                delete_controls: &[],
+                acknowledge_presentation: None,
+                presentation_changed: !prepared.events.is_empty(),
+            }),
+            rng,
+        )?;
+        if delete.is_some() {
+            self.held_notified.remove(&sequence);
+            self.call_queue_deadlines.remove(&sequence);
+        }
+        self.accept_commit_receipt(receipt, prepared.events);
+        Ok(())
+    }
 
     async fn flush(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<()> {
         let transports = self.transports.clone();
@@ -3565,6 +5154,7 @@ impl Node {
         let mut queue = self.store.queue_all()?;
         queue.sort_by_key(|(seq, item)| (queue_lane(item), flush_class(item.envelope.kind), *seq));
         for (seq, mut item) in queue {
+            let before = item.clone();
             if Instant::now() >= deadline {
                 break;
             }
@@ -3574,8 +5164,13 @@ impl Node {
                     .get(&seq)
                     .is_none_or(|deadline| now >= *deadline)
             {
-                self.store.queue_ack(seq)?;
-                self.call_queue_deadlines.remove(&seq);
+                self.commit_queue_maintenance(
+                    seq,
+                    &before,
+                    None,
+                    PreparedDeliveryUpdate::default(),
+                    rng,
+                )?;
                 continue;
             }
             if item
@@ -3583,8 +5178,13 @@ impl Node {
                 .retention_until
                 .is_some_and(|deadline| deadline <= now)
             {
-                self.store.queue_ack(seq)?;
-                self.held_notified.remove(&seq);
+                self.commit_queue_maintenance(
+                    seq,
+                    &before,
+                    None,
+                    PreparedDeliveryUpdate::default(),
+                    rng,
+                )?;
                 continue;
             }
             if now < item.next_attempt_at {
@@ -3601,7 +5201,13 @@ impl Node {
                     Some(result) => result?,
                     None => {
                         schedule_passive_retry(&mut item, now);
-                        self.store.queue_update(seq, &item, rng)?;
+                        self.commit_queue_maintenance(
+                            seq,
+                            &before,
+                            Some(&item),
+                            PreparedDeliveryUpdate::default(),
+                            rng,
+                        )?;
                         break;
                     }
                 };
@@ -3654,6 +5260,7 @@ impl Node {
             candidates.sort_by_key(|(rank, _, _)| *rank);
 
             let mut sent = false;
+            let mut sent_fragments = None;
             for (_, transport, hint) in &candidates {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
@@ -3668,41 +5275,48 @@ impl Node {
                     break;
                 };
                 if let Ok(fragments) = result {
-                    if let Some(bodies) = fragments {
-                        self.remember_fragments(
-                            item.peer,
-                            item.envelope.token,
-                            item.envelope.retention_until,
-                            bodies,
-                            now,
-                        );
-                    }
+                    sent_fragments = fragments;
                     sent = true;
                     break;
                 }
             }
 
             if sent {
+                let mut prepared = PreparedDeliveryUpdate::default();
                 if let Some(msg_id) = item.msg_id {
                     let account = self.account_for_device(&item.peer)?;
-                    self.mark_sent(&account, &item.peer, &msg_id, rng)?;
+                    let update = self.prepare_mark_sent(&account, &item.peer, &msg_id)?;
+                    prepared.messages.extend(update.messages);
+                    prepared.deliveries.extend(update.deliveries);
+                    prepared.events.extend(update.events);
                 }
                 if let Some(group_msg_id) = item.group_msg_id {
                     let account = self.account_for_device(&item.peer)?;
-                    self.group_mark_sent(&account, &item.peer, &group_msg_id, rng)?;
+                    let update =
+                        self.prepare_group_mark_sent(&account, &item.peer, &group_msg_id)?;
+                    prepared.deliveries.extend(update.deliveries);
+                    prepared.group_messages.extend(update.group_messages);
+                    prepared.events.extend(update.events);
                 }
                 if item.msg_id.is_some() || item.group_msg_id.is_some() {
                     // A transport handoff is only `Sent`, not end-to-end
                     // delivery. Retain the exact sealed envelope and retry it
                     // passively until its encrypted receipt arrives.
                     schedule_after_handoff(&mut item, now);
-                    self.store.queue_update(seq, &item, rng)?;
+                    self.commit_queue_maintenance(seq, &before, Some(&item), prepared, rng)?;
                 } else {
                     // Receipts, capability controls, fragments, and realtime
                     // controls are terminal at transport handoff.
-                    self.store.queue_ack(seq)?;
-                    self.held_notified.remove(&seq);
-                    self.call_queue_deadlines.remove(&seq);
+                    self.commit_queue_maintenance(seq, &before, None, prepared, rng)?;
+                }
+                if let Some(bodies) = sent_fragments {
+                    self.remember_fragments(
+                        item.peer,
+                        item.envelope.token,
+                        item.envelope.retention_until,
+                        bodies,
+                        now,
+                    );
                 }
             } else if candidates.is_empty() && held_for_airtime {
                 // Held, not failed: nothing was attempted, so no backoff —
@@ -3717,7 +5331,13 @@ impl Node {
                 }
             } else {
                 schedule_passive_retry(&mut item, now);
-                self.store.queue_update(seq, &item, rng)?;
+                self.commit_queue_maintenance(
+                    seq,
+                    &before,
+                    Some(&item),
+                    PreparedDeliveryUpdate::default(),
+                    rng,
+                )?;
             }
         }
         Ok(())
@@ -3888,31 +5508,39 @@ impl Node {
         );
     }
 
-    fn mark_sent(
-        &mut self,
+    fn prepare_mark_sent(
+        &self,
         peer: &[u8; 32],
         device: &[u8; 32],
         msg_id: &[u8; 16],
-        rng: &mut impl CryptoRngCore,
-    ) -> Result<()> {
-        for mut delivery in self.store.message_device_deliveries(msg_id)? {
+    ) -> Result<PreparedDeliveryUpdate> {
+        let mut deliveries = Vec::new();
+        for delivery in self.store.message_device_deliveries(msg_id)? {
             if &delivery.device == device && delivery.state == DeliveryState::Queued {
-                delivery.state = DeliveryState::Sent;
-                self.store.put_message_device_delivery(&delivery, rng)?;
+                let mut after = delivery.clone();
+                after.state = DeliveryState::Sent;
+                deliveries.push((delivery, after));
             }
         }
+        let mut messages = Vec::new();
+        let mut events = Vec::new();
         for record in self.store.messages_with(peer)? {
             if &record.id == msg_id && record.state == DeliveryState::Queued {
-                let mut updated = record;
+                let mut updated = record.clone();
                 updated.state = DeliveryState::Sent;
-                self.store.update_message(&updated, rng)?;
-                self.events.push_back(Event::DeliveryUpdated {
+                messages.push((record, updated));
+                events.push(Event::DeliveryUpdated {
                     id: *msg_id,
                     state: DeliveryState::Sent,
                 });
             }
         }
-        Ok(())
+        Ok(PreparedDeliveryUpdate {
+            messages,
+            deliveries,
+            group_messages: Vec::new(),
+            events,
+        })
     }
 
     fn hints_for(&self, peer: &[u8; 32]) -> Result<Vec<DeliveryHint>> {

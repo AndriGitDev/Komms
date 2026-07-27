@@ -138,25 +138,24 @@ async fn trio(
         }
         all
     };
-    for i in 0..3usize {
+    for (i, node) in nodes.iter_mut().enumerate() {
         let mut handed = 0;
-        for j in 0..3usize {
+        for (j, sender_bundles) in bundles.iter().enumerate() {
             if i == j {
                 continue;
             }
             // Each prospective contact gets their own bundle (distinct
             // one-time prekeys — handing two people the same bundle gets
             // the second handshake correctly dropped).
-            let bundle = &bundles[j][if i < j { i } else { i - 1 }];
-            nodes[i]
-                .add_contact(
-                    ["a", "b", "c"][j],
-                    bundle,
-                    &[DeliveryHint::MeshNode(j as u32 + 1)],
-                    NOW,
-                    rng,
-                )
-                .unwrap();
+            let bundle = &sender_bundles[if i < j { i } else { i - 1 }];
+            node.add_contact(
+                ["a", "b", "c"][j],
+                bundle,
+                &[DeliveryHint::MeshNode(j as u32 + 1)],
+                NOW,
+                rng,
+            )
+            .unwrap();
             handed += 1;
         }
         assert_eq!(handed, 2);

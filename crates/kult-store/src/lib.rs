@@ -12,6 +12,8 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+#[cfg(feature = "test-failpoints")]
+use std::cell::RefCell;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
@@ -26,6 +28,7 @@ use kult_crypto::{derive_kek, CryptoError, Identity, KdfProfile, Session, Storag
 use kult_protocol::{CapabilityControl, Envelope};
 
 mod backup;
+mod commit;
 mod devices;
 mod ephemeral;
 mod local_metadata;
@@ -41,6 +44,17 @@ mod scheduled;
 mod store_v2;
 
 pub use backup::BACKUP_MAGIC;
+#[cfg(feature = "test-failpoints")]
+pub use commit::{CommitFailpoint, CommitFailure};
+pub use commit::{
+    CommitPlan, CommitReceipt, CommittedRecordIds, ContactDeviceDelete, DeferredControlKind,
+    DeferredControlRecord, DeliveryTransition, EphemeralTransition, GroupMessageDelete,
+    GroupMessageTransition, GroupTransition, HandshakeReceivePlan, MaintenancePlan, MediaDelete,
+    MessageDelete, MessageTransition, PairwiseReceivePlan, PairwiseSendPlan, PendingDelete,
+    PrekeyTransition, QueueDelete, QueueTransition, ReceiptReceivePlan, SessionTransition,
+    MAX_COMMIT_MUTATIONS, MAX_COMMIT_QUEUE_ROWS, MAX_DEFERRED_CONTROLS,
+    MAX_MAINTENANCE_TRANSITIONS, MAX_PAIRWISE_COMMIT_DEVICES,
+};
 pub use devices::{
     ContactDeviceRecord, DeviceChannelRecord, DeviceStateRecord, DeviceTransferGroup,
     DeviceTransferSelection, DeviceTransferSnapshot, MessageDeviceDeliveryRecord,
@@ -388,28 +402,6 @@ pub struct GroupMessagePage {
     pub next: Option<HistoryCursor>,
 }
 
-/// Complete durable consequences of accepting one ordinary pairwise message.
-///
-/// The session is a candidate advanced from the last durable session. Applying
-/// this plan either commits every field in one immediate SQLite transaction or
-/// leaves the prior session and source pending row unchanged.
-pub struct PairwiseReceivePlan<'a> {
-    /// Exact physical-device ratchet route whose receiving state advanced.
-    pub peer_device: &'a [u8; 32],
-    /// Candidate session after authenticating and decrypting the envelope.
-    pub session: &'a Session,
-    /// Accepted immutable history row, or `None` for an application-level
-    /// duplicate whose envelope still needs replay and receipt state.
-    pub message: Option<&'a MessageRecord>,
-    /// Authenticated envelope content id used for durable transport dedup.
-    pub content_id: &'a [u8; 16],
-    /// Local receive time stored with the duplicate-receipt route.
-    pub received_at: u64,
-    /// Stable deferred-inbox row consumed by this transition, when the
-    /// envelope came from the pending inbox rather than a fresh carrier read.
-    pub source_pending_sequence: Option<i64>,
-}
-
 /// A contact (sealed as one blob in the `contacts` table).
 ///
 /// Delivery hints are opaque bytes to the store — the runtime serializes
@@ -738,6 +730,8 @@ pub struct Store {
     k_media: StorageKey,
     media_dir: PathBuf,
     media_limits: MediaLimits,
+    #[cfg(feature = "test-failpoints")]
+    commit_failpoint: RefCell<Option<commit::ArmedCommitFailpoint>>,
     // Prevents another Unix process from bypassing the pathname sidecar via a
     // hardlink alias to the same database inode.
     _database_lock: Option<File>,
@@ -865,6 +859,8 @@ impl Store {
             k_media: keys.media,
             media_dir,
             media_limits: MediaLimits::default(),
+            #[cfg(feature = "test-failpoints")]
+            commit_failpoint: RefCell::new(None),
             conn,
             _database_lock: database_lock,
             _lock: lock,
@@ -881,7 +877,9 @@ impl Store {
         self.validate_note_logical_rows()?;
         self.validate_scheduled_logical_rows()?;
         self.validate_ephemeral_logical_rows()?;
-        self.validate_device_logical_rows()
+        self.validate_device_logical_rows()?;
+        self.validate_presentation_marker()?;
+        self.validate_deferred_controls()
     }
 
     fn validate_core_logical_rows(&self) -> Result<()> {
@@ -1030,105 +1028,6 @@ impl Store {
         self.get_equality::<store_v2::SessionRows>(&store_v2::AccountKey::new(*peer))?
             .map(|row| decode_exact(&row.payload))
             .transpose()
-    }
-
-    /// Atomically commit an accepted ordinary pairwise receive transition.
-    ///
-    /// Sealing and serialization complete before `BEGIN IMMEDIATE`. The
-    /// transaction advances the ratchet, appends optional history, records
-    /// envelope dedup and receipt replay state, and acknowledges the exact
-    /// deferred-inbox row together. A missing named pending row or any SQL
-    /// failure rolls back the entire transition.
-    pub fn commit_pairwise_receive(
-        &self,
-        plan: PairwiseReceivePlan<'_>,
-        rng: &mut impl CryptoRngCore,
-    ) -> Result<()> {
-        if plan.message.is_some_and(|message| {
-            message.direction != Direction::Inbound
-                || message.state != DeliveryState::Received
-                || message.wire_id.is_some()
-        }) {
-            return Err(StoreError::InvalidTransition);
-        }
-        if let Some(sequence) = plan.source_pending_sequence {
-            let Some(row) = self.row_by_rowid::<store_v2::PendingRows>(sequence)? else {
-                return Err(StoreError::InvalidTransition);
-            };
-            let (envelope, _): (Vec<u8>, u64) = decode_exact(&row.payload)?;
-            if Envelope::decode(&envelope)?.content_id() != *plan.content_id {
-                return Err(StoreError::InvalidTransition);
-            }
-        }
-
-        let session_payload = Zeroizing::new(
-            postcard::to_allocvec(plan.session).map_err(|_| StoreError::Serialization)?,
-        );
-        let message_payload = if let Some(message) = plan.message {
-            Some(postcard::to_allocvec(message).map_err(|_| StoreError::Serialization)?)
-        } else {
-            None
-        };
-        let replay = postcard::to_allocvec(&(*plan.peer_device, plan.received_at))
-            .map_err(|_| StoreError::Serialization)?;
-
-        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
-        let applied = (|| -> Result<()> {
-            self.put_equality_on::<store_v2::SessionRows>(
-                &tx,
-                &store_v2::AccountKey::new(*plan.peer_device),
-                &session_payload,
-                store_v2::IndexKeys::none(),
-                rng,
-            )?;
-            if let (Some(message), Some(payload)) = (plan.message, message_payload.as_deref()) {
-                self.append_on::<store_v2::MessageRows>(
-                    &tx,
-                    Some(&store_v2::MessageKey::new(
-                        message.peer,
-                        direction_code(message.direction),
-                        message.id,
-                    )),
-                    payload,
-                    store_v2::IndexKeys::message(
-                        &store_v2::ContentKey::new(message.id),
-                        &store_v2::AccountKey::new(message.peer),
-                    ),
-                    rng,
-                )?;
-            }
-            self.put_equality_on::<store_v2::SeenRows>(
-                &tx,
-                &store_v2::ContentKey::new(*plan.content_id),
-                plan.content_id,
-                store_v2::IndexKeys::none(),
-                rng,
-            )?;
-            self.put_equality_on::<store_v2::ReceiptReplayRows>(
-                &tx,
-                &store_v2::ContentKey::new(*plan.content_id),
-                &replay,
-                store_v2::IndexKeys::none(),
-                rng,
-            )?;
-            if let Some(sequence) = plan.source_pending_sequence {
-                if !self.delete_rowid_on::<store_v2::PendingRows>(&tx, sequence)? {
-                    return Err(StoreError::InvalidTransition);
-                }
-            }
-            Ok(())
-        })();
-
-        match applied {
-            Ok(()) => {
-                tx.commit()?;
-                Ok(())
-            }
-            Err(error) => {
-                let _ = tx.rollback();
-                Err(error)
-            }
-        }
     }
 
     /// Delete one exact physical-endpoint ratchet session.
@@ -1994,6 +1893,24 @@ impl Store {
         Ok(Some(peer))
     }
 
+    /// Return a bounded set of duplicate-receipt routes at or before a cutoff.
+    pub fn expired_receipt_replay_ids(&self, cutoff: u64, limit: usize) -> Result<Vec<[u8; 16]>> {
+        if limit == 0 || limit > MAX_MAINTENANCE_TRANSITIONS {
+            return Err(StoreError::MaintenanceBounds);
+        }
+        let mut expired = Vec::new();
+        for row in self.rows::<store_v2::ReceiptReplayRows>()? {
+            let (_, received_at): ([u8; 32], u64) = decode_exact(&row.payload)?;
+            if received_at <= cutoff {
+                expired.push(*store_v2::ContentKey::decode(&row.logical_key)?.value());
+                if expired.len() == limit {
+                    break;
+                }
+            }
+        }
+        Ok(expired)
+    }
+
     /// Remove duplicate-receipt routes older than the endpoint delivery
     /// window. Seen ids remain independent and keep deduplication durable.
     pub fn sweep_receipt_replay(&self, cutoff: u64) -> Result<usize> {
@@ -2298,7 +2215,8 @@ mod queue_tests {
         };
 
         let decoded = RatchetMessage::decode(&envelope.body).unwrap();
-        let mut failed_candidate = store.get_session(&peer_device).unwrap().unwrap();
+        let failed_before = store.get_session(&peer_device).unwrap().unwrap();
+        let mut failed_candidate = failed_before.clone();
         assert_eq!(
             unpad(
                 &failed_candidate
@@ -2308,9 +2226,22 @@ mod queue_tests {
             .unwrap(),
             b"second"
         );
+        let failed_receipt =
+            failed_candidate.encrypt(&mut rng, NOW + 1, &pad(b"receipt").unwrap(), &[]);
+        let failed_queue = QueueItem {
+            peer: peer_device,
+            msg_id: None,
+            group_msg_id: None,
+            class: QueueClass::Normal,
+            created_at: NOW + 1,
+            attempts: 0,
+            next_attempt_at: NOW + 1,
+            envelope: Envelope::new(EnvelopeKind::Receipt, [8; 32], failed_receipt.encode()),
+        };
 
-        // Force the third statement to fail after the candidate session and
-        // message insert. SQLite must roll both back and retain the source.
+        // Fail the seen-marker statement after the candidate session,
+        // message, and encrypted receipt. SQLite must roll every write back
+        // and retain the exact source row.
         store
             .conn
             .execute_batch(
@@ -2323,15 +2254,28 @@ mod queue_tests {
             )
             .unwrap();
         assert!(store
-            .commit_pairwise_receive(
-                PairwiseReceivePlan {
-                    peer_device: &peer_device,
-                    session: &failed_candidate,
+            .commit_plan(
+                CommitPlan::PairwiseReceive(PairwiseReceivePlan {
+                    session: SessionTransition {
+                        peer_device,
+                        before: Some(&failed_before),
+                        after: &failed_candidate,
+                    },
                     message: Some(&message),
-                    content_id: &content_id,
+                    ephemeral: None,
+                    media_transfers: &[],
+                    media_objects: &[],
+                    capabilities: None,
+                    queue: std::slice::from_ref(&failed_queue),
+                    content_id,
                     received_at: NOW + 1,
-                    source_pending_sequence: Some(pending_sequence),
-                },
+                    receipt_replay: true,
+                    source_pending: Some(PendingDelete {
+                        sequence: pending_sequence,
+                        content_id,
+                    }),
+                    presentation_changed: true,
+                }),
                 &mut rng,
             )
             .is_err());
@@ -2350,10 +2294,12 @@ mod queue_tests {
             ]
         );
         assert_eq!(store.receipt_replay_peer(&content_id).unwrap(), None);
+        assert!(store.queue_all().unwrap().is_empty());
 
         // The original durable ratchet still decrypts the same ciphertext,
         // proving the failed candidate was not persisted.
-        let mut wrong_source_candidate = store.get_session(&peer_device).unwrap().unwrap();
+        let wrong_source_before = store.get_session(&peer_device).unwrap().unwrap();
+        let mut wrong_source_candidate = wrong_source_before.clone();
         assert_eq!(
             unpad(
                 &wrong_source_candidate
@@ -2363,16 +2309,45 @@ mod queue_tests {
             .unwrap(),
             b"second"
         );
+        let wrong_source_receipt =
+            wrong_source_candidate.encrypt(&mut rng, NOW + 1, &pad(b"receipt").unwrap(), &[]);
+        let wrong_source_queue = QueueItem {
+            peer: peer_device,
+            msg_id: None,
+            group_msg_id: None,
+            class: QueueClass::Normal,
+            created_at: NOW + 1,
+            attempts: 0,
+            next_attempt_at: NOW + 1,
+            envelope: Envelope::new(
+                EnvelopeKind::Receipt,
+                [8; 32],
+                wrong_source_receipt.encode(),
+            ),
+        };
         assert!(matches!(
-            store.commit_pairwise_receive(
-                PairwiseReceivePlan {
-                    peer_device: &peer_device,
-                    session: &wrong_source_candidate,
+            store.commit_plan(
+                CommitPlan::PairwiseReceive(PairwiseReceivePlan {
+                    session: SessionTransition {
+                        peer_device,
+                        before: Some(&wrong_source_before),
+                        after: &wrong_source_candidate,
+                    },
                     message: Some(&message),
-                    content_id: &content_id,
+                    ephemeral: None,
+                    media_transfers: &[],
+                    media_objects: &[],
+                    capabilities: None,
+                    queue: std::slice::from_ref(&wrong_source_queue),
+                    content_id,
                     received_at: NOW + 1,
-                    source_pending_sequence: Some(unrelated_sequence),
-                },
+                    receipt_replay: true,
+                    source_pending: Some(PendingDelete {
+                        sequence: unrelated_sequence,
+                        content_id,
+                    }),
+                    presentation_changed: true,
+                }),
                 &mut rng,
             ),
             Err(StoreError::InvalidTransition)
@@ -2387,10 +2362,12 @@ mod queue_tests {
             ]
         );
         assert_eq!(store.receipt_replay_peer(&content_id).unwrap(), None);
+        assert!(store.queue_all().unwrap().is_empty());
 
         // A final retry from the still-unchanged durable session commits all
         // consequences and consumes exactly the named pending source.
-        let mut retry_candidate = store.get_session(&peer_device).unwrap().unwrap();
+        let retry_before = store.get_session(&peer_device).unwrap().unwrap();
+        let mut retry_candidate = retry_before.clone();
         assert_eq!(
             unpad(
                 &retry_candidate
@@ -2400,16 +2377,41 @@ mod queue_tests {
             .unwrap(),
             b"second"
         );
+        let retry_receipt =
+            retry_candidate.encrypt(&mut rng, NOW + 1, &pad(b"receipt").unwrap(), &[]);
+        let retry_queue = QueueItem {
+            peer: peer_device,
+            msg_id: None,
+            group_msg_id: None,
+            class: QueueClass::Normal,
+            created_at: NOW + 1,
+            attempts: 0,
+            next_attempt_at: NOW + 1,
+            envelope: Envelope::new(EnvelopeKind::Receipt, [8; 32], retry_receipt.encode()),
+        };
         store
-            .commit_pairwise_receive(
-                PairwiseReceivePlan {
-                    peer_device: &peer_device,
-                    session: &retry_candidate,
+            .commit_plan(
+                CommitPlan::PairwiseReceive(PairwiseReceivePlan {
+                    session: SessionTransition {
+                        peer_device,
+                        before: Some(&retry_before),
+                        after: &retry_candidate,
+                    },
                     message: Some(&message),
-                    content_id: &content_id,
+                    ephemeral: None,
+                    media_transfers: &[],
+                    media_objects: &[],
+                    capabilities: None,
+                    queue: std::slice::from_ref(&retry_queue),
+                    content_id,
                     received_at: NOW + 1,
-                    source_pending_sequence: Some(pending_sequence),
-                },
+                    receipt_replay: true,
+                    source_pending: Some(PendingDelete {
+                        sequence: pending_sequence,
+                        content_id,
+                    }),
+                    presentation_changed: true,
+                }),
                 &mut rng,
             )
             .unwrap();
@@ -2424,6 +2426,7 @@ mod queue_tests {
             store.receipt_replay_peer(&content_id).unwrap(),
             Some(peer_device)
         );
+        assert_eq!(store.queue_all().unwrap().len(), 1);
         let mut committed = store.get_session(&peer_device).unwrap().unwrap();
         assert!(committed.decrypt(&mut rng, NOW + 1, &decoded, &[]).is_err());
     }

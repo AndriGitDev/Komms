@@ -994,6 +994,9 @@ pub enum ContentStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event {
+    /// A committed transition survived without its detailed notification.
+    /// Applications re-read visible state from the node's snapshot APIs.
+    StateResyncRequired,
     /// Account-authorized physical-device list, name, or revocation changed.
     DevicesChanged,
     /// This installation completed a confirmed proximate account link.

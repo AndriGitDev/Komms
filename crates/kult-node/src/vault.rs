@@ -15,14 +15,14 @@ use crate::{NodeError, Result};
 /// longer be answered).
 const MAX_OPKS: usize = 32;
 
-#[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 struct Opk {
     id: u32,
     secret: [u8; 32],
 }
 
 /// All prekey secrets this device can answer handshakes with.
-#[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub(crate) struct PrekeyVault {
     pub spk_id: u32,
     spk: [u8; 32],

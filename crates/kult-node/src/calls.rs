@@ -14,16 +14,14 @@ use kult_crypto::{
     call_media_record_len, CallMediaContext, CallMediaKind, CallMediaReceiver, CallMediaSender,
     CallRole, CALL_MEDIA_HEADER_LEN, MAX_CALL_MEDIA_FRAME_LEN,
 };
-use kult_protocol::{
-    encode_call_control, pad, CallControl, CallHangupReason, Envelope, EnvelopeKind, MailboxKey,
-};
-use kult_store::{QueueClass, QueueItem};
+use kult_protocol::{encode_call_control, pad, CallControl, CallHangupReason, EnvelopeKind};
+use kult_store::QueueClass;
 use kult_transport::CallStream;
 
 use crate::{
-    delivery_token, epoch_day, CallAudioFrame, CallAvailability, CallDirection, CallEndReason,
-    CallInfo, CallPhase, CallUnavailableReason, CarrierCapability, Event, Node, NodeError, Result,
-    CONTENT_FORMAT_V1, CONTENT_KIND_CALL_CONTROL,
+    CallAudioFrame, CallAvailability, CallDirection, CallEndReason, CallInfo, CallPhase,
+    CallUnavailableReason, CarrierCapability, Event, Node, NodeError, Result, CONTENT_FORMAT_V1,
+    CONTENT_KIND_CALL_CONTROL,
 };
 
 /// Offers are short-lived and never become delayed-message work.
@@ -902,7 +900,7 @@ impl Node {
         Ok(())
     }
 
-    pub(crate) fn sweep_calls(&mut self, now: u64) -> Result<()> {
+    pub(crate) fn sweep_calls(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<()> {
         let expired = self
             .calls
             .iter()
@@ -933,10 +931,21 @@ impl Node {
             .iter()
             .filter(|(_, deadline)| now >= **deadline)
             .map(|(seq, _)| *seq)
+            .take(8)
             .collect::<Vec<_>>();
+        let queued = self.store.queue_all()?;
         for seq in expired_queue {
-            self.store.queue_ack(seq)?;
-            self.call_queue_deadlines.remove(&seq);
+            if let Some((_, item)) = queued.iter().find(|(sequence, _)| *sequence == seq) {
+                self.commit_queue_maintenance(
+                    seq,
+                    item,
+                    None,
+                    crate::PreparedDeliveryUpdate::default(),
+                    rng,
+                )?;
+            } else {
+                self.call_queue_deadlines.remove(&seq);
+            }
         }
         self.trim_calls(now)
     }
@@ -966,28 +975,18 @@ impl Node {
             if self.account_for_device(device)? != *peer {
                 return Err(NodeError::InvalidCall);
             }
-            let session = self.sessions.get_mut(device).ok_or(NodeError::NoSession)?;
-            let message = session.encrypt(rng, now, &padded, &[]);
-            let token = delivery_token(
-                &MailboxKey::from_bytes(*session.mailbox_key()),
-                epoch_day(now),
-                device,
-            );
-            self.store.put_session(device, session, rng)?;
-            let seq = self.store.queue_push(
-                &QueueItem {
-                    peer: *device,
-                    msg_id: None,
-                    group_msg_id: None,
-                    class: QueueClass::Realtime,
-                    created_at: now,
-                    attempts: 0,
-                    next_attempt_at: now,
-                    envelope: Envelope::new(EnvelopeKind::Message, token, message.encode()),
-                },
-                rng,
-            )?;
-            self.call_queue_deadlines.insert(seq, deadline);
+        }
+        for committed in self.commit_pairwise_envelopes(
+            devices,
+            &padded,
+            EnvelopeKind::Message,
+            QueueClass::Realtime,
+            None,
+            now,
+            rng,
+        )? {
+            self.call_queue_deadlines
+                .insert(committed.sequence, deadline);
         }
         Ok(())
     }

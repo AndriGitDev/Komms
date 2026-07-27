@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+test-failpoints = ["kult-store/test-failpoints"]
+
 [dependencies]
 blake3 = "1"
 futures = "0.3"

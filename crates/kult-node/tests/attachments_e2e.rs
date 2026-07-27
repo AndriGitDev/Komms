@@ -489,25 +489,24 @@ async fn group_attachment_encrypts_once_and_members_progress_independently() {
             node.handshake_bundle(NOW, &mut rng).unwrap(),
         ]);
     }
-    for receiver in 0..3 {
-        for sender in 0..3 {
+    for (receiver, node) in nodes.iter_mut().enumerate() {
+        for (sender, sender_bundles) in bundles.iter().enumerate() {
             if receiver == sender {
                 continue;
             }
-            let bundle = &bundles[sender][if receiver < sender {
+            let bundle = &sender_bundles[if receiver < sender {
                 receiver
             } else {
                 receiver - 1
             }];
-            nodes[receiver]
-                .add_contact(
-                    ["a", "b", "c"][sender],
-                    bundle,
-                    &[DeliveryHint::MeshNode(sender as u32 + 1)],
-                    NOW,
-                    &mut rng,
-                )
-                .unwrap();
+            node.add_contact(
+                ["a", "b", "c"][sender],
+                bundle,
+                &[DeliveryHint::MeshNode(sender as u32 + 1)],
+                NOW,
+                &mut rng,
+            )
+            .unwrap();
         }
     }
     let mut iter = nodes.into_iter();

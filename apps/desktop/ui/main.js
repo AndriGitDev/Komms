@@ -2994,8 +2994,27 @@ $("#btn-attach").addEventListener("click", async () => {
 
 // ── node events ─────────────────────────────────────────────────────────
 
+async function resynchronizePresentation() {
+  await refreshStatus();
+  await refreshContacts();
+  await refreshGroups();
+  await refreshFolders();
+  await refreshLabels();
+  await refreshVisibleCustomIcons(true);
+  const theme = await invoke("theme");
+  applyTheme(theme.preference);
+  if (state.currentKind) await renderMessages();
+  if (!$("#modal-backdrop").hidden && $("#modal-title").textContent === "Linked devices") {
+    await renderLinkedDevices($("#modal-body"));
+  }
+}
+
 listen("node-event", async ({ payload: ev }) => {
   switch (ev.type) {
+    case "state_resync_required": {
+      await resynchronizePresentation();
+      break;
+    }
     case "devices_changed": {
       if (!$("#modal-backdrop").hidden && $("#modal-title").textContent === "Linked devices") {
         await renderLinkedDevices($("#modal-body"));

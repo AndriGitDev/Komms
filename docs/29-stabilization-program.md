@@ -234,7 +234,7 @@ This table prevents a prior concern from disappearing into roadmap prose.
 | Video, large groups, new carriers, federation, and governance expansion could distract from everyday reliability | P0-03, P2 |
 | Direct transport currently acknowledges volatile RAM before bounded durable admission can accept or refuse an unknown token | P0-05 |
 | Stable identity-derived DHT locators and public route hints permit polling and network-location correlation | P0-04, P0-05, P0-06 |
-| Several stateful receive paths still persist ratchets, history, replay state, and source acknowledgements in separate crash windows | P0-03, P0-06 |
+| Pairwise send/receive, handshake, receipt, and bounded maintenance now use typed atomic plans with crash injection; group sender/receiver and deferred group/media follow-up still have multi-commit crash windows | P0-03, P0-06 |
 | Mailbox collection deletes relay custody before the endpoint durably stages and acknowledges a leased page | P0-04, P0-08 |
 | Unix store writer exclusion now combines a no-follow sidecar with a database-inode lock; equivalent alias resistance and hostile-filesystem qualification remain open on other supported platforms | P0-06, P0-09 |
 | The Unix RPC sidecar is no-follow and owner-only, but portable stale-socket replacement still requires a daemon-owned parent directory to exclude hostile rename/unlink races | P0-07, P0-09 |
