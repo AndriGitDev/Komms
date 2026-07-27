@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
 use kult_crypto::{
-    GroupHeaderKey, GroupMessage, GroupReceiverChain, GroupSenderChain, IdentityPublic,
+    GroupHeaderKey, GroupMessage, GroupReceiverChain, GroupSenderChain, IdentityPublic, Session,
 };
 use kult_protocol::{
     decode_content, decode_group_authority, delivery_token, encode_disappearing_text_payload,
@@ -26,14 +26,18 @@ use kult_protocol::{
 use kult_store::{
     ContactDeviceRecord, ContactRecord, DeliveryState, Direction, EphemeralConversation,
     EphemeralMode, EphemeralRecord, EphemeralState, GroupDelivery, GroupMember, GroupMessageRecord,
-    GroupRecord, MessageDeviceDeliveryRecord, PendingAnnounce, QueueClass, QueueItem,
+    GroupRecord, MessageDeviceDeliveryRecord, PairwiseSendPlan, PendingAnnounce, QueueClass,
+    QueueItem, SessionTransition,
 };
 
 use crate::api::{
     GroupInfo, GroupMentionCapability, MentionCapabilityIssue, MentionCapabilityIssueReason,
     MentionSpan, ResolvedGroupMessage,
 };
-use crate::{Consumed, ContentStatus, Event, Node, NodeError, Result, MAX_MESSAGE_EDITS};
+use crate::{
+    CommitPlan, Consumed, ContentStatus, Event, Node, NodeError, PreparedDeliveryUpdate, Result,
+    MAX_MESSAGE_EDITS,
+};
 
 /// Rotate the sending chain after this many messages (PCS via periodic
 /// rotation, spec §6).
@@ -846,16 +850,17 @@ impl Node {
     /// owed to them — their device may have restored and lost every
     /// receiving chain (ADR-0012). Existing entries keep their (older, more
     /// capable) snapshot and simply resend on the fresh session.
-    pub(crate) fn groups_on_session_established(
-        &mut self,
+    pub(crate) fn prepare_groups_on_session_established(
+        &self,
         peer: &[u8; 32],
-        rng: &mut impl CryptoRngCore,
-    ) -> Result<()> {
+    ) -> Result<Vec<(GroupRecord, GroupRecord)>> {
         let me = self.identity.public().ed;
         if peer == &me {
-            return Ok(());
+            return Ok(Vec::new());
         }
-        for mut rec in self.store.groups()? {
+        let mut transitions = Vec::new();
+        for before in self.store.groups()? {
+            let mut rec = before.clone();
             if !rec.members.iter().any(|m| &m.peer == peer) {
                 continue;
             }
@@ -877,9 +882,11 @@ impl Node {
                     });
                 }
             }
-            self.store.put_group(&rec, rng)?;
+            if rec != before {
+                transitions.push((before, rec));
+            }
         }
-        Ok(())
+        Ok(transitions)
     }
 
     /// Bind a pre-C2 account-key receiving chain to the certified physical
@@ -1563,96 +1570,50 @@ impl Node {
 
     // ---- receipts and delivery ladder ----------------------------------------
 
-    /// Receipt acks from `peer`: retire acknowledged announces and advance
-    /// per-member deliveries of outbound group messages.
-    pub(crate) fn apply_group_receipt(
-        &mut self,
-        peer: &[u8; 32],
-        peer_device: &[u8; 32],
-        acks: &[[u8; 16]],
-        rng: &mut impl CryptoRngCore,
-    ) -> Result<()> {
-        if acks.is_empty() {
-            return Ok(());
-        }
-        let acked = |wire: &[u8; 16]| -> bool { acks.iter().any(|a| bool::from(a.ct_eq(wire))) };
-        for mut rec in self.store.groups()? {
-            let before = rec.pending.len();
-            rec.pending
-                .retain(|p| !(&p.peer == peer && p.wire_id.as_ref().is_some_and(&acked)));
-            if rec.pending.len() != before {
-                self.store.put_group(&rec, rng)?;
-            }
-        }
-        for mut record in self.store.all_group_messages()? {
-            let mut changed = false;
-            let mut device_acked = false;
-            for mut delivery in self.store.message_device_deliveries(&record.id)? {
-                if delivery.account == *peer
-                    && delivery.device == *peer_device
-                    && delivery.wire_id.as_ref().is_some_and(&acked)
-                {
-                    delivery.state = DeliveryState::Delivered;
-                    self.store.put_message_device_delivery(&delivery, rng)?;
-                    device_acked = true;
-                }
-            }
-            for d in record.deliveries.iter_mut() {
-                if &d.peer == peer
-                    && d.state != DeliveryState::Delivered
-                    && (device_acked || d.wire_id.as_ref().is_some_and(&acked))
-                {
-                    d.state = DeliveryState::Delivered;
-                    changed = true;
-                    self.events.push_back(Event::GroupDeliveryUpdated {
-                        id: record.id,
-                        peer: *peer,
-                        state: DeliveryState::Delivered,
-                    });
-                }
-            }
-            if changed {
-                self.store.update_group_message(&record, rng)?;
-            }
-        }
-        Ok(())
-    }
-
     /// A member's envelope copy was handed to a link: `Queued` → `Sent`.
-    pub(crate) fn group_mark_sent(
-        &mut self,
+    pub(crate) fn prepare_group_mark_sent(
+        &self,
         peer: &[u8; 32],
         peer_device: &[u8; 32],
         group_msg_id: &[u8; 16],
-        rng: &mut impl CryptoRngCore,
-    ) -> Result<()> {
-        for mut delivery in self.store.message_device_deliveries(group_msg_id)? {
+    ) -> Result<PreparedDeliveryUpdate> {
+        let mut deliveries = Vec::new();
+        for delivery in self.store.message_device_deliveries(group_msg_id)? {
             if delivery.account == *peer
                 && delivery.device == *peer_device
                 && delivery.state == DeliveryState::Queued
             {
-                delivery.state = DeliveryState::Sent;
-                self.store.put_message_device_delivery(&delivery, rng)?;
+                let mut after = delivery.clone();
+                after.state = DeliveryState::Sent;
+                deliveries.push((delivery, after));
             }
         }
-        for mut record in self.store.all_group_messages()? {
+        let mut group_messages = Vec::new();
+        let mut events = Vec::new();
+        for record in self.store.all_group_messages()? {
             if &record.id != group_msg_id {
                 continue;
             }
-            for d in record.deliveries.iter_mut() {
+            let mut after = record.clone();
+            for d in after.deliveries.iter_mut() {
                 if &d.peer == peer && d.state == DeliveryState::Queued {
                     d.state = DeliveryState::Sent;
-                    self.events.push_back(Event::GroupDeliveryUpdated {
+                    events.push(Event::GroupDeliveryUpdated {
                         id: *group_msg_id,
                         peer: *peer,
                         state: DeliveryState::Sent,
                     });
-                    self.store.update_group_message(&record, rng)?;
-                    return Ok(());
+                    group_messages.push((record, after));
+                    break;
                 }
             }
         }
-        Ok(())
+        Ok(PreparedDeliveryUpdate {
+            messages: Vec::new(),
+            deliveries,
+            group_messages,
+            events,
+        })
     }
 
     // ---- internals -------------------------------------------------------
@@ -1898,47 +1859,27 @@ impl Node {
         let bytes = zeroize::Zeroizing::new(payload.encode());
         let padded = pad(&bytes)?;
         let mut preferred_wire = None;
+        let mut prepared: Vec<([u8; 32], Option<Session>, Session, bool)> = Vec::new();
+        let mut queue = Vec::new();
         for route in routes {
             let device = route.device;
-            if !self.sessions.contains_key(&device) {
-                if route.bundle.is_empty() {
-                    continue;
-                }
-                // An empty first flight; the control message rides behind it.
-                let Ok(flight) =
-                    self.initiate_session(peer, &device, &route.bundle, &pad(&[])?, now, rng)
-                else {
-                    continue; // e.g. the bundle expired — paced retry
+            let (before, mut after, handshake) =
+                if let Some(before) = self.sessions.get(&device).cloned() {
+                    (Some(before.clone()), before, None)
+                } else {
+                    if route.bundle.is_empty() {
+                        continue;
+                    }
+                    let Ok((after, flight)) =
+                        self.prepare_session(peer, &device, &route.bundle, &pad(&[])?, now, rng)
+                    else {
+                        continue; // e.g. the bundle expired — paced retry
+                    };
+                    (None, after, Some(flight))
                 };
-                self.store.queue_push(
-                    &QueueItem {
-                        peer: device,
-                        msg_id: None,
-                        group_msg_id: None,
-                        class: QueueClass::Normal,
-                        created_at: now,
-                        attempts: 0,
-                        next_attempt_at: now,
-                        envelope: flight,
-                    },
-                    rng,
-                )?;
-            }
-            let session = self
-                .sessions
-                .get_mut(&device)
-                .expect("route session just ensured above");
-            let msg = session.encrypt(rng, now, &padded, &[]);
-            let token = delivery_token(
-                &MailboxKey::from_bytes(*session.mailbox_key()),
-                epoch_day(now),
-                &device,
-            );
-            self.store.put_session(&device, session, rng)?;
-            let envelope = Envelope::new(EnvelopeKind::GroupControl, token, msg.encode());
-            preferred_wire.get_or_insert_with(|| envelope.content_id());
-            self.store.queue_push(
-                &QueueItem {
+            let reset = handshake.is_some();
+            if let Some(flight) = handshake {
+                queue.push(QueueItem {
                     peer: device,
                     msg_id: None,
                     group_msg_id: None,
@@ -1946,11 +1887,68 @@ impl Node {
                     created_at: now,
                     attempts: 0,
                     next_attempt_at: now,
-                    envelope,
-                },
-                rng,
-            )?;
+                    envelope: flight,
+                });
+            }
+            let msg = self.candidate_encrypt(&mut after, rng, now, &padded)?;
+            let token = delivery_token(
+                &MailboxKey::from_bytes(*after.mailbox_key()),
+                epoch_day(now),
+                &device,
+            );
+            let envelope = Envelope::new(EnvelopeKind::GroupControl, token, msg.encode());
+            preferred_wire.get_or_insert_with(|| envelope.content_id());
+            queue.push(QueueItem {
+                peer: device,
+                msg_id: None,
+                group_msg_id: None,
+                class: QueueClass::Normal,
+                created_at: now,
+                attempts: 0,
+                next_attempt_at: now,
+                envelope,
+            });
+            prepared.push((device, before, after, reset));
         }
+        if prepared.is_empty() {
+            return Ok(None);
+        }
+        let transitions = prepared
+            .iter()
+            .map(|(device, before, after, _)| SessionTransition {
+                peer_device: *device,
+                before: before.as_ref(),
+                after,
+            })
+            .collect::<Vec<_>>();
+        let clear_capabilities = prepared
+            .iter()
+            .filter_map(|(device, _, _, reset)| reset.then_some(*device))
+            .collect::<Vec<_>>();
+        self.store.commit_plan(
+            CommitPlan::PairwiseSend(PairwiseSendPlan {
+                sessions: &transitions,
+                message: None,
+                message_update: None,
+                deliveries: &[],
+                delivery_updates: &[],
+                queue: &queue,
+                scheduled: None,
+                clear_capabilities: &clear_capabilities,
+                clear_reset_markers: &[],
+                ephemeral: None,
+                presentation_changed: false,
+            }),
+            rng,
+        )?;
+        self.before_memory_replacement()?;
+        for (device, _, after, reset) in prepared {
+            self.sessions.insert(device, after);
+            if reset {
+                self.capabilities_advertised.remove(&device);
+            }
+        }
+        self.after_memory_replacement()?;
         Ok(preferred_wire)
     }
 

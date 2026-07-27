@@ -287,7 +287,8 @@ final class AppModel: ObservableObject {
             Task { await refreshTheme() }
         case .customIconsChanged:
             Task { await refresh() }
-        case .scheduledMessageUpdated, .scheduledMessageCancelled,
+        case .stateResyncRequired,
+             .scheduledMessageUpdated, .scheduledMessageCancelled,
              .scheduledMessageActivated, .deliveryUpdated, .messageReceived,
              .messageEdited,
              .noteToSelfMessageAdded,

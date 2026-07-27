@@ -1134,6 +1134,9 @@ pub fn err(id: u64, message: &str) -> String {
 /// An event line for subscribed connections.
 pub fn event_line(event: &Event) -> String {
     let body = match event {
+        Event::StateResyncRequired => json!({
+            "type": "state_resync_required",
+        }),
         Event::DevicesChanged => json!({
             "type": "devices_changed",
         }),
@@ -2644,6 +2647,9 @@ mod tests {
         let icon_event: Value =
             serde_json::from_str(&event_line(&Event::CustomIconsChanged)).unwrap();
         assert_eq!(icon_event["event"]["type"], "custom_icons_changed");
+        let resync_event: Value =
+            serde_json::from_str(&event_line(&Event::StateResyncRequired)).unwrap();
+        assert_eq!(resync_event["event"]["type"], "state_resync_required");
 
         let r = parse_request(
             &json!({
@@ -2709,7 +2715,7 @@ mod tests {
             value["err"],
             json!("store error: conversation label limit exhausted")
         );
-        assert!(value.to_string().find("label name").is_none());
+        assert!(!value.to_string().contains("label name"));
     }
 
     #[test]
@@ -2722,7 +2728,7 @@ mod tests {
             value["err"],
             json!("store error: invalid complete folder order")
         );
-        assert!(value.to_string().find("folder name").is_none());
+        assert!(!value.to_string().contains("folder name"));
     }
 
     #[test]
@@ -2762,8 +2768,8 @@ mod tests {
             value["event"]["call"]["end_reason"],
             json!("answered_elsewhere")
         );
-        assert!(value.to_string().find("secret").is_none());
-        assert!(value.to_string().find("route").is_none());
+        assert!(!value.to_string().contains("secret"));
+        assert!(!value.to_string().contains("route"));
     }
 
     #[test]

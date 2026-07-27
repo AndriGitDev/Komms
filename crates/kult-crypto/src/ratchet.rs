@@ -116,7 +116,7 @@ struct SkippedKey {
 ///
 /// Opaque and serializable only through [`Session::seal`] /
 /// [`Session::unseal`] — plaintext state never leaves this type.
-#[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct Session {
     session_id: [u8; 32],
     dhs_priv: [u8; 32],

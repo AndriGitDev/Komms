@@ -502,6 +502,18 @@ impl Store {
     /// Read and locally unseal one end-to-end encrypted chunk record.
     pub fn read_media_chunk(&self, local_id: &[u8; 16], index: u32) -> Result<Vec<u8>> {
         let object = self.require_object(local_id)?;
+        self.read_media_chunk_from_record(&object, index)
+    }
+
+    /// Read one locally sealed chunk through an already validated metadata
+    /// snapshot. This supports post-commit view-once export after the durable
+    /// object row has been removed.
+    pub fn read_media_chunk_from_record(
+        &self,
+        object: &MediaObjectRecord,
+        index: u32,
+    ) -> Result<Vec<u8>> {
+        validate_object(object)?;
         let address = object
             .chunk_addresses
             .get(index as usize)
@@ -616,6 +628,14 @@ impl Store {
         report.orphan_files_removed =
             self.garbage_collect_media_files(report.unknown_records > 0)?;
         Ok(report)
+    }
+
+    /// Remove sealed chunk files no longer referenced by committed metadata.
+    ///
+    /// Protocol transactions call this only after their SQLite commit so
+    /// filesystem work never extends a protocol-state transaction.
+    pub fn collect_media_garbage(&mut self) -> Result<usize> {
+        self.garbage_collect_media_files(false)
     }
 
     fn get_media_record<T, R>(&self, local_id: &[u8; 16]) -> Result<Option<MediaRecord<T>>>

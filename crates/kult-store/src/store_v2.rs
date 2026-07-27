@@ -578,6 +578,8 @@ table!(DeviceStateRows, 22, Equality, SingletonKey);
 table!(DeviceSyncRows, 23, Random, DigestKey);
 table!(ContactDeviceRows, 24, Equality, AccountDeviceKey);
 table!(MessageDeviceDeliveryRows, 25, Equality, MessageDeviceKey);
+table!(PresentationMarkerRows, 26, Equality, SingletonKey);
+table!(DeferredControlRows, 27, Equality, ContentKey);
 pub(crate) struct MigrationCheckpointRows;
 
 impl TableSpec for MigrationCheckpointRows {
@@ -1871,7 +1873,7 @@ fn validate_index_shape(domain: u8, indexes: &IndexKeys) -> Result<()> {
         DeviceSyncRows::DOMAIN => [true, false, false, false, false],
         ContactDeviceRows::DOMAIN => [false, true, false, false, false],
         MessageDeviceDeliveryRows::DOMAIN => [false, true, true, false, false],
-        1..=25 => [false; 5],
+        1..=27 => [false; 5],
         MigrationCheckpointRows::DOMAIN => [false; 5],
         _ => return Err(StoreError::SchemaMismatch),
     };
@@ -1907,6 +1909,8 @@ fn table_locator_kind(domain: u8) -> Result<LocatorKind> {
         | DeviceStateRows::DOMAIN
         | ContactDeviceRows::DOMAIN
         | MessageDeviceDeliveryRows::DOMAIN
+        | PresentationMarkerRows::DOMAIN
+        | DeferredControlRows::DOMAIN
         | MigrationCheckpointRows::DOMAIN => Ok(LocatorKind::Equality),
         MessageRows::DOMAIN
         | QueueRows::DOMAIN
@@ -1923,15 +1927,18 @@ fn validate_key_for_domain(domain: u8, key: &[u8]) -> Result<()> {
         IdentityRows::DOMAIN
         | PrekeyRows::DOMAIN
         | DeviceStateRows::DOMAIN
+        | PresentationMarkerRows::DOMAIN
         | MigrationCheckpointRows::DOMAIN => SingletonKey::validate_encoded(key),
         SessionRows::DOMAIN | CapabilityRows::DOMAIN | ContactRows::DOMAIN | ResetRows::DOMAIN => {
             AccountKey::validate_encoded(key)
         }
         MessageRows::DOMAIN => MessageKey::validate_encoded(key),
         QueueRows::DOMAIN | PendingRows::DOMAIN => OpaqueRowKey::validate_encoded(key),
-        SeenRows::DOMAIN | ReceiptReplayRows::DOMAIN | NoteRows::DOMAIN | ScheduledRows::DOMAIN => {
-            ContentKey::validate_encoded(key)
-        }
+        SeenRows::DOMAIN
+        | ReceiptReplayRows::DOMAIN
+        | DeferredControlRows::DOMAIN
+        | NoteRows::DOMAIN
+        | ScheduledRows::DOMAIN => ContentKey::validate_encoded(key),
         GroupRows::DOMAIN | GroupAuthorityRows::DOMAIN => GroupKey::validate_encoded(key),
         GroupChainRows::DOMAIN => GroupMemberKey::validate_encoded(key),
         GroupMessageRows::DOMAIN => GroupMessageKey::validate_encoded(key),

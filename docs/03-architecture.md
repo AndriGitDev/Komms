@@ -145,12 +145,15 @@ what makes pre-activation edit/cancel safe. Clock rollback keeps the row held;
 clock advance activates it on the next tick; time-zone changes are display-only.
 
 1. **App** calls `send(conversation, content)` through `kult-ffi`.
-2. **kult-node** persists the outbound message locally (`kult-store`) with state
-   `queued`, so ordinary restart preserves the durable queue and the UI can
-   report delivery honestly. Current Alpha outbound ratchet, history, and queue
-   writes are not yet one universal atomic transition; the remaining crash
-   windows are tracked by [ADR-0028](adr/0028-atomic-protocol-commits.md) and
-   must close before a general “nothing is lost on crash” claim.
+2. **kult-node** prepares a detached pairwise ratchet candidate and commits that
+   candidate, immutable history, per-device delivery rows, the sealed outbound
+   envelope, and any consumed schedule/reset/capability state through one typed
+   `BEGIN IMMEDIATE` transition. The UI changes only after the commit receipt;
+   a durable presentation marker requests snapshot resynchronization after a
+   commit-before-notification restart. This evidence is pairwise-specific:
+   group sender/receiver plans and deferred group/media control follow-up remain
+   open under [ADR-0028](adr/0028-atomic-protocol-commits.md), so Komms does not
+   claim universal crash atomicity.
 3. **kult-protocol** serializes content, pads it to the next size bucket, and hands it to
    the conversation's ratchet.
 4. **kult-crypto** advances the sending chain, encrypts with XChaCha20-Poly1305, and

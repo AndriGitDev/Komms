@@ -1657,6 +1657,9 @@ impl UiAttachment {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UiEvent {
+    /// Durable state changed without its detailed notification; re-read all
+    /// visible snapshots.
+    StateResyncRequired,
     /// Account-authorized device list, name, or revocation changed.
     DevicesChanged,
     /// This pristine installation completed a confirmed account link.
@@ -1875,6 +1878,7 @@ pub enum UiEvent {
 impl UiEvent {
     fn from_ffi(event: Event) -> Self {
         match event {
+            Event::StateResyncRequired => Self::StateResyncRequired,
             Event::DevicesChanged => Self::DevicesChanged,
             Event::DeviceLinkCompleted { account, device } => {
                 Self::DeviceLinkCompleted { account, device }
@@ -4369,6 +4373,9 @@ mod tests {
 
     #[test]
     fn events_serialize_with_type_tags() {
+        let resync = serde_json::to_value(UiEvent::StateResyncRequired).unwrap();
+        assert_eq!(resync["type"], "state_resync_required");
+
         let json = serde_json::to_value(UiEvent::DeliveryUpdated {
             id: "ab".to_owned(),
             state: "delivered",

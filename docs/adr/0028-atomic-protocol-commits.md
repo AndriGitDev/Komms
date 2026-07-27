@@ -1,17 +1,18 @@
 # ADR-0028: Atomic protocol-state commits
 
-- **Status**: Proposed
+- **Status**: Proposed; pairwise commit-plan slice implemented
 - **Date**: 2026-07-26
 
 ## Context
 
 Double Ratchet, handshake, and sender-key steps destroy or replace secrets as
-they progress. The current node persists that advanced cryptographic state in
-separate SQLite autocommits from message history, replay markers, receipt
-routes, delivery rows, and outbound queue entries. A process stop or disk error
-between writes can make a valid inbound ciphertext permanently undecryptable or
-advance an outbound chain without retaining the only ciphertext produced by
-that step.
+they progress. Before the pairwise commit-plan slice, the node persisted
+advanced cryptographic state in separate SQLite autocommits from message
+history, replay markers, receipt routes, delivery rows, and outbound queue
+entries. A process stop or disk error between writes could make a valid inbound
+ciphertext permanently undecryptable or advance an outbound chain without
+retaining the only ciphertext produced by that step. Group sender/receiver
+transitions still need the corresponding typed plans.
 
 Deferred inbox rows also need at-least-once processing: removing a row before
 all durable consequences commit turns an ordinary crash into message loss.
@@ -124,8 +125,8 @@ other supported platforms.
 Tests insert deterministic failures:
 
 - before and after every candidate cryptographic step;
-- before each transaction statement;
-- before commit, after commit, and before in-memory replacement;
+- before and after each transaction statement;
+- before and after commit, in-memory replacement, and event delivery;
 - during disk-full/constraint failures; and
 - during restart with deferred, duplicated, reordered, or partially delivered
   carrier input.
@@ -139,12 +140,45 @@ For every injected point, restart must produce exactly one of two states:
 No accepted state may contain a ratchet/chain step without its only ciphertext
 or plaintext consequence.
 
-The first implementation slice covers ordinary retained pairwise text: the
-candidate receiving ratchet, optional history row, seen marker, sealed receipt
-replay route, and exact deferred-row acknowledgement commit together. It is
-deliberately not evidence that handshake, receipt, attachment, ephemeral,
-call-control, group-control, group-message, or outbound transitions are atomic;
-each still needs a typed plan and crash matrix.
+### 7. Implementation and evidence status
+
+The implemented pairwise slice now provides bounded `PairwiseSend`,
+`PairwiseReceive`, `HandshakeReceive`, `ReceiptReceive`, and `Maintenance`
+plans. It covers ordinary and versioned text, edits, pairwise attachment offers,
+ephemeral content, capability controls, receipts, scheduled activation,
+late-device delivery, bounded unconfirmed-session repair, reset re-handshakes,
+retry/expiry and view-once-tombstone maintenance, and exact pending-row
+acknowledgement. Sessions and the prekey vault are cloned before cryptographic
+work; live memory changes only after a successful commit receipt.
+
+Each plan validates its bounded before/after relationships before
+`BEGIN IMMEDIATE`. The transaction then writes the advanced candidate state and
+every paired ciphertext or accepted plaintext consequence. Complete fresh
+envelopes enter the durable pending inbox before parsing or cryptographic work.
+Top-level fragments are the bounded exception: assembly advances no ratchet,
+the completed inner envelope is staged before deferral, and refused assembly
+leaves the fragments unseen for carrier retry.
+
+A sealed presentation marker is written in the same transaction as every
+pairwise-visible transition. If the process stops after commit but before event
+delivery, reopening the node emits `StateResyncRequired`; the marker is removed
+only after a later tick acknowledges delivery. The FFI and daemon surfaces
+preserve that signal, and the desktop shell responds by re-reading its visible
+snapshots. The deterministic crash suite in
+`crates/kult-node/src/atomic_tests.rs` exercises before/after cryptographic
+steps, every logical transaction statement, commit, memory replacement, event
+delivery, disk-full, constraint, duplicate, reorder, deferred-input, expiry,
+session-repair, and restart cases for the five implemented plan kinds.
+
+This is not full ADR acceptance. `GroupSend` and `GroupReceive` plans remain
+unimplemented. Authenticated attachment and group controls are durably accepted
+before their bounded follow-up runs, but their group/media follow-up mutations
+still need a single typed plan with the deferred-control acknowledgement.
+Real-time call state remains intentionally process-local and is not restored
+after a restart. Unknown valid handshakes still enter the ordinary contact table
+rather than the ADR-0030 request quarantine. Those gaps keep this ADR Proposed
+and prevent the pairwise evidence from being presented as universal protocol
+atomicity.
 
 ## Alternatives considered
 

@@ -10,7 +10,7 @@ use crate::api::{
     AttachmentConversation, AttachmentDirection, AttachmentInfo, AttachmentMetadata,
     AttachmentObjectInfo,
 };
-use crate::{Event, Node, NodeError, Result};
+use crate::{CommitPlan, Event, Node, NodeError, Result};
 use kult_crypto::{
     attachment_pairwise_scope_id, open_attachment_chunk, seal_attachment_chunk,
     AttachmentChunkContext, AttachmentChunkScope,
@@ -27,9 +27,11 @@ use kult_protocol::{
 };
 use kult_store::{
     DeliveryState, Direction, EphemeralConversation, EphemeralMode, EphemeralRecord,
-    EphemeralState, GroupDelivery, GroupMessageRecord, MediaDirection, MediaObjectRecord,
-    MediaRecord, MediaScope, MediaTransferRecord, MediaTransferState, MessageDeviceDeliveryRecord,
-    MessageRecord, QueueClass, QueueItem, Store, StoreError,
+    EphemeralState, EphemeralTransition, GroupDelivery, GroupMessageDelete, GroupMessageRecord,
+    MaintenancePlan, MediaDelete, MediaDirection, MediaObjectRecord, MediaRecord, MediaScope,
+    MediaTransferRecord, MediaTransferState, MessageDelete, MessageDeviceDeliveryRecord,
+    MessageRecord, MessageTransition, PairwiseSendPlan, QueueClass, QueueDelete, QueueItem,
+    SessionTransition, Store, StoreError,
 };
 
 const BULK_CONTROL_PADDING_FLOOR: usize = 4096;
@@ -841,15 +843,25 @@ impl Node {
             return Err(NodeError::InvalidAttachment);
         }
         let manifest = self.load_manifest(&transfer)?;
+        self.export_prepared_attachment(&transfer, &object, &manifest, destination)
+    }
+
+    fn export_prepared_attachment<W: Write>(
+        &self,
+        transfer: &MediaTransferRecord,
+        object: &MediaObjectRecord,
+        manifest: &ManifestData,
+        destination: &mut W,
+    ) -> Result<()> {
         let manifest_object = manifest
             .objects
             .iter()
             .find(|candidate| candidate.object_id == object.object_id)
             .ok_or(NodeError::InvalidAttachment)?;
-        let context = self.chunk_context(&transfer, manifest_object);
+        let context = self.chunk_context(transfer, manifest_object);
         let mut hasher = blake3::Hasher::new();
         for index in 0..object.chunk_count {
-            let sealed = self.store.read_media_chunk(&object.local_id, index)?;
+            let sealed = self.store.read_media_chunk_from_record(object, index)?;
             let plain = Zeroizing::new(open_attachment_chunk(
                 &manifest.attachment_key,
                 &context,
@@ -889,11 +901,23 @@ impl Node {
         if record.state != EphemeralState::Active || now >= record.expires_at {
             return Err(NodeError::InvalidEphemeral);
         }
-        record.state = EphemeralState::Consumed;
-        self.store.put_ephemeral_record(&record, rng)?;
+        let transfer = self.require_attachment(transfer_id)?;
+        let object = self
+            .store
+            .media_objects_for_transfer(transfer_id)?
+            .into_iter()
+            .find(|object| object.role == AttachmentRole::Primary as u8)
+            .ok_or(NodeError::UnknownAttachment)?;
+        if object.state != MediaTransferState::Complete {
+            return Err(NodeError::InvalidAttachment);
+        }
+        let manifest = self.load_manifest(&transfer)?;
 
-        let export = self.export_attachment_object_inner(transfer_id, false, destination);
+        let before = record.clone();
+        record.state = EphemeralState::Consumed;
         let me = self.identity.public().ed;
+        let mut pairwise_message = None;
+        let mut group_message = None;
         match record.conversation {
             EphemeralConversation::Pairwise(peer) => {
                 let direction = if record.author == me {
@@ -901,37 +925,122 @@ impl Node {
                 } else {
                     Direction::Inbound
                 };
-                self.store
-                    .delete_message_record(&peer, direction, &record.content_id)?;
-                if direction == Direction::Outbound {
-                    self.store.queue_remove_message(&record.content_id)?;
-                }
+                pairwise_message = self
+                    .store
+                    .messages_with(&peer)?
+                    .into_iter()
+                    .find(|message| {
+                        message.direction == direction && message.id == record.content_id
+                    });
             }
             EphemeralConversation::Group(group) => {
-                self.store.delete_group_message_record(
-                    &group,
-                    &record.author,
-                    &record.content_id,
-                )?;
-                if record.author == me {
-                    self.store.queue_remove_group_message(&record.content_id)?;
-                }
+                group_message = self
+                    .store
+                    .group_messages(&group)?
+                    .into_iter()
+                    .find(|message| {
+                        message.sender == record.author && message.id == record.content_id
+                    });
             }
         }
-        for transfer in &record.transfer_ids {
-            if self.store.get_media_transfer(transfer)?.is_some() {
-                self.store.delete_media_transfer_with_objects(transfer)?;
+        let pairwise_delete = pairwise_message
+            .as_ref()
+            .map(|before| MessageDelete { before });
+        let group_delete = group_message
+            .as_ref()
+            .map(|before| GroupMessageDelete { before });
+        let delete_queue = self
+            .store
+            .queue_all()?
+            .into_iter()
+            .filter_map(|(sequence, item)| {
+                let matches = match record.conversation {
+                    EphemeralConversation::Pairwise(_) => item.msg_id == Some(record.content_id),
+                    EphemeralConversation::Group(_) => item.group_msg_id == Some(record.content_id),
+                };
+                matches.then_some(QueueDelete {
+                    sequence,
+                    content_id: item.envelope.content_id(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut media_rows = Vec::new();
+        for transfer_id in &record.transfer_ids {
+            if matches!(
+                self.store.get_media_transfer(transfer_id)?,
+                Some(MediaRecord::Available(_))
+            ) {
+                let object_ids = self
+                    .store
+                    .media_objects_for_transfer(transfer_id)?
+                    .into_iter()
+                    .map(|object| object.local_id)
+                    .collect::<Vec<_>>();
+                media_rows.push((*transfer_id, object_ids));
             }
-            self.attachment_request_at.remove(transfer);
-            self.attachment_request_target.remove(transfer);
         }
-        self.events.push_back(Event::EphemeralRemoved {
-            conversation: record.conversation,
-            author: record.author,
-            content_id: record.content_id,
-            reason: EphemeralState::Consumed,
-        });
-        export
+        let delete_media = media_rows
+            .iter()
+            .map(|(transfer_id, object_ids)| MediaDelete {
+                transfer_id: *transfer_id,
+                object_ids,
+            })
+            .collect::<Vec<_>>();
+        let receipt = self.store.commit_plan(
+            CommitPlan::Maintenance(MaintenancePlan {
+                seen: &[],
+                delete_pending: &[],
+                delete_queue: &delete_queue,
+                update_queue: &[],
+                delete_replay: &[],
+                messages: &[],
+                deliveries: &[],
+                group_messages: &[],
+                groups: &[],
+                ephemeral: &[EphemeralTransition {
+                    before: Some(&before),
+                    after: &record,
+                }],
+                delete_messages: pairwise_delete.as_slice(),
+                delete_group_messages: group_delete.as_slice(),
+                delete_media: &delete_media,
+                delete_scheduled: &[],
+                delete_sessions: &[],
+                delete_capabilities: &[],
+                clear_reset_markers: &[],
+                delete_controls: &[],
+                acknowledge_presentation: None,
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        for transfer_id in &record.transfer_ids {
+            self.attachment_request_at.remove(transfer_id);
+            self.attachment_request_target.remove(transfer_id);
+        }
+        let deleted = delete_queue
+            .iter()
+            .map(|delete| delete.sequence)
+            .collect::<BTreeSet<_>>();
+        self.held_notified
+            .retain(|sequence| !deleted.contains(sequence));
+        self.call_queue_deadlines
+            .retain(|sequence, _| !deleted.contains(sequence));
+        self.accept_commit_receipt(
+            receipt,
+            [Event::EphemeralRemoved {
+                conversation: record.conversation,
+                author: record.author,
+                content_id: record.content_id,
+                reason: EphemeralState::Consumed,
+            }],
+        );
+
+        let export = self.export_prepared_attachment(&transfer, &object, &manifest, destination);
+        let garbage = self.store.collect_media_garbage();
+        export?;
+        garbage?;
+        Ok(())
     }
 
     /// Accept an inbound offer. The next eligible tick requests all missing
@@ -1075,14 +1184,14 @@ impl Node {
         self.emit_attachment_update(transfer_id)
     }
 
-    pub(crate) fn record_pairwise_attachment_offer(
-        &mut self,
+    pub(crate) fn prepare_pairwise_attachment_offer(
+        &self,
         peer: [u8; 32],
         content_id: [u8; 16],
         manifest: &AttachmentManifest<'_>,
         now: u64,
         rng: &mut impl CryptoRngCore,
-    ) -> Result<[u8; 16]> {
+    ) -> Result<(MediaTransferRecord, Vec<MediaObjectRecord>)> {
         let mut transfer_id = [0u8; 16];
         rng.fill_bytes(&mut transfer_id);
         let me = self.identity.public().ed;
@@ -1098,30 +1207,27 @@ impl Node {
             state: MediaTransferState::AwaitingConsent,
             updated_at: now,
         };
-        self.store.put_media_transfer(&transfer, rng)?;
+        let mut objects = Vec::new();
         for descriptor in core::iter::once(&manifest.primary).chain(manifest.preview.as_ref()) {
             let mut local_id = [0u8; 16];
             rng.fill_bytes(&mut local_id);
-            self.store.put_media_object(
-                &MediaObjectRecord {
-                    local_id,
-                    transfer_id,
-                    object_id: descriptor.object_id,
-                    role: descriptor.role as u8,
-                    total_len: descriptor.total_len,
-                    chunk_count: descriptor.chunk_count,
-                    content_hash: descriptor.content_hash,
-                    media_type: descriptor.media_type.to_owned(),
-                    filename: descriptor.filename.map(str::to_owned),
-                    state: MediaTransferState::AwaitingConsent,
-                    verified_bitmap: vec![0; (descriptor.chunk_count as usize).div_ceil(8)],
-                    chunk_addresses: vec![None; descriptor.chunk_count as usize],
-                    verified_bytes: 0,
-                },
-                rng,
-            )?;
+            objects.push(MediaObjectRecord {
+                local_id,
+                transfer_id,
+                object_id: descriptor.object_id,
+                role: descriptor.role as u8,
+                total_len: descriptor.total_len,
+                chunk_count: descriptor.chunk_count,
+                content_hash: descriptor.content_hash,
+                media_type: descriptor.media_type.to_owned(),
+                filename: descriptor.filename.map(str::to_owned),
+                state: MediaTransferState::AwaitingConsent,
+                verified_bitmap: vec![0; (descriptor.chunk_count as usize).div_ceil(8)],
+                chunk_addresses: vec![None; descriptor.chunk_count as usize],
+                verified_bytes: 0,
+            });
         }
-        Ok(transfer_id)
+        Ok((transfer, objects))
     }
 
     pub(crate) fn record_group_attachment_offer(
@@ -1707,7 +1813,7 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<bool> {
-        let Some(mut message) =
+        let Some(message_before) =
             self.store
                 .messages_with(&transfer.peer)?
                 .into_iter()
@@ -1748,26 +1854,33 @@ impl Node {
             return Ok(false);
         }
 
-        let padded = pad(&message.body)?;
-        let retention = attachment_ephemeral_retention(&message.body);
-        let mut queued = message.wire_id.is_some();
+        let padded = pad(&message_before.body)?;
+        let retention = attachment_ephemeral_retention(&message_before.body);
+        let mut message_after = message_before.clone();
+        let mut prepared = Vec::new();
+        let mut queue = Vec::new();
+        let mut new_deliveries = Vec::new();
+        let mut delivery_pairs = Vec::new();
         for endpoint in routes {
             if deliveries
                 .iter()
                 .any(|delivery| delivery.device == endpoint.device && delivery.wire_id.is_some())
             {
-                queued = true;
                 continue;
             }
             let route = endpoint.device;
-            let session = self.sessions.get_mut(&route).ok_or(NodeError::NoSession)?;
-            let ratchet = session.encrypt(rng, now, &padded, &[]);
+            let before = self
+                .sessions
+                .get(&route)
+                .cloned()
+                .ok_or(NodeError::NoSession)?;
+            let mut after = before.clone();
+            let ratchet = self.candidate_encrypt(&mut after, rng, now, &padded)?;
             let token = delivery_token(
-                &MailboxKey::from_bytes(*session.mailbox_key()),
+                &MailboxKey::from_bytes(*after.mailbox_key()),
                 epoch_day(now),
                 &route,
             );
-            self.store.put_session(&route, session, rng)?;
             let envelope = match retention {
                 Some(deadline) => Envelope::new_retained(
                     EnvelopeKind::Message,
@@ -1778,36 +1891,75 @@ impl Node {
                 None => Envelope::new(EnvelopeKind::Message, token, ratchet.encode()),
             };
             let wire_id = envelope.content_id();
-            if message.wire_id.is_none() {
-                message.wire_id = Some(wire_id);
+            if message_after.wire_id.is_none() {
+                message_after.wire_id = Some(wire_id);
             }
-            self.store.put_message_device_delivery(
-                &MessageDeviceDeliveryRecord {
-                    message: message.id,
-                    account: transfer.peer,
-                    device: route,
-                    wire_id: Some(wire_id),
-                    state: DeliveryState::Queued,
-                },
-                rng,
-            )?;
-            self.store.queue_push(
-                &QueueItem {
-                    peer: route,
-                    msg_id: Some(message.id),
-                    group_msg_id: None,
-                    class: QueueClass::Bulk,
-                    created_at: now,
-                    attempts: 0,
-                    next_attempt_at: now,
-                    envelope,
-                },
-                rng,
-            )?;
-            queued = true;
+            let delivery_after = MessageDeviceDeliveryRecord {
+                message: message_before.id,
+                account: transfer.peer,
+                device: route,
+                wire_id: Some(wire_id),
+                state: DeliveryState::Queued,
+            };
+            if let Some(before_delivery) =
+                deliveries.iter().find(|delivery| delivery.device == route)
+            {
+                delivery_pairs.push((before_delivery.clone(), delivery_after));
+            } else {
+                new_deliveries.push(delivery_after);
+            }
+            queue.push(QueueItem {
+                peer: route,
+                msg_id: Some(message_before.id),
+                group_msg_id: None,
+                class: QueueClass::Bulk,
+                created_at: now,
+                attempts: 0,
+                next_attempt_at: now,
+                envelope: envelope.clone(),
+            });
+            prepared.push((route, before, after));
         }
-        self.store.update_message(&message, rng)?;
-        Ok(queued)
+        if prepared.is_empty() {
+            return Ok(message_before.wire_id.is_some());
+        }
+        let session_transitions = prepared
+            .iter()
+            .map(|(route, before, after)| SessionTransition {
+                peer_device: *route,
+                before: Some(before),
+                after,
+            })
+            .collect::<Vec<_>>();
+        let delivery_updates = delivery_pairs
+            .iter()
+            .map(|(before, after)| kult_store::DeliveryTransition { before, after })
+            .collect::<Vec<_>>();
+        self.store.commit_plan(
+            CommitPlan::PairwiseSend(PairwiseSendPlan {
+                sessions: &session_transitions,
+                message: None,
+                message_update: Some(MessageTransition {
+                    before: &message_before,
+                    after: &message_after,
+                }),
+                deliveries: &new_deliveries,
+                delivery_updates: &delivery_updates,
+                queue: &queue,
+                scheduled: None,
+                clear_capabilities: &[],
+                clear_reset_markers: &[],
+                ephemeral: None,
+                presentation_changed: false,
+            }),
+            rng,
+        )?;
+        self.before_memory_replacement()?;
+        for (route, _, after) in prepared {
+            self.sessions.insert(route, after);
+        }
+        self.after_memory_replacement()?;
+        Ok(true)
     }
 
     fn queue_attachment_bulk_to_account(
@@ -1840,29 +1992,15 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
-        let Some(session) = self.sessions.get_mut(peer) else {
-            return Err(NodeError::NoSession);
-        };
         let payload = encode_attachment_bulk_record(record)?;
         let padded = pad_to_minimum(&payload, BULK_CONTROL_PADDING_FLOOR)?;
-        let ratchet = session.encrypt(rng, now, &padded, &[]);
-        let token = delivery_token(
-            &MailboxKey::from_bytes(*session.mailbox_key()),
-            epoch_day(now),
-            peer,
-        );
-        self.store.put_session(peer, session, rng)?;
-        self.store.queue_push(
-            &QueueItem {
-                peer: *peer,
-                msg_id: None,
-                group_msg_id: None,
-                class: QueueClass::Bulk,
-                created_at: now,
-                attempts: 0,
-                next_attempt_at: now,
-                envelope: Envelope::new(EnvelopeKind::Receipt, token, ratchet.encode()),
-            },
+        self.commit_pairwise_envelopes(
+            &[*peer],
+            &padded,
+            EnvelopeKind::Receipt,
+            QueueClass::Bulk,
+            None,
+            now,
             rng,
         )?;
         Ok(())

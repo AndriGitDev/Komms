@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+test-failpoints = []
+
 [dependencies]
 kult-crypto = { version = "0.3.0", path = "../kult-crypto" }
 kult-protocol = { version = "0.3.0", path = "../kult-protocol" }

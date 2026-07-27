@@ -2010,6 +2010,9 @@ pub struct DeviceLinkAcceptance {
 /// (docs/09-implementation-guide.md §3.5).
 #[derive(Clone, Debug, uniffi::Enum)]
 pub enum Event {
+    /// A committed transition survived without its detailed notification.
+    /// Re-read visible state from the snapshot APIs.
+    StateResyncRequired,
     /// Account-authorized device list, name, or revocation changed.
     DevicesChanged,
     /// This pristine installation completed a confirmed device link.
@@ -2230,6 +2233,7 @@ impl Event {
     /// update, never silently mislabeled.
     fn from_node(event: kult_node::Event) -> Option<Self> {
         Some(match event {
+            kult_node::Event::StateResyncRequired => Self::StateResyncRequired,
             kult_node::Event::DevicesChanged => Self::DevicesChanged,
             kult_node::Event::DeviceLinkCompleted { account, device } => {
                 Self::DeviceLinkCompleted {
@@ -4989,6 +4993,10 @@ mod tests {
 
     #[test]
     fn events_convert_with_hex_ids() {
+        assert!(matches!(
+            Event::from_node(kult_node::Event::StateResyncRequired),
+            Some(Event::StateResyncRequired)
+        ));
         let event = Event::from_node(kult_node::Event::MessageReceived {
             peer: [1; 32],
             id: [2; 16],
