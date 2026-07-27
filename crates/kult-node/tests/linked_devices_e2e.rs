@@ -10,6 +10,8 @@ use kult_node::{
     NodeError,
 };
 use kult_store::MediaTransferState;
+#[cfg(feature = "test-failpoints")]
+use kult_store::{CommitFailpoint, CommitFailure};
 use kult_transport::{DeliveryHint, SneakernetTransport};
 use rand::{rngs::StdRng, SeedableRng};
 use tempfile::TempDir;
@@ -116,13 +118,14 @@ fn three_devices_link_transfer_converge_restart_and_revoke() {
     assert_eq!(tablet.peer_id(), account);
     assert!(tablet.contacts().unwrap().is_empty());
     assert!(tablet.note_to_self_messages().unwrap().is_empty());
+    let mut tablet_rng = StdRng::seed_from_u64(0x5e1e_c710);
+    futures::executor::block_on(tablet.tick(124, &mut tablet_rng)).unwrap();
+    assert!(tablet.contacts().unwrap().is_empty());
+    assert!(tablet.note_to_self_messages().unwrap().is_empty());
     let source_to_laptop = source.export_device_sync(&laptop_device, &mut rng).unwrap();
-    assert!(
-        laptop
-            .import_device_sync(&source_to_laptop, &mut rng)
-            .unwrap()
-            > 0
-    );
+    laptop
+        .import_device_sync(&source_to_laptop, &mut rng)
+        .unwrap();
     assert_eq!(laptop.linked_devices().len(), 3);
 
     // Concurrent account state and history changes converge by signed event
@@ -211,6 +214,65 @@ fn three_devices_link_transfer_converge_restart_and_revoke() {
 }
 
 #[test]
+fn linked_group_deletion_converges_and_survives_restart() {
+    let dir = TempDir::new().unwrap();
+    let mut rng = StdRng::seed_from_u64(0x6d11_3700);
+    let (_, mut source) = create(&dir, "group-source", &mut rng);
+    let (target_path, mut target) = create(&dir, "group-target", &mut rng);
+    let initial_group = source
+        .create_group("Temporary linked group", &[], &mut rng)
+        .unwrap();
+    let target_device = target.device_id();
+
+    link(
+        &mut source,
+        &mut target,
+        "Group target",
+        DeviceLinkSelection::default(),
+        200,
+        &mut rng,
+    );
+    assert!(target
+        .groups()
+        .unwrap()
+        .iter()
+        .any(|entry| entry.id == initial_group));
+
+    let group = source
+        .create_group("Post-link group", &[], &mut rng)
+        .unwrap();
+    source
+        .group_upgrade_authority(&group, 205, &mut rng)
+        .unwrap();
+    let creation = source.export_device_sync(&target_device, &mut rng).unwrap();
+    assert!(target.import_device_sync(&creation, &mut rng).unwrap() > 0);
+    assert!(target
+        .groups()
+        .unwrap()
+        .iter()
+        .any(|entry| entry.id == group));
+    assert!(target.group_authority(&group).unwrap().signed);
+
+    source.group_leave(&initial_group, 210, &mut rng).unwrap();
+    let sync = source.export_device_sync(&target_device, &mut rng).unwrap();
+    assert!(target.import_device_sync(&sync, &mut rng).unwrap() > 0);
+    assert!(!target
+        .groups()
+        .unwrap()
+        .iter()
+        .any(|entry| entry.id == initial_group));
+    drop(target);
+
+    let target = Node::open(&target_path, b"pass").unwrap();
+    assert!(!target
+        .groups()
+        .unwrap()
+        .iter()
+        .any(|entry| entry.id == initial_group));
+    assert!(target.group_authority(&group).unwrap().signed);
+}
+
+#[test]
 fn link_requires_pristine_target_and_explicit_confirmation() {
     let dir = TempDir::new().unwrap();
     let mut rng = StdRng::seed_from_u64(92);
@@ -238,6 +300,110 @@ fn link_requires_pristine_target_and_explicit_confirmation() {
             &mut rng
         )
         .is_err());
+}
+
+#[cfg(feature = "test-failpoints")]
+#[test]
+fn link_secrets_and_return_value_recovery_follow_the_committed_session() {
+    let dir = TempDir::new().unwrap();
+    let mut rng = StdRng::seed_from_u64(0xc200);
+    let (_, mut source) = create(&dir, "retry-source", &mut rng);
+    let (_, mut target) = create(&dir, "retry-target", &mut rng);
+    let offer = source.begin_device_link(100, &mut rng).unwrap();
+    let (response, target_code) = target
+        .accept_device_link(&offer, "Retry target", 101, &mut rng)
+        .unwrap();
+    assert_eq!(
+        source.device_link_confirmation_code(&response).unwrap(),
+        target_code
+    );
+
+    source.arm_commit_failpoint(CommitFailpoint::BeforeCommit, CommitFailure::Interrupted);
+    assert!(source
+        .approve_device_link(
+            &response,
+            DeviceLinkSelection::default(),
+            true,
+            102,
+            &mut rng,
+        )
+        .is_err());
+    assert_eq!(source.linked_devices().len(), 1);
+    assert!(source.drain_events().is_empty());
+    let package = source
+        .approve_device_link(
+            &response,
+            DeviceLinkSelection::default(),
+            true,
+            102,
+            &mut rng,
+        )
+        .unwrap();
+
+    target.arm_commit_failpoint(CommitFailpoint::BeforeCommit, CommitFailure::Interrupted);
+    assert!(target
+        .complete_device_link(&package, true, 103, &mut rng)
+        .is_err());
+    assert!(target.drain_events().is_empty());
+    target
+        .complete_device_link(&package, true, 103, &mut rng)
+        .unwrap();
+    assert_eq!(source.peer_id(), target.peer_id());
+
+    let (source_path, mut source) = create(&dir, "outbox-source", &mut rng);
+    let (_, mut target) = create(&dir, "outbox-target", &mut rng);
+    let source_device = source.device_id();
+    let offer = source.begin_device_link(200, &mut rng).unwrap();
+    let (response, _) = target
+        .accept_device_link(&offer, "Outbox target", 201, &mut rng)
+        .unwrap();
+    source.arm_commit_failpoint(CommitFailpoint::AfterCommit, CommitFailure::Interrupted);
+    assert!(source
+        .approve_device_link(
+            &response,
+            DeviceLinkSelection::default(),
+            true,
+            202,
+            &mut rng,
+        )
+        .is_err());
+    assert_eq!(source.linked_devices().len(), 1);
+    assert!(source.drain_events().is_empty());
+    drop(source);
+
+    let mut source = Node::open(&source_path, b"pass").unwrap();
+    assert_eq!(source.linked_devices().len(), 2);
+    let recovered_package = source
+        .approve_device_link(
+            &response,
+            DeviceLinkSelection::default(),
+            true,
+            203,
+            &mut rng,
+        )
+        .unwrap();
+    target
+        .complete_device_link(&recovered_package, true, 204, &mut rng)
+        .unwrap();
+    let sync = target.export_device_sync(&source_device, &mut rng).unwrap();
+    source.import_device_sync(&sync, &mut rng).unwrap();
+    assert!(matches!(
+        source.import_device_sync(&sync, &mut rng),
+        Err(NodeError::InvalidDeviceSync)
+    ));
+    drop(source);
+
+    let mut source = Node::open(&source_path, b"pass").unwrap();
+    assert!(matches!(
+        source.approve_device_link(
+            &response,
+            DeviceLinkSelection::default(),
+            true,
+            205,
+            &mut rng,
+        ),
+        Err(NodeError::NoPendingDeviceLink)
+    ));
 }
 
 #[test]

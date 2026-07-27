@@ -7,14 +7,15 @@ use std::sync::{
 use async_trait::async_trait;
 use rand::{rngs::StdRng, SeedableRng};
 
-use kult_crypto::KdfProfile;
+use kult_crypto::{GroupSenderChain, KdfProfile};
 use kult_protocol::{Envelope, EnvelopeKind};
 use kult_store::{
     AttachmentStagePlan, AttachmentStatePlan, CommitFailpoint, CommitFailure, DeliveryState,
-    Direction, GroupDelivery, GroupMember, GroupMessageRecord, GroupRecord, GroupSendPlan,
-    GroupStatePlan, GroupStateTransition, GroupTransition, MediaDirection, MediaObjectRecord,
+    DeviceLinkPlan, DeviceProjection, DeviceProjectionPlan, DeviceStateTransition, Direction,
+    GroupDelivery, GroupMember, GroupMessageRecord, GroupRecord, GroupSendPlan, GroupStatePlan,
+    GroupStateTransition, GroupTransition, IdentityTransition, MediaDirection, MediaObjectRecord,
     MediaRecord, MediaScope, MediaTransferRecord, MediaTransferState, MediaTransferTransition,
-    MessageDeviceDeliveryRecord, MessageRecord, QueueClass, QueueItem,
+    MessageDeviceDeliveryRecord, MessageRecord, ProfileBootstrapPlan, QueueClass, QueueItem, Store,
 };
 use kult_transport::{
     CostClass, DeliveryHint, LatencyClass, LinkProfile, Reachability, SendReceipt, Transport,
@@ -68,6 +69,7 @@ impl Transport for CountingTransport {
 
 #[derive(Clone, Copy, Debug)]
 enum Target {
+    ProfileBootstrap,
     PrekeyPublish,
     PairwiseSend,
     HandshakeReceive,
@@ -81,6 +83,9 @@ enum Target {
     GroupReceive,
     AttachmentStage,
     AttachmentState,
+    DeviceControl,
+    DeviceLink,
+    DeviceProjection,
 }
 
 struct Fixture {
@@ -205,6 +210,7 @@ fn run_store_case(
     seed: u64,
 ) -> bool {
     match target {
+        Target::ProfileBootstrap => run_profile_bootstrap(point, failure, seed),
         Target::PrekeyPublish => run_prekey_publish(point, failure, seed),
         Target::PairwiseSend => run_pairwise_send(point, failure, seed),
         Target::HandshakeReceive => run_handshake_receive(point, failure, seed),
@@ -218,11 +224,63 @@ fn run_store_case(
         Target::GroupReceive => run_group_receive(point, failure, seed),
         Target::AttachmentStage => run_attachment_stage(point, failure, seed),
         Target::AttachmentState => run_attachment_state(point, failure, seed),
+        Target::DeviceControl => run_device_control(point, failure, seed),
+        Target::DeviceLink => run_device_link(point, failure, seed),
+        Target::DeviceProjection => run_device_projection(point, failure, seed),
     }
 }
 
 fn expected_committed(result_ok: bool, point: CommitFailpoint) -> bool {
     result_ok || point == CommitFailpoint::AfterCommit
+}
+
+fn run_profile_bootstrap(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
+    let mut rng = StdRng::seed_from_u64(seed);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("profile.db");
+    let store = Store::create(&path, b"profile", TEST_KDF, &mut rng).unwrap();
+    let identity = Identity::generate(&mut rng);
+    let device_state = devices::fresh_device_state(&identity, &mut rng).unwrap();
+    let prekeys = PrekeyVault::generate(&mut rng).encode();
+    store.arm_commit_failpoint(point, failure);
+    let result = store.commit_plan(
+        CommitPlan::ProfileBootstrap(ProfileBootstrapPlan {
+            identity: &identity,
+            device_state: &device_state,
+            prekeys: &prekeys,
+        }),
+        &mut rng,
+    );
+    let result_ok = result.is_ok();
+    let committed = store.get_identity().unwrap().is_some();
+    assert_eq!(committed, expected_committed(result_ok, point));
+    assert_eq!(store.get_device_state().unwrap().is_some(), committed);
+    assert_eq!(store.get_prekeys().unwrap().is_some(), committed);
+    drop(store);
+
+    let store = Store::open(&path, b"profile").unwrap();
+    if !committed {
+        store
+            .commit_plan(
+                CommitPlan::ProfileBootstrap(ProfileBootstrapPlan {
+                    identity: &identity,
+                    device_state: &device_state,
+                    prekeys: &prekeys,
+                }),
+                &mut rng,
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        store.get_identity().unwrap().unwrap().public(),
+        identity.public()
+    );
+    assert_eq!(store.get_device_state().unwrap(), Some(device_state));
+    assert_eq!(
+        store.get_prekeys().unwrap().unwrap().as_slice(),
+        prekeys.as_slice()
+    );
+    result_ok
 }
 
 fn run_prekey_publish(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
@@ -1189,6 +1247,191 @@ fn run_attachment_state(point: CommitFailpoint, failure: CommitFailure, seed: u6
     result_ok
 }
 
+fn run_device_control(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
+    let mut fixture = Fixture::new(seed);
+    let device = fixture.alice.device_id();
+    fixture.alice.arm_commit_failpoint(point, failure);
+    let result = fixture
+        .alice
+        .rename_linked_device(&device, "Renamed device", &mut fixture.rng);
+    let result_ok = result.is_ok();
+    let committed = fixture
+        .alice
+        .store
+        .get_device_state()
+        .unwrap()
+        .unwrap()
+        .manifest
+        .devices
+        .iter()
+        .any(|entry| entry.certificate.device_id() == device && entry.name == "Renamed device");
+    assert_eq!(committed, expected_committed(result_ok, point));
+    assert!(result_ok || fixture.alice.drain_events().is_empty());
+
+    let Fixture {
+        _directory,
+        alice_path,
+        bob_path: _,
+        alice,
+        bob: _,
+        alice_id: _,
+        bob_id: _,
+        mut rng,
+    } = fixture;
+    drop(alice);
+    let mut alice = Node::open(&alice_path, b"alice").unwrap();
+    if !committed {
+        alice
+            .rename_linked_device(&device, "Renamed device", &mut rng)
+            .unwrap();
+    }
+    assert!(alice
+        .linked_devices()
+        .iter()
+        .any(|entry| entry.id == device && entry.name == "Renamed device"));
+    result_ok
+}
+
+fn run_device_link(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
+    let mut rng = StdRng::seed_from_u64(seed);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("target.db");
+    let target = Node::create(&path, b"target", TEST_KDF, &mut rng).unwrap();
+    let before_identity = Identity::from_bytes(&target.identity.to_bytes());
+    let before_state = target.device_state.clone();
+    let after_identity = Identity::generate(&mut rng);
+    let after_state = devices::fresh_device_state(&after_identity, &mut rng).unwrap();
+    target.store.arm_commit_failpoint(point, failure);
+    let result = target.store.commit_plan(
+        CommitPlan::DeviceLink(DeviceLinkPlan {
+            identity: IdentityTransition {
+                before: &before_identity,
+                after: &after_identity,
+            },
+            device_state: DeviceStateTransition {
+                before: Some(&before_state),
+                after: &after_state,
+            },
+            contacts: &[],
+            devices: &[],
+            messages: &[],
+            groups: &[],
+            group_messages: &[],
+            authorities: &[],
+            local_metadata: &[],
+            notes: &[],
+            ephemeral: &[],
+            sync_events: &[],
+            presentation_changed: true,
+        }),
+        &mut rng,
+    );
+    let result_ok = result.is_ok();
+    let committed =
+        target.store.get_identity().unwrap().unwrap().public() == after_identity.public();
+    assert_eq!(committed, expected_committed(result_ok, point));
+    drop(target);
+
+    let store = Store::open(&path, b"target").unwrap();
+    if !committed {
+        store
+            .commit_plan(
+                CommitPlan::DeviceLink(DeviceLinkPlan {
+                    identity: IdentityTransition {
+                        before: &before_identity,
+                        after: &after_identity,
+                    },
+                    device_state: DeviceStateTransition {
+                        before: Some(&before_state),
+                        after: &after_state,
+                    },
+                    contacts: &[],
+                    devices: &[],
+                    messages: &[],
+                    groups: &[],
+                    group_messages: &[],
+                    authorities: &[],
+                    local_metadata: &[],
+                    notes: &[],
+                    ephemeral: &[],
+                    sync_events: &[],
+                    presentation_changed: true,
+                }),
+                &mut rng,
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        store.get_identity().unwrap().unwrap().public(),
+        after_identity.public()
+    );
+    assert_eq!(store.get_device_state().unwrap(), Some(after_state));
+    result_ok
+}
+
+fn run_device_projection(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
+    let mut fixture = Fixture::new(seed);
+    let before = fixture
+        .alice
+        .store
+        .get_contact(&fixture.bob_id)
+        .unwrap()
+        .unwrap();
+    let mut after = before.clone();
+    after.name = "Projected contact".to_owned();
+    fixture.alice.arm_commit_failpoint(point, failure);
+    let result = fixture.alice.store.commit_plan(
+        CommitPlan::DeviceProjection(DeviceProjectionPlan {
+            projections: &[DeviceProjection::Contact {
+                before: Some(&before),
+                after: Some(&after),
+            }],
+            delete_sessions: &[],
+            delete_capabilities: &[],
+            delete_queue: &[],
+            presentation_changed: true,
+        }),
+        &mut fixture.rng,
+    );
+    let result_ok = result.is_ok();
+    let committed =
+        fixture.alice.store.get_contact(&fixture.bob_id).unwrap() == Some(after.clone());
+    assert_eq!(committed, expected_committed(result_ok, point));
+
+    let Fixture {
+        _directory,
+        alice_path,
+        bob_path: _,
+        alice,
+        bob: _,
+        alice_id: _,
+        bob_id: _,
+        mut rng,
+    } = fixture;
+    drop(alice);
+    let alice = Node::open(&alice_path, b"alice").unwrap();
+    if !committed {
+        alice
+            .store
+            .commit_plan(
+                CommitPlan::DeviceProjection(DeviceProjectionPlan {
+                    projections: &[DeviceProjection::Contact {
+                        before: Some(&before),
+                        after: Some(&after),
+                    }],
+                    delete_sessions: &[],
+                    delete_capabilities: &[],
+                    delete_queue: &[],
+                    presentation_changed: true,
+                }),
+                &mut rng,
+            )
+            .unwrap();
+    }
+    assert_eq!(alice.store.get_contact(&after.peer).unwrap(), Some(after));
+    result_ok
+}
+
 struct LargeGroupFanout {
     before_group: GroupRecord,
     after_group: GroupRecord,
@@ -1911,6 +2154,7 @@ fn run_maintenance_reset_transition(point: TransitionFailpoint, seed: u64) -> bo
 #[test]
 fn every_transaction_statement_is_all_or_nothing_after_restart() {
     let targets = [
+        Target::ProfileBootstrap,
         Target::PrekeyPublish,
         Target::PairwiseSend,
         Target::HandshakeReceive,
@@ -1924,6 +2168,9 @@ fn every_transaction_statement_is_all_or_nothing_after_restart() {
         Target::GroupReceive,
         Target::AttachmentStage,
         Target::AttachmentState,
+        Target::DeviceControl,
+        Target::DeviceLink,
+        Target::DeviceProjection,
     ];
     let mut seed = 0xa280_0000;
     for target in targets {
@@ -2078,6 +2325,15 @@ fn stable_protocol_modules_cannot_call_raw_state_setters() {
     let forbidden = [
         "put_session",
         "delete_session",
+        "put_identity",
+        "put_prekeys",
+        "put_device_state",
+        "put_device_sync_event",
+        "retain_device_sync_events",
+        "put_capabilities",
+        "delete_capabilities",
+        "delete_contact_device",
+        "retarget_message_device_deliveries",
         "put_group",
         "delete_group",
         "put_group_authority",
@@ -2118,13 +2374,27 @@ fn stable_protocol_modules_cannot_call_raw_state_setters() {
             continue;
         }
         let filename = path.file_name().and_then(|value| value.to_str()).unwrap();
-        if matches!(filename, "atomic_tests.rs" | "devices.rs") {
-            // C2 remains an explicit deferred transaction redesign under ADR-0026.
+        if filename == "atomic_tests.rs" {
             continue;
         }
         let source = std::fs::read_to_string(&path).unwrap();
         let production = source.split("#[cfg(test)]").next().unwrap_or(&source);
-        let normalized = production.split_whitespace().collect::<String>();
+        let audited = if filename == "devices.rs" {
+            // The pre-C2 contact-admission compatibility bridge remains an
+            // explicit ADR-0030 quarantine. No other device path may inherit
+            // its raw migration setters.
+            let start = production
+                .find("pub(crate) fn apply_contact_device_manifest")
+                .expect("contact-admission quarantine start");
+            let end = production[start..]
+                .find("pub(crate) fn account_for_device")
+                .map(|offset| start + offset)
+                .expect("contact-admission quarantine end");
+            format!("{}{}", &production[..start], &production[end..])
+        } else {
+            production.to_owned()
+        };
+        let normalized = audited.split_whitespace().collect::<String>();
         assert!(
             !normalized.contains("#[cfg(any())]"),
             "{} retains disabled protocol code",
@@ -2135,6 +2405,15 @@ fn stable_protocol_modules_cannot_call_raw_state_setters() {
             assert!(
                 !normalized.contains(&needle),
                 "{} bypasses a typed transition through {setter}",
+                path.display()
+            );
+        }
+        if filename == "devices.rs" {
+            let setter = "put_contact_device";
+            let needle = format!(".{setter}(");
+            assert!(
+                !normalized.contains(&needle),
+                "{} bypasses a device transition through {setter}",
                 path.display()
             );
         }
@@ -2443,6 +2722,7 @@ fn reordered_deferred_and_duplicate_input_converges_after_restart() {
 #[test]
 fn disk_constraint_and_duplicate_failures_leave_retryable_inputs() {
     let targets = [
+        Target::ProfileBootstrap,
         Target::PrekeyPublish,
         Target::PairwiseSend,
         Target::HandshakeReceive,
@@ -2456,6 +2736,9 @@ fn disk_constraint_and_duplicate_failures_leave_retryable_inputs() {
         Target::GroupReceive,
         Target::AttachmentStage,
         Target::AttachmentState,
+        Target::DeviceControl,
+        Target::DeviceLink,
+        Target::DeviceProjection,
     ];
     let failures = [
         CommitFailure::DiskFull,
@@ -2474,4 +2757,78 @@ fn disk_constraint_and_duplicate_failures_leave_retryable_inputs() {
             ));
         }
     }
+}
+
+#[test]
+fn device_link_group_quota_rejects_without_publishing_partial_state() {
+    let mut rng = StdRng::seed_from_u64(0xa284_0000);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("group-quota-target.db");
+    let target = Node::create(&path, b"target", TEST_KDF, &mut rng).unwrap();
+    let before_identity = Identity::from_bytes(&target.identity.to_bytes());
+    let before_state = target.device_state.clone();
+    let after_identity = Identity::generate(&mut rng);
+    let after_state = devices::fresh_device_state(&after_identity, &mut rng).unwrap();
+    let sender_chain = postcard::to_allocvec(&GroupSenderChain::generate(&mut rng)).unwrap();
+    let member_identity = postcard::to_allocvec(&after_identity.public()).unwrap();
+    let mut groups = Vec::with_capacity(kult_store::MAX_PROFILE_GROUPS + 1);
+    for index in 0..=kult_store::MAX_PROFILE_GROUPS {
+        let mut id = [0u8; 32];
+        id[..8].copy_from_slice(&(index as u64 + 1).to_le_bytes());
+        groups.push(GroupRecord {
+            id,
+            name: "bounded profile group".to_owned(),
+            creator: after_identity.public().ed,
+            members: vec![GroupMember {
+                peer: after_identity.public().ed,
+                identity: member_identity.clone(),
+            }],
+            secret: [0x61; 32],
+            prev_secret: None,
+            generation: 1,
+            sender_chain: sender_chain.clone(),
+            sent_since_rotation: 0,
+            pending: Vec::new(),
+        });
+    }
+
+    let result = target.store.commit_plan(
+        CommitPlan::DeviceLink(DeviceLinkPlan {
+            identity: IdentityTransition {
+                before: &before_identity,
+                after: &after_identity,
+            },
+            device_state: DeviceStateTransition {
+                before: Some(&before_state),
+                after: &after_state,
+            },
+            contacts: &[],
+            devices: &[],
+            messages: &[],
+            groups: &groups,
+            group_messages: &[],
+            authorities: &[],
+            local_metadata: &[],
+            notes: &[],
+            ephemeral: &[],
+            sync_events: &[],
+            presentation_changed: true,
+        }),
+        &mut rng,
+    );
+    assert!(matches!(result, Err(kult_store::StoreError::GroupLimit)));
+    assert_eq!(
+        target.store.get_identity().unwrap().unwrap().public(),
+        before_identity.public()
+    );
+    assert!(target.store.groups().unwrap().is_empty());
+    drop(target);
+
+    let target = Node::open(&path, b"target").unwrap();
+    assert_eq!(
+        target.store.get_identity().unwrap().unwrap().public(),
+        before_identity.public()
+    );
+    assert_eq!(target.store.get_device_state().unwrap(), Some(before_state));
+    assert!(target.store.groups().unwrap().is_empty());
 }

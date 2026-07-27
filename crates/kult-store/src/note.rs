@@ -29,7 +29,7 @@ pub struct NoteMessageRecord {
 }
 
 impl NoteMessageRecord {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         if self.body.is_empty() || self.body.len() > MAX_NOTE_TEXT_BYTES {
             Err(StoreError::NoteBounds)
         } else {

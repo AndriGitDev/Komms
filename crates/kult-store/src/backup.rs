@@ -56,10 +56,10 @@ use kult_protocol::DeviceSyncEvent;
 
 use crate::{
     acquire_database_identity_lock, acquire_store_lock, decode_exact as decode_store_exact,
-    migration, store_v2, ContactDeviceRecord, ContactRecord, DeviceStateRecord,
+    migration, store_v2, CommitPlan, ContactDeviceRecord, ContactRecord, DeviceStateRecord,
     EphemeralConversation, EphemeralRecord, EphemeralState, GroupAuthorityRecord, GroupMember,
     GroupMessageRecord, GroupRecord, LocalMetadataRecord, MessageRecord, NoteMessageRecord,
-    PendingAnnounce, Result, Store, StoreError,
+    PendingAnnounce, ProfileBootstrapPlan, Result, Store, StoreError,
 };
 
 /// Backup file magic: Komms recovery file, format 7 (linked-device authority).
@@ -225,6 +225,64 @@ where
 }
 
 impl Store {
+    /// Create and fully initialize a new profile in a same-directory sibling,
+    /// then publish it at `path` with one crash-safe atomic replacement.
+    pub fn create_profile(
+        path: &Path,
+        passphrase: &[u8],
+        profile: KdfProfile,
+        identity: &Identity,
+        device_state: &DeviceStateRecord,
+        prekeys: &[u8],
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Self> {
+        let lock = acquire_store_lock(path)?;
+        if path.exists() {
+            return Err(StoreError::NotAStore);
+        }
+        let temporary = initialization_temporary_path(path)?;
+        if temporary.exists() {
+            cleanup_initialization_temporary(&temporary)?;
+        }
+        let store = match Store::create(&temporary, passphrase, profile, rng) {
+            Ok(store) => store,
+            Err(error) => {
+                cleanup_initialization_temporary(&temporary)?;
+                return Err(error);
+            }
+        };
+        if let Err(error) = store.commit_plan(
+            CommitPlan::ProfileBootstrap(ProfileBootstrapPlan {
+                identity,
+                device_state,
+                prekeys,
+            }),
+            rng,
+        ) {
+            drop(store);
+            cleanup_initialization_temporary(&temporary)?;
+            return Err(error);
+        }
+        store.validate_open_state()?;
+        migration::sync_database_for_replacement(&store.conn)?;
+        drop(store);
+        migration::sync_file(&temporary)?;
+        store_v2::sync_directory(migration::parent_directory(path))?;
+        initialization_failpoint(1)?;
+        if path.exists() {
+            return Err(StoreError::NotAStore);
+        }
+        migration::atomic_replace(&temporary, path)?;
+        initialization_failpoint(2)?;
+        store_v2::sync_directory(migration::parent_directory(path))?;
+        initialization_failpoint(3)?;
+        let conn = Connection::open(path)?;
+        let database_lock = acquire_database_identity_lock(path)?;
+        let store = Store::open_v2_with_parts(path, passphrase, conn, database_lock, lock, false)?;
+        migration::cleanup_obsolete_siblings(&temporary)?;
+        Ok(store)
+    }
+
     /// Export this store as an encrypted backup file. Returns the file
     /// bytes and the freshly minted 24-word mnemonic that seals them —
     /// show it to the user once, then drop it; it is not stored anywhere.
@@ -876,6 +934,13 @@ fn restore_temporary_path(path: &Path) -> Result<PathBuf> {
     Ok(path.with_file_name(temporary))
 }
 
+fn initialization_temporary_path(path: &Path) -> Result<PathBuf> {
+    let name = path.file_name().ok_or(StoreError::NotAStore)?;
+    let mut temporary = name.to_os_string();
+    temporary.push(".initialize-v1-sibling");
+    Ok(path.with_file_name(temporary))
+}
+
 fn ensure_restore_workspace(path: &Path, logical_bytes: usize, record_count: u64) -> Result<()> {
     let logical_bytes =
         u64::try_from(logical_bytes).map_err(|_| StoreError::InsufficientMigrationSpace)?;
@@ -902,12 +967,46 @@ fn cleanup_restore_temporary(path: &Path) -> Result<()> {
     store_v2::sync_directory(migration::parent_directory(path))
 }
 
+fn cleanup_initialization_temporary(path: &Path) -> Result<()> {
+    if path.exists() {
+        fs::remove_file(path)?;
+    }
+    migration::cleanup_obsolete_siblings(path)?;
+    store_v2::sync_directory(migration::parent_directory(path))
+}
+
 pub(crate) fn cleanup_completed_restore(path: &Path) -> Result<()> {
     let temporary = restore_temporary_path(path)?;
     if temporary.exists() {
         return Err(StoreError::ReplacementRecovery);
     }
     migration::cleanup_obsolete_siblings(&temporary)
+}
+
+pub(crate) fn cleanup_completed_initialization(path: &Path) -> Result<()> {
+    let temporary = initialization_temporary_path(path)?;
+    if temporary.exists() {
+        return Err(StoreError::ReplacementRecovery);
+    }
+    migration::cleanup_obsolete_siblings(&temporary)
+}
+
+#[cfg(test)]
+static INITIALIZATION_FAILPOINT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+#[cfg(test)]
+fn set_initialization_failpoint(phase: u8) {
+    INITIALIZATION_FAILPOINT.store(phase, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn initialization_failpoint(phase: u8) -> Result<()> {
+    #[cfg(test)]
+    if INITIALIZATION_FAILPOINT.load(std::sync::atomic::Ordering::SeqCst) == phase {
+        INITIALIZATION_FAILPOINT.store(0, std::sync::atomic::Ordering::SeqCst);
+        return Err(StoreError::MigrationValidation);
+    }
+    let _ = phase;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1003,14 +1102,25 @@ fn restore_device_state(
                 created_at,
             )?
         };
-    store.put_device_state(
-        &DeviceStateRecord {
-            local_device_secret: device.to_bytes().to_vec(),
-            local_certificate: certificate,
-            manifest,
-            sync_counter: 0,
-            channels: Vec::new(),
-        },
+    let state = DeviceStateRecord {
+        local_device_secret: device.to_bytes().to_vec(),
+        local_certificate: certificate,
+        manifest,
+        sync_counter: 0,
+        channels: Vec::new(),
+    };
+    store.commit_plan(
+        CommitPlan::DeviceControl(crate::DeviceControlPlan {
+            state: Some(crate::DeviceStateTransition {
+                before: None,
+                after: &state,
+            }),
+            link_recovery: None,
+            groups: &[],
+            insert_events: &[],
+            delete_events: &[],
+            presentation_changed: false,
+        }),
         rng,
     )?;
     Ok(())
@@ -1028,6 +1138,64 @@ mod tests {
         t_cost: 1,
         p_cost: 1,
     };
+
+    #[test]
+    fn profile_publication_restarts_safely_at_every_replacement_phase() {
+        for phase in 1..=3 {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join(format!("profile-{phase}.db"));
+            let mut rng = StdRng::seed_from_u64(0x6f00 + phase as u64);
+            let identity = Identity::generate(&mut rng);
+            let device = Identity::generate(&mut rng);
+            let certificate = DeviceCertificate::issue(&identity, &device, 0, &mut rng);
+            let manifest =
+                DeviceManifest::initial(&identity, certificate.clone(), "This device".into(), 0)
+                    .unwrap();
+            let state = DeviceStateRecord {
+                local_device_secret: device.to_bytes().to_vec(),
+                local_certificate: certificate,
+                manifest,
+                sync_counter: 0,
+                channels: Vec::new(),
+            };
+            let prekeys = vec![phase; 32];
+
+            set_initialization_failpoint(phase);
+            assert!(matches!(
+                Store::create_profile(
+                    &path,
+                    b"profile-pass",
+                    TEST_KDF,
+                    &identity,
+                    &state,
+                    &prekeys,
+                    &mut rng,
+                ),
+                Err(StoreError::MigrationValidation)
+            ));
+            let store = if phase == 1 {
+                Store::create_profile(
+                    &path,
+                    b"profile-pass",
+                    TEST_KDF,
+                    &identity,
+                    &state,
+                    &prekeys,
+                    &mut rng,
+                )
+                .unwrap()
+            } else {
+                Store::open(&path, b"profile-pass").unwrap()
+            };
+            assert_eq!(
+                store.get_identity().unwrap().unwrap().public(),
+                identity.public()
+            );
+            assert_eq!(store.get_device_state().unwrap(), Some(state));
+            assert_eq!(store.get_prekeys().unwrap().unwrap().as_slice(), prekeys);
+            assert!(!initialization_temporary_path(&path).unwrap().exists());
+        }
+    }
 
     #[test]
     fn restore_restarts_safely_at_every_replacement_phase() {

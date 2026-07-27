@@ -657,12 +657,19 @@ impl Node {
         profile: KdfProfile,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Self> {
-        let store = Store::create(path, passphrase, profile, rng)?;
         let identity = Identity::generate(rng);
-        store.put_identity(&identity, rng)?;
-        devices::initialize_fresh_device(&store, &identity, rng)?;
+        let device_state = devices::fresh_device_state(&identity, rng)?;
         let vault = PrekeyVault::generate(rng);
-        store.put_prekeys(&vault.encode(), rng)?;
+        let encoded_vault = vault.encode();
+        let store = Store::create_profile(
+            path,
+            passphrase,
+            profile,
+            &identity,
+            &device_state,
+            &encoded_vault,
+            rng,
+        )?;
         Self::assemble(store, identity, vault)
     }
 
@@ -697,14 +704,20 @@ impl Node {
             profile,
             rng,
             |store, rng| {
-                let identity = store
-                    .get_identity()?
-                    .ok_or(kult_store::StoreError::NotAStore)?;
-                if store.get_device_state()?.is_none() {
-                    devices::initialize_fresh_device(store, &identity, rng)?;
+                if store.get_identity()?.is_none() || store.get_device_state()?.is_none() {
+                    return Err(kult_store::StoreError::NotAStore);
                 }
                 let vault = PrekeyVault::generate(rng);
-                store.put_prekeys(&vault.encode(), rng)?;
+                let encoded = vault.encode();
+                store.commit_plan(
+                    CommitPlan::PrekeyPublish(PrekeyPublishPlan {
+                        prekeys: PrekeyTransition {
+                            before: None,
+                            after: &encoded,
+                        },
+                    }),
+                    rng,
+                )?;
                 Ok(vault)
             },
         )?;
@@ -918,7 +931,7 @@ impl Node {
         self.store.commit_plan(
             CommitPlan::PrekeyPublish(PrekeyPublishPlan {
                 prekeys: PrekeyTransition {
-                    before: &before_vault,
+                    before: Some(&before_vault),
                     after: &after_vault,
                 },
             }),
@@ -2193,9 +2206,24 @@ impl Node {
     pub async fn tick(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<Vec<Event>> {
         self.acknowledge_presentation(rng)?;
         if self.device_state_dirty {
-            self.store.put_device_state(&self.device_state, rng)?;
+            let receipt = self.store.commit_plan(
+                CommitPlan::DeviceControl(kult_store::DeviceControlPlan {
+                    state: Some(kult_store::DeviceStateTransition {
+                        before: None,
+                        after: &self.device_state,
+                    }),
+                    link_recovery: None,
+                    groups: &[],
+                    insert_events: &[],
+                    delete_events: &[],
+                    presentation_changed: false,
+                }),
+                rng,
+            )?;
             self.device_state_dirty = false;
+            self.accept_commit_receipt(receipt, []);
         }
+        self.apply_resolved_device_sync(rng)?;
         if !self.media_reconciled {
             let batch = self
                 .store
@@ -3973,7 +4001,7 @@ impl Node {
             events.extend(prepared.events.clone());
         }
         let prekeys = init.opk_id.map(|_| PrekeyTransition {
-            before: before_vault.as_ref(),
+            before: Some(before_vault.as_ref()),
             after: after_vault.as_ref(),
         });
         let receipt = self.store.commit_plan(
