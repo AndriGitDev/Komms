@@ -170,6 +170,7 @@ Platform build instructions:
 | when live audio calls work—and when they deliberately do not | [Live Audio Calls](23-live-audio-calls.md) |
 | how a release is validated locally before any hosted run | [Local Release Gate](24-local-release-gate.md) |
 | what evidence is required before stable or wire v1 | [Stabilization Program](29-stabilization-program.md) |
+| which persisted protocol transitions are atomic and which remain open | [Atomic Transition Inventory](34-atomic-transition-inventory.md) |
 | why a technical decision was made | [ADR Index](adr/README.md) |
 
 ## How can I help?

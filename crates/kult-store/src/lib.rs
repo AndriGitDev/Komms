@@ -44,17 +44,22 @@ mod scheduled;
 mod store_v2;
 
 pub use backup::BACKUP_MAGIC;
+pub use commit::{
+    AttachmentStagePlan, AttachmentStatePlan, CommitPlan, CommitReceipt, CommittedRecordIds,
+    ContactDeviceDelete, ContactTransition, DeferredControlKind, DeferredControlRecord,
+    DeliveryTransition, EphemeralTransition, GroupAuthorityStateTransition,
+    GroupAuthorityTransition, GroupChainStateTransition, GroupChainTransition, GroupMessageDelete,
+    GroupMessageTransition, GroupReceivePlan, GroupSendPlan, GroupStatePlan, GroupStateTransition,
+    GroupTransition, HandshakeReceivePlan, MaintenancePlan, MediaDelete, MediaObjectTransition,
+    MediaTransferTransition, MessageDelete, MessageTransition, PairwiseReceivePlan,
+    PairwiseSendPlan, PendingDelete, PrekeyPublishPlan, PrekeyTransition, QueueDelete,
+    QueueTransition, ReceiptReceivePlan, SessionTransition, MAX_ATTACHMENT_STAGE_MUTATIONS,
+    MAX_COMMIT_MUTATIONS, MAX_COMMIT_QUEUE_ROWS, MAX_DEFERRED_CONTROLS, MAX_GROUP_COMMIT_MUTATIONS,
+    MAX_GROUP_COMMIT_QUEUE_ROWS, MAX_GROUP_STATE_MUTATIONS, MAX_MAINTENANCE_TRANSITIONS,
+    MAX_PAIRWISE_COMMIT_DEVICES,
+};
 #[cfg(feature = "test-failpoints")]
 pub use commit::{CommitFailpoint, CommitFailure};
-pub use commit::{
-    CommitPlan, CommitReceipt, CommittedRecordIds, ContactDeviceDelete, DeferredControlKind,
-    DeferredControlRecord, DeliveryTransition, EphemeralTransition, GroupMessageDelete,
-    GroupMessageTransition, GroupTransition, HandshakeReceivePlan, MaintenancePlan, MediaDelete,
-    MessageDelete, MessageTransition, PairwiseReceivePlan, PairwiseSendPlan, PendingDelete,
-    PrekeyTransition, QueueDelete, QueueTransition, ReceiptReceivePlan, SessionTransition,
-    MAX_COMMIT_MUTATIONS, MAX_COMMIT_QUEUE_ROWS, MAX_DEFERRED_CONTROLS,
-    MAX_MAINTENANCE_TRANSITIONS, MAX_PAIRWISE_COMMIT_DEVICES,
-};
 pub use devices::{
     ContactDeviceRecord, DeviceChannelRecord, DeviceStateRecord, DeviceTransferGroup,
     DeviceTransferSelection, DeviceTransferSnapshot, MessageDeviceDeliveryRecord,
@@ -80,9 +85,9 @@ pub use maintenance::{
     MAX_MAINTENANCE_WAL_BYTES,
 };
 pub use media::{
-    MediaDirection, MediaLimits, MediaObjectRecord, MediaReconciliation, MediaRecord, MediaScope,
-    MediaTransferRecord, MediaTransferState, MediaUsage, DEFAULT_MEDIA_STORE_QUOTA,
-    MAX_MEDIA_STORE_QUOTA,
+    MediaDirection, MediaLimits, MediaObjectRecord, MediaReconciliation, MediaReconciliationBatch,
+    MediaRecord, MediaScope, MediaTransferRecord, MediaTransferState, MediaUsage, StagedMediaChunk,
+    DEFAULT_MEDIA_STORE_QUOTA, MAX_MEDIA_STORE_QUOTA,
 };
 pub use note::{NoteMessageRecord, MAX_NOTE_TEXT_BYTES, NOTE_TO_SELF_CONVERSATION_ID};
 pub use scheduled::{ScheduledConversation, ScheduledMessageRecord};

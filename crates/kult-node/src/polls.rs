@@ -258,6 +258,18 @@ impl Node {
             Some(GroupRole::Owner) if authority.owner == me => {}
             _ => return Err(NodeError::NotGroupOwner),
         }
+        self.advance_authority(group, now, rng)?;
+        self.commit_group_poll_moderated_close(group, poll_author, poll_id, now, rng)
+    }
+
+    pub(crate) fn commit_group_poll_moderated_close(
+        &mut self,
+        group: &[u8; 32],
+        poll_author: [u8; 32],
+        poll_id: [u8; 16],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
         let poll = self
             .group_polls(group)?
             .into_iter()
@@ -276,7 +288,6 @@ impl Node {
                 revision: vote.revision,
             })
             .collect::<Vec<_>>();
-        self.advance_authority(group, now, rng)?;
         let generation = self.group_authority(group)?.generation;
         let records = self.store.group_messages(group)?;
         let id = mint_unique_id(rng, |candidate| {

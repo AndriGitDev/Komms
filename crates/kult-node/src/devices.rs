@@ -47,7 +47,7 @@ pub(crate) fn initialize_fresh_device(
     store: &Store,
     account: &Identity,
     rng: &mut impl CryptoRngCore,
-) -> Result<()> {
+) -> kult_store::Result<()> {
     let device = Identity::generate(rng);
     let certificate = DeviceCertificate::issue(account, &device, 0, rng);
     let manifest =

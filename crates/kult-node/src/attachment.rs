@@ -26,12 +26,13 @@ use kult_protocol::{
     MIN_EPHEMERAL_LIFETIME_SECS,
 };
 use kult_store::{
-    DeliveryState, Direction, EphemeralConversation, EphemeralMode, EphemeralRecord,
-    EphemeralState, EphemeralTransition, GroupDelivery, GroupMessageDelete, GroupMessageRecord,
-    MaintenancePlan, MediaDelete, MediaDirection, MediaObjectRecord, MediaRecord, MediaScope,
-    MediaTransferRecord, MediaTransferState, MessageDelete, MessageDeviceDeliveryRecord,
-    MessageRecord, MessageTransition, PairwiseSendPlan, QueueClass, QueueDelete, QueueItem,
-    SessionTransition, Store, StoreError,
+    AttachmentStagePlan, AttachmentStatePlan, DeferredControlRecord, DeliveryState, Direction,
+    EphemeralConversation, EphemeralMode, EphemeralRecord, EphemeralState, EphemeralTransition,
+    GroupDelivery, GroupMessageDelete, GroupMessageRecord, MaintenancePlan, MediaDelete,
+    MediaDirection, MediaObjectRecord, MediaObjectTransition, MediaRecord, MediaScope,
+    MediaTransferRecord, MediaTransferState, MediaTransferTransition, MessageDelete,
+    MessageDeviceDeliveryRecord, MessageRecord, MessageTransition, PairwiseSendPlan, QueueClass,
+    QueueDelete, QueueItem, SessionTransition, Store, StoreError,
 };
 
 const BULK_CONTROL_PADDING_FLOOR: usize = 4096;
@@ -129,6 +130,47 @@ fn media_object_record(
     }
 }
 
+fn media_object_with_state(
+    before: &MediaObjectRecord,
+    state: MediaTransferState,
+) -> MediaObjectRecord {
+    let mut after = before.clone();
+    after.state = state;
+    if matches!(
+        state,
+        MediaTransferState::Rejected | MediaTransferState::Cancelled | MediaTransferState::Corrupt
+    ) {
+        after.chunk_addresses.fill(None);
+        after.verified_bitmap.fill(0);
+        after.verified_bytes = 0;
+    }
+    after
+}
+
+fn commit_media_object_pairs(
+    store: &Store,
+    pairs: &[(MediaObjectRecord, MediaObjectRecord)],
+    rng: &mut impl CryptoRngCore,
+) -> Result<()> {
+    if pairs.is_empty() {
+        return Ok(());
+    }
+    let objects = pairs
+        .iter()
+        .map(|(before, after)| MediaObjectTransition { before, after })
+        .collect::<Vec<_>>();
+    store.commit_plan(
+        CommitPlan::AttachmentState(AttachmentStatePlan {
+            media_transfers: &[],
+            media_objects: &objects,
+            delete_controls: &[],
+            presentation_changed: false,
+        }),
+        rng,
+    )?;
+    Ok(())
+}
+
 fn import_object<R: Read + Seek>(
     store: &mut Store,
     source: &mut R,
@@ -146,9 +188,13 @@ fn import_object<R: Read + Seek>(
         .map_err(|_| NodeError::InvalidAttachment)?;
         source.read_exact(&mut buffer[..actual_len])?;
         let sealed = seal_attachment_chunk(attachment_key, &context, index, &buffer[..actual_len])?;
-        store.commit_media_chunk(local_object_id, index, &sealed, rng)?;
+        let staged = store.stage_media_chunk(local_object_id, index, &sealed, rng)?;
+        if staged.before != staged.after {
+            commit_media_object_pairs(store, &[(staged.before, staged.after)], rng)?;
+        }
     }
-    store.mark_media_complete(local_object_id, &context.content_hash, rng)?;
+    let complete = store.prepare_media_complete(local_object_id, &context.content_hash)?;
+    commit_media_object_pairs(store, &[complete], rng)?;
     Ok(())
 }
 
@@ -169,13 +215,20 @@ fn import_group_object<R: Read + Seek>(
         .map_err(|_| NodeError::InvalidAttachment)?;
         source.read_exact(&mut buffer[..actual_len])?;
         let sealed = seal_attachment_chunk(attachment_key, &context, index, &buffer[..actual_len])?;
+        let mut pairs = Vec::new();
         for local_object_id in local_object_ids {
-            store.commit_media_chunk(local_object_id, index, &sealed, rng)?;
+            let staged = store.stage_media_chunk(local_object_id, index, &sealed, rng)?;
+            if staged.before != staged.after {
+                pairs.push((staged.before, staged.after));
+            }
         }
+        commit_media_object_pairs(store, &pairs, rng)?;
     }
+    let mut complete = Vec::new();
     for local_object_id in local_object_ids {
-        store.mark_media_complete(local_object_id, &context.content_hash, rng)?;
+        complete.push(store.prepare_media_complete(local_object_id, &context.content_hash)?);
     }
+    commit_media_object_pairs(store, &complete, rng)?;
     Ok(())
 }
 
@@ -379,35 +432,49 @@ impl Node {
             metadata,
         );
 
-        self.store.put_message(
-            &MessageRecord {
-                id: content_id,
-                peer: *peer,
-                direction: Direction::Outbound,
-                state: DeliveryState::Queued,
-                timestamp: now,
-                body: frame,
-                wire_id: None,
-            },
-            rng,
-        )?;
-        self.store.put_media_transfer(&transfer, rng)?;
-        self.store.put_media_object(&object, rng)?;
-        if let (Some((preview_metadata, _)), Some(details)) =
-            (preview.as_ref(), preview_details.as_ref())
-        {
-            self.store.put_media_object(
-                &media_object_record(
+        let message = MessageRecord {
+            id: content_id,
+            peer: *peer,
+            direction: Direction::Outbound,
+            state: DeliveryState::Queued,
+            timestamp: now,
+            body: frame,
+            wire_id: None,
+        };
+        let preview_object = preview.as_ref().zip(preview_details.as_ref()).map(
+            |((preview_metadata, _), details)| {
+                media_object_record(
                     preview_local_object_id,
                     transfer_id,
                     preview_object_id,
                     AttachmentRole::Preview,
                     details,
                     preview_metadata,
-                ),
-                rng,
-            )?;
-        }
+                )
+            },
+        );
+        let mut media_objects = vec![object.clone()];
+        media_objects.extend(preview_object.iter().cloned());
+        let ephemeral = expires_at.map(|expires_at| EphemeralRecord {
+            conversation: EphemeralConversation::Pairwise(*peer),
+            author: me,
+            content_id,
+            expires_at,
+            mode: EphemeralMode::ViewOnceAttachment,
+            state: EphemeralState::Active,
+            transfer_ids: vec![transfer_id],
+        });
+        let receipt = self.store.commit_plan(
+            CommitPlan::AttachmentStage(AttachmentStagePlan {
+                message: Some(&message),
+                group_message: None,
+                media_transfers: core::slice::from_ref(&transfer),
+                media_objects: &media_objects,
+                ephemeral: ephemeral.as_ref(),
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
 
         import_object(
             &mut self.store,
@@ -447,20 +514,7 @@ impl Node {
                 rng,
             )?;
         }
-        if let Some(expires_at) = expires_at {
-            self.store.put_ephemeral_record(
-                &EphemeralRecord {
-                    conversation: EphemeralConversation::Pairwise(*peer),
-                    author: me,
-                    content_id,
-                    expires_at,
-                    mode: EphemeralMode::ViewOnceAttachment,
-                    state: EphemeralState::Active,
-                    transfer_ids: vec![transfer_id],
-                },
-                rng,
-            )?;
-        }
+        self.accept_commit_receipt(receipt, []);
         self.emit_attachment_update(&transfer_id)?;
         Ok(content_id)
     }
@@ -639,26 +693,23 @@ impl Node {
             None => encode_attachment(content_id, &manifest)
                 .map_err(|_| NodeError::InvalidAttachment)?,
         };
-        self.store.put_group_message(
-            &GroupMessageRecord {
-                id: content_id,
-                group: *group,
-                sender: me,
-                direction: Direction::Outbound,
-                timestamp: now,
-                body: frame,
-                deliveries: peers
-                    .iter()
-                    .map(|peer| GroupDelivery {
-                        peer: *peer,
-                        wire_id: None,
-                        state: DeliveryState::Queued,
-                    })
-                    .collect(),
-                wire_body: None,
-            },
-            rng,
-        )?;
+        let message = GroupMessageRecord {
+            id: content_id,
+            group: *group,
+            sender: me,
+            direction: Direction::Outbound,
+            timestamp: now,
+            body: frame,
+            deliveries: peers
+                .iter()
+                .map(|peer| GroupDelivery {
+                    peer: *peer,
+                    wire_id: None,
+                    state: DeliveryState::Queued,
+                })
+                .collect(),
+            wire_body: None,
+        };
 
         let primary_context = AttachmentChunkContext {
             scope: AttachmentChunkScope::Group,
@@ -711,13 +762,38 @@ impl Node {
                     )
                 },
             );
-            self.store.put_media_transfer(&transfer, rng)?;
-            self.store.put_media_object(&object, rng)?;
-            if let Some(preview_object) = &preview_object {
-                self.store.put_media_object(preview_object, rng)?;
-            }
             rows.push((transfer, object, preview_object));
         }
+        let transfers = rows
+            .iter()
+            .map(|(transfer, _, _)| transfer.clone())
+            .collect::<Vec<_>>();
+        let objects = rows
+            .iter()
+            .flat_map(|(_, object, preview)| {
+                core::iter::once(object.clone()).chain(preview.iter().cloned())
+            })
+            .collect::<Vec<_>>();
+        let ephemeral = expires_at.map(|expires_at| EphemeralRecord {
+            conversation: EphemeralConversation::Group(*group),
+            author: me,
+            content_id,
+            expires_at,
+            mode: EphemeralMode::ViewOnceAttachment,
+            state: EphemeralState::Active,
+            transfer_ids: transfers.iter().map(|transfer| transfer.local_id).collect(),
+        });
+        let receipt = self.store.commit_plan(
+            CommitPlan::AttachmentStage(AttachmentStagePlan {
+                message: None,
+                group_message: Some(&message),
+                media_transfers: &transfers,
+                media_objects: &objects,
+                ephemeral: ephemeral.as_ref(),
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
 
         let primary_ids = rows
             .iter()
@@ -755,23 +831,7 @@ impl Node {
                 rng,
             )?;
         }
-        if let Some(expires_at) = expires_at {
-            self.store.put_ephemeral_record(
-                &EphemeralRecord {
-                    conversation: EphemeralConversation::Group(*group),
-                    author: me,
-                    content_id,
-                    expires_at,
-                    mode: EphemeralMode::ViewOnceAttachment,
-                    state: EphemeralState::Active,
-                    transfer_ids: rows
-                        .iter()
-                        .map(|(transfer, _, _)| transfer.local_id)
-                        .collect(),
-                },
-                rng,
-            )?;
-        }
+        self.accept_commit_receipt(receipt, []);
         for (transfer, _, _) in &rows {
             self.emit_attachment_update(&transfer.local_id)?;
         }
@@ -1064,29 +1124,29 @@ impl Node {
             return Err(NodeError::InvalidAttachment);
         }
         let mut all_empty = true;
-        for object in self.store.media_objects_for_transfer(transfer_id)? {
-            if object.chunk_count == 0 {
-                self.store
-                    .mark_media_complete(&object.local_id, &object.content_hash, rng)?;
-            } else {
-                all_empty = false;
-                self.store.set_media_object_state(
-                    &object.local_id,
-                    MediaTransferState::Queued,
-                    rng,
-                )?;
-            }
-        }
-        self.store.set_media_transfer_state(
-            transfer_id,
-            if all_empty {
-                MediaTransferState::Complete
-            } else {
-                MediaTransferState::Queued
-            },
-            now,
-            rng,
-        )?;
+        let object_pairs = self
+            .store
+            .media_objects_for_transfer(transfer_id)?
+            .into_iter()
+            .map(|object| {
+                let state = if object.chunk_count == 0 {
+                    MediaTransferState::Complete
+                } else {
+                    all_empty = false;
+                    MediaTransferState::Queued
+                };
+                let after = media_object_with_state(&object, state);
+                (object, after)
+            })
+            .collect::<Vec<_>>();
+        let mut transfer_after = transfer.clone();
+        transfer_after.state = if all_empty {
+            MediaTransferState::Complete
+        } else {
+            MediaTransferState::Queued
+        };
+        transfer_after.updated_at = now;
+        self.commit_attachment_state(&transfer, &transfer_after, &object_pairs, &[], rng)?;
         self.emit_attachment_update(transfer_id)
     }
 
@@ -1130,19 +1190,23 @@ impl Node {
         ) {
             return Err(NodeError::InvalidAttachment);
         }
-        if transfer.direction == MediaDirection::Inbound {
-            for object in self.store.media_objects_for_transfer(transfer_id)? {
-                if object.state != MediaTransferState::Complete {
-                    self.store.set_media_object_state(
-                        &object.local_id,
-                        MediaTransferState::Paused,
-                        rng,
-                    )?;
-                }
-            }
-        }
-        self.store
-            .set_media_transfer_state(transfer_id, MediaTransferState::Paused, now, rng)?;
+        let object_pairs = if transfer.direction == MediaDirection::Inbound {
+            self.store
+                .media_objects_for_transfer(transfer_id)?
+                .into_iter()
+                .filter(|object| object.state != MediaTransferState::Complete)
+                .map(|object| {
+                    let after = media_object_with_state(&object, MediaTransferState::Paused);
+                    (object, after)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let mut transfer_after = transfer.clone();
+        transfer_after.state = MediaTransferState::Paused;
+        transfer_after.updated_at = now;
+        self.commit_attachment_state(&transfer, &transfer_after, &object_pairs, &[], rng)?;
         self.attachment_request_at.remove(transfer_id);
         self.attachment_request_target.remove(transfer_id);
         self.emit_attachment_update(transfer_id)
@@ -1159,17 +1223,19 @@ impl Node {
         if transfer.state != MediaTransferState::Paused {
             return Err(NodeError::InvalidAttachment);
         }
-        if transfer.direction == MediaDirection::Inbound {
-            for object in self.store.media_objects_for_transfer(transfer_id)? {
-                if object.state != MediaTransferState::Complete {
-                    self.store.set_media_object_state(
-                        &object.local_id,
-                        MediaTransferState::Queued,
-                        rng,
-                    )?;
-                }
-            }
-        }
+        let object_pairs = if transfer.direction == MediaDirection::Inbound {
+            self.store
+                .media_objects_for_transfer(transfer_id)?
+                .into_iter()
+                .filter(|object| object.state != MediaTransferState::Complete)
+                .map(|object| {
+                    let after = media_object_with_state(&object, MediaTransferState::Queued);
+                    (object, after)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
         let state = if transfer.direction == MediaDirection::Outbound
             && self.attachment_manifest_was_queued(&transfer)?
         {
@@ -1177,8 +1243,10 @@ impl Node {
         } else {
             MediaTransferState::Queued
         };
-        self.store
-            .set_media_transfer_state(transfer_id, state, now, rng)?;
+        let mut transfer_after = transfer.clone();
+        transfer_after.state = state;
+        transfer_after.updated_at = now;
+        self.commit_attachment_state(&transfer, &transfer_after, &object_pairs, &[], rng)?;
         self.attachment_request_at.remove(transfer_id);
         self.attachment_request_target.remove(transfer_id);
         self.emit_attachment_update(transfer_id)
@@ -1230,14 +1298,14 @@ impl Node {
         Ok((transfer, objects))
     }
 
-    pub(crate) fn record_group_attachment_offer(
-        &mut self,
+    pub(crate) fn prepare_group_attachment_offer(
+        &self,
         offer: GroupAttachmentOffer,
         content_id: [u8; 16],
         manifest: &AttachmentManifest<'_>,
         now: u64,
         rng: &mut impl CryptoRngCore,
-    ) -> Result<[u8; 16]> {
+    ) -> Result<(MediaTransferRecord, Vec<MediaObjectRecord>)> {
         let mut transfer_id = [0u8; 16];
         rng.fill_bytes(&mut transfer_id);
         let transfer = MediaTransferRecord {
@@ -1252,30 +1320,27 @@ impl Node {
             state: MediaTransferState::AwaitingConsent,
             updated_at: now,
         };
-        self.store.put_media_transfer(&transfer, rng)?;
+        let mut objects = Vec::new();
         for descriptor in core::iter::once(&manifest.primary).chain(manifest.preview.as_ref()) {
             let mut local_id = [0u8; 16];
             rng.fill_bytes(&mut local_id);
-            self.store.put_media_object(
-                &MediaObjectRecord {
-                    local_id,
-                    transfer_id,
-                    object_id: descriptor.object_id,
-                    role: descriptor.role as u8,
-                    total_len: descriptor.total_len,
-                    chunk_count: descriptor.chunk_count,
-                    content_hash: descriptor.content_hash,
-                    media_type: descriptor.media_type.to_owned(),
-                    filename: descriptor.filename.map(str::to_owned),
-                    state: MediaTransferState::AwaitingConsent,
-                    verified_bitmap: vec![0; (descriptor.chunk_count as usize).div_ceil(8)],
-                    chunk_addresses: vec![None; descriptor.chunk_count as usize],
-                    verified_bytes: 0,
-                },
-                rng,
-            )?;
+            objects.push(MediaObjectRecord {
+                local_id,
+                transfer_id,
+                object_id: descriptor.object_id,
+                role: descriptor.role as u8,
+                total_len: descriptor.total_len,
+                chunk_count: descriptor.chunk_count,
+                content_hash: descriptor.content_hash,
+                media_type: descriptor.media_type.to_owned(),
+                filename: descriptor.filename.map(str::to_owned),
+                state: MediaTransferState::AwaitingConsent,
+                verified_bitmap: vec![0; (descriptor.chunk_count as usize).div_ceil(8)],
+                chunk_addresses: vec![None; descriptor.chunk_count as usize],
+                verified_bytes: 0,
+            });
         }
-        Ok(transfer_id)
+        Ok((transfer, objects))
     }
 
     pub(crate) async fn activate_attachment_transfers(
@@ -1308,15 +1373,14 @@ impl Node {
             match transfer.direction {
                 MediaDirection::Outbound
                     if transfer.scope == MediaScope::Pairwise
-                        && transfer.state == MediaTransferState::Queued =>
+                        && transfer.state == MediaTransferState::Queued
+                        && self
+                            .store
+                            .media_objects_for_transfer(&transfer.local_id)?
+                            .iter()
+                            .all(|object| object.state == MediaTransferState::Complete) =>
                 {
                     if self.queue_pairwise_attachment_manifest(transfer, now, rng)? {
-                        self.store.set_media_transfer_state(
-                            &transfer.local_id,
-                            MediaTransferState::Transferring,
-                            now,
-                            rng,
-                        )?;
                         self.emit_attachment_update(&transfer.local_id)?;
                     }
                 }
@@ -1330,7 +1394,7 @@ impl Node {
                                     now.saturating_sub(*last) >= MISSING_RETRY_SECS
                                 })) =>
                 {
-                    let mut queued = false;
+                    let mut padded = Vec::new();
                     let verified_before =
                         self.verified_attachment_chunk_count(&transfer.local_id)?;
                     let mut requested_chunks = 0usize;
@@ -1345,13 +1409,7 @@ impl Node {
                                     content_hash: object.content_hash,
                                 },
                             )?;
-                            self.queue_attachment_bulk_to_account(
-                                &transfer.peer,
-                                &complete,
-                                now,
-                                rng,
-                            )?;
-                            queued = true;
+                            padded.extend(Self::encode_attachment_bulk_records(&[&complete])?);
                             continue;
                         }
                         let ranges = missing_ranges(&object);
@@ -1367,23 +1425,32 @@ impl Node {
                             object.object_id,
                             AttachmentBulkOperation::RequestMissing { role, ranges },
                         )?;
-                        self.queue_attachment_bulk_to_account(&transfer.peer, &record, now, rng)?;
-                        queued = true;
+                        padded.extend(Self::encode_attachment_bulk_records(&[&record])?);
                     }
-                    if queued {
-                        self.store.set_media_transfer_state(
-                            &transfer.local_id,
-                            if self
-                                .store
-                                .media_objects_for_transfer(&transfer.local_id)?
-                                .iter()
-                                .all(|object| object.state == MediaTransferState::Complete)
-                            {
-                                MediaTransferState::Complete
-                            } else {
-                                MediaTransferState::Transferring
-                            },
-                            transfer.updated_at,
+                    if !padded.is_empty() {
+                        let mut transfer_after = transfer.clone();
+                        transfer_after.state = if self
+                            .store
+                            .media_objects_for_transfer(&transfer.local_id)?
+                            .iter()
+                            .all(|object| object.state == MediaTransferState::Complete)
+                        {
+                            MediaTransferState::Complete
+                        } else {
+                            MediaTransferState::Transferring
+                        };
+                        let transfer_transition =
+                            (transfer != &transfer_after).then_some(MediaTransferTransition {
+                                before: transfer,
+                                after: &transfer_after,
+                            });
+                        self.queue_attachment_padded_to_account(
+                            &transfer.peer,
+                            &padded,
+                            transfer_transition.as_slice(),
+                            &[],
+                            &[],
+                            now,
                             rng,
                         )?;
                         if requested_chunks == 0 {
@@ -1424,9 +1491,21 @@ impl Node {
                     _ => unreachable!("terminal state checked above"),
                 };
                 let terminal = self.bulk_record(transfer, object.object_id, operation)?;
-                self.queue_attachment_bulk_to_account(&transfer.peer, &terminal, now, rng)?;
-                self.store
-                    .set_media_transfer_state(&transfer.local_id, transfer.state, 0, rng)?;
+                let mut transfer_after = transfer.clone();
+                transfer_after.updated_at = 0;
+                let transition = MediaTransferTransition {
+                    before: transfer,
+                    after: &transfer_after,
+                };
+                self.queue_attachment_bulk_records_to_account(
+                    &transfer.peer,
+                    &[&terminal],
+                    &[transition],
+                    &[],
+                    &[],
+                    now,
+                    rng,
+                )?;
             }
         }
 
@@ -1454,21 +1533,18 @@ impl Node {
                 if transfer.state != MediaTransferState::Queued
                     || !self.peer_supports_attachment(&transfer.peer)?
                     || !self.carrier_allows_bulk(&transfer.peer, now)?
+                    || !self
+                        .store
+                        .media_objects_for_transfer(&transfer.local_id)?
+                        .iter()
+                        .all(|object| object.state == MediaTransferState::Complete)
                 {
                     eligible = false;
                     break;
                 }
             }
-            if eligible && self.queue_group_attachment_manifest(&group, &content_id, now, rng)? {
-                for transfer in copies {
-                    self.store.set_media_transfer_state(
-                        &transfer.local_id,
-                        MediaTransferState::Transferring,
-                        now,
-                        rng,
-                    )?;
-                    self.emit_attachment_update(&transfer.local_id)?;
-                }
+            if eligible {
+                self.queue_group_attachment_manifest(&group, &content_id, now, rng)?;
             }
         }
         Ok(())
@@ -1480,11 +1556,12 @@ impl Node {
         peer_device: [u8; 32],
         body: &[u8],
         now: u64,
+        control: &DeferredControlRecord,
         rng: &mut impl CryptoRngCore,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let DecodedAttachmentBulkRecord::Record(record) = decode_attachment_bulk_record(body)
         else {
-            return Ok(());
+            return Ok(false);
         };
         match record.operation {
             AttachmentBulkOperation::RequestMissing { role, ref ranges } => {
@@ -1494,45 +1571,68 @@ impl Node {
                     MediaDirection::Outbound,
                 ))?
                 else {
-                    return Ok(());
+                    return Ok(false);
                 };
                 if transfer.state == MediaTransferState::Paused {
-                    return Ok(());
+                    return Ok(false);
                 }
                 let Some(object) =
                     ignore_unknown(self.resolve_bulk_object(&transfer, record.object_id, role))?
                 else {
-                    return Ok(());
+                    return Ok(false);
                 };
                 if validate_missing_ranges(ranges, object.chunk_count).is_err() {
-                    return Ok(());
+                    return Ok(false);
                 }
                 let mut served = 0usize;
+                let mut chunks = Vec::new();
                 'ranges: for range in ranges {
                     for index in range.start..range.start + range.count {
                         if served == MAX_CHUNKS_PER_REQUEST {
                             break 'ranges;
                         }
                         let sealed = self.store.read_media_chunk(&object.local_id, index)?;
-                        let chunk = self.bulk_record(
+                        chunks.push((index, sealed));
+                        served += 1;
+                    }
+                }
+                if chunks.is_empty() {
+                    return Ok(false);
+                }
+                let records = chunks
+                    .iter()
+                    .map(|(index, sealed)| {
+                        self.bulk_record(
                             &transfer,
                             object.object_id,
                             AttachmentBulkOperation::Chunk {
                                 role,
-                                index,
-                                sealed_chunk: &sealed,
+                                index: *index,
+                                sealed_chunk: sealed,
                             },
-                        )?;
-                        self.queue_attachment_bulk(&peer_device, &chunk, now, rng)?;
-                        served += 1;
-                    }
-                }
-                self.store.set_media_transfer_state(
-                    &transfer.local_id,
-                    MediaTransferState::Transferring,
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let record_refs = records.iter().collect::<Vec<_>>();
+                let mut transfer_after = transfer.clone();
+                transfer_after.state = MediaTransferState::Transferring;
+                transfer_after.updated_at = now;
+                let transfer_transition =
+                    (transfer != transfer_after).then_some(MediaTransferTransition {
+                        before: &transfer,
+                        after: &transfer_after,
+                    });
+                self.queue_attachment_bulk_records(
+                    &[peer_device],
+                    &record_refs,
+                    transfer_transition.as_slice(),
+                    &[],
+                    core::slice::from_ref(control),
                     now,
                     rng,
                 )?;
+                self.emit_attachment_update(&transfer.local_id)?;
+                Ok(true)
             }
             AttachmentBulkOperation::Chunk {
                 role,
@@ -1545,124 +1645,95 @@ impl Node {
                     MediaDirection::Inbound,
                 ))?
                 else {
-                    return Ok(());
+                    return Ok(false);
                 };
                 let Some(object) =
                     ignore_unknown(self.resolve_bulk_object(&transfer, record.object_id, role))?
                 else {
-                    return Ok(());
+                    return Ok(false);
                 };
                 if index >= object.chunk_count {
-                    return Ok(());
+                    return Ok(false);
                 }
                 let manifest = self.load_manifest(&transfer)?;
                 let Some(manifest_object) = manifest.objects.iter().find(|candidate| {
                     candidate.object_id == object.object_id && candidate.role == role
                 }) else {
-                    return Ok(());
+                    return Ok(false);
                 };
                 let context = self.chunk_context(&transfer, manifest_object);
                 if open_attachment_chunk(&manifest.attachment_key, &context, index, sealed_chunk)
                     .is_err()
                 {
-                    let corrupt = self.bulk_record(
+                    self.finish_attachment_from_control(
                         &transfer,
                         object.object_id,
-                        AttachmentBulkOperation::Cancel(AttachmentReason::Corrupt),
-                    )?;
-                    self.finish_attachment_locally(
-                        &transfer,
                         MediaTransferState::Corrupt,
+                        Some(AttachmentBulkOperation::Cancel(AttachmentReason::Corrupt)),
+                        peer_device,
+                        control,
                         now,
-                        false,
                         rng,
                     )?;
-                    self.queue_attachment_bulk(&peer_device, &corrupt, now, rng)?;
-                    return Ok(());
+                    return Ok(true);
                 }
-                match self
-                    .store
-                    .commit_media_chunk(&object.local_id, index, sealed_chunk, rng)
-                {
-                    Ok(_) => {}
-                    Err(StoreError::MediaQuota) => {
-                        let reject = self.bulk_record(
-                            &transfer,
-                            object.object_id,
-                            AttachmentBulkOperation::Reject(AttachmentReason::Quota),
-                        )?;
-                        self.finish_attachment_locally(
-                            &transfer,
-                            MediaTransferState::Rejected,
-                            now,
-                            false,
-                            rng,
-                        )?;
-                        self.queue_attachment_bulk(&peer_device, &reject, now, rng)?;
-                        return Ok(());
-                    }
-                    Err(StoreError::LowStorage) => {
-                        let reject = self.bulk_record(
-                            &transfer,
-                            object.object_id,
-                            AttachmentBulkOperation::Reject(AttachmentReason::LowStorage),
-                        )?;
-                        self.finish_attachment_locally(
-                            &transfer,
-                            MediaTransferState::Rejected,
-                            now,
-                            false,
-                            rng,
-                        )?;
-                        self.queue_attachment_bulk(&peer_device, &reject, now, rng)?;
-                        return Ok(());
-                    }
-                    Err(StoreError::MediaState) => {
-                        let corrupt = self.bulk_record(
-                            &transfer,
-                            object.object_id,
-                            AttachmentBulkOperation::Cancel(AttachmentReason::Corrupt),
-                        )?;
-                        self.finish_attachment_locally(
-                            &transfer,
-                            MediaTransferState::Corrupt,
-                            now,
-                            false,
-                            rng,
-                        )?;
-                        self.queue_attachment_bulk(&peer_device, &corrupt, now, rng)?;
-                        return Ok(());
-                    }
-                    Err(error) => return Err(error.into()),
-                }
-                self.store.set_media_transfer_state(
-                    &transfer.local_id,
-                    MediaTransferState::Transferring,
-                    now,
-                    rng,
-                )?;
-                let stored = match self.store.get_media_object(&object.local_id)? {
-                    Some(MediaRecord::Available(stored)) => stored,
-                    _ => return Err(NodeError::UnknownAttachment),
-                };
-                if let Some(target) = self
-                    .attachment_request_target
-                    .get(&transfer.local_id)
-                    .copied()
-                {
-                    let verified = self.verified_attachment_chunk_count(&transfer.local_id)?;
-                    if verified >= target {
-                        // The bounded window made progress. Let this same
-                        // receive tick request the next window instead of
-                        // treating the 30-second loss-retry timer as pacing.
-                        self.attachment_request_at.remove(&transfer.local_id);
-                        self.attachment_request_target.remove(&transfer.local_id);
-                    }
-                }
-                if stored.chunk_addresses.iter().all(Option::is_some) {
+                let staged =
+                    match self
+                        .store
+                        .stage_media_chunk(&object.local_id, index, sealed_chunk, rng)
+                    {
+                        Ok(staged) => staged,
+                        Err(StoreError::MediaQuota) => {
+                            self.finish_attachment_from_control(
+                                &transfer,
+                                object.object_id,
+                                MediaTransferState::Rejected,
+                                Some(AttachmentBulkOperation::Reject(AttachmentReason::Quota)),
+                                peer_device,
+                                control,
+                                now,
+                                rng,
+                            )?;
+                            return Ok(true);
+                        }
+                        Err(StoreError::LowStorage) => {
+                            self.finish_attachment_from_control(
+                                &transfer,
+                                object.object_id,
+                                MediaTransferState::Rejected,
+                                Some(AttachmentBulkOperation::Reject(
+                                    AttachmentReason::LowStorage,
+                                )),
+                                peer_device,
+                                control,
+                                now,
+                                rng,
+                            )?;
+                            return Ok(true);
+                        }
+                        Err(StoreError::MediaState) => {
+                            self.finish_attachment_from_control(
+                                &transfer,
+                                object.object_id,
+                                MediaTransferState::Corrupt,
+                                Some(AttachmentBulkOperation::Cancel(AttachmentReason::Corrupt)),
+                                peer_device,
+                                control,
+                                now,
+                                rng,
+                            )?;
+                            return Ok(true);
+                        }
+                        Err(error) => return Err(error.into()),
+                    };
+                let mut object_after = staged.after;
+                let mut complete_response = None;
+                if object_after.chunk_addresses.iter().all(Option::is_some) {
                     let mut hasher = blake3::Hasher::new();
-                    for chunk_index in 0..stored.chunk_count {
-                        let sealed = self.store.read_media_chunk(&stored.local_id, chunk_index)?;
+                    for chunk_index in 0..object_after.chunk_count {
+                        let sealed = self
+                            .store
+                            .read_media_chunk_from_record(&object_after, chunk_index)?;
                         let plain = Zeroizing::new(open_attachment_chunk(
                             &manifest.attachment_key,
                             &context,
@@ -1672,48 +1743,85 @@ impl Node {
                         hasher.update(&plain);
                     }
                     let verified_hash = *hasher.finalize().as_bytes();
-                    if verified_hash != stored.content_hash {
-                        let corrupt = self.bulk_record(
+                    if verified_hash != object_after.content_hash {
+                        self.finish_attachment_from_control(
                             &transfer,
-                            stored.object_id,
-                            AttachmentBulkOperation::Cancel(AttachmentReason::Corrupt),
-                        )?;
-                        self.finish_attachment_locally(
-                            &transfer,
+                            object_after.object_id,
                             MediaTransferState::Corrupt,
+                            Some(AttachmentBulkOperation::Cancel(AttachmentReason::Corrupt)),
+                            peer_device,
+                            control,
                             now,
-                            false,
                             rng,
                         )?;
-                        self.queue_attachment_bulk(&peer_device, &corrupt, now, rng)?;
-                        return Ok(());
+                        return Ok(true);
                     }
-                    self.store
-                        .mark_media_complete(&stored.local_id, &verified_hash, rng)?;
-                    let complete = self.bulk_record(
-                        &transfer,
-                        stored.object_id,
-                        AttachmentBulkOperation::Complete {
-                            role,
-                            content_hash: verified_hash,
-                        },
-                    )?;
-                    self.queue_attachment_bulk(&peer_device, &complete, now, rng)?;
-                    let all_complete = self
+                    object_after.state = MediaTransferState::Complete;
+                    complete_response = Some(AttachmentBulkOperation::Complete {
+                        role,
+                        content_hash: verified_hash,
+                    });
+                }
+                let all_complete = object_after.state == MediaTransferState::Complete
+                    && self
                         .store
                         .media_objects_for_transfer(&transfer.local_id)?
                         .iter()
+                        .filter(|candidate| candidate.local_id != object_after.local_id)
                         .all(|candidate| candidate.state == MediaTransferState::Complete);
-                    if all_complete {
-                        self.store.set_media_transfer_state(
-                            &transfer.local_id,
-                            MediaTransferState::Complete,
-                            now,
-                            rng,
-                        )?;
+                let mut transfer_after = transfer.clone();
+                transfer_after.state = if all_complete {
+                    MediaTransferState::Complete
+                } else {
+                    MediaTransferState::Transferring
+                };
+                transfer_after.updated_at = now;
+                let object_pairs = (staged.before != object_after)
+                    .then_some((staged.before, object_after))
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                if let Some(operation) = complete_response {
+                    let complete = self.bulk_record(&transfer, record.object_id, operation)?;
+                    let transfer_transition =
+                        (transfer != transfer_after).then_some(MediaTransferTransition {
+                            before: &transfer,
+                            after: &transfer_after,
+                        });
+                    let object_transitions = object_pairs
+                        .iter()
+                        .map(|(before, after)| MediaObjectTransition { before, after })
+                        .collect::<Vec<_>>();
+                    self.queue_attachment_bulk_records(
+                        &[peer_device],
+                        &[&complete],
+                        transfer_transition.as_slice(),
+                        &object_transitions,
+                        core::slice::from_ref(control),
+                        now,
+                        rng,
+                    )?;
+                } else {
+                    self.commit_attachment_state(
+                        &transfer,
+                        &transfer_after,
+                        &object_pairs,
+                        core::slice::from_ref(control),
+                        rng,
+                    )?;
+                }
+                if let Some(target) = self
+                    .attachment_request_target
+                    .get(&transfer.local_id)
+                    .copied()
+                {
+                    let verified = self.verified_attachment_chunk_count(&transfer.local_id)?;
+                    if verified >= target {
+                        self.attachment_request_at.remove(&transfer.local_id);
+                        self.attachment_request_target.remove(&transfer.local_id);
                     }
                 }
                 self.emit_attachment_update(&transfer.local_id)?;
+                Ok(true)
             }
             AttachmentBulkOperation::Complete { role, content_hash } => {
                 let Some(transfer) = ignore_unknown(self.resolve_bulk_transfer(
@@ -1722,15 +1830,15 @@ impl Node {
                     MediaDirection::Outbound,
                 ))?
                 else {
-                    return Ok(());
+                    return Ok(false);
                 };
                 let Some(object) =
                     ignore_unknown(self.resolve_bulk_object(&transfer, record.object_id, role))?
                 else {
-                    return Ok(());
+                    return Ok(false);
                 };
                 if object.content_hash != content_hash {
-                    return Ok(());
+                    return Ok(false);
                 }
                 // Completion acknowledgements can cross an explicit local
                 // terminal decision in flight. A delayed acknowledgement
@@ -1742,21 +1850,26 @@ impl Node {
                         | MediaTransferState::Cancelled
                         | MediaTransferState::Corrupt
                 ) {
-                    return Ok(());
+                    return Ok(false);
                 }
-                self.store.set_media_transfer_state(
-                    &transfer.local_id,
-                    MediaTransferState::Complete,
-                    now,
+                let mut transfer_after = transfer.clone();
+                transfer_after.state = MediaTransferState::Complete;
+                transfer_after.updated_at = now;
+                self.commit_attachment_state(
+                    &transfer,
+                    &transfer_after,
+                    &[],
+                    core::slice::from_ref(control),
                     rng,
                 )?;
                 self.emit_attachment_update(&transfer.local_id)?;
+                Ok(true)
             }
             AttachmentBulkOperation::Cancel(_) => {
                 let Some(transfer) =
                     ignore_unknown(self.resolve_bulk_transfer_any_direction(&record, &peer))?
                 else {
-                    return Ok(());
+                    return Ok(false);
                 };
                 if !self
                     .store
@@ -1764,15 +1877,19 @@ impl Node {
                     .iter()
                     .any(|object| object.object_id == record.object_id)
                 {
-                    return Ok(());
+                    return Ok(false);
                 }
-                self.finish_attachment_locally(
+                self.finish_attachment_from_control(
                     &transfer,
+                    record.object_id,
                     MediaTransferState::Cancelled,
+                    None,
+                    peer_device,
+                    control,
                     now,
-                    false,
                     rng,
                 )?;
+                Ok(true)
             }
             AttachmentBulkOperation::Reject(_) => {
                 let Some(transfer) = ignore_unknown(self.resolve_bulk_transfer(
@@ -1781,7 +1898,7 @@ impl Node {
                     MediaDirection::Outbound,
                 ))?
                 else {
-                    return Ok(());
+                    return Ok(false);
                 };
                 if !self
                     .store
@@ -1789,18 +1906,21 @@ impl Node {
                     .iter()
                     .any(|object| object.object_id == record.object_id)
                 {
-                    return Ok(());
+                    return Ok(false);
                 }
-                self.finish_attachment_locally(
+                self.finish_attachment_from_control(
                     &transfer,
+                    record.object_id,
                     MediaTransferState::Rejected,
+                    None,
+                    peer_device,
+                    control,
                     now,
-                    false,
                     rng,
                 )?;
+                Ok(true)
             }
         }
-        Ok(())
     }
 
     pub(crate) fn peer_supports_attachment(&self, peer: &[u8; 32]) -> Result<bool> {
@@ -1921,7 +2041,14 @@ impl Node {
             prepared.push((route, before, after));
         }
         if prepared.is_empty() {
-            return Ok(message_before.wire_id.is_some());
+            if message_before.wire_id.is_none() {
+                return Ok(false);
+            }
+            let mut transfer_after = transfer.clone();
+            transfer_after.state = MediaTransferState::Transferring;
+            transfer_after.updated_at = now;
+            self.commit_attachment_state(transfer, &transfer_after, &[], &[], rng)?;
+            return Ok(true);
         }
         let session_transitions = prepared
             .iter()
@@ -1935,6 +2062,13 @@ impl Node {
             .iter()
             .map(|(before, after)| kult_store::DeliveryTransition { before, after })
             .collect::<Vec<_>>();
+        let mut transfer_after = transfer.clone();
+        transfer_after.state = MediaTransferState::Transferring;
+        transfer_after.updated_at = now;
+        let media_transfers = [MediaTransferTransition {
+            before: transfer,
+            after: &transfer_after,
+        }];
         self.store.commit_plan(
             CommitPlan::PairwiseSend(PairwiseSendPlan {
                 sessions: &session_transitions,
@@ -1946,10 +2080,15 @@ impl Node {
                 deliveries: &new_deliveries,
                 delivery_updates: &delivery_updates,
                 queue: &queue,
+                groups: &[],
+                authorities: &[],
                 scheduled: None,
                 clear_capabilities: &[],
                 clear_reset_markers: &[],
                 ephemeral: None,
+                media_transfers: &media_transfers,
+                media_objects: &[],
+                delete_controls: &[],
                 presentation_changed: false,
             }),
             rng,
@@ -1962,44 +2101,122 @@ impl Node {
         Ok(true)
     }
 
-    fn queue_attachment_bulk_to_account(
+    #[allow(clippy::too_many_arguments)] // exact control and durable consequence boundary
+    fn queue_attachment_bulk_records_to_account(
         &mut self,
         account: &[u8; 32],
-        record: &AttachmentBulkRecord<'_>,
+        records: &[&AttachmentBulkRecord<'_>],
+        media_transfers: &[MediaTransferTransition<'_>],
+        media_objects: &[MediaObjectTransition<'_>],
+        delete_controls: &[DeferredControlRecord],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let padded = Self::encode_attachment_bulk_records(records)?;
+        self.queue_attachment_padded_to_account(
+            account,
+            &padded,
+            media_transfers,
+            media_objects,
+            delete_controls,
+            now,
+            rng,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // exact control and durable consequence boundary
+    fn queue_attachment_padded_to_account(
+        &mut self,
+        account: &[u8; 32],
+        padded: &[Vec<u8>],
+        media_transfers: &[MediaTransferTransition<'_>],
+        media_objects: &[MediaObjectTransition<'_>],
+        delete_controls: &[DeferredControlRecord],
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
         let endpoints = self.store.contact_devices_for(account)?;
-        if endpoints.is_empty() {
-            return self.queue_attachment_bulk(account, record, now, rng);
-        }
-        if endpoints
+        let devices = if endpoints.is_empty() {
+            vec![*account]
+        } else {
+            endpoints
+                .iter()
+                .map(|endpoint| endpoint.device)
+                .collect::<Vec<_>>()
+        };
+        if devices
             .iter()
-            .any(|endpoint| !self.sessions.contains_key(&endpoint.device))
+            .any(|device| !self.sessions.contains_key(device))
         {
             return Err(NodeError::NoSession);
         }
-        for endpoint in endpoints {
-            self.queue_attachment_bulk(&endpoint.device, record, now, rng)?;
-        }
-        Ok(())
+        self.queue_attachment_padded(
+            &devices,
+            padded,
+            media_transfers,
+            media_objects,
+            delete_controls,
+            now,
+            rng,
+        )
     }
 
-    fn queue_attachment_bulk(
+    #[allow(clippy::too_many_arguments)] // exact control and durable consequence boundary
+    fn queue_attachment_bulk_records(
         &mut self,
-        peer: &[u8; 32],
-        record: &AttachmentBulkRecord<'_>,
+        devices: &[[u8; 32]],
+        records: &[&AttachmentBulkRecord<'_>],
+        media_transfers: &[MediaTransferTransition<'_>],
+        media_objects: &[MediaObjectTransition<'_>],
+        delete_controls: &[DeferredControlRecord],
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
-        let payload = encode_attachment_bulk_record(record)?;
-        let padded = pad_to_minimum(&payload, BULK_CONTROL_PADDING_FLOOR)?;
-        self.commit_pairwise_envelopes(
-            &[*peer],
+        let padded = Self::encode_attachment_bulk_records(records)?;
+        self.queue_attachment_padded(
+            devices,
             &padded,
+            media_transfers,
+            media_objects,
+            delete_controls,
+            now,
+            rng,
+        )
+    }
+
+    fn encode_attachment_bulk_records(
+        records: &[&AttachmentBulkRecord<'_>],
+    ) -> Result<Vec<Vec<u8>>> {
+        records
+            .iter()
+            .map(|record| -> Result<Vec<u8>> {
+                let payload = encode_attachment_bulk_record(record)?;
+                Ok(pad_to_minimum(&payload, BULK_CONTROL_PADDING_FLOOR)?)
+            })
+            .collect()
+    }
+
+    #[allow(clippy::too_many_arguments)] // exact control and durable consequence boundary
+    fn queue_attachment_padded(
+        &mut self,
+        devices: &[[u8; 32]],
+        padded: &[Vec<u8>],
+        media_transfers: &[MediaTransferTransition<'_>],
+        media_objects: &[MediaObjectTransition<'_>],
+        delete_controls: &[DeferredControlRecord],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let payloads = padded.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        self.commit_pairwise_payloads_with_effects(
+            devices,
+            &payloads,
             EnvelopeKind::Receipt,
             QueueClass::Bulk,
             None,
+            media_transfers,
+            media_objects,
+            delete_controls,
             now,
             rng,
         )?;
@@ -2083,6 +2300,36 @@ impl Node {
             .ok_or(NodeError::UnknownAttachment)
     }
 
+    fn commit_attachment_state(
+        &mut self,
+        transfer_before: &MediaTransferRecord,
+        transfer_after: &MediaTransferRecord,
+        object_pairs: &[(MediaObjectRecord, MediaObjectRecord)],
+        delete_controls: &[DeferredControlRecord],
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let transfer = (transfer_before != transfer_after).then_some(MediaTransferTransition {
+            before: transfer_before,
+            after: transfer_after,
+        });
+        let objects = object_pairs
+            .iter()
+            .filter(|(before, after)| before != after)
+            .map(|(before, after)| MediaObjectTransition { before, after })
+            .collect::<Vec<_>>();
+        let receipt = self.store.commit_plan(
+            CommitPlan::AttachmentState(AttachmentStatePlan {
+                media_transfers: transfer.as_slice(),
+                media_objects: &objects,
+                delete_controls,
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.accept_commit_receipt(receipt, []);
+        Ok(())
+    }
+
     fn require_attachment(&self, transfer_id: &[u8; 16]) -> Result<MediaTransferRecord> {
         match self.store.get_media_transfer(transfer_id)? {
             Some(MediaRecord::Available(transfer)) => Ok(transfer),
@@ -2152,20 +2399,93 @@ impl Node {
         notify_remote: bool,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
-        if transfer.direction == MediaDirection::Inbound || state == MediaTransferState::Corrupt {
-            for object in self.store.media_objects_for_transfer(&transfer.local_id)? {
-                self.store
-                    .set_media_object_state(&object.local_id, state, rng)?;
-            }
-        }
-        self.store.set_media_transfer_state(
-            &transfer.local_id,
-            state,
-            if notify_remote { now } else { 0 },
-            rng,
-        )?;
+        let object_pairs = if transfer.direction == MediaDirection::Inbound
+            || state == MediaTransferState::Corrupt
+        {
+            self.store
+                .media_objects_for_transfer(&transfer.local_id)?
+                .into_iter()
+                .map(|object| {
+                    let after = media_object_with_state(&object, state);
+                    (object, after)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let mut transfer_after = transfer.clone();
+        transfer_after.state = state;
+        transfer_after.updated_at = if notify_remote { now } else { 0 };
+        self.commit_attachment_state(transfer, &transfer_after, &object_pairs, &[], rng)?;
         self.attachment_request_at.remove(&transfer.local_id);
         self.attachment_request_target.remove(&transfer.local_id);
+        self.emit_attachment_update(&transfer.local_id)
+    }
+
+    #[allow(clippy::too_many_arguments)] // authenticated control, response, and state boundary
+    fn finish_attachment_from_control(
+        &mut self,
+        transfer: &MediaTransferRecord,
+        object_id: [u8; 16],
+        state: MediaTransferState,
+        response: Option<AttachmentBulkOperation<'_>>,
+        peer_device: [u8; 32],
+        control: &DeferredControlRecord,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let object_pairs = if transfer.direction == MediaDirection::Inbound
+            || state == MediaTransferState::Corrupt
+        {
+            self.store
+                .media_objects_for_transfer(&transfer.local_id)?
+                .into_iter()
+                .map(|object| {
+                    let after = media_object_with_state(&object, state);
+                    (object, after)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let mut transfer_after = transfer.clone();
+        transfer_after.state = state;
+        transfer_after.updated_at = 0;
+        if let Some(operation) = response {
+            let record = self.bulk_record(transfer, object_id, operation)?;
+            let transfer_transition =
+                (transfer != &transfer_after).then_some(MediaTransferTransition {
+                    before: transfer,
+                    after: &transfer_after,
+                });
+            let object_transitions = object_pairs
+                .iter()
+                .filter(|(before, after)| before != after)
+                .map(|(before, after)| MediaObjectTransition { before, after })
+                .collect::<Vec<_>>();
+            self.queue_attachment_bulk_records(
+                &[peer_device],
+                &[&record],
+                transfer_transition.as_slice(),
+                &object_transitions,
+                core::slice::from_ref(control),
+                now,
+                rng,
+            )?;
+        } else {
+            self.commit_attachment_state(
+                transfer,
+                &transfer_after,
+                &object_pairs,
+                core::slice::from_ref(control),
+                rng,
+            )?;
+        }
+        self.attachment_request_at.remove(&transfer.local_id);
+        self.attachment_request_target.remove(&transfer.local_id);
+        if !object_pairs.is_empty() {
+            self.store.collect_media_garbage()?;
+        }
         self.emit_attachment_update(&transfer.local_id)
     }
 
@@ -2359,8 +2679,24 @@ mod tests {
             operation: AttachmentBulkOperation::Cancel(AttachmentReason::User),
         };
         let encoded = encode_attachment_bulk_record(&record).unwrap();
-        node.apply_attachment_bulk([2; 32], [2; 32], &encoded, 1_800_000_000, &mut rng)
-            .unwrap();
+        let control = DeferredControlRecord {
+            content_id: [5; 16],
+            peer: [2; 32],
+            peer_device: [2; 32],
+            kind: kult_store::DeferredControlKind::AttachmentBulk,
+            body: encoded.clone(),
+            received_at: 1_800_000_000,
+        };
+        assert!(!node
+            .apply_attachment_bulk(
+                [2; 32],
+                [2; 32],
+                &encoded,
+                1_800_000_000,
+                &control,
+                &mut rng,
+            )
+            .unwrap());
         assert!(node.attachments().unwrap().is_empty());
         assert!(node.drain_events().is_empty());
     }

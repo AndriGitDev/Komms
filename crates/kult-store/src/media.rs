@@ -19,7 +19,10 @@ use kult_protocol::{
     MAX_PRIMARY_OBJECT_LEN,
 };
 
-use crate::{store_v2, Result, Store, StoreError};
+use crate::{
+    store_v2, AttachmentStatePlan, CommitPlan, MediaObjectTransition, Result, Store, StoreError,
+    MAX_MAINTENANCE_TRANSITIONS,
+};
 
 const MEDIA_RECORD_VERSION: u8 = 1;
 const MEDIA_CHUNK_AD: &[u8] = b"KAT-store-chunk-v1";
@@ -230,6 +233,30 @@ pub struct MediaReconciliation {
     pub unknown_records: usize,
 }
 
+/// One bounded candidate page of startup media-state repairs.
+pub struct MediaReconciliationBatch {
+    /// Exact missing-file object replacements.
+    pub transitions: Vec<(MediaObjectRecord, MediaObjectRecord)>,
+    /// Unknown record versions that require conservative orphan retention.
+    pub unknown_records: usize,
+    /// Whether no additional missing-file transition remains after this page.
+    pub complete: bool,
+}
+
+/// File-first candidate for one attachment chunk metadata transition.
+///
+/// The sealed file is durable before this value is returned. Callers commit
+/// `before` → `after` through a typed protocol plan; an uncommitted file is an
+/// unreferenced orphan removed by bounded reconciliation.
+pub struct StagedMediaChunk {
+    /// Exact object row read before staging the file.
+    pub before: MediaObjectRecord,
+    /// Candidate object row that references the staged file.
+    pub after: MediaObjectRecord,
+    /// Ciphertext-derived local address of the staged sealed file.
+    pub address: [u8; 32],
+}
+
 pub(crate) fn prepare_media_directory(store_path: &Path) -> Result<PathBuf> {
     let name = store_path.file_name().ok_or(StoreError::NotAStore)?;
     let mut media_name = OsString::from(name);
@@ -414,21 +441,22 @@ impl Store {
         Ok(())
     }
 
-    /// Commit one already end-to-end-encrypted chunk as a locally sealed file.
+    /// Stage one already end-to-end-encrypted chunk as a locally sealed file.
     ///
-    /// The temp file is fsynced, atomically renamed, and only then is the
-    /// sealed address map and progress bit committed in SQLite.
-    pub fn commit_media_chunk(
+    /// The temp file is fsynced and atomically renamed before an object-row
+    /// candidate is returned. This method never advances SQLite metadata.
+    pub fn stage_media_chunk(
         &mut self,
         local_id: &[u8; 16],
         index: u32,
         sealed_chunk: &[u8],
         rng: &mut impl CryptoRngCore,
-    ) -> Result<[u8; 32]> {
+    ) -> Result<StagedMediaChunk> {
         if sealed_chunk.len() != ATTACHMENT_SEALED_CHUNK_LEN {
             return Err(StoreError::MediaState);
         }
-        let mut object = self.require_object(local_id)?;
+        let before = self.require_object(local_id)?;
+        let mut object = before.clone();
         let slot = usize::try_from(index).map_err(|_| StoreError::MediaState)?;
         if slot >= object.chunk_addresses.len() {
             return Err(StoreError::MediaState);
@@ -436,7 +464,11 @@ impl Store {
         let address = bulk_hash(sealed_chunk);
         if let Some(existing) = object.chunk_addresses[slot] {
             if existing == address && self.chunk_path(&address).is_file() {
-                return Ok(address);
+                return Ok(StagedMediaChunk {
+                    before: before.clone(),
+                    after: before,
+                    address,
+                });
             }
             return Err(StoreError::MediaState);
         }
@@ -495,8 +527,29 @@ impl Store {
         if !matches!(object.state, MediaTransferState::Complete) {
             object.state = MediaTransferState::Transferring;
         }
-        self.persist_object(&object, rng)?;
-        Ok(address)
+        Ok(StagedMediaChunk {
+            before,
+            after: object,
+            address,
+        })
+    }
+
+    /// Commit one staged chunk through the legacy single-row media boundary.
+    ///
+    /// Protocol paths use [`Store::stage_media_chunk`] and include the
+    /// returned object transition in their typed commit plan.
+    pub fn commit_media_chunk(
+        &mut self,
+        local_id: &[u8; 16],
+        index: u32,
+        sealed_chunk: &[u8],
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 32]> {
+        let staged = self.stage_media_chunk(local_id, index, sealed_chunk, rng)?;
+        if staged.before != staged.after {
+            self.persist_object(&staged.after, rng)?;
+        }
+        Ok(staged.address)
     }
 
     /// Read and locally unseal one end-to-end encrypted chunk record.
@@ -559,6 +612,30 @@ impl Store {
         self.persist_object(&object, rng)
     }
 
+    /// Prepare an exact object transition to `Complete` after checking every
+    /// committed address, byte count, and final content hash.
+    pub fn prepare_media_complete(
+        &self,
+        local_id: &[u8; 16],
+        verified_hash: &[u8; 32],
+    ) -> Result<(MediaObjectRecord, MediaObjectRecord)> {
+        let before = self.require_object(local_id)?;
+        if &before.content_hash != verified_hash
+            || before.chunk_addresses.iter().any(Option::is_none)
+            || before.verified_bytes != before.total_len
+            || before
+                .chunk_addresses
+                .iter()
+                .flatten()
+                .any(|address| !self.chunk_path(address).is_file())
+        {
+            return Err(StoreError::MediaState);
+        }
+        let mut after = before.clone();
+        after.state = MediaTransferState::Complete;
+        Ok((before, after))
+    }
+
     /// Delete one object row and garbage-collect chunk files no longer referenced.
     pub fn delete_media_object(&mut self, local_id: &[u8; 16]) -> Result<()> {
         self.delete_equality::<store_v2::MediaObjectRows>(&store_v2::LocalIdKey::new(*local_id))?;
@@ -603,31 +680,85 @@ impl Store {
     ///
     /// Call this once after `Store::open`, when the node has supplied an RNG.
     pub fn reconcile_media(&mut self, rng: &mut impl CryptoRngCore) -> Result<MediaReconciliation> {
-        let mut report = MediaReconciliation {
-            stale_temps_removed: remove_stale_temps(&self.media_dir)?,
-            ..MediaReconciliation::default()
+        let mut missing_objects = 0usize;
+        let unknown_records = loop {
+            let batch = self.prepare_media_reconciliation(MAX_MAINTENANCE_TRANSITIONS)?;
+            missing_objects = missing_objects
+                .checked_add(batch.transitions.len())
+                .ok_or(StoreError::MediaQuota)?;
+            if !batch.transitions.is_empty() {
+                let transitions = batch
+                    .transitions
+                    .iter()
+                    .map(|(before, after)| MediaObjectTransition { before, after })
+                    .collect::<Vec<_>>();
+                self.commit_plan(
+                    CommitPlan::AttachmentState(AttachmentStatePlan {
+                        media_transfers: &[],
+                        media_objects: &transitions,
+                        delete_controls: &[],
+                        presentation_changed: false,
+                    }),
+                    rng,
+                )?;
+            }
+            if batch.complete {
+                break batch.unknown_records;
+            }
         };
-        let records = self.media_objects()?;
-        for record in records {
+        let mut report = self.finish_media_reconciliation(unknown_records)?;
+        report.missing_objects = missing_objects;
+        Ok(report)
+    }
+
+    /// Prepare at most `limit` exact missing-file object transitions.
+    pub fn prepare_media_reconciliation(&self, limit: usize) -> Result<MediaReconciliationBatch> {
+        if limit == 0 || limit > MAX_MAINTENANCE_TRANSITIONS {
+            return Err(StoreError::MaintenanceBounds);
+        }
+        let mut transitions = Vec::new();
+        let mut unknown_records = 0usize;
+        let mut complete = true;
+        for record in self.media_objects()? {
             match record {
-                MediaRecord::Unavailable { .. } => report.unknown_records += 1,
-                MediaRecord::Available(mut object) => {
-                    let missing = object
+                MediaRecord::Unavailable { .. } => unknown_records += 1,
+                MediaRecord::Available(before) => {
+                    let missing = before
                         .chunk_addresses
                         .iter()
                         .flatten()
                         .any(|address| !self.chunk_path(address).is_file());
-                    if missing && object.state != MediaTransferState::Unavailable {
-                        object.state = MediaTransferState::Unavailable;
-                        self.persist_object(&object, rng)?;
-                        report.missing_objects += 1;
+                    if !missing || before.state == MediaTransferState::Unavailable {
+                        continue;
                     }
+                    if transitions.len() == limit {
+                        complete = false;
+                        continue;
+                    }
+                    let mut after = before.clone();
+                    after.state = MediaTransferState::Unavailable;
+                    transitions.push((before, after));
                 }
             }
         }
-        report.orphan_files_removed =
-            self.garbage_collect_media_files(report.unknown_records > 0)?;
-        Ok(report)
+        Ok(MediaReconciliationBatch {
+            transitions,
+            unknown_records,
+            complete,
+        })
+    }
+
+    /// Remove uncommitted filesystem residue after all metadata repairs commit.
+    pub fn finish_media_reconciliation(
+        &self,
+        unknown_records: usize,
+    ) -> Result<MediaReconciliation> {
+        Ok(MediaReconciliation {
+            stale_temps_removed: remove_stale_temps(&self.media_dir)?,
+            orphan_files_removed: self.garbage_collect_media_files(unknown_records > 0)?,
+            missing_objects: 0,
+            unknown_records,
+        })
     }
 
     /// Remove sealed chunk files no longer referenced by committed metadata.

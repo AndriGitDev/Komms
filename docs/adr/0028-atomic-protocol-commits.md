@@ -1,7 +1,7 @@
 # ADR-0028: Atomic protocol-state commits
 
-- **Status**: Proposed; pairwise commit-plan slice implemented
-- **Date**: 2026-07-26
+- **Status**: Proposed; stable-profile implementation inventory recorded
+- **Date**: 2026-07-27
 
 ## Context
 
@@ -11,8 +11,7 @@ advanced cryptographic state in separate SQLite autocommits from message
 history, replay markers, receipt routes, delivery rows, and outbound queue
 entries. A process stop or disk error between writes could make a valid inbound
 ciphertext permanently undecryptable or advance an outbound chain without
-retaining the only ciphertext produced by that step. Group sender/receiver
-transitions still need the corresponding typed plans.
+retaining the only ciphertext produced by that step.
 
 Deferred inbox rows also need at-least-once processing: removing a row before
 all durable consequences commit turns an ordinary crash into message loss.
@@ -31,9 +30,13 @@ work only on those candidate values and creates one bounded typed commit plan:
 
 - `PairwiseSend`;
 - `PairwiseReceive`;
+- `PrekeyPublish`;
 - `HandshakeReceive`;
 - `GroupSend`;
 - `GroupReceive`;
+- `GroupState`;
+- `AttachmentStage`;
+- `AttachmentState`;
 - `ReceiptReceive`; or
 - `Maintenance`.
 
@@ -142,43 +145,50 @@ or plaintext consequence.
 
 ### 7. Implementation and evidence status
 
-The implemented pairwise slice now provides bounded `PairwiseSend`,
-`PairwiseReceive`, `HandshakeReceive`, `ReceiptReceive`, and `Maintenance`
-plans. It covers ordinary and versioned text, edits, pairwise attachment offers,
-ephemeral content, capability controls, receipts, scheduled activation,
-late-device delivery, bounded unconfirmed-session repair, reset re-handshakes,
-retry/expiry and view-once-tombstone maintenance, and exact pending-row
-acknowledgement. Sessions and the prekey vault are cloned before cryptographic
-work; live memory changes only after a successful commit receipt.
+The implementation now provides all eleven plan kinds above. They cover
+pairwise and group text, edits, polls, roles, authority changes, group
+announcements and bounded fan-out, pairwise and group attachments, missing
+ranges, ephemeral/view-once state, scheduled activation, call signalling,
+late-device delivery, exact deferred-control acknowledgement, retry/expiry,
+session repair, media reconciliation, and presentation recovery. Fresh
+out-of-band one-time-prekey issuance uses `PrekeyPublish`; inbound consumption
+uses `HandshakeReceive` and cannot commit without the established session.
 
 Each plan validates its bounded before/after relationships before
-`BEGIN IMMEDIATE`. The transaction then writes the advanced candidate state and
-every paired ciphertext or accepted plaintext consequence. Complete fresh
-envelopes enter the durable pending inbox before parsing or cryptographic work.
-Top-level fragments are the bounded exception: assembly advances no ratchet,
-the completed inner envelope is staged before deferral, and refused assembly
-leaves the fragments unseen for carrier retry.
+`BEGIN IMMEDIATE`. The transaction writes the detached candidate and every
+paired ciphertext or accepted plaintext consequence. Complete fresh envelopes
+enter the durable pending inbox before parsing or cryptographic work. Top-level
+fragments are the bounded exception: assembly advances no ratchet, the
+completed inner envelope is staged before deferral, and refused assembly leaves
+the fragments unseen for carrier retry.
 
 A sealed presentation marker is written in the same transaction as every
-pairwise-visible transition. If the process stops after commit but before event
+visible transition. If the process stops after commit but before event
 delivery, reopening the node emits `StateResyncRequired`; the marker is removed
 only after a later tick acknowledges delivery. The FFI and daemon surfaces
 preserve that signal, and the desktop shell responds by re-reading its visible
-snapshots. The deterministic crash suite in
-`crates/kult-node/src/atomic_tests.rs` exercises before/after cryptographic
-steps, every logical transaction statement, commit, memory replacement, event
-delivery, disk-full, constraint, duplicate, reorder, deferred-input, expiry,
-session-repair, and restart cases for the five implemented plan kinds.
+snapshots.
 
-This is not full ADR acceptance. `GroupSend` and `GroupReceive` plans remain
-unimplemented. Authenticated attachment and group controls are durably accepted
-before their bounded follow-up runs, but their group/media follow-up mutations
-still need a single typed plan with the deferred-control acknowledgement.
-Real-time call state remains intentionally process-local and is not restored
-after a restart. Unknown valid handshakes still enter the ordinary contact table
-rather than the ADR-0030 request quarantine. Those gaps keep this ADR Proposed
-and prevent the pairwise evidence from being presented as universal protocol
-atomicity.
+The deterministic crash suite in `crates/kult-node/src/atomic_tests.rs`
+exercises before/after cryptographic steps, every logical transaction
+statement, commit, memory replacement, event delivery, disk-full, constraint,
+duplicate, reorder, deferred-input, expiry, session-repair, scheduled
+activation, maximum stable-v1 group fan-out, and restart cases for every plan
+kind. Group end-to-end evidence covers partial carrier handoff and restart;
+media evidence covers duplicate chunks, interrupted files and full quotas;
+backup evidence covers each replacement phase and fresh-secret initialization.
+The complete path-by-path disposition is the
+[atomic transition inventory](../34-atomic-transition-inventory.md).
+
+This is not full ADR acceptance. The current linked-device Alpha implementation
+uses the authority design that ADR-0026 must replace and retains quarantined
+multi-write link/sync paths. The current automatic-contact flow remains outside
+stable-v1 pending ADR-0030. Interrupted initial profile creation can leave an
+unusable partial path, mailbox-v1 cannot yet acknowledge leased relay custody
+after endpoint commit, and live call state remains intentionally process-local.
+Independent review and supported-platform sudden-power-loss qualification are
+also absent. These gaps keep this ADR Proposed and prevent the implemented
+matrix from being presented as universal protocol atomicity.
 
 ## Alternatives considered
 

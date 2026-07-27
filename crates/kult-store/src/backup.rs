@@ -346,6 +346,33 @@ impl Store {
         profile: KdfProfile,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Self> {
+        Self::restore_backup_with_initializer(
+            path,
+            backup,
+            mnemonic,
+            passphrase,
+            profile,
+            rng,
+            |_store, _rng| Ok(()),
+        )
+        .map(|(store, ())| store)
+    }
+
+    /// Restore and finish caller-owned state inside the sibling database
+    /// before its single atomic replacement makes the destination visible.
+    pub fn restore_backup_with_initializer<R, T, F>(
+        path: &std::path::Path,
+        backup: &[u8],
+        mnemonic: &str,
+        passphrase: &[u8],
+        profile: KdfProfile,
+        rng: &mut R,
+        initializer: F,
+    ) -> Result<(Self, T)>
+    where
+        R: CryptoRngCore,
+        F: FnOnce(&Store, &mut R) -> Result<T>,
+    {
         if backup.len() <= HEADER_LEN
             || u64::try_from(backup.len()).map_or(true, |length| length > MAX_BACKUP_FILE_BYTES)
         {
@@ -517,6 +544,14 @@ impl Store {
                 return Err(error);
             }
         };
+        let initialized = match initializer(&store, rng) {
+            Ok(initialized) => initialized,
+            Err(error) => {
+                drop(store);
+                cleanup_restore_temporary(&temporary)?;
+                return Err(error);
+            }
+        };
         store.validate_open_state()?;
         migration::sync_database_for_replacement(&store.conn)?;
         drop(store);
@@ -534,7 +569,7 @@ impl Store {
         let database_lock = acquire_database_identity_lock(path)?;
         let store = Store::open_v2_with_parts(path, passphrase, conn, database_lock, lock, false)?;
         migration::cleanup_obsolete_siblings(&temporary)?;
-        Ok(store)
+        Ok((store, initialized))
     }
 
     /// The Argon2id profile this store was created with.
@@ -1010,32 +1045,83 @@ mod tests {
 
             set_restore_failpoint(phase);
             assert!(matches!(
-                Store::restore_backup(
+                Store::restore_backup_with_initializer(
                     &target_path,
                     &backup,
                     &mnemonic,
                     b"target-pass",
                     TEST_KDF,
                     &mut rng,
+                    |store, rng| {
+                        store.put_prekeys(&[phase; 4], rng)?;
+                        Ok(())
+                    },
                 ),
                 Err(StoreError::MigrationValidation)
             ));
             let restored = if phase == 1 {
-                Store::restore_backup(
+                Store::restore_backup_with_initializer(
                     &target_path,
                     &backup,
                     &mnemonic,
                     b"target-pass",
                     TEST_KDF,
                     &mut rng,
+                    |store, rng| {
+                        store.put_prekeys(&[phase; 4], rng)?;
+                        Ok(())
+                    },
                 )
                 .unwrap()
+                .0
             } else {
                 Store::open(&target_path, b"target-pass").unwrap()
             };
             assert_eq!(restored.get_identity().unwrap().unwrap().public(), expected);
+            assert_eq!(
+                restored.get_prekeys().unwrap().unwrap().as_slice(),
+                &[phase; 4]
+            );
             assert!(!restore_temporary_path(&target_path).unwrap().exists());
         }
+    }
+
+    #[test]
+    fn restore_initializer_failure_leaves_no_visible_destination() {
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("source.db");
+        let target_path = directory.path().join("target.db");
+        let mut rng = StdRng::seed_from_u64(0x7005);
+        let source = Store::create(&source_path, b"source-pass", TEST_KDF, &mut rng).unwrap();
+        source
+            .put_identity(&Identity::generate(&mut rng), &mut rng)
+            .unwrap();
+        let (backup, mnemonic) = source.export_backup(123, &mut rng).unwrap();
+        drop(source);
+
+        assert!(matches!(
+            Store::restore_backup_with_initializer(
+                &target_path,
+                &backup,
+                &mnemonic,
+                b"target-pass",
+                TEST_KDF,
+                &mut rng,
+                |_store, _rng| Err::<(), _>(StoreError::MigrationValidation),
+            ),
+            Err(StoreError::MigrationValidation)
+        ));
+        assert!(!target_path.exists());
+        assert!(!restore_temporary_path(&target_path).unwrap().exists());
+        Store::restore_backup(
+            &target_path,
+            &backup,
+            &mnemonic,
+            b"target-pass",
+            TEST_KDF,
+            &mut rng,
+        )
+        .unwrap();
     }
 
     #[test]
