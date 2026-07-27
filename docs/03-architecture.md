@@ -150,10 +150,11 @@ clock advance activates it on the next tick; time-zone changes are display-only.
    envelope, and any consumed schedule/reset/capability state through one typed
    `BEGIN IMMEDIATE` transition. The UI changes only after the commit receipt;
    a durable presentation marker requests snapshot resynchronization after a
-   commit-before-notification restart. This evidence is pairwise-specific:
-   group sender/receiver plans and deferred group/media control follow-up remain
-   open under [ADR-0028](adr/0028-atomic-protocol-commits.md), so Komms does not
-   claim universal crash atomicity.
+   commit-before-notification restart. Group sender/receiver, bounded fan-out,
+   attachment and deferred group/media follow-up use the corresponding typed
+   transitions. The [complete inventory](34-atomic-transition-inventory.md)
+   records the implemented and excluded boundaries; open device-authority,
+   first-contact, bootstrap and relay-custody paths keep ADR-0028 Proposed.
 3. **kult-protocol** serializes content, pads it to the next size bucket, and hands it to
    the conversation's ratchet.
 4. **kult-crypto** advances the sending chain, encrypts with XChaCha20-Poly1305, and

@@ -35,7 +35,7 @@
 
 #[cfg(feature = "test-failpoints")]
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -59,17 +59,18 @@ use kult_protocol::{
     MIN_EPHEMERAL_LIFETIME_SECS, REASSEMBLY_WINDOW_SECS,
 };
 use kult_store::{
-    CommitPlan, CommitReceipt, ContactDeviceDelete, ContactDeviceRecord, ContactRecord,
-    ConversationId, ConversationMetadata, DeferredControlKind, DeferredControlRecord,
-    DeliveryState, DeliveryTransition, DeviceStateRecord, Direction, EphemeralConversation,
-    EphemeralMode, EphemeralRecord, EphemeralState, EphemeralTransition, GroupMessageDelete,
-    GroupMessageRecord, GroupMessageTransition, GroupRecord, GroupTransition, HandshakeReceivePlan,
-    LocalMetadataKey, LocalMetadataRecord, MaintenancePlan, MediaDelete, MediaObjectRecord,
-    MediaTransferRecord, MessageDelete, MessageDeviceDeliveryRecord, MessageRecord,
-    MessageTransition, NoteMessageRecord, PairwiseReceivePlan, PairwiseSendPlan, PendingDelete,
+    AttachmentStatePlan, CommitPlan, CommitReceipt, ContactDeviceDelete, ContactDeviceRecord,
+    ContactRecord, ConversationId, ConversationMetadata, DeferredControlKind,
+    DeferredControlRecord, DeliveryState, DeliveryTransition, DeviceStateRecord, Direction,
+    EphemeralConversation, EphemeralMode, EphemeralRecord, EphemeralState, EphemeralTransition,
+    GroupMessageDelete, GroupMessageRecord, GroupMessageTransition, GroupRecord, GroupTransition,
+    HandshakeReceivePlan, LocalMetadataKey, LocalMetadataRecord, MaintenancePlan, MediaDelete,
+    MediaObjectRecord, MediaObjectTransition, MediaTransferRecord, MediaTransferTransition,
+    MessageDelete, MessageDeviceDeliveryRecord, MessageRecord, MessageTransition,
+    NoteMessageRecord, PairwiseReceivePlan, PairwiseSendPlan, PendingDelete, PrekeyPublishPlan,
     PrekeyTransition, QueueClass, QueueDelete, QueueItem, QueueTransition, ReceiptReceivePlan,
     ScheduledConversation as StoreScheduledConversation, ScheduledMessageRecord, SessionTransition,
-    Store,
+    Store, MAX_MAINTENANCE_TRANSITIONS,
 };
 use kult_transport::{CostClass, DeliveryHint, Discovery, Reachability, Transport};
 
@@ -688,13 +689,26 @@ impl Node {
         profile: KdfProfile,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Self> {
-        let store = Store::restore_backup(path, backup, mnemonic, passphrase, profile, rng)?;
+        let (store, vault) = Store::restore_backup_with_initializer(
+            path,
+            backup,
+            mnemonic,
+            passphrase,
+            profile,
+            rng,
+            |store, rng| {
+                let identity = store
+                    .get_identity()?
+                    .ok_or(kult_store::StoreError::NotAStore)?;
+                if store.get_device_state()?.is_none() {
+                    devices::initialize_fresh_device(store, &identity, rng)?;
+                }
+                let vault = PrekeyVault::generate(rng);
+                store.put_prekeys(&vault.encode(), rng)?;
+                Ok(vault)
+            },
+        )?;
         let identity = store.get_identity()?.ok_or(NodeError::CorruptState)?;
-        if store.get_device_state()?.is_none() {
-            devices::initialize_fresh_device(&store, &identity, rng)?;
-        }
-        let vault = PrekeyVault::generate(rng);
-        store.put_prekeys(&vault.encode(), rng)?;
         Self::assemble(store, identity, vault)
     }
 
@@ -871,8 +885,11 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Vec<u8>> {
+        let before_vault = self.vault.encode();
         let mut candidate_vault = self.vault.clone();
+        let step = self.begin_crypto_step()?;
         let opk = candidate_vault.fresh_opk(rng);
+        self.finish_crypto_step(step)?;
         let linked = self.device_state.manifest.devices.len() > 1;
         let signing_identity = if linked {
             &self.device_identity
@@ -897,7 +914,16 @@ impl Node {
         } else {
             bundle.encode()
         };
-        self.store.put_prekeys(&candidate_vault.encode(), rng)?;
+        let after_vault = candidate_vault.encode();
+        self.store.commit_plan(
+            CommitPlan::PrekeyPublish(PrekeyPublishPlan {
+                prekeys: PrekeyTransition {
+                    before: &before_vault,
+                    after: &after_vault,
+                },
+            }),
+            rng,
+        )?;
         self.before_memory_replacement()?;
         self.vault = candidate_vault;
         self.own_hints = hints.to_vec();
@@ -1903,10 +1929,15 @@ impl Node {
                 deliveries: &deliveries,
                 delivery_updates: &[],
                 queue: &queue,
+                groups: &[],
+                authorities: &[],
                 scheduled,
                 clear_capabilities: &clear_capabilities,
                 clear_reset_markers: &clear_reset_markers,
                 ephemeral: ephemeral.as_ref(),
+                media_transfers: &[],
+                media_objects: &[],
+                delete_controls: &[],
                 presentation_changed: true,
             }),
             rng,
@@ -2166,8 +2197,43 @@ impl Node {
             self.device_state_dirty = false;
         }
         if !self.media_reconciled {
-            self.store.reconcile_media(rng)?;
-            self.media_reconciled = true;
+            let batch = self
+                .store
+                .prepare_media_reconciliation(MAX_MAINTENANCE_TRANSITIONS)?;
+            if batch.transitions.is_empty() {
+                self.store
+                    .finish_media_reconciliation(batch.unknown_records)?;
+                self.media_reconciled = batch.complete;
+            } else {
+                let object_transitions = batch
+                    .transitions
+                    .iter()
+                    .map(|(before, after)| MediaObjectTransition { before, after })
+                    .collect::<Vec<_>>();
+                let receipt = self.store.commit_plan(
+                    CommitPlan::AttachmentState(AttachmentStatePlan {
+                        media_transfers: &[],
+                        media_objects: &object_transitions,
+                        delete_controls: &[],
+                        presentation_changed: true,
+                    }),
+                    rng,
+                )?;
+                let transfers = batch
+                    .transitions
+                    .iter()
+                    .map(|(_, after)| after.transfer_id)
+                    .collect::<HashSet<_>>();
+                self.accept_commit_receipt(receipt, []);
+                for transfer in transfers {
+                    self.emit_attachment_update(&transfer)?;
+                }
+                if batch.complete {
+                    self.store
+                        .finish_media_reconciliation(batch.unknown_records)?;
+                    self.media_reconciled = true;
+                }
+            }
         }
         self.apply_deferred_controls(now, rng)?;
         // Expiry is core-owned and runs before any queue activation, receive,
@@ -2377,7 +2443,6 @@ impl Node {
         //    established (a handshake later in the batch can unlock messages
         //    earlier in it). Each pass consumes at least one envelope, so
         //    this terminates.
-        let mut acks: Vec<([u8; 32], [u8; 16])> = Vec::new();
         let mut pending_acks: Vec<PendingDelete> = Vec::new();
         loop {
             let mut stash = Vec::new();
@@ -2391,7 +2456,6 @@ impl Node {
                     },
                     now,
                     rng,
-                    &mut acks,
                     &mut established,
                 )? {
                     Consumed::Done => {
@@ -2455,17 +2519,10 @@ impl Node {
         //     only under a fresh F4 bulk-capable verdict.
         self.activate_attachment_transfers(now, rng).await?;
 
-        // 3. Acknowledge consumed messages with end-to-end encrypted
-        //    receipts, and NACK the missing fragment indices of stale
+        // 3. NACK the missing fragment indices of stale
         //    partials (selective retransmission, docs/05-transports.md §4.2
-        //    rule 2) — batched per peer, acks and nacks in one envelope.
-        for (peer, content_id) in &acks {
-            self.store.put_receipt_replay(content_id, peer, now, rng)?;
-        }
-        let mut acks_by_peer: BTreeMap<[u8; 32], Vec<[u8; 16]>> = BTreeMap::new();
-        for (peer, content_id) in acks {
-            acks_by_peer.entry(peer).or_default().push(content_id);
-        }
+        //    rule 2). Accepted messages already own their encrypted receipt
+        //    and duplicate-replay route inside the receive commit plan.
         let mut nacks_by_peer: BTreeMap<[u8; 32], FragNacks> = BTreeMap::new();
         for (id, missing) in self.stale_partials(now) {
             // The fragment's delivery token names the session to ask.
@@ -2482,15 +2539,9 @@ impl Node {
             }
             nacks_by_peer.entry(peer).or_default().push((id, missing));
         }
-        let receipt_peers: BTreeSet<[u8; 32]> = acks_by_peer
-            .keys()
-            .chain(nacks_by_peer.keys())
-            .copied()
-            .collect();
-        for peer in receipt_peers {
-            let acks = acks_by_peer.remove(&peer).unwrap_or_default();
+        for peer in nacks_by_peer.keys().copied().collect::<Vec<_>>() {
             let nacks = nacks_by_peer.remove(&peer).unwrap_or_default();
-            self.queue_receipt(&peer, acks, nacks, now, rng)?;
+            self.queue_receipt(&peer, Vec::new(), nacks, now, rng)?;
         }
         if !pending_acks.is_empty() {
             self.store.commit_plan(
@@ -2986,25 +3037,14 @@ impl Node {
                         Ok(true)
                     }
                     StoreScheduledConversation::Group(group) => {
-                        self.group_send_with_id(
-                            &group,
-                            &scheduled.body,
-                            scheduled.id,
-                            scheduled.not_before,
-                            now,
-                            rng,
-                        )?;
-                        Ok(false)
+                        self.activate_scheduled_group_message(&group, &scheduled, now, rng)?;
+                        Ok(true)
                     }
                 }
             })();
             match activation {
                 Ok(true) => {}
-                Ok(false) => {
-                    self.store.delete_scheduled_message(&scheduled.id)?;
-                    self.events
-                        .push_back(Event::ScheduledMessageActivated { id: scheduled.id });
-                }
+                Ok(false) => unreachable!("scheduled activation reports committed success"),
                 Err(_) => continue,
             }
         }
@@ -3134,10 +3174,15 @@ impl Node {
                     deliveries: &[],
                     delivery_updates: &[],
                     queue: &queue,
+                    groups: &[],
+                    authorities: &[],
                     scheduled: None,
                     clear_capabilities: &clear_capabilities,
                     clear_reset_markers: &[marker],
                     ephemeral: None,
+                    media_transfers: &[],
+                    media_objects: &[],
+                    delete_controls: &[],
                     presentation_changed: false,
                 }),
                 rng,
@@ -3354,10 +3399,15 @@ impl Node {
                         deliveries: &[],
                         delivery_updates: &delivery_updates,
                         queue: &queue,
+                        groups: &[],
+                        authorities: &[],
                         scheduled: None,
                         clear_capabilities: &clear_capabilities,
                         clear_reset_markers: &[],
                         ephemeral: None,
+                        media_transfers: &[],
+                        media_objects: &[],
+                        delete_controls: &[],
                         presentation_changed: false,
                     }),
                     rng,
@@ -3383,33 +3433,30 @@ impl Node {
             .store
             .deferred_controls(MAX_DEFERRED_CONTROLS_PER_TICK)?
         {
-            let applied = match control.kind {
+            let (applied, acknowledged) = match control.kind {
                 DeferredControlKind::AttachmentBulk => {
-                    self.apply_attachment_bulk(
+                    let acknowledged = self.apply_attachment_bulk(
                         control.peer,
                         control.peer_device,
                         &control.body,
                         now,
+                        &control,
                         rng,
                     )?;
-                    true
+                    (true, acknowledged)
                 }
                 DeferredControlKind::GroupControl => {
                     let mut established = false;
-                    self.apply_group_control(
-                        control.peer,
-                        control.peer_device,
-                        &control.body,
-                        now,
-                        rng,
-                        &mut established,
-                    )?
+                    self.apply_group_control(&control, now, rng, &mut established)?
                 }
             };
             if !applied {
                 continue;
             }
             made_progress = true;
+            if acknowledged {
+                continue;
+            }
             let receipt = self.store.commit_plan(
                 CommitPlan::Maintenance(MaintenancePlan {
                     seen: &[],
@@ -3517,7 +3564,6 @@ impl Node {
         origin: ConsumeOrigin,
         now: u64,
         rng: &mut impl CryptoRngCore,
-        acks: &mut Vec<([u8; 32], [u8; 16])>,
         established: &mut bool,
     ) -> Result<Consumed> {
         // Multipath duplicates of anything already consumed are dropped here.
@@ -3570,8 +3616,11 @@ impl Node {
                 // Fragments never nest (we only fragment whole envelopes);
                 // treat nested ones as malformed.
                 if origin.depth > 0 {
-                    self.store.mark_seen(&env.content_id())?;
-                    return Ok(Consumed::Done);
+                    return self.commit_terminal_input(
+                        env.content_id(),
+                        origin.pending_sequence,
+                        rng,
+                    );
                 }
                 // Remember which delivery token this partial rides under so
                 // the NACK for its missing pieces (selective retransmission,
@@ -3602,7 +3651,6 @@ impl Node {
                             },
                             now,
                             rng,
-                            acks,
                             established,
                         )? {
                             // Reassembled before its session exists — stash
@@ -3617,12 +3665,14 @@ impl Node {
                 Ok(Consumed::Done)
             }
             EnvelopeKind::Handshake => {
-                self.consume_handshake(env, origin.pending_sequence, now, rng, acks, established)
+                self.consume_handshake(env, origin.pending_sequence, now, rng, established)
             }
             EnvelopeKind::Message | EnvelopeKind::Receipt | EnvelopeKind::GroupControl => {
-                self.consume_ratchet(env, origin.pending_sequence, now, rng, acks, established)
+                self.consume_ratchet(env, origin.pending_sequence, now, rng, established)
             }
-            EnvelopeKind::GroupMessage => self.consume_group_message(env, now, rng, acks),
+            EnvelopeKind::GroupMessage => {
+                self.consume_group_message(env, origin.pending_sequence, now, rng)
+            }
         }
     }
 
@@ -3632,7 +3682,6 @@ impl Node {
         pending_sequence: Option<i64>,
         now: u64,
         rng: &mut impl CryptoRngCore,
-        _acks: &mut [([u8; 32], [u8; 16])],
         established: &mut bool,
     ) -> Result<Consumed> {
         // Every failure below is permanent for this envelope (it cannot
@@ -3990,7 +4039,6 @@ impl Node {
         pending_sequence: Option<i64>,
         now: u64,
         rng: &mut impl CryptoRngCore,
-        _acks: &mut [([u8; 32], [u8; 16])],
         _established: &mut bool,
     ) -> Result<Consumed> {
         let Some(peer_device) = self.match_session(&env.token, now) else {
@@ -4744,14 +4792,73 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Vec<CommittedPairwiseEnvelope>> {
+        self.commit_pairwise_envelopes_with_effects(
+            devices,
+            padded,
+            kind,
+            class,
+            retention_until,
+            &[],
+            &[],
+            &[],
+            now,
+            rng,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // exact crypto and durable consequence boundary
+    pub(crate) fn commit_pairwise_envelopes_with_effects(
+        &mut self,
+        devices: &[[u8; 32]],
+        padded: &[u8],
+        kind: EnvelopeKind,
+        class: QueueClass,
+        retention_until: Option<u64>,
+        media_transfers: &[MediaTransferTransition<'_>],
+        media_objects: &[MediaObjectTransition<'_>],
+        delete_controls: &[DeferredControlRecord],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Vec<CommittedPairwiseEnvelope>> {
+        self.commit_pairwise_payloads_with_effects(
+            devices,
+            &[padded],
+            kind,
+            class,
+            retention_until,
+            media_transfers,
+            media_objects,
+            delete_controls,
+            now,
+            rng,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // exact crypto and durable consequence boundary
+    pub(crate) fn commit_pairwise_payloads_with_effects(
+        &mut self,
+        devices: &[[u8; 32]],
+        padded_payloads: &[&[u8]],
+        kind: EnvelopeKind,
+        class: QueueClass,
+        retention_until: Option<u64>,
+        media_transfers: &[MediaTransferTransition<'_>],
+        media_objects: &[MediaObjectTransition<'_>],
+        delete_controls: &[DeferredControlRecord],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Vec<CommittedPairwiseEnvelope>> {
         let mut routes = devices.to_vec();
         routes.sort_unstable();
         routes.dedup();
-        if routes.is_empty() || routes.len() > kult_store::MAX_PAIRWISE_COMMIT_DEVICES {
+        if routes.is_empty()
+            || routes.len() > kult_store::MAX_PAIRWISE_COMMIT_DEVICES
+            || padded_payloads.is_empty()
+        {
             return Err(NodeError::NoSession);
         }
         let mut prepared = Vec::with_capacity(routes.len());
-        let mut queue = Vec::with_capacity(routes.len());
+        let mut queue = Vec::with_capacity(routes.len().saturating_mul(padded_payloads.len()));
         for device in routes {
             let before = self
                 .sessions
@@ -4759,31 +4866,37 @@ impl Node {
                 .cloned()
                 .ok_or(NodeError::NoSession)?;
             let mut after = before.clone();
-            let message = self.candidate_encrypt(&mut after, rng, now, padded)?;
-            let token = delivery_token(
-                &MailboxKey::from_bytes(*after.mailbox_key()),
-                epoch_day(now),
-                &device,
-            );
-            let envelope = match retention_until {
-                Some(deadline) => Envelope::new_retained(kind, token, deadline, message.encode())?,
-                None => Envelope::new(kind, token, message.encode()),
-            };
-            queue.push(QueueItem {
-                peer: device,
-                msg_id: None,
-                group_msg_id: None,
-                class,
-                created_at: now,
-                attempts: 0,
-                next_attempt_at: now,
-                envelope: envelope.clone(),
-            });
+            let mut final_envelope = None;
+            for padded in padded_payloads {
+                let message = self.candidate_encrypt(&mut after, rng, now, padded)?;
+                let token = delivery_token(
+                    &MailboxKey::from_bytes(*after.mailbox_key()),
+                    epoch_day(now),
+                    &device,
+                );
+                let envelope = match retention_until {
+                    Some(deadline) => {
+                        Envelope::new_retained(kind, token, deadline, message.encode())?
+                    }
+                    None => Envelope::new(kind, token, message.encode()),
+                };
+                queue.push(QueueItem {
+                    peer: device,
+                    msg_id: None,
+                    group_msg_id: None,
+                    class,
+                    created_at: now,
+                    attempts: 0,
+                    next_attempt_at: now,
+                    envelope: envelope.clone(),
+                });
+                final_envelope = Some(envelope);
+            }
             prepared.push(PreparedPairwiseRoute {
                 route: device,
                 before: Some(before),
                 after,
-                envelope,
+                envelope: final_envelope.expect("payloads are non-empty"),
                 resets_capabilities: false,
             });
         }
@@ -4803,11 +4916,16 @@ impl Node {
                 deliveries: &[],
                 delivery_updates: &[],
                 queue: &queue,
+                groups: &[],
+                authorities: &[],
                 scheduled: None,
                 clear_capabilities: &[],
                 clear_reset_markers: &[],
                 ephemeral: None,
-                presentation_changed: false,
+                media_transfers,
+                media_objects,
+                delete_controls,
+                presentation_changed: !media_transfers.is_empty() || !media_objects.is_empty(),
             }),
             rng,
         )?;

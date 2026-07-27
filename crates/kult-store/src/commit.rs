@@ -1,19 +1,22 @@
 //! Bounded typed transactions for protocol-state transitions (ADR-0028).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use rand_core::CryptoRngCore;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use kult_crypto::Session;
-use kult_protocol::{CapabilityControl, Envelope, EnvelopeKind};
+use kult_protocol::{
+    CapabilityControl, Envelope, EnvelopeKind, MAX_GROUP_ADMIN_REQUESTS,
+    MAX_GROUP_AUTHORITY_MEMBERS, MAX_GROUP_MEMBER_IDENTITY_LEN, MAX_GROUP_NAME_LEN,
+};
 
 use crate::{
     decode_exact, store_v2, ContactDeviceRecord, ContactRecord, DeliveryState, Direction,
-    EphemeralRecord, EphemeralState, GroupMessageRecord, GroupRecord, MediaObjectRecord,
-    MediaTransferRecord, MessageDeviceDeliveryRecord, MessageRecord, QueueItem, Result,
-    ScheduledMessageRecord, Store, StoreError,
+    EphemeralRecord, EphemeralState, GroupAuthorityRecord, GroupMessageRecord, GroupRecord,
+    MediaObjectRecord, MediaRecord, MediaTransferRecord, MessageDeviceDeliveryRecord,
+    MessageRecord, QueueItem, Result, ScheduledMessageRecord, Store, StoreError,
 };
 
 /// Maximum logical durable mutations accepted by one typed commit plan.
@@ -22,6 +25,14 @@ pub const MAX_COMMIT_MUTATIONS: usize = 512;
 pub const MAX_PAIRWISE_COMMIT_DEVICES: usize = 8;
 /// Maximum queue rows created by one protocol transition.
 pub const MAX_COMMIT_QUEUE_ROWS: usize = 128;
+/// Maximum queue rows in a stable-v1 group fan-out (64 accounts × 8 devices).
+pub const MAX_GROUP_COMMIT_QUEUE_ROWS: usize = 512;
+/// Maximum durable mutations in one bounded group fan-out transaction.
+pub const MAX_GROUP_COMMIT_MUTATIONS: usize = 2_048;
+/// Maximum rows created while staging one bounded attachment manifest.
+pub const MAX_ATTACHMENT_STAGE_MUTATIONS: usize = 256;
+/// Maximum exact rows changed by one group roster or authority transition.
+pub const MAX_GROUP_STATE_MUTATIONS: usize = 256;
 /// Maximum exact maintenance transitions applied in one transaction.
 pub const MAX_MAINTENANCE_TRANSITIONS: usize = 256;
 /// Maximum authenticated control records retained for post-commit work.
@@ -135,6 +146,62 @@ pub struct GroupMessageTransition<'a> {
     pub after: &'a GroupMessageRecord,
 }
 
+/// An exact sealed group receiver-chain replacement.
+pub struct GroupChainTransition<'a> {
+    /// Exact group conversation.
+    pub group: [u8; 32],
+    /// Account whose sender chain this receiver state follows.
+    pub peer: [u8; 32],
+    /// Exact durable chain expected before the transaction.
+    pub before: &'a [u8],
+    /// Candidate chain produced without mutating durable or live state.
+    pub after: &'a [u8],
+}
+
+/// A new or exact replacement signed group-authority record.
+pub struct GroupAuthorityTransition<'a> {
+    /// Existing authority state, or `None` for the first signed generation.
+    pub before: Option<&'a GroupAuthorityRecord>,
+    /// Resulting signed authority state.
+    pub after: &'a GroupAuthorityRecord,
+}
+
+/// New, exact replacement, or exact removal of one signed group-authority record.
+pub struct GroupAuthorityStateTransition<'a> {
+    /// Existing authority state, or `None` when creating it.
+    pub before: Option<&'a GroupAuthorityRecord>,
+    /// Resulting authority state, or `None` when removing it with the group.
+    pub after: Option<&'a GroupAuthorityRecord>,
+}
+
+/// New, exact replacement, or exact removal of one group record.
+pub struct GroupStateTransition<'a> {
+    /// Existing group, or `None` when creating it.
+    pub before: Option<&'a GroupRecord>,
+    /// Resulting group, or `None` when removing it.
+    pub after: Option<&'a GroupRecord>,
+}
+
+/// New, exact replacement, or exact removal of one group receiver-chain blob.
+pub struct GroupChainStateTransition<'a> {
+    /// Group whose receiver-chain map changes.
+    pub group: [u8; 32],
+    /// Account whose device-chain aggregate changes.
+    pub peer: [u8; 32],
+    /// Exact existing blob, or `None` when creating it.
+    pub before: Option<&'a [u8]>,
+    /// Resulting blob, or `None` when removing it.
+    pub after: Option<&'a [u8]>,
+}
+
+/// New or exact replacement contact stub adopted from authenticated group state.
+pub struct ContactTransition<'a> {
+    /// Existing contact, or `None` for a newly authenticated roster stub.
+    pub before: Option<&'a ContactRecord>,
+    /// Resulting contact row.
+    pub after: &'a ContactRecord,
+}
+
 /// An exact ephemeral marker update.
 pub struct EphemeralTransition<'a> {
     /// Existing marker, or `None` when the transition creates it.
@@ -149,6 +216,22 @@ pub struct MediaDelete<'a> {
     pub transfer_id: [u8; 16],
     /// Exact local object ids removed before the transfer row.
     pub object_ids: &'a [[u8; 16]],
+}
+
+/// An exact attachment-transfer metadata replacement.
+pub struct MediaTransferTransition<'a> {
+    /// Exact durable value expected before the transaction.
+    pub before: &'a MediaTransferRecord,
+    /// Replacement value with the same local transfer identity.
+    pub after: &'a MediaTransferRecord,
+}
+
+/// An exact attachment-object metadata replacement.
+pub struct MediaObjectTransition<'a> {
+    /// Exact durable value expected before the transaction.
+    pub before: &'a MediaObjectRecord,
+    /// Replacement value with the same local object identity.
+    pub after: &'a MediaObjectRecord,
 }
 
 /// One exact contact endpoint removed by an authenticated manifest transition.
@@ -171,6 +254,10 @@ pub struct PairwiseSendPlan<'a> {
     pub delivery_updates: &'a [DeliveryTransition<'a>],
     /// Every ciphertext produced by the candidate sessions.
     pub queue: &'a [QueueItem],
+    /// Exact pending-announcement ownership updates for group controls.
+    pub groups: &'a [GroupTransition<'a>],
+    /// Exact authority bookkeeping owned by an encrypted group-control response.
+    pub authorities: &'a [GroupAuthorityStateTransition<'a>],
     /// Exact scheduled record consumed by activation, when applicable.
     pub scheduled: Option<&'a ScheduledMessageRecord>,
     /// Session-bound capability snapshots invalidated by new handshakes.
@@ -179,6 +266,115 @@ pub struct PairwiseSendPlan<'a> {
     pub clear_reset_markers: &'a [[u8; 32]],
     /// Optional local ephemeral marker created with history.
     pub ephemeral: Option<&'a EphemeralRecord>,
+    /// Attachment transfer rows activated by this exact manifest send.
+    pub media_transfers: &'a [MediaTransferTransition<'a>],
+    /// Attachment object progress owned by an encrypted bulk control.
+    pub media_objects: &'a [MediaObjectTransition<'a>],
+    /// Accepted controls consumed by the resulting encrypted response.
+    pub delete_controls: &'a [DeferredControlRecord],
+    /// Whether presentation must be recoverable after commit.
+    pub presentation_changed: bool,
+}
+
+/// Complete durable consequences of one sender-key group send or late fan-out.
+pub struct GroupSendPlan<'a> {
+    /// Sender-chain/group-state replacement when this transition encrypts.
+    /// Late fan-out of an already retained ciphertext leaves this `None`.
+    pub group: Option<GroupTransition<'a>>,
+    /// Immutable outbound group history created by this send.
+    pub message: Option<&'a GroupMessageRecord>,
+    /// Exact retained-history replacement for attachment activation or late fan-out.
+    pub message_update: Option<GroupMessageTransition<'a>>,
+    /// Honest per-device delivery rows created with ciphertext copies.
+    pub deliveries: &'a [MessageDeviceDeliveryRecord],
+    /// Exact placeholder or delivery-row replacements.
+    pub delivery_updates: &'a [DeliveryTransition<'a>],
+    /// Every recipient-scoped envelope that owns the produced group ciphertext.
+    pub queue: &'a [QueueItem],
+    /// Exact scheduled record consumed by activation, when applicable.
+    pub scheduled: Option<&'a ScheduledMessageRecord>,
+    /// Optional local ephemeral marker created with history.
+    pub ephemeral: Option<&'a EphemeralRecord>,
+    /// Attachment transfer rows activated by this exact manifest send.
+    pub media_transfers: &'a [MediaTransferTransition<'a>],
+    /// Receiver chains removed by the roster transition carried by this send.
+    pub delete_chains: &'a [GroupChainStateTransition<'a>],
+    /// Optional signed authority state committed with its immutable announcement.
+    pub authority: Option<GroupAuthorityTransition<'a>>,
+    /// Whether presentation must be recoverable after commit.
+    pub presentation_changed: bool,
+}
+
+/// Complete durable consequences of one sender-key group receive.
+pub struct GroupReceivePlan<'a> {
+    /// Detached group receiver-chain candidate.
+    pub chain: GroupChainTransition<'a>,
+    /// Detached pairwise sending-session candidate used by the receipt.
+    pub receipt_session: SessionTransition<'a>,
+    /// Accepted immutable group history, if this content creates one.
+    pub message: Option<&'a GroupMessageRecord>,
+    /// Optional local ephemeral marker or tombstone.
+    pub ephemeral: Option<&'a EphemeralRecord>,
+    /// Attachment-offer transfer metadata created by accepted content.
+    pub media_transfers: &'a [MediaTransferRecord],
+    /// Attachment-offer object metadata created by accepted content.
+    pub media_objects: &'a [MediaObjectRecord],
+    /// Encrypted receipt produced by the detached pairwise candidate.
+    pub queue: &'a [QueueItem],
+    /// Authenticated group envelope content id used for replay absorption.
+    pub content_id: [u8; 16],
+    /// Local receive time retained with duplicate-receipt routing.
+    pub received_at: u64,
+    /// Exact deferred source row, when this input came from the durable inbox.
+    pub source_pending: Option<PendingDelete>,
+    /// Whether presentation must be recoverable after commit.
+    pub presentation_changed: bool,
+}
+
+/// Complete local metadata stage for one outbound attachment manifest.
+///
+/// Chunk files are committed through the media store's file-first chunk
+/// protocol after this plan succeeds. The manifest is not eligible for
+/// encryption until every staged object is complete.
+pub struct AttachmentStagePlan<'a> {
+    /// Pairwise history created by this stage.
+    pub message: Option<&'a MessageRecord>,
+    /// Group history created by this stage.
+    pub group_message: Option<&'a GroupMessageRecord>,
+    /// New transfer rows owned by the manifest history.
+    pub media_transfers: &'a [MediaTransferRecord],
+    /// New object rows owned by those transfers.
+    pub media_objects: &'a [MediaObjectRecord],
+    /// Optional view-once marker created with the manifest.
+    pub ephemeral: Option<&'a EphemeralRecord>,
+    /// Whether presentation must be recoverable after commit.
+    pub presentation_changed: bool,
+}
+
+/// One bounded attachment lifecycle or progress transition.
+pub struct AttachmentStatePlan<'a> {
+    /// Exact transfer-level replacements.
+    pub media_transfers: &'a [MediaTransferTransition<'a>],
+    /// Exact object-level replacements.
+    pub media_objects: &'a [MediaObjectTransition<'a>],
+    /// Accepted authenticated controls consumed by the transition.
+    pub delete_controls: &'a [DeferredControlRecord],
+    /// Whether presentation must be recoverable after commit.
+    pub presentation_changed: bool,
+}
+
+/// One bounded group membership, announcement, authority, or deferred-control transition.
+pub struct GroupStatePlan<'a> {
+    /// Group creations, replacements, or removals.
+    pub groups: &'a [GroupStateTransition<'a>],
+    /// Receiver-chain creations, replacements, or removals.
+    pub chains: &'a [GroupChainStateTransition<'a>],
+    /// Contact stubs authenticated by the accepted roster.
+    pub contacts: &'a [ContactTransition<'a>],
+    /// Signed authority state creations or replacements.
+    pub authorities: &'a [GroupAuthorityStateTransition<'a>],
+    /// Accepted controls consumed by this exact state transition.
+    pub delete_controls: &'a [DeferredControlRecord],
     /// Whether presentation must be recoverable after commit.
     pub presentation_changed: bool,
 }
@@ -211,12 +407,18 @@ pub struct PairwiseReceivePlan<'a> {
     pub presentation_changed: bool,
 }
 
-/// Exact prekey-vault replacement performed by an inbound handshake.
+/// Exact prekey-vault replacement performed by issuance or an inbound handshake.
 pub struct PrekeyTransition<'a> {
     /// Encoded durable vault expected before the transaction.
     pub before: &'a [u8],
-    /// Encoded candidate vault after one-time-prekey consumption.
+    /// Encoded candidate vault after one-time-prekey issuance or consumption.
     pub after: &'a [u8],
+}
+
+/// One newly issued prekey bundle and the vault state that owns its OPK.
+pub struct PrekeyPublishPlan<'a> {
+    /// Exact vault replacement that makes the returned bundle usable.
+    pub prekeys: PrekeyTransition<'a>,
 }
 
 /// Complete durable consequences of accepting one inbound handshake.
@@ -339,10 +541,22 @@ pub struct MaintenancePlan<'a> {
 
 /// The only protocol-state transaction variants exposed by the store.
 pub enum CommitPlan<'a> {
+    /// Prekey bundle issuance.
+    PrekeyPublish(PrekeyPublishPlan<'a>),
     /// Pairwise send.
     PairwiseSend(PairwiseSendPlan<'a>),
     /// Pairwise receive.
     PairwiseReceive(PairwiseReceivePlan<'a>),
+    /// Sender-key group send or late fan-out.
+    GroupSend(GroupSendPlan<'a>),
+    /// Sender-key group receive.
+    GroupReceive(GroupReceivePlan<'a>),
+    /// Local outbound attachment metadata stage.
+    AttachmentStage(AttachmentStagePlan<'a>),
+    /// Attachment lifecycle, progress, or deferred-control transition.
+    AttachmentState(AttachmentStatePlan<'a>),
+    /// Group membership, authority, chain, or deferred-control transition.
+    GroupState(GroupStatePlan<'a>),
     /// Handshake receive.
     HandshakeReceive(HandshakeReceivePlan<'a>),
     /// Receipt or authenticated pairwise control receive.
@@ -426,8 +640,14 @@ impl Store {
     ) -> Result<CommitReceipt> {
         self.validate_commit_plan(&plan)?;
         let presentation_changed = match &plan {
+            CommitPlan::PrekeyPublish(_) => false,
             CommitPlan::PairwiseSend(plan) => plan.presentation_changed,
             CommitPlan::PairwiseReceive(plan) => plan.presentation_changed,
+            CommitPlan::GroupSend(plan) => plan.presentation_changed,
+            CommitPlan::GroupReceive(plan) => plan.presentation_changed,
+            CommitPlan::AttachmentStage(plan) => plan.presentation_changed,
+            CommitPlan::AttachmentState(plan) => plan.presentation_changed,
+            CommitPlan::GroupState(plan) => plan.presentation_changed,
             CommitPlan::HandshakeReceive(plan) => plan.presentation_changed,
             CommitPlan::ReceiptReceive(plan) => plan.presentation_changed,
             CommitPlan::Maintenance(plan) => plan.presentation_changed,
@@ -451,8 +671,14 @@ impl Store {
                 .store
                 .check_commit_failpoint(CommitPoint::AfterBegin)?;
             match plan {
+                CommitPlan::PrekeyPublish(plan) => writer.prekey_publish(&plan)?,
                 CommitPlan::PairwiseSend(plan) => writer.pairwise_send(&plan)?,
                 CommitPlan::PairwiseReceive(plan) => writer.pairwise_receive(&plan)?,
+                CommitPlan::GroupSend(plan) => writer.group_send(&plan)?,
+                CommitPlan::GroupReceive(plan) => writer.group_receive(&plan)?,
+                CommitPlan::AttachmentStage(plan) => writer.attachment_stage(&plan)?,
+                CommitPlan::AttachmentState(plan) => writer.attachment_state(&plan)?,
+                CommitPlan::GroupState(plan) => writer.group_state(&plan)?,
                 CommitPlan::HandshakeReceive(plan) => writer.handshake_receive(&plan)?,
                 CommitPlan::ReceiptReceive(plan) => writer.receipt_receive(&plan)?,
                 CommitPlan::Maintenance(plan) => writer.maintenance(&plan)?,
@@ -533,12 +759,30 @@ impl Store {
 
     fn validate_commit_plan(&self, plan: &CommitPlan<'_>) -> Result<()> {
         match plan {
+            CommitPlan::PrekeyPublish(plan) => self.validate_prekey_publish(plan),
             CommitPlan::PairwiseSend(plan) => self.validate_pairwise_send(plan),
             CommitPlan::PairwiseReceive(plan) => self.validate_pairwise_receive(plan),
+            CommitPlan::GroupSend(plan) => self.validate_group_send(plan),
+            CommitPlan::GroupReceive(plan) => self.validate_group_receive(plan),
+            CommitPlan::AttachmentStage(plan) => self.validate_attachment_stage(plan),
+            CommitPlan::AttachmentState(plan) => self.validate_attachment_state(plan),
+            CommitPlan::GroupState(plan) => self.validate_group_state(plan),
             CommitPlan::HandshakeReceive(plan) => self.validate_handshake_receive(plan),
             CommitPlan::ReceiptReceive(plan) => self.validate_receipt_receive(plan),
             CommitPlan::Maintenance(plan) => self.validate_maintenance(plan),
         }
+    }
+
+    fn validate_prekey_publish(&self, plan: &PrekeyPublishPlan<'_>) -> Result<()> {
+        if plan.prekeys.before.is_empty()
+            || plan.prekeys.after.is_empty()
+            || plan.prekeys.before == plan.prekeys.after
+            || self.get_prekeys()?.as_ref().map(|value| value.as_slice())
+                != Some(plan.prekeys.before)
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        Ok(())
     }
 
     fn validate_pairwise_send(&self, plan: &PairwiseSendPlan<'_>) -> Result<()> {
@@ -553,11 +797,18 @@ impl Store {
                 plan.deliveries.len(),
                 plan.delivery_updates.len(),
                 plan.queue.len(),
+                plan.groups.len(),
+                plan.authorities.len(),
                 usize::from(plan.scheduled.is_some()),
                 plan.clear_capabilities.len(),
                 plan.clear_reset_markers.len(),
                 usize::from(plan.ephemeral.is_some()),
+                plan.media_transfers.len(),
+                plan.media_objects.len(),
+                plan.delete_controls.len(),
             ])? > MAX_COMMIT_MUTATIONS
+            || plan.groups.len() > MAX_GROUP_AUTHORITY_MEMBERS
+            || plan.authorities.len() > MAX_GROUP_AUTHORITY_MEMBERS
         {
             return Err(StoreError::InvalidTransition);
         }
@@ -583,6 +834,38 @@ impl Store {
         }
         for transition in plan.sessions {
             self.validate_session_transition(transition)?;
+        }
+        for transition in plan.groups {
+            self.validate_group_transition(transition)?;
+            validate_group_control_transition(transition, plan.queue)?;
+        }
+        let authority_ids = plan
+            .authorities
+            .iter()
+            .filter_map(|transition| transition.after.map(|authority| authority.group))
+            .collect::<HashSet<_>>();
+        if authority_ids.len() != plan.authorities.len()
+            || (!plan.authorities.is_empty()
+                && !plan
+                    .queue
+                    .iter()
+                    .any(|item| item.envelope.kind == EnvelopeKind::GroupControl))
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        for transition in plan.authorities {
+            let (Some(before), Some(after)) = (transition.before, transition.after) else {
+                return Err(StoreError::InvalidTransition);
+            };
+            if before.group != after.group
+                || before.state_id != after.state_id
+                || before.state_payload != after.state_payload
+                || before.consumed_requests == after.consumed_requests
+                || self.get_group_authority(&before.group)?.as_ref() != Some(before)
+                || !valid_group_authority_record(after)
+            {
+                return Err(StoreError::InvalidTransition);
+            }
         }
         if plan.message.is_some() && plan.message_update.is_some() {
             return Err(StoreError::InvalidTransition);
@@ -624,6 +907,9 @@ impl Store {
                 || !plan.delivery_updates.is_empty()
                 || plan.queue.iter().any(|item| item.msg_id.is_some()))
         {
+            return Err(StoreError::InvalidTransition);
+        }
+        if history_id.is_some() && !plan.groups.is_empty() {
             return Err(StoreError::InvalidTransition);
         }
         if plan.deliveries.iter().any(|delivery| {
@@ -728,6 +1014,46 @@ impl Store {
                 return Err(StoreError::InvalidTransition);
             }
         }
+        if let Some(ephemeral) = plan.ephemeral {
+            if Some(ephemeral.content_id) != history_id
+                || ephemeral.conversation
+                    != crate::EphemeralConversation::Pairwise(plan.message.map_or_else(
+                        || {
+                            plan.message_update
+                                .as_ref()
+                                .expect("history exists")
+                                .after
+                                .peer
+                        },
+                        |message| message.peer,
+                    ))
+                || self
+                    .get_ephemeral_record(
+                        &ephemeral.conversation,
+                        &ephemeral.author,
+                        &ephemeral.content_id,
+                    )?
+                    .is_some()
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        for transition in plan.media_transfers {
+            self.validate_media_transfer_transition(transition)?;
+            if history_id
+                .is_some_and(|history_id| transition.after.manifest_content_id != history_id)
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        for transition in plan.media_objects {
+            self.validate_media_object_transition(transition)?;
+        }
+        for control in plan.delete_controls {
+            if self.get_deferred_control(&control.content_id)?.as_ref() != Some(control) {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
         let reset_markers = self.reset_markers()?.into_iter().collect::<HashSet<_>>();
         if plan
             .clear_reset_markers
@@ -785,6 +1111,672 @@ impl Store {
                 && (accepted_state || !plan.receipt_replay || plan.queue.is_empty()))
         {
             return Err(StoreError::InvalidTransition);
+        }
+        Ok(())
+    }
+
+    fn validate_group_send(&self, plan: &GroupSendPlan<'_>) -> Result<()> {
+        if plan.message.is_some() == plan.message_update.is_some()
+            || plan.queue.len() > MAX_GROUP_COMMIT_QUEUE_ROWS
+            || mutation_count([
+                usize::from(plan.group.is_some()),
+                usize::from(plan.message.is_some()),
+                usize::from(plan.message_update.is_some()),
+                plan.deliveries.len(),
+                plan.delivery_updates.len(),
+                plan.queue.len(),
+                usize::from(plan.scheduled.is_some()),
+                usize::from(plan.ephemeral.is_some()),
+                plan.media_transfers.len(),
+                plan.delete_chains.len(),
+                usize::from(plan.authority.is_some()),
+            ])? > MAX_GROUP_COMMIT_MUTATIONS
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+
+        let (message_id, group_id, message_after, retained_wire) =
+            if let Some(message) = plan.message {
+                self.validate_new_group_message(message)?;
+                if message.direction != Direction::Outbound {
+                    return Err(StoreError::InvalidTransition);
+                }
+                (message.id, message.group, message, None)
+            } else {
+                let transition = plan
+                    .message_update
+                    .as_ref()
+                    .ok_or(StoreError::InvalidTransition)?;
+                self.validate_group_message_transition(transition)?;
+                if transition.after.direction != Direction::Outbound {
+                    return Err(StoreError::InvalidTransition);
+                }
+                (
+                    transition.after.id,
+                    transition.after.group,
+                    transition.after,
+                    transition.before.wire_body.as_deref(),
+                )
+            };
+
+        if let Some(group) = &plan.group {
+            self.validate_group_transition(group)?;
+            if group.after.id != group_id
+                || group.before.sender_chain == group.after.sender_chain
+                || (plan.queue.is_empty() && message_after.wire_body.is_none())
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        } else if retained_wire.is_none() || plan.message.is_some() {
+            // A plan without a sender-chain transition may only fan out an
+            // already durable ciphertext retained by the exact prior row.
+            return Err(StoreError::InvalidTransition);
+        }
+        let stored_distribution_group = if plan.group.is_none() {
+            self.get_group(&group_id)?
+        } else {
+            None
+        };
+        let distribution_group = plan
+            .group
+            .as_ref()
+            .map(|group| group.before)
+            .or(stored_distribution_group.as_ref())
+            .ok_or(StoreError::InvalidTransition)?;
+        let eligible_accounts = distribution_group
+            .members
+            .iter()
+            .filter(|member| member.peer != message_after.sender)
+            .map(|member| member.peer)
+            .collect::<HashSet<_>>();
+        let history_accounts = message_after
+            .deliveries
+            .iter()
+            .map(|delivery| delivery.peer)
+            .collect::<HashSet<_>>();
+        if history_accounts.len() != message_after.deliveries.len()
+            || history_accounts != eligible_accounts
+            || plan.queue.len()
+                > eligible_accounts
+                    .len()
+                    .saturating_mul(MAX_PAIRWISE_COMMIT_DEVICES)
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+
+        let wire = plan
+            .queue
+            .first()
+            .map(|item| item.envelope.body.as_slice())
+            .or(message_after.wire_body.as_deref())
+            .or(retained_wire)
+            .ok_or(StoreError::InvalidTransition)?;
+        if plan.queue.iter().any(|item| {
+            item.msg_id.is_some()
+                || item.group_msg_id != Some(message_id)
+                || item.envelope.kind != EnvelopeKind::GroupMessage
+                || item.envelope.body.as_slice() != wire
+        }) || message_after
+            .wire_body
+            .as_deref()
+            .is_some_and(|retained| retained != wire)
+            || retained_wire.is_some_and(|retained| retained != wire)
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+
+        let queue_ids = plan
+            .queue
+            .iter()
+            .map(|item| item.envelope.content_id())
+            .collect::<HashSet<_>>();
+        if queue_ids.len() != plan.queue.len() {
+            return Err(StoreError::InvalidTransition);
+        }
+        let existing_queue = self.queue_all()?;
+        let existing_deliveries = self.message_device_deliveries(&message_id)?;
+        let mut account_device_counts = HashMap::new();
+        for delivery in &existing_deliveries {
+            let count = account_device_counts
+                .entry(delivery.account)
+                .or_insert(0usize);
+            *count = count.saturating_add(1);
+        }
+        if account_device_counts
+            .values()
+            .any(|count| *count > MAX_PAIRWISE_COMMIT_DEVICES)
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        let mut devices = HashSet::new();
+        for delivery in plan.deliveries {
+            let count = account_device_counts
+                .entry(delivery.account)
+                .or_insert(0usize);
+            *count = count.saturating_add(1);
+            if delivery.message != message_id
+                || delivery.state != DeliveryState::Queued
+                || !eligible_accounts.contains(&delivery.account)
+                || *count > MAX_PAIRWISE_COMMIT_DEVICES
+                || !devices.insert(delivery.device)
+                || existing_deliveries
+                    .iter()
+                    .any(|existing| existing.device == delivery.device)
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        for transition in plan.delivery_updates {
+            self.validate_delivery_transition(transition)?;
+            if transition.after.message != message_id
+                || transition.after.state != DeliveryState::Queued
+                || transition.before.account != transition.after.account
+                || !eligible_accounts.contains(&transition.after.account)
+                || !devices.insert(transition.after.device)
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        for item in plan.queue {
+            let wire_id = item.envelope.content_id();
+            let owners = plan
+                .deliveries
+                .iter()
+                .filter(|delivery| {
+                    delivery.message == message_id
+                        && delivery.device == item.peer
+                        && delivery.wire_id == Some(wire_id)
+                })
+                .count()
+                + plan
+                    .delivery_updates
+                    .iter()
+                    .filter(|transition| {
+                        transition.after.message == message_id
+                            && transition.after.device == item.peer
+                            && transition.after.wire_id == Some(wire_id)
+                    })
+                    .count();
+            if owners != 1 {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        for delivery in plan.deliveries.iter().chain(
+            plan.delivery_updates
+                .iter()
+                .map(|transition| transition.after),
+        ) {
+            if let Some(wire_id) = delivery.wire_id {
+                let owned = plan.queue.iter().any(|item| {
+                    item.peer == delivery.device
+                        && item.group_msg_id == Some(message_id)
+                        && item.envelope.content_id() == wire_id
+                }) || existing_queue.iter().any(|(_, item)| {
+                    item.peer == delivery.device
+                        && item.group_msg_id == Some(message_id)
+                        && item.envelope.content_id() == wire_id
+                });
+                if !owned {
+                    return Err(StoreError::InvalidTransition);
+                }
+            }
+        }
+
+        if message_after
+            .deliveries
+            .iter()
+            .any(|delivery| delivery.peer == message_after.sender)
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        if let Some(scheduled) = plan.scheduled {
+            if self.get_scheduled_message(&scheduled.id)?.as_ref() != Some(scheduled)
+                || scheduled.id != message_id
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        if let Some(ephemeral) = plan.ephemeral {
+            if ephemeral.content_id != message_id
+                || ephemeral.conversation != crate::EphemeralConversation::Group(group_id)
+                || self
+                    .get_ephemeral_record(
+                        &ephemeral.conversation,
+                        &ephemeral.author,
+                        &ephemeral.content_id,
+                    )?
+                    .is_some()
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        for transition in plan.media_transfers {
+            self.validate_media_transfer_transition(transition)?;
+            if transition.after.manifest_content_id != message_id {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        let deleted_chain_ids = plan
+            .delete_chains
+            .iter()
+            .map(|transition| (transition.group, transition.peer))
+            .collect::<HashSet<_>>();
+        if deleted_chain_ids.len() != plan.delete_chains.len() {
+            return Err(StoreError::InvalidTransition);
+        }
+        for transition in plan.delete_chains {
+            let current = self.get_group_chain(&transition.group, &transition.peer)?;
+            if transition.after.is_some()
+                || transition.before.is_none()
+                || current.as_ref().map(|chain| chain.as_slice()) != transition.before
+                || transition.group != group_id
+                || plan.group.as_ref().is_none_or(|group| {
+                    group
+                        .after
+                        .members
+                        .iter()
+                        .any(|member| member.peer == transition.peer)
+                })
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        if let Some(authority) = &plan.authority {
+            self.validate_group_authority_transition(authority)?;
+            if authority.after.group != group_id || authority.after.state_id != message_id {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_group_receive(&self, plan: &GroupReceivePlan<'_>) -> Result<()> {
+        self.validate_group_chain_transition(&plan.chain)?;
+        self.validate_session_transition(&plan.receipt_session)?;
+        if plan.content_id == [0u8; 16]
+            || self.is_seen(&plan.content_id)?
+            || plan.queue.is_empty()
+            || plan.queue.len() > MAX_COMMIT_QUEUE_ROWS
+            || plan.queue.iter().any(|item| {
+                item.peer != plan.receipt_session.peer_device
+                    || item.msg_id.is_some()
+                    || item.group_msg_id.is_some()
+                    || item.envelope.kind != EnvelopeKind::Receipt
+            })
+            || mutation_count([
+                1,
+                1,
+                usize::from(plan.message.is_some()),
+                usize::from(plan.ephemeral.is_some()),
+                plan.media_transfers.len(),
+                plan.media_objects.len(),
+                plan.queue.len(),
+                1,
+                1,
+                usize::from(plan.source_pending.is_some()),
+            ])? > MAX_COMMIT_MUTATIONS
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        if let Some(message) = plan.message {
+            self.validate_new_group_message(message)?;
+            if message.direction != Direction::Inbound
+                || message.group != plan.chain.group
+                || message.sender != plan.chain.peer
+                || !message.deliveries.is_empty()
+                || message.wire_body.is_some()
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        if let Some(ephemeral) = plan.ephemeral {
+            if ephemeral.conversation != crate::EphemeralConversation::Group(plan.chain.group)
+                || ephemeral.author != plan.chain.peer
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        self.validate_new_media(plan.media_transfers, plan.media_objects)?;
+        self.validate_pending(plan.source_pending)
+    }
+
+    fn validate_attachment_stage(&self, plan: &AttachmentStagePlan<'_>) -> Result<()> {
+        if plan.message.is_some() == plan.group_message.is_some()
+            || plan.media_transfers.is_empty()
+            || plan.media_objects.is_empty()
+            || mutation_count([
+                usize::from(plan.message.is_some()),
+                usize::from(plan.group_message.is_some()),
+                plan.media_transfers.len(),
+                plan.media_objects.len(),
+                usize::from(plan.ephemeral.is_some()),
+            ])? > MAX_ATTACHMENT_STAGE_MUTATIONS
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        self.validate_new_media(plan.media_transfers, plan.media_objects)?;
+
+        let (content_id, author, conversation, peers) = if let Some(message) = plan.message {
+            self.validate_new_message(message)?;
+            if message.direction != Direction::Outbound
+                || message.state != DeliveryState::Queued
+                || message.wire_id.is_some()
+                || message.body.is_empty()
+                || plan.media_transfers.len() != 1
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+            (
+                message.id,
+                None,
+                crate::EphemeralConversation::Pairwise(message.peer),
+                HashSet::from([message.peer]),
+            )
+        } else {
+            let message = plan.group_message.ok_or(StoreError::InvalidTransition)?;
+            self.validate_new_group_message(message)?;
+            let peers = message
+                .deliveries
+                .iter()
+                .map(|delivery| delivery.peer)
+                .collect::<HashSet<_>>();
+            if message.direction != Direction::Outbound
+                || message.wire_body.is_some()
+                || message.body.is_empty()
+                || peers.len() != message.deliveries.len()
+                || peers.len() != plan.media_transfers.len()
+                || message.deliveries.iter().any(|delivery| {
+                    delivery.peer == message.sender
+                        || delivery.wire_id.is_some()
+                        || delivery.state != DeliveryState::Queued
+                })
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+            (
+                message.id,
+                Some(message.sender),
+                crate::EphemeralConversation::Group(message.group),
+                peers,
+            )
+        };
+
+        let transfer_ids = plan
+            .media_transfers
+            .iter()
+            .map(|transfer| transfer.local_id)
+            .collect::<HashSet<_>>();
+        if plan.media_transfers.iter().any(|transfer| {
+            transfer.direction != crate::MediaDirection::Outbound
+                || transfer.manifest_content_id != content_id
+                || transfer.state != crate::MediaTransferState::Queued
+                || !peers.contains(&transfer.peer)
+                || author.is_some_and(|sender| {
+                    transfer.scope != crate::MediaScope::Group
+                        || transfer.scope_id
+                            != plan.group_message.expect("group stage selected").group
+                        || transfer.manifest_author != sender
+                })
+                || author.is_none() && transfer.scope != crate::MediaScope::Pairwise
+        }) || plan.media_objects.iter().any(|object| {
+            !transfer_ids.contains(&object.transfer_id)
+                || object.state != crate::MediaTransferState::Queued
+        }) {
+            return Err(StoreError::InvalidTransition);
+        }
+
+        if let Some(ephemeral) = plan.ephemeral {
+            let ephemeral_transfers = ephemeral
+                .transfer_ids
+                .iter()
+                .copied()
+                .collect::<HashSet<_>>();
+            if ephemeral.content_id != content_id
+                || ephemeral.conversation != conversation
+                || ephemeral.state != EphemeralState::Active
+                || ephemeral_transfers != transfer_ids
+                || self
+                    .get_ephemeral_record(
+                        &ephemeral.conversation,
+                        &ephemeral.author,
+                        &ephemeral.content_id,
+                    )?
+                    .is_some()
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_attachment_state(&self, plan: &AttachmentStatePlan<'_>) -> Result<()> {
+        let count = mutation_count([
+            plan.media_transfers.len(),
+            plan.media_objects.len(),
+            plan.delete_controls.len(),
+        ])?;
+        if count == 0 || count > MAX_MAINTENANCE_TRANSITIONS {
+            return Err(StoreError::MaintenanceBounds);
+        }
+        let transfer_ids = plan
+            .media_transfers
+            .iter()
+            .map(|transition| transition.after.local_id)
+            .collect::<HashSet<_>>();
+        let object_ids = plan
+            .media_objects
+            .iter()
+            .map(|transition| transition.after.local_id)
+            .collect::<HashSet<_>>();
+        let control_ids = plan
+            .delete_controls
+            .iter()
+            .map(|control| control.content_id)
+            .collect::<HashSet<_>>();
+        if transfer_ids.len() != plan.media_transfers.len()
+            || object_ids.len() != plan.media_objects.len()
+            || control_ids.len() != plan.delete_controls.len()
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        for transition in plan.media_transfers {
+            self.validate_media_transfer_transition(transition)?;
+        }
+        for transition in plan.media_objects {
+            self.validate_media_object_transition(transition)?;
+        }
+        for control in plan.delete_controls {
+            if self.get_deferred_control(&control.content_id)?.as_ref() != Some(control) {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_group_state(&self, plan: &GroupStatePlan<'_>) -> Result<()> {
+        let count = mutation_count([
+            plan.groups.len(),
+            plan.chains.len(),
+            plan.contacts.len(),
+            plan.authorities.len(),
+            plan.delete_controls.len(),
+        ])?;
+        if count == 0 || count > MAX_GROUP_STATE_MUTATIONS {
+            return Err(StoreError::MaintenanceBounds);
+        }
+
+        let mut group_ids = HashSet::new();
+        for transition in plan.groups {
+            let id = match (transition.before, transition.after) {
+                (None, None) => return Err(StoreError::InvalidTransition),
+                (None, Some(after)) => after.id,
+                (Some(before), None) => before.id,
+                (Some(before), Some(after)) => {
+                    if before == after || before.id != after.id {
+                        return Err(StoreError::InvalidTransition);
+                    }
+                    before.id
+                }
+            };
+            if !group_ids.insert(id)
+                || self.get_group(&id)?.as_ref() != transition.before
+                || transition
+                    .after
+                    .is_some_and(|group| !valid_group_record(group))
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+
+        let mut chain_ids = HashSet::new();
+        for transition in plan.chains {
+            let current = self.get_group_chain(&transition.group, &transition.peer)?;
+            if !chain_ids.insert((transition.group, transition.peer))
+                || (transition.before.is_none() && transition.after.is_none())
+                || transition.before == transition.after
+                || transition.before.is_some_and(<[u8]>::is_empty)
+                || transition.after.is_some_and(<[u8]>::is_empty)
+                || current.as_ref().map(|value| value.as_slice()) != transition.before
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+
+        let mut contact_ids = HashSet::new();
+        for transition in plan.contacts {
+            if !contact_ids.insert(transition.after.peer)
+                || transition.before == Some(transition.after)
+                || transition
+                    .before
+                    .is_some_and(|before| before.peer != transition.after.peer)
+                || transition.after.identity.is_empty()
+                || transition.after.identity.len() > MAX_GROUP_MEMBER_IDENTITY_LEN
+                || self.get_contact(&transition.after.peer)?.as_ref() != transition.before
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+
+        let mut authority_ids = HashSet::new();
+        for transition in plan.authorities {
+            let group = match (transition.before, transition.after) {
+                (None, None) => return Err(StoreError::InvalidTransition),
+                (None, Some(after)) => after.group,
+                (Some(before), None) => before.group,
+                (Some(before), Some(after)) => {
+                    if before == after || before.group != after.group {
+                        return Err(StoreError::InvalidTransition);
+                    }
+                    before.group
+                }
+            };
+            if !authority_ids.insert(group)
+                || self.get_group_authority(&group)?.as_ref() != transition.before
+                || transition
+                    .after
+                    .is_some_and(|authority| !valid_group_authority_record(authority))
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+
+        let control_ids = plan
+            .delete_controls
+            .iter()
+            .map(|control| control.content_id)
+            .collect::<HashSet<_>>();
+        if control_ids.len() != plan.delete_controls.len() {
+            return Err(StoreError::InvalidTransition);
+        }
+        for control in plan.delete_controls {
+            if self.get_deferred_control(&control.content_id)?.as_ref() != Some(control) {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+
+        for transition in plan.groups {
+            let id = transition
+                .before
+                .or(transition.after)
+                .expect("validated group transition")
+                .id;
+            let current_chains = self.group_chains(&id)?;
+            if let Some(final_group) = transition.after {
+                for (peer, _) in current_chains {
+                    let removed = plan.chains.iter().any(|chain| {
+                        chain.group == id && chain.peer == peer && chain.after.is_none()
+                    });
+                    if !removed && !final_group.members.iter().any(|member| member.peer == peer) {
+                        return Err(StoreError::InvalidTransition);
+                    }
+                }
+            } else {
+                let deleted_chains = plan
+                    .chains
+                    .iter()
+                    .filter(|chain| chain.group == id && chain.after.is_none())
+                    .map(|chain| chain.peer)
+                    .collect::<HashSet<_>>();
+                if deleted_chains.len() != current_chains.len()
+                    || current_chains
+                        .iter()
+                        .any(|(peer, _)| !deleted_chains.contains(peer))
+                    || plan
+                        .chains
+                        .iter()
+                        .any(|chain| chain.group == id && chain.after.is_some())
+                {
+                    return Err(StoreError::InvalidTransition);
+                }
+                let current_authority = self.get_group_authority(&id)?;
+                let delete_authority = plan.authorities.iter().find(|authority| {
+                    authority.before.is_some_and(|before| before.group == id)
+                        && authority.after.is_none()
+                });
+                if current_authority.is_some() != delete_authority.is_some() {
+                    return Err(StoreError::InvalidTransition);
+                }
+            }
+        }
+
+        for transition in plan.chains {
+            if transition.after.is_some() {
+                let planned_group = plan.groups.iter().find_map(|candidate| {
+                    candidate.after.filter(|group| group.id == transition.group)
+                });
+                let current_group;
+                let group = if let Some(group) = planned_group {
+                    group
+                } else {
+                    current_group = self.get_group(&transition.group)?;
+                    current_group
+                        .as_ref()
+                        .ok_or(StoreError::InvalidTransition)?
+                };
+                if !group
+                    .members
+                    .iter()
+                    .any(|member| member.peer == transition.peer)
+                {
+                    return Err(StoreError::InvalidTransition);
+                }
+            }
+        }
+        for transition in plan.authorities {
+            if let Some(authority) = transition.after {
+                let group_exists = plan.groups.iter().any(|candidate| {
+                    candidate
+                        .after
+                        .is_some_and(|group| group.id == authority.group)
+                }) || (plan.groups.iter().all(|candidate| {
+                    candidate
+                        .before
+                        .is_none_or(|group| group.id != authority.group)
+                }) && self.get_group(&authority.group)?.is_some());
+                if !group_exists {
+                    return Err(StoreError::InvalidTransition);
+                }
+            }
         }
         Ok(())
     }
@@ -1201,7 +2193,41 @@ impl Store {
 
     fn validate_group_transition(&self, transition: &GroupTransition<'_>) -> Result<()> {
         if transition.before.id != transition.after.id
+            || !valid_group_record(transition.after)
             || self.get_group(&transition.before.id)?.as_ref() != Some(transition.before)
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        Ok(())
+    }
+
+    fn validate_group_chain_transition(&self, transition: &GroupChainTransition<'_>) -> Result<()> {
+        let current = self.get_group_chain(&transition.group, &transition.peer)?;
+        if transition.before.is_empty()
+            || transition.after.is_empty()
+            || transition.before == transition.after
+            || current.as_ref().map(|value| value.as_slice()) != Some(transition.before)
+            || self.get_group(&transition.group)?.is_none_or(|group| {
+                !group
+                    .members
+                    .iter()
+                    .any(|member| member.peer == transition.peer)
+            })
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        Ok(())
+    }
+
+    fn validate_group_authority_transition(
+        &self,
+        transition: &GroupAuthorityTransition<'_>,
+    ) -> Result<()> {
+        if !valid_group_authority_record(transition.after)
+            || transition
+                .before
+                .is_some_and(|before| before.group != transition.after.group)
+            || self.get_group_authority(&transition.after.group)?.as_ref() != transition.before
         {
             return Err(StoreError::InvalidTransition);
         }
@@ -1224,6 +2250,17 @@ impl Store {
                 })
                 .as_ref()
                 != Some(transition.before)
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        Ok(())
+    }
+
+    fn validate_new_group_message(&self, message: &GroupMessageRecord) -> Result<()> {
+        if self
+            .group_messages(&message.group)?
+            .into_iter()
+            .any(|existing| existing.id == message.id)
         {
             return Err(StoreError::InvalidTransition);
         }
@@ -1260,6 +2297,35 @@ impl Store {
             if self.get_media_object(&object.local_id)?.is_some() {
                 return Err(StoreError::InvalidTransition);
             }
+        }
+        Ok(())
+    }
+
+    fn validate_media_transfer_transition(
+        &self,
+        transition: &MediaTransferTransition<'_>,
+    ) -> Result<()> {
+        if transition.before.local_id != transition.after.local_id
+            || transition.before == transition.after
+            || self.get_media_transfer(&transition.before.local_id)?
+                != Some(MediaRecord::Available(transition.before.clone()))
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        Ok(())
+    }
+
+    fn validate_media_object_transition(
+        &self,
+        transition: &MediaObjectTransition<'_>,
+    ) -> Result<()> {
+        if transition.before.local_id != transition.after.local_id
+            || transition.before.transfer_id != transition.after.transfer_id
+            || transition.before == transition.after
+            || self.get_media_object(&transition.before.local_id)?
+                != Some(MediaRecord::Available(transition.before.clone()))
+        {
+            return Err(StoreError::InvalidTransition);
         }
         Ok(())
     }
@@ -1373,6 +2439,12 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
         })
     }
 
+    fn group_chain(&mut self, transition: &GroupChainTransition<'_>) -> Result<()> {
+        self.write(|store, rng| {
+            store.put_group_chain(&transition.group, &transition.peer, transition.after, rng)
+        })
+    }
+
     fn queue(&mut self, items: &[QueueItem]) -> Result<()> {
         for item in items {
             let sequence = self.write(|store, rng| store.queue_push(item, rng))?;
@@ -1392,6 +2464,10 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
             })?;
         }
         Ok(())
+    }
+
+    fn prekey_publish(&mut self, plan: &PrekeyPublishPlan<'_>) -> Result<()> {
+        self.write(|store, rng| store.put_prekeys(plan.prekeys.after, rng))
     }
 
     fn pairwise_send(&mut self, plan: &PairwiseSendPlan<'_>) -> Result<()> {
@@ -1419,6 +2495,17 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
             self.write(|store, rng| store.put_message_device_delivery(transition.after, rng))?;
         }
         self.queue(plan.queue)?;
+        for transition in plan.groups {
+            self.write(|store, rng| store.put_group(transition.after, rng))?;
+        }
+        for transition in plan.authorities {
+            self.write(|store, rng| {
+                store.put_group_authority(
+                    transition.after.expect("validated authority replacement"),
+                    rng,
+                )
+            })?;
+        }
         if let Some(scheduled) = plan.scheduled {
             self.write(|store, _| {
                 if store.delete_scheduled_message(&scheduled.id)? {
@@ -1436,6 +2523,23 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
         }
         if let Some(ephemeral) = plan.ephemeral {
             self.write(|store, rng| store.put_ephemeral_record(ephemeral, rng))?;
+        }
+        for transition in plan.media_transfers {
+            self.write(|store, rng| store.put_media_transfer(transition.after, rng))?;
+        }
+        for transition in plan.media_objects {
+            self.write(|store, rng| store.put_media_object(transition.after, rng))?;
+        }
+        for control in plan.delete_controls {
+            self.write(|store, _| {
+                if store.delete_equality::<store_v2::DeferredControlRows>(
+                    &store_v2::ContentKey::new(control.content_id),
+                )? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
         }
         Ok(())
     }
@@ -1475,6 +2579,203 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
             })?;
         }
         self.pending(plan.source_pending)
+    }
+
+    fn group_send(&mut self, plan: &GroupSendPlan<'_>) -> Result<()> {
+        if let Some(group) = &plan.group {
+            self.write(|store, rng| store.put_group(group.after, rng))?;
+        }
+        if let Some(message) = plan.message {
+            self.write(|store, rng| store.put_group_message(message, rng))?;
+        }
+        if let Some(transition) = &plan.message_update {
+            self.write(|store, rng| {
+                if store.update_group_message(transition.after, rng)? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+        }
+        for delivery in plan.deliveries {
+            self.write(|store, rng| store.put_message_device_delivery(delivery, rng))?;
+        }
+        for transition in plan.delivery_updates {
+            self.write(|store, rng| store.put_message_device_delivery(transition.after, rng))?;
+        }
+        self.queue(plan.queue)?;
+        if let Some(scheduled) = plan.scheduled {
+            self.write(|store, _| {
+                if store.delete_scheduled_message(&scheduled.id)? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+        }
+        if let Some(ephemeral) = plan.ephemeral {
+            self.write(|store, rng| store.put_ephemeral_record(ephemeral, rng))?;
+        }
+        for transition in plan.media_transfers {
+            self.write(|store, rng| store.put_media_transfer(transition.after, rng))?;
+        }
+        for transition in plan.delete_chains {
+            self.write(|store, _| {
+                if store.delete_equality::<store_v2::GroupChainRows>(
+                    &store_v2::GroupMemberKey::new(transition.group, transition.peer),
+                )? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+        }
+        if let Some(authority) = &plan.authority {
+            self.write(|store, rng| store.put_group_authority(authority.after, rng))?;
+        }
+        Ok(())
+    }
+
+    fn group_receive(&mut self, plan: &GroupReceivePlan<'_>) -> Result<()> {
+        self.group_chain(&plan.chain)?;
+        self.session(&plan.receipt_session)?;
+        if let Some(message) = plan.message {
+            self.write(|store, rng| store.put_group_message(message, rng))?;
+        }
+        if let Some(ephemeral) = plan.ephemeral {
+            self.write(|store, rng| store.put_ephemeral_record(ephemeral, rng))?;
+        }
+        for transfer in plan.media_transfers {
+            self.write(|store, rng| store.put_media_transfer(transfer, rng))?;
+        }
+        for object in plan.media_objects {
+            self.write(|store, rng| store.put_media_object(object, rng))?;
+        }
+        self.queue(plan.queue)?;
+        self.write(|store, rng| {
+            store.put_equality::<store_v2::SeenRows>(
+                &store_v2::ContentKey::new(plan.content_id),
+                &plan.content_id,
+                store_v2::IndexKeys::none(),
+                rng,
+            )
+        })?;
+        let peer = plan.receipt_session.peer_device;
+        self.write(|store, rng| {
+            store.put_receipt_replay(&plan.content_id, &peer, plan.received_at, rng)
+        })?;
+        self.pending(plan.source_pending)
+    }
+
+    fn attachment_stage(&mut self, plan: &AttachmentStagePlan<'_>) -> Result<()> {
+        if let Some(message) = plan.message {
+            self.write(|store, rng| store.put_message(message, rng))?;
+            self.records.messages.push(message.id);
+        }
+        if let Some(message) = plan.group_message {
+            self.write(|store, rng| store.put_group_message(message, rng))?;
+        }
+        for transfer in plan.media_transfers {
+            self.write(|store, rng| store.put_media_transfer(transfer, rng))?;
+        }
+        for object in plan.media_objects {
+            self.write(|store, rng| store.put_media_object(object, rng))?;
+        }
+        if let Some(ephemeral) = plan.ephemeral {
+            self.write(|store, rng| store.put_ephemeral_record(ephemeral, rng))?;
+        }
+        Ok(())
+    }
+
+    fn attachment_state(&mut self, plan: &AttachmentStatePlan<'_>) -> Result<()> {
+        for transition in plan.media_transfers {
+            self.write(|store, rng| store.put_media_transfer(transition.after, rng))?;
+        }
+        for transition in plan.media_objects {
+            self.write(|store, rng| store.put_media_object(transition.after, rng))?;
+        }
+        for control in plan.delete_controls {
+            self.write(|store, _| {
+                if store.delete_equality::<store_v2::DeferredControlRows>(
+                    &store_v2::ContentKey::new(control.content_id),
+                )? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+        }
+        Ok(())
+    }
+
+    fn group_state(&mut self, plan: &GroupStatePlan<'_>) -> Result<()> {
+        for transition in plan.contacts {
+            self.write(|store, rng| store.put_contact(transition.after, rng))?;
+        }
+        for transition in plan.groups {
+            if let Some(group) = transition.after {
+                self.write(|store, rng| store.put_group(group, rng))?;
+            } else {
+                let group = transition.before.expect("validated group deletion").id;
+                self.write(|store, _| {
+                    if store
+                        .delete_equality::<store_v2::GroupRows>(&store_v2::GroupKey::new(group))?
+                    {
+                        Ok(())
+                    } else {
+                        Err(StoreError::InvalidTransition)
+                    }
+                })?;
+            }
+        }
+        for transition in plan.chains {
+            if let Some(chain) = transition.after {
+                self.write(|store, rng| {
+                    store.put_group_chain(&transition.group, &transition.peer, chain, rng)
+                })?;
+            } else {
+                self.write(|store, _| {
+                    if store.delete_equality::<store_v2::GroupChainRows>(
+                        &store_v2::GroupMemberKey::new(transition.group, transition.peer),
+                    )? {
+                        Ok(())
+                    } else {
+                        Err(StoreError::InvalidTransition)
+                    }
+                })?;
+            }
+        }
+        for transition in plan.authorities {
+            if let Some(authority) = transition.after {
+                self.write(|store, rng| store.put_group_authority(authority, rng))?;
+            } else {
+                let group = transition
+                    .before
+                    .expect("validated authority deletion")
+                    .group;
+                self.write(|store, _| {
+                    if store.delete_equality::<store_v2::GroupAuthorityRows>(
+                        &store_v2::GroupKey::new(group),
+                    )? {
+                        Ok(())
+                    } else {
+                        Err(StoreError::InvalidTransition)
+                    }
+                })?;
+            }
+        }
+        for control in plan.delete_controls {
+            self.write(|store, _| {
+                if store.delete_equality::<store_v2::DeferredControlRows>(
+                    &store_v2::ContentKey::new(control.content_id),
+                )? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+        }
+        Ok(())
     }
 
     fn handshake_receive(&mut self, plan: &HandshakeReceivePlan<'_>) -> Result<()> {
@@ -1819,6 +3120,97 @@ fn session_eq(left: Option<&Session>, right: Option<&Session>) -> Result<bool> {
         }
         _ => Ok(false),
     }
+}
+
+fn valid_group_record(group: &GroupRecord) -> bool {
+    let member_ids = group
+        .members
+        .iter()
+        .map(|member| member.peer)
+        .collect::<HashSet<_>>();
+    let pending_ids = group
+        .pending
+        .iter()
+        .map(|pending| pending.peer)
+        .collect::<HashSet<_>>();
+    group.id != [0u8; 32]
+        && !group.name.is_empty()
+        && group.name.len() <= MAX_GROUP_NAME_LEN
+        && !group.members.is_empty()
+        && group.members.len() <= MAX_GROUP_AUTHORITY_MEMBERS
+        && member_ids.len() == group.members.len()
+        && group.members.iter().all(|member| {
+            !member.identity.is_empty() && member.identity.len() <= MAX_GROUP_MEMBER_IDENTITY_LEN
+        })
+        && group.secret != [0u8; 32]
+        && !group.sender_chain.is_empty()
+        && group.pending.len() <= MAX_GROUP_AUTHORITY_MEMBERS
+        && pending_ids.len() == group.pending.len()
+        && group
+            .pending
+            .iter()
+            .all(|pending| member_ids.contains(&pending.peer))
+}
+
+fn valid_group_authority_record(authority: &GroupAuthorityRecord) -> bool {
+    let consumed = authority
+        .consumed_requests
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    authority.group != [0u8; 32]
+        && authority.state_id != [0u8; 16]
+        && !authority.state_payload.is_empty()
+        && authority.consumed_requests.len() <= MAX_GROUP_ADMIN_REQUESTS
+        && consumed.len() == authority.consumed_requests.len()
+}
+
+fn validate_group_control_transition(
+    transition: &GroupTransition<'_>,
+    queue: &[QueueItem],
+) -> Result<()> {
+    let before = transition.before;
+    let after = transition.after;
+    if before.name != after.name
+        || before.creator != after.creator
+        || before.members != after.members
+        || before.secret != after.secret
+        || before.prev_secret != after.prev_secret
+        || before.generation != after.generation
+        || before.sender_chain != after.sender_chain
+        || before.sent_since_rotation != after.sent_since_rotation
+        || before.pending.len() != after.pending.len()
+    {
+        return Err(StoreError::InvalidTransition);
+    }
+    let mut changed = 0usize;
+    for (prior, candidate) in before.pending.iter().zip(&after.pending) {
+        if prior.peer != candidate.peer
+            || prior.key_id != candidate.key_id
+            || prior.chain_key != candidate.chain_key
+            || prior.iteration != candidate.iteration
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        if prior.wire_id == candidate.wire_id && prior.last_sent == candidate.last_sent {
+            continue;
+        }
+        changed += 1;
+        if candidate.last_sent == 0
+            || candidate.wire_id.is_none_or(|wire_id| {
+                !queue.iter().any(|item| {
+                    item.envelope.kind == EnvelopeKind::GroupControl
+                        && item.envelope.content_id() == wire_id
+                })
+            })
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+    }
+    if changed != 1 {
+        return Err(StoreError::InvalidTransition);
+    }
+    Ok(())
 }
 
 fn mutation_count<const N: usize>(counts: [usize; N]) -> Result<usize> {

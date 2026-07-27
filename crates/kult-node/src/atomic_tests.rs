@@ -1,10 +1,24 @@
 use std::path::PathBuf;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 
+use async_trait::async_trait;
 use rand::{rngs::StdRng, SeedableRng};
 
 use kult_crypto::KdfProfile;
 use kult_protocol::{Envelope, EnvelopeKind};
-use kult_store::{CommitFailpoint, CommitFailure, DeliveryState};
+use kult_store::{
+    AttachmentStagePlan, AttachmentStatePlan, CommitFailpoint, CommitFailure, DeliveryState,
+    Direction, GroupDelivery, GroupMember, GroupMessageRecord, GroupRecord, GroupSendPlan,
+    GroupStatePlan, GroupStateTransition, GroupTransition, MediaDirection, MediaObjectRecord,
+    MediaRecord, MediaScope, MediaTransferRecord, MediaTransferState, MediaTransferTransition,
+    MessageDeviceDeliveryRecord, MessageRecord, QueueClass, QueueItem,
+};
+use kult_transport::{
+    CostClass, DeliveryHint, LatencyClass, LinkProfile, Reachability, SendReceipt, Transport,
+};
 
 use super::*;
 
@@ -15,8 +29,46 @@ const TEST_KDF: KdfProfile = KdfProfile {
     p_cost: 1,
 };
 
+#[derive(Default)]
+struct CountingTransport {
+    sends: AtomicUsize,
+}
+
+#[async_trait]
+impl Transport for CountingTransport {
+    fn profile(&self) -> LinkProfile {
+        LinkProfile {
+            mtu: 64 * 1024,
+            latency: LatencyClass::Millis,
+            cost: CostClass::Metered,
+            broadcast: false,
+        }
+    }
+
+    async fn reachable(&self, hint: &DeliveryHint) -> Reachability {
+        match hint {
+            DeliveryHint::MeshNode(_) => Reachability::Now,
+            _ => Reachability::Unreachable,
+        }
+    }
+
+    async fn send(
+        &self,
+        _hint: &DeliveryHint,
+        _envelope: &Envelope,
+    ) -> kult_transport::Result<SendReceipt> {
+        self.sends.fetch_add(1, Ordering::SeqCst);
+        Ok(SendReceipt::HandedToLink)
+    }
+
+    async fn recv(&self) -> kult_transport::Result<Vec<Envelope>> {
+        Ok(Vec::new())
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Target {
+    PrekeyPublish,
     PairwiseSend,
     HandshakeReceive,
     PairwiseReceive,
@@ -24,6 +76,11 @@ enum Target {
     Maintenance,
     MaintenanceReset,
     MaintenanceExpiry,
+    GroupState,
+    GroupSend,
+    GroupReceive,
+    AttachmentStage,
+    AttachmentState,
 }
 
 struct Fixture {
@@ -128,7 +185,6 @@ fn consume(
     now: u64,
     rng: &mut StdRng,
 ) -> Result<Consumed> {
-    let mut acks = Vec::new();
     let mut established = false;
     node.consume(
         envelope,
@@ -138,7 +194,6 @@ fn consume(
         },
         now,
         rng,
-        &mut acks,
         &mut established,
     )
 }
@@ -150,6 +205,7 @@ fn run_store_case(
     seed: u64,
 ) -> bool {
     match target {
+        Target::PrekeyPublish => run_prekey_publish(point, failure, seed),
         Target::PairwiseSend => run_pairwise_send(point, failure, seed),
         Target::HandshakeReceive => run_handshake_receive(point, failure, seed),
         Target::PairwiseReceive => run_pairwise_receive(point, failure, seed),
@@ -157,11 +213,44 @@ fn run_store_case(
         Target::Maintenance => run_maintenance(point, failure, seed),
         Target::MaintenanceReset => run_maintenance_reset(point, failure, seed),
         Target::MaintenanceExpiry => run_maintenance_expiry(point, failure, seed),
+        Target::GroupState => run_group_state(point, failure, seed),
+        Target::GroupSend => run_group_send(point, failure, seed),
+        Target::GroupReceive => run_group_receive(point, failure, seed),
+        Target::AttachmentStage => run_attachment_stage(point, failure, seed),
+        Target::AttachmentState => run_attachment_state(point, failure, seed),
     }
 }
 
 fn expected_committed(result_ok: bool, point: CommitFailpoint) -> bool {
     result_ok || point == CommitFailpoint::AfterCommit
+}
+
+fn run_prekey_publish(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
+    let mut fixture = Fixture::new(seed);
+    let before = fixture.alice.store.get_prekeys().unwrap().unwrap();
+    fixture.alice.arm_commit_failpoint(point, failure);
+    let result = fixture.alice.handshake_bundle(NOW + 9, &mut fixture.rng);
+    let result_ok = result.is_ok();
+    let committed = fixture.alice.store.get_prekeys().unwrap().unwrap() != before;
+    assert_eq!(committed, expected_committed(result_ok, point));
+
+    let Fixture {
+        _directory,
+        alice_path,
+        bob_path: _,
+        alice,
+        bob: _,
+        alice_id: _,
+        bob_id: _,
+        mut rng,
+    } = fixture;
+    drop(alice);
+    let mut alice = Node::open(&alice_path, b"alice").unwrap();
+    if !committed {
+        alice.handshake_bundle(NOW + 10, &mut rng).unwrap();
+    }
+    assert_ne!(alice.store.get_prekeys().unwrap().unwrap(), before);
+    result_ok
 }
 
 fn run_pairwise_send(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
@@ -714,6 +803,543 @@ fn run_maintenance_expiry(point: CommitFailpoint, failure: CommitFailure, seed: 
     result_ok
 }
 
+fn run_group_state(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
+    let mut fixture = Fixture::new(seed);
+    let group = fixture
+        .alice
+        .create_group("state before", &[fixture.bob_id], &mut fixture.rng)
+        .unwrap();
+    fixture.alice.drain_events();
+    let before = fixture.alice.store.get_group(&group).unwrap().unwrap();
+    let mut after = before.clone();
+    after.name = "state after".to_owned();
+    fixture.alice.arm_commit_failpoint(point, failure);
+    let result = fixture.alice.store.commit_plan(
+        CommitPlan::GroupState(GroupStatePlan {
+            groups: &[GroupStateTransition {
+                before: Some(&before),
+                after: Some(&after),
+            }],
+            chains: &[],
+            contacts: &[],
+            authorities: &[],
+            delete_controls: &[],
+            presentation_changed: true,
+        }),
+        &mut fixture.rng,
+    );
+    let result_ok = result.is_ok();
+    let committed = fixture.alice.store.get_group(&group).unwrap() == Some(after.clone());
+    assert_eq!(committed, expected_committed(result_ok, point));
+
+    let Fixture {
+        _directory,
+        alice_path,
+        bob_path: _,
+        alice,
+        bob: _,
+        alice_id: _,
+        bob_id: _,
+        mut rng,
+    } = fixture;
+    drop(alice);
+    let alice = Node::open(&alice_path, b"alice").unwrap();
+    if !committed {
+        alice
+            .store
+            .commit_plan(
+                CommitPlan::GroupState(GroupStatePlan {
+                    groups: &[GroupStateTransition {
+                        before: Some(&before),
+                        after: Some(&after),
+                    }],
+                    chains: &[],
+                    contacts: &[],
+                    authorities: &[],
+                    delete_controls: &[],
+                    presentation_changed: true,
+                }),
+                &mut rng,
+            )
+            .unwrap();
+    }
+    assert_eq!(alice.store.get_group(&group).unwrap(), Some(after));
+    result_ok
+}
+
+fn run_group_send(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
+    let mut fixture = Fixture::new(seed);
+    fixture.establish();
+    let group = fixture
+        .alice
+        .create_group("planned send", &[fixture.bob_id], &mut fixture.rng)
+        .unwrap();
+    fixture.alice.arm_commit_failpoint(point, failure);
+    let result =
+        fixture
+            .alice
+            .group_send(&group, b"group planned send", NOW + 80, &mut fixture.rng);
+    let result_ok = result.is_ok();
+    let committed = fixture.alice.store.group_messages(&group).unwrap().len() == 1;
+    assert_eq!(committed, expected_committed(result_ok, point));
+    assert_eq!(
+        fixture
+            .alice
+            .store
+            .queue_all()
+            .unwrap()
+            .iter()
+            .filter(|(_, item)| item.group_msg_id.is_some())
+            .count(),
+        usize::from(committed)
+    );
+
+    let Fixture {
+        _directory,
+        alice_path,
+        bob_path: _,
+        alice,
+        bob: _,
+        alice_id: _,
+        bob_id: _,
+        mut rng,
+    } = fixture;
+    drop(alice);
+    let mut alice = Node::open(&alice_path, b"alice").unwrap();
+    if !committed {
+        alice
+            .group_send(&group, b"group planned send", NOW + 81, &mut rng)
+            .unwrap();
+    }
+    assert_eq!(alice.store.group_messages(&group).unwrap().len(), 1);
+    result_ok
+}
+
+fn run_group_receive(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
+    let mut fixture = Fixture::new(seed);
+    fixture.establish();
+    let group = fixture
+        .alice
+        .create_group("planned receive", &[fixture.bob_id], &mut fixture.rng)
+        .unwrap();
+    futures::executor::block_on(fixture.alice.tick_groups(NOW + 90, &mut fixture.rng)).unwrap();
+    let announce = fixture
+        .alice
+        .store
+        .queue_all()
+        .unwrap()
+        .into_iter()
+        .find_map(|(_, item)| {
+            (item.envelope.kind == EnvelopeKind::GroupControl).then_some(item.envelope)
+        })
+        .expect("group announce");
+    consume(
+        &mut fixture.bob,
+        &announce,
+        None,
+        NOW + 91,
+        &mut fixture.rng,
+    )
+    .unwrap();
+    fixture
+        .bob
+        .apply_deferred_controls(NOW + 91, &mut fixture.rng)
+        .unwrap();
+    let message_id = fixture
+        .alice
+        .group_send(&group, b"group planned receive", NOW + 92, &mut fixture.rng)
+        .unwrap();
+    let envelope = fixture
+        .alice
+        .store
+        .queue_all()
+        .unwrap()
+        .into_iter()
+        .find_map(|(_, item)| (item.group_msg_id == Some(message_id)).then_some(item.envelope))
+        .expect("group message");
+    let content_id = envelope.content_id();
+    let pending_sequence = fixture
+        .bob
+        .store
+        .pending_push(&envelope, NOW + 92, &mut fixture.rng)
+        .unwrap();
+    fixture.bob.arm_commit_failpoint(point, failure);
+    let result = consume(
+        &mut fixture.bob,
+        &envelope,
+        Some(pending_sequence),
+        NOW + 93,
+        &mut fixture.rng,
+    );
+    let result_ok = result.is_ok();
+    let committed = fixture.bob.store.is_seen(&content_id).unwrap();
+    assert_eq!(committed, expected_committed(result_ok, point));
+    assert_eq!(
+        fixture.bob.store.group_messages(&group).unwrap().len(),
+        usize::from(committed)
+    );
+    assert_eq!(
+        pending_contains(&fixture.bob, pending_sequence, content_id),
+        !committed
+    );
+
+    let Fixture {
+        _directory,
+        alice_path: _,
+        bob_path,
+        alice: _,
+        bob,
+        alice_id: _,
+        bob_id: _,
+        mut rng,
+    } = fixture;
+    drop(bob);
+    let mut bob = Node::open(&bob_path, b"bob").unwrap();
+    consume(
+        &mut bob,
+        &envelope,
+        (!committed).then_some(pending_sequence),
+        NOW + 94,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(bob.store.group_messages(&group).unwrap().len(), 1);
+    result_ok
+}
+
+fn attachment_records(peer: [u8; 32]) -> (MessageRecord, MediaTransferRecord, MediaObjectRecord) {
+    let content_id = [0xa1; 16];
+    let transfer_id = [0xa2; 16];
+    (
+        MessageRecord {
+            id: content_id,
+            peer,
+            direction: Direction::Outbound,
+            state: DeliveryState::Queued,
+            timestamp: NOW + 100,
+            body: vec![1],
+            wire_id: None,
+        },
+        MediaTransferRecord {
+            local_id: transfer_id,
+            peer,
+            direction: MediaDirection::Outbound,
+            scope: MediaScope::Pairwise,
+            scope_id: [0xa3; 32],
+            manifest_author: [0xa4; 32],
+            manifest_content_id: content_id,
+            entitled_peers: vec![peer],
+            state: MediaTransferState::Queued,
+            updated_at: NOW + 100,
+        },
+        MediaObjectRecord {
+            local_id: [0xa5; 16],
+            transfer_id,
+            object_id: [0xa6; 16],
+            role: 0,
+            total_len: 1,
+            chunk_count: 1,
+            content_hash: [0xa7; 32],
+            media_type: "application/octet-stream".to_owned(),
+            filename: Some("planned.bin".to_owned()),
+            state: MediaTransferState::Queued,
+            verified_bitmap: vec![0],
+            chunk_addresses: vec![None],
+            verified_bytes: 0,
+        },
+    )
+}
+
+fn run_attachment_stage(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
+    let mut fixture = Fixture::new(seed);
+    let (message, transfer, object) = attachment_records(fixture.bob_id);
+    fixture.alice.arm_commit_failpoint(point, failure);
+    let result = fixture.alice.store.commit_plan(
+        CommitPlan::AttachmentStage(AttachmentStagePlan {
+            message: Some(&message),
+            group_message: None,
+            media_transfers: core::slice::from_ref(&transfer),
+            media_objects: core::slice::from_ref(&object),
+            ephemeral: None,
+            presentation_changed: true,
+        }),
+        &mut fixture.rng,
+    );
+    let result_ok = result.is_ok();
+    let committed = matches!(
+        fixture
+            .alice
+            .store
+            .get_media_transfer(&transfer.local_id)
+            .unwrap(),
+        Some(MediaRecord::Available(_))
+    );
+    assert_eq!(committed, expected_committed(result_ok, point));
+    assert_eq!(
+        fixture
+            .alice
+            .store
+            .messages_with(&fixture.bob_id)
+            .unwrap()
+            .len(),
+        usize::from(committed)
+    );
+
+    let Fixture {
+        _directory,
+        alice_path,
+        bob_path: _,
+        alice,
+        bob: _,
+        alice_id: _,
+        bob_id: _,
+        mut rng,
+    } = fixture;
+    drop(alice);
+    let alice = Node::open(&alice_path, b"alice").unwrap();
+    if !committed {
+        alice
+            .store
+            .commit_plan(
+                CommitPlan::AttachmentStage(AttachmentStagePlan {
+                    message: Some(&message),
+                    group_message: None,
+                    media_transfers: core::slice::from_ref(&transfer),
+                    media_objects: core::slice::from_ref(&object),
+                    ephemeral: None,
+                    presentation_changed: true,
+                }),
+                &mut rng,
+            )
+            .unwrap();
+    }
+    assert!(matches!(
+        alice.store.get_media_transfer(&transfer.local_id).unwrap(),
+        Some(MediaRecord::Available(_))
+    ));
+    result_ok
+}
+
+fn run_attachment_state(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
+    let mut fixture = Fixture::new(seed);
+    let (_, before, _) = attachment_records(fixture.bob_id);
+    fixture
+        .alice
+        .store
+        .put_media_transfer(&before, &mut fixture.rng)
+        .unwrap();
+    let mut after = before.clone();
+    after.state = MediaTransferState::Paused;
+    after.updated_at += 1;
+    fixture.alice.arm_commit_failpoint(point, failure);
+    let result = fixture.alice.store.commit_plan(
+        CommitPlan::AttachmentState(AttachmentStatePlan {
+            media_transfers: &[MediaTransferTransition {
+                before: &before,
+                after: &after,
+            }],
+            media_objects: &[],
+            delete_controls: &[],
+            presentation_changed: true,
+        }),
+        &mut fixture.rng,
+    );
+    let result_ok = result.is_ok();
+    let committed = fixture
+        .alice
+        .store
+        .get_media_transfer(&before.local_id)
+        .unwrap()
+        == Some(MediaRecord::Available(after.clone()));
+    assert_eq!(committed, expected_committed(result_ok, point));
+
+    let Fixture {
+        _directory,
+        alice_path,
+        bob_path: _,
+        alice,
+        bob: _,
+        alice_id: _,
+        bob_id: _,
+        mut rng,
+    } = fixture;
+    drop(alice);
+    let alice = Node::open(&alice_path, b"alice").unwrap();
+    if !committed {
+        alice
+            .store
+            .commit_plan(
+                CommitPlan::AttachmentState(AttachmentStatePlan {
+                    media_transfers: &[MediaTransferTransition {
+                        before: &before,
+                        after: &after,
+                    }],
+                    media_objects: &[],
+                    delete_controls: &[],
+                    presentation_changed: true,
+                }),
+                &mut rng,
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        alice.store.get_media_transfer(&before.local_id).unwrap(),
+        Some(MediaRecord::Available(after))
+    );
+    result_ok
+}
+
+struct LargeGroupFanout {
+    before_group: GroupRecord,
+    after_group: GroupRecord,
+    message: GroupMessageRecord,
+    deliveries: Vec<MessageDeviceDeliveryRecord>,
+    queue: Vec<QueueItem>,
+}
+
+impl LargeGroupFanout {
+    fn commit(
+        &self,
+        node: &Node,
+        rng: &mut impl rand_core::CryptoRngCore,
+    ) -> kult_store::Result<kult_store::CommitReceipt> {
+        node.store.commit_plan(
+            CommitPlan::GroupSend(GroupSendPlan {
+                group: Some(GroupTransition {
+                    before: &self.before_group,
+                    after: &self.after_group,
+                }),
+                message: Some(&self.message),
+                message_update: None,
+                deliveries: &self.deliveries,
+                delivery_updates: &[],
+                queue: &self.queue,
+                scheduled: None,
+                ephemeral: None,
+                media_transfers: &[],
+                delete_chains: &[],
+                authority: None,
+                presentation_changed: true,
+            }),
+            rng,
+        )
+    }
+}
+
+fn prepare_large_group_fanout(fixture: &mut Fixture) -> LargeGroupFanout {
+    let group = fixture
+        .alice
+        .create_group("bounded maximum", &[fixture.bob_id], &mut fixture.rng)
+        .unwrap();
+    let initial = fixture.alice.store.get_group(&group).unwrap().unwrap();
+    let mut before_group = initial.clone();
+    let mut discriminator = 1u8;
+    while before_group.members.len() < 64 {
+        let mut peer = [0u8; 32];
+        peer[0] = 0x80;
+        peer[1] = discriminator;
+        discriminator = discriminator.checked_add(1).unwrap();
+        if before_group
+            .members
+            .iter()
+            .any(|member| member.peer == peer)
+        {
+            continue;
+        }
+        before_group.members.push(GroupMember {
+            peer,
+            identity: vec![0x49, discriminator],
+        });
+    }
+    fixture
+        .alice
+        .store
+        .commit_plan(
+            CommitPlan::GroupState(GroupStatePlan {
+                groups: &[GroupStateTransition {
+                    before: Some(&initial),
+                    after: Some(&before_group),
+                }],
+                chains: &[],
+                contacts: &[],
+                authorities: &[],
+                delete_controls: &[],
+                presentation_changed: false,
+            }),
+            &mut fixture.rng,
+        )
+        .unwrap();
+
+    let mut after_group = before_group.clone();
+    fixture
+        .alice
+        .rotate_group(&mut after_group, &mut fixture.rng)
+        .unwrap();
+    let id = [0xb1; 16];
+    let wire = vec![0xc7; 96];
+    let mut account_deliveries = Vec::new();
+    let mut deliveries = Vec::new();
+    let mut queue = Vec::new();
+    for (account_index, member) in before_group
+        .members
+        .iter()
+        .filter(|member| member.peer != before_group.creator)
+        .enumerate()
+    {
+        let mut first_wire = None;
+        for device_index in 0..8 {
+            let mut device = [0u8; 32];
+            device[0] = 0xd0;
+            device[1] = u8::try_from(account_index + 1).unwrap();
+            device[2] = u8::try_from(device_index + 1).unwrap();
+            let envelope = Envelope::new(EnvelopeKind::GroupMessage, device, wire.clone());
+            let wire_id = envelope.content_id();
+            first_wire.get_or_insert(wire_id);
+            deliveries.push(MessageDeviceDeliveryRecord {
+                message: id,
+                account: member.peer,
+                device,
+                wire_id: Some(wire_id),
+                state: DeliveryState::Queued,
+            });
+            queue.push(QueueItem {
+                peer: device,
+                msg_id: None,
+                group_msg_id: Some(id),
+                class: QueueClass::Interactive,
+                created_at: NOW + 110,
+                attempts: 0,
+                next_attempt_at: NOW + 110,
+                envelope,
+            });
+        }
+        account_deliveries.push(GroupDelivery {
+            peer: member.peer,
+            wire_id: first_wire,
+            state: DeliveryState::Queued,
+        });
+    }
+    assert_eq!(account_deliveries.len(), 63);
+    assert_eq!(deliveries.len(), 504);
+    assert_eq!(queue.len(), 504);
+    LargeGroupFanout {
+        before_group,
+        after_group,
+        message: GroupMessageRecord {
+            id,
+            group,
+            sender: initial.creator,
+            direction: Direction::Outbound,
+            timestamp: NOW + 110,
+            body: b"maximum bounded group fan-out".to_vec(),
+            deliveries: account_deliveries,
+            wire_body: None,
+        },
+        deliveries,
+        queue,
+    }
+}
+
 fn transition_commits_when_fired(point: TransitionFailpoint) -> bool {
     matches!(
         point,
@@ -1018,6 +1644,230 @@ fn run_receipt_transition(point: TransitionFailpoint, seed: u64) -> bool {
     fired
 }
 
+fn run_group_send_transition(point: TransitionFailpoint, seed: u64) -> bool {
+    let mut fixture = Fixture::new(seed);
+    fixture.establish();
+    let group = fixture
+        .alice
+        .create_group("group send checkpoint", &[fixture.bob_id], &mut fixture.rng)
+        .unwrap();
+    let id = [0x79; 16];
+    fixture.alice.arm_transition_failpoint(point);
+    let result = fixture.alice.group_send_with_id(
+        &group,
+        b"group send checkpoint",
+        id,
+        NOW + 24,
+        NOW + 24,
+        &mut fixture.rng,
+    );
+    let fired = fixture.alice.transition_failpoint_fired();
+    let committed = fixture
+        .alice
+        .store
+        .group_messages(&group)
+        .unwrap()
+        .iter()
+        .any(|message| message.id == id);
+    if fired {
+        assert!(result.is_err());
+        assert_eq!(committed, transition_commits_when_fired(point));
+    } else {
+        result.unwrap();
+        assert!(committed);
+    }
+    let Fixture {
+        _directory,
+        alice_path,
+        bob_path: _,
+        alice,
+        bob: _,
+        alice_id: _,
+        bob_id: _,
+        mut rng,
+    } = fixture;
+    drop(alice);
+    let mut alice = Node::open(&alice_path, b"alice").unwrap();
+    if !committed {
+        alice
+            .group_send_with_id(
+                &group,
+                b"group send checkpoint",
+                id,
+                NOW + 24,
+                NOW + 24,
+                &mut rng,
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        alice
+            .store
+            .group_messages(&group)
+            .unwrap()
+            .iter()
+            .filter(|message| message.id == id)
+            .count(),
+        1
+    );
+    fired
+}
+
+fn run_prekey_publish_transition(point: TransitionFailpoint, seed: u64) -> bool {
+    let mut fixture = Fixture::new(seed);
+    let before = fixture.alice.store.get_prekeys().unwrap().unwrap();
+    fixture.alice.arm_transition_failpoint(point);
+    let result = fixture.alice.handshake_bundle(NOW + 23, &mut fixture.rng);
+    let fired = fixture.alice.transition_failpoint_fired();
+    let committed = fixture.alice.store.get_prekeys().unwrap().unwrap() != before;
+    if fired {
+        assert!(result.is_err());
+        assert_eq!(committed, transition_commits_when_fired(point));
+    } else {
+        result.unwrap();
+        assert!(committed);
+    }
+    let Fixture {
+        _directory,
+        alice_path,
+        bob_path: _,
+        alice,
+        bob: _,
+        alice_id: _,
+        bob_id: _,
+        mut rng,
+    } = fixture;
+    drop(alice);
+    let mut alice = Node::open(&alice_path, b"alice").unwrap();
+    if !committed {
+        alice.handshake_bundle(NOW + 24, &mut rng).unwrap();
+    }
+    assert_ne!(alice.store.get_prekeys().unwrap().unwrap(), before);
+    assert_eq!(
+        alice.vault.encode(),
+        alice.store.get_prekeys().unwrap().unwrap()
+    );
+    fired
+}
+
+fn run_group_receive_transition(point: TransitionFailpoint, seed: u64) -> bool {
+    let mut fixture = Fixture::new(seed);
+    fixture.establish();
+    let group = fixture
+        .alice
+        .create_group(
+            "group receive checkpoint",
+            &[fixture.bob_id],
+            &mut fixture.rng,
+        )
+        .unwrap();
+    futures::executor::block_on(fixture.alice.tick_groups(NOW + 25, &mut fixture.rng)).unwrap();
+    let announce = fixture
+        .alice
+        .store
+        .queue_all()
+        .unwrap()
+        .into_iter()
+        .find_map(|(_, item)| {
+            (item.envelope.kind == EnvelopeKind::GroupControl).then_some(item.envelope)
+        })
+        .expect("group announce");
+    consume(
+        &mut fixture.bob,
+        &announce,
+        None,
+        NOW + 26,
+        &mut fixture.rng,
+    )
+    .unwrap();
+    fixture
+        .bob
+        .apply_deferred_controls(NOW + 26, &mut fixture.rng)
+        .unwrap();
+    let id = [0x7a; 16];
+    fixture
+        .alice
+        .group_send_with_id(
+            &group,
+            b"group receive checkpoint",
+            id,
+            NOW + 27,
+            NOW + 27,
+            &mut fixture.rng,
+        )
+        .unwrap();
+    let envelope = fixture
+        .alice
+        .store
+        .queue_all()
+        .unwrap()
+        .into_iter()
+        .find_map(|(_, item)| (item.group_msg_id == Some(id)).then_some(item.envelope))
+        .expect("group message");
+    let content_id = envelope.content_id();
+    let sequence = fixture
+        .bob
+        .store
+        .pending_push(&envelope, NOW + 27, &mut fixture.rng)
+        .unwrap();
+    fixture.bob.arm_transition_failpoint(point);
+    let result = consume(
+        &mut fixture.bob,
+        &envelope,
+        Some(sequence),
+        NOW + 28,
+        &mut fixture.rng,
+    );
+    let fired = fixture.bob.transition_failpoint_fired();
+    let committed = fixture.bob.store.is_seen(&content_id).unwrap();
+    if fired {
+        assert!(result.is_err());
+        assert_eq!(committed, transition_commits_when_fired(point));
+    } else {
+        result.unwrap();
+        assert!(committed);
+    }
+    assert_eq!(
+        pending_contains(&fixture.bob, sequence, content_id),
+        !committed
+    );
+    let Fixture {
+        _directory,
+        alice_path: _,
+        bob_path,
+        alice: _,
+        bob,
+        alice_id: _,
+        bob_id: _,
+        mut rng,
+    } = fixture;
+    drop(bob);
+    let mut bob = Node::open(&bob_path, b"bob").unwrap();
+    let retry = consume(
+        &mut bob,
+        &envelope,
+        (!committed).then_some(sequence),
+        NOW + 29,
+        &mut rng,
+    )
+    .unwrap();
+    assert!(
+        matches!(retry, Consumed::Done | Consumed::DoneAtomic),
+        "group receive retry remained deferred at {point:?}"
+    );
+    assert_eq!(
+        bob.store
+            .group_messages(&group)
+            .unwrap()
+            .iter()
+            .filter(|message| message.body == b"group receive checkpoint")
+            .count(),
+        1,
+        "group receive restart did not converge at {point:?}; fired={fired}, committed={committed}"
+    );
+    fired
+}
+
 fn run_maintenance_reset_transition(point: TransitionFailpoint, seed: u64) -> bool {
     let mut fixture = Fixture::new(seed);
     fixture.establish();
@@ -1061,6 +1911,7 @@ fn run_maintenance_reset_transition(point: TransitionFailpoint, seed: u64) -> bo
 #[test]
 fn every_transaction_statement_is_all_or_nothing_after_restart() {
     let targets = [
+        Target::PrekeyPublish,
         Target::PairwiseSend,
         Target::HandshakeReceive,
         Target::PairwiseReceive,
@@ -1068,6 +1919,11 @@ fn every_transaction_statement_is_all_or_nothing_after_restart() {
         Target::Maintenance,
         Target::MaintenanceReset,
         Target::MaintenanceExpiry,
+        Target::GroupState,
+        Target::GroupSend,
+        Target::GroupReceive,
+        Target::AttachmentStage,
+        Target::AttachmentState,
     ];
     let mut seed = 0xa280_0000;
     for target in targets {
@@ -1105,16 +1961,200 @@ fn every_transaction_statement_is_all_or_nothing_after_restart() {
 }
 
 #[test]
+fn maximum_group_fanout_is_bounded_and_restart_atomic() {
+    let points = [
+        CommitFailpoint::BeforeStatement(0),
+        CommitFailpoint::AfterStatement(505),
+        CommitFailpoint::AfterStatement(1009),
+        CommitFailpoint::BeforeCommit,
+        CommitFailpoint::AfterCommit,
+    ];
+    for (offset, point) in points.into_iter().enumerate() {
+        let mut fixture = Fixture::new(0xa280_4000 + offset as u64);
+        let fanout = prepare_large_group_fanout(&mut fixture);
+        fixture
+            .alice
+            .arm_commit_failpoint(point, CommitFailure::Interrupted);
+        let result = fanout.commit(&fixture.alice, &mut fixture.rng);
+        assert!(result.is_err(), "large fan-out failpoint was not reached");
+        let committed = fixture
+            .alice
+            .store
+            .group_messages(&fanout.message.group)
+            .unwrap()
+            .iter()
+            .any(|message| message.id == fanout.message.id);
+        assert_eq!(committed, point == CommitFailpoint::AfterCommit);
+
+        let Fixture {
+            _directory,
+            alice_path,
+            bob_path: _,
+            alice,
+            bob: _,
+            alice_id: _,
+            bob_id: _,
+            mut rng,
+        } = fixture;
+        drop(alice);
+        let alice = Node::open(&alice_path, b"alice").unwrap();
+        if !committed {
+            fanout.commit(&alice, &mut rng).unwrap();
+        }
+        assert_eq!(
+            alice
+                .store
+                .message_device_deliveries(&fanout.message.id)
+                .unwrap()
+                .len(),
+            504
+        );
+        assert_eq!(
+            alice
+                .store
+                .queue_all()
+                .unwrap()
+                .iter()
+                .filter(|(_, item)| item.group_msg_id == Some(fanout.message.id))
+                .count(),
+            504
+        );
+        assert_eq!(
+            alice
+                .store
+                .group_messages(&fanout.message.group)
+                .unwrap()
+                .iter()
+                .filter(|message| message.id == fanout.message.id)
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn group_fanout_rejects_a_ninth_device_for_one_account() {
+    let mut fixture = Fixture::new(0xa280_5000);
+    let mut fanout = prepare_large_group_fanout(&mut fixture);
+    let account = fanout.message.deliveries[0].peer;
+    let mut device = [0u8; 32];
+    device[0] = 0xd0;
+    device[1] = 1;
+    device[2] = 9;
+    let envelope = Envelope::new(EnvelopeKind::GroupMessage, device, vec![0xc7; 96]);
+    let wire_id = envelope.content_id();
+    fanout.deliveries.push(MessageDeviceDeliveryRecord {
+        message: fanout.message.id,
+        account,
+        device,
+        wire_id: Some(wire_id),
+        state: DeliveryState::Queued,
+    });
+    fanout.queue.push(QueueItem {
+        peer: device,
+        msg_id: None,
+        group_msg_id: Some(fanout.message.id),
+        class: QueueClass::Interactive,
+        created_at: NOW + 110,
+        attempts: 0,
+        next_attempt_at: NOW + 110,
+        envelope,
+    });
+    assert!(matches!(
+        fanout.commit(&fixture.alice, &mut fixture.rng),
+        Err(kult_store::StoreError::InvalidTransition)
+    ));
+    assert!(fixture
+        .alice
+        .store
+        .group_messages(&fanout.message.group)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn stable_protocol_modules_cannot_call_raw_state_setters() {
+    let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let forbidden = [
+        "put_session",
+        "delete_session",
+        "put_group",
+        "delete_group",
+        "put_group_authority",
+        "put_group_chain",
+        "delete_group_chain",
+        "put_group_message",
+        "update_group_message",
+        "delete_group_message_record",
+        "put_ephemeral_record",
+        "put_media_transfer",
+        "set_media_transfer_state",
+        "put_media_object",
+        "set_media_object_state",
+        "commit_media_chunk",
+        "mark_media_complete",
+        "delete_media_transfer",
+        "delete_media_transfer_with_objects",
+        "delete_media_object",
+        "mark_seen",
+        "put_receipt_replay",
+        "put_message",
+        "update_message",
+        "delete_message_record",
+        "put_message_device_delivery",
+        "queue_push",
+        "queue_ack",
+        "queue_update",
+        "queue_remove_peer",
+        "queue_retarget_peer",
+        "queue_remove_message",
+        "queue_remove_group_message",
+        "queue_remove_envelope",
+        "pending_ack",
+    ];
+    for entry in std::fs::read_dir(source_root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|value| value.to_str()) != Some("rs") {
+            continue;
+        }
+        let filename = path.file_name().and_then(|value| value.to_str()).unwrap();
+        if matches!(filename, "atomic_tests.rs" | "devices.rs") {
+            // C2 remains an explicit deferred transaction redesign under ADR-0026.
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).unwrap();
+        let production = source.split("#[cfg(test)]").next().unwrap_or(&source);
+        let normalized = production.split_whitespace().collect::<String>();
+        assert!(
+            !normalized.contains("#[cfg(any())]"),
+            "{} retains disabled protocol code",
+            path.display()
+        );
+        for setter in forbidden {
+            let needle = format!(".{setter}(");
+            assert!(
+                !normalized.contains(&needle),
+                "{} bypasses a typed transition through {setter}",
+                path.display()
+            );
+        }
+    }
+}
+
+#[test]
 fn every_candidate_crypto_and_memory_checkpoint_has_a_binary_restart_state() {
-    let runners: [fn(TransitionFailpoint, u64) -> bool; 5] = [
+    let crypto_runners: [fn(TransitionFailpoint, u64) -> bool; 8] = [
+        run_prekey_publish_transition,
         run_pairwise_send_transition,
         run_handshake_transition,
         run_pairwise_receive_transition,
         run_receipt_transition,
+        run_group_send_transition,
+        run_group_receive_transition,
         run_maintenance_reset_transition,
     ];
     let mut seed = 0xa281_0000;
-    for runner in runners {
+    for runner in crypto_runners {
         for before in [true, false] {
             let mut reached_end = false;
             for step in 0..16 {
@@ -1131,6 +2171,17 @@ fn every_candidate_crypto_and_memory_checkpoint_has_a_binary_restart_state() {
             }
             assert!(reached_end, "crypto checkpoint test bound exceeded");
         }
+    }
+    let memory_runners: [fn(TransitionFailpoint, u64) -> bool; 7] = [
+        run_prekey_publish_transition,
+        run_pairwise_send_transition,
+        run_handshake_transition,
+        run_pairwise_receive_transition,
+        run_receipt_transition,
+        run_group_receive_transition,
+        run_maintenance_reset_transition,
+    ];
+    for runner in memory_runners {
         for point in [
             TransitionFailpoint::BeforeMemoryReplacement,
             TransitionFailpoint::AfterMemoryReplacement,
@@ -1138,6 +2189,102 @@ fn every_candidate_crypto_and_memory_checkpoint_has_a_binary_restart_state() {
             seed += 1;
             assert!(runner(point, seed));
         }
+    }
+}
+
+#[test]
+fn scheduled_activation_commits_before_transport_or_presentation() {
+    for (offset, point) in [CommitFailpoint::BeforeCommit, CommitFailpoint::AfterCommit]
+        .into_iter()
+        .enumerate()
+    {
+        let mut fixture = Fixture::new(0xa281_8000 + offset as u64);
+        fixture.establish();
+        fixture
+            .alice
+            .acknowledge_presentation(&mut fixture.rng)
+            .unwrap();
+        let transport = Arc::new(CountingTransport::default());
+        fixture.alice.add_transport(transport.clone());
+        fixture
+            .alice
+            .set_hints(
+                &fixture.bob_id,
+                &[DeliveryHint::MeshNode(9)],
+                &mut fixture.rng,
+            )
+            .unwrap();
+        fixture.alice.capabilities_advertised.insert(fixture.bob_id);
+        let id = fixture
+            .alice
+            .schedule_message(
+                &fixture.bob_id,
+                b"scheduled commit boundary",
+                NOW + 50,
+                NOW + 40,
+                &mut fixture.rng,
+            )
+            .unwrap();
+        fixture.alice.drain_events();
+        fixture
+            .alice
+            .arm_commit_failpoint(point, CommitFailure::Interrupted);
+        let result = futures::executor::block_on(fixture.alice.tick(NOW + 50, &mut fixture.rng));
+        result.unwrap();
+        assert_eq!(
+            transport.sends.load(Ordering::SeqCst) > 0,
+            point == CommitFailpoint::AfterCommit
+        );
+        assert_eq!(
+            fixture
+                .alice
+                .store
+                .get_scheduled_message(&id)
+                .unwrap()
+                .is_none(),
+            point == CommitFailpoint::AfterCommit,
+            "scheduled activation failpoint was consumed by a different transition"
+        );
+        assert_eq!(
+            fixture
+                .alice
+                .store
+                .presentation_resync_marker()
+                .unwrap()
+                .is_some(),
+            point == CommitFailpoint::AfterCommit
+        );
+        assert!(!fixture.alice.drain_events().iter().any(
+            |event| matches!(event, Event::ScheduledMessageActivated { id: event } if *event == id)
+        ));
+
+        let Fixture {
+            _directory,
+            alice_path,
+            bob_path: _,
+            alice,
+            bob: _,
+            alice_id: _,
+            bob_id: _,
+            mut rng,
+        } = fixture;
+        drop(alice);
+        let mut alice = Node::open(&alice_path, b"alice").unwrap();
+        alice.add_transport(transport.clone());
+        let reopen_events = alice.drain_events();
+        if point == CommitFailpoint::AfterCommit {
+            assert!(reopen_events
+                .iter()
+                .any(|event| matches!(event, Event::StateResyncRequired)));
+        }
+        let events = futures::executor::block_on(alice.tick(NOW + 51, &mut rng)).unwrap();
+        assert!(transport.sends.load(Ordering::SeqCst) > 0);
+        if point == CommitFailpoint::BeforeCommit {
+            assert!(events.iter().any(
+                |event| matches!(event, Event::ScheduledMessageActivated { id: event } if *event == id)
+            ));
+        }
+        assert!(alice.store.get_scheduled_message(&id).unwrap().is_none());
     }
 }
 
@@ -1296,6 +2443,7 @@ fn reordered_deferred_and_duplicate_input_converges_after_restart() {
 #[test]
 fn disk_constraint_and_duplicate_failures_leave_retryable_inputs() {
     let targets = [
+        Target::PrekeyPublish,
         Target::PairwiseSend,
         Target::HandshakeReceive,
         Target::PairwiseReceive,
@@ -1303,6 +2451,11 @@ fn disk_constraint_and_duplicate_failures_leave_retryable_inputs() {
         Target::Maintenance,
         Target::MaintenanceReset,
         Target::MaintenanceExpiry,
+        Target::GroupState,
+        Target::GroupSend,
+        Target::GroupReceive,
+        Target::AttachmentStage,
+        Target::AttachmentState,
     ];
     let failures = [
         CommitFailure::DiskFull,

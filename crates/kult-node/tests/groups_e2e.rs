@@ -316,6 +316,82 @@ async fn group_round_trip_receipts_and_restart() {
     ));
 }
 
+#[tokio::test]
+async fn partial_carrier_handoff_survives_sender_restart() {
+    let mut rng = StdRng::seed_from_u64(18);
+    let dir = tempfile::tempdir().unwrap();
+    let net: Net = Arc::new(Mutex::new(HashMap::new()));
+    let (mut alice, mut bob, mut carol, _a_id, b_id, c_id) = trio(dir.path(), &net, &mut rng).await;
+    let gid = alice
+        .create_group("partial handoff", &[b_id, c_id], &mut rng)
+        .unwrap();
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 1).await;
+
+    let id = alice
+        .group_send(&gid, b"survives one lost carrier copy", NOW + 30, &mut rng)
+        .unwrap();
+    alice.tick(NOW + 31, &mut rng).await.unwrap();
+    let removed = {
+        let mut network = net.lock().unwrap();
+        let carol_inbox = network.entry(3).or_default();
+        let before = carol_inbox.len();
+        carol_inbox.retain(|envelope| envelope.kind != EnvelopeKind::GroupMessage);
+        before - carol_inbox.len()
+    };
+    assert_eq!(removed, 1);
+
+    bob.tick(NOW + 32, &mut rng).await.unwrap();
+    alice.tick(NOW + 33, &mut rng).await.unwrap();
+    let record = alice
+        .group_messages(&gid)
+        .unwrap()
+        .into_iter()
+        .find(|message| message.id == id)
+        .unwrap();
+    assert_eq!(
+        record
+            .deliveries
+            .iter()
+            .find(|delivery| delivery.peer == b_id)
+            .unwrap()
+            .state,
+        DeliveryState::Delivered
+    );
+    assert_eq!(
+        record
+            .deliveries
+            .iter()
+            .find(|delivery| delivery.peer == c_id)
+            .unwrap()
+            .state,
+        DeliveryState::Sent
+    );
+
+    let alice_path = dir.path().join("a.db");
+    drop(alice);
+    let mut alice = Node::open(&alice_path, b"a").unwrap();
+    alice.add_transport(Arc::new(MockLink {
+        net: net.clone(),
+        me: 1,
+    }));
+    alice.tick(NOW + 1_000, &mut rng).await.unwrap();
+    assert_eq!(
+        group_bodies(&carol.tick(NOW + 1_001, &mut rng).await.unwrap()),
+        vec![b"survives one lost carrier copy".to_vec()]
+    );
+    alice.tick(NOW + 1_002, &mut rng).await.unwrap();
+    let record = alice
+        .group_messages(&gid)
+        .unwrap()
+        .into_iter()
+        .find(|message| message.id == id)
+        .unwrap();
+    assert!(record
+        .deliveries
+        .iter()
+        .all(|delivery| delivery.state == DeliveryState::Delivered));
+}
+
 // ---------------------------------------------------------------------------
 // 2. Membership: add mid-flight (no history for the newcomer), creator
 //    removal (removed member is cut off and told, survivors rotate and keep

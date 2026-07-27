@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 
 use kult_crypto::{
     verify_group_admin_request_signature, verify_group_authority_state_signature,
-    verify_group_owner_transfer_signature, GroupReceiverChain, GroupSenderChain, IdentityPublic,
+    verify_group_owner_transfer_signature, GroupSenderChain, IdentityPublic,
 };
 use kult_protocol::{
     decode_group_authority, encode_group_authority, encode_group_authority_state,
@@ -15,9 +15,12 @@ use kult_protocol::{
     GroupMemberInfo, GroupRole, OwnerTransferCertificate, SignedGroupAuthorityState,
     CONTENT_KIND_GROUP_AUTHORITY, MAX_GROUP_ADMIN_REQUESTS, MAX_GROUP_NAME_LEN,
 };
-use kult_store::{GroupAuthorityRecord, GroupMember, GroupRecord};
+use kult_store::{
+    ContactTransition, DeferredControlRecord, GroupAuthorityRecord, GroupAuthorityStateTransition,
+    GroupChainStateTransition, GroupMember, GroupRecord, GroupStatePlan, GroupStateTransition,
+};
 
-use crate::{Event, GroupAuthorityInfo, GroupMemberRoleInfo, Node, NodeError, Result};
+use crate::{CommitPlan, Event, GroupAuthorityInfo, GroupMemberRoleInfo, Node, NodeError, Result};
 
 const ID_RETRY_LIMIT: usize = 16;
 
@@ -277,7 +280,14 @@ impl Node {
         state.secret_hash = hash_secret(&secret);
         // The transfer state itself is still authorized by the old owner.
         state.signature = [0; 64];
-        self.commit_authority_state_signed_by(state, secret, now, rng, self.identity.public().ed)
+        self.commit_authority_state_signed_by(
+            state,
+            secret,
+            now,
+            rng,
+            self.identity.public().ed,
+            None,
+        )
     }
 
     pub(crate) fn group_authority_add_member(
@@ -500,7 +510,19 @@ impl Node {
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 16]> {
         let signer = state.signer;
-        self.commit_authority_state_signed_by(state, secret, now, rng, signer)
+        self.commit_authority_state_signed_by(state, secret, now, rng, signer, None)
+    }
+
+    fn commit_authority_state_for_request(
+        &mut self,
+        state: SignedGroupAuthorityState,
+        secret: [u8; 32],
+        request_id: [u8; 16],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        let signer = state.signer;
+        self.commit_authority_state_signed_by(state, secret, now, rng, signer, Some(request_id))
     }
 
     fn commit_authority_state_signed_by(
@@ -510,6 +532,7 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
         signer: [u8; 32],
+        consumed_request: Option<[u8; 16]>,
     ) -> Result<[u8; 16]> {
         if signer != self.identity.public().ed {
             return Err(NodeError::NotGroupOwner);
@@ -523,45 +546,43 @@ impl Node {
             encode_group_authority_state(&state).map_err(|_| NodeError::InvalidGroupAuthority)?;
         let wire =
             encode_group_authority(id, &payload).map_err(|_| NodeError::InvalidGroupAuthority)?;
-        self.group_send_content_with_id(&state.group, wire, id, now, now, rng)?;
-
-        // Reload because sending advanced the old sender chain.
-        let mut rec = self
-            .store
-            .get_group(&state.group)?
-            .ok_or(NodeError::UnknownGroup)?;
-        rec.prev_secret = Some(rec.secret);
-        rec.secret = secret;
-        rec.name = state.name.clone();
-        rec.creator = state.owner;
-        rec.generation = state.generation;
-        rec.members = state
-            .members
-            .iter()
-            .map(|member| GroupMember {
-                peer: member.peer,
-                identity: member.identity.clone(),
-            })
-            .collect();
-        self.rotate_group(&mut rec, rng)?;
-        self.store.put_group(&rec, rng)?;
-        let consumed_requests = self
-            .store
-            .get_group_authority(&state.group)?
-            .map(|record| record.consumed_requests)
+        let authority_before = self.store.get_group_authority(&state.group)?;
+        let consumed_requests = authority_before
+            .as_ref()
+            .map(|record| record.consumed_requests.clone())
             .unwrap_or_default();
-        self.store.put_group_authority(
-            &GroupAuthorityRecord {
+        let mut consumed_requests = consumed_requests;
+        if let Some(request_id) = consumed_request {
+            if !consumed_requests.contains(&request_id) {
+                consumed_requests.push(request_id);
+            }
+            if consumed_requests.len() > MAX_GROUP_ADMIN_REQUESTS {
+                let excess = consumed_requests.len() - MAX_GROUP_ADMIN_REQUESTS;
+                consumed_requests.drain(..excess);
+            }
+        }
+        let authority = crate::groups::PreparedAuthorityGroupState {
+            secret,
+            name: state.name.clone(),
+            creator: state.owner,
+            generation: state.generation,
+            members: state
+                .members
+                .iter()
+                .map(|member| GroupMember {
+                    peer: member.peer,
+                    identity: member.identity.clone(),
+                })
+                .collect(),
+            authority_before,
+            authority_after: GroupAuthorityRecord {
                 group: state.group,
                 state_id: id,
                 state_payload: payload,
                 consumed_requests,
             },
-            rng,
-        )?;
-        self.events
-            .push_back(Event::GroupUpdated { group: state.group });
-        Ok(id)
+        };
+        self.group_send_authority_content_with_id(&state.group, wire, id, now, now, &authority, rng)
     }
 
     fn mint_authority_id(
@@ -583,29 +604,31 @@ impl Node {
     pub(crate) fn apply_authority_announce(
         &mut self,
         peer: [u8; 32],
+        peer_device: [u8; 32],
         announce: &GroupAuthorityAnnounce,
+        control: &DeferredControlRecord,
         rng: &mut impl CryptoRngCore,
         established: &mut bool,
-    ) -> Result<bool> {
+    ) -> Result<(bool, bool)> {
         let DecodedGroupAuthority::State(state) = decode_group_authority(&announce.state_payload)
         else {
-            return Ok(true);
+            return Ok((true, false));
         };
         if state.group != announce.group
             || !state.members.iter().any(|member| member.peer == peer)
             || verify_authority_state(&state, Some(&announce.secret)).is_err()
         {
-            return Ok(true);
+            return Ok((true, false));
         }
         let me = self.identity.public().ed;
         if !state.members.iter().any(|member| member.peer == me) {
-            return Ok(false);
+            return Ok((false, false));
         }
         let current_authority = self.store.get_group_authority(&state.group)?;
         let current_state = current_authority.as_ref().map(decode_stored).transpose()?;
         if let Some(current) = &current_state {
             if current.original_owner != state.original_owner {
-                return Ok(true);
+                return Ok((true, false));
             }
             if state.generation > current.generation
                 && !transfer_chain_extends(&current.transfers, &state.transfers)
@@ -613,11 +636,11 @@ impl Node {
                 // Once one same-generation ownership fork wins locally, a
                 // later state rooted in the losing transfer chain cannot use
                 // a larger generation to take the replica back.
-                return Ok(true);
+                return Ok((true, false));
             }
         } else if let Some(group) = self.store.get_group(&state.group)? {
             if group.creator != state.original_owner {
-                return Ok(true);
+                return Ok((true, false));
             }
         }
         let adopt = current_state.as_ref().is_none_or(|current| {
@@ -635,11 +658,15 @@ impl Node {
         if !adopt && !current_winner {
             // A losing fork or older state must never replace a receiver
             // chain belonging to the accepted generation.
-            return Ok(true);
+            return Ok((true, false));
         }
-        let mut rec = match self.store.get_group(&state.group)? {
-            Some(rec) => rec,
+        let before_group = self.store.get_group(&state.group)?;
+        let mut rec = match before_group.as_ref() {
+            Some(rec) => rec.clone(),
             None => {
+                if !adopt {
+                    return Err(NodeError::CorruptState);
+                }
                 let chain = GroupSenderChain::generate(rng);
                 GroupRecord {
                     id: state.group,
@@ -659,6 +686,9 @@ impl Node {
                 }
             }
         };
+        let mut contacts = Vec::new();
+        let mut authority_after = None;
+        let mut removed_peers = Vec::new();
         if adopt {
             let stubs = state
                 .members
@@ -668,17 +698,13 @@ impl Node {
                     identity: member.identity.clone(),
                 })
                 .collect::<Vec<_>>();
-            self.adopt_roster_stubs(&stubs, rng)?;
-            let old_peers = rec
+            contacts = self.prepare_roster_stubs(&stubs)?;
+            removed_peers = rec
                 .members
                 .iter()
                 .map(|member| member.peer)
-                .collect::<Vec<_>>();
-            for old in old_peers {
-                if !state.members.iter().any(|member| member.peer == old) {
-                    self.store.delete_group_chain(&state.group, &old)?;
-                }
-            }
+                .filter(|old| !state.members.iter().any(|member| member.peer == *old))
+                .collect();
             rec.prev_secret = (rec.secret != announce.secret).then_some(rec.secret);
             rec.secret = announce.secret;
             rec.name = state.name.clone();
@@ -686,41 +712,95 @@ impl Node {
             rec.members = state_members(&state);
             rec.generation = state.generation;
             self.rotate_group(&mut rec, rng)?;
-            self.store.put_group(&rec, rng)?;
-            self.store.put_group_authority(
-                &GroupAuthorityRecord {
-                    group: state.group,
-                    state_id: announce.state_id,
-                    state_payload: announce.state_payload.clone(),
-                    consumed_requests: current_authority
-                        .map(|record| record.consumed_requests)
-                        .unwrap_or_default(),
-                },
-                rng,
-            )?;
-            self.events
-                .push_back(Event::GroupUpdated { group: state.group });
+            authority_after = Some(GroupAuthorityRecord {
+                group: state.group,
+                state_id: announce.state_id,
+                state_payload: announce.state_payload.clone(),
+                consumed_requests: current_authority
+                    .as_ref()
+                    .map(|record| record.consumed_requests.clone())
+                    .unwrap_or_default(),
+            });
         }
-        if rec.members.iter().any(|member| member.peer == peer) {
-            let replace = match self.store.get_group_chain(&state.group, &peer)? {
-                Some(blob) => postcard::from_bytes::<GroupReceiverChain>(&blob)
-                    .map(|chain| chain.key_id() != announce.key_id)
-                    .unwrap_or(true),
-                None => true,
-            };
-            if replace {
-                let chain = GroupReceiverChain::new(
-                    announce.key_id,
-                    &announce.chain_key,
-                    announce.iteration,
-                );
-                let encoded = postcard::to_allocvec(&chain).map_err(|_| NodeError::CorruptState)?;
-                self.store
-                    .put_group_chain(&state.group, &peer, &encoded, rng)?;
-                *established = true;
-            }
+        if !rec.members.iter().any(|member| member.peer == peer) {
+            return Ok((false, false));
         }
-        Ok(true)
+        let (before_chain, after_chain) = self.prepare_group_receiver_chain(
+            &state.group,
+            peer,
+            peer_device,
+            announce.key_id,
+            &announce.chain_key,
+            announce.iteration,
+        )?;
+        let removed_chain_rows = self
+            .store
+            .group_chains(&state.group)?
+            .into_iter()
+            .filter(|(account, _)| removed_peers.contains(account))
+            .collect::<Vec<_>>();
+        let mut chain_transitions = removed_chain_rows
+            .iter()
+            .map(|(account, chain)| GroupChainStateTransition {
+                group: state.group,
+                peer: *account,
+                before: Some(chain.as_slice()),
+                after: None,
+            })
+            .collect::<Vec<_>>();
+        if let Some(after_chain) = after_chain.as_ref() {
+            chain_transitions.push(GroupChainStateTransition {
+                group: state.group,
+                peer,
+                before: before_chain.as_ref().map(|chain| chain.as_slice()),
+                after: Some(after_chain),
+            });
+        }
+        let group_transitions = adopt
+            .then_some(GroupStateTransition {
+                before: before_group.as_ref(),
+                after: Some(&rec),
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+        let authority_transitions = authority_after
+            .as_ref()
+            .map(|after| GroupAuthorityStateTransition {
+                before: current_authority.as_ref(),
+                after: Some(after),
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+        let contact_transitions = contacts
+            .iter()
+            .map(|contact| ContactTransition {
+                before: None,
+                after: contact,
+            })
+            .collect::<Vec<_>>();
+        let mut events = contacts
+            .iter()
+            .map(|contact| Event::ContactAdded { peer: contact.peer })
+            .collect::<Vec<_>>();
+        if adopt {
+            events.push(Event::GroupUpdated { group: state.group });
+        }
+        let receipt = self.store.commit_plan(
+            CommitPlan::GroupState(GroupStatePlan {
+                groups: &group_transitions,
+                chains: &chain_transitions,
+                contacts: &contact_transitions,
+                authorities: &authority_transitions,
+                delete_controls: core::slice::from_ref(control),
+                presentation_changed: !events.is_empty(),
+            }),
+            rng,
+        )?;
+        self.accept_commit_receipt(receipt, events);
+        if after_chain.is_some() {
+            *established = true;
+        }
+        Ok((true, true))
     }
 
     pub(crate) fn apply_authority_remove(
@@ -729,9 +809,11 @@ impl Node {
         group: &[u8; 32],
         state_id: &[u8; 16],
         payload: &[u8],
-    ) -> Result<bool> {
+        control: &DeferredControlRecord,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<(bool, bool)> {
         let DecodedGroupAuthority::State(state) = decode_group_authority(payload) else {
-            return Ok(true);
+            return Ok((true, false));
         };
         if state.group != *group
             || state.signer != peer
@@ -741,7 +823,7 @@ impl Node {
                 .any(|member| member.peer == self.identity.public().ed)
             || verify_authority_state(&state, None).is_err()
         {
-            return Ok(true);
+            return Ok((true, false));
         }
         if let Some(current) = self.store.get_group_authority(group)? {
             let current_state = decode_stored(&current)?;
@@ -751,122 +833,315 @@ impl Node {
                 || state.generation < current_state.generation
                 || (state.generation == current_state.generation && *state_id >= current.state_id)
             {
-                return Ok(true);
+                return Ok((true, false));
             }
         }
-        self.store.delete_group(group)?;
-        self.events.push_back(Event::GroupUpdated { group: *group });
-        Ok(true)
+        let Some(before) = self.store.get_group(group)? else {
+            return Ok((true, false));
+        };
+        self.commit_group_removal(&before, control, rng)?;
+        Ok((true, true))
     }
 
     pub(crate) fn apply_group_admin_request(
         &mut self,
         peer: [u8; 32],
         request: &GroupAdminRequest,
+        control: &DeferredControlRecord,
         now: u64,
         rng: &mut impl CryptoRngCore,
-    ) -> Result<bool> {
-        let Some(mut stored) = self.store.get_group_authority(&request.group)? else {
-            return Ok(true);
+    ) -> Result<(bool, bool)> {
+        let Some(stored) = self.store.get_group_authority(&request.group)? else {
+            return Ok((true, false));
         };
         if stored.consumed_requests.contains(&request.request_id) {
-            return Ok(true);
+            let state = decode_stored(&stored)?;
+            let (accepted, state_id, reason) =
+                self.observed_admin_request_outcome(request, &state)?;
+            return self.finish_admin_request(
+                peer, request, control, &stored, accepted, state_id, reason, now, rng,
+            );
         }
         let state = decode_stored(&stored)?;
         let signature: [u8; 64] = match request.signature.as_slice().try_into() {
             Ok(signature) => signature,
-            Err(_) => return Ok(true),
+            Err(_) => {
+                return self.finish_admin_request(
+                    peer, request, control, &stored, false, None, 2, now, rng,
+                )
+            }
         };
         let signing = match group_admin_request_signing_bytes(request) {
             Ok(signing) => signing,
-            Err(_) => return Ok(true),
+            Err(_) => {
+                return self.finish_admin_request(
+                    peer, request, control, &stored, false, None, 2, now, rng,
+                )
+            }
         };
         let is_admin = state
             .members
             .iter()
             .any(|member| member.peer == peer && member.role == GroupRole::Admin);
+        let moderation_resume = matches!(request.action, GroupAdminAction::ModeratePoll { .. })
+            && request
+                .base_generation
+                .checked_add(1)
+                .is_some_and(|generation| generation == state.generation);
         let authorized = state.owner == self.identity.public().ed
-            && request.base_generation == state.generation
+            && (request.base_generation == state.generation || moderation_resume)
             && is_admin
             && verify_group_admin_request_signature(&peer, &signing, &signature).is_ok();
-        let result = if authorized {
-            match &request.action {
-                GroupAdminAction::Rename { name } => {
-                    self.group_rename(&request.group, name, now, rng).map(Some)
-                }
-                GroupAdminAction::Invite(member) => self
-                    .group_authority_add_member(
-                        &request.group,
-                        GroupMember {
-                            peer: member.peer,
-                            identity: member.identity.clone(),
-                        },
+        if !authorized {
+            return self
+                .finish_admin_request(peer, request, control, &stored, false, None, 2, now, rng);
+        }
+        let result = match &request.action {
+            GroupAdminAction::Rename { name } => {
+                if name.is_empty() || name.len() > MAX_GROUP_NAME_LEN || moderation_resume {
+                    Err(NodeError::InvalidGroupAuthority)
+                } else {
+                    let mut next = state.clone();
+                    next.name.clone_from(name);
+                    let mut secret = [0u8; 32];
+                    rng.fill_bytes(&mut secret);
+                    prepare_next_state(&mut next, stored.state_id, &secret)?;
+                    self.commit_authority_state_for_request(
+                        next,
+                        secret,
+                        request.request_id,
                         now,
                         rng,
                     )
-                    .map(Some),
-                GroupAdminAction::Remove { peer } => self
-                    .group_authority_remove_member(&request.group, *peer, now, rng)
-                    .map(Some),
-                GroupAdminAction::ModeratePoll {
-                    poll_author,
-                    poll_id,
-                } => self
-                    .group_moderate_poll_close(&request.group, *poll_author, *poll_id, now, rng)
-                    .map(Some),
+                    .map(Some)
+                }
             }
-        } else {
-            Err(NodeError::InvalidGroupAuthority)
+            GroupAdminAction::Invite(member) => {
+                if moderation_resume {
+                    Err(NodeError::InvalidGroupAuthority)
+                } else if state
+                    .members
+                    .iter()
+                    .any(|existing| existing.peer == member.peer)
+                {
+                    Ok(Some(stored.state_id))
+                } else {
+                    let mut next = state.clone();
+                    next.members.push(GroupAuthorityMember {
+                        peer: member.peer,
+                        identity: member.identity.clone(),
+                        role: GroupRole::Member,
+                    });
+                    next.members.sort_unstable_by_key(|member| member.peer);
+                    let mut secret = [0u8; 32];
+                    rng.fill_bytes(&mut secret);
+                    prepare_next_state(&mut next, stored.state_id, &secret)?;
+                    self.commit_authority_state_for_request(
+                        next,
+                        secret,
+                        request.request_id,
+                        now,
+                        rng,
+                    )
+                    .map(Some)
+                }
+            }
+            GroupAdminAction::Remove { peer: removed } => {
+                if moderation_resume || *removed == state.owner {
+                    Err(NodeError::InvalidGroupAuthority)
+                } else if !state.members.iter().any(|member| member.peer == *removed) {
+                    Err(NodeError::UnknownPeer)
+                } else {
+                    let mut next = state.clone();
+                    next.members.retain(|member| member.peer != *removed);
+                    let mut secret = [0u8; 32];
+                    rng.fill_bytes(&mut secret);
+                    prepare_next_state(&mut next, stored.state_id, &secret)?;
+                    let state_id = self.commit_authority_state_for_request(
+                        next,
+                        secret,
+                        request.request_id,
+                        now,
+                        rng,
+                    )?;
+                    let authority = self
+                        .store
+                        .get_group_authority(&request.group)?
+                        .ok_or(NodeError::CorruptState)?;
+                    self.queue_group_control(
+                        removed,
+                        &GroupControlPayload::AuthorityRemove {
+                            group: request.group,
+                            state_id,
+                            state_payload: authority.state_payload,
+                        },
+                        now,
+                        rng,
+                    )?;
+                    Ok(Some(state_id))
+                }
+            }
+            GroupAdminAction::ModeratePoll {
+                poll_author,
+                poll_id,
+            } => {
+                let poll = self
+                    .group_polls(&request.group)?
+                    .into_iter()
+                    .find(|poll| poll.author == *poll_author && poll.id == *poll_id)
+                    .ok_or(NodeError::InvalidPoll)?;
+                if poll.closed {
+                    Ok(None)
+                } else {
+                    if !moderation_resume {
+                        self.advance_authority(&request.group, now, rng)?;
+                    }
+                    self.commit_group_poll_moderated_close(
+                        &request.group,
+                        *poll_author,
+                        *poll_id,
+                        now,
+                        rng,
+                    )
+                    .map(Some)
+                }
+            }
         };
-        stored = self
+        let current = self
             .store
             .get_group_authority(&request.group)?
-            .unwrap_or(stored);
-        stored.consumed_requests.push(request.request_id);
-        if stored.consumed_requests.len() > MAX_GROUP_ADMIN_REQUESTS {
-            let excess = stored.consumed_requests.len() - MAX_GROUP_ADMIN_REQUESTS;
-            stored.consumed_requests.drain(..excess);
-        }
-        self.store.put_group_authority(&stored, rng)?;
+            .ok_or(NodeError::CorruptState)?;
         let (accepted, state_id, reason) = match result {
-            Ok(state_id) => (true, state_id, 0),
+            Ok(state_id) => (true, state_id.or(Some(current.state_id)), 0),
             Err(NodeError::InvalidGroupAuthority) => (false, None, 2),
             Err(_) => (false, None, 3),
         };
+        self.finish_admin_request(
+            peer, request, control, &current, accepted, state_id, reason, now, rng,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // authenticated request outcome and exact response commit
+    fn finish_admin_request(
+        &mut self,
+        peer: [u8; 32],
+        request: &GroupAdminRequest,
+        control: &DeferredControlRecord,
+        authority_before: &GroupAuthorityRecord,
+        accepted: bool,
+        state_id: Option<[u8; 16]>,
+        reason: u8,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<(bool, bool)> {
+        let mut authority_after = authority_before.clone();
+        if !authority_after
+            .consumed_requests
+            .contains(&request.request_id)
+        {
+            authority_after.consumed_requests.push(request.request_id);
+            if authority_after.consumed_requests.len() > MAX_GROUP_ADMIN_REQUESTS {
+                let excess = authority_after.consumed_requests.len() - MAX_GROUP_ADMIN_REQUESTS;
+                authority_after.consumed_requests.drain(..excess);
+            }
+        }
+        let generation = decode_stored(&authority_after)?.generation;
         let response = GroupControlPayload::AdminResult(GroupAdminResult {
             group: request.group,
             request_id: request.request_id,
             accepted,
-            generation: self.group_authority(&request.group)?.generation,
+            generation,
             state_id,
             reason,
         });
-        self.queue_group_control(&peer, &response, now, rng)?;
-        Ok(true)
+        let committed = if authority_after == *authority_before {
+            self.queue_group_control_with_control_ack(&peer, &response, control, now, rng)?
+        } else {
+            self.queue_group_control_with_authority_response(
+                &peer,
+                &response,
+                authority_before,
+                &authority_after,
+                control,
+                now,
+                rng,
+            )?
+        };
+        Ok((committed, committed))
+    }
+
+    fn observed_admin_request_outcome(
+        &self,
+        request: &GroupAdminRequest,
+        state: &SignedGroupAuthorityState,
+    ) -> Result<(bool, Option<[u8; 16]>, u8)> {
+        let accepted = match &request.action {
+            GroupAdminAction::Rename { name } => {
+                state.generation > request.base_generation && state.name == *name
+            }
+            GroupAdminAction::Invite(member) => state
+                .members
+                .iter()
+                .any(|existing| existing.peer == member.peer),
+            GroupAdminAction::Remove { peer } => {
+                !state.members.iter().any(|member| member.peer == *peer)
+            }
+            GroupAdminAction::ModeratePoll {
+                poll_author,
+                poll_id,
+            } => self
+                .group_polls(&request.group)?
+                .into_iter()
+                .any(|poll| poll.author == *poll_author && poll.id == *poll_id && poll.closed),
+        };
+        let state_id = if accepted {
+            self.store
+                .get_group_authority(&request.group)?
+                .map(|record| record.state_id)
+        } else {
+            None
+        };
+        Ok((accepted, state_id, if accepted { 0 } else { 4 }))
     }
 
     pub(crate) fn apply_group_admin_result(
         &mut self,
         peer: [u8; 32],
         result: &GroupAdminResult,
-    ) -> Result<bool> {
+        control: &DeferredControlRecord,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<(bool, bool)> {
         let info = self.group_authority(&result.group)?;
         // The pairwise result and signed authority announce use independent
         // queued envelopes, so the result may arrive first. Authenticate it
         // against the currently accepted owner, but do not discard honest UI
         // status merely because the durable signed state is still in flight.
         if peer != info.owner {
-            return Ok(true);
+            return Ok((true, false));
         }
-        self.events.push_back(Event::GroupAdminRequestResolved {
-            group: result.group,
-            request_id: result.request_id,
-            accepted: result.accepted,
-            generation: result.generation,
-            state_id: result.state_id,
-            reason: result.reason,
-        });
-        Ok(true)
+        let receipt = self.store.commit_plan(
+            CommitPlan::GroupState(GroupStatePlan {
+                groups: &[],
+                chains: &[],
+                contacts: &[],
+                authorities: &[],
+                delete_controls: core::slice::from_ref(control),
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.accept_commit_receipt(
+            receipt,
+            [Event::GroupAdminRequestResolved {
+                group: result.group,
+                request_id: result.request_id,
+                accepted: result.accepted,
+                generation: result.generation,
+                state_id: result.state_id,
+                reason: result.reason,
+            }],
+        );
+        Ok((true, true))
     }
 }
 

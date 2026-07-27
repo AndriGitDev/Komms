@@ -20,14 +20,20 @@ use kult_protocol::{
     encode_edit, encode_ephemeral, encode_mention, encode_text, epoch_day, pad, retention_bucket,
     unpad, DecodedContent, DecodedGroupAuthority, Edit, Envelope, EnvelopeKind, Ephemeral,
     GroupAnnounce, GroupAuthorityAnnounce, GroupControlPayload, GroupMemberInfo, MailboxKey, Poll,
-    CONTENT_FORMAT_V1, CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL, CONTENT_KIND_MENTION,
-    MAX_EDIT_TEXT_LEN, MAX_EPHEMERAL_LIFETIME_SECS, MIN_EPHEMERAL_LIFETIME_SECS,
+    ReceiptPayload, CONTENT_FORMAT_V1, CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL,
+    CONTENT_KIND_MENTION, MAX_EDIT_TEXT_LEN, MAX_EPHEMERAL_LIFETIME_SECS,
+    MAX_GROUP_AUTHORITY_MEMBERS, MAX_GROUP_MEMBER_IDENTITY_LEN, MIN_EPHEMERAL_LIFETIME_SECS,
 };
 use kult_store::{
-    ContactDeviceRecord, ContactRecord, DeliveryState, Direction, EphemeralConversation,
-    EphemeralMode, EphemeralRecord, EphemeralState, GroupDelivery, GroupMember, GroupMessageRecord,
-    GroupRecord, MessageDeviceDeliveryRecord, PairwiseSendPlan, PendingAnnounce, QueueClass,
-    QueueItem, SessionTransition,
+    ContactDeviceRecord, ContactRecord, ContactTransition, DeferredControlRecord, DeliveryState,
+    DeliveryTransition, Direction, EphemeralConversation, EphemeralMode, EphemeralRecord,
+    EphemeralState, GroupAuthorityRecord, GroupAuthorityStateTransition, GroupAuthorityTransition,
+    GroupChainStateTransition, GroupChainTransition, GroupDelivery, GroupMember,
+    GroupMessageRecord, GroupMessageTransition, GroupReceivePlan, GroupRecord, GroupSendPlan,
+    GroupStatePlan, GroupStateTransition, GroupTransition, MediaDirection, MediaRecord, MediaScope,
+    MediaTransferState, MediaTransferTransition, MessageDeviceDeliveryRecord, PairwiseSendPlan,
+    PendingAnnounce, PendingDelete, QueueClass, QueueItem, ScheduledMessageRecord,
+    SessionTransition,
 };
 
 use crate::api::{
@@ -54,6 +60,49 @@ const MAX_DEVICE_GROUP_CHAINS: usize = 64;
 struct DeviceGroupReceiverChain {
     device: [u8; 32],
     chain: GroupReceiverChain,
+}
+
+#[derive(Default)]
+struct PreparedGroupCopy {
+    queue: Vec<QueueItem>,
+    deliveries: Vec<MessageDeviceDeliveryRecord>,
+    delivery_updates: Vec<(MessageDeviceDeliveryRecord, MessageDeviceDeliveryRecord)>,
+    first_wire: Option<[u8; 16]>,
+    all_served: bool,
+}
+
+struct PreparedGroupControl {
+    preferred_wire: [u8; 16],
+    routes: Vec<PreparedGroupControlRoute>,
+    queue: Vec<QueueItem>,
+}
+
+struct PreparedGroupControlRoute {
+    device: [u8; 32],
+    before: Option<Session>,
+    after: Session,
+    reset: bool,
+}
+
+type PreparedGroupReceiverChainUpdate = (Option<zeroize::Zeroizing<Vec<u8>>>, Option<Vec<u8>>);
+
+struct PreparedGroupInbound {
+    message: Option<GroupMessageRecord>,
+    ephemeral: Option<EphemeralRecord>,
+    media_transfers: Vec<kult_store::MediaTransferRecord>,
+    media_objects: Vec<kult_store::MediaObjectRecord>,
+    events: Vec<Event>,
+    attachment_updates: Vec<[u8; 16]>,
+}
+
+pub(crate) struct PreparedAuthorityGroupState {
+    pub(crate) secret: [u8; 32],
+    pub(crate) name: String,
+    pub(crate) creator: [u8; 32],
+    pub(crate) generation: u64,
+    pub(crate) members: Vec<GroupMember>,
+    pub(crate) authority_before: Option<GroupAuthorityRecord>,
+    pub(crate) authority_after: GroupAuthorityRecord,
 }
 
 fn decode_device_group_chains(
@@ -126,6 +175,9 @@ impl Node {
                 peer: *peer,
                 identity: contact.identity,
             });
+            if roster.len() > MAX_GROUP_AUTHORITY_MEMBERS {
+                return Err(NodeError::InvalidGroupAuthority);
+            }
         }
 
         let mut id = [0u8; 32];
@@ -134,22 +186,33 @@ impl Node {
         rng.fill_bytes(&mut secret);
         let chain = GroupSenderChain::generate(rng);
         let pending = pending_for(&chain, roster.iter().map(|m| m.peer), &me);
-        self.store.put_group(
-            &GroupRecord {
-                id,
-                name: name.to_owned(),
-                creator: me,
-                members: roster,
-                secret,
-                prev_secret: None,
-                generation: 1,
-                sender_chain: encode_chain(&chain)?,
-                sent_since_rotation: 0,
-                pending,
-            },
+        let group = GroupRecord {
+            id,
+            name: name.to_owned(),
+            creator: me,
+            members: roster,
+            secret,
+            prev_secret: None,
+            generation: 1,
+            sender_chain: encode_chain(&chain)?,
+            sent_since_rotation: 0,
+            pending,
+        };
+        let receipt = self.store.commit_plan(
+            CommitPlan::GroupState(GroupStatePlan {
+                groups: &[GroupStateTransition {
+                    before: None,
+                    after: Some(&group),
+                }],
+                chains: &[],
+                contacts: &[],
+                authorities: &[],
+                delete_controls: &[],
+                presentation_changed: true,
+            }),
             rng,
         )?;
-        self.events.push_back(Event::GroupUpdated { group: id });
+        self.accept_commit_receipt(receipt, [Event::GroupUpdated { group: id }]);
         Ok(id)
     }
 
@@ -219,6 +282,38 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 16]> {
+        self.group_send_with_id_source(group, body, id, timestamp, now, None, rng)
+    }
+
+    pub(crate) fn activate_scheduled_group_message(
+        &mut self,
+        group: &[u8; 32],
+        scheduled: &ScheduledMessageRecord,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        self.group_send_with_id_source(
+            group,
+            &scheduled.body,
+            scheduled.id,
+            scheduled.not_before,
+            now,
+            Some(scheduled),
+            rng,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn group_send_with_id_source(
+        &mut self,
+        group: &[u8; 32],
+        body: &[u8],
+        id: [u8; 16],
+        timestamp: u64,
+        now: u64,
+        scheduled: Option<&ScheduledMessageRecord>,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
         let rec = self
             .store
             .get_group(group)?
@@ -239,7 +334,16 @@ impl Node {
         } else {
             body.to_vec()
         };
-        self.group_send_content_with_id(group, wire_content, id, timestamp, now, rng)
+        self.group_send_content_with_id_retention(
+            group,
+            wire_content,
+            id,
+            timestamp,
+            now,
+            None,
+            scheduled,
+            rng,
+        )
     }
 
     /// Current exact Mention capability intersection and review binding.
@@ -453,18 +557,6 @@ impl Node {
         rng.fill_bytes(&mut id);
         let payload = encode_disappearing_text_payload(expires_at, text)?;
         let wire_content = encode_ephemeral(id, &payload)?;
-        self.store.put_ephemeral_record(
-            &EphemeralRecord {
-                conversation: EphemeralConversation::Group(*group),
-                author: me,
-                content_id: id,
-                expires_at,
-                mode: EphemeralMode::DisappearingText,
-                state: EphemeralState::Active,
-                transfer_ids: Vec::new(),
-            },
-            rng,
-        )?;
         self.group_send_content_with_id_retention(
             group,
             wire_content,
@@ -472,6 +564,7 @@ impl Node {
             now,
             now,
             Some(retention_until),
+            None,
             rng,
         )
     }
@@ -492,6 +585,7 @@ impl Node {
             timestamp,
             now,
             None,
+            None,
             rng,
         )
     }
@@ -505,12 +599,64 @@ impl Node {
         timestamp: u64,
         now: u64,
         retention_until: Option<u64>,
+        scheduled: Option<&ScheduledMessageRecord>,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 16]> {
-        let mut rec = self
+        self.group_send_content_with_id_effects(
+            group,
+            wire_content,
+            id,
+            timestamp,
+            now,
+            retention_until,
+            scheduled,
+            None,
+            rng,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // authority message and resulting signed state
+    pub(crate) fn group_send_authority_content_with_id(
+        &mut self,
+        group: &[u8; 32],
+        wire_content: Vec<u8>,
+        id: [u8; 16],
+        timestamp: u64,
+        now: u64,
+        authority: &PreparedAuthorityGroupState,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        self.group_send_content_with_id_effects(
+            group,
+            wire_content,
+            id,
+            timestamp,
+            now,
+            None,
+            None,
+            Some(authority),
+            rng,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // canonical group send and exact durable effects
+    fn group_send_content_with_id_effects(
+        &mut self,
+        group: &[u8; 32],
+        wire_content: Vec<u8>,
+        id: [u8; 16],
+        timestamp: u64,
+        now: u64,
+        retention_until: Option<u64>,
+        scheduled: Option<&ScheduledMessageRecord>,
+        authority: Option<&PreparedAuthorityGroupState>,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        let before_group = self
             .store
             .get_group(group)?
             .ok_or(NodeError::UnknownGroup)?;
+        let mut after_group = before_group.clone();
         let me = self.identity.public().ed;
         let mut record = GroupMessageRecord {
             id,
@@ -519,7 +665,7 @@ impl Node {
             direction: Direction::Outbound,
             timestamp,
             body: wire_content.clone(),
-            deliveries: rec
+            deliveries: after_group
                 .members
                 .iter()
                 .filter(|m| m.peer != me)
@@ -531,44 +677,149 @@ impl Node {
                 .collect(),
             wire_body: None,
         };
-        self.store.put_group_message(&record, rng)?;
-        for d in &record.deliveries {
-            self.events.push_back(Event::GroupDeliveryUpdated {
-                id,
-                peer: d.peer,
-                state: DeliveryState::Queued,
-            });
-        }
 
         // A spent chain rotates before it encrypts anything else (PCS).
-        if rec.sent_since_rotation >= GROUP_ROTATE_MSGS {
-            self.rotate_group(&mut rec, rng)?;
+        if after_group.sent_since_rotation >= GROUP_ROTATE_MSGS {
+            self.rotate_group(&mut after_group, rng)?;
         }
 
-        let mut chain = decode_chain(&rec.sender_chain)?;
-        let hk = GroupHeaderKey::derive(&rec.secret);
-        let wire = chain.seal(&hk, group, &pad(&wire_content)?, rng).encode();
-        rec.sender_chain = encode_chain(&chain)?;
-        rec.sent_since_rotation += 1;
+        let mut chain = decode_chain(&after_group.sender_chain)?;
+        let hk = GroupHeaderKey::derive(&after_group.secret);
+        let wire = self
+            .candidate_group_seal(&mut chain, &hk, group, &pad(&wire_content)?, rng)?
+            .encode();
+        after_group.sender_chain = encode_chain(&chain)?;
+        after_group.sent_since_rotation = after_group
+            .sent_since_rotation
+            .checked_add(1)
+            .ok_or(NodeError::CorruptState)?;
 
-        let mut unserved = false;
+        let mut removed_peers = HashSet::new();
+        if let Some(authority) = authority {
+            if authority.authority_after.group != *group
+                || authority.authority_after.state_id != id
+                || authority.members.is_empty()
+            {
+                return Err(NodeError::InvalidGroupAuthority);
+            }
+            let retained = authority
+                .members
+                .iter()
+                .map(|member| member.peer)
+                .collect::<HashSet<_>>();
+            removed_peers.extend(
+                after_group
+                    .members
+                    .iter()
+                    .filter(|member| !retained.contains(&member.peer))
+                    .map(|member| member.peer),
+            );
+            after_group.prev_secret = Some(after_group.secret);
+            after_group.secret = authority.secret;
+            after_group.name.clone_from(&authority.name);
+            after_group.creator = authority.creator;
+            after_group.generation = authority.generation;
+            after_group.members.clone_from(&authority.members);
+            self.rotate_group(&mut after_group, rng)?;
+        }
+
+        let mut queue = Vec::new();
+        let mut delivery_rows = Vec::new();
+        let mut delivery_pairs = Vec::new();
+        let mut unserved = record.deliveries.is_empty();
         for d in record.deliveries.iter_mut() {
-            match self.queue_group_copy(
+            let prepared = self.prepare_group_copy(
                 &d.peer,
                 &wire,
                 id,
                 QueueClass::Interactive,
                 retention_until,
                 now,
-                rng,
-            )? {
-                Some(cid) => d.wire_id = Some(cid),
-                None => unserved = true,
+            )?;
+            if prepared.all_served {
+                d.wire_id = prepared.first_wire;
+            } else {
+                unserved = true;
             }
+            queue.extend(prepared.queue);
+            delivery_rows.extend(prepared.deliveries);
+            delivery_pairs.extend(prepared.delivery_updates);
         }
         record.wire_body = unserved.then_some(wire);
-        self.store.update_group_message(&record, rng)?;
-        self.store.put_group(&rec, rng)?;
+        let delivery_updates = delivery_pairs
+            .iter()
+            .map(|(before, after)| DeliveryTransition { before, after })
+            .collect::<Vec<_>>();
+        let ephemeral = match decode_content(&wire_content) {
+            DecodedContent::Ephemeral {
+                id: content_id,
+                ephemeral: Ephemeral::DisappearingText { expires_at, .. },
+            } => Some(EphemeralRecord {
+                conversation: EphemeralConversation::Group(*group),
+                author: me,
+                content_id,
+                expires_at,
+                mode: EphemeralMode::DisappearingText,
+                state: EphemeralState::Active,
+                transfer_ids: Vec::new(),
+            }),
+            _ => None,
+        };
+        let deleted_chain_rows = self
+            .store
+            .group_chains(group)?
+            .into_iter()
+            .filter(|(peer, _)| removed_peers.contains(peer))
+            .collect::<Vec<_>>();
+        let delete_chains = deleted_chain_rows
+            .iter()
+            .map(|(peer, chain)| GroupChainStateTransition {
+                group: *group,
+                peer: *peer,
+                before: Some(chain.as_slice()),
+                after: None,
+            })
+            .collect::<Vec<_>>();
+        let authority_transition = authority.map(|authority| GroupAuthorityTransition {
+            before: authority.authority_before.as_ref(),
+            after: &authority.authority_after,
+        });
+        let receipt = self.store.commit_plan(
+            CommitPlan::GroupSend(GroupSendPlan {
+                group: Some(GroupTransition {
+                    before: &before_group,
+                    after: &after_group,
+                }),
+                message: Some(&record),
+                message_update: None,
+                deliveries: &delivery_rows,
+                delivery_updates: &delivery_updates,
+                queue: &queue,
+                scheduled,
+                ephemeral: ephemeral.as_ref(),
+                media_transfers: &[],
+                delete_chains: &delete_chains,
+                authority: authority_transition,
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        let mut events = record
+            .deliveries
+            .iter()
+            .map(|delivery| Event::GroupDeliveryUpdated {
+                id,
+                peer: delivery.peer,
+                state: DeliveryState::Queued,
+            })
+            .collect::<Vec<_>>();
+        if scheduled.is_some() {
+            events.push(Event::ScheduledMessageActivated { id });
+        }
+        if authority.is_some() {
+            events.push(Event::GroupUpdated { group: *group });
+        }
+        self.accept_commit_receipt(receipt, events);
         Ok(id)
     }
 
@@ -582,10 +833,11 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
-        let mut rec = self
+        let before = self
             .store
             .get_group(group)?
             .ok_or(NodeError::UnknownGroup)?;
+        let mut rec = before.clone();
         let me = self.identity.public().ed;
         if self.store.get_group_authority(group)?.is_some() {
             if rec.members.iter().any(|member| &member.peer == peer) {
@@ -611,6 +863,9 @@ impl Node {
         }
         if rec.members.iter().any(|m| &m.peer == peer) {
             return Ok(()); // already in — idempotent
+        }
+        if rec.members.len() >= MAX_GROUP_AUTHORITY_MEMBERS {
+            return Err(NodeError::InvalidGroupAuthority);
         }
         let contact = self
             .store
@@ -640,8 +895,21 @@ impl Node {
                 last_sent: 0,
             });
         }
-        self.store.put_group(&rec, rng)?;
-        self.events.push_back(Event::GroupUpdated { group: *group });
+        let receipt = self.store.commit_plan(
+            CommitPlan::GroupState(GroupStatePlan {
+                groups: &[GroupStateTransition {
+                    before: Some(&before),
+                    after: Some(&rec),
+                }],
+                chains: &[],
+                contacts: &[],
+                authorities: &[],
+                delete_controls: &[],
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.accept_commit_receipt(receipt, [Event::GroupUpdated { group: *group }]);
         Ok(())
     }
 
@@ -663,10 +931,11 @@ impl Node {
             self.group_authority_remove_member(group, *peer, now, rng)?;
             return Ok(());
         }
-        let mut rec = self
+        let before = self
             .store
             .get_group(group)?
             .ok_or(NodeError::UnknownGroup)?;
+        let mut rec = before.clone();
         if rec.creator != me {
             return Err(NodeError::NotGroupCreator);
         }
@@ -674,12 +943,36 @@ impl Node {
             return Err(NodeError::UnknownPeer);
         }
         rec.members.retain(|m| &m.peer != peer);
-        self.store.delete_group_chain(group, peer)?;
+        let chain_before = self.store.get_group_chain(group, peer)?;
         rec.generation += 1;
         rec.prev_secret = Some(rec.secret);
         rng.fill_bytes(&mut rec.secret);
         self.rotate_group(&mut rec, rng)?; // also drops the removed peer's pending entry
-        self.store.put_group(&rec, rng)?;
+        let chain_transitions = chain_before
+            .as_ref()
+            .map(|chain| GroupChainStateTransition {
+                group: *group,
+                peer: *peer,
+                before: Some(chain.as_slice()),
+                after: None,
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+        let receipt = self.store.commit_plan(
+            CommitPlan::GroupState(GroupStatePlan {
+                groups: &[GroupStateTransition {
+                    before: Some(&before),
+                    after: Some(&rec),
+                }],
+                chains: &chain_transitions,
+                contacts: &[],
+                authorities: &[],
+                delete_controls: &[],
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.accept_commit_receipt(receipt, [Event::GroupUpdated { group: *group }]);
         // Best effort: keys are already rotated whether or not this lands.
         self.queue_group_control(
             peer,
@@ -687,7 +980,6 @@ impl Node {
             now,
             rng,
         )?;
-        self.events.push_back(Event::GroupUpdated { group: *group });
         Ok(())
     }
 
@@ -705,11 +997,45 @@ impl Node {
             .get_group(group)?
             .ok_or(NodeError::UnknownGroup)?;
         let me = self.identity.public().ed;
-        if self.store.get_group_authority(group)?.is_some()
+        let authority = self.store.get_group_authority(group)?;
+        if authority.is_some()
             && self.group_authority(group)?.my_role == Some(kult_protocol::GroupRole::Owner)
         {
             return Err(NodeError::LastGroupOwner);
         }
+        let chain_rows = self.store.group_chains(group)?;
+        let chain_transitions = chain_rows
+            .iter()
+            .map(|(peer, chain)| GroupChainStateTransition {
+                group: *group,
+                peer: *peer,
+                before: Some(chain.as_slice()),
+                after: None,
+            })
+            .collect::<Vec<_>>();
+        let authority_transitions = authority
+            .as_ref()
+            .map(|authority| GroupAuthorityStateTransition {
+                before: Some(authority),
+                after: None,
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+        let receipt = self.store.commit_plan(
+            CommitPlan::GroupState(GroupStatePlan {
+                groups: &[GroupStateTransition {
+                    before: Some(&rec),
+                    after: None,
+                }],
+                chains: &chain_transitions,
+                contacts: &[],
+                authorities: &authority_transitions,
+                delete_controls: &[],
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.accept_commit_receipt(receipt, [Event::GroupUpdated { group: *group }]);
         for member in &rec.members {
             if member.peer == me {
                 continue;
@@ -721,8 +1047,6 @@ impl Node {
                 rng,
             )?;
         }
-        self.store.delete_group(group)?;
-        self.events.push_back(Event::GroupUpdated { group: *group });
         Ok(())
     }
 
@@ -746,9 +1070,8 @@ impl Node {
             .collect();
 
         for mut rec in self.store.groups()? {
-            let mut dirty = false;
-            let mut pending = std::mem::take(&mut rec.pending);
-            for entry in pending.iter_mut() {
+            for pending_index in 0..rec.pending.len() {
+                let entry = rec.pending[pending_index].clone();
                 // Due when never attempted, or when the retry window passed
                 // and the last envelope is out of the queue (a queued one is
                 // still the transport scheduler's problem, not ours).
@@ -797,49 +1120,82 @@ impl Node {
                         iteration: entry.iteration,
                     }),
                 };
-                entry.wire_id = self.queue_group_control(&entry.peer, &announce, now, rng)?;
-                entry.last_sent = now; // paces the next attempt either way
-                dirty = true;
-            }
-            rec.pending = pending;
-            if dirty {
-                self.store.put_group(&rec, rng)?;
+                let before = rec.clone();
+                self.queue_group_announce(
+                    &entry.peer,
+                    &announce,
+                    &before,
+                    &mut rec,
+                    pending_index,
+                    now,
+                    rng,
+                )?;
             }
         }
 
         // Late fan-out from retained ciphertexts.
-        for mut record in self.store.all_group_messages()? {
-            let Some(wire) = record.wire_body.clone() else {
+        for before_record in self.store.all_group_messages()? {
+            let Some(wire) = before_record.wire_body.clone() else {
                 continue;
             };
+            let mut record = before_record.clone();
             let mut changed = false;
             let mut unserved = false;
+            let mut queue = Vec::new();
+            let mut delivery_rows = Vec::new();
+            let mut delivery_pairs = Vec::new();
             for d in record.deliveries.iter_mut() {
                 if d.wire_id.is_some() {
                     continue;
                 }
-                match self.queue_group_copy(
+                let prepared = self.prepare_group_copy(
                     &d.peer,
                     &wire,
                     record.id,
                     QueueClass::Interactive,
                     ephemeral_retention(&record.body),
                     now,
-                    rng,
-                )? {
-                    Some(cid) => {
-                        d.wire_id = Some(cid);
-                        changed = true;
-                    }
-                    None => unserved = true,
+                )?;
+                if prepared.all_served {
+                    d.wire_id = prepared.first_wire;
+                    changed = true;
+                } else {
+                    unserved = true;
                 }
+                queue.extend(prepared.queue);
+                delivery_rows.extend(prepared.deliveries);
+                delivery_pairs.extend(prepared.delivery_updates);
             }
             if !unserved {
                 record.wire_body = None;
                 changed = true;
             }
-            if changed {
-                self.store.update_group_message(&record, rng)?;
+            if changed || !queue.is_empty() {
+                let delivery_updates = delivery_pairs
+                    .iter()
+                    .map(|(before, after)| DeliveryTransition { before, after })
+                    .collect::<Vec<_>>();
+                let receipt = self.store.commit_plan(
+                    CommitPlan::GroupSend(GroupSendPlan {
+                        group: None,
+                        message: None,
+                        message_update: Some(GroupMessageTransition {
+                            before: &before_record,
+                            after: &record,
+                        }),
+                        deliveries: &delivery_rows,
+                        delivery_updates: &delivery_updates,
+                        queue: &queue,
+                        scheduled: None,
+                        ephemeral: None,
+                        media_transfers: &[],
+                        delete_chains: &[],
+                        authority: None,
+                        presentation_changed: false,
+                    }),
+                    rng,
+                )?;
+                self.accept_commit_receipt(receipt, []);
             }
         }
         Ok(())
@@ -912,11 +1268,59 @@ impl Node {
             }
             if changed {
                 let encoded = encode_device_group_chains(&mut chains)?;
-                self.store
-                    .put_group_chain(&group.id, account, &encoded, rng)?;
+                let receipt = self.store.commit_plan(
+                    CommitPlan::GroupState(GroupStatePlan {
+                        groups: &[],
+                        chains: &[GroupChainStateTransition {
+                            group: group.id,
+                            peer: *account,
+                            before: Some(blob.as_slice()),
+                            after: Some(&encoded),
+                        }],
+                        contacts: &[],
+                        authorities: &[],
+                        delete_controls: &[],
+                        presentation_changed: false,
+                    }),
+                    rng,
+                )?;
+                self.accept_commit_receipt(receipt, []);
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn prepare_group_receiver_chain(
+        &self,
+        group: &[u8; 32],
+        peer: [u8; 32],
+        peer_device: [u8; 32],
+        key_id: [u8; 16],
+        chain_key: &[u8; 32],
+        iteration: u32,
+    ) -> Result<PreparedGroupReceiverChainUpdate> {
+        let before = self.store.get_group_chain(group, &peer)?;
+        let mut chains = match before.as_ref() {
+            Some(blob) => decode_device_group_chains(blob, peer)?,
+            None => Vec::new(),
+        };
+        let replace = chains
+            .iter()
+            .find(|entry| entry.device == peer_device)
+            .is_none_or(|entry| entry.chain.key_id() != key_id);
+        if !replace {
+            return Ok((before, None));
+        }
+        let chain = GroupReceiverChain::new(key_id, chain_key, iteration);
+        if let Some(entry) = chains.iter_mut().find(|entry| entry.device == peer_device) {
+            entry.chain = chain;
+        } else {
+            chains.push(DeviceGroupReceiverChain {
+                device: peer_device,
+                chain,
+            });
+        }
+        Ok((before, Some(encode_device_group_chains(&mut chains)?)))
     }
 
     // ---- receive path --------------------------------------------------------
@@ -929,418 +1333,509 @@ impl Node {
     pub(crate) fn consume_group_message(
         &mut self,
         env: &Envelope,
+        pending_sequence: Option<i64>,
         now: u64,
         rng: &mut impl CryptoRngCore,
-        acks: &mut Vec<([u8; 32], [u8; 16])>,
     ) -> Result<Consumed> {
         let Some(peer_device) = self.match_session(&env.token, now) else {
             return Ok(Consumed::Later);
         };
         let peer = self.account_for_device(&peer_device)?;
-        let me = self.identity.public().ed;
-        let done = |node: &mut Self| -> Result<Consumed> {
-            node.store.mark_seen(&env.content_id())?;
-            Ok(Consumed::Done)
-        };
-        let Ok(msg) = GroupMessage::decode(&env.body) else {
-            return done(self);
+        let Ok(message) = GroupMessage::decode(&env.body) else {
+            return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
         };
 
-        for rec in self.store.groups()? {
-            if !rec.members.iter().any(|m| m.peer == peer) {
+        for group in self.store.groups()? {
+            if !group.members.iter().any(|member| member.peer == peer) {
                 continue;
             }
-            // Current header key first; the previous one covers in-flight
-            // traffic crossing a re-key (kept one generation deep).
             let mut opened = None;
-            for secret in core::iter::once(rec.secret).chain(rec.prev_secret) {
-                let hk = GroupHeaderKey::derive(&secret);
-                if let Ok(header) = msg.open_header(&hk) {
-                    opened = Some(header);
+            for secret in core::iter::once(group.secret).chain(group.prev_secret) {
+                let header = GroupHeaderKey::derive(&secret);
+                if let Ok(value) = message.open_header(&header) {
+                    opened = Some(value);
                     break;
                 }
             }
             let Some((key_id, iteration)) = opened else {
                 continue;
             };
-            let Some(blob) = self.store.get_group_chain(&rec.id, &peer)? else {
-                return Ok(Consumed::Later); // sender's announce still in flight
+            let Some(before_blob) = self.store.get_group_chain(&group.id, &peer)? else {
+                return Ok(Consumed::Later);
             };
-            let mut chains = decode_device_group_chains(&blob, peer)?;
+            let mut chains = decode_device_group_chains(&before_blob, peer)?;
             let Some(chain) = chains
                 .iter_mut()
                 .find(|entry| entry.device == peer_device && entry.chain.key_id() == key_id)
                 .map(|entry| &mut entry.chain)
             else {
-                return Ok(Consumed::Later); // rotation announce still in flight
+                return Ok(Consumed::Later);
             };
-            let Ok(padded) = chain.open(&rec.id, &msg, iteration, now) else {
-                // Tampered or replayed — permanent, honest failure.
-                return done(self);
-            };
-            let encoded = encode_device_group_chains(&mut chains)?;
-            self.store.put_group_chain(&rec.id, &peer, &encoded, rng)?;
-            let Ok(body) = unpad(&padded) else {
-                return done(self);
+            let padded =
+                match self.candidate_group_open(chain, &group.id, &message, iteration, now)? {
+                    Ok(plaintext) => plaintext,
+                    Err(_) => {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng)
+                    }
+                };
+            let after_blob = encode_device_group_chains(&mut chains)?;
+            let prepared = match unpad(&padded) {
+                Ok(body) => {
+                    self.prepare_group_inbound(&group, peer, body, env.retention_until, now, rng)?
+                }
+                Err(_) => PreparedGroupInbound {
+                    message: None,
+                    ephemeral: None,
+                    media_transfers: Vec::new(),
+                    media_objects: Vec::new(),
+                    events: Vec::new(),
+                    attachment_updates: Vec::new(),
+                },
             };
 
-            let decoded = decode_content(&body);
-            let authenticated_retention = match decoded {
-                DecodedContent::Ephemeral { ephemeral, .. } => Some(match ephemeral {
-                    Ephemeral::DisappearingText {
-                        retention_until, ..
-                    }
-                    | Ephemeral::ViewOnceAttachment {
-                        retention_until, ..
-                    } => retention_until,
-                }),
-                _ => None,
-            };
-            if env.retention_until != authenticated_retention {
-                return done(self);
+            let receipt_before = self
+                .store
+                .get_session(&peer_device)?
+                .ok_or(NodeError::CorruptState)?;
+            let mut receipt_after = receipt_before.clone();
+            let receipt_payload = ReceiptPayload {
+                acks: vec![env.content_id()],
+                nacks: Vec::new(),
             }
-            let decoded_is_edit = matches!(decoded, DecodedContent::Edit { .. });
-            if let DecodedContent::Text { id, .. }
-            | DecodedContent::Attachment { id, .. }
-            | DecodedContent::Mention { id, .. }
-            | DecodedContent::Edit { id, .. }
-            | DecodedContent::Ephemeral { id, .. }
-            | DecodedContent::Poll { id, .. }
-            | DecodedContent::GroupAuthority { id, .. } = decoded
-            {
-                let conversation = EphemeralConversation::Group(rec.id);
-                if self
-                    .store
-                    .get_ephemeral_record(&conversation, &peer, &id)?
-                    .is_some()
-                {
-                    acks.push((peer_device, env.content_id()));
-                    return done(self);
+            .encode();
+            let receipt_queue = self.prepare_control_queue(
+                &mut receipt_after,
+                peer_device,
+                &receipt_payload,
+                now,
+                rng,
+            )?;
+            let source_pending = pending_sequence.map(|sequence| PendingDelete {
+                sequence,
+                content_id: env.content_id(),
+            });
+            let presentation_changed = !prepared.events.is_empty()
+                || !prepared.attachment_updates.is_empty()
+                || prepared.ephemeral.is_some();
+            let receipt = self.store.commit_plan(
+                CommitPlan::GroupReceive(GroupReceivePlan {
+                    chain: GroupChainTransition {
+                        group: group.id,
+                        peer,
+                        before: &before_blob,
+                        after: &after_blob,
+                    },
+                    receipt_session: SessionTransition {
+                        peer_device,
+                        before: Some(&receipt_before),
+                        after: &receipt_after,
+                    },
+                    message: prepared.message.as_ref(),
+                    ephemeral: prepared.ephemeral.as_ref(),
+                    media_transfers: &prepared.media_transfers,
+                    media_objects: &prepared.media_objects,
+                    queue: &[receipt_queue],
+                    content_id: env.content_id(),
+                    received_at: now,
+                    source_pending,
+                    presentation_changed,
+                }),
+                rng,
+            )?;
+            self.before_memory_replacement()?;
+            self.sessions.insert(peer_device, receipt_after);
+            self.after_memory_replacement()?;
+            self.accept_commit_receipt(receipt, prepared.events);
+            for transfer in prepared.attachment_updates {
+                self.emit_attachment_update(&transfer)?;
+            }
+            return Ok(Consumed::DoneAtomic);
+        }
+        Ok(Consumed::Later)
+    }
+
+    fn prepare_group_inbound(
+        &self,
+        group: &GroupRecord,
+        peer: [u8; 32],
+        body: Vec<u8>,
+        envelope_retention: Option<u64>,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<PreparedGroupInbound> {
+        let empty = || PreparedGroupInbound {
+            message: None,
+            ephemeral: None,
+            media_transfers: Vec::new(),
+            media_objects: Vec::new(),
+            events: Vec::new(),
+            attachment_updates: Vec::new(),
+        };
+        let decoded = decode_content(&body);
+        let authenticated_retention = match decoded {
+            DecodedContent::Ephemeral { ephemeral, .. } => Some(match ephemeral {
+                Ephemeral::DisappearingText {
+                    retention_until, ..
                 }
-                let duplicate = self.store.group_messages(&rec.id)?.iter().any(|record| {
+                | Ephemeral::ViewOnceAttachment {
+                    retention_until, ..
+                } => retention_until,
+            }),
+            _ => None,
+        };
+        if authenticated_retention != envelope_retention {
+            return Ok(empty());
+        }
+        if let DecodedContent::Text { id, .. }
+        | DecodedContent::Attachment { id, .. }
+        | DecodedContent::Mention { id, .. }
+        | DecodedContent::Edit { id, .. }
+        | DecodedContent::Ephemeral { id, .. }
+        | DecodedContent::Poll { id, .. }
+        | DecodedContent::GroupAuthority { id, .. } = decoded
+        {
+            let conversation = EphemeralConversation::Group(group.id);
+            if self
+                .store
+                .get_ephemeral_record(&conversation, &peer, &id)?
+                .is_some()
+                || self.store.group_messages(&group.id)?.iter().any(|record| {
                     record.direction == Direction::Inbound
                         && record.sender == peer
                         && matches!(
                             decode_content(&record.body),
-                            DecodedContent::Text { id: stored_id, .. }
-                                | DecodedContent::Attachment { id: stored_id, .. }
-                                | DecodedContent::Mention { id: stored_id, .. }
-                                | DecodedContent::Edit { id: stored_id, .. }
-                                | DecodedContent::Ephemeral { id: stored_id, .. }
-                                | DecodedContent::Poll { id: stored_id, .. }
-                                | DecodedContent::GroupAuthority { id: stored_id, .. }
-                                if stored_id == id
+                            DecodedContent::Text { id: stored, .. }
+                                | DecodedContent::Attachment { id: stored, .. }
+                                | DecodedContent::Mention { id: stored, .. }
+                                | DecodedContent::Edit { id: stored, .. }
+                                | DecodedContent::Ephemeral { id: stored, .. }
+                                | DecodedContent::Poll { id: stored, .. }
+                                | DecodedContent::GroupAuthority { id: stored, .. }
+                                if stored == id
                         )
-                });
-                if duplicate {
-                    acks.push((peer_device, env.content_id()));
-                    return done(self);
-                }
+                })
+            {
+                return Ok(empty());
             }
-            let mut mentions_local_peer = false;
-            let (id, event_body, content) = match decoded {
-                DecodedContent::LegacyText(text) => {
-                    let mut id = [0u8; 16];
-                    rng.fill_bytes(&mut id);
-                    (id, text.as_bytes().to_vec(), ContentStatus::LegacyText)
-                }
-                DecodedContent::Text { id, text } => {
-                    (id, text.as_bytes().to_vec(), ContentStatus::Text { id })
-                }
-                DecodedContent::Attachment { id, manifest } => {
-                    let entitled_peers = rec.members.iter().map(|member| member.peer).collect();
-                    let transfer = self.record_group_attachment_offer(
-                        crate::attachment::GroupAttachmentOffer {
-                            group: rec.id,
-                            author: peer,
-                            entitled_peers,
-                        },
-                        id,
-                        &manifest,
-                        now,
-                        rng,
-                    )?;
-                    self.emit_attachment_update(&transfer)?;
-                    (id, Vec::new(), ContentStatus::Attachment { id, transfer })
-                }
-                DecodedContent::Mention { id, mention } => {
-                    let spans = mention.spans().map(MentionSpan::from).collect::<Vec<_>>();
-                    mentions_local_peer = spans.iter().any(|span| span.target == me);
-                    (
-                        id,
-                        mention.text.as_bytes().to_vec(),
-                        ContentStatus::Mention { id, spans },
-                    )
-                }
-                DecodedContent::Edit { id, edit } if edit.target_author == peer => (
+        }
+
+        let me = self.identity.public().ed;
+        let decoded_is_edit = matches!(decoded, DecodedContent::Edit { .. });
+        let mut ephemeral = None;
+        let mut media_transfers = Vec::new();
+        let mut media_objects = Vec::new();
+        let mut attachment_updates = Vec::new();
+        let mut mentions_local_peer = false;
+        let (id, event_body, content) = match decoded {
+            DecodedContent::LegacyText(text) => {
+                let mut id = [0u8; 16];
+                rng.fill_bytes(&mut id);
+                (id, text.as_bytes().to_vec(), ContentStatus::LegacyText)
+            }
+            DecodedContent::Text { id, text } => {
+                (id, text.as_bytes().to_vec(), ContentStatus::Text { id })
+            }
+            DecodedContent::Attachment { id, manifest } => {
+                let (transfer, objects) = self.prepare_group_attachment_offer(
+                    crate::attachment::GroupAttachmentOffer {
+                        group: group.id,
+                        author: peer,
+                        entitled_peers: group.members.iter().map(|member| member.peer).collect(),
+                    },
+                    id,
+                    &manifest,
+                    now,
+                    rng,
+                )?;
+                let transfer_id = transfer.local_id;
+                media_transfers.push(transfer);
+                media_objects.extend(objects);
+                attachment_updates.push(transfer_id);
+                (
                     id,
                     Vec::new(),
-                    ContentStatus::Edit {
+                    ContentStatus::Attachment {
                         id,
-                        target_author: edit.target_author,
-                        target_content_id: edit.target_content_id,
-                        revision: edit.revision,
+                        transfer: transfer_id,
                     },
-                ),
-                DecodedContent::Edit { id, .. } => (id, Vec::new(), ContentStatus::Malformed),
-                DecodedContent::Ephemeral {
+                )
+            }
+            DecodedContent::Mention { id, mention } => {
+                let spans = mention.spans().map(MentionSpan::from).collect::<Vec<_>>();
+                mentions_local_peer = spans.iter().any(|span| span.target == me);
+                (
                     id,
-                    ephemeral:
-                        Ephemeral::DisappearingText {
-                            expires_at, text, ..
-                        },
-                } => {
-                    let state = if now >= expires_at {
-                        EphemeralState::Expired
-                    } else {
-                        EphemeralState::Active
-                    };
-                    self.store.put_ephemeral_record(
-                        &EphemeralRecord {
-                            conversation: EphemeralConversation::Group(rec.id),
-                            author: peer,
-                            content_id: id,
-                            expires_at,
-                            mode: EphemeralMode::DisappearingText,
-                            state,
-                            transfer_ids: Vec::new(),
-                        },
-                        rng,
-                    )?;
-                    if state == EphemeralState::Expired {
-                        self.events.push_back(Event::EphemeralRemoved {
-                            conversation: EphemeralConversation::Group(rec.id),
+                    mention.text.as_bytes().to_vec(),
+                    ContentStatus::Mention { id, spans },
+                )
+            }
+            DecodedContent::Edit { id, edit } if edit.target_author == peer => (
+                id,
+                Vec::new(),
+                ContentStatus::Edit {
+                    id,
+                    target_author: edit.target_author,
+                    target_content_id: edit.target_content_id,
+                    revision: edit.revision,
+                },
+            ),
+            DecodedContent::Edit { id, .. } => (id, Vec::new(), ContentStatus::Malformed),
+            DecodedContent::Ephemeral {
+                id,
+                ephemeral:
+                    Ephemeral::DisappearingText {
+                        expires_at, text, ..
+                    },
+            } => {
+                let state = if now >= expires_at {
+                    EphemeralState::Expired
+                } else {
+                    EphemeralState::Active
+                };
+                ephemeral = Some(EphemeralRecord {
+                    conversation: EphemeralConversation::Group(group.id),
+                    author: peer,
+                    content_id: id,
+                    expires_at,
+                    mode: EphemeralMode::DisappearingText,
+                    state,
+                    transfer_ids: Vec::new(),
+                });
+                if state == EphemeralState::Expired {
+                    return Ok(PreparedGroupInbound {
+                        message: None,
+                        ephemeral,
+                        media_transfers,
+                        media_objects,
+                        events: vec![Event::EphemeralRemoved {
+                            conversation: EphemeralConversation::Group(group.id),
                             author: peer,
                             content_id: id,
                             reason: state,
-                        });
-                        acks.push((peer_device, env.content_id()));
-                        return done(self);
-                    }
-                    (
-                        id,
-                        text.as_bytes().to_vec(),
-                        ContentStatus::DisappearingText { id, expires_at },
-                    )
+                        }],
+                        attachment_updates,
+                    });
                 }
-                DecodedContent::Poll {
+                (
                     id,
-                    poll: Poll::Create(create),
-                } if create.voters().any(|voter| voter == peer) => (
-                    id,
-                    Vec::new(),
-                    ContentStatus::Poll {
-                        id,
-                        poll_author: peer,
-                        poll_id: id,
+                    text.as_bytes().to_vec(),
+                    ContentStatus::DisappearingText { id, expires_at },
+                )
+            }
+            DecodedContent::Ephemeral {
+                id,
+                ephemeral:
+                    Ephemeral::ViewOnceAttachment {
+                        expires_at,
+                        manifest,
+                        ..
                     },
-                ),
-                DecodedContent::Poll {
-                    id,
-                    poll: Poll::Vote(vote),
-                } => (
-                    id,
-                    Vec::new(),
-                    ContentStatus::Poll {
-                        id,
-                        poll_author: vote.poll_author,
-                        poll_id: vote.poll_id,
-                    },
-                ),
-                DecodedContent::Poll {
-                    id,
-                    poll: Poll::Close(close),
-                } if close.poll_author == peer => (
-                    id,
-                    Vec::new(),
-                    ContentStatus::Poll {
-                        id,
-                        poll_author: close.poll_author,
-                        poll_id: close.poll_id,
-                    },
-                ),
-                DecodedContent::Poll {
-                    id,
-                    poll: Poll::ModeratedClose(close),
-                } => (
-                    id,
-                    Vec::new(),
-                    ContentStatus::Poll {
-                        id,
-                        poll_author: close.poll_author,
-                        poll_id: close.poll_id,
-                    },
-                ),
-                DecodedContent::Poll { id, .. } => (id, Vec::new(), ContentStatus::Malformed),
-                DecodedContent::GroupAuthority { id, payload } => {
-                    match decode_group_authority(payload) {
-                        DecodedGroupAuthority::State(state)
-                            if state.group == rec.id
-                                && state.signer == peer
-                                && crate::authority::verify_authority_state(&state, None)
-                                    .is_ok() =>
-                        {
-                            (
-                                id,
-                                Vec::new(),
-                                ContentStatus::GroupAuthority {
-                                    id,
-                                    generation: state.generation,
-                                    owner: state.owner,
-                                },
-                            )
-                        }
-                        _ => (id, Vec::new(), ContentStatus::Malformed),
-                    }
-                }
-                // Call controls are pairwise-only; group delivery retains the
-                // authenticated bytes as malformed history without acting.
-                DecodedContent::CallControl { id, .. } => {
-                    (id, Vec::new(), ContentStatus::Malformed)
-                }
-                DecodedContent::Ephemeral {
-                    id,
-                    ephemeral:
-                        Ephemeral::ViewOnceAttachment {
-                            expires_at,
-                            manifest,
-                            ..
-                        },
-                } => {
-                    if now >= expires_at {
-                        self.store.put_ephemeral_record(
-                            &EphemeralRecord {
-                                conversation: EphemeralConversation::Group(rec.id),
-                                author: peer,
-                                content_id: id,
-                                expires_at,
-                                mode: EphemeralMode::ViewOnceAttachment,
-                                state: EphemeralState::Expired,
-                                transfer_ids: Vec::new(),
-                            },
-                            rng,
-                        )?;
-                        self.events.push_back(Event::EphemeralRemoved {
-                            conversation: EphemeralConversation::Group(rec.id),
+            } => {
+                if now >= expires_at {
+                    ephemeral = Some(EphemeralRecord {
+                        conversation: EphemeralConversation::Group(group.id),
+                        author: peer,
+                        content_id: id,
+                        expires_at,
+                        mode: EphemeralMode::ViewOnceAttachment,
+                        state: EphemeralState::Expired,
+                        transfer_ids: Vec::new(),
+                    });
+                    return Ok(PreparedGroupInbound {
+                        message: None,
+                        ephemeral,
+                        media_transfers,
+                        media_objects,
+                        events: vec![Event::EphemeralRemoved {
+                            conversation: EphemeralConversation::Group(group.id),
                             author: peer,
                             content_id: id,
                             reason: EphemeralState::Expired,
-                        });
-                        acks.push((peer_device, env.content_id()));
-                        return done(self);
-                    }
-                    let entitled_peers = rec.members.iter().map(|member| member.peer).collect();
-                    let transfer = self.record_group_attachment_offer(
-                        crate::attachment::GroupAttachmentOffer {
-                            group: rec.id,
-                            author: peer,
-                            entitled_peers,
-                        },
-                        id,
-                        &manifest,
-                        now,
-                        rng,
-                    )?;
-                    self.store.put_ephemeral_record(
-                        &EphemeralRecord {
-                            conversation: EphemeralConversation::Group(rec.id),
-                            author: peer,
-                            content_id: id,
-                            expires_at,
-                            mode: EphemeralMode::ViewOnceAttachment,
-                            state: EphemeralState::Active,
-                            transfer_ids: vec![transfer],
-                        },
-                        rng,
-                    )?;
-                    self.emit_attachment_update(&transfer)?;
-                    (
-                        id,
-                        Vec::new(),
-                        ContentStatus::ViewOnceAttachment {
-                            id,
-                            transfer,
-                            expires_at,
-                        },
-                    )
+                        }],
+                        attachment_updates,
+                    });
                 }
-                DecodedContent::Unsupported {
-                    format_version,
-                    kind,
-                } => {
-                    let mut id = [0u8; 16];
-                    rng.fill_bytes(&mut id);
-                    (
-                        id,
-                        Vec::new(),
-                        ContentStatus::Unsupported {
-                            format_version,
-                            kind,
-                        },
-                    )
-                }
-                DecodedContent::Malformed => {
-                    let mut id = [0u8; 16];
-                    rng.fill_bytes(&mut id);
-                    (id, Vec::new(), ContentStatus::Malformed)
-                }
-            };
-            self.store.put_group_message(
-                &GroupMessageRecord {
+                let (transfer, objects) = self.prepare_group_attachment_offer(
+                    crate::attachment::GroupAttachmentOffer {
+                        group: group.id,
+                        author: peer,
+                        entitled_peers: group.members.iter().map(|member| member.peer).collect(),
+                    },
                     id,
-                    group: rec.id,
-                    sender: peer,
-                    direction: Direction::Inbound,
-                    timestamp: now,
-                    body,
-                    deliveries: Vec::new(),
-                    wire_body: None,
-                },
-                rng,
-            )?;
-            match content {
-                ContentStatus::Edit {
-                    target_content_id, ..
-                } => self.events.push_back(Event::GroupMessageEdited {
-                    group: rec.id,
-                    sender: peer,
-                    target_content_id,
-                }),
+                    &manifest,
+                    now,
+                    rng,
+                )?;
+                let transfer_id = transfer.local_id;
+                media_transfers.push(transfer);
+                media_objects.extend(objects);
+                attachment_updates.push(transfer_id);
+                ephemeral = Some(EphemeralRecord {
+                    conversation: EphemeralConversation::Group(group.id),
+                    author: peer,
+                    content_id: id,
+                    expires_at,
+                    mode: EphemeralMode::ViewOnceAttachment,
+                    state: EphemeralState::Active,
+                    transfer_ids: vec![transfer_id],
+                });
+                (
+                    id,
+                    Vec::new(),
+                    ContentStatus::ViewOnceAttachment {
+                        id,
+                        transfer: transfer_id,
+                        expires_at,
+                    },
+                )
+            }
+            DecodedContent::Poll {
+                id,
+                poll: Poll::Create(create),
+            } if create.voters().any(|voter| voter == peer) => (
+                id,
+                Vec::new(),
                 ContentStatus::Poll {
-                    poll_author,
-                    poll_id,
-                    ..
-                } => self.events.push_back(Event::PollUpdated {
-                    group: rec.id,
-                    poll_author,
-                    poll_id,
-                }),
-                ContentStatus::GroupAuthority {
-                    generation, owner, ..
-                } => self.events.push_back(Event::GroupAuthorityUpdated {
-                    group: rec.id,
-                    generation,
-                    owner,
-                }),
-                ContentStatus::Malformed if decoded_is_edit => {}
-                _ => self.events.push_back(Event::GroupMessageReceived {
-                    group: rec.id,
-                    sender: peer,
                     id,
-                    timestamp: now,
-                    body: event_body,
-                    content,
-                }),
+                    poll_author: peer,
+                    poll_id: id,
+                },
+            ),
+            DecodedContent::Poll {
+                id,
+                poll: Poll::Vote(vote),
+            } => (
+                id,
+                Vec::new(),
+                ContentStatus::Poll {
+                    id,
+                    poll_author: vote.poll_author,
+                    poll_id: vote.poll_id,
+                },
+            ),
+            DecodedContent::Poll {
+                id,
+                poll: Poll::Close(close),
+            } if close.poll_author == peer => (
+                id,
+                Vec::new(),
+                ContentStatus::Poll {
+                    id,
+                    poll_author: close.poll_author,
+                    poll_id: close.poll_id,
+                },
+            ),
+            DecodedContent::Poll {
+                id,
+                poll: Poll::ModeratedClose(close),
+            } => (
+                id,
+                Vec::new(),
+                ContentStatus::Poll {
+                    id,
+                    poll_author: close.poll_author,
+                    poll_id: close.poll_id,
+                },
+            ),
+            DecodedContent::Poll { id, .. } => (id, Vec::new(), ContentStatus::Malformed),
+            DecodedContent::GroupAuthority { id, payload } => match decode_group_authority(payload)
+            {
+                DecodedGroupAuthority::State(state)
+                    if state.group == group.id
+                        && state.signer == peer
+                        && crate::authority::verify_authority_state(&state, None).is_ok() =>
+                {
+                    (
+                        id,
+                        Vec::new(),
+                        ContentStatus::GroupAuthority {
+                            id,
+                            generation: state.generation,
+                            owner: state.owner,
+                        },
+                    )
+                }
+                _ => (id, Vec::new(), ContentStatus::Malformed),
+            },
+            DecodedContent::CallControl { id, .. } => (id, Vec::new(), ContentStatus::Malformed),
+            DecodedContent::Unsupported {
+                format_version,
+                kind,
+            } => {
+                let mut id = [0u8; 16];
+                rng.fill_bytes(&mut id);
+                (
+                    id,
+                    Vec::new(),
+                    ContentStatus::Unsupported {
+                        format_version,
+                        kind,
+                    },
+                )
             }
-            if mentions_local_peer {
-                self.events.push_back(Event::MentionReceived { id });
+            DecodedContent::Malformed => {
+                let mut id = [0u8; 16];
+                rng.fill_bytes(&mut id);
+                (id, Vec::new(), ContentStatus::Malformed)
             }
-            acks.push((peer_device, env.content_id()));
-            return done(self);
+        };
+
+        let message = GroupMessageRecord {
+            id,
+            group: group.id,
+            sender: peer,
+            direction: Direction::Inbound,
+            timestamp: now,
+            body,
+            deliveries: Vec::new(),
+            wire_body: None,
+        };
+        let mut events = Vec::new();
+        match content {
+            ContentStatus::Edit {
+                target_content_id, ..
+            } => events.push(Event::GroupMessageEdited {
+                group: group.id,
+                sender: peer,
+                target_content_id,
+            }),
+            ContentStatus::Poll {
+                poll_author,
+                poll_id,
+                ..
+            } => events.push(Event::PollUpdated {
+                group: group.id,
+                poll_author,
+                poll_id,
+            }),
+            ContentStatus::GroupAuthority {
+                generation, owner, ..
+            } => events.push(Event::GroupAuthorityUpdated {
+                group: group.id,
+                generation,
+                owner,
+            }),
+            ContentStatus::Malformed if decoded_is_edit => {}
+            _ => events.push(Event::GroupMessageReceived {
+                group: group.id,
+                sender: peer,
+                id,
+                timestamp: now,
+                body: event_body,
+                content,
+            }),
         }
-        // No group of this sender opened the header: the invite may still
-        // be in flight (or the message is junk — the pending TTL bounds it).
-        Ok(Consumed::Later)
+        if mentions_local_peer {
+            events.push(Event::MentionReceived { id });
+        }
+        Ok(PreparedGroupInbound {
+            message: Some(message),
+            ephemeral,
+            media_transfers,
+            media_objects,
+            events,
+            attachment_updates,
+        })
     }
 
     /// Apply a decrypted `GroupControl` payload from `peer`. Returns whether
@@ -1349,37 +1844,44 @@ impl Node {
     /// co-member's announce racing the creator's invite).
     pub(crate) fn apply_group_control(
         &mut self,
-        peer: [u8; 32],
-        peer_device: [u8; 32],
-        body: &[u8],
+        control: &DeferredControlRecord,
         now: u64,
         rng: &mut impl CryptoRngCore,
         established: &mut bool,
-    ) -> Result<bool> {
-        let Ok(payload) = GroupControlPayload::decode(body) else {
-            return Ok(true); // malformed is terminal — ack so it is not resent
+    ) -> Result<(bool, bool)> {
+        let Ok(payload) = GroupControlPayload::decode(&control.body) else {
+            return Ok((true, false)); // malformed is terminal
         };
-        let _ = now;
+        let peer = control.peer;
         match &payload {
             GroupControlPayload::Announce(a) => {
-                self.apply_group_announce(peer, peer_device, a, rng, established)
+                self.apply_group_announce(peer, control.peer_device, a, control, rng, established)
             }
-            GroupControlPayload::Leave { group } => self.apply_group_leave(peer, group, rng),
+            GroupControlPayload::Leave { group } => {
+                self.apply_group_leave(peer, group, control, rng)
+            }
             GroupControlPayload::Remove { group } => {
-                self.apply_group_remove_notice(peer, group, rng)
+                self.apply_group_remove_notice(peer, group, control, rng)
             }
-            GroupControlPayload::AuthorityAnnounce(announce) => {
-                self.apply_authority_announce(peer, announce, rng, established)
-            }
+            GroupControlPayload::AuthorityAnnounce(announce) => self.apply_authority_announce(
+                peer,
+                control.peer_device,
+                announce,
+                control,
+                rng,
+                established,
+            ),
             GroupControlPayload::AdminRequest(request) => {
-                self.apply_group_admin_request(peer, request, now, rng)
+                self.apply_group_admin_request(peer, request, control, now, rng)
             }
-            GroupControlPayload::AdminResult(result) => self.apply_group_admin_result(peer, result),
+            GroupControlPayload::AdminResult(result) => {
+                self.apply_group_admin_result(peer, result, control, rng)
+            }
             GroupControlPayload::AuthorityRemove {
                 group,
                 state_id,
                 state_payload,
-            } => self.apply_authority_remove(peer, group, state_id, state_payload),
+            } => self.apply_authority_remove(peer, group, state_id, state_payload, control, rng),
         }
     }
 
@@ -1388,21 +1890,26 @@ impl Node {
         peer: [u8; 32],
         peer_device: [u8; 32],
         a: &GroupAnnounce,
+        control: &DeferredControlRecord,
         rng: &mut impl CryptoRngCore,
         established: &mut bool,
-    ) -> Result<bool> {
+    ) -> Result<(bool, bool)> {
         let me = self.identity.public().ed;
-        let rec = match self.store.get_group(&a.group)? {
+        let before_group = self.store.get_group(&a.group)?;
+        let mut group_changed = false;
+        let mut contact_records = Vec::new();
+        let rec = match before_group.as_ref() {
             None => {
                 // An invite: only the claimed creator's announce creates
                 // the group, and it must list both of us.
                 if a.creator != peer
                     || !a.members.iter().any(|m| m.peer == me)
                     || !a.members.iter().any(|m| m.peer == peer)
+                    || !valid_roster(&a.members)
                 {
-                    return Ok(false);
+                    return Ok((false, false));
                 }
-                self.adopt_roster_stubs(&a.members, rng)?;
+                contact_records = self.prepare_roster_stubs(&a.members)?;
                 let chain = GroupSenderChain::generate(rng);
                 let members: Vec<GroupMember> = a
                     .members
@@ -1425,26 +1932,24 @@ impl Node {
                     sent_since_rotation: 0,
                     pending,
                 };
-                self.events
-                    .push_back(Event::GroupUpdated { group: a.group });
+                group_changed = true;
                 rec
             }
-            Some(mut rec) => {
+            Some(stored) => {
+                let mut rec = stored.clone();
                 if peer == rec.creator && a.generation > rec.generation {
                     if !a.members.iter().any(|m| m.peer == me) {
                         // The creator's newer roster omits us: removed.
-                        self.store.delete_group(&rec.id)?;
-                        self.events
-                            .push_back(Event::GroupUpdated { group: a.group });
-                        return Ok(true);
+                        self.commit_group_removal(&rec, control, rng)?;
+                        return Ok((true, true));
+                    }
+                    if !valid_roster(&a.members) {
+                        return Ok((true, false));
                     }
                     let old: HashSet<[u8; 32]> = rec.members.iter().map(|m| m.peer).collect();
                     let new: HashSet<[u8; 32]> = a.members.iter().map(|m| m.peer).collect();
-                    for gone in old.difference(&new) {
-                        self.store.delete_group_chain(&rec.id, gone)?;
-                    }
                     rec.pending.retain(|p| new.contains(&p.peer));
-                    self.adopt_roster_stubs(&a.members, rng)?;
+                    contact_records = self.prepare_roster_stubs(&a.members)?;
                     rec.members = a
                         .members
                         .iter()
@@ -1481,8 +1986,7 @@ impl Node {
                             });
                         }
                     }
-                    self.events
-                        .push_back(Event::GroupUpdated { group: a.group });
+                    group_changed = true;
                 }
                 rec
             }
@@ -1490,10 +1994,11 @@ impl Node {
 
         // The sender-key half: honored from any current member.
         if !rec.members.iter().any(|m| m.peer == peer) {
-            return Ok(false);
+            return Ok((false, false));
         }
-        let mut chains = match self.store.get_group_chain(&rec.id, &peer)? {
-            Some(blob) => decode_device_group_chains(&blob, peer)?,
+        let before_chain = self.store.get_group_chain(&rec.id, &peer)?;
+        let mut chains = match before_chain.as_ref() {
+            Some(blob) => decode_device_group_chains(blob, peer)?,
             None => Vec::new(),
         };
         let replace = chains
@@ -1502,7 +2007,7 @@ impl Node {
             // Same chain id: the stored state reads from an earlier (or
             // equal) iteration — strictly more capable, keep it.
             .is_none_or(|entry| entry.chain.key_id() != a.key_id);
-        if replace {
+        let after_chain = if replace {
             let chain = GroupReceiverChain::new(a.key_id, &a.chain_key, a.iteration);
             if let Some(entry) = chains.iter_mut().find(|entry| entry.device == peer_device) {
                 entry.chain = chain;
@@ -1512,29 +2017,106 @@ impl Node {
                     chain,
                 });
             }
-            let encoded = encode_device_group_chains(&mut chains)?;
-            self.store.put_group_chain(&rec.id, &peer, &encoded, rng)?;
+            Some(encode_device_group_chains(&mut chains)?)
+        } else {
+            None
+        };
+
+        let group_transitions = (before_group.as_ref() != Some(&rec))
+            .then_some(GroupStateTransition {
+                before: before_group.as_ref(),
+                after: Some(&rec),
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+        let removed_peers = before_group
+            .as_ref()
+            .map(|before| {
+                let retained = rec
+                    .members
+                    .iter()
+                    .map(|member| member.peer)
+                    .collect::<HashSet<_>>();
+                before
+                    .members
+                    .iter()
+                    .filter(|member| !retained.contains(&member.peer))
+                    .map(|member| member.peer)
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        let removed_chain_rows = self
+            .store
+            .group_chains(&rec.id)?
+            .into_iter()
+            .filter(|(account, _)| removed_peers.contains(account))
+            .collect::<Vec<_>>();
+        let mut chain_transitions = removed_chain_rows
+            .iter()
+            .map(|(account, chain)| GroupChainStateTransition {
+                group: rec.id,
+                peer: *account,
+                before: Some(chain.as_slice()),
+                after: None,
+            })
+            .collect::<Vec<_>>();
+        if let Some(after_chain) = after_chain.as_ref() {
+            chain_transitions.push(GroupChainStateTransition {
+                group: rec.id,
+                peer,
+                before: before_chain.as_ref().map(|chain| chain.as_slice()),
+                after: Some(after_chain),
+            });
+        }
+        let contact_transitions = contact_records
+            .iter()
+            .map(|contact| ContactTransition {
+                before: None,
+                after: contact,
+            })
+            .collect::<Vec<_>>();
+        let mut events = contact_records
+            .iter()
+            .map(|contact| Event::ContactAdded { peer: contact.peer })
+            .collect::<Vec<_>>();
+        if group_changed {
+            events.push(Event::GroupUpdated { group: a.group });
+        }
+        let receipt = self.store.commit_plan(
+            CommitPlan::GroupState(GroupStatePlan {
+                groups: &group_transitions,
+                chains: &chain_transitions,
+                contacts: &contact_transitions,
+                authorities: &[],
+                delete_controls: core::slice::from_ref(control),
+                presentation_changed: !events.is_empty(),
+            }),
+            rng,
+        )?;
+        self.accept_commit_receipt(receipt, events);
+        if after_chain.is_some() {
             // Stashed group messages on this chain may decrypt now.
             *established = true;
         }
-        self.store.put_group(&rec, rng)?;
-        Ok(true)
+        Ok((true, true))
     }
 
     fn apply_group_leave(
         &mut self,
         peer: [u8; 32],
         group: &[u8; 32],
+        control: &DeferredControlRecord,
         rng: &mut impl CryptoRngCore,
-    ) -> Result<bool> {
-        let Some(mut rec) = self.store.get_group(group)? else {
-            return Ok(true); // unknown group: terminal no-op
+    ) -> Result<(bool, bool)> {
+        let Some(before) = self.store.get_group(group)? else {
+            return Ok((true, false)); // unknown group: terminal no-op
         };
-        if !rec.members.iter().any(|m| m.peer == peer) {
-            return Ok(true);
+        if !before.members.iter().any(|m| m.peer == peer) {
+            return Ok((true, false));
         }
+        let mut rec = before.clone();
         rec.members.retain(|m| m.peer != peer);
-        self.store.delete_group_chain(group, &peer)?;
+        let before_chain = self.store.get_group_chain(group, &peer)?;
         let me = self.identity.public().ed;
         if rec.creator == me {
             // Authority: re-key the shrunk roster so the leaver cannot even
@@ -1545,27 +2127,49 @@ impl Node {
         }
         // Every remaining member rotates on membership shrink (spec §6).
         self.rotate_group(&mut rec, rng)?;
-        self.store.put_group(&rec, rng)?;
-        self.events.push_back(Event::GroupUpdated { group: *group });
-        Ok(true)
+        let chain_transitions = before_chain
+            .as_ref()
+            .map(|chain| GroupChainStateTransition {
+                group: *group,
+                peer,
+                before: Some(chain.as_slice()),
+                after: None,
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+        let receipt = self.store.commit_plan(
+            CommitPlan::GroupState(GroupStatePlan {
+                groups: &[GroupStateTransition {
+                    before: Some(&before),
+                    after: Some(&rec),
+                }],
+                chains: &chain_transitions,
+                contacts: &[],
+                authorities: &[],
+                delete_controls: core::slice::from_ref(control),
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.accept_commit_receipt(receipt, [Event::GroupUpdated { group: *group }]);
+        Ok((true, true))
     }
 
     fn apply_group_remove_notice(
         &mut self,
         peer: [u8; 32],
         group: &[u8; 32],
+        control: &DeferredControlRecord,
         rng: &mut impl CryptoRngCore,
-    ) -> Result<bool> {
-        let _ = rng;
+    ) -> Result<(bool, bool)> {
         let Some(rec) = self.store.get_group(group)? else {
-            return Ok(true);
+            return Ok((true, false));
         };
         if rec.creator != peer {
-            return Ok(true); // only the creator removes; anything else is noise
+            return Ok((true, false)); // only the creator removes
         }
-        self.store.delete_group(group)?; // history stays
-        self.events.push_back(Event::GroupUpdated { group: *group });
-        Ok(true)
+        self.commit_group_removal(&rec, control, rng)?;
+        Ok((true, true))
     }
 
     // ---- receipts and delivery ladder ----------------------------------------
@@ -1618,6 +2222,34 @@ impl Node {
 
     // ---- internals -------------------------------------------------------
 
+    fn candidate_group_seal(
+        &self,
+        chain: &mut GroupSenderChain,
+        header: &GroupHeaderKey,
+        group: &[u8; 32],
+        plaintext: &[u8],
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<GroupMessage> {
+        let step = self.begin_crypto_step()?;
+        let message = chain.seal(header, group, plaintext, rng);
+        self.finish_crypto_step(step)?;
+        Ok(message)
+    }
+
+    fn candidate_group_open(
+        &self,
+        chain: &mut GroupReceiverChain,
+        group: &[u8; 32],
+        message: &GroupMessage,
+        iteration: u32,
+        now: u64,
+    ) -> Result<std::result::Result<Vec<u8>, kult_crypto::CryptoError>> {
+        let step = self.begin_crypto_step()?;
+        let plaintext = chain.open(group, message, iteration, now);
+        self.finish_crypto_step(step)?;
+        Ok(plaintext)
+    }
+
     /// Fresh sending chain, everything reset: announces owed to the whole
     /// roster with the new snapshot.
     pub(crate) fn rotate_group(
@@ -1633,41 +2265,76 @@ impl Node {
         Ok(())
     }
 
-    /// Contact stubs for roster members we have never met: identity only,
-    /// no bundle, no hints — the DHT (or a later out-of-band exchange)
-    /// fills those in, exactly like a contact learned from an inbound
-    /// handshake.
-    pub(crate) fn adopt_roster_stubs(
-        &mut self,
+    pub(crate) fn prepare_roster_stubs(
+        &self,
         members: &[GroupMemberInfo],
+    ) -> Result<Vec<ContactRecord>> {
+        let me = self.identity.public().ed;
+        let mut contacts = Vec::new();
+        for member in members {
+            if member.peer == me
+                || member.identity.is_empty()
+                || self.store.get_contact(&member.peer)?.is_some()
+            {
+                continue;
+            }
+            let identity: IdentityPublic =
+                postcard::from_bytes(&member.identity).map_err(|_| NodeError::CorruptState)?;
+            if identity.ed != member.peer {
+                return Err(NodeError::CorruptState);
+            }
+            contacts.push(ContactRecord {
+                peer: member.peer,
+                identity: member.identity.clone(),
+                name: String::new(),
+                bundle: Vec::new(),
+                hints: Vec::new(),
+                verified: false,
+            });
+        }
+        Ok(contacts)
+    }
+
+    pub(crate) fn commit_group_removal(
+        &mut self,
+        before: &GroupRecord,
+        control: &DeferredControlRecord,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
-        let me = self.identity.public().ed;
-        for m in members {
-            if m.peer == me || m.identity.is_empty() || self.store.get_contact(&m.peer)?.is_some() {
-                continue;
-            }
-            // Never store an identity blob that does not belong to the peer
-            // id it is filed under.
-            let Ok(identity) = postcard::from_bytes::<IdentityPublic>(&m.identity) else {
-                continue;
-            };
-            if identity.ed != m.peer {
-                continue;
-            }
-            self.store.put_contact(
-                &ContactRecord {
-                    peer: m.peer,
-                    identity: m.identity.clone(),
-                    name: String::new(),
-                    bundle: Vec::new(),
-                    hints: Vec::new(),
-                    verified: false,
-                },
-                rng,
-            )?;
-            self.events.push_back(Event::ContactAdded { peer: m.peer });
-        }
+        let chain_rows = self.store.group_chains(&before.id)?;
+        let chain_transitions = chain_rows
+            .iter()
+            .map(|(peer, chain)| GroupChainStateTransition {
+                group: before.id,
+                peer: *peer,
+                before: Some(chain.as_slice()),
+                after: None,
+            })
+            .collect::<Vec<_>>();
+        let authority = self.store.get_group_authority(&before.id)?;
+        let authority_transitions = authority
+            .as_ref()
+            .map(|authority| GroupAuthorityStateTransition {
+                before: Some(authority),
+                after: None,
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+        let receipt = self.store.commit_plan(
+            CommitPlan::GroupState(GroupStatePlan {
+                groups: &[GroupStateTransition {
+                    before: Some(before),
+                    after: None,
+                }],
+                chains: &chain_transitions,
+                contacts: &[],
+                authorities: &authority_transitions,
+                delete_controls: core::slice::from_ref(control),
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.accept_commit_receipt(receipt, [Event::GroupUpdated { group: before.id }]);
         Ok(())
     }
 
@@ -1675,16 +2342,15 @@ impl Node {
     /// exists (the delivery token needs it). `None` means "not yet" — the
     /// tick retries once the session appears.
     #[allow(clippy::too_many_arguments)] // exact fan-out identity, timing, and retention inputs
-    fn queue_group_copy(
-        &mut self,
+    fn prepare_group_copy(
+        &self,
         peer: &[u8; 32],
         wire: &[u8],
         group_msg_id: [u8; 16],
         class: QueueClass,
         retention_until: Option<u64>,
         now: u64,
-        rng: &mut impl CryptoRngCore,
-    ) -> Result<Option<[u8; 16]>> {
+    ) -> Result<PreparedGroupCopy> {
         let mut routes: Vec<[u8; 32]> = self
             .store
             .contact_devices_for(peer)?
@@ -1696,21 +2362,25 @@ impl Node {
         }
         routes.sort_unstable();
         routes.dedup();
+        if routes.len() > kult_store::MAX_PAIRWISE_COMMIT_DEVICES {
+            return Err(NodeError::CorruptState);
+        }
 
         let existing = self.store.message_device_deliveries(&group_msg_id)?;
-        let mut first_wire = None;
-        let mut all_served = true;
+        let mut prepared = PreparedGroupCopy {
+            all_served: true,
+            ..PreparedGroupCopy::default()
+        };
         for route in routes {
-            if let Some(wire_id) = existing
+            let existing_delivery = existing
                 .iter()
-                .find(|delivery| delivery.account == *peer && delivery.device == route)
-                .and_then(|delivery| delivery.wire_id)
-            {
-                first_wire.get_or_insert(wire_id);
+                .find(|delivery| delivery.account == *peer && delivery.device == route);
+            if let Some(wire_id) = existing_delivery.and_then(|delivery| delivery.wire_id) {
+                prepared.first_wire.get_or_insert(wire_id);
                 continue;
             }
             let Some(session) = self.sessions.get(&route) else {
-                all_served = false;
+                prepared.all_served = false;
                 continue;
             };
             let token = delivery_token(
@@ -1728,32 +2398,31 @@ impl Node {
                 None => Envelope::new(EnvelopeKind::GroupMessage, token, wire.to_vec()),
             };
             let wire_id = envelope.content_id();
-            first_wire.get_or_insert(wire_id);
-            self.store.put_message_device_delivery(
-                &MessageDeviceDeliveryRecord {
-                    message: group_msg_id,
-                    account: *peer,
-                    device: route,
-                    wire_id: Some(wire_id),
-                    state: DeliveryState::Queued,
-                },
-                rng,
-            )?;
-            self.store.queue_push(
-                &QueueItem {
-                    peer: route,
-                    msg_id: None,
-                    group_msg_id: Some(group_msg_id),
-                    class,
-                    created_at: now,
-                    attempts: 0,
-                    next_attempt_at: now,
-                    envelope,
-                },
-                rng,
-            )?;
+            prepared.first_wire.get_or_insert(wire_id);
+            let after = MessageDeviceDeliveryRecord {
+                message: group_msg_id,
+                account: *peer,
+                device: route,
+                wire_id: Some(wire_id),
+                state: DeliveryState::Queued,
+            };
+            if let Some(before) = existing_delivery {
+                prepared.delivery_updates.push((before.clone(), after));
+            } else {
+                prepared.deliveries.push(after);
+            }
+            prepared.queue.push(QueueItem {
+                peer: route,
+                msg_id: None,
+                group_msg_id: Some(group_msg_id),
+                class,
+                created_at: now,
+                attempts: 0,
+                next_attempt_at: now,
+                envelope,
+            });
         }
-        Ok(all_served.then_some(first_wire).flatten())
+        Ok(prepared)
     }
 
     /// Encrypt one already-persisted Attachment manifest exactly once on the
@@ -1767,53 +2436,119 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<bool> {
-        let mut rec = self
+        let before_group = self
             .store
             .get_group(group)?
             .ok_or(NodeError::UnknownGroup)?;
-        let mut record = self
+        let mut after_group = before_group.clone();
+        let before_record = self
             .store
             .group_messages(group)?
             .into_iter()
             .find(|record| record.direction == Direction::Outbound && &record.id == content_id)
             .ok_or(NodeError::UnknownAttachment)?;
-        if record
+        if before_record
             .deliveries
             .iter()
             .any(|delivery| delivery.wire_id.is_some())
         {
             return Ok(false);
         }
-        for delivery in &record.deliveries {
+        for delivery in &before_record.deliveries {
             if !self.peer_has_live_device_sessions(&delivery.peer)? {
                 return Ok(false);
             }
         }
-        if rec.sent_since_rotation >= GROUP_ROTATE_MSGS {
-            self.rotate_group(&mut rec, rng)?;
+        if after_group.sent_since_rotation >= GROUP_ROTATE_MSGS {
+            self.rotate_group(&mut after_group, rng)?;
         }
-        let mut chain = decode_chain(&rec.sender_chain)?;
-        let hk = GroupHeaderKey::derive(&rec.secret);
-        let wire = chain.seal(&hk, group, &pad(&record.body)?, rng).encode();
-        rec.sender_chain = encode_chain(&chain)?;
-        rec.sent_since_rotation += 1;
-        for delivery in record.deliveries.iter_mut() {
-            delivery.wire_id = self.queue_group_copy(
+        let mut chain = decode_chain(&after_group.sender_chain)?;
+        let hk = GroupHeaderKey::derive(&after_group.secret);
+        let wire = self
+            .candidate_group_seal(&mut chain, &hk, group, &pad(&before_record.body)?, rng)?
+            .encode();
+        after_group.sender_chain = encode_chain(&chain)?;
+        after_group.sent_since_rotation = after_group
+            .sent_since_rotation
+            .checked_add(1)
+            .ok_or(NodeError::CorruptState)?;
+        let mut after_record = before_record.clone();
+        let mut queue = Vec::new();
+        let mut delivery_rows = Vec::new();
+        let mut delivery_pairs = Vec::new();
+        for delivery in after_record.deliveries.iter_mut() {
+            let prepared = self.prepare_group_copy(
                 &delivery.peer,
                 &wire,
-                record.id,
+                after_record.id,
                 QueueClass::Bulk,
-                ephemeral_retention(&record.body),
+                ephemeral_retention(&after_record.body),
                 now,
-                rng,
             )?;
-            if delivery.wire_id.is_none() {
+            if !prepared.all_served || prepared.first_wire.is_none() {
                 return Ok(false);
             }
+            delivery.wire_id = prepared.first_wire;
+            queue.extend(prepared.queue);
+            delivery_rows.extend(prepared.deliveries);
+            delivery_pairs.extend(prepared.delivery_updates);
         }
-        record.wire_body = None;
-        self.store.update_group_message(&record, rng)?;
-        self.store.put_group(&rec, rng)?;
+        after_record.wire_body = None;
+        let delivery_updates = delivery_pairs
+            .iter()
+            .map(|(before, after)| DeliveryTransition { before, after })
+            .collect::<Vec<_>>();
+        let media_pairs = self
+            .store
+            .media_transfers()?
+            .into_iter()
+            .filter_map(|record| match record {
+                MediaRecord::Available(before)
+                    if before.scope == MediaScope::Group
+                        && before.direction == MediaDirection::Outbound
+                        && before.scope_id == *group
+                        && before.manifest_content_id == *content_id
+                        && before.state == MediaTransferState::Queued =>
+                {
+                    let mut after = before.clone();
+                    after.state = MediaTransferState::Transferring;
+                    after.updated_at = now;
+                    Some((before, after))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let media_transfers = media_pairs
+            .iter()
+            .map(|(before, after)| MediaTransferTransition { before, after })
+            .collect::<Vec<_>>();
+        let receipt = self.store.commit_plan(
+            CommitPlan::GroupSend(GroupSendPlan {
+                group: Some(GroupTransition {
+                    before: &before_group,
+                    after: &after_group,
+                }),
+                message: None,
+                message_update: Some(GroupMessageTransition {
+                    before: &before_record,
+                    after: &after_record,
+                }),
+                deliveries: &delivery_rows,
+                delivery_updates: &delivery_updates,
+                queue: &queue,
+                scheduled: None,
+                ephemeral: None,
+                media_transfers: &media_transfers,
+                delete_chains: &[],
+                authority: None,
+                presentation_changed: !media_transfers.is_empty(),
+            }),
+            rng,
+        )?;
+        self.accept_commit_receipt(receipt, []);
+        for (_, transfer) in media_pairs {
+            self.emit_attachment_update(&transfer.local_id)?;
+        }
         Ok(true)
     }
 
@@ -1829,6 +2564,121 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Option<[u8; 16]>> {
+        let Some(prepared) = self.prepare_group_control(peer, payload, now, rng)? else {
+            return Ok(None);
+        };
+        let preferred_wire = prepared.preferred_wire;
+        self.commit_prepared_group_control(prepared, None, &[], &[], rng)?;
+        Ok(Some(preferred_wire))
+    }
+
+    #[allow(clippy::too_many_arguments)] // encrypted response and exact authority consequence
+    pub(crate) fn queue_group_control_with_authority_response(
+        &mut self,
+        peer: &[u8; 32],
+        payload: &GroupControlPayload,
+        authority_before: &GroupAuthorityRecord,
+        authority_after: &GroupAuthorityRecord,
+        control: &DeferredControlRecord,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<bool> {
+        let Some(prepared) = self.prepare_group_control(peer, payload, now, rng)? else {
+            return Ok(false);
+        };
+        self.commit_prepared_group_control(
+            prepared,
+            None,
+            &[GroupAuthorityStateTransition {
+                before: Some(authority_before),
+                after: Some(authority_after),
+            }],
+            core::slice::from_ref(control),
+            rng,
+        )?;
+        Ok(true)
+    }
+
+    pub(crate) fn queue_group_control_with_control_ack(
+        &mut self,
+        peer: &[u8; 32],
+        payload: &GroupControlPayload,
+        control: &DeferredControlRecord,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<bool> {
+        let Some(prepared) = self.prepare_group_control(peer, payload, now, rng)? else {
+            return Ok(false);
+        };
+        self.commit_prepared_group_control(
+            prepared,
+            None,
+            &[],
+            core::slice::from_ref(control),
+            rng,
+        )?;
+        Ok(true)
+    }
+
+    #[allow(clippy::too_many_arguments)] // exact pending owner and pairwise crypto inputs
+    fn queue_group_announce(
+        &mut self,
+        peer: &[u8; 32],
+        payload: &GroupControlPayload,
+        before_group: &GroupRecord,
+        after_group: &mut GroupRecord,
+        pending_index: usize,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Option<[u8; 16]>> {
+        let prepared = self.prepare_group_control(peer, payload, now, rng)?;
+        let preferred_wire = prepared.as_ref().map(|prepared| prepared.preferred_wire);
+        let pending = after_group
+            .pending
+            .get_mut(pending_index)
+            .filter(|pending| pending.peer == *peer)
+            .ok_or(NodeError::CorruptState)?;
+        pending.wire_id = preferred_wire;
+        pending.last_sent = now.max(pending.last_sent.saturating_add(1));
+
+        if let Some(prepared) = prepared {
+            self.commit_prepared_group_control(
+                prepared,
+                Some(GroupTransition {
+                    before: before_group,
+                    after: after_group,
+                }),
+                &[],
+                &[],
+                rng,
+            )?;
+        } else {
+            let receipt = self.store.commit_plan(
+                CommitPlan::GroupState(GroupStatePlan {
+                    groups: &[GroupStateTransition {
+                        before: Some(before_group),
+                        after: Some(after_group),
+                    }],
+                    chains: &[],
+                    contacts: &[],
+                    authorities: &[],
+                    delete_controls: &[],
+                    presentation_changed: false,
+                }),
+                rng,
+            )?;
+            self.accept_commit_receipt(receipt, []);
+        }
+        Ok(preferred_wire)
+    }
+
+    fn prepare_group_control(
+        &mut self,
+        peer: &[u8; 32],
+        payload: &GroupControlPayload,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Option<PreparedGroupControl>> {
         let Some(contact) = self.store.get_contact(peer)? else {
             return Ok(None);
         };
@@ -1855,11 +2705,14 @@ impl Node {
                 .then_with(|| left.device.cmp(&right.device))
         });
         routes.dedup_by_key(|route| route.device);
+        if routes.len() > kult_store::MAX_PAIRWISE_COMMIT_DEVICES {
+            return Err(NodeError::CorruptState);
+        }
 
         let bytes = zeroize::Zeroizing::new(payload.encode());
         let padded = pad(&bytes)?;
         let mut preferred_wire = None;
-        let mut prepared: Vec<([u8; 32], Option<Session>, Session, bool)> = Vec::new();
+        let mut prepared = Vec::new();
         let mut queue = Vec::new();
         for route in routes {
             let device = route.device;
@@ -1908,48 +2761,77 @@ impl Node {
                 next_attempt_at: now,
                 envelope,
             });
-            prepared.push((device, before, after, reset));
+            prepared.push(PreparedGroupControlRoute {
+                device,
+                before,
+                after,
+                reset,
+            });
         }
         if prepared.is_empty() {
             return Ok(None);
         }
+        Ok(Some(PreparedGroupControl {
+            preferred_wire: preferred_wire.expect("prepared route has a control ciphertext"),
+            routes: prepared,
+            queue,
+        }))
+    }
+
+    fn commit_prepared_group_control(
+        &mut self,
+        prepared: PreparedGroupControl,
+        group: Option<GroupTransition<'_>>,
+        authorities: &[GroupAuthorityStateTransition<'_>],
+        delete_controls: &[DeferredControlRecord],
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
         let transitions = prepared
+            .routes
             .iter()
-            .map(|(device, before, after, _)| SessionTransition {
-                peer_device: *device,
-                before: before.as_ref(),
-                after,
+            .map(|route| SessionTransition {
+                peer_device: route.device,
+                before: route.before.as_ref(),
+                after: &route.after,
             })
             .collect::<Vec<_>>();
         let clear_capabilities = prepared
+            .routes
             .iter()
-            .filter_map(|(device, _, _, reset)| reset.then_some(*device))
+            .filter_map(|route| route.reset.then_some(route.device))
             .collect::<Vec<_>>();
-        self.store.commit_plan(
+        let groups = group.into_iter().collect::<Vec<_>>();
+        let receipt = self.store.commit_plan(
             CommitPlan::PairwiseSend(PairwiseSendPlan {
                 sessions: &transitions,
                 message: None,
                 message_update: None,
                 deliveries: &[],
                 delivery_updates: &[],
-                queue: &queue,
+                queue: &prepared.queue,
+                groups: &groups,
+                authorities,
                 scheduled: None,
                 clear_capabilities: &clear_capabilities,
                 clear_reset_markers: &[],
                 ephemeral: None,
+                media_transfers: &[],
+                media_objects: &[],
+                delete_controls,
                 presentation_changed: false,
             }),
             rng,
         )?;
         self.before_memory_replacement()?;
-        for (device, _, after, reset) in prepared {
-            self.sessions.insert(device, after);
-            if reset {
-                self.capabilities_advertised.remove(&device);
+        for route in prepared.routes {
+            self.sessions.insert(route.device, route.after);
+            if route.reset {
+                self.capabilities_advertised.remove(&route.device);
             }
         }
         self.after_memory_replacement()?;
-        Ok(preferred_wire)
+        self.accept_commit_receipt(receipt, []);
+        Ok(())
     }
 
     /// Roster members met only through an announce have identity but no
@@ -1964,21 +2846,36 @@ impl Node {
         if self.peer_has_session_or_bundle(peer)? || self.discoveries.is_empty() {
             return Ok(());
         }
-        let Some(mut contact) = self.store.get_contact(peer)? else {
+        let Some(before) = self.store.get_contact(peer)? else {
             return Ok(());
         };
-        if !contact.bundle.is_empty() {
+        if !before.bundle.is_empty() {
             return Ok(());
         }
-        let Ok(identity) = postcard::from_bytes::<IdentityPublic>(&contact.identity) else {
+        let Ok(identity) = postcard::from_bytes::<IdentityPublic>(&before.identity) else {
             return Ok(());
         };
         let Some(bundle) = self.lookup_bundle(identity.address_digest(), now).await else {
             return Ok(());
         };
+        let mut contact = before.clone();
         contact.hints = bundle.relay_hints.clone();
         contact.bundle = bundle.encode();
-        self.store.put_contact(&contact, rng)?;
+        let receipt = self.store.commit_plan(
+            CommitPlan::GroupState(GroupStatePlan {
+                groups: &[],
+                chains: &[],
+                contacts: &[ContactTransition {
+                    before: Some(&before),
+                    after: &contact,
+                }],
+                authorities: &[],
+                delete_controls: &[],
+                presentation_changed: false,
+            }),
+            rng,
+        )?;
+        self.accept_commit_receipt(receipt, []);
         Ok(())
     }
 }
@@ -2005,6 +2902,22 @@ fn ephemeral_retention(body: &[u8]) -> Option<u64> {
         } => Some(retention_until),
         _ => None,
     }
+}
+
+fn valid_roster(members: &[GroupMemberInfo]) -> bool {
+    let peers = members
+        .iter()
+        .map(|member| member.peer)
+        .collect::<HashSet<_>>();
+    !members.is_empty()
+        && members.len() <= MAX_GROUP_AUTHORITY_MEMBERS
+        && peers.len() == members.len()
+        && members.iter().all(|member| {
+            !member.identity.is_empty()
+                && member.identity.len() <= MAX_GROUP_MEMBER_IDENTITY_LEN
+                && postcard::from_bytes::<IdentityPublic>(&member.identity)
+                    .is_ok_and(|identity| identity.ed == member.peer)
+        })
 }
 
 /// Announce entries for every roster member but `me`, snapshotting `chain`
