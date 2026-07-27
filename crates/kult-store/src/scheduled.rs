@@ -5,10 +5,10 @@
 //! can safely edit or cancel it beforehand.
 
 use rand_core::CryptoRngCore;
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
-use crate::{Result, Store, StoreError};
+use crate::{decode_exact, store_v2, Result, Store, StoreError};
 
 /// A conversation that can receive scheduled text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,35 +41,40 @@ impl Store {
         record: &ScheduledMessageRecord,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
-        let plain = postcard::to_allocvec(record).map_err(|_| StoreError::Serialization)?;
-        let sealed = self.k_scheduled.seal(b"scheduled-message", &plain, rng);
-        self.conn.execute(
-            "INSERT INTO scheduled_messages (blob) VALUES (?1)",
-            params![sealed],
+        let plain =
+            Zeroizing::new(postcard::to_allocvec(record).map_err(|_| StoreError::Serialization)?);
+        self.put_equality::<store_v2::ScheduledRows>(
+            &store_v2::ContentKey::new(record.id),
+            &plain,
+            store_v2::IndexKeys::none(),
+            rng,
         )?;
         Ok(())
     }
 
     /// All scheduled messages in creation order.
     pub fn scheduled_messages(&self) -> Result<Vec<ScheduledMessageRecord>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT blob FROM scheduled_messages ORDER BY rowid_")?;
-        let rows = stmt.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
         let mut out = Vec::new();
-        for row in rows {
-            let plain = self.k_scheduled.open(b"scheduled-message", &row?)?;
-            out.push(postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?);
+        for row in self.rows::<store_v2::ScheduledRows>()? {
+            let record: ScheduledMessageRecord = decode_exact(&row.payload)?;
+            row.verify_key(&store_v2::ContentKey::new(record.id))?;
+            out.push(record);
         }
         Ok(out)
     }
 
     /// Load one scheduled message by stable id.
     pub fn get_scheduled_message(&self, id: &[u8; 16]) -> Result<Option<ScheduledMessageRecord>> {
-        Ok(self
-            .scheduled_messages()?
-            .into_iter()
-            .find(|record| &record.id == id))
+        let key = store_v2::ContentKey::new(*id);
+        let Some(row) = self.get_equality::<store_v2::ScheduledRows>(&key)? else {
+            return Ok(None);
+        };
+        row.verify_key(&key)?;
+        let record: ScheduledMessageRecord = decode_exact(&row.payload)?;
+        if record.id != *id {
+            return Err(StoreError::LogicalKeyMismatch);
+        }
+        Ok(Some(record))
     }
 
     /// Replace the scheduled message with the same id. Returns whether it
@@ -79,52 +84,28 @@ impl Store {
         record: &ScheduledMessageRecord,
         rng: &mut impl CryptoRngCore,
     ) -> Result<bool> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT rowid_, blob FROM scheduled_messages ORDER BY rowid_")?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })?;
-        for row in rows {
-            let (rowid, sealed) = row?;
-            let plain = self.k_scheduled.open(b"scheduled-message", &sealed)?;
-            let stored: ScheduledMessageRecord =
-                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
-            if stored.id == record.id {
-                let plain = postcard::to_allocvec(record).map_err(|_| StoreError::Serialization)?;
-                let sealed = self.k_scheduled.seal(b"scheduled-message", &plain, rng);
-                self.conn.execute(
-                    "UPDATE scheduled_messages SET blob = ?2 WHERE rowid_ = ?1",
-                    params![rowid, sealed],
-                )?;
-                return Ok(true);
-            }
+        let key = store_v2::ContentKey::new(record.id);
+        if self
+            .get_equality::<store_v2::ScheduledRows>(&key)?
+            .is_none()
+        {
+            return Ok(false);
         }
-        Ok(false)
+        self.put_scheduled_message(record, rng)?;
+        Ok(true)
     }
 
     /// Delete a scheduled message. Returns whether it still existed.
     pub fn delete_scheduled_message(&self, id: &[u8; 16]) -> Result<bool> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT rowid_, blob FROM scheduled_messages ORDER BY rowid_")?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })?;
-        for row in rows {
-            let (rowid, sealed) = row?;
-            let plain = self.k_scheduled.open(b"scheduled-message", &sealed)?;
-            let stored: ScheduledMessageRecord =
-                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
-            if &stored.id == id {
-                self.conn.execute(
-                    "DELETE FROM scheduled_messages WHERE rowid_ = ?1",
-                    params![rowid],
-                )?;
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        self.delete_equality::<store_v2::ScheduledRows>(&store_v2::ContentKey::new(*id))
+    }
+
+    pub(crate) fn validate_scheduled_logical_rows(&self) -> Result<()> {
+        self.validate_rows::<store_v2::ScheduledRows, _>(|row| {
+            let record: ScheduledMessageRecord = decode_exact(&row.payload)?;
+            row.verify_key(&store_v2::ContentKey::new(record.id))?;
+            row.verify_indexes(&store_v2::IndexKeys::none())
+        })
     }
 }
 

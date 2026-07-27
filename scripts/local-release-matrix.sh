@@ -27,6 +27,7 @@ run_in "$root" cargo clippy --workspace --all-targets --all-features
 run_in "$root" cargo test --workspace --all-features
 run_in "$root" cargo build -p kult-crypto -p kult-protocol --no-default-features
 run_in "$root" cargo deny check
+run_in "$root" scripts/store-scale-gate.sh
 
 desktop="$root/apps/desktop/src-tauri"
 run_in "$desktop" cargo fmt --all -- --check

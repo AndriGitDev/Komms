@@ -13,12 +13,13 @@ locally deletable within explicit endpoint and copy-retention limits.
    an operator. Implemented C2 sync is explicit device-to-device,
    end-to-end encrypted, and accepted only between account-authorized physical
    devices.
-2. **Durable record bodies at rest are sealed.** The core database does not
-   persist message, draft, or media plaintext. The current Alpha schema still
-   has plaintext equality and ordering columns that expose some exact
-   relationship metadata in a copied database; these are documented below and
-   are not yet replaced. ADR-0027 now has an inactive, independently testable
-   v2 destination foundation, but no current user table enters that format.
+2. **Durable records and sensitive equality keys at rest are sealed.** The core
+   database does not persist message, draft, or media plaintext. Contact,
+   group, delivery-token, message, media, device, and other guessable equality
+   identifiers appear only inside row ciphertext or as database- and
+   domain-separated keyed indexes. SQLite still reveals static schema
+   structure, approximate row counts and sizes, insertion order, and access
+   patterns.
    Bounded protected transients required by OS picker, recording, editing,
    playback, or explicit export workflows are temporary exceptions with
    lifecycle cleanup, never durable sources of truth.
@@ -43,8 +44,8 @@ HKDF per-domain keys.
 | Domain | Contents | Notes |
 |---|---|---|
 | `identity` | Own keys (wrapped), device settings | Smallest, most sensitive; extra wrap layer |
-| `sessions` | Serialized ratchet states, skipped-key store | Body sealed and rewrapped on persist; current peer-key lookup column remains plaintext metadata |
-| `contacts` | Peer keys, verification state, petnames, relay hints | Body sealed; current peer-key lookup column exposes an exact identifier in a copied database; selected fields may enter authenticated own-device sync |
+| `sessions` | Serialized ratchet states, skipped-key store | Body sealed and rewrapped on persist; peer lookup is a keyed opaque locator |
+| `contacts` | Peer keys, verification state, petnames, relay hints | Body sealed; peer lookup is a keyed opaque locator; selected fields may enter authenticated own-device sync |
 | `devices` | Own and contact device certificates, signed manifests, revocation tombstones | Bounded authority state; exact physical identities |
 | `device_sync` | Per-device channels, counters, Lamport winners, terminal convergence tombstones | Direction-bound, replay-protected, never a cloud log |
 | `messages` | Envelope plaintexts post-decrypt, delivery state | Per-blob AEAD, random nonces |
@@ -56,21 +57,36 @@ HKDF per-domain keys.
 | `ephemeral` | Exact local deadlines, mode, transfer references, active/terminal lifecycle | Sealed separately; terminal tombstones block resurrection after plaintext/media deletion |
 | `local_metadata` | Conversation types, folders, pins, labels, drafts, UI preferences, custom icons | Endpoint-private; only the C2 allowlist can sync to another owned device |
 
-Every record body is individually AEAD-sealed (XChaCha20-Poly1305, random
-24-byte nonce, table name + row purpose as associated data). The current Alpha
-schema is **not** an opaque-index store: contact/device public keys, group ids,
-and related equality columns remain plaintext, so a copied locked database can
-reveal exact relationship identifiers in addition to row counts and sizes.
-Constant per-table associated data prevents cross-table/cross-key opening but
-does not bind every ciphertext to its logical row, so a writer can substitute
-some valid rows within one table without guaranteed detection.
-[ADR-0027](adr/0027-opaque-indexed-store.md) defines the keyed indexes,
-row-bound associated data, versioned migration, and deletion wording required
-before stronger at-rest metadata claims. Its implemented foundation exercises
-the destination metadata, index, record, and row-binding formats behind an
-inactive migration boundary. The complete all-table migration and replacement
-protocol remains open, so these protections do not describe current user
-databases.
+Every database has a random identity. Every record body is individually
+AEAD-sealed with XChaCha20-Poly1305 and a random 24-byte nonce. Associated data
+binds the row to that database identity, physical schema version, logical table
+domain, and final locator. The decoded envelope repeats its logical key and
+secondary keys; opening recomputes and verifies the keyed locator and every
+opaque SQLite index before returning the payload.
+
+The physical schema is generic: metadata plus one record table and fixed opaque
+index slots serve all 25 sensitive logical domains. Pairwise and group history
+use keyed message-id and conversation indexes, bounded authenticated cursor
+pages, and indexed exact edit/delete. A copied locked database can still reveal
+row counts, approximate sizes, insertion order, equality and access patterns
+within one index domain, and change timing; it does not provide plaintext
+relationship identifiers as SQLite keys. See
+[ADR-0027](adr/0027-opaque-indexed-store.md) and the
+[opaque-store qualification](33-opaque-store-qualification.md).
+
+Opening a released plaintext-index schema validates it against the retained
+release fixture, decrypts and verifies bounded rows, and copies logical records
+in 256-row transactions into a fresh-id sibling database. A sealed checkpoint
+supports restart. Counts, references, SQLite integrity, every opaque row, and a
+complete reopen are checked before the synced sibling atomically replaces the
+active path. A synced rollback copy remains until that reopen succeeds.
+
+Deletion removes the live logical row. An explicit bounded maintenance call can
+enable SQLite full secure-delete, incrementally vacuum at most 4,096 pages, and
+truncate an observed WAL no larger than the caller's bound. The operation
+reports deferral and always reports that forensic erasure is not guaranteed.
+These controls reduce live-file remnants but cannot control prior copies,
+snapshots, flash remapping, recipient devices, or operating-system artifacts.
 
 B9 formatting creates no additional durable state. The `messages`,
 `scheduled_messages`, group history, and note-to-self rows retain exact source
@@ -206,7 +222,8 @@ designed separately.
 
 ## 3. Search (planned)
 
-The current Alpha does not ship a durable full-text index. ADR-0027 proposes a
+The current Alpha does not ship a durable full-text index. A future design may
+use a
 separately keyed, bounded local index in which tokenized terms are HMAC'd under
 a search-domain key before insertion. That design avoids plaintext vocabulary
 at rest but still leaks repeated-term equality and access patterns inside one
@@ -229,7 +246,12 @@ before search is described as available.
   revokes every device active in the backup, and mints a fresh sole active
   physical device; sessions re-handshake (ratchet states and reusable device
   private credentials are deliberately *not* portable). Format
-  and mechanism: ADR-0011.
+  and mechanism: ADR-0011. After outer backup decryption, the payload is a
+  bounded stream of logical records; it contains no source database id, opaque
+  index, SQLite page, or wrapped database-row ciphertext. Restore validates the
+  complete logical payload and references, writes a fresh-id sibling database,
+  syncs and atomically installs it, and then fully reopens it. It never exposes
+  a partially restored destination as a valid store.
 - **B18 label backup behavior**: `KKR7` preserves exact label IDs, names, color
   tokens, insertion order, assignments, and stale-reference behavior. Labels
   have no cloud, server, contact, or taxonomy-sharing path; C2 may converge them
@@ -292,9 +314,9 @@ before search is described as available.
   bodies in the core database or encrypted Komms backups, or intentionally in
   logs, analytics, crash metadata, or notification metadata. Explicit warned
   plaintext export and protected lifecycle-bound application transients are the
-  narrow exceptions described above. The current plaintext relationship indexes
-  remain the separately disclosed Alpha limitation; logs remain structured and
-  content-free by policy.
+  narrow exceptions described above. Keyed equality values and row ciphertext
+  remain inside Komms-owned storage; logs remain structured and content-free by
+  policy.
 - Message keys after use; chain keys after advancing (zeroize-on-drop).
 - Plaintext contact graphs intentionally uploaded to a remote system. Optional
   relay queues hold only sealed envelopes under rotating tokens with TTLs, but

@@ -5,13 +5,12 @@
 //! queue, or transport fields.
 
 use rand_core::CryptoRngCore;
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
-use crate::{Result, Store, StoreError};
+use crate::{decode_exact, store_v2, Result, Store, StoreError};
 
 const RECORD_MAGIC_V1: &[u8; 4] = b"KNT1";
-const RECORD_AD: &[u8] = b"note-to-self-message";
 
 /// Reserved conversation identity shared by node, RPC, UniFFI, and every shell.
 pub const NOTE_TO_SELF_CONVERSATION_ID: &str = "note_to_self";
@@ -51,34 +50,39 @@ impl Store {
         let mut versioned = Vec::with_capacity(RECORD_MAGIC_V1.len() + encoded.len());
         versioned.extend_from_slice(RECORD_MAGIC_V1);
         versioned.extend_from_slice(&encoded);
-        let sealed = self.k_notes.seal(RECORD_AD, &versioned, rng);
-        self.conn.execute(
-            "INSERT INTO note_messages (blob) VALUES (?1)",
-            params![sealed],
-        )?;
+        let versioned = Zeroizing::new(versioned);
+        let id = store_v2::ContentKey::new(record.id);
+        self.append::<store_v2::NoteRows>(&id, &versioned, store_v2::IndexKeys::note(&id), rng)?;
         Ok(())
     }
 
     /// Read note-to-self history in stable insertion order.
     pub fn note_messages(&self) -> Result<Vec<NoteMessageRecord>> {
-        let mut statement = self
-            .conn
-            .prepare("SELECT blob FROM note_messages ORDER BY rowid_")?;
-        let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
         let mut records = Vec::new();
-        for row in rows {
-            let plain = self.k_notes.open(RECORD_AD, &row?)?;
-            let encoded = plain
+        for row in self.rows::<store_v2::NoteRows>()? {
+            let encoded = row
+                .payload
                 .strip_prefix(RECORD_MAGIC_V1)
                 .ok_or(StoreError::Serialization)?;
-            let (record, remainder): (NoteMessageRecord, &[u8]) =
-                postcard::take_from_bytes(encoded).map_err(|_| StoreError::Serialization)?;
-            if !remainder.is_empty() {
-                return Err(StoreError::Serialization);
-            }
+            let record: NoteMessageRecord = decode_exact(encoded)?;
             record.validate()?;
+            row.verify_key(&store_v2::ContentKey::new(record.id))?;
             records.push(record);
         }
         Ok(records)
+    }
+
+    pub(crate) fn validate_note_logical_rows(&self) -> Result<()> {
+        self.validate_rows::<store_v2::NoteRows, _>(|row| {
+            let encoded = row
+                .payload
+                .strip_prefix(RECORD_MAGIC_V1)
+                .ok_or(StoreError::Serialization)?;
+            let record: NoteMessageRecord = decode_exact(encoded)?;
+            record.validate()?;
+            let id = store_v2::ContentKey::new(record.id);
+            row.verify_key(&id)?;
+            row.verify_indexes(&store_v2::IndexKeys::note(&id))
+        })
     }
 }

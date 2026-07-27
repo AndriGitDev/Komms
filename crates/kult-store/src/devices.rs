@@ -7,20 +7,19 @@
 use std::collections::HashSet;
 
 use rand_core::CryptoRngCore;
-use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use kult_crypto::{DeviceCertificate, DeviceManifest, GroupSenderChain, Identity};
 
 use crate::{
-    ContactRecord, DeliveryState, EphemeralRecord, EphemeralState, GroupAuthorityRecord,
-    GroupMember, GroupMessageRecord, GroupRecord, LocalMetadataRecord, MessageRecord,
-    NoteMessageRecord, PendingAnnounce, Result, Store, StoreError, THEME_PREFERENCE_KEY,
+    decode_exact, store_v2, ContactRecord, DeliveryState, EphemeralRecord, EphemeralState,
+    GroupAuthorityRecord, GroupMember, GroupMessageRecord, GroupRecord, LocalMetadataRecord,
+    MessageRecord, NoteMessageRecord, PendingAnnounce, Result, Store, StoreError,
+    THEME_PREFERENCE_KEY,
 };
 
-const DEVICE_STATE_AD: &[u8] = b"device-state-v1";
-const DEVICE_SYNC_AD: &[u8] = b"device-sync-v1";
+const DEVICE_SYNC_DIGEST_DOMAIN: &[u8] = b"Komms-Store-Device-Sync-Digest-v2";
 /// Maximum authenticated sync-event bytes stored in one row.
 pub const MAX_DEVICE_SYNC_EVENT_BYTES: usize = 1024 * 1024;
 /// Maximum durable sync events before compaction must make progress.
@@ -386,10 +385,11 @@ impl Store {
         state.validate(&account)?;
         let plain =
             Zeroizing::new(postcard::to_allocvec(state).map_err(|_| StoreError::Serialization)?);
-        let sealed = self.k_devices.seal(DEVICE_STATE_AD, &plain, rng);
-        self.conn.execute(
-            "INSERT OR REPLACE INTO device_state (id, blob) VALUES (1, ?1)",
-            params![sealed],
+        self.put_equality::<store_v2::DeviceStateRows>(
+            &store_v2::SingletonKey,
+            &plain,
+            store_v2::IndexKeys::none(),
+            rng,
         )?;
         Ok(())
     }
@@ -408,84 +408,57 @@ impl Store {
         {
             return Err(StoreError::Serialization);
         }
-        let encoded = postcard::to_allocvec(endpoint).map_err(|_| StoreError::Serialization)?;
-        let sealed = self.k_devices.seal(b"contact-device-v1", &encoded, rng);
-        let mut statement = self
-            .conn
-            .prepare("SELECT rowid_, blob FROM contact_devices ORDER BY rowid_")?;
-        let rows = statement.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })?;
-        for row in rows {
-            let (rowid, stored) = row?;
-            let plain = self.k_devices.open(b"contact-device-v1", &stored)?;
-            let decoded: ContactDeviceRecord =
-                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
-            if decoded.account == endpoint.account && decoded.device == endpoint.device {
-                self.conn.execute(
-                    "UPDATE contact_devices SET blob = ?2 WHERE rowid_ = ?1",
-                    params![rowid, sealed],
-                )?;
-                return Ok(());
-            }
-        }
-        drop(statement);
-        self.conn.execute(
-            "INSERT INTO contact_devices (blob) VALUES (?1)",
-            params![sealed],
+        let encoded =
+            Zeroizing::new(postcard::to_allocvec(endpoint).map_err(|_| StoreError::Serialization)?);
+        self.put_equality::<store_v2::ContactDeviceRows>(
+            &store_v2::AccountDeviceKey::new(endpoint.account, endpoint.device),
+            &encoded,
+            store_v2::IndexKeys::contact_device(&store_v2::AccountKey::new(endpoint.account)),
+            rng,
         )?;
         Ok(())
     }
 
     /// Every sealed contact-device endpoint in insertion order.
     pub fn contact_devices(&self) -> Result<Vec<ContactDeviceRecord>> {
-        let mut statement = self
-            .conn
-            .prepare("SELECT blob FROM contact_devices ORDER BY rowid_")?;
-        let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
         let mut endpoints = Vec::new();
-        for row in rows {
-            let plain = self.k_devices.open(b"contact-device-v1", &row?)?;
-            endpoints.push(postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?);
+        for row in self.rows::<store_v2::ContactDeviceRows>()? {
+            let endpoint: ContactDeviceRecord = decode_exact(&row.payload)?;
+            row.verify_key(&store_v2::AccountDeviceKey::new(
+                endpoint.account,
+                endpoint.device,
+            ))?;
+            endpoints.push(endpoint);
         }
         Ok(endpoints)
     }
 
     /// Active endpoints known for one stable contact account.
     pub fn contact_devices_for(&self, account: &[u8; 32]) -> Result<Vec<ContactDeviceRecord>> {
-        Ok(self
-            .contact_devices()?
-            .into_iter()
-            .filter(|endpoint| &endpoint.account == account && endpoint.revoked_at.is_none())
-            .collect())
+        let mut endpoints = Vec::new();
+        for row in self.rows_by_index::<store_v2::ContactDeviceAccountIndex>(
+            &store_v2::AccountKey::new(*account),
+        )? {
+            let endpoint: ContactDeviceRecord = decode_exact(&row.payload)?;
+            row.verify_key(&store_v2::AccountDeviceKey::new(
+                endpoint.account,
+                endpoint.device,
+            ))?;
+            if endpoint.account != *account {
+                return Err(StoreError::LogicalKeyMismatch);
+            }
+            if endpoint.revoked_at.is_none() {
+                endpoints.push(endpoint);
+            }
+        }
+        Ok(endpoints)
     }
 
     /// Delete one exact sealed contact-device endpoint.
     pub fn delete_contact_device(&self, account: &[u8; 32], device: &[u8; 32]) -> Result<()> {
-        let mut statement = self
-            .conn
-            .prepare("SELECT rowid_, blob FROM contact_devices ORDER BY rowid_")?;
-        let rows = statement.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })?;
-        let mut target = None;
-        for row in rows {
-            let (rowid, stored) = row?;
-            let plain = self.k_devices.open(b"contact-device-v1", &stored)?;
-            let decoded: ContactDeviceRecord =
-                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
-            if &decoded.account == account && &decoded.device == device {
-                target = Some(rowid);
-                break;
-            }
-        }
-        drop(statement);
-        if let Some(rowid) = target {
-            self.conn.execute(
-                "DELETE FROM contact_devices WHERE rowid_ = ?1",
-                params![rowid],
-            )?;
-        }
+        self.delete_equality::<store_v2::ContactDeviceRows>(&store_v2::AccountDeviceKey::new(
+            *account, *device,
+        ))?;
         Ok(())
     }
 
@@ -498,37 +471,39 @@ impl Store {
         new_device: &[u8; 32],
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
-        let mut statement = self
-            .conn
-            .prepare("SELECT rowid_, blob FROM message_device_delivery ORDER BY rowid_")?;
-        let rows = statement.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })?;
         let mut replacements = Vec::new();
-        for row in rows {
-            let (rowid, stored) = row?;
-            let plain = self
-                .k_devices
-                .open(b"message-device-delivery-v1", &stored)?;
-            let mut delivery: MessageDeviceDeliveryRecord =
-                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
+        for row in self.rows_by_index::<store_v2::MessageDeliveryAccountIndex>(
+            &store_v2::AccountKey::new(*account),
+        )? {
+            let mut delivery: MessageDeviceDeliveryRecord = decode_exact(&row.payload)?;
+            row.verify_key(&store_v2::MessageDeviceKey::new(
+                delivery.message,
+                delivery.device,
+            ))?;
             if &delivery.account == account && &delivery.device == old_device {
                 delivery.device = *new_device;
-                let encoded =
-                    postcard::to_allocvec(&delivery).map_err(|_| StoreError::Serialization)?;
-                let sealed = self
-                    .k_devices
-                    .seal(b"message-device-delivery-v1", &encoded, rng);
-                replacements.push((rowid, sealed));
+                replacements.push((row.locator, delivery));
             }
         }
-        drop(statement);
-        for (rowid, sealed) in replacements {
-            self.conn.execute(
-                "UPDATE message_device_delivery SET blob = ?2 WHERE rowid_ = ?1",
-                params![rowid, sealed],
+        let tx = self.conn.unchecked_transaction()?;
+        for (locator, delivery) in replacements {
+            let new_key = store_v2::MessageDeviceKey::new(delivery.message, *new_device);
+            let encoded = Zeroizing::new(
+                postcard::to_allocvec(&delivery).map_err(|_| StoreError::Serialization)?,
+            );
+            self.delete_row_on::<store_v2::MessageDeviceDeliveryRows>(&tx, &locator)?;
+            self.put_equality_on::<store_v2::MessageDeviceDeliveryRows>(
+                &tx,
+                &new_key,
+                &encoded,
+                store_v2::IndexKeys::message_device_delivery(
+                    &store_v2::ContentKey::new(delivery.message),
+                    &store_v2::AccountKey::new(delivery.account),
+                ),
+                rng,
             )?;
         }
+        tx.commit()?;
         Ok(())
     }
 
@@ -544,35 +519,16 @@ impl Store {
         {
             return Err(StoreError::Serialization);
         }
-        let encoded = postcard::to_allocvec(delivery).map_err(|_| StoreError::Serialization)?;
-        let sealed = self
-            .k_devices
-            .seal(b"message-device-delivery-v1", &encoded, rng);
-        let mut statement = self
-            .conn
-            .prepare("SELECT rowid_, blob FROM message_device_delivery ORDER BY rowid_")?;
-        let rows = statement.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })?;
-        for row in rows {
-            let (rowid, stored) = row?;
-            let plain = self
-                .k_devices
-                .open(b"message-device-delivery-v1", &stored)?;
-            let decoded: MessageDeviceDeliveryRecord =
-                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
-            if decoded.message == delivery.message && decoded.device == delivery.device {
-                self.conn.execute(
-                    "UPDATE message_device_delivery SET blob = ?2 WHERE rowid_ = ?1",
-                    params![rowid, sealed],
-                )?;
-                return Ok(());
-            }
-        }
-        drop(statement);
-        self.conn.execute(
-            "INSERT INTO message_device_delivery (blob) VALUES (?1)",
-            params![sealed],
+        let encoded =
+            Zeroizing::new(postcard::to_allocvec(delivery).map_err(|_| StoreError::Serialization)?);
+        self.put_equality::<store_v2::MessageDeviceDeliveryRows>(
+            &store_v2::MessageDeviceKey::new(delivery.message, delivery.device),
+            &encoded,
+            store_v2::IndexKeys::message_device_delivery(
+                &store_v2::ContentKey::new(delivery.message),
+                &store_v2::AccountKey::new(delivery.account),
+            ),
+            rng,
         )?;
         Ok(())
     }
@@ -582,36 +538,31 @@ impl Store {
         &self,
         message: &[u8; 16],
     ) -> Result<Vec<MessageDeviceDeliveryRecord>> {
-        let mut statement = self
-            .conn
-            .prepare("SELECT blob FROM message_device_delivery ORDER BY rowid_")?;
-        let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
         let mut deliveries = Vec::new();
-        for row in rows {
-            let plain = self.k_devices.open(b"message-device-delivery-v1", &row?)?;
-            let delivery: MessageDeviceDeliveryRecord =
-                postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
-            if &delivery.message == message {
-                deliveries.push(delivery);
+        for row in self.rows_by_index::<store_v2::MessageDeliveryMessageIndex>(
+            &store_v2::ContentKey::new(*message),
+        )? {
+            let delivery: MessageDeviceDeliveryRecord = decode_exact(&row.payload)?;
+            row.verify_key(&store_v2::MessageDeviceKey::new(
+                delivery.message,
+                delivery.device,
+            ))?;
+            if delivery.message != *message {
+                return Err(StoreError::LogicalKeyMismatch);
             }
+            deliveries.push(delivery);
         }
         Ok(deliveries)
     }
 
     /// Load and validate the complete local linked-device state, if enabled.
     pub fn get_device_state(&self) -> Result<Option<DeviceStateRecord>> {
-        let sealed: Option<Vec<u8>> = self
-            .conn
-            .query_row("SELECT blob FROM device_state WHERE id = 1", [], |row| {
-                row.get(0)
-            })
-            .optional()?;
-        let Some(sealed) = sealed else {
+        let Some(row) = self.get_equality::<store_v2::DeviceStateRows>(&store_v2::SingletonKey)?
+        else {
             return Ok(None);
         };
-        let plain = Zeroizing::new(self.k_devices.open(DEVICE_STATE_AD, &sealed)?);
-        let state: DeviceStateRecord =
-            postcard::from_bytes(&plain).map_err(|_| StoreError::Serialization)?;
+        row.verify_key(&store_v2::SingletonKey)?;
+        let state: DeviceStateRecord = decode_exact(&row.payload)?;
         let account = self.get_identity()?.ok_or(StoreError::NotAStore)?;
         state.validate(&account)?;
         Ok(Some(state))
@@ -627,34 +578,34 @@ impl Store {
         if event.is_empty() || event.len() > MAX_DEVICE_SYNC_EVENT_BYTES {
             return Err(StoreError::Serialization);
         }
-        let existing = self.device_sync_events()?;
-        if existing.iter().any(|stored| stored == event) {
+        let digest = self.device_sync_digest(event);
+        if self
+            .row_by_unique::<store_v2::DeviceSyncDigestIndex>(&digest)?
+            .is_some()
+        {
             return Ok(false);
         }
-        if existing.len() >= MAX_DEVICE_SYNC_EVENTS {
+        if self.count_rows::<store_v2::DeviceSyncRows>()? >= MAX_DEVICE_SYNC_EVENTS as u64 {
             return Err(StoreError::Serialization);
         }
-        let sealed = self.k_devices.seal(DEVICE_SYNC_AD, event, rng);
-        self.conn.execute(
-            "INSERT INTO device_sync (blob) VALUES (?1)",
-            params![sealed],
+        self.append::<store_v2::DeviceSyncRows>(
+            &digest,
+            event,
+            store_v2::IndexKeys::device_sync(&digest),
+            rng,
         )?;
         Ok(true)
     }
 
     /// Return every opaque authenticated sync event in insertion order.
     pub fn device_sync_events(&self) -> Result<Vec<Vec<u8>>> {
-        let mut statement = self
-            .conn
-            .prepare("SELECT blob FROM device_sync ORDER BY rowid_")?;
-        let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
         let mut events = Vec::new();
-        for row in rows {
-            let event = self.k_devices.open(DEVICE_SYNC_AD, &row?)?;
-            if event.is_empty() || event.len() > MAX_DEVICE_SYNC_EVENT_BYTES {
+        for row in self.rows::<store_v2::DeviceSyncRows>()? {
+            if row.payload.is_empty() || row.payload.len() > MAX_DEVICE_SYNC_EVENT_BYTES {
                 return Err(StoreError::Serialization);
             }
-            events.push(event);
+            row.verify_key(&self.device_sync_digest(&row.payload))?;
+            events.push(row.payload.to_vec());
         }
         Ok(events)
     }
@@ -663,25 +614,94 @@ impl Store {
     /// compaction snapshot commits. Event bytes remain sealed lookup keys.
     pub fn retain_device_sync_events(&self, retain: &[Vec<u8>]) -> Result<()> {
         let wanted: HashSet<&[u8]> = retain.iter().map(Vec::as_slice).collect();
-        let mut statement = self
-            .conn
-            .prepare("SELECT rowid_, blob FROM device_sync ORDER BY rowid_")?;
-        let rows = statement.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })?;
         let mut remove = Vec::new();
-        for row in rows {
-            let (rowid, sealed) = row?;
-            let event = self.k_devices.open(DEVICE_SYNC_AD, &sealed)?;
-            if !wanted.contains(event.as_slice()) {
-                remove.push(rowid);
+        for row in self.rows::<store_v2::DeviceSyncRows>()? {
+            row.verify_key(&self.device_sync_digest(&row.payload))?;
+            if !wanted.contains(row.payload.as_slice()) {
+                remove.push(row.rowid);
             }
         }
-        drop(statement);
+        let tx = self.conn.unchecked_transaction()?;
         for rowid in remove {
-            self.conn
-                .execute("DELETE FROM device_sync WHERE rowid_ = ?1", params![rowid])?;
+            self.delete_rowid_on::<store_v2::DeviceSyncRows>(&tx, rowid)?;
         }
+        tx.commit()?;
         Ok(())
     }
+
+    fn device_sync_digest(&self, event: &[u8]) -> store_v2::DigestKey {
+        let mut input = Vec::with_capacity(DEVICE_SYNC_DIGEST_DOMAIN.len() + event.len());
+        input.extend_from_slice(DEVICE_SYNC_DIGEST_DOMAIN);
+        input.extend_from_slice(event);
+        store_v2::DigestKey::new(self.index_root.hmac_sha256(&input))
+    }
+
+    pub(crate) fn validate_device_logical_rows(&self) -> Result<()> {
+        let account = self.get_identity()?;
+        self.validate_rows::<store_v2::DeviceStateRows, _>(|row| {
+            row.verify_key(&store_v2::SingletonKey)?;
+            row.verify_indexes(&store_v2::IndexKeys::none())?;
+            let state: DeviceStateRecord = decode_exact(&row.payload)?;
+            state.validate(account.as_ref().ok_or(StoreError::NotAStore)?)
+        })?;
+        self.validate_rows::<store_v2::DeviceSyncRows, _>(|row| {
+            if row.payload.is_empty() || row.payload.len() > MAX_DEVICE_SYNC_EVENT_BYTES {
+                return Err(StoreError::Serialization);
+            }
+            let digest = self.device_sync_digest(&row.payload);
+            let stored = store_v2::DigestKey::decode(&row.logical_key)?;
+            if stored.value() != digest.value() {
+                return Err(StoreError::LogicalKeyMismatch);
+            }
+            row.verify_indexes(&store_v2::IndexKeys::device_sync(&digest))
+        })?;
+        if self.count_rows::<store_v2::DeviceSyncRows>()? > MAX_DEVICE_SYNC_EVENTS as u64 {
+            return Err(StoreError::Serialization);
+        }
+        self.validate_rows::<store_v2::ContactDeviceRows, _>(|row| {
+            let endpoint: ContactDeviceRecord = decode_exact(&row.payload)?;
+            validate_contact_device(&endpoint)?;
+            let key = store_v2::AccountDeviceKey::decode(&row.logical_key)?;
+            if key.account() != &endpoint.account || key.device() != &endpoint.device {
+                return Err(StoreError::LogicalKeyMismatch);
+            }
+            row.verify_indexes(&store_v2::IndexKeys::contact_device(
+                &store_v2::AccountKey::new(endpoint.account),
+            ))
+        })?;
+        self.validate_rows::<store_v2::MessageDeviceDeliveryRows, _>(|row| {
+            let delivery: MessageDeviceDeliveryRecord = decode_exact(&row.payload)?;
+            validate_message_device_delivery(&delivery)?;
+            let key = store_v2::MessageDeviceKey::decode(&row.logical_key)?;
+            if key.message() != &delivery.message || key.device() != &delivery.device {
+                return Err(StoreError::LogicalKeyMismatch);
+            }
+            row.verify_indexes(&store_v2::IndexKeys::message_device_delivery(
+                &store_v2::ContentKey::new(delivery.message),
+                &store_v2::AccountKey::new(delivery.account),
+            ))
+        })
+    }
+}
+
+fn validate_contact_device(endpoint: &ContactDeviceRecord) -> Result<()> {
+    if endpoint.account == [0u8; 32]
+        || endpoint.device == [0u8; 32]
+        || (endpoint.certificate.is_empty() && endpoint.account != endpoint.device)
+        || (endpoint.manifest_generation == 0) != (endpoint.manifest_state_id == [0u8; 32])
+        || endpoint.revoked_at.is_some() != endpoint.revoked_after_counter.is_some()
+    {
+        return Err(StoreError::Serialization);
+    }
+    Ok(())
+}
+
+fn validate_message_device_delivery(delivery: &MessageDeviceDeliveryRecord) -> Result<()> {
+    if delivery.message == [0u8; 16]
+        || delivery.account == [0u8; 32]
+        || delivery.device == [0u8; 32]
+    {
+        return Err(StoreError::Serialization);
+    }
+    Ok(())
 }

@@ -239,7 +239,7 @@ This table prevents a prior concern from disappearing into roadmap prose.
 | Unix store writer exclusion now combines a no-follow sidecar with a database-inode lock; equivalent alias resistance and hostile-filesystem qualification remain open on other supported platforms | P0-06, P0-09 |
 | The Unix RPC sidecar is no-follow and owner-only, but portable stale-socket replacement still requires a daemon-owned parent directory to exclude hostile rename/unlink races | P0-07, P0-09 |
 | Current linked devices copy the account root, so a compromised revoked device can mint a replacement credential; ADR-0026 requires offline-root migration and majority-authorized manifests | P0-03, P0-06 |
-| Current SQLite equality columns reveal exact contact/group identifiers in a locked copy and constant row AD permits same-table substitution; ADR-0027 has an inactive v2 destination foundation, while the complete all-table migration remains open | P0-03, P0-06 |
+| ADR-0027 removes sensitive plaintext SQLite equality identifiers and binds every sealed row, but independent storage review and real macOS, Windows, mobile, power-loss, backup-exclusion, and forensic qualification remain open | P0-03, P0-06, P0-09 |
 | Current sender-key group content proves membership, not individual origin, so a malicious member can forge another member's text, edit, vote, or ephemeral event; ADR-0029 requires recipient-verifiable group origins | P0-03, P0-06 |
 | RAM-only storage, disabled logs, and aggregate metrics reduce retention but remain deployment controls; a cloud operator can still observe network metadata, running memory, and availability | P0-01, P0-04, P1-07 |
 

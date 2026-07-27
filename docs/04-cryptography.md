@@ -261,13 +261,21 @@ passphrase/biometric-unlocked keystore
         │ unwraps (XChaCha20-Poly1305)
         ▼
    SK: storage master key
-        │ HKDF-SHA-256, per-domain info strings
+        │ HKDF-SHA-256, purpose-separated info strings
         ▼
-   per-table keys: messages / sessions / contacts / queue
+   metadata / index root / row root / cursor root / media
+                    │
+                    └─ database + table + index-slot separation
 ```
 
-- Database: SQLite; every stored blob individually AEAD-sealed (random 24-B nonce): no
-  reliance on whole-file encryption alone, and blobs stay sealed in backups.
+- Database: SQLite; every stored row is individually AEAD-sealed with a random
+  24-byte nonce and bound to its database id, schema, table domain, and final
+  locator. Guessable equality keys become database/table/slot-separated keyed
+  indexes rather than plaintext SQLite columns. There is no reliance on
+  whole-file encryption alone.
+- Encrypted backups serialize validated logical records under their independent
+  mnemonic-derived outer AEAD. They do not copy source database ids, opaque
+  indexes, SQLite pages, or wrapped database-row ciphertext.
 - Ratchet session state is the most sensitive record class; serialized state is
   additionally wrapped and zeroized in memory after each persist.
 - Key rotation: re-wrap `SK` under a new KEK (passphrase change is O(1)); full `SK`

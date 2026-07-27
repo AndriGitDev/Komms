@@ -2,13 +2,15 @@
 
 use std::collections::HashSet;
 use std::ffi::OsString;
-use std::fs::{self, File, OpenOptions};
+#[cfg(unix)]
+use std::fs::File;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use rand_core::CryptoRngCore;
-use rusqlite::{params, OptionalExtension};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use kult_crypto::bulk_hash;
 use kult_protocol::{
@@ -17,11 +19,9 @@ use kult_protocol::{
     MAX_PRIMARY_OBJECT_LEN,
 };
 
-use crate::{Result, Store, StoreError};
+use crate::{store_v2, Result, Store, StoreError};
 
 const MEDIA_RECORD_VERSION: u8 = 1;
-const MEDIA_TRANSFER_AD: &[u8] = b"media-transfer";
-const MEDIA_OBJECT_AD: &[u8] = b"media-object";
 const MEDIA_CHUNK_AD: &[u8] = b"KAT-store-chunk-v1";
 const MAX_ENTITLEMENTS: usize = 64;
 const LOCAL_SEAL_OVERHEAD: u64 = 24 + 16;
@@ -260,10 +260,12 @@ impl Store {
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
         validate_transfer(record)?;
-        let sealed = seal_record(&self.k_media, MEDIA_TRANSFER_AD, record, rng)?;
-        self.conn.execute(
-            "INSERT OR REPLACE INTO media_transfers (id, blob) VALUES (?1, ?2)",
-            params![record.local_id.as_slice(), sealed],
+        let encoded = encode_record(record)?;
+        self.put_equality::<store_v2::MediaTransferRows>(
+            &store_v2::LocalIdKey::new(record.local_id),
+            &encoded,
+            store_v2::IndexKeys::none(),
+            rng,
         )?;
         Ok(())
     }
@@ -273,12 +275,12 @@ impl Store {
         &self,
         local_id: &[u8; 16],
     ) -> Result<Option<MediaRecord<MediaTransferRecord>>> {
-        self.get_media_record("media_transfers", MEDIA_TRANSFER_AD, local_id)
+        self.get_media_record::<MediaTransferRecord, store_v2::MediaTransferRows>(local_id)
     }
 
     /// Read every transfer metadata row.
     pub fn media_transfers(&self) -> Result<Vec<MediaRecord<MediaTransferRecord>>> {
-        self.media_records("media_transfers", MEDIA_TRANSFER_AD)
+        self.media_records::<MediaTransferRecord, store_v2::MediaTransferRows>()
     }
 
     /// Transition transfer-level lifecycle state and authenticated progress
@@ -298,15 +300,10 @@ impl Store {
 
     /// Delete one transfer row after its object rows have been removed.
     pub fn delete_media_transfer(&self, local_id: &[u8; 16]) -> Result<()> {
-        if self.media_objects()?.into_iter().any(
-            |record| matches!(record, MediaRecord::Available(object) if object.transfer_id == *local_id),
-        ) {
+        if !self.media_objects_for_transfer(local_id)?.is_empty() {
             return Err(StoreError::MediaState);
         }
-        self.conn.execute(
-            "DELETE FROM media_transfers WHERE id = ?1",
-            params![local_id.as_slice()],
-        )?;
+        self.delete_equality::<store_v2::MediaTransferRows>(&store_v2::LocalIdKey::new(*local_id))?;
         Ok(())
     }
 
@@ -335,10 +332,12 @@ impl Store {
         if record.state.active() {
             self.enforce_active_limits(&transfer, Some(record.local_id))?;
         }
-        let sealed = seal_record(&self.k_media, MEDIA_OBJECT_AD, record, rng)?;
-        self.conn.execute(
-            "INSERT OR REPLACE INTO media_objects (id, blob) VALUES (?1, ?2)",
-            params![record.local_id.as_slice(), sealed],
+        let encoded = encode_record(record)?;
+        self.put_equality::<store_v2::MediaObjectRows>(
+            &store_v2::LocalIdKey::new(record.local_id),
+            &encoded,
+            store_v2::IndexKeys::media_object(&store_v2::LocalIdKey::new(record.transfer_id)),
+            rng,
         )?;
         Ok(())
     }
@@ -348,12 +347,12 @@ impl Store {
         &self,
         local_id: &[u8; 16],
     ) -> Result<Option<MediaRecord<MediaObjectRecord>>> {
-        self.get_media_record("media_objects", MEDIA_OBJECT_AD, local_id)
+        self.get_media_record::<MediaObjectRecord, store_v2::MediaObjectRows>(local_id)
     }
 
     /// Read every object metadata row.
     pub fn media_objects(&self) -> Result<Vec<MediaRecord<MediaObjectRecord>>> {
-        self.media_records("media_objects", MEDIA_OBJECT_AD)
+        self.media_records::<MediaObjectRecord, store_v2::MediaObjectRows>()
     }
 
     /// Read supported object rows belonging to one transfer, preserving
@@ -362,16 +361,20 @@ impl Store {
         &self,
         transfer_id: &[u8; 16],
     ) -> Result<Vec<MediaObjectRecord>> {
-        let mut objects: Vec<_> = self
-            .media_objects()?
-            .into_iter()
-            .filter_map(|record| match record {
-                MediaRecord::Available(object) if object.transfer_id == *transfer_id => {
-                    Some(object)
+        let mut objects = Vec::new();
+        for row in self.rows_by_index::<store_v2::MediaObjectTransferIndex>(
+            &store_v2::LocalIdKey::new(*transfer_id),
+        )? {
+            let local_id = *store_v2::LocalIdKey::decode(&row.logical_key)?.value();
+            if let MediaRecord::Available(object) =
+                self.decode_media_record::<MediaObjectRecord>(local_id, &row.payload)?
+            {
+                if object.transfer_id != *transfer_id {
+                    return Err(StoreError::LogicalKeyMismatch);
                 }
-                _ => None,
-            })
-            .collect();
+                objects.push(object);
+            }
+        }
         objects.sort_by_key(|object| object.role);
         Ok(objects)
     }
@@ -492,13 +495,7 @@ impl Store {
         if !matches!(object.state, MediaTransferState::Complete) {
             object.state = MediaTransferState::Transferring;
         }
-        let sealed = seal_record(&self.k_media, MEDIA_OBJECT_AD, &object, rng)?;
-        let tx = self.conn.transaction()?;
-        tx.execute(
-            "UPDATE media_objects SET blob = ?2 WHERE id = ?1",
-            params![object.local_id.as_slice(), sealed],
-        )?;
-        tx.commit()?;
+        self.persist_object(&object, rng)?;
         Ok(address)
     }
 
@@ -552,12 +549,7 @@ impl Store {
 
     /// Delete one object row and garbage-collect chunk files no longer referenced.
     pub fn delete_media_object(&mut self, local_id: &[u8; 16]) -> Result<()> {
-        let tx = self.conn.transaction()?;
-        tx.execute(
-            "DELETE FROM media_objects WHERE id = ?1",
-            params![local_id.as_slice()],
-        )?;
-        tx.commit()?;
+        self.delete_equality::<store_v2::MediaObjectRows>(&store_v2::LocalIdKey::new(*local_id))?;
         self.garbage_collect_media_files(false).map(|_| ())
     }
 
@@ -626,48 +618,37 @@ impl Store {
         Ok(report)
     }
 
-    fn get_media_record<T: DeserializeOwned>(
-        &self,
-        table: &str,
-        ad: &[u8],
-        local_id: &[u8; 16],
-    ) -> Result<Option<MediaRecord<T>>> {
-        let sql = format!("SELECT blob FROM {table} WHERE id = ?1");
-        let sealed: Option<Vec<u8>> = self
-            .conn
-            .query_row(&sql, params![local_id.as_slice()], |row| row.get(0))
-            .optional()?;
-        sealed
-            .map(|sealed| self.decode_media_record(ad, *local_id, &sealed))
-            .transpose()
+    fn get_media_record<T, R>(&self, local_id: &[u8; 16]) -> Result<Option<MediaRecord<T>>>
+    where
+        T: DeserializeOwned,
+        R: store_v2::TableSpec<Key = store_v2::LocalIdKey>,
+    {
+        let key = store_v2::LocalIdKey::new(*local_id);
+        let Some(row) = self.get_equality::<R>(&key)? else {
+            return Ok(None);
+        };
+        row.verify_key(&key)?;
+        self.decode_media_record(*local_id, &row.payload).map(Some)
     }
 
-    fn media_records<T: DeserializeOwned>(
-        &self,
-        table: &str,
-        ad: &[u8],
-    ) -> Result<Vec<MediaRecord<T>>> {
-        let sql = format!("SELECT id, blob FROM {table} ORDER BY rowid");
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })?;
+    fn media_records<T, R>(&self) -> Result<Vec<MediaRecord<T>>>
+    where
+        T: DeserializeOwned,
+        R: store_v2::TableSpec<Key = store_v2::LocalIdKey>,
+    {
         let mut records = Vec::new();
-        for row in rows {
-            let (local_id, sealed) = row?;
-            let local_id: [u8; 16] = local_id.try_into().map_err(|_| StoreError::Serialization)?;
-            records.push(self.decode_media_record(ad, local_id, &sealed)?);
+        for row in self.rows::<R>()? {
+            let local_id = *store_v2::LocalIdKey::decode(&row.logical_key)?.value();
+            records.push(self.decode_media_record(local_id, &row.payload)?);
         }
         Ok(records)
     }
 
     fn decode_media_record<T: DeserializeOwned>(
         &self,
-        ad: &[u8],
         local_id: [u8; 16],
-        sealed: &[u8],
+        plain: &[u8],
     ) -> Result<MediaRecord<T>> {
-        let plain = self.k_media.open(ad, sealed)?;
         let Some((&version, encoded)) = plain.split_first() else {
             return Err(StoreError::Serialization);
         };
@@ -702,10 +683,12 @@ impl Store {
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
         validate_object(object)?;
-        let sealed = seal_record(&self.k_media, MEDIA_OBJECT_AD, object, rng)?;
-        self.conn.execute(
-            "UPDATE media_objects SET blob = ?2 WHERE id = ?1",
-            params![object.local_id.as_slice(), sealed],
+        let encoded = encode_record(object)?;
+        self.put_equality::<store_v2::MediaObjectRows>(
+            &store_v2::LocalIdKey::new(object.local_id),
+            &encoded,
+            store_v2::IndexKeys::media_object(&store_v2::LocalIdKey::new(object.transfer_id)),
+            rng,
         )?;
         Ok(())
     }
@@ -772,19 +755,45 @@ impl Store {
         }
         Ok(removed)
     }
+
+    pub(crate) fn validate_media_logical_rows(&self) -> Result<()> {
+        self.validate_rows::<store_v2::MediaTransferRows, _>(|row| {
+            let local_id = *store_v2::LocalIdKey::decode(&row.logical_key)?.value();
+            row.verify_indexes(&store_v2::IndexKeys::none())?;
+            if let MediaRecord::Available(record) =
+                self.decode_media_record::<MediaTransferRecord>(local_id, &row.payload)?
+            {
+                validate_transfer(&record)?;
+                if record.local_id != local_id {
+                    return Err(StoreError::LogicalKeyMismatch);
+                }
+            }
+            Ok(())
+        })?;
+        self.validate_rows::<store_v2::MediaObjectRows, _>(|row| {
+            let local_id = *store_v2::LocalIdKey::decode(&row.logical_key)?.value();
+            if let MediaRecord::Available(record) =
+                self.decode_media_record::<MediaObjectRecord>(local_id, &row.payload)?
+            {
+                validate_object(&record)?;
+                if record.local_id != local_id {
+                    return Err(StoreError::LogicalKeyMismatch);
+                }
+                row.verify_indexes(&store_v2::IndexKeys::media_object(
+                    &store_v2::LocalIdKey::new(record.transfer_id),
+                ))?;
+            }
+            Ok(())
+        })
+    }
 }
 
-fn seal_record<T: Serialize>(
-    key: &kult_crypto::StorageKey,
-    ad: &[u8],
-    record: &T,
-    rng: &mut impl CryptoRngCore,
-) -> Result<Vec<u8>> {
+fn encode_record<T: Serialize>(record: &T) -> Result<Zeroizing<Vec<u8>>> {
     let encoded = postcard::to_allocvec(record).map_err(|_| StoreError::Serialization)?;
     let mut versioned = Vec::with_capacity(1 + encoded.len());
     versioned.push(MEDIA_RECORD_VERSION);
     versioned.extend_from_slice(&encoded);
-    Ok(key.seal(ad, &versioned, rng))
+    Ok(Zeroizing::new(versioned))
 }
 
 fn validate_transfer(record: &MediaTransferRecord) -> Result<()> {
@@ -1000,14 +1009,12 @@ mod tests {
         let store =
             Store::create(&dir.path().join("versions.db"), b"pass", TEST_KDF, &mut rng).unwrap();
         let local_id = [9u8; 16];
-        let sealed = store
-            .k_media
-            .seal(MEDIA_OBJECT_AD, &[2, 0xff, 0xff], &mut rng);
         store
-            .conn
-            .execute(
-                "INSERT INTO media_objects (id, blob) VALUES (?1, ?2)",
-                params![local_id.as_slice(), sealed],
+            .put_equality::<store_v2::MediaObjectRows>(
+                &store_v2::LocalIdKey::new(local_id),
+                &[2, 0xff, 0xff],
+                store_v2::IndexKeys::media_object(&store_v2::LocalIdKey::new([7; 16])),
+                &mut rng,
             )
             .unwrap();
         assert_eq!(
