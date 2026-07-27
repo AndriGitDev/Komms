@@ -463,7 +463,7 @@ impl LocalMetadataRecord {
         }
     }
 
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         let string_ok =
             |value: &str| !value.is_empty() && value.len() <= MAX_LOCAL_METADATA_STRING_BYTES;
         let valid = match self {

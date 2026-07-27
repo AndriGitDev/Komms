@@ -4,19 +4,17 @@
 //! tables expose only row counts and approximate sealed sizes to a copied
 //! database, matching the rest of the store's local-metadata boundary.
 
-use std::collections::HashSet;
-
 use rand_core::CryptoRngCore;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use kult_crypto::{DeviceCertificate, DeviceManifest, GroupSenderChain, Identity};
+use kult_crypto::{DeviceCertificate, DeviceManifest, Identity, MAX_LINKED_DEVICES};
+use kult_protocol::{DeviceSyncEvent, DeviceSyncNamespace};
 
 use crate::{
     decode_exact, store_v2, ContactRecord, DeliveryState, EphemeralRecord, EphemeralState,
-    GroupAuthorityRecord, GroupMember, GroupMessageRecord, GroupRecord, LocalMetadataRecord,
-    MessageRecord, NoteMessageRecord, PendingAnnounce, Result, Store, StoreError,
-    THEME_PREFERENCE_KEY,
+    GroupAuthorityRecord, GroupMember, GroupMessageRecord, LocalMetadataRecord, MessageRecord,
+    NoteMessageRecord, Result, Store, StoreError, THEME_PREFERENCE_KEY,
 };
 
 const DEVICE_SYNC_DIGEST_DOMAIN: &[u8] = b"Komms-Store-Device-Sync-Digest-v2";
@@ -101,6 +99,24 @@ pub struct DeviceChannelRecord {
     pub receive_counter: u64,
 }
 
+/// Small durable recovery handle for a committed link package whose caller
+/// may not have observed the return value before restart.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceLinkRecoveryRecord {
+    /// Exact target physical-device id.
+    pub target_device: [u8; 32],
+    /// Digest of the signed target response accepted by the source.
+    pub response_hash: [u8; 32],
+    /// Link-package AEAD key derived from the confirmed ceremony transcript.
+    pub link_key: [u8; 32],
+    /// Whether a retry includes contacts.
+    pub contacts: bool,
+    /// Whether a retry includes shared organization state.
+    pub organization: bool,
+    /// Whether a retry includes history.
+    pub history: bool,
+}
+
 /// One contact account's independently addressable physical-device endpoint.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContactDeviceRecord {
@@ -160,7 +176,7 @@ pub struct DeviceStateRecord {
 }
 
 impl DeviceStateRecord {
-    fn validate(&self, account: &Identity) -> Result<()> {
+    pub(crate) fn validate(&self, account: &Identity) -> Result<()> {
         self.manifest.verify()?;
         self.local_certificate.verify()?;
         let device_bytes: Zeroizing<[u8; 64]> = Zeroizing::new(
@@ -250,6 +266,28 @@ impl Store {
         } else {
             Vec::new()
         };
+        let sync_events = self
+            .device_sync_events()?
+            .into_iter()
+            .map(|encoded| {
+                let event = DeviceSyncEvent::decode(&encoded)?;
+                let selected = match event.namespace {
+                    DeviceSyncNamespace::Contacts | DeviceSyncNamespace::Verification => {
+                        selection.contacts
+                    }
+                    DeviceSyncNamespace::LocalOrganization => selection.organization,
+                    DeviceSyncNamespace::ConversationHistory
+                    | DeviceSyncNamespace::MessageEdits
+                    | DeviceSyncNamespace::GroupPolls => selection.history,
+                    DeviceSyncNamespace::Groups => selection.history || selection.organization,
+                    DeviceSyncNamespace::ExpiryTombstones => true,
+                };
+                Ok(selected.then_some(encoded))
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect();
         Ok(DeviceTransferSnapshot {
             contacts: if selection.contacts {
                 self.contacts()?
@@ -294,85 +332,8 @@ impl Store {
                 Vec::new()
             },
             ephemeral_tombstones: terminal,
-            sync_events: self.device_sync_events()?,
+            sync_events,
         })
-    }
-
-    /// Import one authenticated link snapshot into a new/pristine target.
-    /// Group sending/receiving chains are regenerated rather than copied.
-    pub fn import_device_transfer(
-        &self,
-        snapshot: &DeviceTransferSnapshot,
-        me: [u8; 32],
-        rng: &mut impl CryptoRngCore,
-    ) -> Result<()> {
-        for contact in &snapshot.contacts {
-            self.put_contact(contact, rng)?;
-        }
-        for endpoint in &snapshot.contact_devices {
-            self.put_contact_device(endpoint, rng)?;
-        }
-        for message in &snapshot.messages {
-            self.put_message(message, rng)?;
-        }
-        for group in &snapshot.groups {
-            let chain = GroupSenderChain::generate(rng);
-            let (key_id, chain_key, iteration) = chain.snapshot();
-            let pending = group
-                .members
-                .iter()
-                .filter(|member| member.peer != me)
-                .map(|member| PendingAnnounce {
-                    peer: member.peer,
-                    key_id,
-                    chain_key: *chain_key,
-                    iteration,
-                    wire_id: None,
-                    last_sent: 0,
-                })
-                .collect();
-            self.put_group(
-                &GroupRecord {
-                    id: group.id,
-                    name: group.name.clone(),
-                    creator: group.creator,
-                    members: group.members.clone(),
-                    secret: group.secret,
-                    prev_secret: None,
-                    generation: group.generation,
-                    sender_chain: postcard::to_allocvec(&chain)
-                        .map_err(|_| StoreError::Serialization)?,
-                    sent_since_rotation: 0,
-                    pending,
-                },
-                rng,
-            )?;
-        }
-        for message in &snapshot.group_messages {
-            self.put_group_message(message, rng)?;
-        }
-        for authority in &snapshot.group_authorities {
-            self.put_group_authority(authority, rng)?;
-        }
-        for record in &snapshot.local_metadata {
-            if matches!(record, LocalMetadataRecord::Draft(_)) {
-                return Err(StoreError::Serialization);
-            }
-            self.put_local_metadata(record, rng)?;
-        }
-        for message in &snapshot.note_messages {
-            self.put_note_message(message, rng)?;
-        }
-        for record in &snapshot.ephemeral_tombstones {
-            if record.state == EphemeralState::Active || !record.transfer_ids.is_empty() {
-                return Err(StoreError::Serialization);
-            }
-            self.put_ephemeral_record(record, rng)?;
-        }
-        for event in &snapshot.sync_events {
-            self.put_device_sync_event(event, rng)?;
-        }
-        Ok(())
     }
 
     /// Atomically replace the complete sealed local linked-device state.
@@ -568,6 +529,49 @@ impl Store {
         Ok(Some(state))
     }
 
+    /// Load one committed link-package recovery handle.
+    pub fn get_device_link_recovery(
+        &self,
+        target_device: &[u8; 32],
+    ) -> Result<Option<DeviceLinkRecoveryRecord>> {
+        let Some(row) = self.get_equality::<store_v2::DeviceLinkRecoveryRows>(
+            &store_v2::AccountKey::new(*target_device),
+        )?
+        else {
+            return Ok(None);
+        };
+        row.verify_key(&store_v2::AccountKey::new(*target_device))?;
+        row.verify_indexes(&store_v2::IndexKeys::none())?;
+        let recovery: DeviceLinkRecoveryRecord = decode_exact(&row.payload)?;
+        validate_device_link_recovery(&recovery)?;
+        if recovery.target_device != *target_device {
+            return Err(StoreError::LogicalKeyMismatch);
+        }
+        Ok(Some(recovery))
+    }
+
+    pub(crate) fn put_device_link_recovery(
+        &self,
+        recovery: &DeviceLinkRecoveryRecord,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        validate_device_link_recovery(recovery)?;
+        if self
+            .get_device_link_recovery(&recovery.target_device)?
+            .is_none()
+            && self.count_rows::<store_v2::DeviceLinkRecoveryRows>()? >= MAX_LINKED_DEVICES as u64
+        {
+            return Err(StoreError::RecordBounds);
+        }
+        let encoded = postcard::to_allocvec(recovery).map_err(|_| StoreError::Serialization)?;
+        self.put_equality::<store_v2::DeviceLinkRecoveryRows>(
+            &store_v2::AccountKey::new(recovery.target_device),
+            &encoded,
+            store_v2::IndexKeys::none(),
+            rng,
+        )
+    }
+
     /// Insert one opaque authenticated sync event if its exact bytes are new.
     /// Returns `true` only for a new durable row.
     pub fn put_device_sync_event(
@@ -610,26 +614,19 @@ impl Store {
         Ok(events)
     }
 
-    /// Delete every event except the exact supplied set after a verified
-    /// compaction snapshot commits. Event bytes remain sealed lookup keys.
-    pub fn retain_device_sync_events(&self, retain: &[Vec<u8>]) -> Result<()> {
-        let wanted: HashSet<&[u8]> = retain.iter().map(Vec::as_slice).collect();
-        let mut remove = Vec::new();
-        for row in self.rows::<store_v2::DeviceSyncRows>()? {
-            row.verify_key(&self.device_sync_digest(&row.payload))?;
-            if !wanted.contains(row.payload.as_slice()) {
-                remove.push(row.rowid);
-            }
+    pub(crate) fn delete_device_sync_event(&self, event: &[u8]) -> Result<bool> {
+        let digest = self.device_sync_digest(event);
+        let Some(row) = self.row_by_unique::<store_v2::DeviceSyncDigestIndex>(&digest)? else {
+            return Ok(false);
+        };
+        row.verify_key(&digest)?;
+        if row.payload.as_slice() != event {
+            return Err(StoreError::LogicalKeyMismatch);
         }
-        let tx = self.conn.unchecked_transaction()?;
-        for rowid in remove {
-            self.delete_rowid_on::<store_v2::DeviceSyncRows>(&tx, rowid)?;
-        }
-        tx.commit()?;
-        Ok(())
+        self.delete_row::<store_v2::DeviceSyncRows>(&row.locator)
     }
 
-    fn device_sync_digest(&self, event: &[u8]) -> store_v2::DigestKey {
+    pub(crate) fn device_sync_digest(&self, event: &[u8]) -> store_v2::DigestKey {
         let mut input = Vec::with_capacity(DEVICE_SYNC_DIGEST_DOMAIN.len() + event.len());
         input.extend_from_slice(DEVICE_SYNC_DIGEST_DOMAIN);
         input.extend_from_slice(event);
@@ -644,6 +641,7 @@ impl Store {
             let state: DeviceStateRecord = decode_exact(&row.payload)?;
             state.validate(account.as_ref().ok_or(StoreError::NotAStore)?)
         })?;
+        let device_state = self.get_device_state()?;
         self.validate_rows::<store_v2::DeviceSyncRows, _>(|row| {
             if row.payload.is_empty() || row.payload.len() > MAX_DEVICE_SYNC_EVENT_BYTES {
                 return Err(StoreError::Serialization);
@@ -680,11 +678,43 @@ impl Store {
                 &store_v2::ContentKey::new(delivery.message),
                 &store_v2::AccountKey::new(delivery.account),
             ))
-        })
+        })?;
+        self.validate_rows::<store_v2::DeviceLinkRecoveryRows, _>(|row| {
+            let recovery: DeviceLinkRecoveryRecord = decode_exact(&row.payload)?;
+            validate_device_link_recovery(&recovery)?;
+            row.verify_key(&store_v2::AccountKey::new(recovery.target_device))?;
+            row.verify_indexes(&store_v2::IndexKeys::none())?;
+            let state = device_state.as_ref().ok_or(StoreError::NotAStore)?;
+            if !state.manifest.devices.iter().any(|entry| {
+                entry.certificate.device_id() == recovery.target_device
+                    && entry.revoked_at.is_none()
+            }) || !state
+                .channels
+                .iter()
+                .any(|channel| channel.peer_device == recovery.target_device)
+            {
+                return Err(StoreError::LogicalKeyMismatch);
+            }
+            Ok(())
+        })?;
+        if self.count_rows::<store_v2::DeviceLinkRecoveryRows>()? > MAX_LINKED_DEVICES as u64 {
+            return Err(StoreError::RecordBounds);
+        }
+        Ok(())
     }
 }
 
-fn validate_contact_device(endpoint: &ContactDeviceRecord) -> Result<()> {
+pub(crate) fn validate_device_link_recovery(recovery: &DeviceLinkRecoveryRecord) -> Result<()> {
+    if recovery.target_device == [0u8; 32]
+        || recovery.response_hash == [0u8; 32]
+        || recovery.link_key == [0u8; 32]
+    {
+        return Err(StoreError::Serialization);
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_contact_device(endpoint: &ContactDeviceRecord) -> Result<()> {
     if endpoint.account == [0u8; 32]
         || endpoint.device == [0u8; 32]
         || (endpoint.certificate.is_empty() && endpoint.account != endpoint.device)

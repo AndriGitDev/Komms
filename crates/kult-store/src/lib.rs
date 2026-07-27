@@ -45,25 +45,29 @@ mod store_v2;
 
 pub use backup::BACKUP_MAGIC;
 pub use commit::{
-    AttachmentStagePlan, AttachmentStatePlan, CommitPlan, CommitReceipt, CommittedRecordIds,
-    ContactDeviceDelete, ContactTransition, DeferredControlKind, DeferredControlRecord,
-    DeliveryTransition, EphemeralTransition, GroupAuthorityStateTransition,
-    GroupAuthorityTransition, GroupChainStateTransition, GroupChainTransition, GroupMessageDelete,
-    GroupMessageTransition, GroupReceivePlan, GroupSendPlan, GroupStatePlan, GroupStateTransition,
-    GroupTransition, HandshakeReceivePlan, MaintenancePlan, MediaDelete, MediaObjectTransition,
+    AttachmentStagePlan, AttachmentStatePlan, CapabilityDelete, CommitPlan, CommitReceipt,
+    CommittedRecordIds, ContactDeviceDelete, ContactTransition, DeferredControlKind,
+    DeferredControlRecord, DeliveryTransition, DeviceControlPlan, DeviceLinkPlan,
+    DeviceLinkRecoveryTransition, DeviceProjection, DeviceProjectionPlan, DeviceStateTransition,
+    EphemeralTransition, GroupAuthorityStateTransition, GroupAuthorityTransition,
+    GroupChainStateTransition, GroupChainTransition, GroupMessageDelete, GroupMessageTransition,
+    GroupReceivePlan, GroupSendPlan, GroupStatePlan, GroupStateTransition, GroupTransition,
+    HandshakeReceivePlan, IdentityTransition, MaintenancePlan, MediaDelete, MediaObjectTransition,
     MediaTransferTransition, MessageDelete, MessageTransition, PairwiseReceivePlan,
-    PairwiseSendPlan, PendingDelete, PrekeyPublishPlan, PrekeyTransition, QueueDelete,
-    QueueTransition, ReceiptReceivePlan, SessionTransition, MAX_ATTACHMENT_STAGE_MUTATIONS,
-    MAX_COMMIT_MUTATIONS, MAX_COMMIT_QUEUE_ROWS, MAX_DEFERRED_CONTROLS, MAX_GROUP_COMMIT_MUTATIONS,
-    MAX_GROUP_COMMIT_QUEUE_ROWS, MAX_GROUP_STATE_MUTATIONS, MAX_MAINTENANCE_TRANSITIONS,
-    MAX_PAIRWISE_COMMIT_DEVICES,
+    PairwiseSendPlan, PendingDelete, PrekeyPublishPlan, PrekeyTransition, ProfileBootstrapPlan,
+    QueueDelete, QueueTransition, ReceiptReceivePlan, SessionDelete, SessionTransition,
+    MAX_ATTACHMENT_STAGE_MUTATIONS, MAX_COMMIT_MUTATIONS, MAX_COMMIT_QUEUE_ROWS,
+    MAX_DEFERRED_CONTROLS, MAX_DEVICE_CONTROL_MUTATIONS, MAX_DEVICE_LINK_MUTATIONS,
+    MAX_DEVICE_PROJECTION_MUTATIONS, MAX_GROUP_COMMIT_MUTATIONS, MAX_GROUP_COMMIT_QUEUE_ROWS,
+    MAX_GROUP_STATE_MUTATIONS, MAX_MAINTENANCE_TRANSITIONS, MAX_PAIRWISE_COMMIT_DEVICES,
+    MAX_PROFILE_GROUPS,
 };
 #[cfg(feature = "test-failpoints")]
 pub use commit::{CommitFailpoint, CommitFailure};
 pub use devices::{
-    ContactDeviceRecord, DeviceChannelRecord, DeviceStateRecord, DeviceTransferGroup,
-    DeviceTransferSelection, DeviceTransferSnapshot, MessageDeviceDeliveryRecord,
-    MAX_DEVICE_SYNC_EVENTS, MAX_DEVICE_SYNC_EVENT_BYTES,
+    ContactDeviceRecord, DeviceChannelRecord, DeviceLinkRecoveryRecord, DeviceStateRecord,
+    DeviceTransferGroup, DeviceTransferSelection, DeviceTransferSnapshot,
+    MessageDeviceDeliveryRecord, MAX_DEVICE_SYNC_EVENTS, MAX_DEVICE_SYNC_EVENT_BYTES,
 };
 pub use ephemeral::{EphemeralConversation, EphemeralMode, EphemeralRecord, EphemeralState};
 pub use local_metadata::{
@@ -117,6 +121,8 @@ pub enum StoreError {
     /// A typed protocol transition did not match the durable source state it
     /// named and was rolled back without changing the store.
     InvalidTransition,
+    /// The durable profile group limit is exhausted.
+    GroupLimit,
     /// The bounded deferred-inbox item or sealed-byte quota is exhausted.
     PendingQuota,
     /// Configured or protocol-hard media quota would be exceeded.
@@ -218,6 +224,7 @@ impl std::fmt::Display for StoreError {
             Self::Io(e) => write!(f, "store filesystem error: {e}"),
             Self::AlreadyOpen => f.write_str("store is already open by another process"),
             Self::InvalidTransition => f.write_str("invalid durable protocol transition"),
+            Self::GroupLimit => f.write_str("profile group limit exhausted"),
             Self::PendingQuota => f.write_str("deferred inbox quota exhausted"),
             Self::MediaQuota => f.write_str("media quota exceeded"),
             Self::LowStorage => f.write_str("insufficient reserved filesystem space"),
@@ -807,6 +814,7 @@ impl Store {
         let store = Self::open_v2_with_parts(path, passphrase, conn, database_lock, lock, false)?;
         migration::cleanup_completed_replacement(path)?;
         backup::cleanup_completed_restore(path)?;
+        backup::cleanup_completed_initialization(path)?;
         Ok(store)
     }
 
@@ -965,6 +973,9 @@ impl Store {
             }
             row.verify_indexes(&store_v2::IndexKeys::none())
         })?;
+        if self.count_rows::<store_v2::GroupRows>()? > MAX_PROFILE_GROUPS as u64 {
+            return Err(StoreError::GroupLimit);
+        }
         self.validate_rows::<store_v2::GroupAuthorityRows, _>(|row| {
             let record: GroupAuthorityRecord = decode_exact(&row.payload)?;
             row.verify_key(&store_v2::GroupKey::new(record.group))?;
@@ -1546,14 +1557,15 @@ impl Store {
 
     /// Insert or replace a group (sealed).
     pub fn put_group(&self, rec: &GroupRecord, rng: &mut impl CryptoRngCore) -> Result<()> {
+        let key = store_v2::GroupKey::new(rec.id);
+        if self.get_equality::<store_v2::GroupRows>(&key)?.is_none()
+            && self.count_rows::<store_v2::GroupRows>()? >= MAX_PROFILE_GROUPS as u64
+        {
+            return Err(StoreError::GroupLimit);
+        }
         let plain =
             Zeroizing::new(postcard::to_allocvec(rec).map_err(|_| StoreError::Serialization)?);
-        self.put_equality::<store_v2::GroupRows>(
-            &store_v2::GroupKey::new(rec.id),
-            &plain,
-            store_v2::IndexKeys::none(),
-            rng,
-        )?;
+        self.put_equality::<store_v2::GroupRows>(&key, &plain, store_v2::IndexKeys::none(), rng)?;
         Ok(())
     }
 

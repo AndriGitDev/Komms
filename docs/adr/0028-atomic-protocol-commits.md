@@ -30,11 +30,15 @@ work only on those candidate values and creates one bounded typed commit plan:
 
 - `PairwiseSend`;
 - `PairwiseReceive`;
+- `ProfileBootstrap`;
 - `PrekeyPublish`;
 - `HandshakeReceive`;
 - `GroupSend`;
 - `GroupReceive`;
 - `GroupState`;
+- `DeviceControl`;
+- `DeviceLink`;
+- `DeviceProjection`;
 - `AttachmentStage`;
 - `AttachmentState`;
 - `ReceiptReceive`; or
@@ -145,14 +149,36 @@ or plaintext consequence.
 
 ### 7. Implementation and evidence status
 
-The implementation now provides all eleven plan kinds above. They cover
+The implementation now provides all fifteen plan kinds above. They cover
 pairwise and group text, edits, polls, roles, authority changes, group
 announcements and bounded fan-out, pairwise and group attachments, missing
 ranges, ephemeral/view-once state, scheduled activation, call signalling,
 late-device delivery, exact deferred-control acknowledgement, retry/expiry,
-session repair, media reconciliation, and presentation recovery. Fresh
-out-of-band one-time-prekey issuance uses `PrekeyPublish`; inbound consumption
-uses `HandshakeReceive` and cannot commit without the established session.
+session repair, current linked-device authority/counter changes, confirmed link
+imports, convergence projection, media reconciliation, profile bootstrap, and
+presentation recovery. Fresh out-of-band one-time-prekey issuance uses
+`PrekeyPublish`; inbound consumption uses `HandshakeReceive` and cannot commit
+without the established session.
+
+`ProfileBootstrap` commits a fresh account identity, physical-device authority
+state, and prekey vault inside an unpublished sibling database. The sibling is
+file- and directory-synchronized before one atomic replacement publishes the
+profile, so interruption leaves either no destination or one complete openable
+profile. Recovery initializes fresh device state and fresh prekeys before the
+same sibling-publication boundary.
+
+`DeviceControl`, `DeviceLink`, and `DeviceProjection` cover the current
+ADR-0024 implementation without endorsing its authority design. Manifest
+rename/revocation, channel counters, convergence events and group rotations
+commit together; a confirmed pristine target switches identity, authority and
+its bounded selected snapshot in one transaction; accepted event winners are
+projected through exact idempotent before/after plans. A link ceremony secret
+is retained until its channel commits. The source also commits a small sealed
+recovery handle with link approval, allowing a package return value lost after
+commit to be resealed after restart. Authenticated target sync removes that
+handle. Profiles admit at most 4,094 groups, leaving one `DeviceControl`
+transaction enough space for every group-chain rotation, a maximum
+4,096-event sync bundle, device authority and recovery retirement.
 
 Each plan validates its bounded before/after relationships before
 `BEGIN IMMEDIATE`. The transaction writes the detached candidate and every
@@ -174,21 +200,24 @@ exercises before/after cryptographic steps, every logical transaction
 statement, commit, memory replacement, event delivery, disk-full, constraint,
 duplicate, reorder, deferred-input, expiry, session-repair, scheduled
 activation, maximum stable-v1 group fan-out, and restart cases for every plan
-kind. Group end-to-end evidence covers partial carrier handoff and restart;
-media evidence covers duplicate chunks, interrupted files and full quotas;
-backup evidence covers each replacement phase and fresh-secret initialization.
+kind. Linked-device evidence additionally covers retained ceremony secrets,
+lost-return recovery, duplicate import, profile group-limit rejection and
+event-outbox recovery. Group end-to-end evidence covers partial carrier handoff
+and restart; pending-inbox, media and custom-icon evidence covers full quotas,
+while media also covers duplicate chunks and interrupted files; profile and
+backup evidence covers every atomic-replacement phase and fresh-secret
+initialization.
 The complete path-by-path disposition is the
 [atomic transition inventory](../34-atomic-transition-inventory.md).
 
 This is not full ADR acceptance. The current linked-device Alpha implementation
-uses the authority design that ADR-0026 must replace and retains quarantined
-multi-write link/sync paths. The current automatic-contact flow remains outside
-stable-v1 pending ADR-0030. Interrupted initial profile creation can leave an
-unusable partial path, mailbox-v1 cannot yet acknowledge leased relay custody
-after endpoint commit, and live call state remains intentionally process-local.
-Independent review and supported-platform sudden-power-loss qualification are
-also absent. These gaps keep this ADR Proposed and prevent the implemented
-matrix from being presented as universal protocol atomicity.
+still uses the authority design that ADR-0026 must replace. The pre-C2 contact
+manifest bridge and current automatic-contact flow remain quarantined outside
+stable-v1 pending ADR-0030. Mailbox-v1 cannot yet acknowledge leased relay
+custody after endpoint commit, and live call state remains intentionally
+process-local. Independent review and supported-platform sudden-power-loss
+qualification are also absent. These gaps keep this ADR Proposed and prevent
+the implemented matrix from being presented as universal protocol atomicity.
 
 ## Alternatives considered
 

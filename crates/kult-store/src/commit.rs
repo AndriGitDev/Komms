@@ -6,17 +6,20 @@ use rand_core::CryptoRngCore;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use kult_crypto::Session;
+use kult_crypto::{Identity, Session};
 use kult_protocol::{
-    CapabilityControl, Envelope, EnvelopeKind, MAX_GROUP_ADMIN_REQUESTS,
-    MAX_GROUP_AUTHORITY_MEMBERS, MAX_GROUP_MEMBER_IDENTITY_LEN, MAX_GROUP_NAME_LEN,
+    CapabilityControl, DeviceSyncEvent, Envelope, EnvelopeKind, MAX_DEVICE_SYNC_BUNDLE_EVENTS,
+    MAX_GROUP_ADMIN_REQUESTS, MAX_GROUP_AUTHORITY_MEMBERS, MAX_GROUP_MEMBER_IDENTITY_LEN,
+    MAX_GROUP_NAME_LEN,
 };
 
 use crate::{
-    decode_exact, store_v2, ContactDeviceRecord, ContactRecord, DeliveryState, Direction,
-    EphemeralRecord, EphemeralState, GroupAuthorityRecord, GroupMessageRecord, GroupRecord,
-    MediaObjectRecord, MediaRecord, MediaTransferRecord, MessageDeviceDeliveryRecord,
-    MessageRecord, QueueItem, Result, ScheduledMessageRecord, Store, StoreError,
+    decode_exact, direction_code, store_v2, ContactDeviceRecord, ContactRecord, DeliveryState,
+    DeviceLinkRecoveryRecord, DeviceStateRecord, Direction, EphemeralRecord, EphemeralState,
+    GroupAuthorityRecord, GroupMessageRecord, GroupRecord, LocalMetadataRecord, MediaObjectRecord,
+    MediaRecord, MediaTransferRecord, MessageDeviceDeliveryRecord, MessageRecord,
+    NoteMessageRecord, QueueItem, Result, ScheduledMessageRecord, Store, StoreError,
+    MAX_DEVICE_SYNC_EVENT_BYTES,
 };
 
 /// Maximum logical durable mutations accepted by one typed commit plan.
@@ -37,6 +40,29 @@ pub const MAX_GROUP_STATE_MUTATIONS: usize = 256;
 pub const MAX_MAINTENANCE_TRANSITIONS: usize = 256;
 /// Maximum authenticated control records retained for post-commit work.
 pub const MAX_DEFERRED_CONTROLS: usize = 512;
+/// Maximum exact changes in one linked-device authority or convergence transition.
+pub const MAX_DEVICE_CONTROL_MUTATIONS: usize = 8_192;
+/// Maximum durable groups in one profile.
+///
+/// This leaves room for a full device-sync bundle, device authority, and
+/// link-recovery retirement while rotating every local group sender chain in
+/// the same revocation transaction.
+pub const MAX_PROFILE_GROUPS: usize =
+    MAX_DEVICE_CONTROL_MUTATIONS - MAX_DEVICE_SYNC_BUNDLE_EVENTS - 2;
+/// Maximum selected records imported by one confirmed pristine-device link.
+pub const MAX_DEVICE_LINK_MUTATIONS: usize = 8_192;
+/// Maximum exact durable changes projected from one accepted sync winner.
+pub const MAX_DEVICE_PROJECTION_MUTATIONS: usize = 512;
+
+/// Complete cryptographic bootstrap of one previously unpublished profile.
+pub struct ProfileBootstrapPlan<'a> {
+    /// Fresh account identity.
+    pub identity: &'a Identity,
+    /// Fresh local physical-device authority state.
+    pub device_state: &'a DeviceStateRecord,
+    /// Fresh encoded prekey vault.
+    pub prekeys: &'a [u8],
+}
 
 /// Kind of authenticated pairwise control retained for idempotent follow-up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -240,6 +266,150 @@ pub struct ContactDeviceDelete<'a> {
     pub before: &'a ContactDeviceRecord,
 }
 
+/// Exact account-identity replacement during a confirmed device link.
+pub struct IdentityTransition<'a> {
+    /// Identity currently stored on the pristine target.
+    pub before: &'a Identity,
+    /// Account identity authenticated by the completed link package.
+    pub after: &'a Identity,
+}
+
+/// New or exact replacement of the complete local linked-device state.
+pub struct DeviceStateTransition<'a> {
+    /// Existing state, or `None` while atomically initializing a new profile.
+    pub before: Option<&'a DeviceStateRecord>,
+    /// Detached candidate state.
+    pub after: &'a DeviceStateRecord,
+}
+
+/// Creation, exact replacement, or acknowledgement of a recoverable link package.
+pub struct DeviceLinkRecoveryTransition<'a> {
+    /// Current recovery handle, or `None` before link approval.
+    pub before: Option<&'a DeviceLinkRecoveryRecord>,
+    /// Resulting recovery handle, or `None` after authenticated target activity.
+    pub after: Option<&'a DeviceLinkRecoveryRecord>,
+}
+
+/// Exact ratchet session retired by an authenticated device transition.
+pub struct SessionDelete<'a> {
+    /// Exact physical-device route.
+    pub peer_device: [u8; 32],
+    /// Durable session expected before deletion.
+    pub before: &'a Session,
+}
+
+/// Exact session-bound capability snapshot retired with its device route.
+pub struct CapabilityDelete<'a> {
+    /// Exact physical-device route.
+    pub peer_device: [u8; 32],
+    /// Durable capability state expected before deletion.
+    pub before: &'a CapabilityControl,
+}
+
+/// One exact, idempotent projection of an accepted linked-device sync winner.
+pub enum DeviceProjection<'a> {
+    /// Contact creation, replacement, or deletion.
+    Contact {
+        /// Exact current value.
+        before: Option<&'a ContactRecord>,
+        /// Desired value.
+        after: Option<&'a ContactRecord>,
+    },
+    /// Physical contact-device creation, replacement, or deletion.
+    ContactDevice {
+        /// Exact current value.
+        before: Option<&'a ContactDeviceRecord>,
+        /// Desired value.
+        after: Option<&'a ContactDeviceRecord>,
+    },
+    /// Pairwise history creation, replacement, or deletion.
+    Message {
+        /// Exact current value.
+        before: Option<&'a MessageRecord>,
+        /// Desired value.
+        after: Option<&'a MessageRecord>,
+    },
+    /// Group history creation, replacement, or deletion.
+    GroupMessage {
+        /// Exact current value.
+        before: Option<&'a GroupMessageRecord>,
+        /// Desired value.
+        after: Option<&'a GroupMessageRecord>,
+    },
+    /// Local organization creation, replacement, or deletion.
+    LocalMetadata {
+        /// Exact current value.
+        before: Option<&'a LocalMetadataRecord>,
+        /// Desired value.
+        after: Option<&'a LocalMetadataRecord>,
+    },
+    /// A new immutable note-to-self record.
+    Note {
+        /// New record, which must not already exist.
+        after: &'a NoteMessageRecord,
+    },
+}
+
+/// One bounded linked-device authority, counter, convergence-log, or rotation transition.
+pub struct DeviceControlPlan<'a> {
+    /// Optional complete local authority/counter replacement.
+    pub state: Option<DeviceStateTransition<'a>>,
+    /// Optional committed link-package recovery outbox transition.
+    pub link_recovery: Option<DeviceLinkRecoveryTransition<'a>>,
+    /// Sender-chain rotations owned by a device revocation.
+    pub groups: &'a [GroupTransition<'a>],
+    /// New authenticated convergence events.
+    pub insert_events: &'a [Vec<u8>],
+    /// Exact redundant convergence events removed during bounded compaction.
+    pub delete_events: &'a [Vec<u8>],
+    /// Whether presentation must be recoverable after commit.
+    pub presentation_changed: bool,
+}
+
+/// Complete bounded import performed by one confirmed link onto a pristine target.
+pub struct DeviceLinkPlan<'a> {
+    /// Authenticated account replacement.
+    pub identity: IdentityTransition<'a>,
+    /// Complete target-device authority and channel state.
+    pub device_state: DeviceStateTransition<'a>,
+    /// Selected contact records.
+    pub contacts: &'a [ContactRecord],
+    /// Selected contact-device endpoints.
+    pub devices: &'a [ContactDeviceRecord],
+    /// Selected pairwise history.
+    pub messages: &'a [MessageRecord],
+    /// Regenerated local group records.
+    pub groups: &'a [GroupRecord],
+    /// Selected group history.
+    pub group_messages: &'a [GroupMessageRecord],
+    /// Selected signed group authority.
+    pub authorities: &'a [GroupAuthorityRecord],
+    /// Selected local organization state.
+    pub local_metadata: &'a [LocalMetadataRecord],
+    /// Selected note-to-self history.
+    pub notes: &'a [NoteMessageRecord],
+    /// Terminal ephemeral tombstones.
+    pub ephemeral: &'a [EphemeralRecord],
+    /// Authenticated convergence events.
+    pub sync_events: &'a [Vec<u8>],
+    /// Whether presentation must be recoverable after commit.
+    pub presentation_changed: bool,
+}
+
+/// One bounded projection from already-durable device-sync control state.
+pub struct DeviceProjectionPlan<'a> {
+    /// Exact row projections owned by one resolved sync event.
+    pub projections: &'a [DeviceProjection<'a>],
+    /// Exact ratchet sessions retired by a revoked endpoint.
+    pub delete_sessions: &'a [SessionDelete<'a>],
+    /// Exact capability snapshots retired with those sessions.
+    pub delete_capabilities: &'a [CapabilityDelete<'a>],
+    /// Exact queued ciphertext rows invalidated by the endpoint transition.
+    pub delete_queue: &'a [QueueDelete],
+    /// Whether presentation must be recoverable after commit.
+    pub presentation_changed: bool,
+}
+
 /// Complete durable consequences of one pairwise send.
 pub struct PairwiseSendPlan<'a> {
     /// Every detached sending-session candidate advanced by the fan-out.
@@ -409,8 +579,9 @@ pub struct PairwiseReceivePlan<'a> {
 
 /// Exact prekey-vault replacement performed by issuance or an inbound handshake.
 pub struct PrekeyTransition<'a> {
-    /// Encoded durable vault expected before the transaction.
-    pub before: &'a [u8],
+    /// Encoded durable vault expected before the transaction, or `None`
+    /// while completing a recovered profile.
+    pub before: Option<&'a [u8]>,
     /// Encoded candidate vault after one-time-prekey issuance or consumption.
     pub after: &'a [u8],
 }
@@ -541,6 +712,8 @@ pub struct MaintenancePlan<'a> {
 
 /// The only protocol-state transaction variants exposed by the store.
 pub enum CommitPlan<'a> {
+    /// Initial account, device, and prekey publication.
+    ProfileBootstrap(ProfileBootstrapPlan<'a>),
     /// Prekey bundle issuance.
     PrekeyPublish(PrekeyPublishPlan<'a>),
     /// Pairwise send.
@@ -557,6 +730,12 @@ pub enum CommitPlan<'a> {
     AttachmentState(AttachmentStatePlan<'a>),
     /// Group membership, authority, chain, or deferred-control transition.
     GroupState(GroupStatePlan<'a>),
+    /// Linked-device authority, channel counter, convergence-log, or rotation transition.
+    DeviceControl(DeviceControlPlan<'a>),
+    /// Confirmed bounded link import onto a pristine target.
+    DeviceLink(DeviceLinkPlan<'a>),
+    /// One idempotent projection from already-durable device-sync state.
+    DeviceProjection(DeviceProjectionPlan<'a>),
     /// Handshake receive.
     HandshakeReceive(HandshakeReceivePlan<'a>),
     /// Receipt or authenticated pairwise control receive.
@@ -640,6 +819,7 @@ impl Store {
     ) -> Result<CommitReceipt> {
         self.validate_commit_plan(&plan)?;
         let presentation_changed = match &plan {
+            CommitPlan::ProfileBootstrap(_) => false,
             CommitPlan::PrekeyPublish(_) => false,
             CommitPlan::PairwiseSend(plan) => plan.presentation_changed,
             CommitPlan::PairwiseReceive(plan) => plan.presentation_changed,
@@ -648,6 +828,9 @@ impl Store {
             CommitPlan::AttachmentStage(plan) => plan.presentation_changed,
             CommitPlan::AttachmentState(plan) => plan.presentation_changed,
             CommitPlan::GroupState(plan) => plan.presentation_changed,
+            CommitPlan::DeviceControl(plan) => plan.presentation_changed,
+            CommitPlan::DeviceLink(plan) => plan.presentation_changed,
+            CommitPlan::DeviceProjection(plan) => plan.presentation_changed,
             CommitPlan::HandshakeReceive(plan) => plan.presentation_changed,
             CommitPlan::ReceiptReceive(plan) => plan.presentation_changed,
             CommitPlan::Maintenance(plan) => plan.presentation_changed,
@@ -671,6 +854,7 @@ impl Store {
                 .store
                 .check_commit_failpoint(CommitPoint::AfterBegin)?;
             match plan {
+                CommitPlan::ProfileBootstrap(plan) => writer.profile_bootstrap(&plan)?,
                 CommitPlan::PrekeyPublish(plan) => writer.prekey_publish(&plan)?,
                 CommitPlan::PairwiseSend(plan) => writer.pairwise_send(&plan)?,
                 CommitPlan::PairwiseReceive(plan) => writer.pairwise_receive(&plan)?,
@@ -679,6 +863,9 @@ impl Store {
                 CommitPlan::AttachmentStage(plan) => writer.attachment_stage(&plan)?,
                 CommitPlan::AttachmentState(plan) => writer.attachment_state(&plan)?,
                 CommitPlan::GroupState(plan) => writer.group_state(&plan)?,
+                CommitPlan::DeviceControl(plan) => writer.device_control(&plan)?,
+                CommitPlan::DeviceLink(plan) => writer.device_link(&plan)?,
+                CommitPlan::DeviceProjection(plan) => writer.device_projection(&plan)?,
                 CommitPlan::HandshakeReceive(plan) => writer.handshake_receive(&plan)?,
                 CommitPlan::ReceiptReceive(plan) => writer.receipt_receive(&plan)?,
                 CommitPlan::Maintenance(plan) => writer.maintenance(&plan)?,
@@ -759,6 +946,7 @@ impl Store {
 
     fn validate_commit_plan(&self, plan: &CommitPlan<'_>) -> Result<()> {
         match plan {
+            CommitPlan::ProfileBootstrap(plan) => self.validate_profile_bootstrap(plan),
             CommitPlan::PrekeyPublish(plan) => self.validate_prekey_publish(plan),
             CommitPlan::PairwiseSend(plan) => self.validate_pairwise_send(plan),
             CommitPlan::PairwiseReceive(plan) => self.validate_pairwise_receive(plan),
@@ -767,18 +955,32 @@ impl Store {
             CommitPlan::AttachmentStage(plan) => self.validate_attachment_stage(plan),
             CommitPlan::AttachmentState(plan) => self.validate_attachment_state(plan),
             CommitPlan::GroupState(plan) => self.validate_group_state(plan),
+            CommitPlan::DeviceControl(plan) => self.validate_device_control(plan),
+            CommitPlan::DeviceLink(plan) => self.validate_device_link(plan),
+            CommitPlan::DeviceProjection(plan) => self.validate_device_projection(plan),
             CommitPlan::HandshakeReceive(plan) => self.validate_handshake_receive(plan),
             CommitPlan::ReceiptReceive(plan) => self.validate_receipt_receive(plan),
             CommitPlan::Maintenance(plan) => self.validate_maintenance(plan),
         }
     }
 
+    fn validate_profile_bootstrap(&self, plan: &ProfileBootstrapPlan<'_>) -> Result<()> {
+        if plan.prekeys.is_empty()
+            || self.get_identity()?.is_some()
+            || self.get_device_state()?.is_some()
+            || self.get_prekeys()?.is_some()
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        plan.identity.public().verify()?;
+        plan.device_state.validate(plan.identity)
+    }
+
     fn validate_prekey_publish(&self, plan: &PrekeyPublishPlan<'_>) -> Result<()> {
-        if plan.prekeys.before.is_empty()
+        if plan.prekeys.before.is_some_and(<[u8]>::is_empty)
             || plan.prekeys.after.is_empty()
-            || plan.prekeys.before == plan.prekeys.after
-            || self.get_prekeys()?.as_ref().map(|value| value.as_slice())
-                != Some(plan.prekeys.before)
+            || plan.prekeys.before == Some(plan.prekeys.after)
+            || self.get_prekeys()?.as_ref().map(|value| value.as_slice()) != plan.prekeys.before
         {
             return Err(StoreError::InvalidTransition);
         }
@@ -1627,6 +1829,24 @@ impl Store {
                 return Err(StoreError::InvalidTransition);
             }
         }
+        let current_groups = self.count_rows::<store_v2::GroupRows>()?;
+        let additions = plan
+            .groups
+            .iter()
+            .filter(|transition| transition.before.is_none() && transition.after.is_some())
+            .count() as u64;
+        let removals = plan
+            .groups
+            .iter()
+            .filter(|transition| transition.before.is_some() && transition.after.is_none())
+            .count() as u64;
+        let resulting_groups = current_groups
+            .checked_add(additions)
+            .and_then(|count| count.checked_sub(removals))
+            .ok_or(StoreError::InvalidTransition)?;
+        if resulting_groups > MAX_PROFILE_GROUPS as u64 {
+            return Err(StoreError::GroupLimit);
+        }
 
         let mut chain_ids = HashSet::new();
         for transition in plan.chains {
@@ -1781,6 +2001,430 @@ impl Store {
         Ok(())
     }
 
+    fn validate_device_control(&self, plan: &DeviceControlPlan<'_>) -> Result<()> {
+        let count = mutation_count([
+            usize::from(plan.state.is_some()),
+            usize::from(plan.link_recovery.is_some()),
+            plan.groups.len(),
+            plan.insert_events.len(),
+            plan.delete_events.len(),
+        ])?;
+        if count == 0 || count > MAX_DEVICE_CONTROL_MUTATIONS {
+            return Err(StoreError::MaintenanceBounds);
+        }
+        if let Some(state) = &plan.state {
+            let current = self.get_device_state()?;
+            if current.as_ref() != state.before || state.before == Some(state.after) {
+                return Err(StoreError::InvalidTransition);
+            }
+            let identity = self.get_identity()?.ok_or(StoreError::InvalidTransition)?;
+            state.after.validate(&identity)?;
+        }
+        let mut group_ids = HashSet::new();
+        for transition in plan.groups {
+            if !group_ids.insert(transition.after.id) {
+                return Err(StoreError::InvalidTransition);
+            }
+            self.validate_group_transition(transition)?;
+        }
+
+        let current_events = self.device_sync_events()?;
+        let current = current_events
+            .iter()
+            .map(Vec::as_slice)
+            .collect::<HashSet<_>>();
+        let inserts = plan
+            .insert_events
+            .iter()
+            .map(Vec::as_slice)
+            .collect::<HashSet<_>>();
+        let deletes = plan
+            .delete_events
+            .iter()
+            .map(Vec::as_slice)
+            .collect::<HashSet<_>>();
+        if inserts.len() != plan.insert_events.len()
+            || deletes.len() != plan.delete_events.len()
+            || inserts
+                .iter()
+                .any(|event| current.contains(event) || deletes.contains(event))
+            || deletes.iter().any(|event| !current.contains(event))
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        let manifest = if let Some(state) = &plan.state {
+            &state.after.manifest
+        } else {
+            &self
+                .get_device_state()?
+                .ok_or(StoreError::InvalidTransition)?
+                .manifest
+        };
+        if let Some(transition) = &plan.link_recovery {
+            let target = transition
+                .before
+                .map(|record| record.target_device)
+                .or_else(|| transition.after.map(|record| record.target_device))
+                .ok_or(StoreError::InvalidTransition)?;
+            if transition.before == transition.after
+                || transition
+                    .before
+                    .is_some_and(|record| record.target_device != target)
+                || transition
+                    .after
+                    .is_some_and(|record| record.target_device != target)
+                || self.get_device_link_recovery(&target)?.as_ref() != transition.before
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+            if let Some(recovery) = transition.after {
+                crate::devices::validate_device_link_recovery(recovery)?;
+                let channel_exists = if let Some(state) = &plan.state {
+                    state
+                        .after
+                        .channels
+                        .iter()
+                        .any(|channel| channel.peer_device == target)
+                } else {
+                    self.get_device_state()?.is_some_and(|state| {
+                        state
+                            .channels
+                            .iter()
+                            .any(|channel| channel.peer_device == target)
+                    })
+                };
+                if !manifest.devices.iter().any(|entry| {
+                    entry.certificate.device_id() == target && entry.revoked_at.is_none()
+                }) || !channel_exists
+                {
+                    return Err(StoreError::InvalidTransition);
+                }
+            }
+        }
+        for encoded in plan.insert_events {
+            if encoded.is_empty() || encoded.len() > MAX_DEVICE_SYNC_EVENT_BYTES {
+                return Err(StoreError::RecordBounds);
+            }
+            DeviceSyncEvent::decode(encoded)?.verify(manifest)?;
+        }
+        Ok(())
+    }
+
+    fn validate_device_link(&self, plan: &DeviceLinkPlan<'_>) -> Result<()> {
+        let count = mutation_count([
+            2,
+            plan.contacts.len(),
+            plan.devices.len(),
+            plan.messages.len(),
+            plan.groups.len(),
+            plan.group_messages.len(),
+            plan.authorities.len(),
+            plan.local_metadata.len(),
+            plan.notes.len(),
+            plan.ephemeral.len(),
+            plan.sync_events.len(),
+        ])?;
+        if plan.groups.len() > MAX_PROFILE_GROUPS {
+            return Err(StoreError::GroupLimit);
+        }
+        if count > MAX_DEVICE_LINK_MUTATIONS
+            || identity_eq(plan.identity.before, plan.identity.after)
+            || self
+                .get_identity()?
+                .as_ref()
+                .is_none_or(|current| !identity_eq(current, plan.identity.before))
+            || self.get_device_state()?.as_ref() != plan.device_state.before
+            || plan.device_state.before == Some(plan.device_state.after)
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        plan.device_state.after.validate(plan.identity.after)?;
+
+        let pristine_tables = [
+            self.count_rows::<store_v2::SessionRows>()?,
+            self.count_rows::<store_v2::CapabilityRows>()?,
+            self.count_rows::<store_v2::MessageRows>()?,
+            self.count_rows::<store_v2::ContactRows>()?,
+            self.count_rows::<store_v2::QueueRows>()?,
+            self.count_rows::<store_v2::SeenRows>()?,
+            self.count_rows::<store_v2::ReceiptReplayRows>()?,
+            self.count_rows::<store_v2::PendingRows>()?,
+            self.count_rows::<store_v2::GroupRows>()?,
+            self.count_rows::<store_v2::GroupAuthorityRows>()?,
+            self.count_rows::<store_v2::GroupChainRows>()?,
+            self.count_rows::<store_v2::GroupMessageRows>()?,
+            self.count_rows::<store_v2::ResetRows>()?,
+            self.count_rows::<store_v2::MediaTransferRows>()?,
+            self.count_rows::<store_v2::MediaObjectRows>()?,
+            self.count_rows::<store_v2::LocalMetadataRows>()?,
+            self.count_rows::<store_v2::NoteRows>()?,
+            self.count_rows::<store_v2::ScheduledRows>()?,
+            self.count_rows::<store_v2::EphemeralRows>()?,
+            self.count_rows::<store_v2::DeviceSyncRows>()?,
+            self.count_rows::<store_v2::ContactDeviceRows>()?,
+            self.count_rows::<store_v2::MessageDeviceDeliveryRows>()?,
+            self.count_rows::<store_v2::PresentationMarkerRows>()?,
+            self.count_rows::<store_v2::DeferredControlRows>()?,
+            self.count_rows::<store_v2::DeviceLinkRecoveryRows>()?,
+        ];
+        if self.get_prekeys()?.is_none() || pristine_tables.into_iter().any(|count| count != 0) {
+            return Err(StoreError::InvalidTransition);
+        }
+
+        let contact_ids = plan
+            .contacts
+            .iter()
+            .map(|record| record.peer)
+            .collect::<HashSet<_>>();
+        let device_ids = plan
+            .devices
+            .iter()
+            .map(|record| (record.account, record.device))
+            .collect::<HashSet<_>>();
+        let message_ids = plan
+            .messages
+            .iter()
+            .map(|record| record.id)
+            .collect::<HashSet<_>>();
+        let group_ids = plan
+            .groups
+            .iter()
+            .map(|record| record.id)
+            .collect::<HashSet<_>>();
+        let group_message_ids = plan
+            .group_messages
+            .iter()
+            .map(|record| record.id)
+            .collect::<HashSet<_>>();
+        let authority_ids = plan
+            .authorities
+            .iter()
+            .map(|record| record.group)
+            .collect::<HashSet<_>>();
+        let note_ids = plan
+            .notes
+            .iter()
+            .map(|record| record.id)
+            .collect::<HashSet<_>>();
+        if contact_ids.len() != plan.contacts.len()
+            || device_ids.len() != plan.devices.len()
+            || message_ids.len() != plan.messages.len()
+            || group_ids.len() != plan.groups.len()
+            || group_message_ids.len() != plan.group_messages.len()
+            || authority_ids.len() != plan.authorities.len()
+            || note_ids.len() != plan.notes.len()
+            || plan
+                .devices
+                .iter()
+                .any(|record| !contact_ids.contains(&record.account))
+            || plan.groups.iter().any(|record| !valid_group_record(record))
+            || plan
+                .group_messages
+                .iter()
+                .any(|record| !group_ids.contains(&record.group))
+            || plan.authorities.iter().any(|record| {
+                !group_ids.contains(&record.group) || !valid_group_authority_record(record)
+            })
+            || plan.ephemeral.iter().any(|record| {
+                record.state == EphemeralState::Active || !record.transfer_ids.is_empty()
+            })
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        for record in plan.devices {
+            crate::devices::validate_contact_device(record)?;
+        }
+        for record in plan.local_metadata {
+            record.validate()?;
+        }
+        for record in plan.notes {
+            record.validate()?;
+        }
+        let event_ids = plan
+            .sync_events
+            .iter()
+            .map(Vec::as_slice)
+            .collect::<HashSet<_>>();
+        if event_ids.len() != plan.sync_events.len() {
+            return Err(StoreError::InvalidTransition);
+        }
+        for encoded in plan.sync_events {
+            if encoded.is_empty() || encoded.len() > MAX_DEVICE_SYNC_EVENT_BYTES {
+                return Err(StoreError::RecordBounds);
+            }
+            DeviceSyncEvent::decode(encoded)?.verify(&plan.device_state.after.manifest)?;
+        }
+        Ok(())
+    }
+
+    fn validate_device_projection(&self, plan: &DeviceProjectionPlan<'_>) -> Result<()> {
+        let count = mutation_count([
+            plan.projections.len(),
+            plan.delete_sessions.len(),
+            plan.delete_capabilities.len(),
+            plan.delete_queue.len(),
+        ])?;
+        if count == 0 || count > MAX_DEVICE_PROJECTION_MUTATIONS {
+            return Err(StoreError::MaintenanceBounds);
+        }
+        let mut keys = HashSet::new();
+        for projection in plan.projections {
+            match projection {
+                DeviceProjection::Contact { before, after } => {
+                    let peer = before
+                        .map(|record| record.peer)
+                        .or_else(|| after.map(|record| record.peer))
+                        .ok_or(StoreError::InvalidTransition)?;
+                    if before == after
+                        || before.is_some_and(|record| record.peer != peer)
+                        || after.is_some_and(|record| record.peer != peer)
+                        || !keys.insert((0u8, peer.to_vec()))
+                        || self.get_contact(&peer)?.as_ref() != *before
+                    {
+                        return Err(StoreError::InvalidTransition);
+                    }
+                }
+                DeviceProjection::ContactDevice { before, after } => {
+                    let key = before
+                        .map(|record| (record.account, record.device))
+                        .or_else(|| after.map(|record| (record.account, record.device)))
+                        .ok_or(StoreError::InvalidTransition)?;
+                    let current = self
+                        .contact_devices()?
+                        .into_iter()
+                        .find(|record| (record.account, record.device) == key);
+                    if before == after
+                        || before.is_some_and(|record| (record.account, record.device) != key)
+                        || after.is_some_and(|record| (record.account, record.device) != key)
+                        || !keys.insert((1u8, [key.0.as_slice(), key.1.as_slice()].concat()))
+                        || current.as_ref() != *before
+                    {
+                        return Err(StoreError::InvalidTransition);
+                    }
+                    if let Some(record) = after {
+                        crate::devices::validate_contact_device(record)?;
+                    }
+                }
+                DeviceProjection::Message { before, after } => {
+                    let record = (*before).or(*after).ok_or(StoreError::InvalidTransition)?;
+                    let key = (record.peer, record.direction, record.id);
+                    let current = self
+                        .messages_with(&record.peer)?
+                        .into_iter()
+                        .find(|candidate| {
+                            (candidate.peer, candidate.direction, candidate.id) == key
+                        });
+                    if before == after
+                        || before.is_some_and(|candidate| {
+                            (candidate.peer, candidate.direction, candidate.id) != key
+                        })
+                        || after.is_some_and(|candidate| {
+                            (candidate.peer, candidate.direction, candidate.id) != key
+                        })
+                        || !keys.insert((
+                            2u8,
+                            [key.0.as_slice(), &[direction_code(key.1)], key.2.as_slice()].concat(),
+                        ))
+                        || current.as_ref() != *before
+                    {
+                        return Err(StoreError::InvalidTransition);
+                    }
+                }
+                DeviceProjection::GroupMessage { before, after } => {
+                    let record = (*before).or(*after).ok_or(StoreError::InvalidTransition)?;
+                    let key = (record.group, record.sender, record.id);
+                    let current = self
+                        .group_messages(&record.group)?
+                        .into_iter()
+                        .find(|candidate| (candidate.group, candidate.sender, candidate.id) == key);
+                    if before == after
+                        || before.is_some_and(|candidate| {
+                            (candidate.group, candidate.sender, candidate.id) != key
+                        })
+                        || after.is_some_and(|candidate| {
+                            (candidate.group, candidate.sender, candidate.id) != key
+                        })
+                        || !keys.insert((
+                            3u8,
+                            [key.0.as_slice(), key.1.as_slice(), key.2.as_slice()].concat(),
+                        ))
+                        || current.as_ref() != *before
+                    {
+                        return Err(StoreError::InvalidTransition);
+                    }
+                }
+                DeviceProjection::LocalMetadata { before, after } => {
+                    let key = before
+                        .map(|record| record.key())
+                        .or_else(|| after.map(LocalMetadataRecord::key))
+                        .ok_or(StoreError::InvalidTransition)?;
+                    if before == after
+                        || before.is_some_and(|record| record.key() != key)
+                        || after.is_some_and(|record| record.key() != key)
+                        || !keys.insert((
+                            4u8,
+                            postcard::to_allocvec(&key).map_err(|_| StoreError::Serialization)?,
+                        ))
+                        || self.get_local_metadata(&key)?.as_ref() != *before
+                    {
+                        return Err(StoreError::InvalidTransition);
+                    }
+                    if let Some(record) = after {
+                        record.validate()?;
+                    }
+                }
+                DeviceProjection::Note { after } => {
+                    if !keys.insert((5u8, after.id.to_vec()))
+                        || self
+                            .note_messages()?
+                            .iter()
+                            .any(|record| record.id == after.id)
+                    {
+                        return Err(StoreError::InvalidTransition);
+                    }
+                    after.validate()?;
+                }
+            }
+        }
+        let mut sessions = HashSet::new();
+        for delete in plan.delete_sessions {
+            if !sessions.insert(delete.peer_device)
+                || !session_eq(
+                    self.get_session(&delete.peer_device)?.as_ref(),
+                    Some(delete.before),
+                )?
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        let mut capabilities = HashSet::new();
+        for delete in plan.delete_capabilities {
+            if !capabilities.insert(delete.peer_device)
+                || self
+                    .get_capabilities(&delete.peer_device)?
+                    .as_ref()
+                    .map(CapabilityControl::encode)
+                    .transpose()?
+                    .as_deref()
+                    != Some(delete.before.encode()?.as_slice())
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        let queue_ids = plan
+            .delete_queue
+            .iter()
+            .map(|delete| delete.sequence)
+            .collect::<HashSet<_>>();
+        if queue_ids.len() != plan.delete_queue.len() {
+            return Err(StoreError::InvalidTransition);
+        }
+        for delete in plan.delete_queue {
+            self.validate_queue_delete(*delete)?;
+        }
+        Ok(())
+    }
+
     fn validate_handshake_receive(&self, plan: &HandshakeReceivePlan<'_>) -> Result<()> {
         self.validate_session_transition(&plan.session)?;
         if plan.content_id == [0u8; 16]
@@ -1854,8 +2498,9 @@ impl Store {
         }
         if let Some(prekeys) = &plan.prekeys {
             let current = self.get_prekeys()?;
-            if prekeys.before == prekeys.after
-                || current.as_ref().map(|value| value.as_slice()) != Some(prekeys.before)
+            if prekeys.before.is_none()
+                || prekeys.before == Some(prekeys.after)
+                || current.as_ref().map(|value| value.as_slice()) != prekeys.before
             {
                 return Err(StoreError::InvalidTransition);
             }
@@ -2466,6 +3111,12 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
         Ok(())
     }
 
+    fn profile_bootstrap(&mut self, plan: &ProfileBootstrapPlan<'_>) -> Result<()> {
+        self.write(|store, rng| store.put_identity(plan.identity, rng))?;
+        self.write(|store, rng| store.put_device_state(plan.device_state, rng))?;
+        self.write(|store, rng| store.put_prekeys(plan.prekeys, rng))
+    }
+
     fn prekey_publish(&mut self, plan: &PrekeyPublishPlan<'_>) -> Result<()> {
         self.write(|store, rng| store.put_prekeys(plan.prekeys.after, rng))
     }
@@ -2769,6 +3420,233 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
                 if store.delete_equality::<store_v2::DeferredControlRows>(
                     &store_v2::ContentKey::new(control.content_id),
                 )? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+        }
+        Ok(())
+    }
+
+    fn device_control(&mut self, plan: &DeviceControlPlan<'_>) -> Result<()> {
+        if let Some(state) = &plan.state {
+            self.write(|store, rng| store.put_device_state(state.after, rng))?;
+        }
+        if let Some(recovery) = &plan.link_recovery {
+            if let Some(after) = recovery.after {
+                self.write(|store, rng| store.put_device_link_recovery(after, rng))?;
+            } else {
+                let target = recovery
+                    .before
+                    .expect("validated recovery deletion")
+                    .target_device;
+                self.write(|store, _| {
+                    if store.delete_equality::<store_v2::DeviceLinkRecoveryRows>(
+                        &store_v2::AccountKey::new(target),
+                    )? {
+                        Ok(())
+                    } else {
+                        Err(StoreError::InvalidTransition)
+                    }
+                })?;
+            }
+        }
+        for transition in plan.groups {
+            self.write(|store, rng| store.put_group(transition.after, rng))?;
+        }
+        for encoded in plan.delete_events {
+            self.write(|store, _| {
+                if store.delete_device_sync_event(encoded)? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+        }
+        for encoded in plan.insert_events {
+            self.write(|store, rng| {
+                if store.put_device_sync_event(encoded, rng)? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+        }
+        Ok(())
+    }
+
+    fn device_link(&mut self, plan: &DeviceLinkPlan<'_>) -> Result<()> {
+        self.write(|store, rng| store.put_identity(plan.identity.after, rng))?;
+        self.write(|store, rng| store.put_device_state(plan.device_state.after, rng))?;
+        for contact in plan.contacts {
+            self.write(|store, rng| store.put_contact(contact, rng))?;
+        }
+        for device in plan.devices {
+            self.write(|store, rng| store.put_contact_device(device, rng))?;
+        }
+        for message in plan.messages {
+            self.write(|store, rng| store.put_message(message, rng))?;
+            self.records.messages.push(message.id);
+        }
+        for group in plan.groups {
+            self.write(|store, rng| store.put_group(group, rng))?;
+        }
+        for message in plan.group_messages {
+            self.write(|store, rng| store.put_group_message(message, rng))?;
+        }
+        for authority in plan.authorities {
+            self.write(|store, rng| store.put_group_authority(authority, rng))?;
+        }
+        for record in plan.local_metadata {
+            self.write(|store, rng| store.put_local_metadata(record, rng))?;
+        }
+        for note in plan.notes {
+            self.write(|store, rng| store.put_note_message(note, rng))?;
+        }
+        for record in plan.ephemeral {
+            self.write(|store, rng| store.put_ephemeral_record(record, rng))?;
+        }
+        for encoded in plan.sync_events {
+            self.write(|store, rng| {
+                if store.put_device_sync_event(encoded, rng)? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+        }
+        Ok(())
+    }
+
+    fn device_projection(&mut self, plan: &DeviceProjectionPlan<'_>) -> Result<()> {
+        for projection in plan.projections {
+            match projection {
+                DeviceProjection::Contact { before, after } => {
+                    if let Some(record) = after {
+                        self.write(|store, rng| store.put_contact(record, rng))?;
+                    } else {
+                        let peer = before.expect("validated contact deletion").peer;
+                        self.write(|store, _| {
+                            if store.delete_contact(&peer)? {
+                                Ok(())
+                            } else {
+                                Err(StoreError::InvalidTransition)
+                            }
+                        })?;
+                    }
+                }
+                DeviceProjection::ContactDevice { before, after } => {
+                    if let Some(record) = after {
+                        self.write(|store, rng| store.put_contact_device(record, rng))?;
+                    } else {
+                        let record = before.expect("validated device deletion");
+                        self.write(|store, _| {
+                            store.delete_contact_device(&record.account, &record.device)
+                        })?;
+                    }
+                }
+                DeviceProjection::Message { before, after } => {
+                    if let Some(record) = after {
+                        if before.is_some() {
+                            self.write(|store, rng| {
+                                if store.update_message(record, rng)? {
+                                    Ok(())
+                                } else {
+                                    Err(StoreError::InvalidTransition)
+                                }
+                            })?;
+                        } else {
+                            self.write(|store, rng| store.put_message(record, rng))?;
+                        }
+                        self.records.messages.push(record.id);
+                    } else {
+                        let record = before.expect("validated message deletion");
+                        self.write(|store, _| {
+                            if store.delete_message_record(
+                                &record.peer,
+                                record.direction,
+                                &record.id,
+                            )? {
+                                Ok(())
+                            } else {
+                                Err(StoreError::InvalidTransition)
+                            }
+                        })?;
+                    }
+                }
+                DeviceProjection::GroupMessage { before, after } => {
+                    if let Some(record) = after {
+                        if before.is_some() {
+                            self.write(|store, rng| {
+                                if store.update_group_message(record, rng)? {
+                                    Ok(())
+                                } else {
+                                    Err(StoreError::InvalidTransition)
+                                }
+                            })?;
+                        } else {
+                            self.write(|store, rng| store.put_group_message(record, rng))?;
+                        }
+                    } else {
+                        let record = before.expect("validated group-message deletion");
+                        self.write(|store, _| {
+                            if store.delete_group_message_record(
+                                &record.group,
+                                &record.sender,
+                                &record.id,
+                            )? {
+                                Ok(())
+                            } else {
+                                Err(StoreError::InvalidTransition)
+                            }
+                        })?;
+                    }
+                }
+                DeviceProjection::LocalMetadata { before, after } => {
+                    if let Some(record) = after {
+                        self.write(|store, rng| store.put_local_metadata(record, rng))?;
+                    } else {
+                        let key = before.expect("validated metadata deletion").key();
+                        self.write(|store, _| {
+                            if store.delete_local_metadata(&key)? {
+                                Ok(())
+                            } else {
+                                Err(StoreError::InvalidTransition)
+                            }
+                        })?;
+                    }
+                }
+                DeviceProjection::Note { after } => {
+                    self.write(|store, rng| store.put_note_message(after, rng))?;
+                }
+            }
+        }
+        for delete in plan.delete_sessions {
+            self.write(|store, _| {
+                if store.delete_equality::<store_v2::SessionRows>(&store_v2::AccountKey::new(
+                    delete.peer_device,
+                ))? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+        }
+        for delete in plan.delete_capabilities {
+            self.write(|store, _| {
+                if store.delete_equality::<store_v2::CapabilityRows>(&store_v2::AccountKey::new(
+                    delete.peer_device,
+                ))? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+        }
+        for delete in plan.delete_queue {
+            self.write(|store, _| {
+                if store.delete_rowid::<store_v2::QueueRows>(delete.sequence)? {
                     Ok(())
                 } else {
                     Err(StoreError::InvalidTransition)
@@ -3120,6 +3998,10 @@ fn session_eq(left: Option<&Session>, right: Option<&Session>) -> Result<bool> {
         }
         _ => Ok(false),
     }
+}
+
+fn identity_eq(left: &Identity, right: &Identity) -> bool {
+    left.to_bytes().as_slice() == right.to_bytes().as_slice()
 }
 
 fn valid_group_record(group: &GroupRecord) -> bool {

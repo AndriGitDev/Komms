@@ -50,10 +50,11 @@ pub use call::{
     MAX_CALL_MEDIA_FRAME_LEN, MAX_CALL_MEDIA_PAYLOAD_LEN,
 };
 pub use device::{
-    ApprovedDeviceLink, CompletedDeviceLink, DeviceCertificate, DeviceLinkCode, DeviceLinkOffer,
-    DeviceLinkResponse, DeviceManifest, DeviceManifestEntry, DevicePrekeyBundle,
-    PendingDeviceLinkSource, PendingDeviceLinkTarget, MAX_DEVICE_MANIFEST_ENTRIES,
-    MAX_DEVICE_NAME_BYTES, MAX_LINKED_DEVICES, MAX_LINK_TRANSFER_BYTES,
+    seal_device_link_recovery_package, ApprovedDeviceLink, CompletedDeviceLink, DeviceCertificate,
+    DeviceLinkCode, DeviceLinkOffer, DeviceLinkResponse, DeviceManifest, DeviceManifestEntry,
+    DevicePrekeyBundle, PendingDeviceLinkSource, PendingDeviceLinkTarget,
+    MAX_DEVICE_MANIFEST_ENTRIES, MAX_DEVICE_NAME_BYTES, MAX_LINKED_DEVICES,
+    MAX_LINK_TRANSFER_BYTES,
 };
 pub use error::CryptoError;
 pub use fingerprint::{safety_number, SafetyNumber};

@@ -1,6 +1,6 @@
 //! C2 linked-device lifecycle and proximate state transfer.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rand_core::CryptoRngCore;
 use serde::{Deserialize, Serialize};
@@ -8,18 +8,23 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use kult_crypto::{
-    DeviceCertificate, DeviceLinkOffer, DeviceLinkResponse, DeviceManifest,
-    PendingDeviceLinkSource, PendingDeviceLinkTarget,
+    seal_device_link_recovery_package, DeviceCertificate, DeviceLinkOffer, DeviceLinkResponse,
+    DeviceManifest, GroupSenderChain, PendingDeviceLinkSource, PendingDeviceLinkTarget,
 };
 use kult_protocol::{
     decode_content, resolve_device_sync_events, DecodedContent, DeviceSyncBundle, DeviceSyncEvent,
     DeviceSyncNamespace,
 };
 use kult_store::{
-    ContactDeviceRecord, ContactRecord, DeviceChannelRecord, DeviceStateRecord,
+    CapabilityDelete, CommitPlan, ContactDeviceRecord, ContactRecord, DeviceChannelRecord,
+    DeviceControlPlan, DeviceLinkPlan, DeviceLinkRecoveryRecord, DeviceLinkRecoveryTransition,
+    DeviceProjection, DeviceProjectionPlan, DeviceStateRecord, DeviceStateTransition,
     DeviceTransferGroup, DeviceTransferSelection, DeviceTransferSnapshot, Direction,
-    EphemeralRecord, GroupAuthorityRecord, GroupMessageRecord, LocalMetadataKey,
-    LocalMetadataRecord, MessageRecord, NoteMessageRecord, Store, THEME_PREFERENCE_KEY,
+    EphemeralRecord, EphemeralTransition, GroupAuthorityRecord, GroupAuthorityStateTransition,
+    GroupMessageDelete, GroupMessageRecord, GroupRecord, GroupStatePlan, GroupStateTransition,
+    GroupTransition, IdentityTransition, LocalMetadataKey, LocalMetadataRecord, MaintenancePlan,
+    MessageDelete, MessageRecord, NoteMessageRecord, PendingAnnounce, QueueDelete, SessionDelete,
+    Store, MAX_DEVICE_CONTROL_MUTATIONS, THEME_PREFERENCE_KEY,
 };
 
 use crate::{
@@ -43,26 +48,21 @@ enum SyncGroupValue {
     Authority(GroupAuthorityRecord),
 }
 
-pub(crate) fn initialize_fresh_device(
-    store: &Store,
+pub(crate) fn fresh_device_state(
     account: &Identity,
     rng: &mut impl CryptoRngCore,
-) -> kult_store::Result<()> {
+) -> kult_store::Result<DeviceStateRecord> {
     let device = Identity::generate(rng);
     let certificate = DeviceCertificate::issue(account, &device, 0, rng);
     let manifest =
         DeviceManifest::initial(account, certificate.clone(), DEFAULT_DEVICE_NAME.into(), 0)?;
-    store.put_device_state(
-        &DeviceStateRecord {
-            local_device_secret: device.to_bytes().to_vec(),
-            local_certificate: certificate,
-            manifest,
-            sync_counter: 0,
-            channels: Vec::new(),
-        },
-        rng,
-    )?;
-    Ok(())
+    Ok(DeviceStateRecord {
+        local_device_secret: device.to_bytes().to_vec(),
+        local_certificate: certificate,
+        manifest,
+        sync_counter: 0,
+        channels: Vec::new(),
+    })
 }
 
 pub(crate) fn load_or_migrate_device(
@@ -330,13 +330,30 @@ impl Node {
         name: &str,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
-        let mut manifest = self.device_state.manifest.clone();
-        manifest
+        let before = self.device_state.clone();
+        let mut after = before.clone();
+        after
+            .manifest
             .rename_device(&self.identity, device, name.to_owned())
             .map_err(|_| NodeError::UnknownLinkedDevice)?;
-        self.device_state.manifest = manifest;
-        self.store.put_device_state(&self.device_state, rng)?;
-        self.events.push_back(Event::DevicesChanged);
+        let receipt = self.store.commit_plan(
+            CommitPlan::DeviceControl(DeviceControlPlan {
+                state: Some(DeviceStateTransition {
+                    before: Some(&before),
+                    after: &after,
+                }),
+                link_recovery: None,
+                groups: &[],
+                insert_events: &[],
+                delete_events: &[],
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.before_memory_replacement()?;
+        self.device_state = after;
+        self.after_memory_replacement()?;
+        self.accept_commit_receipt(receipt, [Event::DevicesChanged]);
         Ok(())
     }
 
@@ -359,23 +376,52 @@ impl Node {
             .map(|event| event.counter)
             .max()
             .unwrap_or(0);
-        let mut manifest = self.device_state.manifest.clone();
-        manifest
+        let before_state = self.device_state.clone();
+        let mut after_state = before_state.clone();
+        after_state
+            .manifest
             .revoke_device(&self.identity, device, now, cutoff)
             .map_err(|_| NodeError::UnknownLinkedDevice)?;
-        self.device_state.manifest = manifest;
-        self.device_state
+        after_state
             .channels
             .retain(|channel| &channel.peer_device != device);
         // Revocation always rotates this installation's sender chains. A
         // revoked copy can retain old ciphertext/key material, but receives
         // no fresh chain snapshots from the surviving channel set.
-        for mut group in self.store.groups()? {
-            self.rotate_group(&mut group, rng)?;
-            self.store.put_group(&group, rng)?;
+        let before_groups = self.store.groups()?;
+        let mut after_groups = before_groups.clone();
+        for group in &mut after_groups {
+            self.rotate_group(group, rng)?;
         }
-        self.store.put_device_state(&self.device_state, rng)?;
-        self.events.push_back(Event::DevicesChanged);
+        let group_transitions = before_groups
+            .iter()
+            .zip(&after_groups)
+            .map(|(before, after)| GroupTransition { before, after })
+            .collect::<Vec<_>>();
+        let recovery = self.store.get_device_link_recovery(device)?;
+        let receipt = self.store.commit_plan(
+            CommitPlan::DeviceControl(DeviceControlPlan {
+                state: Some(DeviceStateTransition {
+                    before: Some(&before_state),
+                    after: &after_state,
+                }),
+                link_recovery: recovery
+                    .as_ref()
+                    .map(|before| DeviceLinkRecoveryTransition {
+                        before: Some(before),
+                        after: None,
+                    }),
+                groups: &group_transitions,
+                insert_events: &[],
+                delete_events: &[],
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.before_memory_replacement()?;
+        self.device_state = after_state;
+        self.after_memory_replacement()?;
+        self.accept_commit_receipt(receipt, [Event::DevicesChanged]);
         Ok(())
     }
 
@@ -434,17 +480,56 @@ impl Node {
     /// encrypt the selected initial state transfer.
     pub fn approve_device_link(
         &mut self,
-        response: &[u8],
+        encoded_response: &[u8],
         selection: DeviceLinkSelection,
         confirmed: bool,
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Vec<u8>> {
+        let response_hash: [u8; 32] = Sha256::digest(encoded_response).into();
+        let response = DeviceLinkResponse::decode(encoded_response)?;
+        if let Some(recovery) = self.store.get_device_link_recovery(&response.device.ed)? {
+            if !confirmed || recovery.response_hash != response_hash {
+                return Err(NodeError::InvalidDeviceLink);
+            }
+            self.capture_device_sync_state(rng)?;
+            let snapshot = self.store.export_device_transfer(DeviceTransferSelection {
+                contacts: recovery.contacts,
+                organization: recovery.organization,
+                history: recovery.history,
+            })?;
+            let snapshot = postcard::to_allocvec(&snapshot).map_err(|_| NodeError::CorruptState)?;
+            let durable_state = self
+                .store
+                .get_device_state()?
+                .ok_or(NodeError::CorruptState)?;
+            let channel = durable_state
+                .channels
+                .iter()
+                .find(|channel| channel.peer_device == recovery.target_device)
+                .ok_or(NodeError::CorruptState)?;
+            let package = seal_device_link_recovery_package(
+                &self.identity,
+                &durable_state.manifest,
+                &recovery.target_device,
+                &channel.root,
+                &snapshot,
+                &recovery.link_key,
+                rng,
+            )?;
+            self.device_state = durable_state;
+            self.pending_device_link_source = None;
+            return Ok(package);
+        }
+        self.pending_device_link_source
+            .as_ref()
+            .ok_or(NodeError::NoPendingDeviceLink)?
+            .validate_approval(&response, confirmed, now)?;
+        self.capture_device_sync_state(rng)?;
         let pending = self
             .pending_device_link_source
-            .take()
+            .as_ref()
             .ok_or(NodeError::NoPendingDeviceLink)?;
-        let response = DeviceLinkResponse::decode(response)?;
         let snapshot = self.store.export_device_transfer(DeviceTransferSelection {
             contacts: selection.contacts,
             organization: selection.organization,
@@ -452,18 +537,46 @@ impl Node {
         })?;
         let snapshot = postcard::to_allocvec(&snapshot).map_err(|_| NodeError::CorruptState)?;
         let approved = pending.approve(&self.identity, &response, confirmed, now, snapshot, rng)?;
-        self.device_state.manifest = approved.manifest;
-        self.device_state.channels.push(DeviceChannelRecord {
+        let before = self.device_state.clone();
+        let mut after = before.clone();
+        after.manifest = approved.manifest;
+        after.channels.push(DeviceChannelRecord {
             peer_device: approved.target_device,
             root: *approved.channel_root,
             send_counter: 0,
             receive_counter: 0,
         });
-        self.device_state
-            .channels
-            .sort_by_key(|channel| channel.peer_device);
-        self.store.put_device_state(&self.device_state, rng)?;
-        self.events.push_back(Event::DevicesChanged);
+        after.channels.sort_by_key(|channel| channel.peer_device);
+        let recovery = DeviceLinkRecoveryRecord {
+            target_device: approved.target_device,
+            response_hash,
+            link_key: *approved.recovery_key,
+            contacts: selection.contacts,
+            organization: selection.organization,
+            history: selection.history,
+        };
+        let receipt = self.store.commit_plan(
+            CommitPlan::DeviceControl(DeviceControlPlan {
+                state: Some(DeviceStateTransition {
+                    before: Some(&before),
+                    after: &after,
+                }),
+                link_recovery: Some(DeviceLinkRecoveryTransition {
+                    before: None,
+                    after: Some(&recovery),
+                }),
+                groups: &[],
+                insert_events: &[],
+                delete_events: &[],
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.before_memory_replacement()?;
+        self.device_state = after;
+        self.pending_device_link_source = None;
+        self.after_memory_replacement()?;
+        self.accept_commit_receipt(receipt, [Event::DevicesChanged]);
         Ok(approved.package)
     }
 
@@ -478,7 +591,7 @@ impl Node {
     ) -> Result<()> {
         let pending = self
             .pending_device_link_target
-            .take()
+            .as_ref()
             .ok_or(NodeError::NoPendingDeviceLink)?;
         if !self.device_link_target_is_pristine()? {
             return Err(NodeError::DeviceLinkTargetNotEmpty);
@@ -490,11 +603,11 @@ impl Node {
         if !remainder.is_empty() || completed.certificate.device != self.device_identity.public() {
             return Err(NodeError::InvalidDeviceLink);
         }
-        self.store.put_identity(&completed.account, rng)?;
-        self.store
-            .import_device_transfer(&snapshot, completed.account.public().ed, rng)?;
-        self.identity = completed.account;
-        self.device_state = DeviceStateRecord {
+        let before_identity_bytes = self.identity.to_bytes();
+        let before_identity = Identity::from_bytes(&before_identity_bytes);
+        let before_state = self.device_state.clone();
+        let after_identity = completed.account;
+        let after_state = DeviceStateRecord {
             local_device_secret: self.device_identity.to_bytes().to_vec(),
             local_certificate: completed.certificate,
             manifest: completed.manifest,
@@ -506,14 +619,90 @@ impl Node {
                 receive_counter: 0,
             }],
         };
-        self.store.put_device_state(&self.device_state, rng)?;
+        let DeviceTransferSnapshot {
+            contacts,
+            contact_devices,
+            messages,
+            groups: transferred_groups,
+            group_messages,
+            group_authorities,
+            local_metadata,
+            note_messages,
+            ephemeral_tombstones,
+            sync_events,
+        } = snapshot;
+        let me = after_identity.public().ed;
+        let mut groups = Vec::with_capacity(transferred_groups.len());
+        for group in transferred_groups {
+            let chain = GroupSenderChain::generate(rng);
+            let (key_id, chain_key, iteration) = chain.snapshot();
+            let pending = group
+                .members
+                .iter()
+                .filter(|member| member.peer != me)
+                .map(|member| PendingAnnounce {
+                    peer: member.peer,
+                    key_id,
+                    chain_key: *chain_key,
+                    iteration,
+                    wire_id: None,
+                    last_sent: 0,
+                })
+                .collect();
+            groups.push(GroupRecord {
+                id: group.id,
+                name: group.name,
+                creator: group.creator,
+                members: group.members,
+                secret: group.secret,
+                prev_secret: None,
+                generation: group.generation,
+                sender_chain: postcard::to_allocvec(&chain).map_err(|_| NodeError::CorruptState)?,
+                sent_since_rotation: 0,
+                pending,
+            });
+        }
+        let receipt = self.store.commit_plan(
+            CommitPlan::DeviceLink(DeviceLinkPlan {
+                identity: IdentityTransition {
+                    before: &before_identity,
+                    after: &after_identity,
+                },
+                device_state: DeviceStateTransition {
+                    before: Some(&before_state),
+                    after: &after_state,
+                },
+                contacts: &contacts,
+                devices: &contact_devices,
+                messages: &messages,
+                groups: &groups,
+                group_messages: &group_messages,
+                authorities: &group_authorities,
+                local_metadata: &local_metadata,
+                notes: &note_messages,
+                ephemeral: &ephemeral_tombstones,
+                sync_events: &sync_events,
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.before_memory_replacement()?;
+        self.identity = after_identity;
+        self.device_state = after_state;
+        self.pending_device_link_target = None;
         self.sessions.clear();
         self.capabilities_advertised.clear();
-        self.events.push_back(Event::DeviceLinkCompleted {
-            account: self.identity.public().ed,
-            device: self.device_id(),
-        });
-        self.events.push_back(Event::DevicesChanged);
+        self.after_memory_replacement()?;
+        self.accept_commit_receipt(
+            receipt,
+            [
+                Event::DeviceLinkCompleted {
+                    account: self.identity.public().ed,
+                    device: self.device_id(),
+                },
+                Event::DevicesChanged,
+            ],
+        );
         Ok(())
     }
 
@@ -525,8 +714,9 @@ impl Node {
     ) -> Result<Vec<u8>> {
         self.capture_device_sync_state(rng)?;
         let local = self.device_id();
-        let channel = self
-            .device_state
+        let before = self.device_state.clone();
+        let mut after = before.clone();
+        let channel = after
             .channels
             .iter_mut()
             .find(|channel| &channel.peer_device == peer_device)
@@ -550,8 +740,26 @@ impl Node {
             events,
             rng,
         )?;
-        self.store.put_device_state(&self.device_state, rng)?;
-        bundle.encode().map_err(Into::into)
+        let encoded = bundle.encode()?;
+        let receipt = self.store.commit_plan(
+            CommitPlan::DeviceControl(DeviceControlPlan {
+                state: Some(DeviceStateTransition {
+                    before: Some(&before),
+                    after: &after,
+                }),
+                link_recovery: None,
+                groups: &[],
+                insert_events: &[],
+                delete_events: &[],
+                presentation_changed: false,
+            }),
+            rng,
+        )?;
+        self.before_memory_replacement()?;
+        self.device_state = after;
+        self.after_memory_replacement()?;
+        self.accept_commit_receipt(receipt, []);
+        Ok(encoded)
     }
 
     /// Import one authenticated linked-device convergence bundle. Replays,
@@ -595,27 +803,66 @@ impl Node {
                         && new.revoked_at.is_some()
                 })
             });
-        let mut inserted = 0usize;
+        let existing_events = self
+            .store
+            .device_sync_events()?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let mut inserts = BTreeSet::new();
         for event in opened.events {
-            let encoded = event.encode()?;
-            if self.store.put_device_sync_event(&encoded, rng)? {
-                inserted += 1;
+            let bytes = event.encode()?;
+            if !existing_events.contains(&bytes) {
+                inserts.insert(bytes);
             }
         }
-        self.device_state.manifest = opened.manifest;
-        self.device_state.channels[channel_index].receive_counter = bundle.sequence;
-        self.device_state.channels.retain(|channel| {
-            self.device_state.manifest.devices.iter().any(|entry| {
+        let insert_events = inserts.into_iter().collect::<Vec<_>>();
+        let inserted = insert_events.len();
+        let before_state = self.device_state.clone();
+        let mut after_state = before_state.clone();
+        after_state.manifest = opened.manifest;
+        after_state.channels[channel_index].receive_counter = bundle.sequence;
+        after_state.channels.retain(|channel| {
+            after_state.manifest.devices.iter().any(|entry| {
                 entry.certificate.device_id() == channel.peer_device && entry.revoked_at.is_none()
             })
         });
+        let before_groups = self.store.groups()?;
+        let mut after_groups = before_groups.clone();
         if newly_revoked {
-            for mut group in self.store.groups()? {
-                self.rotate_group(&mut group, rng)?;
-                self.store.put_group(&group, rng)?;
+            for group in &mut after_groups {
+                self.rotate_group(group, rng)?;
             }
         }
-        self.store.put_device_state(&self.device_state, rng)?;
+        let group_transitions = before_groups
+            .iter()
+            .zip(&after_groups)
+            .filter(|(before, after)| before != after)
+            .map(|(before, after)| GroupTransition { before, after })
+            .collect::<Vec<_>>();
+        let recovery = self.store.get_device_link_recovery(&bundle.sender)?;
+        let receipt = self.store.commit_plan(
+            CommitPlan::DeviceControl(DeviceControlPlan {
+                state: Some(DeviceStateTransition {
+                    before: Some(&before_state),
+                    after: &after_state,
+                }),
+                link_recovery: recovery
+                    .as_ref()
+                    .map(|before| DeviceLinkRecoveryTransition {
+                        before: Some(before),
+                        after: None,
+                    }),
+                groups: &group_transitions,
+                insert_events: &insert_events,
+                delete_events: &[],
+                presentation_changed: manifest_changed || inserted > 0,
+            }),
+            rng,
+        )?;
+        self.before_memory_replacement()?;
+        self.device_state = after_state;
+        self.after_memory_replacement()?;
+        self.accept_commit_receipt(receipt, []);
         self.apply_resolved_device_sync(rng)?;
         if inserted > 0 || manifest_changed {
             self.events.push_back(Event::DevicesChanged);
@@ -742,13 +989,35 @@ impl Node {
             );
         }
 
-        let stored = self
-            .store
-            .device_sync_events()?
-            .into_iter()
-            .map(|bytes| DeviceSyncEvent::decode(&bytes))
+        let stored_encoded = self.store.device_sync_events()?;
+        let stored = stored_encoded
+            .iter()
+            .map(|bytes| DeviceSyncEvent::decode(bytes))
             .collect::<core::result::Result<Vec<_>, _>>()?;
         let resolved = resolve_device_sync_events(&self.device_state.manifest, stored);
+        let winners = resolved
+            .values()
+            .map(DeviceSyncEvent::encode)
+            .collect::<core::result::Result<BTreeSet<_>, _>>()?;
+        let mut redundant = stored_encoded
+            .into_iter()
+            .filter(|encoded| !winners.contains(encoded))
+            .collect::<Vec<_>>();
+        while !redundant.is_empty() {
+            let take = redundant.len().min(MAX_DEVICE_CONTROL_MUTATIONS);
+            let page = redundant.drain(..take).collect::<Vec<_>>();
+            self.store.commit_plan(
+                CommitPlan::DeviceControl(DeviceControlPlan {
+                    state: None,
+                    link_recovery: None,
+                    groups: &[],
+                    insert_events: &[],
+                    delete_events: &page,
+                    presentation_changed: false,
+                }),
+                rng,
+            )?;
+        }
         let mut lamport = resolved
             .values()
             .map(|event| event.lamport)
@@ -768,53 +1037,146 @@ impl Node {
                 mutations.push((*namespace, key.clone(), None));
             }
         }
-        for (namespace, key, value) in mutations {
-            self.device_state.sync_counter = self
-                .device_state
-                .sync_counter
-                .checked_add(1)
-                .ok_or(NodeError::InvalidDeviceSync)?;
-            lamport = lamport.checked_add(1).ok_or(NodeError::InvalidDeviceSync)?;
-            let event = DeviceSyncEvent::sign(
-                self.identity.public().ed,
-                &self.device_identity,
-                self.device_state.sync_counter,
-                lamport,
-                self.device_state.manifest.generation,
-                namespace,
-                key,
-                value,
+        let page_size = (MAX_DEVICE_CONTROL_MUTATIONS.saturating_sub(1) / 2).max(1);
+        for page in mutations.chunks(page_size) {
+            let before_state = self.device_state.clone();
+            let mut after_state = before_state.clone();
+            let mut insert_events = Vec::with_capacity(page.len());
+            let mut delete_events = Vec::with_capacity(page.len());
+            for (namespace, key, value) in page {
+                if let Some(event) = resolved.get(&(*namespace, key.clone())) {
+                    delete_events.push(event.encode()?);
+                }
+                after_state.sync_counter = after_state
+                    .sync_counter
+                    .checked_add(1)
+                    .ok_or(NodeError::InvalidDeviceSync)?;
+                lamport = lamport.checked_add(1).ok_or(NodeError::InvalidDeviceSync)?;
+                let event = DeviceSyncEvent::sign(
+                    self.identity.public().ed,
+                    &self.device_identity,
+                    after_state.sync_counter,
+                    lamport,
+                    after_state.manifest.generation,
+                    *namespace,
+                    key.clone(),
+                    value.clone(),
+                )?;
+                insert_events.push(event.encode()?);
+            }
+            let receipt = self.store.commit_plan(
+                CommitPlan::DeviceControl(DeviceControlPlan {
+                    state: Some(DeviceStateTransition {
+                        before: Some(&before_state),
+                        after: &after_state,
+                    }),
+                    link_recovery: None,
+                    groups: &[],
+                    insert_events: &insert_events,
+                    delete_events: &delete_events,
+                    presentation_changed: false,
+                }),
+                rng,
             )?;
-            self.store.put_device_sync_event(&event.encode()?, rng)?;
+            self.before_memory_replacement()?;
+            self.device_state = after_state;
+            self.after_memory_replacement()?;
+            self.accept_commit_receipt(receipt, []);
         }
 
         // Retain only converged winners. This bounds replay material while
         // preserving every live value and tombstone needed by a new peer.
-        let all = self
-            .store
-            .device_sync_events()?
-            .into_iter()
-            .map(|bytes| DeviceSyncEvent::decode(&bytes))
+        let all_encoded = self.store.device_sync_events()?;
+        let all = all_encoded
+            .iter()
+            .map(|bytes| DeviceSyncEvent::decode(bytes))
             .collect::<core::result::Result<Vec<_>, _>>()?;
         let compacted = resolve_device_sync_events(&self.device_state.manifest, all)
             .into_values()
             .map(|event| event.encode())
             .collect::<core::result::Result<Vec<_>, _>>()?;
-        self.store.retain_device_sync_events(&compacted)?;
-        self.store.put_device_state(&self.device_state, rng)?;
+        let compacted = compacted.into_iter().collect::<BTreeSet<_>>();
+        let mut redundant = all_encoded
+            .into_iter()
+            .filter(|encoded| !compacted.contains(encoded))
+            .collect::<Vec<_>>();
+        while !redundant.is_empty() {
+            let take = redundant.len().min(MAX_DEVICE_CONTROL_MUTATIONS);
+            let page = redundant.drain(..take).collect::<Vec<_>>();
+            self.store.commit_plan(
+                CommitPlan::DeviceControl(DeviceControlPlan {
+                    state: None,
+                    link_recovery: None,
+                    groups: &[],
+                    insert_events: &[],
+                    delete_events: &page,
+                    presentation_changed: false,
+                }),
+                rng,
+            )?;
+        }
         Ok(())
     }
 
-    fn apply_resolved_device_sync(&mut self, rng: &mut impl CryptoRngCore) -> Result<()> {
+    fn retire_device_projection_queue(
+        &mut self,
+        queue: &[QueueDelete],
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        for page in queue.chunks(kult_store::MAX_MAINTENANCE_TRANSITIONS) {
+            let receipt = self.store.commit_plan(
+                CommitPlan::Maintenance(MaintenancePlan {
+                    seen: &[],
+                    delete_pending: &[],
+                    delete_queue: page,
+                    update_queue: &[],
+                    delete_replay: &[],
+                    messages: &[],
+                    deliveries: &[],
+                    group_messages: &[],
+                    groups: &[],
+                    ephemeral: &[],
+                    delete_messages: &[],
+                    delete_group_messages: &[],
+                    delete_media: &[],
+                    delete_scheduled: &[],
+                    delete_sessions: &[],
+                    delete_capabilities: &[],
+                    clear_reset_markers: &[],
+                    delete_controls: &[],
+                    acknowledge_presentation: None,
+                    presentation_changed: false,
+                }),
+                rng,
+            )?;
+            self.accept_commit_receipt(receipt, []);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn apply_resolved_device_sync(
+        &mut self,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
         let events = self
             .store
             .device_sync_events()?
             .into_iter()
             .map(|bytes| DeviceSyncEvent::decode(&bytes))
             .collect::<core::result::Result<Vec<_>, _>>()?;
-        for ((namespace, key), event) in
-            resolve_device_sync_events(&self.device_state.manifest, events)
-        {
+        let resolved = resolve_device_sync_events(&self.device_state.manifest, events);
+        // Definitions own the existence of group state. Project them before
+        // authority winners so a newly synchronized group and its authority
+        // converge in this invocation rather than requiring another tick.
+        for ((namespace, key), event) in &resolved {
+            if *namespace == DeviceSyncNamespace::Groups && key.first() == Some(&b'd') {
+                self.apply_sync_group(key, event.value.as_deref(), rng)?;
+            }
+        }
+        for ((namespace, key), event) in resolved {
+            if namespace == DeviceSyncNamespace::Groups && key.first() == Some(&b'd') {
+                continue;
+            }
             match namespace {
                 DeviceSyncNamespace::Contacts => {
                     if key.len() == 32 {
@@ -827,15 +1189,95 @@ impl Node {
                             if contact.peer != peer {
                                 return Err(NodeError::InvalidDeviceSync);
                             }
-                            let verified = self
-                                .store
-                                .get_contact(&peer)?
-                                .is_some_and(|stored| stored.verified);
+                            let before = self.store.get_contact(&peer)?;
+                            let verified = before.as_ref().is_some_and(|stored| stored.verified);
                             contact.verified = verified;
-                            self.store.put_contact(&contact, rng)?;
+                            if before.as_ref() != Some(&contact) {
+                                let projection = DeviceProjection::Contact {
+                                    before: before.as_ref(),
+                                    after: Some(&contact),
+                                };
+                                let receipt = self.store.commit_plan(
+                                    CommitPlan::DeviceProjection(DeviceProjectionPlan {
+                                        projections: &[projection],
+                                        delete_sessions: &[],
+                                        delete_capabilities: &[],
+                                        delete_queue: &[],
+                                        presentation_changed: true,
+                                    }),
+                                    rng,
+                                )?;
+                                self.accept_commit_receipt(receipt, []);
+                            }
                         } else {
-                            self.store.delete_contact(&peer)?;
-                            self.sessions.remove(&peer);
+                            let before = self.store.get_contact(&peer)?;
+                            let session = self.store.get_session(&peer)?;
+                            let capabilities = self.store.get_capabilities(&peer)?;
+                            let queue = self
+                                .store
+                                .queue_all()?
+                                .into_iter()
+                                .filter(|(_, item)| item.peer == peer)
+                                .map(|(sequence, item)| QueueDelete {
+                                    sequence,
+                                    content_id: item.envelope.content_id(),
+                                })
+                                .collect::<Vec<_>>();
+                            if before.is_some()
+                                || session.is_some()
+                                || capabilities.is_some()
+                                || !queue.is_empty()
+                            {
+                                self.retire_device_projection_queue(&queue, rng)?;
+                                let projections = before
+                                    .as_ref()
+                                    .map(|before| {
+                                        vec![DeviceProjection::Contact {
+                                            before: Some(before),
+                                            after: None,
+                                        }]
+                                    })
+                                    .unwrap_or_default();
+                                let sessions = session
+                                    .as_ref()
+                                    .map(|before| {
+                                        vec![SessionDelete {
+                                            peer_device: peer,
+                                            before,
+                                        }]
+                                    })
+                                    .unwrap_or_default();
+                                let capability_deletes = capabilities
+                                    .as_ref()
+                                    .map(|before| {
+                                        vec![CapabilityDelete {
+                                            peer_device: peer,
+                                            before,
+                                        }]
+                                    })
+                                    .unwrap_or_default();
+                                if projections.is_empty()
+                                    && sessions.is_empty()
+                                    && capability_deletes.is_empty()
+                                {
+                                    continue;
+                                }
+                                let receipt = self.store.commit_plan(
+                                    CommitPlan::DeviceProjection(DeviceProjectionPlan {
+                                        projections: &projections,
+                                        delete_sessions: &sessions,
+                                        delete_capabilities: &capability_deletes,
+                                        delete_queue: &[],
+                                        presentation_changed: before.is_some(),
+                                    }),
+                                    rng,
+                                )?;
+                                self.before_memory_replacement()?;
+                                self.sessions.remove(&peer);
+                                self.capabilities_advertised.remove(&peer);
+                                self.after_memory_replacement()?;
+                                self.accept_commit_receipt(receipt, []);
+                            }
                         }
                     } else if key.len() == 65 && key[0] == b'd' {
                         let account: [u8; 32] = key[1..33]
@@ -844,26 +1286,99 @@ impl Node {
                         let device: [u8; 32] = key[33..65]
                             .try_into()
                             .map_err(|_| NodeError::InvalidDeviceSync)?;
-                        if let Some(value) = event.value {
+                        let before = self.store.contact_devices()?.into_iter().find(|endpoint| {
+                            endpoint.account == account && endpoint.device == device
+                        });
+                        let after = if let Some(value) = event.value {
                             let endpoint: ContactDeviceRecord = decode_exact(&value)?;
                             if endpoint.account != account || endpoint.device != device {
                                 return Err(NodeError::InvalidDeviceSync);
                             }
-                            self.store.put_contact_device(&endpoint, rng)?;
-                            if endpoint.revoked_at.is_some() {
+                            Some(endpoint)
+                        } else {
+                            None
+                        };
+                        let retiring = after
+                            .as_ref()
+                            .is_none_or(|endpoint| endpoint.revoked_at.is_some());
+                        let session = if retiring {
+                            self.store.get_session(&device)?
+                        } else {
+                            None
+                        };
+                        let capabilities = if retiring {
+                            self.store.get_capabilities(&device)?
+                        } else {
+                            None
+                        };
+                        let queue = if retiring {
+                            self.store
+                                .queue_all()?
+                                .into_iter()
+                                .filter(|(_, item)| item.peer == device)
+                                .map(|(sequence, item)| QueueDelete {
+                                    sequence,
+                                    content_id: item.envelope.content_id(),
+                                })
+                                .collect::<Vec<_>>()
+                        } else {
+                            Vec::new()
+                        };
+                        if before.as_ref() != after.as_ref()
+                            || session.is_some()
+                            || capabilities.is_some()
+                            || !queue.is_empty()
+                        {
+                            self.retire_device_projection_queue(&queue, rng)?;
+                            let projections = if before.as_ref() != after.as_ref() {
+                                vec![DeviceProjection::ContactDevice {
+                                    before: before.as_ref(),
+                                    after: after.as_ref(),
+                                }]
+                            } else {
+                                Vec::new()
+                            };
+                            let sessions = session
+                                .as_ref()
+                                .map(|before| {
+                                    vec![SessionDelete {
+                                        peer_device: device,
+                                        before,
+                                    }]
+                                })
+                                .unwrap_or_default();
+                            let capability_deletes = capabilities
+                                .as_ref()
+                                .map(|before| {
+                                    vec![CapabilityDelete {
+                                        peer_device: device,
+                                        before,
+                                    }]
+                                })
+                                .unwrap_or_default();
+                            if projections.is_empty()
+                                && sessions.is_empty()
+                                && capability_deletes.is_empty()
+                            {
+                                continue;
+                            }
+                            let receipt = self.store.commit_plan(
+                                CommitPlan::DeviceProjection(DeviceProjectionPlan {
+                                    projections: &projections,
+                                    delete_sessions: &sessions,
+                                    delete_capabilities: &capability_deletes,
+                                    delete_queue: &[],
+                                    presentation_changed: before.as_ref() != after.as_ref(),
+                                }),
+                                rng,
+                            )?;
+                            if retiring {
+                                self.before_memory_replacement()?;
                                 self.sessions.remove(&device);
                                 self.capabilities_advertised.remove(&device);
-                                self.store.delete_session(&device)?;
-                                self.store.delete_capabilities(&device)?;
-                                self.store.queue_remove_peer(&device)?;
+                                self.after_memory_replacement()?;
                             }
-                        } else {
-                            self.sessions.remove(&device);
-                            self.capabilities_advertised.remove(&device);
-                            self.store.delete_session(&device)?;
-                            self.store.delete_capabilities(&device)?;
-                            self.store.queue_remove_peer(&device)?;
-                            self.store.delete_contact_device(&account, &device)?;
+                            self.accept_commit_receipt(receipt, []);
                         }
                     } else {
                         return Err(NodeError::InvalidDeviceSync);
@@ -875,14 +1390,32 @@ impl Node {
                         .try_into()
                         .map_err(|_| NodeError::InvalidDeviceSync)?;
                     let verified = event.value.as_deref() == Some(&[1][..]);
-                    if let Some(mut contact) = self.store.get_contact(&peer)? {
+                    if let Some(before) = self.store.get_contact(&peer)? {
+                        let mut contact = before.clone();
                         contact.verified = verified;
-                        self.store.put_contact(&contact, rng)?;
+                        if contact != before {
+                            let projection = DeviceProjection::Contact {
+                                before: Some(&before),
+                                after: Some(&contact),
+                            };
+                            let receipt = self.store.commit_plan(
+                                CommitPlan::DeviceProjection(DeviceProjectionPlan {
+                                    projections: &[projection],
+                                    delete_sessions: &[],
+                                    delete_capabilities: &[],
+                                    delete_queue: &[],
+                                    presentation_changed: true,
+                                }),
+                                rng,
+                            )?;
+                            self.accept_commit_receipt(receipt, []);
+                        }
                     }
                 }
                 DeviceSyncNamespace::LocalOrganization => {
                     let metadata_key: LocalMetadataKey = decode_exact(&key)?;
-                    if let Some(value) = event.value {
+                    let before = self.store.get_local_metadata(&metadata_key)?;
+                    let after = if let Some(value) = event.value {
                         let record: LocalMetadataRecord = decode_exact(&value)?;
                         if record.key() != metadata_key
                             || matches!(record, LocalMetadataRecord::Draft(_))
@@ -894,9 +1427,26 @@ impl Node {
                         {
                             return Err(NodeError::InvalidDeviceSync);
                         }
-                        self.store.put_local_metadata(&record, rng)?;
+                        Some(record)
                     } else {
-                        self.store.delete_local_metadata(&metadata_key)?;
+                        None
+                    };
+                    if before.as_ref() != after.as_ref() {
+                        let projection = DeviceProjection::LocalMetadata {
+                            before: before.as_ref(),
+                            after: after.as_ref(),
+                        };
+                        let receipt = self.store.commit_plan(
+                            CommitPlan::DeviceProjection(DeviceProjectionPlan {
+                                projections: &[projection],
+                                delete_sessions: &[],
+                                delete_capabilities: &[],
+                                delete_queue: &[],
+                                presentation_changed: true,
+                            }),
+                            rng,
+                        )?;
+                        self.accept_commit_receipt(receipt, []);
                     }
                 }
                 DeviceSyncNamespace::ConversationHistory
@@ -905,9 +1455,7 @@ impl Node {
                     self.apply_sync_history(&key, event.value.as_deref(), rng)?;
                 }
                 DeviceSyncNamespace::Groups => {
-                    if let Some(value) = event.value {
-                        self.apply_sync_group(&key, &value, rng)?;
-                    }
+                    self.apply_sync_group(&key, event.value.as_deref(), rng)?;
                 }
                 DeviceSyncNamespace::ExpiryTombstones => {
                     if let Some(value) = event.value {
@@ -918,26 +1466,97 @@ impl Node {
                         {
                             return Err(NodeError::InvalidDeviceSync);
                         }
-                        self.store.put_ephemeral_record(&tombstone, rng)?;
+                        let before_ephemeral = self.store.get_ephemeral_record(
+                            &tombstone.conversation,
+                            &tombstone.author,
+                            &tombstone.content_id,
+                        )?;
+                        if before_ephemeral.as_ref().is_some_and(|before| {
+                            before != &tombstone
+                                && before.state != kult_store::EphemeralState::Active
+                        }) {
+                            return Err(NodeError::InvalidDeviceSync);
+                        }
+                        let mut delete_messages = Vec::new();
+                        let mut delete_group_messages = Vec::new();
                         match tombstone.conversation {
                             kult_store::EphemeralConversation::Pairwise(peer) => {
-                                self.store.delete_message_record(
-                                    &peer,
-                                    if tombstone.author == self.identity.public().ed {
-                                        Direction::Outbound
-                                    } else {
-                                        Direction::Inbound
-                                    },
-                                    &tombstone.content_id,
-                                )?;
+                                let direction = if tombstone.author == self.identity.public().ed {
+                                    Direction::Outbound
+                                } else {
+                                    Direction::Inbound
+                                };
+                                if let Some(message) = self
+                                    .store
+                                    .messages_with(&peer)?
+                                    .into_iter()
+                                    .find(|message| {
+                                        message.direction == direction
+                                            && message.id == tombstone.content_id
+                                    })
+                                {
+                                    delete_messages.push(message);
+                                }
                             }
                             kult_store::EphemeralConversation::Group(group) => {
-                                self.store.delete_group_message_record(
-                                    &group,
-                                    &tombstone.author,
-                                    &tombstone.content_id,
-                                )?;
+                                if let Some(message) = self
+                                    .store
+                                    .group_messages(&group)?
+                                    .into_iter()
+                                    .find(|message| {
+                                        message.sender == tombstone.author
+                                            && message.id == tombstone.content_id
+                                    })
+                                {
+                                    delete_group_messages.push(message);
+                                }
                             }
+                        }
+                        let ephemeral = (before_ephemeral.as_ref() != Some(&tombstone))
+                            .then_some(EphemeralTransition {
+                                before: before_ephemeral.as_ref(),
+                                after: &tombstone,
+                            })
+                            .into_iter()
+                            .collect::<Vec<_>>();
+                        let message_deletes = delete_messages
+                            .iter()
+                            .map(|before| MessageDelete { before })
+                            .collect::<Vec<_>>();
+                        let group_message_deletes = delete_group_messages
+                            .iter()
+                            .map(|before| GroupMessageDelete { before })
+                            .collect::<Vec<_>>();
+                        if !ephemeral.is_empty()
+                            || !message_deletes.is_empty()
+                            || !group_message_deletes.is_empty()
+                        {
+                            let receipt = self.store.commit_plan(
+                                CommitPlan::Maintenance(MaintenancePlan {
+                                    seen: &[],
+                                    delete_pending: &[],
+                                    delete_queue: &[],
+                                    update_queue: &[],
+                                    delete_replay: &[],
+                                    messages: &[],
+                                    deliveries: &[],
+                                    group_messages: &[],
+                                    groups: &[],
+                                    ephemeral: &ephemeral,
+                                    delete_messages: &message_deletes,
+                                    delete_group_messages: &group_message_deletes,
+                                    delete_media: &[],
+                                    delete_scheduled: &[],
+                                    delete_sessions: &[],
+                                    delete_capabilities: &[],
+                                    clear_reset_markers: &[],
+                                    delete_controls: &[],
+                                    acknowledge_presentation: None,
+                                    presentation_changed: true,
+                                }),
+                                rng,
+                            )?;
+                            self.accept_commit_receipt(receipt, []);
                         }
                     }
                 }
@@ -966,7 +1585,28 @@ impl Node {
                     let id: [u8; 16] = key[34..]
                         .try_into()
                         .map_err(|_| NodeError::InvalidDeviceSync)?;
-                    self.store.delete_message_record(&peer, direction, &id)?;
+                    let before = self
+                        .store
+                        .messages_with(&peer)?
+                        .into_iter()
+                        .find(|message| message.direction == direction && message.id == id);
+                    if let Some(before) = before {
+                        let projection = DeviceProjection::Message {
+                            before: Some(&before),
+                            after: None,
+                        };
+                        let receipt = self.store.commit_plan(
+                            CommitPlan::DeviceProjection(DeviceProjectionPlan {
+                                projections: &[projection],
+                                delete_sessions: &[],
+                                delete_capabilities: &[],
+                                delete_queue: &[],
+                                presentation_changed: true,
+                            }),
+                            rng,
+                        )?;
+                        self.accept_commit_receipt(receipt, []);
+                    }
                 }
                 Some(b'g') if key.len() == 81 => {
                     let group: [u8; 32] = key[1..33]
@@ -978,8 +1618,28 @@ impl Node {
                     let id: [u8; 16] = key[65..]
                         .try_into()
                         .map_err(|_| NodeError::InvalidDeviceSync)?;
-                    self.store
-                        .delete_group_message_record(&group, &sender, &id)?;
+                    let before = self
+                        .store
+                        .group_messages(&group)?
+                        .into_iter()
+                        .find(|message| message.sender == sender && message.id == id);
+                    if let Some(before) = before {
+                        let projection = DeviceProjection::GroupMessage {
+                            before: Some(&before),
+                            after: None,
+                        };
+                        let receipt = self.store.commit_plan(
+                            CommitPlan::DeviceProjection(DeviceProjectionPlan {
+                                projections: &[projection],
+                                delete_sessions: &[],
+                                delete_capabilities: &[],
+                                delete_queue: &[],
+                                presentation_changed: true,
+                            }),
+                            rng,
+                        )?;
+                        self.accept_commit_receipt(receipt, []);
+                    }
                 }
                 _ => {}
             }
@@ -1001,8 +1661,29 @@ impl Node {
                 // A target device never inherits another device's queue/wire
                 // promise. History delivery is account-level and immutable.
                 message.wire_id = None;
-                if !self.store.update_message(&message, rng)? {
-                    self.store.put_message(&message, rng)?;
+                let before = self
+                    .store
+                    .messages_with(&message.peer)?
+                    .into_iter()
+                    .find(|stored| {
+                        stored.id == message.id && stored.direction == message.direction
+                    });
+                if before.as_ref() != Some(&message) {
+                    let projection = DeviceProjection::Message {
+                        before: before.as_ref(),
+                        after: Some(&message),
+                    };
+                    let receipt = self.store.commit_plan(
+                        CommitPlan::DeviceProjection(DeviceProjectionPlan {
+                            projections: &[projection],
+                            delete_sessions: &[],
+                            delete_capabilities: &[],
+                            delete_queue: &[],
+                            presentation_changed: true,
+                        }),
+                        rng,
+                    )?;
+                    self.accept_commit_receipt(receipt, []);
                 }
             }
             SyncHistoryValue::Group(mut message) => {
@@ -1015,8 +1696,27 @@ impl Node {
                     return Err(NodeError::InvalidDeviceSync);
                 }
                 message.wire_body = None;
-                if !self.store.update_group_message(&message, rng)? {
-                    self.store.put_group_message(&message, rng)?;
+                let before = self
+                    .store
+                    .group_messages(&message.group)?
+                    .into_iter()
+                    .find(|stored| stored.id == message.id && stored.sender == message.sender);
+                if before.as_ref() != Some(&message) {
+                    let projection = DeviceProjection::GroupMessage {
+                        before: before.as_ref(),
+                        after: Some(&message),
+                    };
+                    let receipt = self.store.commit_plan(
+                        CommitPlan::DeviceProjection(DeviceProjectionPlan {
+                            projections: &[projection],
+                            delete_sessions: &[],
+                            delete_capabilities: &[],
+                            delete_queue: &[],
+                            presentation_changed: true,
+                        }),
+                        rng,
+                    )?;
+                    self.accept_commit_receipt(receipt, []);
                 }
             }
             SyncHistoryValue::Note(message) => {
@@ -1026,13 +1726,31 @@ impl Node {
                 if expected != key {
                     return Err(NodeError::InvalidDeviceSync);
                 }
-                if !self
+                let before = self
                     .store
                     .note_messages()?
                     .iter()
-                    .any(|stored| stored.id == message.id)
-                {
-                    self.store.put_note_message(&message, rng)?;
+                    .find(|stored| stored.id == message.id)
+                    .cloned();
+                match before {
+                    Some(before) if before != message => {
+                        return Err(NodeError::InvalidDeviceSync);
+                    }
+                    Some(_) => {}
+                    None => {
+                        let projection = DeviceProjection::Note { after: &message };
+                        let receipt = self.store.commit_plan(
+                            CommitPlan::DeviceProjection(DeviceProjectionPlan {
+                                projections: &[projection],
+                                delete_sessions: &[],
+                                delete_capabilities: &[],
+                                delete_queue: &[],
+                                presentation_changed: true,
+                            }),
+                            rng,
+                        )?;
+                        self.accept_commit_receipt(receipt, []);
+                    }
                 }
             }
         }
@@ -1042,9 +1760,85 @@ impl Node {
     fn apply_sync_group(
         &mut self,
         key: &[u8],
-        value: &[u8],
+        value: Option<&[u8]>,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
+        let Some(value) = value else {
+            if key.len() != 33 {
+                return Err(NodeError::InvalidDeviceSync);
+            }
+            let group: [u8; 32] = key[1..]
+                .try_into()
+                .map_err(|_| NodeError::InvalidDeviceSync)?;
+            match key[0] {
+                b'd' => {
+                    let before = self.store.get_group(&group)?;
+                    let chain_rows = self.store.group_chains(&group)?;
+                    let authority = self.store.get_group_authority(&group)?;
+                    if before.is_none() && chain_rows.is_empty() && authority.is_none() {
+                        return Ok(());
+                    }
+                    let groups = before
+                        .as_ref()
+                        .map(|before| GroupStateTransition {
+                            before: Some(before),
+                            after: None,
+                        })
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    let chains = chain_rows
+                        .iter()
+                        .map(|(peer, chain)| kult_store::GroupChainStateTransition {
+                            group,
+                            peer: *peer,
+                            before: Some(chain.as_slice()),
+                            after: None,
+                        })
+                        .collect::<Vec<_>>();
+                    let authorities = authority
+                        .as_ref()
+                        .map(|before| GroupAuthorityStateTransition {
+                            before: Some(before),
+                            after: None,
+                        })
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    let receipt = self.store.commit_plan(
+                        CommitPlan::GroupState(GroupStatePlan {
+                            groups: &groups,
+                            chains: &chains,
+                            contacts: &[],
+                            authorities: &authorities,
+                            delete_controls: &[],
+                            presentation_changed: before.is_some(),
+                        }),
+                        rng,
+                    )?;
+                    self.accept_commit_receipt(receipt, []);
+                }
+                b'a' => {
+                    if let Some(before) = self.store.get_group_authority(&group)? {
+                        let receipt = self.store.commit_plan(
+                            CommitPlan::GroupState(GroupStatePlan {
+                                groups: &[],
+                                chains: &[],
+                                contacts: &[],
+                                authorities: &[GroupAuthorityStateTransition {
+                                    before: Some(&before),
+                                    after: None,
+                                }],
+                                delete_controls: &[],
+                                presentation_changed: true,
+                            }),
+                            rng,
+                        )?;
+                        self.accept_commit_receipt(receipt, []);
+                    }
+                }
+                _ => return Err(NodeError::InvalidDeviceSync),
+            }
+            return Ok(());
+        };
         match decode_exact::<SyncGroupValue>(value)? {
             SyncGroupValue::Definition(group) => {
                 let mut expected = Vec::with_capacity(33);
@@ -1053,33 +1847,78 @@ impl Node {
                 if expected != key {
                     return Err(NodeError::InvalidDeviceSync);
                 }
-                if let Some(mut stored) = self.store.get_group(&group.id)? {
+                if let Some(stored) = self.store.get_group(&group.id)? {
                     if group.generation >= stored.generation {
-                        stored.name = group.name;
-                        stored.creator = group.creator;
-                        stored.members = group.members;
-                        stored.secret = group.secret;
-                        stored.prev_secret = None;
-                        stored.generation = group.generation;
-                        self.store.put_group(&stored, rng)?;
+                        let mut after = stored.clone();
+                        after.name = group.name;
+                        after.creator = group.creator;
+                        after.members = group.members;
+                        after.secret = group.secret;
+                        after.prev_secret = None;
+                        after.generation = group.generation;
+                        if after != stored {
+                            let receipt = self.store.commit_plan(
+                                CommitPlan::GroupState(GroupStatePlan {
+                                    groups: &[GroupStateTransition {
+                                        before: Some(&stored),
+                                        after: Some(&after),
+                                    }],
+                                    chains: &[],
+                                    contacts: &[],
+                                    authorities: &[],
+                                    delete_controls: &[],
+                                    presentation_changed: true,
+                                }),
+                                rng,
+                            )?;
+                            self.accept_commit_receipt(receipt, []);
+                        }
                     }
                 } else {
-                    self.store.import_device_transfer(
-                        &DeviceTransferSnapshot {
-                            contacts: Vec::new(),
-                            contact_devices: Vec::new(),
-                            messages: Vec::new(),
-                            groups: vec![group],
-                            group_messages: Vec::new(),
-                            group_authorities: Vec::new(),
-                            local_metadata: Vec::new(),
-                            note_messages: Vec::new(),
-                            ephemeral_tombstones: Vec::new(),
-                            sync_events: Vec::new(),
-                        },
-                        self.identity.public().ed,
+                    let me = self.identity.public().ed;
+                    let chain = GroupSenderChain::generate(rng);
+                    let (key_id, chain_key, iteration) = chain.snapshot();
+                    let pending = group
+                        .members
+                        .iter()
+                        .filter(|member| member.peer != me)
+                        .map(|member| PendingAnnounce {
+                            peer: member.peer,
+                            key_id,
+                            chain_key: *chain_key,
+                            iteration,
+                            wire_id: None,
+                            last_sent: 0,
+                        })
+                        .collect();
+                    let after = GroupRecord {
+                        id: group.id,
+                        name: group.name,
+                        creator: group.creator,
+                        members: group.members,
+                        secret: group.secret,
+                        prev_secret: None,
+                        generation: group.generation,
+                        sender_chain: postcard::to_allocvec(&chain)
+                            .map_err(|_| NodeError::CorruptState)?,
+                        sent_since_rotation: 0,
+                        pending,
+                    };
+                    let receipt = self.store.commit_plan(
+                        CommitPlan::GroupState(GroupStatePlan {
+                            groups: &[GroupStateTransition {
+                                before: None,
+                                after: Some(&after),
+                            }],
+                            chains: &[],
+                            contacts: &[],
+                            authorities: &[],
+                            delete_controls: &[],
+                            presentation_changed: true,
+                        }),
                         rng,
                     )?;
+                    self.accept_commit_receipt(receipt, []);
                 }
             }
             SyncGroupValue::Authority(authority) => {
@@ -1089,7 +1928,27 @@ impl Node {
                 if expected != key {
                     return Err(NodeError::InvalidDeviceSync);
                 }
-                self.store.put_group_authority(&authority, rng)?;
+                if self.store.get_group(&authority.group)?.is_none() {
+                    return Ok(());
+                }
+                let before = self.store.get_group_authority(&authority.group)?;
+                if before.as_ref() != Some(&authority) {
+                    let receipt = self.store.commit_plan(
+                        CommitPlan::GroupState(GroupStatePlan {
+                            groups: &[],
+                            chains: &[],
+                            contacts: &[],
+                            authorities: &[GroupAuthorityStateTransition {
+                                before: before.as_ref(),
+                                after: Some(&authority),
+                            }],
+                            delete_controls: &[],
+                            presentation_changed: true,
+                        }),
+                        rng,
+                    )?;
+                    self.accept_commit_receipt(receipt, []);
+                }
             }
         }
         Ok(())

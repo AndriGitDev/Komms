@@ -678,10 +678,25 @@ impl PendingDeviceLinkSource {
         Ok(link_material(&self.offer, response, shared.as_bytes()).1)
     }
 
+    /// Validate a confirmed approval before preparing its selected state.
+    pub fn validate_approval(
+        &self,
+        response: &DeviceLinkResponse,
+        confirmed: bool,
+        now: u64,
+    ) -> Result<()> {
+        self.offer.verify(now)?;
+        response.verify_for(&self.offer)?;
+        if !confirmed {
+            return Err(CryptoError::InvalidMessage);
+        }
+        Ok(())
+    }
+
     /// After explicit code confirmation, issue the device credential and
     /// encrypt the account root plus selected synchronized state to target.
     pub fn approve(
-        self,
+        &self,
         account: &Identity,
         response: &DeviceLinkResponse,
         confirmed: bool,
@@ -689,9 +704,8 @@ impl PendingDeviceLinkSource {
         sync_payload: Vec<u8>,
         rng: &mut impl CryptoRngCore,
     ) -> Result<ApprovedDeviceLink> {
-        self.offer.verify(now)?;
-        response.verify_for(&self.offer)?;
-        if !confirmed || sync_payload.len() > MAX_LINK_TRANSFER_BYTES {
+        self.validate_approval(response, confirmed, now)?;
+        if sync_payload.len() > MAX_LINK_TRANSFER_BYTES {
             return Err(CryptoError::InvalidMessage);
         }
         let shared = self
@@ -713,21 +727,22 @@ impl PendingDeviceLinkSource {
         )?;
         let mut channel_root = [0u8; 32];
         rng.fill_bytes(&mut channel_root);
-        let payload = LinkPackagePayload {
-            account_secret: account.to_bytes().to_vec(),
-            manifest: manifest.clone(),
-            certificate,
-            channel_root,
-            sync_payload,
-        };
-        let plain = postcard::to_allocvec(&payload).map_err(|_| CryptoError::Serialization)?;
-        let package = StorageKey::from_bytes(*link_key).seal(LINK_PACKAGE_AD, &plain, rng);
+        let package = seal_device_link_recovery_package(
+            account,
+            &manifest,
+            &response.device.ed,
+            &channel_root,
+            &sync_payload,
+            &link_key,
+            rng,
+        )?;
         Ok(ApprovedDeviceLink {
             package,
             manifest,
             code,
             target_device: response.device.ed,
             channel_root: Zeroizing::new(channel_root),
+            recovery_key: link_key,
         })
     }
 }
@@ -785,7 +800,7 @@ impl PendingDeviceLinkTarget {
     /// After explicit local confirmation, authenticate and open the source's
     /// transfer package. Nothing is returned on mismatch or cancellation.
     pub fn complete(
-        self,
+        &self,
         package: &[u8],
         confirmed: bool,
         now: u64,
@@ -851,6 +866,8 @@ pub struct ApprovedDeviceLink {
     pub target_device: [u8; 32],
     /// Shared sync-channel root retained only by the two linked devices.
     pub channel_root: Zeroizing<[u8; 32]>,
+    /// Transcript-derived package key retained only for durable return-value recovery.
+    pub recovery_key: Zeroizing<[u8; 32]>,
 }
 
 /// Target result after authenticating and opening a transfer package.
@@ -878,6 +895,45 @@ struct LinkPackagePayload {
     certificate: DeviceCertificate,
     channel_root: [u8; 32],
     sync_payload: Vec<u8>,
+}
+
+/// Rebuild a committed device-link package after a caller restart lost the
+/// original return value. The durable manifest and channel remain the source
+/// of truth; the selected snapshot may be refreshed before resealing.
+pub fn seal_device_link_recovery_package(
+    account: &Identity,
+    manifest: &DeviceManifest,
+    target_device: &[u8; 32],
+    channel_root: &[u8; 32],
+    sync_payload: &[u8],
+    link_key: &[u8; 32],
+    rng: &mut impl CryptoRngCore,
+) -> Result<Vec<u8>> {
+    manifest.verify()?;
+    if manifest.account != account.public()
+        || *target_device == [0u8; 32]
+        || *channel_root == [0u8; 32]
+        || *link_key == [0u8; 32]
+        || sync_payload.len() > MAX_LINK_TRANSFER_BYTES
+    {
+        return Err(CryptoError::InvalidMessage);
+    }
+    let certificate = manifest
+        .devices
+        .iter()
+        .find(|entry| entry.certificate.device_id() == *target_device && entry.revoked_at.is_none())
+        .map(|entry| entry.certificate.clone())
+        .ok_or(CryptoError::InvalidMessage)?;
+    let payload = LinkPackagePayload {
+        account_secret: account.to_bytes().to_vec(),
+        manifest: manifest.clone(),
+        certificate,
+        channel_root: *channel_root,
+        sync_payload: sync_payload.to_vec(),
+    };
+    let plain =
+        Zeroizing::new(postcard::to_allocvec(&payload).map_err(|_| CryptoError::Serialization)?);
+    Ok(StorageKey::from_bytes(*link_key).seal(LINK_PACKAGE_AD, &plain, rng))
 }
 
 fn link_material(
