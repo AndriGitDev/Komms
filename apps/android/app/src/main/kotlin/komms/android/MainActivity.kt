@@ -192,6 +192,7 @@ class MainActivity : SecureActivity() {
 
     override fun onResume() {
         super.onResume()
+        refreshAuthorityResetHistory()
         refreshLabelsAndLists(false)
         tick.post(refreshLoop)
     }
@@ -265,6 +266,30 @@ class MainActivity : SecureActivity() {
                         )
                         .setPositiveButton(android.R.string.ok, null)
                         .show()
+                }
+            }
+        }
+    }
+
+    private fun refreshAuthorityResetHistory() {
+        val session = NodeHolder.session ?: return
+        runNode(work = { session.authorityResetHistory() }, onError = {}) { history ->
+            findViewById<TextView>(R.id.main_authority_reset_history).apply {
+                if (history == null) {
+                    visibility = View.GONE
+                    text = ""
+                } else {
+                    text = getString(
+                        R.string.authority_reset_archive_summary,
+                        getString(R.string.authority_reset_archive_title),
+                        history.preservedPairwiseMessages.toLong(),
+                        history.preservedNoteMessages.toLong(),
+                        history.omittedGroups.toLong(),
+                        history.omittedGroupMessages.toLong(),
+                        history.pendingReverification.size,
+                    )
+                    contentDescription = text
+                    visibility = View.VISIBLE
                 }
             }
         }

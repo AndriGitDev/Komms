@@ -51,6 +51,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var groupHistories: [String: [GroupMessage]] = [:]
     @Published private(set) var groupPolls: [String: [GroupPoll]] = [:]
     @Published private(set) var groupAuthorities: [String: GroupAuthority] = [:]
+    @Published private(set) var groupSecurities: [String: GroupSecurity] = [:]
     @Published private(set) var scheduledMessages: [ScheduledMessage] = []
     @Published private(set) var attachments: [Attachment] = []
     @Published private(set) var noteHistory: [NoteMessage] = []
@@ -71,6 +72,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var customIcons: [CustomIconTarget: CustomIcon] = [:]
     @Published private(set) var customIconUsage = CustomIconQuotaUsage(records: 0, bytes: 0)
     @Published private(set) var linkedDevices: [LinkedDevice] = []
+    @Published private(set) var deviceAuthorityConflicts: [DeviceAuthorityConflict] = []
+    @Published private(set) var contactAuthorityConflicts: [ContactAuthorityConflict] = []
+    @Published private(set) var authorityResetHistory: AuthorityResetHistory?
+    @Published private(set) var requiresRecoveryAuthorityExport = false
     @Published private(set) var calls: [KommsCore.Call] = []
     @Published private(set) var callAvailability: [String: CallAvailability] = [:]
     /// Surfaced node happenings: key changes, held-for-faster-link verdicts.
@@ -123,12 +128,13 @@ final class AppModel: ObservableObject {
         let entries = try? FileManager.default.contentsOfDirectory(
             at: temporary, includingPropertiesForKeys: nil
         )
-        let plaintextPrefixes = [
+        let transientPrefixes = [
             "komms-audio-", "komms-attachment-", "komms-image-final-",
             "komms-render-preview-", "komms-render-image-", "komms-export-",
+            "komms-account-authority-",
         ]
         entries?.filter { url in
-            plaintextPrefixes.contains { url.lastPathComponent.hasPrefix($0) }
+            transientPrefixes.contains { url.lastPathComponent.hasPrefix($0) }
         }.forEach { try? FileManager.default.removeItem(at: $0) }
     }
 
@@ -186,6 +192,10 @@ final class AppModel: ObservableObject {
     /// startup error.
     func unlock(passphrase: String) async throws {
         let dir = dataDir
+        let creating = !storeExists
+        if creating {
+            UserDefaults.standard.set(true, forKey: "komms.recovery-authority.pending")
+        }
         let settings = try NetworkSettings.load(from: dir)
         let sink = sink()
         let session = try await run {
@@ -194,12 +204,21 @@ final class AppModel: ObservableObject {
                 settings: settings, kdf: .mobile, sink: sink)
         }
         await adopt(session)
+        requiresRecoveryAuthorityExport =
+            UserDefaults.standard.bool(forKey: "komms.recovery-authority.pending")
         try? excludeFromBackup(dir)
     }
 
     /// First run only: restore identity, contacts, and history from an
-    /// encrypted `.kkr` backup plus its 24-word mnemonic.
-    func restore(backup: URL, mnemonic: String, passphrase: String) async throws {
+    /// encrypted root-free `.kkr` backup plus the separately held offline
+    /// account authority and its different phrase.
+    func restore(
+        backup: URL,
+        mnemonic: String,
+        recoveryAuthority: URL,
+        recoveryMnemonic: String,
+        passphrase: String
+    ) async throws {
         let dir = dataDir
         let settings = try NetworkSettings.load(from: dir)
         let sink = sink()
@@ -207,6 +226,67 @@ final class AppModel: ObservableObject {
             try Session.restore(
                 dataDir: dir, passphrase: passphrase,
                 backupPath: backup, mnemonic: mnemonic,
+                recoveryPackagePath: recoveryAuthority,
+                recoveryMnemonic: recoveryMnemonic,
+                settings: settings, kdf: .mobile, sink: sink)
+        }
+        await adopt(session)
+        UserDefaults.standard.set(false, forKey: "komms.recovery-authority.pending")
+        requiresRecoveryAuthorityExport = false
+        try? excludeFromBackup(dir)
+    }
+
+    func prepareAuthorityMigration(
+        passphrase: String,
+        recoveryPath: URL
+    ) async throws -> String {
+        let dir = dataDir
+        return try await run {
+            try Session.prepareAlphaAuthorityMigration(
+                dataDir: dir, passphrase: passphrase, recoveryPath: recoveryPath)
+        }
+    }
+
+    func prepareAuthorityReset(
+        passphrase: String,
+        recoveryPath: URL
+    ) async throws -> AuthorityResetPreparation {
+        let dir = dataDir
+        return try await run {
+            try Session.prepareAlphaAuthorityReset(
+                dataDir: dir, passphrase: passphrase, recoveryPath: recoveryPath)
+        }
+    }
+
+    func prepareLegacyBackupAuthorityReset(
+        recoveryPath: URL
+    ) async throws -> AuthorityResetPreparation {
+        try await run {
+            try Session.prepareLegacyArchiveReset(recoveryPath: recoveryPath)
+        }
+    }
+
+    func completeAuthorityUpgrade(
+        reset: Bool,
+        passphrase: String,
+        recoveryPath: URL,
+        recoveryMnemonic: String
+    ) async throws {
+        let dir = dataDir
+        let settings = try NetworkSettings.load(from: dir)
+        let sink = sink()
+        let session = try await run {
+            if reset {
+                return try Session.resetAuthority(
+                    dataDir: dir, passphrase: passphrase,
+                    recoveryPackagePath: recoveryPath,
+                    recoveryMnemonic: recoveryMnemonic,
+                    settings: settings, kdf: .mobile, sink: sink)
+            }
+            return try Session.migrateAuthority(
+                dataDir: dir, passphrase: passphrase,
+                recoveryPackagePath: recoveryPath,
+                recoveryMnemonic: recoveryMnemonic,
                 settings: settings, kdf: .mobile, sink: sink)
         }
         await adopt(session)
@@ -241,6 +321,9 @@ final class AppModel: ObservableObject {
         customIcons = [:]
         customIconUsage = CustomIconQuotaUsage(records: 0, bytes: 0)
         linkedDevices = []
+        deviceAuthorityConflicts = []
+        contactAuthorityConflicts = []
+        authorityResetHistory = nil
         calls = []
         callAvailability = [:]
     }
@@ -260,7 +343,10 @@ final class AppModel: ObservableObject {
             [weak self] _ in
             Task { @MainActor in await self?.refresh() }
         }
-        Task { await refresh() }
+        Task {
+            await refreshDevices()
+            await refresh()
+        }
     }
 
     private func excludeFromBackup(_ dir: URL) throws {
@@ -277,6 +363,16 @@ final class AppModel: ObservableObject {
         case .callUpdated(let call):
             receive(call)
         case .devicesChanged:
+            Task { await refreshDevices() }
+        case .deviceAuthorityFork(_, _, let recoveryEpoch):
+            notices.append(
+                "A device-authority fork was detected in recovery epoch \(recoveryEpoch). "
+                + "Authority is fail-closed; review Linked devices.")
+            Task { await refreshDevices() }
+        case .deviceRecoveryConflict(_, _, let recoveryEpoch):
+            notices.append(
+                "Conflicting recoveries claim epoch \(recoveryEpoch). "
+                + "Authority is fail-closed; review Linked devices.")
             Task { await refreshDevices() }
         case .deviceLinkCompleted:
             Task {
@@ -436,8 +532,18 @@ final class AppModel: ObservableObject {
 
     func refreshDevices() async {
         guard let session,
-              let devices = try? await run({ try session.linkedDevices() }) else { return }
-        linkedDevices = devices
+              let snapshot = try? await run({
+                  (
+                    try session.linkedDevices(),
+                    try session.deviceAuthorityConflicts(),
+                    try session.contactAuthorityConflicts(),
+                    try session.authorityResetHistory()
+                  )
+              }) else { return }
+        linkedDevices = snapshot.0
+        deviceAuthorityConflicts = snapshot.1
+        contactAuthorityConflicts = snapshot.2
+        authorityResetHistory = snapshot.3
     }
 
     func beginDeviceLink() async throws -> String {
@@ -473,6 +579,21 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func deviceLinkApprovalRequest() async throws -> String {
+        guard let session else { throw InputError("locked") }
+        return try await run { try session.deviceLinkApprovalRequest() }
+    }
+
+    func approveDeviceLinkRequest(_ requestHex: String) async throws -> String {
+        guard let session else { throw InputError("locked") }
+        return try await run { try session.approveDeviceLinkRequest(requestHex: requestHex) }
+    }
+
+    func acceptDeviceLinkApproval(_ approvalHex: String) async throws -> String? {
+        guard let session else { throw InputError("locked") }
+        return try await run { try session.acceptDeviceLinkApproval(approvalHex: approvalHex) }
+    }
+
     func completeDeviceLink(packageHex: String, confirmed: Bool) async throws {
         guard let session else { throw InputError("locked") }
         try await run { try session.completeDeviceLink(packageHex: packageHex, confirmed: confirmed) }
@@ -490,6 +611,27 @@ final class AppModel: ObservableObject {
         guard let session else { throw InputError("locked") }
         try await run { try session.revokeLinkedDevice(device: device, confirmed: confirmed) }
         await refreshDevices()
+    }
+
+    func deviceAuthorityApprovalRequest() async throws -> String {
+        guard let session else { throw InputError("locked") }
+        return try await run { try session.deviceAuthorityApprovalRequest() }
+    }
+
+    func approveDeviceAuthorityRequest(_ requestHex: String) async throws -> String {
+        guard let session else { throw InputError("locked") }
+        return try await run {
+            try session.approveDeviceAuthorityRequest(requestHex: requestHex)
+        }
+    }
+
+    func acceptDeviceAuthorityApproval(_ approvalHex: String) async throws -> Bool {
+        guard let session else { throw InputError("locked") }
+        let committed = try await run {
+            try session.acceptDeviceAuthorityApproval(approvalHex: approvalHex)
+        }
+        if committed { await refreshDevices() }
+        return committed
     }
 
     func exportDeviceSync(device: String) async throws -> String {
@@ -539,8 +681,10 @@ final class AppModel: ObservableObject {
                 var freshGroups: [String: [GroupMessage]] = [:]
                 var freshPolls: [String: [GroupPoll]] = [:]
                 var freshAuthorities: [String: GroupAuthority] = [:]
+                var freshSecurities: [String: GroupSecurity] = [:]
                 for group in liveGroups {
                     freshAuthorities[group.id] = try session.groupAuthority(group: group.id)
+                    freshSecurities[group.id] = try session.groupSecurity(group: group.id)
                 }
                 for group in followedGroups where liveIds.contains(group) {
                     freshGroups[group] = try session.groupMessages(group: group)
@@ -590,6 +734,7 @@ final class AppModel: ObservableObject {
                     groups: liveGroups, groupHistories: freshGroups,
                     groupPolls: freshPolls,
                     groupAuthorities: freshAuthorities,
+                    groupSecurities: freshSecurities,
                     scheduled: try session.scheduledMessages(), attachments: try session.attachments(),
                     notes: try session.noteToSelfMessages(), folders: folders,
                     staleFolders: try session.staleFolders(), folderWasMissing: missingFolder,
@@ -605,6 +750,7 @@ final class AppModel: ObservableObject {
             groupHistories.merge(snapshot.groupHistories) { _, new in new }
             groupPolls.merge(snapshot.groupPolls) { _, new in new }
             groupAuthorities = snapshot.groupAuthorities
+            groupSecurities = snapshot.groupSecurities
             scheduledMessages = snapshot.scheduled
             attachments = snapshot.attachments
             noteHistory = snapshot.notes
@@ -645,8 +791,16 @@ final class AppModel: ObservableObject {
         guard let session else { return }
         let history = try await run { try session.groupMessages(group: group) }
         let polls = try await run { try session.groupPolls(group: group) }
+        let security = try await run { try session.groupSecurity(group: group) }
         groupHistories[group] = history
         groupPolls[group] = polls
+        groupSecurities[group] = security
+    }
+
+    func upgradeGroupSecurity(group: String) async throws {
+        guard let session else { throw InputError("node is locked") }
+        try await run { try session.upgradeGroupSecurity(group: group) }
+        await refresh()
     }
 
     /// Stable identity used by the local note-to-self route in every shell.
@@ -1363,6 +1517,7 @@ final class AppModel: ObservableObject {
     func markVerified(peer: String) async throws {
         guard let session else { return }
         try await run { try session.markVerified(peer: peer) }
+        await refreshDevices()
         await refresh()
     }
 
@@ -1473,6 +1628,16 @@ final class AppModel: ObservableObject {
         guard let session else { throw InputError("node is locked") }
         return try await run { try session.exportBackup(to: path) }
     }
+
+    func exportAccountRecoveryAuthority(to path: URL) async throws -> String {
+        guard let session else { throw InputError("node is locked") }
+        return try await run { try session.exportAccountRecoveryAuthority(to: path) }
+    }
+
+    func completeRecoveryAuthorityOnboarding() {
+        UserDefaults.standard.set(false, forKey: "komms.recovery-authority.pending")
+        requiresRecoveryAuthorityExport = false
+    }
 }
 
 private struct AppRefreshSnapshot: Sendable {
@@ -1483,6 +1648,7 @@ private struct AppRefreshSnapshot: Sendable {
     let groupHistories: [String: [GroupMessage]]
     let groupPolls: [String: [GroupPoll]]
     let groupAuthorities: [String: GroupAuthority]
+    let groupSecurities: [String: GroupSecurity]
     let scheduled: [ScheduledMessage]
     let attachments: [Attachment]
     let notes: [NoteMessage]

@@ -93,9 +93,11 @@ filesystem corruption, snapshot rollback, or flash remapping.
 
 ## 3. Backup and restore boundary
 
-Encrypted `KKR1` through `KKR7` files decode into versioned logical records.
-The decrypted backup payload contains the intended portable identity, contact,
-history, group, metadata, note, tombstone, and linked-device records. It never
+Encrypted `KKR1` through `KKR8` files decode into versioned logical records.
+Only current root-free `KKR8` resumes its stable public identity. Legacy
+`KKR1`–`KKR7` is decode-only in production and is projected into a
+fresh-identity local archive that omits
+groups and live protocol state. The decrypted payload never
 contains the source database id, keyed locators or indexes, SQLite pages, or
 wrapped opaque-store row ciphertext.
 

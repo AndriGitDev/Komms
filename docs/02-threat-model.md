@@ -143,7 +143,7 @@ viewer, or defeat A7. Exact behavior is in
 | Goal | Meaning | Mechanism |
 |---|---|---|
 | **Confidentiality** | Only intended recipients read content. | XChaCha20-Poly1305 AEAD under Double Ratchet keys. |
-| **Integrity & authenticity** | Pairwise messages and signed authority state cannot be altered or forged by an outsider. | AEAD tags and identity-key-signed handshakes protect pairwise lanes; signed group authority state is attributable. Current sender-key group content has only membership-level authenticity, so a malicious member can impersonate another member until [ADR-0029](adr/0029-recipient-authenticated-groups.md) is implemented. |
+| **Integrity & authenticity** | Pairwise messages, recipient-authenticated group events, and signed authority state cannot be altered or forged as another accepted sender. | AEAD tags and identity-key-signed handshakes protect pairwise lanes; ADR-0029 binds each shared group ciphertext to the verified sender account/device separately for every recipient; signed group authority state is attributable. Group event authentication remains recipient-deniable rather than publicly verifiable. |
 | **Forward secrecy** | Key compromise doesn't expose past messages. | Symmetric + DH ratchets; keys zeroized after use. |
 | **Post-compromise security** | Security self-heals after transient compromise. | DH ratchet steps on every round trip. |
 | **Post-quantum confidentiality** | A6 resistance for content. | Hybrid PQXDH-style handshake (ML-KEM-768). |
@@ -155,8 +155,8 @@ viewer, or defeat A7. Exact behavior is in
 | **Local input minimization** | Reduce keyboard learning, correction, spellcheck, autofill, and secret-field exposure where native APIs permit. | Always-on B15 field controls and explicit best-effort/unavailable states; not an endpoint-compromise defense. |
 | **Identity-text safety** | Keep mutable human labels from becoming identity or silently hiding spoofing risk. | Exact peer-key targeting, NFC normalization, duplicate/confusable/bidi/invisible warnings, and explicit review for warned B5 renames. |
 | **Active-content isolation** | Authenticated message text must not become executable or network-active content. | B9 keeps exact source, applies a bounded local parser, exports only inert block/run tokens, literal-falls back on complexity, and never interprets HTML, links, images, or URL schemes. |
-| **Edit provenance** | A pairwise peer must not rewrite another author's message, and offline endpoints must agree about the visible version. | C3 immutable edit events bind exact author/content ids inside authenticated content; wrong-author/wrong-scope events never apply, and maximum `(revision, edit id)` converges without clocks. Current group edits still inherit sender-key member impersonation until ADR-0029. |
-| **Poll convergence and honesty** | Replicas must tally the same received events; stable release must also prevent one member from casting another member's vote. | C5 fixes the creation-declared electorate, selects maximum `(revision, event id)`, and freezes a close snapshot claimed by the creator. Convergence is implemented, but voter, creator, and close-origin authentication remain open under ADR-0029; the UI says votes are visible and never claims anonymity or election fairness. |
+| **Edit provenance** | An accepted peer or group member must not rewrite another author's message, and offline endpoints must agree about the visible version. | C3 immutable edit events bind exact author/content ids inside authenticated content; ADR-0029 derives group authors from a verified sender device before state application; wrong-author/wrong-scope events never apply, and maximum `(revision, edit id)` converges without clocks. |
+| **Poll convergence and honesty** | Replicas must tally the same received events and one member must not cast another member's vote. | C5 fixes the creation-declared electorate, selects maximum `(revision, event id)`, and freezes a close snapshot from the recipient-authenticated creator. Votes remain visible and the protocol does not claim anonymity, fairness, completeness, or protection from a creator closing early. |
 | **Group authority convergence** | A stale admin or losing ownership fork must not regain authority or future group secrets. | C6 signs canonical full role state and transfer certificates, binds admin requests to one generation, serializes mutations at one owner, rejects non-extending transfer chains, and re-keys every accepted transition. |
 | **Sovereignty** | Users hold their own keys and data; anyone can run every component. | Local-first storage, AGPLv3, no privileged nodes. |
 
@@ -171,15 +171,16 @@ or a global passive observer. Service compromise can suppress convenience work
 but cannot decrypt or forge an accepted Komms message.
 
 Message editing does not erase evidence or extend pairwise sender authority. The
-original and accepted versions remain sealed locally and in backups; in a
-pairwise conversation only the exact authenticated author can target canonical
-text in that conversation. Current sender-key groups validate the claimed author
-against membership but cannot stop a malicious member from forging another
-member's edit; ADR-0029 is required before extending the pairwise authorship
-claim to groups. Display names, local timestamps, and arrival order cannot
-authorize or select a winner. A malicious peer can send many authenticated
-attempts and consume its own conversation storage, so local authors are capped
-at 64 edits per target; authenticated inbound events remain durable to preserve
+original and accepted versions remain sealed locally and in backups. In both a
+pairwise conversation and an upgraded group, only the exact authenticated
+author can target canonical text in that conversation. Group authors come from
+the verified pairwise sender device and accepted authority chain before the
+edit state machine runs; a content field, display name, timestamp, arrival
+order, delivery token alone, or sender-chain id cannot authorize an edit.
+Legacy group rows retain their membership-authenticated label. A malicious
+peer can send many authenticated attempts and consume its own conversation
+storage, so local authors are capped at 64 edits per target; authenticated
+inbound events remain durable to preserve
 convergence. Recipients may retain, copy, capture, or export any prior version,
 and the UI never describes editing as remote deletion. Exact limits are in
 [18: Authenticated Message Editing](18-message-editing.md).
@@ -195,15 +196,13 @@ Komms's ordinary preview/export/playback paths but is not DRM or universal
 screenshot prevention. See
 [19: Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md).
 
-C5 group polls protect content from intermediaries and deterministically converge,
-but the current shared sender-key construction authenticates only that an event
-came from some member. A malicious member can therefore forge another member's
-apparent vote until ADR-0029 adds recipient-verifiable origin authentication.
-Every holder of the poll can inspect current apparent voter identities and
-choices. The creator attests the fixed electorate and final observed vote-head
-snapshot, so a malicious creator can close before an offline vote arrives or
-omit an observed head in a forged close event; deterministic convergence is not
-proof of fair or complete counting. Outsider, unknown-option, duplicate,
+C5 group polls protect content from intermediaries, authenticate each voter and
+creator separately to every recipient device, and deterministically converge.
+Every holder of the poll can inspect current voter identities and choices. The
+creator attests the fixed electorate and final observed vote-head snapshot, so a
+malicious creator can still close before an offline vote arrives or omit an
+observed head; deterministic convergence is not proof of fair or complete
+counting. Outsider, wrong-origin, unknown-option, duplicate,
 delayed, and reordered events do not change the defined result. Removed members
 retain what they already received. See [20: Group Polls](20-group-polls.md),
 [ADR-0022](adr/0022-convergent-group-polls.md), and
@@ -224,16 +223,18 @@ requests from removed/demoted admins fail closed. See
 
 C2 prevents two installations from sharing live ratchet or sender-chain state,
 but it does not make an authorized device harmless. Every physical endpoint has
-an account-signed certificate and independent delivery cryptography; manifests,
-link transcripts, sync events, counters, and revocations are authenticated and
-rollback/replay checked. A compromised authorized device can retain plaintext,
-emit account-authorized events, race manifests, or—because ADR-0024 currently
-copies the account root—mint a fresh certificate even after its known device id
-is revoked. Current revocation excludes that exact id from honest future
-delivery and sync; it is not permanent containment of a compromised device.
-ADR-0026 moves the root offline and requires prior-device majority authority.
-Explicit bounded sync has no server log and excludes live queues/ratchets,
-active ephemeral content, downloaded media, drafts, and scheduled outbox rows. See
+an immutable device-owned certificate and independent delivery cryptography;
+`KDA2` manifests, link transcripts, sync events, counters, and revocations are
+authenticated and rollback/replay checked. The account root is an offline
+recovery authority and never enters ordinary linked-device state. A compromised
+minority device can retain plaintext and emit device-authorized data events, but
+cannot unilaterally add, replace, rename, or revoke credentials; ordinary
+authority requires a strict majority of the previous active set. Compromise of
+a majority can authorize a branch. Concurrent branches and same-epoch root
+recoveries remain visible and fail closed. Theft of the offline root remains
+ultimate account takeover and can revoke every device. Explicit bounded sync
+has no server log and excludes live queues/ratchets, active ephemeral content,
+downloaded media, drafts, and scheduled outbox rows. See
 [22: Linked Devices](22-linked-devices.md) and
 [ADR-0026](adr/0026-revocable-device-authority.md).
 
@@ -245,7 +246,7 @@ folder/label view preferences remain device-local. An organization operation
 creates no envelope, mailbox, mesh, sneakernet,
 LAN, internet, DHT, capability, sender-key, ratchet, delivery-token, analytics,
 or remote-notification work. A copied SQLite database reveals only the already
-accepted row count and approximate sealed blob sizes. `KKR7` is the current folder,
+accepted row count and approximate sealed blob sizes. `KKR8` is the current folder,
 pin, or label backup format. None has server, contact, or service
 synchronization; C2 may carry them only in authenticated encrypted bundles
 between account-authorized owned devices. Once rendered on an unlocked endpoint, organization text has

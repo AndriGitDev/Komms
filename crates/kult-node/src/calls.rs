@@ -1007,15 +1007,10 @@ impl Node {
         Ok(devices)
     }
 
-    /// Single-device wire compatibility authenticates the stable account key
-    /// as its sole endpoint. Once C2 is active, every ratchet endpoint is the
-    /// separately certified physical-device key instead.
+    /// Every live ADR-0026 call endpoint is the separately certified
+    /// physical-device key, including accounts with only one active device.
     fn call_local_device_id(&self) -> [u8; 32] {
-        if self.linked_devices().len() > 1 {
-            self.device_id()
-        } else {
-            self.peer_id()
-        }
+        self.device_id()
     }
 
     fn has_live_call(&self) -> bool {

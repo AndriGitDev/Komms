@@ -241,10 +241,11 @@ resolver hides edit events, retains ordered versions, and selects maximum
 `edit_message` and `group_edit_message`; CLI commands are `edit` and
 `group-edit`; UniFFI mirrors them and the typed refresh events. The complete
 wire, storage, shell, and qualification contract is
-[18: Authenticated Message Editing](18-message-editing.md). Do not describe the
-current group sender field as individual-origin authentication: a member can
-forge another member's apparent edit until
-[ADR-0029](adr/0029-recipient-authenticated-groups.md) is implemented.
+[18: Authenticated Message Editing](18-message-editing.md). Never infer a group
+author from the sender-chain id, content field, roster position, petname, or
+delivery token alone. ADR-0029 requires a verified pairwise device certificate,
+accepted device-authority chain, and recipient origin tag before applying an
+edit. Legacy membership-authenticated rows remain visibly distinct.
 
 C4 is a replicated lifecycle feature, not a timer implemented by each shell.
 Only the dedicated pair/group disappearing and view-once APIs may create
@@ -269,8 +270,9 @@ list and votes are visible, not anonymous. RPC uses `group_poll_create`,
 hyphenated commands; UniFFI exposes `GroupPoll` and `PollUpdated`. Shells render
 the node snapshot and never resolve raw events. The complete contract is
 [20: Group Polls](20-group-polls.md) and
-[ADR-0022](adr/0022-convergent-group-polls.md). These rules prove convergence,
-not malicious-member origin; ADR-0029 is required for that property.
+[ADR-0022](adr/0022-convergent-group-polls.md). ADR-0029 supplies the separate
+recipient-authenticated voter and creator origin; deterministic resolution
+still does not prove fairness, completeness, or anonymity.
 
 C6 authority is a signed control plane over the existing sender-key group, not
 mutable role flags in a shell. Use only content-v1 kind `0x0007` for canonical

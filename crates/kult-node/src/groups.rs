@@ -10,35 +10,43 @@ use std::collections::HashSet;
 
 use rand_core::CryptoRngCore;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use kult_crypto::{
-    GroupHeaderKey, GroupMessage, GroupReceiverChain, GroupSenderChain, IdentityPublic, Session,
+    DeviceAuthorityManifest, GroupHeaderKey, GroupMessage, GroupOriginContext, GroupOriginEnvelope,
+    GroupReceiverChain, GroupSenderChain, IdentityPublic, Session, GROUP_MESSAGE_VERSION_ORIGIN,
+    GROUP_ORIGIN_ENVELOPE_MAGIC,
 };
 use kult_protocol::{
     decode_content, decode_group_authority, delivery_token, encode_disappearing_text_payload,
     encode_edit, encode_ephemeral, encode_mention, encode_text, epoch_day, pad, retention_bucket,
     unpad, DecodedContent, DecodedGroupAuthority, Edit, Envelope, EnvelopeKind, Ephemeral,
-    GroupAnnounce, GroupAuthorityAnnounce, GroupControlPayload, GroupMemberInfo, MailboxKey, Poll,
-    ReceiptPayload, CONTENT_FORMAT_V1, CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL,
-    CONTENT_KIND_MENTION, MAX_EDIT_TEXT_LEN, MAX_EPHEMERAL_LIFETIME_SECS,
-    MAX_GROUP_AUTHORITY_MEMBERS, MAX_GROUP_MEMBER_IDENTITY_LEN, MIN_EPHEMERAL_LIFETIME_SECS,
+    GroupAnnounce, GroupAuthorityAnnounce, GroupControlPayload, GroupMemberInfo,
+    GroupOriginAnnounce, GroupOriginAuthorityAnnounce, MailboxKey, Poll, ReceiptPayload,
+    CONTENT_FORMAT_V1, CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL, CONTENT_KIND_MENTION,
+    GROUP_ORIGIN_CAPABILITY_FORMAT, GROUP_ORIGIN_CAPABILITY_KIND, MAX_EDIT_TEXT_LEN,
+    MAX_EPHEMERAL_LIFETIME_SECS, MAX_GROUP_AUTHORITY_MEMBERS, MAX_GROUP_MEMBER_IDENTITY_LEN,
+    MIN_EPHEMERAL_LIFETIME_SECS,
 };
 use kult_store::{
     ContactDeviceRecord, ContactRecord, ContactTransition, DeferredControlRecord, DeliveryState,
     DeliveryTransition, Direction, EphemeralConversation, EphemeralMode, EphemeralRecord,
     EphemeralState, GroupAuthorityRecord, GroupAuthorityStateTransition, GroupAuthorityTransition,
     GroupChainStateTransition, GroupChainTransition, GroupDelivery, GroupMember,
-    GroupMessageRecord, GroupMessageTransition, GroupReceivePlan, GroupRecord, GroupSendPlan,
-    GroupStatePlan, GroupStateTransition, GroupTransition, MediaDirection, MediaRecord, MediaScope,
-    MediaTransferState, MediaTransferTransition, MessageDeviceDeliveryRecord, PairwiseSendPlan,
-    PendingAnnounce, PendingDelete, QueueClass, QueueItem, ScheduledMessageRecord,
-    SessionTransition,
+    GroupMessageRecord, GroupMessageTransition, GroupOriginAuthentication, GroupPendingFanout,
+    GroupPendingFanoutRoute, GroupReceivePlan, GroupRecord, GroupSendPlan, GroupStatePlan,
+    GroupStateTransition, GroupTransition, MaintenancePlan, MediaDirection, MediaRecord,
+    MediaScope, MediaTransferState, MediaTransferTransition, MessageDeviceDeliveryRecord,
+    PairwiseSendPlan, PendingAnnounce, PendingDelete, QueueClass, QueueDelete, QueueItem,
+    ScheduledMessageRecord, SessionTransition, GROUP_PENDING_FANOUT_MAGIC,
+    MAX_MAINTENANCE_TRANSITIONS,
 };
 
 use crate::api::{
-    GroupInfo, GroupMentionCapability, MentionCapabilityIssue, MentionCapabilityIssueReason,
-    MentionSpan, ResolvedGroupMessage,
+    GroupInfo, GroupMentionCapability, GroupSecurityInfo, GroupSecurityLevel,
+    MentionCapabilityIssue, MentionCapabilityIssueReason, MentionSpan, ResolvedGroupMessage,
 };
 use crate::{
     CommitPlan, Consumed, ContentStatus, Event, Node, NodeError, PreparedDeliveryUpdate, Result,
@@ -53,13 +61,62 @@ const GROUP_ROTATE_MSGS: u32 = 1000;
 /// retries handle a flaky link; this covers an envelope lost in transit
 /// outright (a member missing one announce is deaf to its sender).
 const GROUP_ANNOUNCE_RETRY_SECS: u64 = 900;
-const DEVICE_GROUP_CHAINS_MAGIC: &[u8; 4] = b"KGC2";
+const LEGACY_DEVICE_GROUP_CHAINS_V2_MAGIC: &[u8; 4] = b"KGC2";
+const LEGACY_DEVICE_GROUP_CHAINS_V3_MAGIC: &[u8; 4] = b"KGC3";
+const DEVICE_GROUP_CHAINS_MAGIC: &[u8; 4] = b"KGC4";
+const LEGACY_GROUP_SENDER_ORIGIN_MAGIC: &[u8; 4] = b"KGS2";
+const GROUP_SENDER_ORIGIN_MAGIC: &[u8; 4] = b"KGS3";
 const MAX_DEVICE_GROUP_CHAINS: usize = 64;
+const MAX_GROUP_ORIGIN_ROUTES: usize = MAX_GROUP_AUTHORITY_MEMBERS * 8;
 
 #[derive(Serialize, Deserialize)]
 struct DeviceGroupReceiverChain {
     device: [u8; 32],
     chain: GroupReceiverChain,
+    origin_key: Option<[u8; 32]>,
+    recipient_device: [u8; 32],
+    origin_generation: u64,
+    origin_announce_digest: [u8; 32],
+}
+
+#[derive(Serialize, Deserialize)]
+struct LegacyDeviceGroupReceiverChainV2 {
+    device: [u8; 32],
+    chain: GroupReceiverChain,
+}
+
+#[derive(Serialize, Deserialize)]
+struct LegacyDeviceGroupReceiverChainV3 {
+    device: [u8; 32],
+    chain: GroupReceiverChain,
+    origin_key: Option<[u8; 32]>,
+    recipient_device: [u8; 32],
+}
+
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+struct OutgoingGroupOrigin {
+    recipient_account: [u8; 32],
+    recipient_device: [u8; 32],
+    key_id: [u8; 16],
+    chain_key: [u8; 32],
+    iteration: u32,
+    origin_key: [u8; 32],
+    wire_id: Option<[u8; 16]>,
+    last_sent: u64,
+    acknowledged: bool,
+}
+
+#[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+struct GroupSenderState {
+    origin_generation: u64,
+    chain: GroupSenderChain,
+    origins: Vec<OutgoingGroupOrigin>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct LegacyGroupSenderState {
+    chain: GroupSenderChain,
+    origins: Vec<OutgoingGroupOrigin>,
 }
 
 #[derive(Default)]
@@ -69,6 +126,7 @@ struct PreparedGroupCopy {
     delivery_updates: Vec<(MessageDeviceDeliveryRecord, MessageDeviceDeliveryRecord)>,
     first_wire: Option<[u8; 16]>,
     all_served: bool,
+    completed_routes: Vec<([u8; 32], [u8; 32])>,
 }
 
 struct PreparedGroupControl {
@@ -84,7 +142,34 @@ struct PreparedGroupControlRoute {
     reset: bool,
 }
 
+type GroupRouteDevice = ([u8; 32], [u8; 32], bool);
 type PreparedGroupReceiverChainUpdate = (Option<zeroize::Zeroizing<Vec<u8>>>, Option<Vec<u8>>);
+
+#[derive(Clone, Copy)]
+pub(crate) struct AuthenticatedGroupSender {
+    pub(crate) account: [u8; 32],
+    pub(crate) device: [u8; 32],
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct GroupOriginMaterial {
+    pub(crate) key: [u8; 32],
+    pub(crate) generation: u64,
+}
+
+pub(crate) struct GroupReceiverChainMaterial {
+    pub(crate) key_id: [u8; 16],
+    pub(crate) chain_key: [u8; 32],
+    pub(crate) iteration: u32,
+    pub(crate) origin: Option<GroupOriginMaterial>,
+}
+
+struct GroupInboundContext {
+    peer: [u8; 32],
+    envelope_retention: Option<u64>,
+    origin: Option<([u8; 16], GroupOriginAuthentication)>,
+    now: u64,
+}
 
 struct PreparedGroupInbound {
     message: Option<GroupMessageRecord>,
@@ -105,35 +190,159 @@ pub(crate) struct PreparedAuthorityGroupState {
     pub(crate) authority_after: GroupAuthorityRecord,
 }
 
+#[allow(clippy::too_many_arguments)] // fixed authenticated announce context
+fn group_origin_announce_digest(
+    group: &[u8; 32],
+    sender_account: &[u8; 32],
+    sender_device: &[u8; 32],
+    recipient_account: &[u8; 32],
+    recipient_device: &[u8; 32],
+    origin_generation: u64,
+    key_id: &[u8; 16],
+    chain_key: &[u8; 32],
+    iteration: u32,
+    origin_key: &[u8; 32],
+) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"Komms-Group-Origin-Announce-v1");
+    digest.update(group);
+    digest.update(sender_account);
+    digest.update(sender_device);
+    digest.update(recipient_account);
+    digest.update(recipient_device);
+    digest.update(origin_generation.to_le_bytes());
+    digest.update(key_id);
+    digest.update(chain_key);
+    digest.update(iteration.to_le_bytes());
+    digest.update(origin_key);
+    digest.finalize().into()
+}
+
 fn decode_device_group_chains(
     bytes: &[u8],
     legacy_device: [u8; 32],
 ) -> Result<Vec<DeviceGroupReceiverChain>> {
-    if let Some(body) = bytes.strip_prefix(DEVICE_GROUP_CHAINS_MAGIC) {
-        let (chains, remainder): (Vec<DeviceGroupReceiverChain>, &[u8]) =
-            postcard::take_from_bytes(body).map_err(|_| NodeError::CorruptState)?;
-        if !remainder.is_empty()
-            || chains.is_empty()
-            || chains.len() > MAX_DEVICE_GROUP_CHAINS
-            || chains
-                .windows(2)
-                .any(|pair| pair[0].device >= pair[1].device)
-        {
-            return Err(NodeError::CorruptState);
-        }
-        return Ok(chains);
+    let (chains, permits_unordered_origin) =
+        if let Some(body) = bytes.strip_prefix(DEVICE_GROUP_CHAINS_MAGIC) {
+            let (chains, remainder): (Vec<DeviceGroupReceiverChain>, &[u8]) =
+                postcard::take_from_bytes(body).map_err(|_| NodeError::CorruptState)?;
+            if !remainder.is_empty() {
+                return Err(NodeError::CorruptState);
+            }
+            (chains, false)
+        } else if let Some(body) = bytes.strip_prefix(LEGACY_DEVICE_GROUP_CHAINS_V3_MAGIC) {
+            let (chains, remainder): (Vec<LegacyDeviceGroupReceiverChainV3>, &[u8]) =
+                postcard::take_from_bytes(body).map_err(|_| NodeError::CorruptState)?;
+            if !remainder.is_empty() {
+                return Err(NodeError::CorruptState);
+            }
+            (
+                chains
+                    .into_iter()
+                    .map(|entry| DeviceGroupReceiverChain {
+                        device: entry.device,
+                        chain: entry.chain,
+                        origin_key: entry.origin_key,
+                        recipient_device: entry.recipient_device,
+                        // KGC3 never carried an ordering value or the original
+                        // chain-snapshot commitment. A fresh authenticated announce
+                        // upgrades it once instead of guessing ordering.
+                        origin_generation: 0,
+                        origin_announce_digest: [0u8; 32],
+                    })
+                    .collect(),
+                true,
+            )
+        } else if let Some(body) = bytes.strip_prefix(LEGACY_DEVICE_GROUP_CHAINS_V2_MAGIC) {
+            let (chains, remainder): (Vec<LegacyDeviceGroupReceiverChainV2>, &[u8]) =
+                postcard::take_from_bytes(body).map_err(|_| NodeError::CorruptState)?;
+            if !remainder.is_empty() {
+                return Err(NodeError::CorruptState);
+            }
+            (
+                chains
+                    .into_iter()
+                    .map(|entry| DeviceGroupReceiverChain {
+                        device: entry.device,
+                        chain: entry.chain,
+                        origin_key: None,
+                        recipient_device: [0u8; 32],
+                        origin_generation: 0,
+                        origin_announce_digest: [0u8; 32],
+                    })
+                    .collect(),
+                false,
+            )
+        } else {
+            let chain = postcard::from_bytes(bytes).map_err(|_| NodeError::CorruptState)?;
+            (
+                vec![DeviceGroupReceiverChain {
+                    device: legacy_device,
+                    chain,
+                    origin_key: None,
+                    recipient_device: [0u8; 32],
+                    origin_generation: 0,
+                    origin_announce_digest: [0u8; 32],
+                }],
+                false,
+            )
+        };
+    if chains.is_empty()
+        || chains.len() > MAX_DEVICE_GROUP_CHAINS
+        || chains
+            .windows(2)
+            .any(|pair| pair[0].device >= pair[1].device)
+        || chains.iter().any(|entry| match entry.origin_key {
+            Some(key) => {
+                key == [0u8; 32]
+                    || entry.recipient_device == [0u8; 32]
+                    || (entry.origin_generation == 0 && !permits_unordered_origin)
+                    || (entry.origin_generation == 0 && entry.origin_announce_digest != [0u8; 32])
+                    || (entry.origin_generation != 0 && entry.origin_announce_digest == [0u8; 32])
+            }
+            None => {
+                entry.recipient_device != [0u8; 32]
+                    || entry.origin_generation != 0
+                    || entry.origin_announce_digest != [0u8; 32]
+            }
+        })
+    {
+        return Err(NodeError::CorruptState);
     }
-    let chain = postcard::from_bytes(bytes).map_err(|_| NodeError::CorruptState)?;
-    Ok(vec![DeviceGroupReceiverChain {
-        device: legacy_device,
-        chain,
-    }])
+    Ok(chains)
 }
 
 fn encode_device_group_chains(chains: &mut Vec<DeviceGroupReceiverChain>) -> Result<Vec<u8>> {
+    for entry in chains.iter_mut().filter(|entry| {
+        entry.origin_key.is_some()
+            && entry.origin_generation == 0
+            && entry.origin_announce_digest == [0u8; 32]
+    }) {
+        // KGC3 carried no monotonic ordering or immutable announce
+        // commitment. Once any row is rewritten, retire that unordered
+        // capability and require a fresh authenticated announce.
+        entry.origin_key.zeroize();
+        entry.origin_key = None;
+        entry.recipient_device = [0u8; 32];
+    }
     chains.sort_by_key(|entry| entry.device);
     chains.dedup_by_key(|entry| entry.device);
-    if chains.is_empty() || chains.len() > MAX_DEVICE_GROUP_CHAINS {
+    if chains.is_empty()
+        || chains.len() > MAX_DEVICE_GROUP_CHAINS
+        || chains.iter().any(|entry| match entry.origin_key {
+            Some(key) => {
+                key == [0u8; 32]
+                    || entry.recipient_device == [0u8; 32]
+                    || entry.origin_generation == 0
+                    || entry.origin_announce_digest == [0u8; 32]
+            }
+            None => {
+                entry.recipient_device != [0u8; 32]
+                    || entry.origin_generation != 0
+                    || entry.origin_announce_digest != [0u8; 32]
+            }
+        })
+    {
         return Err(NodeError::CorruptState);
     }
     let body = postcard::to_allocvec(chains).map_err(|_| NodeError::CorruptState)?;
@@ -146,6 +355,350 @@ fn encode_device_group_chains(chains: &mut Vec<DeviceGroupReceiverChain>) -> Res
 impl Node {
     // ---- commands -----------------------------------------------------------
 
+    fn group_route_devices(&self, members: &[GroupMember]) -> Result<Vec<GroupRouteDevice>> {
+        let me = self.account.ed;
+        let mut routes = Vec::new();
+        for member in members.iter().filter(|member| member.peer != me) {
+            let mut endpoints = self
+                .store
+                .contact_devices_for(&member.peer)?
+                .into_iter()
+                .filter(|endpoint| endpoint.revoked_at.is_none())
+                .collect::<Vec<_>>();
+            endpoints.sort_unstable_by_key(|endpoint| endpoint.device);
+            endpoints.dedup_by_key(|endpoint| endpoint.device);
+            if endpoints.is_empty() {
+                routes.push((member.peer, member.peer, false));
+                continue;
+            }
+            for endpoint in endpoints {
+                let authorized = DeviceAuthorityManifest::decode(&endpoint.authority)
+                    .ok()
+                    .filter(|manifest| manifest.verify().is_ok())
+                    .is_some_and(|manifest| {
+                        manifest.account().ed == member.peer
+                            && manifest.active_certificate(&endpoint.device).is_some()
+                    });
+                routes.push((member.peer, endpoint.device, authorized));
+            }
+        }
+        routes.sort_unstable_by_key(|(account, device, _)| (*account, *device));
+        routes.dedup_by_key(|(account, device, _)| (*account, *device));
+        if routes.len() > MAX_GROUP_ORIGIN_ROUTES {
+            return Err(NodeError::CorruptState);
+        }
+        Ok(routes)
+    }
+
+    fn route_supports_group_origins(&self, device: &[u8; 32]) -> Result<bool> {
+        Ok(self.sessions.contains_key(device)
+            && self
+                .store
+                .get_capabilities(device)?
+                .is_some_and(|capabilities| {
+                    capabilities
+                        .supports(GROUP_ORIGIN_CAPABILITY_FORMAT, GROUP_ORIGIN_CAPABILITY_KIND)
+                }))
+    }
+
+    fn verified_group_sender_account(&self, device: &[u8; 32]) -> Result<Option<[u8; 32]>> {
+        for endpoint in self
+            .store
+            .contact_devices()?
+            .into_iter()
+            .filter(|endpoint| endpoint.device == *device && endpoint.revoked_at.is_none())
+        {
+            let Ok(manifest) = DeviceAuthorityManifest::decode(&endpoint.authority) else {
+                continue;
+            };
+            if manifest.verify().is_ok()
+                && manifest.account().ed == endpoint.account
+                && manifest.active_certificate(device).is_some()
+            {
+                return Ok(Some(endpoint.account));
+            }
+        }
+        Ok(None)
+    }
+
+    pub(crate) fn can_initialize_group_origins(&self, members: &[GroupMember]) -> Result<bool> {
+        for (_, device, authorized) in self.group_route_devices(members)? {
+            if !authorized || !self.route_supports_group_origins(&device)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn new_origin_sender_state(
+        &self,
+        members: &[GroupMember],
+        chain: GroupSenderChain,
+        origin_generation: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<GroupSenderState> {
+        if origin_generation == 0 {
+            return Err(NodeError::CorruptState);
+        }
+        let (key_id, chain_key, iteration) = chain.snapshot();
+        let mut origins = Vec::new();
+        for (recipient_account, recipient_device, authorized) in
+            self.group_route_devices(members)?
+        {
+            if !authorized {
+                // A manifest gap must block sending, but it must not preserve
+                // a capability for a device that is no longer authorized.
+                // The visible security state keeps the unresolved route
+                // pending until a valid authority chain arrives.
+                continue;
+            }
+            let mut origin_key = [0u8; 32];
+            while origin_key == [0u8; 32] {
+                rng.fill_bytes(&mut origin_key);
+            }
+            origins.push(OutgoingGroupOrigin {
+                recipient_account,
+                recipient_device,
+                key_id,
+                chain_key: *chain_key,
+                iteration,
+                origin_key,
+                wire_id: None,
+                last_sent: 0,
+                acknowledged: false,
+            });
+        }
+        let state = GroupSenderState {
+            origin_generation,
+            chain,
+            origins,
+        };
+        validate_sender_origins(&state)?;
+        Ok(state)
+    }
+
+    fn group_security_info_for(&self, rec: &GroupRecord) -> Result<GroupSecurityInfo> {
+        let sender = decode_sender_state(&rec.sender_chain)?;
+        let StoredGroupSenderState::Origin(state) = sender else {
+            return Ok(GroupSecurityInfo {
+                group: rec.id,
+                level: GroupSecurityLevel::UpgradeRequired,
+                pending_devices: self
+                    .group_route_devices(&rec.members)?
+                    .into_iter()
+                    .map(|(_, device, _)| device)
+                    .collect(),
+                legacy_history_rows: self
+                    .store
+                    .group_messages(&rec.id)?
+                    .into_iter()
+                    .filter(|message| message.origin.is_legacy_membership())
+                    .count(),
+            });
+        };
+        let local_device = self.device_id();
+        let mut pending_devices = Vec::new();
+        for (account, device, authorized) in self.group_route_devices(&rec.members)? {
+            let outgoing_ready = state.origins.iter().any(|origin| {
+                origin.recipient_account == account
+                    && origin.recipient_device == device
+                    && origin.acknowledged
+            });
+            let incoming_ready = self
+                .store
+                .get_group_chain(&rec.id, &account)?
+                .as_ref()
+                .and_then(|blob| decode_device_group_chains(blob, account).ok())
+                .is_some_and(|chains| {
+                    chains.iter().any(|entry| {
+                        entry.device == device
+                            && entry.recipient_device == local_device
+                            && entry.origin_key.is_some()
+                            && entry.origin_generation != 0
+                            && entry.origin_announce_digest != [0u8; 32]
+                    })
+                });
+            if !authorized
+                || !self.route_supports_group_origins(&device)?
+                || !outgoing_ready
+                || !incoming_ready
+            {
+                pending_devices.push(device);
+            }
+        }
+        pending_devices.sort_unstable();
+        pending_devices.dedup();
+        let level = if pending_devices.is_empty() {
+            GroupSecurityLevel::RecipientAuthenticated
+        } else {
+            GroupSecurityLevel::Upgrading
+        };
+        Ok(GroupSecurityInfo {
+            group: rec.id,
+            level,
+            pending_devices,
+            legacy_history_rows: self
+                .store
+                .group_messages(&rec.id)?
+                .into_iter()
+                .filter(|message| message.origin.is_legacy_membership())
+                .count(),
+        })
+    }
+
+    /// Current visible ADR-0029 upgrade state and retained legacy-history
+    /// count for one group.
+    pub fn group_security_info(&self, group: &[u8; 32]) -> Result<GroupSecurityInfo> {
+        let rec = self
+            .store
+            .get_group(group)?
+            .ok_or(NodeError::UnknownGroup)?;
+        self.group_security_info_for(&rec)
+    }
+
+    /// Start the visible security upgrade after every exact current device
+    /// has authenticated ADR-0029 support over its pairwise session.
+    pub fn group_upgrade_security(
+        &mut self,
+        group: &[u8; 32],
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let before = self
+            .store
+            .get_group(group)?
+            .ok_or(NodeError::UnknownGroup)?;
+        if matches!(
+            decode_sender_state(&before.sender_chain)?,
+            StoredGroupSenderState::Origin(_)
+        ) {
+            return Ok(());
+        }
+        if !self.can_initialize_group_origins(&before.members)? {
+            return Err(NodeError::GroupSecurityUpgradeRequired);
+        }
+        let mut after = before.clone();
+        self.rotate_group_origin(&mut after, rng)?;
+        let receipt = self.store.commit_plan(
+            CommitPlan::GroupState(GroupStatePlan {
+                groups: &[GroupStateTransition {
+                    before: Some(&before),
+                    after: Some(&after),
+                }],
+                chains: &[],
+                contacts: &[],
+                authorities: &[],
+                delete_controls: &[],
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.accept_commit_receipt(receipt, [Event::GroupUpdated { group: *group }]);
+        Ok(())
+    }
+
+    fn has_current_incoming_group_origin(&self, rec: &GroupRecord) -> Result<bool> {
+        let local_device = self.device_id();
+        let routes = self
+            .group_route_devices(&rec.members)?
+            .into_iter()
+            .filter(|(_, _, authorized)| *authorized)
+            .map(|(account, device, _)| (account, device))
+            .collect::<HashSet<_>>();
+        for member in rec
+            .members
+            .iter()
+            .filter(|member| member.peer != self.account.ed)
+        {
+            let Some(blob) = self.store.get_group_chain(&rec.id, &member.peer)? else {
+                continue;
+            };
+            if decode_device_group_chains(&blob, member.peer)?
+                .into_iter()
+                .any(|entry| {
+                    routes.contains(&(member.peer, entry.device))
+                        && entry.recipient_device == local_device
+                        && entry.origin_key.is_some()
+                        && entry.origin_generation != 0
+                        && entry.origin_announce_digest != [0u8; 32]
+                })
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn reconcile_group_origin_sender(
+        &mut self,
+        rec: &GroupRecord,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Option<GroupRecord>> {
+        let sender = decode_sender_state(&rec.sender_chain)?;
+        let should_rotate = match sender {
+            StoredGroupSenderState::Legacy(_) => {
+                self.has_current_incoming_group_origin(rec)?
+                    && self.can_initialize_group_origins(&rec.members)?
+            }
+            StoredGroupSenderState::Origin(state) => {
+                let expected = self
+                    .group_route_devices(&rec.members)?
+                    .into_iter()
+                    .filter(|(_, _, authorized)| *authorized)
+                    .map(|(account, device, _)| (account, device))
+                    .collect::<Vec<_>>();
+                let actual = state
+                    .origins
+                    .iter()
+                    .map(|origin| (origin.recipient_account, origin.recipient_device))
+                    .collect::<Vec<_>>();
+                expected != actual
+            }
+        };
+        if !should_rotate {
+            return Ok(None);
+        }
+        let mut after = rec.clone();
+        self.rotate_group_origin(&mut after, rng)?;
+        Ok(Some(after))
+    }
+
+    pub(crate) fn require_recipient_authenticated_group(&self, group: &[u8; 32]) -> Result<()> {
+        let status = self.group_security_info(group)?;
+        if status.level != GroupSecurityLevel::RecipientAuthenticated {
+            return Err(NodeError::GroupSecurityUpgradeRequired);
+        }
+        Ok(())
+    }
+
+    fn require_fresh_group_origin_material(&self, group: &[u8; 32]) -> Result<()> {
+        let rec = self
+            .store
+            .get_group(group)?
+            .ok_or(NodeError::UnknownGroup)?;
+        let StoredGroupSenderState::Origin(state) = decode_sender_state(&rec.sender_chain)? else {
+            return Err(NodeError::GroupSecurityUpgradeRequired);
+        };
+        let expected = self.group_route_devices(&rec.members)?;
+        for (_, device, authorized) in &expected {
+            if !authorized || !self.route_supports_group_origins(device)? {
+                return Err(NodeError::GroupSecurityUpgradeRequired);
+            }
+        }
+        let expected = expected
+            .into_iter()
+            .map(|(account, device, _)| (account, device))
+            .collect::<Vec<_>>();
+        let actual = state
+            .origins
+            .iter()
+            .map(|origin| (origin.recipient_account, origin.recipient_device))
+            .collect::<Vec<_>>();
+        if expected != actual {
+            return Err(NodeError::GroupSecurityUpgradeRequired);
+        }
+        Ok(())
+    }
+
     /// Create a group with stored contacts. This node becomes the creator —
     /// the single writer for roster, name, and group secret (ADR-0012).
     /// Announces (invite + sender key in one message) queue on the next
@@ -156,9 +709,9 @@ impl Node {
         members: &[[u8; 32]],
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 32]> {
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         let my_identity =
-            postcard::to_allocvec(&self.identity.public()).map_err(|_| NodeError::CorruptState)?;
+            postcard::to_allocvec(&self.account.clone()).map_err(|_| NodeError::CorruptState)?;
         let mut roster = vec![GroupMember {
             peer: me,
             identity: my_identity,
@@ -185,7 +738,19 @@ impl Node {
         let mut secret = [0u8; 32];
         rng.fill_bytes(&mut secret);
         let chain = GroupSenderChain::generate(rng);
-        let pending = pending_for(&chain, roster.iter().map(|m| m.peer), &me);
+        let origin_ready = self.can_initialize_group_origins(&roster)?;
+        let (sender_chain, pending) = if origin_ready {
+            let state = self.new_origin_sender_state(&roster, chain, 1, rng)?;
+            (
+                encode_sender_state(&StoredGroupSenderState::Origin(state))?,
+                Vec::new(),
+            )
+        } else {
+            (
+                encode_chain(&chain)?,
+                pending_for(&chain, roster.iter().map(|m| m.peer), &me),
+            )
+        };
         let group = GroupRecord {
             id,
             name: name.to_owned(),
@@ -194,7 +759,7 @@ impl Node {
             secret,
             prev_secret: None,
             generation: 1,
-            sender_chain: encode_chain(&chain)?,
+            sender_chain,
             sent_since_rotation: 0,
             pending,
         };
@@ -218,17 +783,20 @@ impl Node {
 
     /// All stored groups, without their secrets.
     pub fn groups(&self) -> Result<Vec<GroupInfo>> {
-        Ok(self
-            .store
+        self.store
             .groups()?
             .into_iter()
-            .map(|g| GroupInfo {
-                id: g.id,
-                name: g.name,
-                creator: g.creator,
-                members: g.members.iter().map(|m| m.peer).collect(),
+            .map(|g| {
+                let security = self.group_security_info_for(&g)?.level;
+                Ok(GroupInfo {
+                    id: g.id,
+                    name: g.name,
+                    creator: g.creator,
+                    members: g.members.iter().map(|m| m.peer).collect(),
+                    security,
+                })
             })
-            .collect())
+            .collect()
     }
 
     /// Message history for a group, in insertion order.
@@ -318,7 +886,7 @@ impl Node {
             .store
             .get_group(group)?
             .ok_or(NodeError::UnknownGroup)?;
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         let mut all_members_support_text = true;
         for member in rec.members.iter().filter(|member| member.peer != me) {
             if !self.peer_supports_text(&member.peer)? {
@@ -352,7 +920,7 @@ impl Node {
             .store
             .get_group(group)?
             .ok_or(NodeError::UnknownGroup)?;
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         let mut members = rec.members.iter().collect::<Vec<_>>();
         members.sort_unstable_by_key(|member| member.peer);
 
@@ -367,14 +935,32 @@ impl Node {
             let state = if member.peer == me {
                 1u8
             } else {
-                match self.store.get_capabilities(&member.peer)? {
-                    None => 0,
-                    Some(capabilities)
-                        if capabilities.supports(CONTENT_FORMAT_V1, CONTENT_KIND_MENTION) =>
-                    {
-                        1
+                let endpoints = self.store.contact_devices_for(&member.peer)?;
+                let routes = if endpoints.is_empty() {
+                    vec![member.peer]
+                } else {
+                    endpoints
+                        .into_iter()
+                        .filter(|endpoint| endpoint.revoked_at.is_none())
+                        .map(|endpoint| endpoint.device)
+                        .collect::<Vec<_>>()
+                };
+                let mut missing = false;
+                let mut unsupported = false;
+                for route in routes {
+                    match self.store.get_capabilities(&route)? {
+                        None => missing = true,
+                        Some(capabilities)
+                            if capabilities.supports(CONTENT_FORMAT_V1, CONTENT_KIND_MENTION) => {}
+                        Some(_) => unsupported = true,
                     }
-                    Some(_) => 2,
+                }
+                if missing {
+                    0
+                } else if unsupported {
+                    2
+                } else {
+                    1
                 }
             };
             hasher.update(&member.peer);
@@ -458,7 +1044,7 @@ impl Node {
             .store
             .get_group(group)?
             .ok_or(NodeError::UnknownGroup)?;
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         if target_author != me
             || text.is_empty()
             || text.len() > MAX_EDIT_TEXT_LEN
@@ -475,6 +1061,7 @@ impl Node {
         if !records.iter().any(|record| {
             record.sender == me
                 && record.direction == Direction::Outbound
+                && record.origin.is_recipient_authenticated()
                 && matches!(
                     decode_content(&record.body),
                     DecodedContent::Text { id, .. } if id == target_content_id
@@ -538,7 +1125,7 @@ impl Node {
             .store
             .get_group(group)?
             .ok_or(NodeError::UnknownGroup)?;
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         if !rec.members.iter().any(|member| member.peer == me) {
             return Err(NodeError::InvalidEphemeral);
         }
@@ -611,6 +1198,30 @@ impl Node {
             retention_until,
             scheduled,
             None,
+            false,
+            rng,
+        )
+    }
+
+    pub(crate) fn group_send_moderated_content_with_id(
+        &mut self,
+        group: &[u8; 32],
+        wire_content: Vec<u8>,
+        id: [u8; 16],
+        timestamp: u64,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 16]> {
+        self.group_send_content_with_id_effects(
+            group,
+            wire_content,
+            id,
+            timestamp,
+            now,
+            None,
+            None,
+            None,
+            true,
             rng,
         )
     }
@@ -635,6 +1246,7 @@ impl Node {
             None,
             None,
             Some(authority),
+            false,
             rng,
         )
     }
@@ -650,14 +1262,20 @@ impl Node {
         retention_until: Option<u64>,
         scheduled: Option<&ScheduledMessageRecord>,
         authority: Option<&PreparedAuthorityGroupState>,
+        allow_unacknowledged_origin: bool,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 16]> {
         let before_group = self
             .store
             .get_group(group)?
             .ok_or(NodeError::UnknownGroup)?;
+        if allow_unacknowledged_origin {
+            self.require_fresh_group_origin_material(group)?;
+        } else {
+            self.require_recipient_authenticated_group(group)?;
+        }
         let mut after_group = before_group.clone();
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         let mut record = GroupMessageRecord {
             id,
             group: *group,
@@ -676,6 +1294,7 @@ impl Node {
                 })
                 .collect(),
             wire_body: None,
+            origin: GroupOriginAuthentication::LegacyMembership,
         };
 
         // A spent chain rotates before it encrypts anything else (PCS).
@@ -683,16 +1302,43 @@ impl Node {
             self.rotate_group(&mut after_group, rng)?;
         }
 
-        let mut chain = decode_chain(&after_group.sender_chain)?;
+        let mut sender_state = decode_sender_state(&after_group.sender_chain)?;
+        let origin_chain = matches!(&sender_state, StoredGroupSenderState::Origin(_));
+        let chain_key_id = sender_state.chain().key_id();
         let hk = GroupHeaderKey::derive(&after_group.secret);
         let wire = self
-            .candidate_group_seal(&mut chain, &hk, group, &pad(&wire_content)?, rng)?
+            .candidate_group_seal(
+                sender_state.chain_mut(),
+                &hk,
+                group,
+                origin_chain.then_some(id),
+                &pad(&wire_content)?,
+                rng,
+            )?
             .encode();
-        after_group.sender_chain = encode_chain(&chain)?;
+        after_group.sender_chain = encode_sender_state(&sender_state)?;
+        if origin_chain {
+            record.origin = GroupOriginAuthentication::OutboundV1 {
+                sender_device: self.device_id(),
+                chain_key_id,
+            };
+        }
         after_group.sent_since_rotation = after_group
             .sent_since_rotation
             .checked_add(1)
             .ok_or(NodeError::CorruptState)?;
+        let mut pending_fanout = if record.deliveries.is_empty() {
+            None
+        } else {
+            Some(self.prepare_group_pending_fanout(
+                group,
+                &wire,
+                &sender_state,
+                &record.deliveries,
+                id,
+                retention_until,
+            )?)
+        };
 
         let mut removed_peers = HashSet::new();
         if let Some(authority) = authority {
@@ -726,11 +1372,12 @@ impl Node {
         let mut queue = Vec::new();
         let mut delivery_rows = Vec::new();
         let mut delivery_pairs = Vec::new();
-        let mut unserved = record.deliveries.is_empty();
+        let mut completed_routes = HashSet::new();
         for d in record.deliveries.iter_mut() {
+            let pending = pending_fanout.as_ref().ok_or(NodeError::CorruptState)?;
             let prepared = self.prepare_group_copy(
                 &d.peer,
-                &wire,
+                pending,
                 id,
                 QueueClass::Interactive,
                 retention_until,
@@ -738,14 +1385,20 @@ impl Node {
             )?;
             if prepared.all_served {
                 d.wire_id = prepared.first_wire;
-            } else {
-                unserved = true;
             }
+            completed_routes.extend(prepared.completed_routes);
             queue.extend(prepared.queue);
             delivery_rows.extend(prepared.deliveries);
             delivery_pairs.extend(prepared.delivery_updates);
         }
-        record.wire_body = unserved.then_some(wire);
+        if let Some(mut pending) = pending_fanout.take() {
+            pending
+                .routes
+                .retain(|route| !completed_routes.contains(&(route.account, route.device)));
+            if !pending.routes.is_empty() {
+                record.wire_body = Some(pending.encode()?);
+            }
+        }
         let delivery_updates = delivery_pairs
             .iter()
             .map(|(before, after)| DeliveryTransition { before, after })
@@ -838,7 +1491,7 @@ impl Node {
             .get_group(group)?
             .ok_or(NodeError::UnknownGroup)?;
         let mut rec = before.clone();
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         if self.store.get_group_authority(group)?.is_some() {
             if rec.members.iter().any(|member| &member.peer == peer) {
                 return Ok(());
@@ -877,24 +1530,9 @@ impl Node {
         });
         rec.generation += 1;
 
-        // The newcomer needs our chain from *now* (no history); everyone
-        // else needs the new roster — served members get a fresh announce
-        // entry, unserved ones already have one.
-        let chain = decode_chain(&rec.sender_chain)?;
-        let (key_id, chain_key, iteration) = chain.snapshot();
-        for member in rec.members.clone() {
-            if member.peer == me || rec.pending.iter().any(|p| p.peer == member.peer) {
-                continue;
-            }
-            rec.pending.push(PendingAnnounce {
-                peer: member.peer,
-                key_id,
-                chain_key: *chain_key,
-                iteration,
-                wire_id: None,
-                last_sent: 0,
-            });
-        }
+        // Roster changes rotate both the sender chain and every recipient
+        // origin capability. The newcomer starts at this fresh snapshot.
+        self.rotate_group(&mut rec, rng)?;
         let receipt = self.store.commit_plan(
             CommitPlan::GroupState(GroupStatePlan {
                 groups: &[GroupStateTransition {
@@ -923,7 +1561,7 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         if peer == &me {
             return self.group_leave(group, now, rng);
         }
@@ -996,7 +1634,7 @@ impl Node {
             .store
             .get_group(group)?
             .ok_or(NodeError::UnknownGroup)?;
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         let authority = self.store.get_group_authority(group)?;
         if authority.is_some()
             && self.group_authority(group)?.my_role == Some(kult_protocol::GroupRole::Owner)
@@ -1052,6 +1690,142 @@ impl Node {
 
     // ---- the tick's group upkeep --------------------------------------------
 
+    fn retire_legacy_group_delivery(
+        &mut self,
+        before: &GroupMessageRecord,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let queued = self
+            .store
+            .queue_all()?
+            .into_iter()
+            .filter(|(_, item)| item.group_msg_id == Some(before.id))
+            .map(|(sequence, item)| QueueDelete {
+                sequence,
+                content_id: item.envelope.content_id(),
+            })
+            .collect::<Vec<_>>();
+        for page in queued.chunks(MAX_MAINTENANCE_TRANSITIONS) {
+            let receipt = self.store.commit_plan(
+                CommitPlan::Maintenance(MaintenancePlan {
+                    seen: &[],
+                    delete_pending: &[],
+                    delete_queue: page,
+                    update_queue: &[],
+                    delete_replay: &[],
+                    messages: &[],
+                    deliveries: &[],
+                    group_messages: &[],
+                    groups: &[],
+                    ephemeral: &[],
+                    delete_messages: &[],
+                    delete_group_messages: &[],
+                    delete_media: &[],
+                    delete_scheduled: &[],
+                    delete_sessions: &[],
+                    delete_capabilities: &[],
+                    clear_reset_markers: &[],
+                    delete_controls: &[],
+                    acknowledge_presentation: None,
+                    presentation_changed: false,
+                }),
+                rng,
+            )?;
+            self.accept_commit_receipt(receipt, []);
+        }
+
+        let delivery_pairs = self
+            .store
+            .message_device_deliveries(&before.id)?
+            .into_iter()
+            .filter_map(|prior| {
+                let mut after = prior.clone();
+                after.wire_id = None;
+                if matches!(after.state, DeliveryState::Queued | DeliveryState::Sent) {
+                    after.state = DeliveryState::Failed;
+                }
+                (after != prior).then_some((prior, after))
+            })
+            .collect::<Vec<_>>();
+        for page in delivery_pairs.chunks(MAX_MAINTENANCE_TRANSITIONS) {
+            let transitions = page
+                .iter()
+                .map(|(prior, after)| DeliveryTransition {
+                    before: prior,
+                    after,
+                })
+                .collect::<Vec<_>>();
+            let receipt = self.store.commit_plan(
+                CommitPlan::Maintenance(MaintenancePlan {
+                    seen: &[],
+                    delete_pending: &[],
+                    delete_queue: &[],
+                    update_queue: &[],
+                    delete_replay: &[],
+                    messages: &[],
+                    deliveries: &transitions,
+                    group_messages: &[],
+                    groups: &[],
+                    ephemeral: &[],
+                    delete_messages: &[],
+                    delete_group_messages: &[],
+                    delete_media: &[],
+                    delete_scheduled: &[],
+                    delete_sessions: &[],
+                    delete_capabilities: &[],
+                    clear_reset_markers: &[],
+                    delete_controls: &[],
+                    acknowledge_presentation: None,
+                    presentation_changed: false,
+                }),
+                rng,
+            )?;
+            self.accept_commit_receipt(receipt, []);
+        }
+
+        let mut after = before.clone();
+        after.wire_body = None;
+        for delivery in &mut after.deliveries {
+            delivery.wire_id = None;
+            if matches!(delivery.state, DeliveryState::Queued | DeliveryState::Sent) {
+                delivery.state = DeliveryState::Failed;
+            }
+        }
+        if &after != before {
+            let transition = GroupMessageTransition {
+                before,
+                after: &after,
+            };
+            let receipt = self.store.commit_plan(
+                CommitPlan::Maintenance(MaintenancePlan {
+                    seen: &[],
+                    delete_pending: &[],
+                    delete_queue: &[],
+                    update_queue: &[],
+                    delete_replay: &[],
+                    messages: &[],
+                    deliveries: &[],
+                    group_messages: &[transition],
+                    groups: &[],
+                    ephemeral: &[],
+                    delete_messages: &[],
+                    delete_group_messages: &[],
+                    delete_media: &[],
+                    delete_scheduled: &[],
+                    delete_sessions: &[],
+                    delete_capabilities: &[],
+                    clear_reset_markers: &[],
+                    delete_controls: &[],
+                    acknowledge_presentation: None,
+                    presentation_changed: true,
+                }),
+                rng,
+            )?;
+            self.accept_commit_receipt(receipt, []);
+        }
+        Ok(())
+    }
+
     /// Flush due announces (initiating pairwise sessions where a bundle is
     /// stored or the DHT can produce one) and serve late fan-out: members
     /// whose session appeared after a group message was queued get their
@@ -1061,15 +1835,130 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
-        let me = self.identity.public().ed;
-        let queued_ids: HashSet<[u8; 16]> = self
-            .store
-            .queue_all()?
+        let me = self.account.ed;
+        let queued = self.store.queue_all()?;
+        let queued_ids: HashSet<[u8; 16]> = queued
             .iter()
             .map(|(_, item)| item.envelope.content_id())
             .collect();
+        let queued_group_messages: HashSet<[u8; 16]> = queued
+            .iter()
+            .filter_map(|(_, item)| item.group_msg_id)
+            .collect();
 
         for mut rec in self.store.groups()? {
+            if let Some(after) = self.reconcile_group_origin_sender(&rec, rng)? {
+                let before = rec;
+                let receipt = self.store.commit_plan(
+                    CommitPlan::GroupState(GroupStatePlan {
+                        groups: &[GroupStateTransition {
+                            before: Some(&before),
+                            after: Some(&after),
+                        }],
+                        chains: &[],
+                        contacts: &[],
+                        authorities: &[],
+                        delete_controls: &[],
+                        presentation_changed: true,
+                    }),
+                    rng,
+                )?;
+                rec = after;
+                self.accept_commit_receipt(receipt, [Event::GroupUpdated { group: rec.id }]);
+            }
+            let origin_count = match decode_sender_state(&rec.sender_chain)? {
+                StoredGroupSenderState::Origin(state) => state.origins.len(),
+                StoredGroupSenderState::Legacy(_) => 0,
+            };
+            if origin_count != 0
+                || matches!(
+                    decode_sender_state(&rec.sender_chain)?,
+                    StoredGroupSenderState::Origin(_)
+                )
+            {
+                for origin_index in 0..origin_count {
+                    let sender = decode_sender_state(&rec.sender_chain)?;
+                    let StoredGroupSenderState::Origin(state) = sender else {
+                        return Err(NodeError::CorruptState);
+                    };
+                    let entry = state
+                        .origins
+                        .get(origin_index)
+                        .cloned()
+                        .ok_or(NodeError::CorruptState)?;
+                    let origin_generation = state.origin_generation;
+                    if entry.acknowledged {
+                        continue;
+                    }
+                    let never_tried = entry.last_sent == 0;
+                    let resend_due = entry.last_sent != 0
+                        && now.saturating_sub(entry.last_sent) >= GROUP_ANNOUNCE_RETRY_SECS
+                        && entry.wire_id.is_none_or(|wire| !queued_ids.contains(&wire));
+                    if !(never_tried || resend_due) {
+                        continue;
+                    }
+                    self.resolve_group_peer_bundle(&entry.recipient_account, now, rng)
+                        .await?;
+                    let payload = match self.store.get_group_authority(&rec.id)? {
+                        Some(authority) => GroupControlPayload::OriginAuthorityAnnounce(
+                            GroupOriginAuthorityAnnounce {
+                                announce: GroupAuthorityAnnounce {
+                                    group: rec.id,
+                                    state_id: authority.state_id,
+                                    state_payload: authority.state_payload,
+                                    secret: rec.secret,
+                                    key_id: entry.key_id,
+                                    chain_key: entry.chain_key,
+                                    iteration: entry.iteration,
+                                },
+                                origin_generation,
+                                recipient_account: entry.recipient_account,
+                                recipient_device: entry.recipient_device,
+                                origin_key: entry.origin_key,
+                            },
+                        ),
+                        None => GroupControlPayload::OriginAnnounce(GroupOriginAnnounce {
+                            announce: GroupAnnounce {
+                                group: rec.id,
+                                name: rec.name.clone(),
+                                creator: rec.creator,
+                                members: if rec.creator == me {
+                                    rec.members
+                                        .iter()
+                                        .map(|member| GroupMemberInfo {
+                                            peer: member.peer,
+                                            identity: member.identity.clone(),
+                                        })
+                                        .collect()
+                                } else {
+                                    Vec::new()
+                                },
+                                secret: rec.secret,
+                                generation: rec.generation,
+                                key_id: entry.key_id,
+                                chain_key: entry.chain_key,
+                                iteration: entry.iteration,
+                            },
+                            origin_generation,
+                            recipient_account: entry.recipient_account,
+                            recipient_device: entry.recipient_device,
+                            origin_key: entry.origin_key,
+                        }),
+                    };
+                    let before = rec.clone();
+                    self.queue_group_origin_announce(
+                        &entry.recipient_account,
+                        &entry.recipient_device,
+                        &payload,
+                        &before,
+                        &mut rec,
+                        origin_index,
+                        now,
+                        rng,
+                    )?;
+                }
+                continue;
+            }
             for pending_index in 0..rec.pending.len() {
                 let entry = rec.pending[pending_index].clone();
                 // Due when never attempted, or when the retry window passed
@@ -1135,22 +2024,58 @@ impl Node {
 
         // Late fan-out from retained ciphertexts.
         for before_record in self.store.all_group_messages()? {
+            if before_record.origin.is_legacy_membership() {
+                let live_delivery = before_record.wire_body.is_some()
+                    || before_record.deliveries.iter().any(|delivery| {
+                        delivery.wire_id.is_some()
+                            || matches!(delivery.state, DeliveryState::Queued | DeliveryState::Sent)
+                    })
+                    || queued_group_messages.contains(&before_record.id);
+                if live_delivery {
+                    self.retire_legacy_group_delivery(&before_record, rng)?;
+                }
+                continue;
+            }
             let Some(wire) = before_record.wire_body.clone() else {
                 continue;
             };
+            let mut pending = self.decode_group_pending_fanout(&before_record, &wire)?;
             let mut record = before_record.clone();
-            let mut changed = false;
-            let mut unserved = false;
             let mut queue = Vec::new();
             let mut delivery_rows = Vec::new();
             let mut delivery_pairs = Vec::new();
+            let mut completed_routes = HashSet::new();
+
+            // A revoked device must never regain an old queued capability.
+            // The retained value contains only a tag, so dropping the route
+            // also completes local erasure without keeping an origin key.
+            for delivery in &record.deliveries {
+                let active = self
+                    .group_account_route_devices(&delivery.peer)?
+                    .into_iter()
+                    .collect::<HashSet<_>>();
+                pending.routes.retain(|route| {
+                    route.account != delivery.peer || active.contains(&route.device)
+                });
+            }
+
             for d in record.deliveries.iter_mut() {
                 if d.wire_id.is_some() {
+                    pending.routes.retain(|route| route.account != d.peer);
+                    continue;
+                }
+                if !pending.routes.iter().any(|route| route.account == d.peer) {
+                    d.wire_id = self
+                        .store
+                        .message_device_deliveries(&record.id)?
+                        .into_iter()
+                        .find(|delivery| delivery.account == d.peer && delivery.wire_id.is_some())
+                        .and_then(|delivery| delivery.wire_id);
                     continue;
                 }
                 let prepared = self.prepare_group_copy(
                     &d.peer,
-                    &wire,
+                    &pending,
                     record.id,
                     QueueClass::Interactive,
                     ephemeral_retention(&record.body),
@@ -1158,18 +2083,21 @@ impl Node {
                 )?;
                 if prepared.all_served {
                     d.wire_id = prepared.first_wire;
-                    changed = true;
-                } else {
-                    unserved = true;
                 }
+                completed_routes.extend(prepared.completed_routes);
                 queue.extend(prepared.queue);
                 delivery_rows.extend(prepared.deliveries);
                 delivery_pairs.extend(prepared.delivery_updates);
             }
-            if !unserved {
+            pending
+                .routes
+                .retain(|route| !completed_routes.contains(&(route.account, route.device)));
+            if pending.routes.is_empty() {
                 record.wire_body = None;
-                changed = true;
+            } else {
+                record.wire_body = Some(pending.encode()?);
             }
+            let changed = record != before_record;
             if changed || !queue.is_empty() {
                 let delivery_updates = delivery_pairs
                     .iter()
@@ -1204,13 +2132,16 @@ impl Node {
     /// A pairwise session with `peer` was (re-)established from an inbound
     /// handshake: if they co-member any group, make sure an announce is
     /// owed to them — their device may have restored and lost every
-    /// receiving chain (ADR-0012). Existing entries keep their (older, more
-    /// capable) snapshot and simply resend on the fresh session.
+    /// receiving chain (ADR-0012). Legacy sender-key entries keep their
+    /// existing snapshot and resend it on the fresh session. Origin-
+    /// authenticated groups rotate the chain and every recipient capability
+    /// because those capabilities are bound to the replaced pairwise session.
     pub(crate) fn prepare_groups_on_session_established(
-        &self,
+        &mut self,
         peer: &[u8; 32],
+        rng: &mut impl CryptoRngCore,
     ) -> Result<Vec<(GroupRecord, GroupRecord)>> {
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         if peer == &me {
             return Ok(Vec::new());
         }
@@ -1220,13 +2151,27 @@ impl Node {
             if !rec.members.iter().any(|m| &m.peer == peer) {
                 continue;
             }
+            if matches!(
+                decode_sender_state(&rec.sender_chain)?,
+                StoredGroupSenderState::Origin(_)
+            ) {
+                // A new pairwise session invalidates every capability tied
+                // to the previous session. Rotate the chain and all
+                // per-recipient origin keys together.
+                self.rotate_group_origin(&mut rec, rng)?;
+                if rec != before {
+                    transitions.push((before, rec));
+                }
+                continue;
+            }
             match rec.pending.iter_mut().find(|p| &p.peer == peer) {
                 Some(entry) => {
                     entry.wire_id = None;
                     entry.last_sent = 0;
                 }
                 None => {
-                    let chain = decode_chain(&rec.sender_chain)?;
+                    let sender = decode_sender_state(&rec.sender_chain)?;
+                    let chain = sender.chain();
                     let (key_id, chain_key, iteration) = chain.snapshot();
                     rec.pending.push(PendingAnnounce {
                         peer: *peer,
@@ -1243,6 +2188,38 @@ impl Node {
             }
         }
         Ok(transitions)
+    }
+
+    pub(crate) fn prepare_group_origin_ack(
+        &self,
+        before: &GroupRecord,
+        peer: &[u8; 32],
+        peer_device: &[u8; 32],
+        acks: &[[u8; 16]],
+    ) -> Result<Option<GroupRecord>> {
+        let mut sender = decode_sender_state(&before.sender_chain)?;
+        let StoredGroupSenderState::Origin(state) = &mut sender else {
+            return Ok(None);
+        };
+        let mut changed = false;
+        for origin in &mut state.origins {
+            if origin.recipient_account == *peer
+                && origin.recipient_device == *peer_device
+                && !origin.acknowledged
+                && origin
+                    .wire_id
+                    .is_some_and(|wire| acks.iter().any(|ack| bool::from(ack.ct_eq(&wire))))
+            {
+                origin.acknowledged = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            return Ok(None);
+        }
+        let mut after = before.clone();
+        after.sender_chain = encode_sender_state(&sender)?;
+        Ok(Some(after))
     }
 
     /// Bind a pre-C2 account-key receiving chain to the certified physical
@@ -1293,31 +2270,77 @@ impl Node {
     pub(crate) fn prepare_group_receiver_chain(
         &self,
         group: &[u8; 32],
-        peer: [u8; 32],
-        peer_device: [u8; 32],
-        key_id: [u8; 16],
-        chain_key: &[u8; 32],
-        iteration: u32,
+        sender: AuthenticatedGroupSender,
+        material: GroupReceiverChainMaterial,
     ) -> Result<PreparedGroupReceiverChainUpdate> {
-        let before = self.store.get_group_chain(group, &peer)?;
+        if material
+            .origin
+            .is_some_and(|origin| origin.key == [0u8; 32] || origin.generation == 0)
+        {
+            return Err(NodeError::CorruptState);
+        }
+        let before = self.store.get_group_chain(group, &sender.account)?;
         let mut chains = match before.as_ref() {
-            Some(blob) => decode_device_group_chains(blob, peer)?,
+            Some(blob) => decode_device_group_chains(blob, sender.account)?,
             None => Vec::new(),
         };
-        let replace = chains
-            .iter()
-            .find(|entry| entry.device == peer_device)
-            .is_none_or(|entry| entry.chain.key_id() != key_id);
+        let local_device = self.device_id();
+        let incoming_digest = material.origin.map(|origin| {
+            group_origin_announce_digest(
+                group,
+                &sender.account,
+                &sender.device,
+                &self.account.ed,
+                &local_device,
+                origin.generation,
+                &material.key_id,
+                &material.chain_key,
+                material.iteration,
+                &origin.key,
+            )
+        });
+        let replace = match chains.iter().find(|entry| entry.device == sender.device) {
+            None => true,
+            Some(entry) => match (material.origin, incoming_digest) {
+                (None, None) => {
+                    entry.origin_key.is_none() && entry.chain.key_id() != material.key_id
+                }
+                (Some(origin), Some(_)) => {
+                    entry.origin_generation == 0 || origin.generation > entry.origin_generation
+                }
+                _ => return Err(NodeError::CorruptState),
+            },
+        };
         if !replace {
             return Ok((before, None));
         }
-        let chain = GroupReceiverChain::new(key_id, chain_key, iteration);
-        if let Some(entry) = chains.iter_mut().find(|entry| entry.device == peer_device) {
+        let chain =
+            GroupReceiverChain::new(material.key_id, &material.chain_key, material.iteration);
+        let (origin_key, recipient_device, origin_generation, origin_announce_digest) =
+            match (material.origin, incoming_digest) {
+                (Some(origin), Some(digest)) => {
+                    (Some(origin.key), local_device, origin.generation, digest)
+                }
+                (None, None) => (None, [0u8; 32], 0, [0u8; 32]),
+                _ => return Err(NodeError::CorruptState),
+            };
+        if let Some(entry) = chains
+            .iter_mut()
+            .find(|entry| entry.device == sender.device)
+        {
             entry.chain = chain;
+            entry.origin_key = origin_key;
+            entry.recipient_device = recipient_device;
+            entry.origin_generation = origin_generation;
+            entry.origin_announce_digest = origin_announce_digest;
         } else {
             chains.push(DeviceGroupReceiverChain {
-                device: peer_device,
+                device: sender.device,
                 chain,
+                origin_key,
+                recipient_device,
+                origin_generation,
+                origin_announce_digest,
             });
         }
         Ok((before, Some(encode_device_group_chains(&mut chains)?)))
@@ -1340,9 +2363,32 @@ impl Node {
         let Some(peer_device) = self.match_session(&env.token, now) else {
             return Ok(Consumed::Later);
         };
-        let peer = self.account_for_device(&peer_device)?;
-        let Ok(message) = GroupMessage::decode(&env.body) else {
-            return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+        let origin_wrapper = match GroupOriginEnvelope::decode(&env.body) {
+            Ok(wrapper) => Some(wrapper),
+            Err(_) if env.body.starts_with(&GROUP_ORIGIN_ENVELOPE_MAGIC) => {
+                return self.commit_terminal_input(env.content_id(), pending_sequence, rng)
+            }
+            Err(_) => None,
+        };
+        let peer = if origin_wrapper.is_some() {
+            let Some(account) = self.verified_group_sender_account(&peer_device)? else {
+                return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+            };
+            account
+        } else {
+            self.account_for_device(&peer_device)?
+        };
+        let message = match origin_wrapper.as_ref() {
+            Some(wrapper) => wrapper.shared().clone(),
+            None => {
+                let Ok(message) = GroupMessage::decode(&env.body) else {
+                    return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                };
+                if message.version() == GROUP_MESSAGE_VERSION_ORIGIN {
+                    return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                }
+                message
+            }
         };
 
         for group in self.store.groups()? {
@@ -1352,46 +2398,99 @@ impl Node {
             let mut opened = None;
             for secret in core::iter::once(group.secret).chain(group.prev_secret) {
                 let header = GroupHeaderKey::derive(&secret);
-                if let Ok(value) = message.open_header(&header) {
+                if let Ok(value) = message.open_header_details(&header) {
                     opened = Some(value);
                     break;
                 }
             }
-            let Some((key_id, iteration)) = opened else {
+            let Some(header) = opened else {
                 continue;
             };
             let Some(before_blob) = self.store.get_group_chain(&group.id, &peer)? else {
                 return Ok(Consumed::Later);
             };
             let mut chains = decode_device_group_chains(&before_blob, peer)?;
-            let Some(chain) = chains
+            let Some(receiver) = chains
                 .iter_mut()
-                .find(|entry| entry.device == peer_device && entry.chain.key_id() == key_id)
-                .map(|entry| &mut entry.chain)
+                .find(|entry| entry.device == peer_device && entry.chain.key_id() == header.key_id)
             else {
                 return Ok(Consumed::Later);
             };
-            let padded =
-                match self.candidate_group_open(chain, &group.id, &message, iteration, now)? {
-                    Ok(plaintext) => plaintext,
-                    Err(_) => {
-                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng)
-                    }
+            let origin = if let Some(wrapper) = origin_wrapper.as_ref() {
+                let Some(content_id) = header.content_id else {
+                    return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
                 };
-            let after_blob = encode_device_group_chains(&mut chains)?;
-            let prepared = match unpad(&padded) {
-                Ok(body) => {
-                    self.prepare_group_inbound(&group, peer, body, env.retention_until, now, rng)?
+                let Some(origin_key) = receiver.origin_key else {
+                    return Ok(Consumed::Later);
+                };
+                let recipient_device = self.device_id();
+                if receiver.recipient_device != recipient_device
+                    || wrapper
+                        .verify(
+                            &origin_key,
+                            &GroupOriginContext {
+                                group_id: group.id,
+                                sender_account: peer,
+                                sender_device: peer_device,
+                                recipient_account: self.account.ed,
+                                recipient_device,
+                                sender_chain_key_id: header.key_id,
+                                envelope_content_id: content_id,
+                                authenticated_retention: env.retention_until,
+                            },
+                        )
+                        .is_err()
+                {
+                    return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
                 }
-                Err(_) => PreparedGroupInbound {
-                    message: None,
-                    ephemeral: None,
-                    media_transfers: Vec::new(),
-                    media_objects: Vec::new(),
-                    events: Vec::new(),
-                    attachment_updates: Vec::new(),
-                },
+                Some((
+                    content_id,
+                    GroupOriginAuthentication::RecipientV1 {
+                        sender_device: peer_device,
+                        recipient_device,
+                        chain_key_id: header.key_id,
+                    },
+                ))
+            } else {
+                None
             };
+            let padded = match self.candidate_group_open(
+                &mut receiver.chain,
+                &group.id,
+                &message,
+                header.iteration,
+                now,
+            )? {
+                Ok(plaintext) => plaintext,
+                Err(_) => {
+                    return self.commit_terminal_input(env.content_id(), pending_sequence, rng)
+                }
+            };
+            let Ok(body) = unpad(&padded) else {
+                return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+            };
+            if !valid_group_origin_plaintext(
+                &body,
+                origin.as_ref().map(|(content_id, _)| *content_id),
+                env.retention_until,
+            ) {
+                return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+            }
+            if origin.is_none() {
+                return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+            }
+            let after_blob = encode_device_group_chains(&mut chains)?;
+            let prepared = self.prepare_group_inbound(
+                &group,
+                body,
+                GroupInboundContext {
+                    peer,
+                    envelope_retention: env.retention_until,
+                    origin,
+                    now,
+                },
+                rng,
+            )?;
 
             let receipt_before = self
                 .store
@@ -1457,12 +2556,16 @@ impl Node {
     fn prepare_group_inbound(
         &self,
         group: &GroupRecord,
-        peer: [u8; 32],
         body: Vec<u8>,
-        envelope_retention: Option<u64>,
-        now: u64,
+        context: GroupInboundContext,
         rng: &mut impl CryptoRngCore,
     ) -> Result<PreparedGroupInbound> {
+        let GroupInboundContext {
+            peer,
+            envelope_retention,
+            origin,
+            now,
+        } = context;
         let empty = || PreparedGroupInbound {
             message: None,
             ephemeral: None,
@@ -1472,6 +2575,11 @@ impl Node {
             attachment_updates: Vec::new(),
         };
         let decoded = decode_content(&body);
+        let origin_content_id = origin.as_ref().map(|(content_id, _)| *content_id);
+        let origin_authentication = origin
+            .as_ref()
+            .map(|(_, authentication)| *authentication)
+            .unwrap_or_default();
         let authenticated_retention = match decoded {
             DecodedContent::Ephemeral { ephemeral, .. } => Some(match ephemeral {
                 Ephemeral::DisappearingText {
@@ -1519,7 +2627,7 @@ impl Node {
             }
         }
 
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         let decoded_is_edit = matches!(decoded, DecodedContent::Edit { .. });
         let mut ephemeral = None;
         let mut media_transfers = Vec::new();
@@ -1528,8 +2636,10 @@ impl Node {
         let mut mentions_local_peer = false;
         let (id, event_body, content) = match decoded {
             DecodedContent::LegacyText(text) => {
-                let mut id = [0u8; 16];
-                rng.fill_bytes(&mut id);
+                let mut id = origin_content_id.unwrap_or([0u8; 16]);
+                if id == [0u8; 16] {
+                    rng.fill_bytes(&mut id);
+                }
                 (id, text.as_bytes().to_vec(), ContentStatus::LegacyText)
             }
             DecodedContent::Text { id, text } => {
@@ -1762,8 +2872,10 @@ impl Node {
                 format_version,
                 kind,
             } => {
-                let mut id = [0u8; 16];
-                rng.fill_bytes(&mut id);
+                let mut id = origin_content_id.unwrap_or([0u8; 16]);
+                if id == [0u8; 16] {
+                    rng.fill_bytes(&mut id);
+                }
                 (
                     id,
                     Vec::new(),
@@ -1774,8 +2886,10 @@ impl Node {
                 )
             }
             DecodedContent::Malformed => {
-                let mut id = [0u8; 16];
-                rng.fill_bytes(&mut id);
+                let mut id = origin_content_id.unwrap_or([0u8; 16]);
+                if id == [0u8; 16] {
+                    rng.fill_bytes(&mut id);
+                }
                 (id, Vec::new(), ContentStatus::Malformed)
             }
         };
@@ -1789,6 +2903,7 @@ impl Node {
             body,
             deliveries: Vec::new(),
             wire_body: None,
+            origin: origin_authentication,
         };
         let mut events = Vec::new();
         match content {
@@ -1853,9 +2968,13 @@ impl Node {
             return Ok((true, false)); // malformed is terminal
         };
         let peer = control.peer;
+        let sender = AuthenticatedGroupSender {
+            account: peer,
+            device: control.peer_device,
+        };
         match &payload {
             GroupControlPayload::Announce(a) => {
-                self.apply_group_announce(peer, control.peer_device, a, control, rng, established)
+                self.apply_group_announce(sender, a, None, control, rng, established)
             }
             GroupControlPayload::Leave { group } => {
                 self.apply_group_leave(peer, group, control, rng)
@@ -1863,14 +2982,9 @@ impl Node {
             GroupControlPayload::Remove { group } => {
                 self.apply_group_remove_notice(peer, group, control, rng)
             }
-            GroupControlPayload::AuthorityAnnounce(announce) => self.apply_authority_announce(
-                peer,
-                control.peer_device,
-                announce,
-                control,
-                rng,
-                established,
-            ),
+            GroupControlPayload::AuthorityAnnounce(announce) => {
+                self.apply_authority_announce(sender, announce, None, control, rng, established)
+            }
             GroupControlPayload::AdminRequest(request) => {
                 self.apply_group_admin_request(peer, request, control, now, rng)
             }
@@ -1882,23 +2996,62 @@ impl Node {
                 state_id,
                 state_payload,
             } => self.apply_authority_remove(peer, group, state_id, state_payload, control, rng),
+            GroupControlPayload::OriginAnnounce(origin) => {
+                if origin.recipient_account != self.account.ed
+                    || origin.recipient_device != self.device_id()
+                    || self.verified_group_sender_account(&control.peer_device)? != Some(peer)
+                {
+                    return Ok((true, false));
+                }
+                self.apply_group_announce(
+                    sender,
+                    &origin.announce,
+                    Some(GroupOriginMaterial {
+                        key: origin.origin_key,
+                        generation: origin.origin_generation,
+                    }),
+                    control,
+                    rng,
+                    established,
+                )
+            }
+            GroupControlPayload::OriginAuthorityAnnounce(origin) => {
+                if origin.recipient_account != self.account.ed
+                    || origin.recipient_device != self.device_id()
+                    || self.verified_group_sender_account(&control.peer_device)? != Some(peer)
+                {
+                    return Ok((true, false));
+                }
+                self.apply_authority_announce(
+                    sender,
+                    &origin.announce,
+                    Some(GroupOriginMaterial {
+                        key: origin.origin_key,
+                        generation: origin.origin_generation,
+                    }),
+                    control,
+                    rng,
+                    established,
+                )
+            }
         }
     }
 
     fn apply_group_announce(
         &mut self,
-        peer: [u8; 32],
-        peer_device: [u8; 32],
+        sender: AuthenticatedGroupSender,
         a: &GroupAnnounce,
+        origin: Option<GroupOriginMaterial>,
         control: &DeferredControlRecord,
         rng: &mut impl CryptoRngCore,
         established: &mut bool,
     ) -> Result<(bool, bool)> {
-        let me = self.identity.public().ed;
+        let peer = sender.account;
+        let me = self.account.ed;
         let before_group = self.store.get_group(&a.group)?;
         let mut group_changed = false;
         let mut contact_records = Vec::new();
-        let rec = match before_group.as_ref() {
+        let mut rec = match before_group.as_ref() {
             None => {
                 // An invite: only the claimed creator's announce creates
                 // the group, and it must list both of us.
@@ -1946,9 +3099,6 @@ impl Node {
                     if !valid_roster(&a.members) {
                         return Ok((true, false));
                     }
-                    let old: HashSet<[u8; 32]> = rec.members.iter().map(|m| m.peer).collect();
-                    let new: HashSet<[u8; 32]> = a.members.iter().map(|m| m.peer).collect();
-                    rec.pending.retain(|p| new.contains(&p.peer));
                     contact_records = self.prepare_roster_stubs(&a.members)?;
                     rec.members = a
                         .members
@@ -1964,28 +3114,9 @@ impl Node {
                         rec.prev_secret = Some(rec.secret);
                         rec.secret = a.secret;
                     }
-                    if old.difference(&new).next().is_some() {
-                        // Someone was removed: every remaining member
-                        // rotates (spec §6).
-                        self.rotate_group(&mut rec, rng)?;
-                    } else {
-                        // Pure additions: newcomers get our current chain.
-                        let chain = decode_chain(&rec.sender_chain)?;
-                        let (key_id, chain_key, iteration) = chain.snapshot();
-                        for added in new.difference(&old) {
-                            if added == &me || rec.pending.iter().any(|p| &p.peer == added) {
-                                continue;
-                            }
-                            rec.pending.push(PendingAnnounce {
-                                peer: *added,
-                                key_id,
-                                chain_key: *chain_key,
-                                iteration,
-                                wire_id: None,
-                                last_sent: 0,
-                            });
-                        }
-                    }
+                    // Any roster/generation change rotates sender and origin
+                    // capabilities; no prior recipient key survives.
+                    self.rotate_group(&mut rec, rng)?;
                     group_changed = true;
                 }
                 rec
@@ -1996,31 +3127,27 @@ impl Node {
         if !rec.members.iter().any(|m| m.peer == peer) {
             return Ok((false, false));
         }
-        let before_chain = self.store.get_group_chain(&rec.id, &peer)?;
-        let mut chains = match before_chain.as_ref() {
-            Some(blob) => decode_device_group_chains(blob, peer)?,
-            None => Vec::new(),
-        };
-        let replace = chains
-            .iter()
-            .find(|entry| entry.device == peer_device)
-            // Same chain id: the stored state reads from an earlier (or
-            // equal) iteration — strictly more capable, keep it.
-            .is_none_or(|entry| entry.chain.key_id() != a.key_id);
-        let after_chain = if replace {
-            let chain = GroupReceiverChain::new(a.key_id, &a.chain_key, a.iteration);
-            if let Some(entry) = chains.iter_mut().find(|entry| entry.device == peer_device) {
-                entry.chain = chain;
-            } else {
-                chains.push(DeviceGroupReceiverChain {
-                    device: peer_device,
-                    chain,
-                });
-            }
-            Some(encode_device_group_chains(&mut chains)?)
-        } else {
-            None
-        };
+        let (before_chain, after_chain) = self.prepare_group_receiver_chain(
+            &rec.id,
+            sender,
+            GroupReceiverChainMaterial {
+                key_id: a.key_id,
+                chain_key: a.chain_key,
+                iteration: a.iteration,
+                origin,
+            },
+        )?;
+
+        if origin.is_some()
+            && matches!(
+                decode_sender_state(&rec.sender_chain)?,
+                StoredGroupSenderState::Legacy(_)
+            )
+            && self.can_initialize_group_origins(&rec.members)?
+        {
+            self.rotate_group_origin(&mut rec, rng)?;
+            group_changed = true;
+        }
 
         let group_transitions = (before_group.as_ref() != Some(&rec))
             .then_some(GroupStateTransition {
@@ -2082,13 +3209,27 @@ impl Node {
         if group_changed {
             events.push(Event::GroupUpdated { group: a.group });
         }
+        if origin.is_some()
+            && group_transitions.is_empty()
+            && chain_transitions.is_empty()
+            && contact_transitions.is_empty()
+        {
+            // Exact duplicates are acknowledged below from persisted state;
+            // stale or conflicting generations are terminally discarded.
+            // Neither case needs an empty durable state transaction.
+            return Ok((true, false));
+        }
         let receipt = self.store.commit_plan(
             CommitPlan::GroupState(GroupStatePlan {
                 groups: &group_transitions,
                 chains: &chain_transitions,
                 contacts: &contact_transitions,
                 authorities: &[],
-                delete_controls: core::slice::from_ref(control),
+                delete_controls: if origin.is_some() {
+                    &[]
+                } else {
+                    core::slice::from_ref(control)
+                },
                 presentation_changed: !events.is_empty(),
             }),
             rng,
@@ -2098,7 +3239,79 @@ impl Node {
             // Stashed group messages on this chain may decrypt now.
             *established = true;
         }
-        Ok((true, true))
+        Ok((true, origin.is_none()))
+    }
+
+    pub(crate) fn accepted_group_origin_control(
+        &self,
+        control: &DeferredControlRecord,
+    ) -> Result<bool> {
+        let Ok(payload) = GroupControlPayload::decode(&control.body) else {
+            return Ok(false);
+        };
+        let (
+            group,
+            key_id,
+            chain_key,
+            iteration,
+            origin_generation,
+            recipient_account,
+            recipient_device,
+            origin_key,
+        ) = match &payload {
+            GroupControlPayload::OriginAnnounce(origin) => (
+                origin.announce.group,
+                origin.announce.key_id,
+                origin.announce.chain_key,
+                origin.announce.iteration,
+                origin.origin_generation,
+                origin.recipient_account,
+                origin.recipient_device,
+                origin.origin_key,
+            ),
+            GroupControlPayload::OriginAuthorityAnnounce(origin) => (
+                origin.announce.group,
+                origin.announce.key_id,
+                origin.announce.chain_key,
+                origin.announce.iteration,
+                origin.origin_generation,
+                origin.recipient_account,
+                origin.recipient_device,
+                origin.origin_key,
+            ),
+            _ => return Ok(false),
+        };
+        if recipient_account != self.account.ed
+            || recipient_device != self.device_id()
+            || control.peer_device == [0u8; 32]
+        {
+            return Ok(false);
+        }
+        let Some(blob) = self.store.get_group_chain(&group, &control.peer)? else {
+            return Ok(false);
+        };
+        let digest = group_origin_announce_digest(
+            &group,
+            &control.peer,
+            &control.peer_device,
+            &recipient_account,
+            &recipient_device,
+            origin_generation,
+            &key_id,
+            &chain_key,
+            iteration,
+            &origin_key,
+        );
+        Ok(decode_device_group_chains(&blob, control.peer)?
+            .iter()
+            .any(|entry| {
+                entry.device == control.peer_device
+                    && entry.chain.key_id() == key_id
+                    && entry.recipient_device == recipient_device
+                    && entry.origin_key == Some(origin_key)
+                    && entry.origin_generation == origin_generation
+                    && bool::from(entry.origin_announce_digest.ct_eq(&digest))
+            }))
     }
 
     fn apply_group_leave(
@@ -2117,7 +3330,7 @@ impl Node {
         let mut rec = before.clone();
         rec.members.retain(|m| m.peer != peer);
         let before_chain = self.store.get_group_chain(group, &peer)?;
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         if rec.creator == me {
             // Authority: re-key the shrunk roster so the leaver cannot even
             // header-decrypt what follows.
@@ -2227,11 +3440,15 @@ impl Node {
         chain: &mut GroupSenderChain,
         header: &GroupHeaderKey,
         group: &[u8; 32],
+        content_id: Option<[u8; 16]>,
         plaintext: &[u8],
         rng: &mut impl CryptoRngCore,
     ) -> Result<GroupMessage> {
         let step = self.begin_crypto_step()?;
-        let message = chain.seal(header, group, plaintext, rng);
+        let message = match content_id {
+            Some(content_id) => chain.seal_origin(header, group, content_id, plaintext, rng),
+            None => chain.seal(header, group, plaintext, rng),
+        };
         self.finish_crypto_step(step)?;
         Ok(message)
     }
@@ -2257,10 +3474,37 @@ impl Node {
         rec: &mut GroupRecord,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
-        let me = self.identity.public().ed;
+        let origin = matches!(
+            decode_sender_state(&rec.sender_chain)?,
+            StoredGroupSenderState::Origin(_)
+        );
+        if origin {
+            return self.rotate_group_origin(rec, rng);
+        }
+        let me = self.account.ed;
         let chain = GroupSenderChain::generate(rng);
         rec.pending = pending_for(&chain, rec.members.iter().map(|m| m.peer), &me);
         rec.sender_chain = encode_chain(&chain)?;
+        rec.sent_since_rotation = 0;
+        Ok(())
+    }
+
+    pub(crate) fn rotate_group_origin(
+        &mut self,
+        rec: &mut GroupRecord,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let origin_generation = match decode_sender_state(&rec.sender_chain)? {
+            StoredGroupSenderState::Legacy(_) => 1,
+            StoredGroupSenderState::Origin(state) => state
+                .origin_generation
+                .checked_add(1)
+                .ok_or(NodeError::CorruptState)?,
+        };
+        let chain = GroupSenderChain::generate(rng);
+        let state = self.new_origin_sender_state(&rec.members, chain, origin_generation, rng)?;
+        rec.pending.clear();
+        rec.sender_chain = encode_sender_state(&StoredGroupSenderState::Origin(state))?;
         rec.sent_since_rotation = 0;
         Ok(())
     }
@@ -2269,7 +3513,7 @@ impl Node {
         &self,
         members: &[GroupMemberInfo],
     ) -> Result<Vec<ContactRecord>> {
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         let mut contacts = Vec::new();
         for member in members {
             if member.peer == me
@@ -2338,19 +3582,7 @@ impl Node {
         Ok(())
     }
 
-    /// One member's copy of a group ciphertext, if their pairwise session
-    /// exists (the delivery token needs it). `None` means "not yet" — the
-    /// tick retries once the session appears.
-    #[allow(clippy::too_many_arguments)] // exact fan-out identity, timing, and retention inputs
-    fn prepare_group_copy(
-        &self,
-        peer: &[u8; 32],
-        wire: &[u8],
-        group_msg_id: [u8; 16],
-        class: QueueClass,
-        retention_until: Option<u64>,
-        now: u64,
-    ) -> Result<PreparedGroupCopy> {
+    fn group_account_route_devices(&self, peer: &[u8; 32]) -> Result<Vec<[u8; 32]>> {
         let mut routes: Vec<[u8; 32]> = self
             .store
             .contact_devices_for(peer)?
@@ -2365,8 +3597,141 @@ impl Node {
         if routes.len() > kult_store::MAX_PAIRWISE_COMMIT_DEVICES {
             return Err(NodeError::CorruptState);
         }
+        Ok(routes)
+    }
 
+    fn prepare_group_pending_fanout(
+        &self,
+        group: &[u8; 32],
+        wire: &[u8],
+        sender: &StoredGroupSenderState,
+        deliveries: &[GroupDelivery],
+        group_msg_id: [u8; 16],
+        retention_until: Option<u64>,
+    ) -> Result<GroupPendingFanout> {
+        let shared = GroupMessage::decode(wire).map_err(NodeError::from)?;
+        let recipients = deliveries
+            .iter()
+            .map(|delivery| delivery.peer)
+            .collect::<HashSet<_>>();
+        if recipients.len() != deliveries.len() {
+            return Err(NodeError::CorruptState);
+        }
+        let mut routes = Vec::new();
+        match sender {
+            StoredGroupSenderState::Legacy(_) => {
+                if shared.version() == GROUP_MESSAGE_VERSION_ORIGIN {
+                    return Err(NodeError::CorruptState);
+                }
+                for account in recipients {
+                    routes.extend(self.group_account_route_devices(&account)?.into_iter().map(
+                        |device| GroupPendingFanoutRoute {
+                            account,
+                            device,
+                            origin_tag: None,
+                        },
+                    ));
+                }
+            }
+            StoredGroupSenderState::Origin(state) => {
+                if shared.version() != GROUP_MESSAGE_VERSION_ORIGIN {
+                    return Err(NodeError::CorruptState);
+                }
+                for origin in &state.origins {
+                    if !recipients.contains(&origin.recipient_account)
+                        || origin.key_id != state.chain.key_id()
+                    {
+                        return Err(NodeError::CorruptState);
+                    }
+                    let wrapper = GroupOriginEnvelope::seal(
+                        shared.clone(),
+                        &origin.origin_key,
+                        &GroupOriginContext {
+                            group_id: *group,
+                            sender_account: self.account.ed,
+                            sender_device: self.device_id(),
+                            recipient_account: origin.recipient_account,
+                            recipient_device: origin.recipient_device,
+                            sender_chain_key_id: origin.key_id,
+                            envelope_content_id: group_msg_id,
+                            authenticated_retention: retention_until,
+                        },
+                    )?;
+                    routes.push(GroupPendingFanoutRoute {
+                        account: origin.recipient_account,
+                        device: origin.recipient_device,
+                        origin_tag: Some(wrapper.tag()),
+                    });
+                }
+                if recipients
+                    .iter()
+                    .any(|account| !routes.iter().any(|route| &route.account == account))
+                {
+                    return Err(NodeError::GroupSecurityUpgradeRequired);
+                }
+            }
+        }
+        GroupPendingFanout::new(wire.to_vec(), routes).map_err(NodeError::from)
+    }
+
+    fn decode_group_pending_fanout(
+        &self,
+        record: &GroupMessageRecord,
+        encoded: &[u8],
+    ) -> Result<GroupPendingFanout> {
+        if encoded.starts_with(GROUP_PENDING_FANOUT_MAGIC) {
+            let pending = GroupPendingFanout::decode(encoded)?;
+            let tagged = pending.routes[0].origin_tag.is_some();
+            if tagged != record.origin.is_recipient_authenticated() {
+                return Err(NodeError::CorruptState);
+            }
+            return Ok(pending);
+        }
+        if record.origin.is_recipient_authenticated() {
+            return Err(NodeError::CorruptState);
+        }
+        let shared = GroupMessage::decode(encoded).map_err(NodeError::from)?;
+        if shared.version() == GROUP_MESSAGE_VERSION_ORIGIN {
+            return Err(NodeError::CorruptState);
+        }
+        let mut routes = Vec::new();
+        for delivery in &record.deliveries {
+            routes.extend(
+                self.group_account_route_devices(&delivery.peer)?
+                    .into_iter()
+                    .map(|device| GroupPendingFanoutRoute {
+                        account: delivery.peer,
+                        device,
+                        origin_tag: None,
+                    }),
+            );
+        }
+        GroupPendingFanout::new(encoded.to_vec(), routes).map_err(NodeError::from)
+    }
+
+    /// One exact recipient-device copy of a shared group ciphertext, if its
+    /// pairwise session exists. Pending tags are fixed when the ciphertext is
+    /// created, so later chain/session rotation cannot change its authority.
+    #[allow(clippy::too_many_arguments)] // exact fan-out identity, timing, and retention inputs
+    fn prepare_group_copy(
+        &self,
+        peer: &[u8; 32],
+        pending: &GroupPendingFanout,
+        group_msg_id: [u8; 16],
+        class: QueueClass,
+        retention_until: Option<u64>,
+        now: u64,
+    ) -> Result<PreparedGroupCopy> {
         let existing = self.store.message_device_deliveries(&group_msg_id)?;
+        let shared = GroupMessage::decode(&pending.shared_ciphertext).map_err(NodeError::from)?;
+        let routes = pending
+            .routes
+            .iter()
+            .filter(|route| route.account == *peer)
+            .collect::<Vec<_>>();
+        if routes.is_empty() {
+            return Err(NodeError::CorruptState);
+        }
         let mut prepared = PreparedGroupCopy {
             all_served: true,
             ..PreparedGroupCopy::default()
@@ -2374,35 +3739,40 @@ impl Node {
         for route in routes {
             let existing_delivery = existing
                 .iter()
-                .find(|delivery| delivery.account == *peer && delivery.device == route);
+                .find(|delivery| delivery.account == *peer && delivery.device == route.device);
             if let Some(wire_id) = existing_delivery.and_then(|delivery| delivery.wire_id) {
                 prepared.first_wire.get_or_insert(wire_id);
+                prepared.completed_routes.push((*peer, route.device));
                 continue;
             }
-            let Some(session) = self.sessions.get(&route) else {
+            let Some(session) = self.sessions.get(&route.device) else {
                 prepared.all_served = false;
                 continue;
             };
             let token = delivery_token(
                 &MailboxKey::from_bytes(*session.mailbox_key()),
                 epoch_day(now),
-                &route,
+                &route.device,
             );
+            let body = match route.origin_tag {
+                Some(tag) => GroupOriginEnvelope::from_parts(shared.clone(), tag)?.encode(),
+                None if shared.version() != GROUP_MESSAGE_VERSION_ORIGIN => {
+                    pending.shared_ciphertext.clone()
+                }
+                None => return Err(NodeError::CorruptState),
+            };
             let envelope = match retention_until {
-                Some(deadline) => Envelope::new_retained(
-                    EnvelopeKind::GroupMessage,
-                    token,
-                    deadline,
-                    wire.to_vec(),
-                )?,
-                None => Envelope::new(EnvelopeKind::GroupMessage, token, wire.to_vec()),
+                Some(deadline) => {
+                    Envelope::new_retained(EnvelopeKind::GroupMessage, token, deadline, body)?
+                }
+                None => Envelope::new(EnvelopeKind::GroupMessage, token, body),
             };
             let wire_id = envelope.content_id();
             prepared.first_wire.get_or_insert(wire_id);
             let after = MessageDeviceDeliveryRecord {
                 message: group_msg_id,
                 account: *peer,
-                device: route,
+                device: route.device,
                 wire_id: Some(wire_id),
                 state: DeliveryState::Queued,
             };
@@ -2412,7 +3782,7 @@ impl Node {
                 prepared.deliveries.push(after);
             }
             prepared.queue.push(QueueItem {
-                peer: route,
+                peer: route.device,
                 msg_id: None,
                 group_msg_id: Some(group_msg_id),
                 class,
@@ -2421,6 +3791,7 @@ impl Node {
                 next_attempt_at: now,
                 envelope,
             });
+            prepared.completed_routes.push((*peer, route.device));
         }
         Ok(prepared)
     }
@@ -2447,6 +3818,13 @@ impl Node {
             .into_iter()
             .find(|record| record.direction == Direction::Outbound && &record.id == content_id)
             .ok_or(NodeError::UnknownAttachment)?;
+        if before_record.origin
+            != (GroupOriginAuthentication::PendingOutboundV1 {
+                sender_device: self.device_id(),
+            })
+        {
+            return Err(NodeError::CorruptState);
+        }
         if before_record
             .deliveries
             .iter()
@@ -2462,24 +3840,49 @@ impl Node {
         if after_group.sent_since_rotation >= GROUP_ROTATE_MSGS {
             self.rotate_group(&mut after_group, rng)?;
         }
-        let mut chain = decode_chain(&after_group.sender_chain)?;
+        let mut sender_state = decode_sender_state(&after_group.sender_chain)?;
+        let origin_chain = matches!(&sender_state, StoredGroupSenderState::Origin(_));
+        let chain_key_id = sender_state.chain().key_id();
         let hk = GroupHeaderKey::derive(&after_group.secret);
         let wire = self
-            .candidate_group_seal(&mut chain, &hk, group, &pad(&before_record.body)?, rng)?
+            .candidate_group_seal(
+                sender_state.chain_mut(),
+                &hk,
+                group,
+                origin_chain.then_some(before_record.id),
+                &pad(&before_record.body)?,
+                rng,
+            )?
             .encode();
-        after_group.sender_chain = encode_chain(&chain)?;
+        after_group.sender_chain = encode_sender_state(&sender_state)?;
         after_group.sent_since_rotation = after_group
             .sent_since_rotation
             .checked_add(1)
             .ok_or(NodeError::CorruptState)?;
         let mut after_record = before_record.clone();
+        after_record.origin = if origin_chain {
+            GroupOriginAuthentication::OutboundV1 {
+                sender_device: self.device_id(),
+                chain_key_id,
+            }
+        } else {
+            GroupOriginAuthentication::LegacyMembership
+        };
+        let pending_fanout = self.prepare_group_pending_fanout(
+            group,
+            &wire,
+            &sender_state,
+            &after_record.deliveries,
+            after_record.id,
+            ephemeral_retention(&after_record.body),
+        )?;
         let mut queue = Vec::new();
         let mut delivery_rows = Vec::new();
         let mut delivery_pairs = Vec::new();
         for delivery in after_record.deliveries.iter_mut() {
             let prepared = self.prepare_group_copy(
                 &delivery.peer,
-                &wire,
+                &pending_fanout,
                 after_record.id,
                 QueueClass::Bulk,
                 ephemeral_retention(&after_record.body),
@@ -2672,6 +4075,67 @@ impl Node {
         Ok(preferred_wire)
     }
 
+    #[allow(clippy::too_many_arguments)] // exact recipient capability and durable group update
+    fn queue_group_origin_announce(
+        &mut self,
+        peer: &[u8; 32],
+        device: &[u8; 32],
+        payload: &GroupControlPayload,
+        before_group: &GroupRecord,
+        after_group: &mut GroupRecord,
+        origin_index: usize,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Option<[u8; 16]>> {
+        let prepared = self.prepare_group_control_to_device(peer, device, payload, now, rng)?;
+        let preferred_wire = prepared.as_ref().map(|prepared| prepared.preferred_wire);
+        let mut sender = decode_sender_state(&after_group.sender_chain)?;
+        let StoredGroupSenderState::Origin(state) = &mut sender else {
+            return Err(NodeError::CorruptState);
+        };
+        let origin = state
+            .origins
+            .get_mut(origin_index)
+            .filter(|origin| {
+                origin.recipient_account == *peer && origin.recipient_device == *device
+            })
+            .ok_or(NodeError::CorruptState)?;
+        origin.wire_id = preferred_wire;
+        origin.last_sent = now.max(origin.last_sent.saturating_add(1));
+        origin.acknowledged = false;
+        after_group.sender_chain = encode_sender_state(&sender)?;
+
+        if let Some(prepared) = prepared {
+            self.commit_prepared_group_control(
+                prepared,
+                Some(GroupTransition {
+                    before: before_group,
+                    after: after_group,
+                }),
+                &[],
+                &[],
+                rng,
+            )?;
+        } else {
+            let receipt = self.store.commit_plan(
+                CommitPlan::GroupState(GroupStatePlan {
+                    groups: &[GroupStateTransition {
+                        before: Some(before_group),
+                        after: Some(after_group),
+                    }],
+                    chains: &[],
+                    contacts: &[],
+                    authorities: &[],
+                    delete_controls: &[],
+                    presentation_changed: false,
+                }),
+                rng,
+            )?;
+            self.accept_commit_receipt(receipt, []);
+        }
+        Ok(preferred_wire)
+    }
+
     fn prepare_group_control(
         &mut self,
         peer: &[u8; 32],
@@ -2689,6 +4153,7 @@ impl Node {
                 device: *peer,
                 name: None,
                 certificate: Vec::new(),
+                authority: Vec::new(),
                 bundle: contact.bundle,
                 hints: contact.hints,
                 manifest_generation: 0,
@@ -2778,6 +4243,101 @@ impl Node {
         }))
     }
 
+    fn prepare_group_control_to_device(
+        &mut self,
+        peer: &[u8; 32],
+        device: &[u8; 32],
+        payload: &GroupControlPayload,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Option<PreparedGroupControl>> {
+        let Some(contact) = self.store.get_contact(peer)? else {
+            return Ok(None);
+        };
+        let endpoint = self
+            .store
+            .contact_devices_for(peer)?
+            .into_iter()
+            .find(|endpoint| endpoint.device == *device && endpoint.revoked_at.is_none())
+            .or_else(|| {
+                (*device == *peer).then_some(ContactDeviceRecord {
+                    account: *peer,
+                    device: *device,
+                    name: None,
+                    certificate: Vec::new(),
+                    authority: Vec::new(),
+                    bundle: contact.bundle,
+                    hints: contact.hints,
+                    manifest_generation: 0,
+                    manifest_state_id: [0u8; 32],
+                    last_seen: 0,
+                    revoked_at: None,
+                    revoked_after_counter: None,
+                })
+            });
+        let Some(endpoint) = endpoint else {
+            return Ok(None);
+        };
+        let (before, mut after, handshake) =
+            if let Some(before) = self.sessions.get(device).cloned() {
+                (Some(before.clone()), before, None)
+            } else {
+                if endpoint.bundle.is_empty() {
+                    return Ok(None);
+                }
+                let Ok((after, flight)) =
+                    self.prepare_session(peer, device, &endpoint.bundle, &pad(&[])?, now, rng)
+                else {
+                    return Ok(None);
+                };
+                (None, after, Some(flight))
+            };
+        let reset = handshake.is_some();
+        let mut queue = Vec::new();
+        if let Some(flight) = handshake {
+            queue.push(QueueItem {
+                peer: *device,
+                msg_id: None,
+                group_msg_id: None,
+                class: QueueClass::Normal,
+                created_at: now,
+                attempts: 0,
+                next_attempt_at: now,
+                envelope: flight,
+            });
+        }
+        let bytes = zeroize::Zeroizing::new(payload.encode());
+        let padded = pad(&bytes)?;
+        let message = self.candidate_encrypt(&mut after, rng, now, &padded)?;
+        let token = delivery_token(
+            &MailboxKey::from_bytes(*after.mailbox_key()),
+            epoch_day(now),
+            device,
+        );
+        let envelope = Envelope::new(EnvelopeKind::GroupControl, token, message.encode());
+        let preferred_wire = envelope.content_id();
+        queue.push(QueueItem {
+            peer: *device,
+            msg_id: None,
+            group_msg_id: None,
+            class: QueueClass::Normal,
+            created_at: now,
+            attempts: 0,
+            next_attempt_at: now,
+            envelope,
+        });
+        Ok(Some(PreparedGroupControl {
+            preferred_wire,
+            routes: vec![PreparedGroupControlRoute {
+                device: *device,
+                before,
+                after,
+                reset,
+            }],
+            queue,
+        }))
+    }
+
     fn commit_prepared_group_control(
         &mut self,
         prepared: PreparedGroupControl,
@@ -2859,8 +4419,8 @@ impl Node {
             return Ok(());
         };
         let mut contact = before.clone();
-        contact.hints = bundle.relay_hints.clone();
-        contact.bundle = bundle.encode();
+        contact.hints = bundle.prekey.relay_hints.clone();
+        contact.bundle = bundle.prekey.encode();
         let receipt = self.store.commit_plan(
             CommitPlan::GroupState(GroupStatePlan {
                 groups: &[],
@@ -2884,8 +4444,92 @@ pub(crate) fn encode_chain(chain: &GroupSenderChain) -> Result<Vec<u8>> {
     postcard::to_allocvec(chain).map_err(|_| NodeError::CorruptState)
 }
 
-fn decode_chain(blob: &[u8]) -> Result<GroupSenderChain> {
-    postcard::from_bytes(blob).map_err(|_| NodeError::CorruptState)
+enum StoredGroupSenderState {
+    Legacy(GroupSenderChain),
+    Origin(GroupSenderState),
+}
+
+impl StoredGroupSenderState {
+    fn chain(&self) -> &GroupSenderChain {
+        match self {
+            Self::Legacy(chain) => chain,
+            Self::Origin(state) => &state.chain,
+        }
+    }
+
+    fn chain_mut(&mut self) -> &mut GroupSenderChain {
+        match self {
+            Self::Legacy(chain) => chain,
+            Self::Origin(state) => &mut state.chain,
+        }
+    }
+}
+
+fn encode_sender_state(state: &StoredGroupSenderState) -> Result<Vec<u8>> {
+    match state {
+        StoredGroupSenderState::Legacy(chain) => encode_chain(chain),
+        StoredGroupSenderState::Origin(state) => {
+            validate_sender_origins(state)?;
+            let body = postcard::to_allocvec(state).map_err(|_| NodeError::CorruptState)?;
+            let mut encoded = Vec::with_capacity(GROUP_SENDER_ORIGIN_MAGIC.len() + body.len());
+            encoded.extend_from_slice(GROUP_SENDER_ORIGIN_MAGIC);
+            encoded.extend_from_slice(&body);
+            Ok(encoded)
+        }
+    }
+}
+
+fn decode_sender_state(blob: &[u8]) -> Result<StoredGroupSenderState> {
+    if let Some(body) = blob.strip_prefix(GROUP_SENDER_ORIGIN_MAGIC) {
+        let (state, remainder): (GroupSenderState, &[u8]) =
+            postcard::take_from_bytes(body).map_err(|_| NodeError::CorruptState)?;
+        if !remainder.is_empty() {
+            return Err(NodeError::CorruptState);
+        }
+        validate_sender_origins(&state)?;
+        Ok(StoredGroupSenderState::Origin(state))
+    } else if let Some(body) = blob.strip_prefix(LEGACY_GROUP_SENDER_ORIGIN_MAGIC) {
+        let (legacy, remainder): (LegacyGroupSenderState, &[u8]) =
+            postcard::take_from_bytes(body).map_err(|_| NodeError::CorruptState)?;
+        if !remainder.is_empty() {
+            return Err(NodeError::CorruptState);
+        }
+        let state = GroupSenderState {
+            origin_generation: 1,
+            chain: legacy.chain,
+            origins: legacy.origins,
+        };
+        validate_sender_origins(&state)?;
+        Ok(StoredGroupSenderState::Origin(state))
+    } else {
+        let (chain, remainder): (GroupSenderChain, &[u8]) =
+            postcard::take_from_bytes(blob).map_err(|_| NodeError::CorruptState)?;
+        if !remainder.is_empty() {
+            return Err(NodeError::CorruptState);
+        }
+        Ok(StoredGroupSenderState::Legacy(chain))
+    }
+}
+
+fn validate_sender_origins(state: &GroupSenderState) -> Result<()> {
+    if state.origin_generation == 0
+        || state.origins.len() > MAX_GROUP_ORIGIN_ROUTES
+        || state.origins.windows(2).any(|pair| {
+            (pair[0].recipient_account, pair[0].recipient_device)
+                >= (pair[1].recipient_account, pair[1].recipient_device)
+        })
+        || state.origins.iter().any(|origin| {
+            origin.recipient_account == [0u8; 32]
+                || origin.recipient_device == [0u8; 32]
+                || origin.origin_key == [0u8; 32]
+                || origin.chain_key == [0u8; 32]
+                || origin.key_id != state.chain.key_id()
+                || origin.acknowledged && origin.wire_id.is_none()
+        })
+    {
+        return Err(NodeError::CorruptState);
+    }
+    Ok(())
 }
 
 fn ephemeral_retention(body: &[u8]) -> Option<u64> {
@@ -2901,6 +4545,35 @@ fn ephemeral_retention(body: &[u8]) -> Option<u64> {
             ..
         } => Some(retention_until),
         _ => None,
+    }
+}
+
+fn valid_group_origin_plaintext(
+    body: &[u8],
+    origin_content_id: Option<[u8; 16]>,
+    envelope_retention: Option<u64>,
+) -> bool {
+    if ephemeral_retention(body) != envelope_retention {
+        return false;
+    }
+    let Some(expected) = origin_content_id else {
+        return true;
+    };
+    if expected == [0u8; 16] {
+        return false;
+    }
+    match decode_content(body) {
+        DecodedContent::Text { id, .. }
+        | DecodedContent::Attachment { id, .. }
+        | DecodedContent::Mention { id, .. }
+        | DecodedContent::Edit { id, .. }
+        | DecodedContent::Ephemeral { id, .. }
+        | DecodedContent::Poll { id, .. }
+        | DecodedContent::GroupAuthority { id, .. }
+        | DecodedContent::CallControl { id, .. } => id == expected,
+        DecodedContent::LegacyText(_)
+        | DecodedContent::Unsupported { .. }
+        | DecodedContent::Malformed => true,
     }
 }
 
@@ -2959,6 +4632,193 @@ mod tests {
     };
 
     #[test]
+    fn origin_state_codecs_migrate_released_and_premerge_rows_explicitly() {
+        let mut rng = StdRng::seed_from_u64(0x0029_c0de);
+        let sender = GroupSenderChain::generate(&mut rng);
+        let (key_id, chain_key, iteration) = sender.snapshot();
+        let receiver = GroupReceiverChain::new(key_id, &chain_key, iteration);
+
+        let v2 = vec![LegacyDeviceGroupReceiverChainV2 {
+            device: [1; 32],
+            chain: receiver.clone(),
+        }];
+        let mut v2_blob = LEGACY_DEVICE_GROUP_CHAINS_V2_MAGIC.to_vec();
+        v2_blob.extend_from_slice(&postcard::to_allocvec(&v2).unwrap());
+        let mut decoded = decode_device_group_chains(&v2_blob, [9; 32]).unwrap();
+        assert_eq!(decoded[0].chain.key_id(), key_id);
+        assert!(decoded[0].origin_key.is_none());
+        let current = encode_device_group_chains(&mut decoded).unwrap();
+        assert!(current.starts_with(DEVICE_GROUP_CHAINS_MAGIC));
+        assert!(decode_device_group_chains(&current, [9; 32]).is_ok());
+
+        let v3 = vec![LegacyDeviceGroupReceiverChainV3 {
+            device: [1; 32],
+            chain: receiver,
+            origin_key: Some([2; 32]),
+            recipient_device: [3; 32],
+        }];
+        let mut v3_blob = LEGACY_DEVICE_GROUP_CHAINS_V3_MAGIC.to_vec();
+        v3_blob.extend_from_slice(&postcard::to_allocvec(&v3).unwrap());
+        let mut decoded = decode_device_group_chains(&v3_blob, [9; 32]).unwrap();
+        assert_eq!(decoded[0].origin_generation, 0);
+        let current = encode_device_group_chains(&mut decoded).unwrap();
+        let decoded = decode_device_group_chains(&current, [9; 32]).unwrap();
+        assert!(
+            decoded[0].origin_key.is_none(),
+            "unordered KGC3 origin material requires a fresh announce"
+        );
+
+        let legacy_sender = LegacyGroupSenderState {
+            chain: sender,
+            origins: vec![OutgoingGroupOrigin {
+                recipient_account: [4; 32],
+                recipient_device: [5; 32],
+                key_id,
+                chain_key: *chain_key,
+                iteration,
+                origin_key: [6; 32],
+                wire_id: None,
+                last_sent: 0,
+                acknowledged: false,
+            }],
+        };
+        let mut sender_blob = LEGACY_GROUP_SENDER_ORIGIN_MAGIC.to_vec();
+        sender_blob.extend_from_slice(&postcard::to_allocvec(&legacy_sender).unwrap());
+        let StoredGroupSenderState::Origin(migrated) = decode_sender_state(&sender_blob).unwrap()
+        else {
+            panic!("KGS2 must decode as origin state");
+        };
+        assert_eq!(migrated.origin_generation, 1);
+        let current = encode_sender_state(&StoredGroupSenderState::Origin(migrated)).unwrap();
+        assert!(current.starts_with(GROUP_SENDER_ORIGIN_MAGIC));
+    }
+
+    #[test]
+    fn receiver_origin_generation_ignores_stale_and_same_generation_conflicts() {
+        let mut rng = StdRng::seed_from_u64(0x0029_6e6e);
+        let directory = tempfile::tempdir().unwrap();
+        let alice =
+            Node::create(&directory.path().join("alice.db"), b"a", TEST_KDF, &mut rng).unwrap();
+        let bob = Node::create(&directory.path().join("bob.db"), b"b", TEST_KDF, &mut rng).unwrap();
+        let group = [7u8; 32];
+        let peer = bob.peer_id();
+        let device = bob.device_id();
+
+        let (_, accepted) = alice
+            .prepare_group_receiver_chain(
+                &group,
+                AuthenticatedGroupSender {
+                    account: peer,
+                    device,
+                },
+                GroupReceiverChainMaterial {
+                    key_id: [1; 16],
+                    chain_key: [2; 32],
+                    iteration: 0,
+                    origin: Some(GroupOriginMaterial {
+                        key: [3; 32],
+                        generation: 2,
+                    }),
+                },
+            )
+            .unwrap();
+        let accepted = accepted.unwrap();
+        alice
+            .store
+            .put_group_chain(&group, &peer, &accepted, &mut rng)
+            .unwrap();
+
+        let (_, duplicate) = alice
+            .prepare_group_receiver_chain(
+                &group,
+                AuthenticatedGroupSender {
+                    account: peer,
+                    device,
+                },
+                GroupReceiverChainMaterial {
+                    key_id: [1; 16],
+                    chain_key: [2; 32],
+                    iteration: 0,
+                    origin: Some(GroupOriginMaterial {
+                        key: [3; 32],
+                        generation: 2,
+                    }),
+                },
+            )
+            .unwrap();
+        assert!(duplicate.is_none());
+
+        let (_, conflict) = alice
+            .prepare_group_receiver_chain(
+                &group,
+                AuthenticatedGroupSender {
+                    account: peer,
+                    device,
+                },
+                GroupReceiverChainMaterial {
+                    key_id: [4; 16],
+                    chain_key: [5; 32],
+                    iteration: 0,
+                    origin: Some(GroupOriginMaterial {
+                        key: [6; 32],
+                        generation: 2,
+                    }),
+                },
+            )
+            .unwrap();
+        assert!(conflict.is_none());
+
+        let (_, stale) = alice
+            .prepare_group_receiver_chain(
+                &group,
+                AuthenticatedGroupSender {
+                    account: peer,
+                    device,
+                },
+                GroupReceiverChainMaterial {
+                    key_id: [7; 16],
+                    chain_key: [8; 32],
+                    iteration: 0,
+                    origin: Some(GroupOriginMaterial {
+                        key: [9; 32],
+                        generation: 1,
+                    }),
+                },
+            )
+            .unwrap();
+        assert!(stale.is_none());
+        assert_eq!(
+            alice
+                .store
+                .get_group_chain(&group, &peer)
+                .unwrap()
+                .unwrap()
+                .as_slice(),
+            accepted.as_slice()
+        );
+
+        let (_, fresh) = alice
+            .prepare_group_receiver_chain(
+                &group,
+                AuthenticatedGroupSender {
+                    account: peer,
+                    device,
+                },
+                GroupReceiverChainMaterial {
+                    key_id: [10; 16],
+                    chain_key: [11; 32],
+                    iteration: 0,
+                    origin: Some(GroupOriginMaterial {
+                        key: [12; 32],
+                        generation: 3,
+                    }),
+                },
+            )
+            .unwrap();
+        assert!(fresh.is_some());
+    }
+
+    #[test]
     fn group_edit_requires_every_current_member_capability() {
         let mut rng = StdRng::seed_from_u64(0x00c3_0004);
         let directory = tempfile::tempdir().unwrap();
@@ -2967,6 +4827,7 @@ mod tests {
         let mut bob =
             Node::create(&directory.path().join("bob.db"), b"b", TEST_KDF, &mut rng).unwrap();
         let bob_bundle = bob.handshake_bundle(1_800_000_000, &mut rng).unwrap();
+        let bob_device = bob.device_id();
         let bob_peer = alice
             .add_contact("bob", &bob_bundle, &[], 1_800_000_000, &mut rng)
             .unwrap();
@@ -2976,7 +4837,7 @@ mod tests {
         let group = alice
             .create_group("old client", &[bob_peer], &mut rng)
             .unwrap();
-        let alice_peer = alice.identity.public().ed;
+        let alice_peer = alice.account.ed;
 
         assert!(matches!(
             alice.group_edit_message(
@@ -2998,7 +4859,7 @@ mod tests {
         };
         alice
             .store
-            .put_capabilities(&bob_peer, &text_only, &mut rng)
+            .put_capabilities(&bob_device, &text_only, &mut rng)
             .unwrap();
         assert!(matches!(
             alice.group_edit_message(
@@ -3020,7 +4881,7 @@ mod tests {
         };
         alice
             .store
-            .put_capabilities(&bob_peer, &edit_capable, &mut rng)
+            .put_capabilities(&bob_device, &edit_capable, &mut rng)
             .unwrap();
         assert!(matches!(
             alice.group_edit_message(
@@ -3044,6 +4905,7 @@ mod tests {
         let mut bob =
             Node::create(&directory.path().join("bob.db"), b"b", TEST_KDF, &mut rng).unwrap();
         let bob_bundle = bob.handshake_bundle(1_800_000_000, &mut rng).unwrap();
+        let bob_device = bob.device_id();
         let bob_peer = alice
             .add_contact("same name", &bob_bundle, &[], 1_800_000_000, &mut rng)
             .unwrap();
@@ -3059,7 +4921,7 @@ mod tests {
         };
         alice
             .store
-            .put_capabilities(&bob_peer, &supported_snapshot, &mut rng)
+            .put_capabilities(&bob_device, &supported_snapshot, &mut rng)
             .unwrap();
         let supported = alice.group_mention_capability(&group).unwrap();
         assert!(supported.supported());
@@ -3095,7 +4957,7 @@ mod tests {
         };
         alice
             .store
-            .put_capabilities(&bob_peer, &downgraded_snapshot, &mut rng)
+            .put_capabilities(&bob_device, &downgraded_snapshot, &mut rng)
             .unwrap();
         let downgraded = alice.group_mention_capability(&group).unwrap();
         assert_eq!(
@@ -3129,7 +4991,7 @@ mod tests {
             Err(NodeError::MentionUnsupported)
         ));
 
-        alice.store.delete_capabilities(&bob_peer).unwrap();
+        alice.store.delete_capabilities(&bob_device).unwrap();
         let missing = alice.group_mention_capability(&group).unwrap();
         assert_eq!(
             missing.issues,

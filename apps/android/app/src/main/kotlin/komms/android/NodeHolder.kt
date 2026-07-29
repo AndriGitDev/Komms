@@ -1,5 +1,6 @@
 package komms.android
 
+import java.io.File
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -19,6 +20,27 @@ import uniffi.kult_ffi.Event
 object NodeHolder {
     @Volatile
     var session: Session? = null
+        private set
+
+    /**
+     * First-run authority export is a process-memory-only gate. Keeping this
+     * state here lets an Activity recreation resume without persisting the
+     * one-time phrase or allowing the main UI through early.
+     */
+    @Volatile
+    var recoveryAuthorityOnboardingPending: Boolean = false
+        private set
+
+    @Volatile
+    var stagedRecoveryAuthority: File? = null
+        private set
+
+    @Volatile
+    var stagedRecoveryAuthorityMnemonic: String? = null
+        private set
+
+    @Volatile
+    var recoveryAuthorityWritten: Boolean = false
         private set
 
     /** The one thread every blocking node call runs on. */
@@ -53,6 +75,28 @@ object NodeHolder {
         this.session = session
     }
 
+    fun beginRecoveryAuthorityOnboarding() {
+        recoveryAuthorityOnboardingPending = true
+    }
+
+    fun stageRecoveryAuthority(file: File, mnemonic: String) {
+        stagedRecoveryAuthority = file
+        stagedRecoveryAuthorityMnemonic = mnemonic
+        recoveryAuthorityWritten = false
+    }
+
+    fun markRecoveryAuthorityWritten() {
+        recoveryAuthorityWritten = true
+    }
+
+    fun completeRecoveryAuthorityOnboarding() {
+        stagedRecoveryAuthority?.delete()
+        stagedRecoveryAuthority = null
+        stagedRecoveryAuthorityMnemonic = null
+        recoveryAuthorityWritten = false
+        recoveryAuthorityOnboardingPending = false
+    }
+
     /**
      * Lock: forget the session immediately (so the gate shows), then stop
      * the node off-thread — `stop` blocks until the runtime is down.
@@ -61,6 +105,11 @@ object NodeHolder {
         val stopping = session
         session = null
         held.clear()
+        stagedRecoveryAuthority?.delete()
+        stagedRecoveryAuthority = null
+        stagedRecoveryAuthorityMnemonic = null
+        recoveryAuthorityWritten = false
+        recoveryAuthorityOnboardingPending = false
         stopping?.let { executor.execute { it.stop() } }
     }
 

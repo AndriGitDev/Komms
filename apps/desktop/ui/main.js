@@ -668,6 +668,12 @@ $("#gate-tabs").addEventListener("click", (e) => {
   if (tab) setGateMode(tab.dataset.tab);
 });
 
+$("#gate-legacy-backup").addEventListener("change", (event) => {
+  const legacy = event.target.checked;
+  $("#gate-legacy-warning").hidden = !legacy;
+  $("#gate-current-authority-fields").hidden = legacy;
+});
+
 let probeDebounce;
 $("#gate-dir").addEventListener("input", () => {
   clearTimeout(probeDebounce);
@@ -675,6 +681,130 @@ $("#gate-dir").addEventListener("input", () => {
 });
 
 $("#startup-dialog").addEventListener("cancel", (event) => event.preventDefault());
+
+function authorityUpgradeKind(error) {
+  const text = String(error);
+  if (text.includes("explicit offline-authority migration is required")) return "migration";
+  if (text.includes("authority reset with a new identity is required")) return "reset";
+  return null;
+}
+
+function openAuthorityUpgrade(kind, args) {
+  const legacyBackupReset = kind === "legacy-backup-reset";
+  const reset = kind === "reset" || legacyBackupReset;
+  const root = openModal(
+    legacyBackupReset
+      ? "Recover legacy backup with a new identity"
+      : reset
+        ? "Required new-identity security reset"
+        : "Required device-authority migration",
+    "tpl-authority-upgrade",
+  );
+  root.querySelector('[data-f="explanation"]').textContent = legacyBackupReset
+    ? "This legacy backup contains an account root that may have been copied. It cannot safely resume the former address. Komms will decrypt it only into an unpublished migration projection, then publish a fresh account containing cleared petnames and accurately labelled local pairwise/note history. Groups, routes, sessions, devices, queues, and service capabilities will not transfer."
+    : reset
+    ? "This Alpha profile copied its account root to another device. Revoking that device cannot erase its copy, so the old address cannot be made permanently revocable. The safe upgrade creates a new account, clears every live route/session/device/group capability, and keeps only clearly marked local pairwise/note history and petnames."
+    : "Komms found no linked-device root copy in this store. Keep this address only if you also never exported or copied a legacy KKR7 backup. If you did, choose the conservative new-identity reset below. In-place migration keeps this device, petnames, and history after the root is saved as a separate offline authority.";
+  root.querySelector('[data-f="consequence"]').textContent = reset
+    ? "These words open the new account authority. The old safety number and device revocations are not preserved. Every retained contact is blocked until you compare the new safety number."
+    : "These words open the offline authority for the same account. The live database will retain only the public account anchor and this device’s independent key.";
+  root.querySelector('[data-f="identity-confirm-row"]').hidden = !reset;
+  root.querySelector('[data-act="reset-instead"]').hidden = reset;
+  if (legacyBackupReset) {
+    root.querySelector('[data-act="prepare"]').textContent = "Prepare fresh recovery authority";
+    root.querySelector('[data-act="complete"]').textContent = "Create new identity and import archive";
+  }
+  const path = root.querySelector('[data-f="path"]');
+  let mnemonic = "";
+  root.addEventListener("click", async (event) => {
+    if (event.target.matches('[data-act="reset-instead"]')) {
+      closeModal();
+      openAuthorityUpgrade("reset", args);
+      return;
+    }
+    if (event.target.matches('[data-act="prepare"]')) {
+      const error = root.querySelector('[data-f="error"]');
+      error.hidden = true;
+      if (!path.value.trim()) {
+        error.textContent = "Choose an offline or removable destination first.";
+        error.hidden = false;
+        return;
+      }
+      event.target.disabled = true;
+      try {
+        if (reset) {
+          const prepared = await invoke(
+            legacyBackupReset
+              ? "prepare_legacy_backup_authority_reset"
+              : "prepare_authority_reset",
+            legacyBackupReset
+              ? { recoveryPath: path.value.trim() }
+              : {
+                  dataDir: args.dataDir,
+                  passphrase: args.passphrase,
+                  recoveryPath: path.value.trim(),
+                },
+          );
+          mnemonic = prepared.recovery_mnemonic ?? prepared.recoveryMnemonic;
+          root.querySelector('[data-f="new-address"]').textContent =
+            prepared.new_address ?? prepared.newAddress;
+          root.querySelector('[data-f="new-address-row"]').hidden = false;
+        } else {
+          mnemonic = await invoke("prepare_authority_migration", {
+            dataDir: args.dataDir,
+            passphrase: args.passphrase,
+            recoveryPath: path.value.trim(),
+          });
+        }
+        const list = root.querySelector('[data-f="mnemonic"]');
+        list.replaceChildren(...mnemonic.split(/\s+/).map((word) => {
+          const item = document.createElement("li");
+          item.textContent = word;
+          return item;
+        }));
+        root.querySelector('[data-f="prepare-stage"]').hidden = true;
+        root.querySelector('[data-f="confirm-stage"]').hidden = false;
+      } catch (failure) {
+        error.textContent = String(failure);
+        error.hidden = false;
+        event.target.disabled = false;
+      }
+    }
+    if (event.target.matches('[data-act="complete"]')) {
+      const error = root.querySelector('[data-f="complete-error"]');
+      error.hidden = true;
+      const saved = root.querySelector('[data-f="saved"]').checked;
+      const identityConfirmed =
+        !reset || root.querySelector('[data-f="identity-confirm"]').checked;
+      if (!saved || !identityConfirmed) {
+        error.textContent = "Confirm both security statements before continuing.";
+        error.hidden = false;
+        return;
+      }
+      event.target.disabled = true;
+      try {
+        const address = await invoke(
+          legacyBackupReset ? "restore" : reset ? "reset_authority" : "migrate_authority",
+          {
+            ...args,
+            recoveryPackagePath: path.value.trim(),
+            recoveryMnemonic: mnemonic,
+          },
+        );
+        closeModal();
+        state.dataDir = args.dataDir;
+        enterApp(address);
+        if (reset) {
+          toast("New identity created · re-verify every preserved contact");
+        }
+      } catch (failure) {
+        error.textContent = String(failure);
+        error.hidden = false;
+        event.target.disabled = false;
+      }
+    }
+  });
+}
 
 $("#gate-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -685,7 +815,10 @@ $("#gate-form").addEventListener("submit", async (e) => {
   btn.disabled = true;
   btn.textContent = "Opening… (up to 30 seconds)";
   if (!startupDialog.open) startupDialog.showModal();
+  let deferredUpgrade = null;
   try {
+    const creatingFresh =
+      gateMode !== "restore" && !$("#gate-tabs").hidden;
     const args = {
       dataDir: $("#gate-dir").value.trim(),
       passphrase: $("#gate-pass").value,
@@ -693,24 +826,47 @@ $("#gate-form").addEventListener("submit", async (e) => {
     };
     let address;
     if (gateMode === "restore" && !$("#gate-tabs").hidden) {
-      address = await invoke("restore", {
-        ...args,
-        backupPath: $("#gate-backup").value.trim(),
-        mnemonic: $("#gate-mnemonic").value.trim(),
-      });
+      if ($("#gate-legacy-backup").checked) {
+        deferredUpgrade = ["legacy-backup-reset", {
+          ...args,
+          backupPath: $("#gate-backup").value.trim(),
+          mnemonic: $("#gate-mnemonic").value.trim(),
+        }];
+      } else {
+        address = await invoke("restore", {
+          ...args,
+          backupPath: $("#gate-backup").value.trim(),
+          mnemonic: $("#gate-mnemonic").value.trim(),
+          recoveryPackagePath: $("#gate-recovery-package").value.trim(),
+          recoveryMnemonic: $("#gate-recovery-mnemonic").value.trim(),
+        });
+      }
     } else {
       address = await invoke("unlock", args);
     }
-    state.dataDir = args.dataDir;
-    enterApp(address);
+    if (address) {
+      state.dataDir = args.dataDir;
+      enterApp(address);
+      if (creatingFresh) openRecoveryAuthorityOnboarding();
+    }
   } catch (err) {
-    errEl.textContent = String(err);
-    errEl.hidden = false;
+    const upgrade = authorityUpgradeKind(err);
+    if (upgrade) {
+      deferredUpgrade = [upgrade, {
+        dataDir: $("#gate-dir").value.trim(),
+        passphrase: $("#gate-pass").value,
+        settings: readSettings(),
+      }];
+    } else {
+      errEl.textContent = String(err);
+      errEl.hidden = false;
+    }
   } finally {
     if (startupDialog.open) startupDialog.close();
     btn.disabled = false;
     probeGate($("#gate-dir").value).catch(() => {});
   }
+  if (deferredUpgrade) openAuthorityUpgrade(...deferredUpgrade);
 });
 
 // ── main app ────────────────────────────────────────────────────────────
@@ -722,6 +878,7 @@ function enterApp(address) {
   $("#my-address").textContent = address;
   $("#gate-pass").value = "";
   $("#gate-mnemonic").value = "";
+  $("#gate-recovery-mnemonic").value = "";
   // Transport status is essential, so start it before optional list, icon,
   // and theme setup. A failure in any independent UI surface must not leave
   // these indicators at the static HTML placeholders.
@@ -734,6 +891,7 @@ function enterApp(address) {
   refreshGroups();
   refreshFolders();
   refreshLabels();
+  refreshAuthorityResetHistory();
   call("note_to_self_id").then((id) => { state.noteToSelfId = id; });
   applyCustomIcon(
     $("#note-to-self .avatar"),
@@ -742,6 +900,27 @@ function enterApp(address) {
     "Note to self",
   );
   syncThemeAfterUnlock();
+}
+
+async function refreshAuthorityResetHistory() {
+  const banner = $("#authority-reset-banner");
+  try {
+    const record = await invoke("authority_reset_history");
+    if (!record) {
+      banner.hidden = true;
+      return;
+    }
+    const pending = record.pending_reverification ?? record.pendingReverification ?? [];
+    const pairwise =
+      record.preserved_pairwise_messages ?? record.preservedPairwiseMessages ?? 0;
+    const notes = record.preserved_note_messages ?? record.preservedNoteMessages ?? 0;
+    const omittedGroups = record.omitted_groups ?? record.omittedGroups ?? 0;
+    $("#authority-reset-summary").textContent =
+      `${pairwise} pairwise rows and ${notes} notes below were copied locally from the former identity; ${omittedGroups} active groups were not transferred. ${pending.length} contact${pending.length === 1 ? "" : "s"} still require a new safety-number comparison.`;
+    banner.hidden = false;
+  } catch {
+    banner.hidden = true;
+  }
 }
 
 async function syncThemeAfterUnlock() {
@@ -785,6 +964,7 @@ async function leaveApp() {
   state.msgEls.clear();
   $("#messages").replaceChildren();
   $("#attachment-transfers").replaceChildren();
+  $("#authority-reset-banner").hidden = true;
   $("#app").hidden = true;
   $("#gate").hidden = false;
   $("#chat-pane").hidden = true;
@@ -2030,6 +2210,17 @@ function groupBubble(m, formatted) {
   meta.className = "meta";
   meta.textContent = fmtTime(m.timestamp);
   appendExpiryMetadata(meta, m);
+  if (m.authentication === "legacy_membership") {
+    const authentication = document.createElement("span");
+    authentication.textContent = " · legacy group origin";
+    authentication.title = "This historical row is membership-authenticated; it is not proof of the individual sender.";
+    meta.append(authentication);
+  } else if (m.authentication === "pending_recipient_authentication") {
+    const authentication = document.createElement("span");
+    authentication.textContent = " · securing recipients";
+    authentication.title = "This attachment is local-only until every recipient wrapper is authenticated and queued.";
+    meta.append(authentication);
+  }
   el.append(meta);
   appendEditMetadata(el, meta, m, true);
   if (m.outbound) {
@@ -2491,7 +2682,7 @@ async function renderMessages() {
   const renderGeneration = ++state.messageRenderGeneration;
   const isNote = state.currentKind === "note";
   const isGroup = state.currentKind === "group";
-  const [msgs, scheduled, attachments, polls, authority] = await Promise.all([
+  const [msgs, scheduled, attachments, polls, authority, groupSecurity] = await Promise.all([
     isNote
       ? call("note_to_self_messages")
       : isGroup
@@ -2501,6 +2692,7 @@ async function renderMessages() {
     isNote ? Promise.resolve([]) : call("attachments"),
     isGroup ? call("group_polls", { group: state.currentId }) : Promise.resolve([]),
     isGroup ? call("group_authority", { group: state.currentId }) : Promise.resolve(null),
+    isGroup ? invoke("group_security", { group: state.currentId }) : Promise.resolve(null),
   ]);
   if (renderGeneration !== state.messageRenderGeneration) return;
   const visibleMessages = msgs.filter((message) => !["attachment", "view_once_attachment"].includes(message.content_kind));
@@ -2521,6 +2713,7 @@ async function renderMessages() {
   if (renderGeneration !== state.messageRenderGeneration) return;
 
   state.currentAuthority = authority;
+  renderGroupSecurity(groupSecurity);
   const box = $("#messages");
   box.textContent = "";
   state.msgEls.clear();
@@ -2542,6 +2735,57 @@ async function renderMessages() {
   renderPolls(polls, authority);
   box.scrollTop = box.scrollHeight;
 }
+
+function renderGroupSecurity(security) {
+  const panel = $("#group-security");
+  const upgrade = $("#btn-group-security-upgrade");
+  const composer = $("#composer-input");
+  if (!security || state.currentKind !== "group") {
+    panel.hidden = true;
+    composer.disabled = false;
+    $("#btn-mention").disabled = false;
+    $("#btn-poll").disabled = false;
+    $("#btn-attach").disabled = false;
+    $("#btn-schedule").disabled = false;
+    return;
+  }
+  const blocked = security.level !== "recipient_authenticated";
+  composer.disabled = blocked;
+  $("#btn-mention").disabled = blocked;
+  $("#btn-poll").disabled = blocked;
+  $("#btn-attach").disabled = blocked;
+  $("#btn-schedule").disabled = blocked;
+  if (security.level === "upgrade_required") {
+    panel.hidden = false;
+    $("#group-security-title").textContent = "Group security upgrade required. ";
+    $("#group-security-detail").textContent = "New messages and author-sensitive actions stay blocked until every current device receives a fresh recipient-specific origin capability.";
+    upgrade.hidden = false;
+  } else if (security.level === "upgrading") {
+    panel.hidden = false;
+    $("#group-security-title").textContent = "Upgrading group security. ";
+    $("#group-security-detail").textContent = `${security.pending_devices.length} device${security.pending_devices.length === 1 ? "" : "s"} still waiting. Komms will continue automatically.`;
+    upgrade.hidden = true;
+  } else if (security.legacy_history_rows > 0) {
+    panel.hidden = false;
+    $("#group-security-title").textContent = "New messages are recipient-authenticated. ";
+    $("#group-security-detail").textContent = `${security.legacy_history_rows} older message${security.legacy_history_rows === 1 ? "" : "s"} remain accurately labelled as legacy membership-authenticated history.`;
+    upgrade.hidden = true;
+  } else {
+    panel.hidden = true;
+    upgrade.hidden = true;
+  }
+}
+
+$("#btn-group-security-upgrade").addEventListener("click", async () => {
+  if (state.currentKind !== "group" || !state.currentId) return;
+  try {
+    await invoke("upgrade_group_security", { group: state.currentId });
+    await renderMessages();
+    await refreshGroups();
+  } catch (error) {
+    toast(String(error), true);
+  }
+});
 
 $("#composer").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -3021,6 +3265,19 @@ listen("node-event", async ({ payload: ev }) => {
       }
       break;
     }
+    case "device_authority_fork":
+    case "device_recovery_conflict": {
+      toast(
+        ev.type === "device_recovery_conflict"
+          ? "Conflicting account recoveries detected. Device authority is fail-closed; review Linked devices."
+          : "A device-authority fork was detected. Authority is fail-closed; review Linked devices.",
+        true
+      );
+      if (!$("#modal-backdrop").hidden && $("#modal-title").textContent === "Linked devices") {
+        await renderLinkedDevices($("#modal-body"));
+      }
+      break;
+    }
     case "device_link_completed": {
       await refreshStatus();
       break;
@@ -3224,6 +3481,7 @@ listen("node-event", async ({ payload: ev }) => {
 // ── modals ──────────────────────────────────────────────────────────────
 
 let modalReturnFocus = null;
+let recoveryOnboardingPending = false;
 
 function modalFocusable() {
   return [...$("#modal").querySelectorAll(
@@ -3244,6 +3502,7 @@ function openModal(title, tplId) {
 }
 
 function closeModal() {
+  if (recoveryOnboardingPending) return;
   discardAudioDraft();
   discardImageDraft();
   $("#modal").classList.remove("image-editing");
@@ -3928,7 +4187,12 @@ async function openGroupDetails() {
   const isOwner = authority.my_role === "owner";
   const isAdmin = authority.my_role === "admin";
   const root = openModal(`Members of ${group.name}`, "tpl-group-details");
-  root.querySelector(".group-summary").textContent = `${group.members.length} members · ${memberName(authority.owner)} owns this group · generation ${authority.generation}${authority.signed ? " · signed authority" : " · legacy authority"}.`;
+  const originSecurity = group.security === "recipient_authenticated"
+    ? "recipient-authenticated origins"
+    : group.security === "upgrading"
+      ? "origin upgrade in progress"
+      : "security upgrade required";
+  root.querySelector(".group-summary").textContent = `${group.members.length} members · ${memberName(authority.owner)} owns this group · generation ${authority.generation}${authority.signed ? " · signed authority" : " · legacy authority"} · ${originSecurity}.`;
   const manage = root.querySelector('[data-f="manage"]');
   if (isOwner || isAdmin) {
     manage.hidden = false;
@@ -4170,7 +4434,7 @@ $("#btn-verify").addEventListener("click", async () => {
     await call("mark_verified", { peer });
     closeModal();
     toast("Marked verified");
-    await refreshContacts();
+    await Promise.all([refreshContacts(), refreshAuthorityResetHistory()]);
   });
 });
 
@@ -4213,7 +4477,30 @@ async function openAppearanceSettings() {
 
 async function renderLinkedDevices(root) {
   const list = root.querySelector('[data-f="device-list"]');
-  const devices = await invoke("linked_devices");
+  const [devices, conflicts, contactConflicts] = await Promise.all([
+    invoke("linked_devices"),
+    invoke("device_authority_conflicts"),
+    invoke("contact_authority_conflicts"),
+  ]);
+  const conflictView = root.querySelector('[data-f="authority-conflicts"]');
+  if (conflicts.length || contactConflicts.length) {
+    conflictView.hidden = false;
+    const ownWarnings = conflicts.map((conflict) =>
+      conflict.kind === "recovery"
+        ? `Conflicting recoveries claim epoch ${conflict.recovery_epoch}. Authority is fail-closed; re-verify contacts after resolving with offline recovery.`
+        : `Concurrent device-authority branches were detected in epoch ${conflict.recovery_epoch}. Authority is fail-closed and requires offline recovery.`
+    );
+    const contactWarnings = contactConflicts.map((conflict) => {
+      const name = contactName(conflict.account);
+      return conflict.kind === "recovery"
+        ? `${name} presented conflicting recoveries for epoch ${conflict.recovery_epoch}. Their accepted branch was retained and verification was cleared.`
+        : `${name} presented concurrent device-authority branches in epoch ${conflict.recovery_epoch}. Their accepted branch was retained; offline recovery is required.`;
+    });
+    conflictView.textContent = ownWarnings.concat(contactWarnings).join(" ");
+  } else {
+    conflictView.hidden = true;
+    conflictView.textContent = "";
+  }
   list.replaceChildren();
   for (const device of devices) {
     const row = document.createElement("div");
@@ -4278,7 +4565,24 @@ async function openDeviceLinkSource() {
   const root = openModal("Link another device", "tpl-device-link-source");
   try {
     const offer = await invoke("begin_device_link");
-    root.querySelector('[data-f="offer-qr"]').innerHTML = offer.qr_svg;
+    const pane = root.querySelector('[data-f="offer-qr"]');
+    const frames = offer.qr_svgs?.length ? offer.qr_svgs : [offer.qr_svg];
+    let frame = 0;
+    pane.innerHTML = frames[frame];
+    if (frames.length > 1) {
+      const timer = window.setInterval(() => {
+        if (!root.isConnected) {
+          window.clearInterval(timer);
+          return;
+        }
+        frame = (frame + 1) % frames.length;
+        pane.innerHTML = frames[frame];
+        pane.setAttribute(
+          "aria-label",
+          `Device link offer frame ${frame + 1} of ${frames.length}`
+        );
+      }, 1100);
+    }
     root.querySelector('[data-f="offer"]').value = offer.hex;
   } catch (error) { showError(root, error); }
   root.addEventListener("click", async (event) => {
@@ -4301,12 +4605,92 @@ async function openDeviceLinkSource() {
           organization: root.querySelector('[data-f="organization"]').checked,
           history: root.querySelector('[data-f="history"]').checked,
         };
-        const packageHex = await invoke("approve_device_link", { responseHex, selection, confirmed: true });
+        try {
+          const packageHex = await invoke("approve_device_link", {
+            responseHex, selection, confirmed: true
+          });
+          root.querySelector('[data-f="package"]').value = packageHex;
+          root.querySelector('[data-f="package-wrap"]').hidden = false;
+        } catch (failure) {
+          if (!String(failure).includes("additional active-device approval")) throw failure;
+          const request = await invoke("device_link_approval_request");
+          root.querySelector('[data-f="approval-request"]').value = request;
+          root.querySelector('[data-f="quorum"]').hidden = false;
+        }
+      }
+      if (event.target.matches('[data-act="copy-approval-request"]')) {
+        await copyText(root.querySelector('[data-f="approval-request"]').value);
+      }
+      if (event.target.matches('[data-act="accept-additional-approval"]')) {
+        const packageHex = await invoke("accept_device_link_approval", {
+          approvalHex: root.querySelector('[data-f="additional-approval"]').value.trim(),
+        });
+        if (!packageHex) {
+          toast("Approval accepted; another active device is still required");
+          return;
+        }
         root.querySelector('[data-f="package"]').value = packageHex;
         root.querySelector('[data-f="package-wrap"]').hidden = false;
+        root.querySelector('[data-f="quorum"]').hidden = true;
       }
       if (event.target.matches('[data-act="copy-package"]')) {
         await copyText(root.querySelector('[data-f="package"]').value);
+      }
+    } catch (error) { showError(root, error); }
+  });
+}
+
+function openDeviceApproval(kind) {
+  const isLink = kind === "link";
+  const root = openModal(
+    isLink ? "Approve another device’s link" : "Approve a device change",
+    "tpl-device-approval"
+  );
+  root.querySelector('[data-f="explanation"]').textContent = isLink
+    ? "Verify an exact pending add-device proposal from another active installation. Your detached signature alone cannot alter the proposal."
+    : "Verify an exact pending rename or revocation proposal from another active installation.";
+  root.addEventListener("click", async (event) => {
+    try {
+      if (event.target.matches('[data-act="approve-request"]')) {
+        const command = isLink
+          ? "approve_device_link_request"
+          : "approve_device_authority_request";
+        const approval = await invoke(command, {
+          requestHex: root.querySelector('[data-f="request"]').value.trim(),
+        });
+        root.querySelector('[data-f="approval"]').value = approval;
+        root.querySelector('[data-f="result"]').hidden = false;
+      }
+      if (event.target.matches('[data-act="copy-approval"]')) {
+        await copyText(root.querySelector('[data-f="approval"]').value);
+      }
+    } catch (error) { showError(root, error); }
+  });
+}
+
+async function openPendingAuthorityApproval() {
+  const root = openModal("Continue pending device change", "tpl-pending-authority");
+  try {
+    root.querySelector('[data-f="request"]').value =
+      await invoke("device_authority_approval_request");
+  } catch (error) {
+    showError(root, error);
+  }
+  root.addEventListener("click", async (event) => {
+    try {
+      if (event.target.matches('[data-act="copy-request"]')) {
+        await copyText(root.querySelector('[data-f="request"]').value);
+      }
+      if (event.target.matches('[data-act="accept-approval"]')) {
+        const committed = await invoke("accept_device_authority_approval", {
+          approvalHex: root.querySelector('[data-f="approval"]').value.trim(),
+        });
+        if (committed) {
+          closeModal();
+          toast("Device authority change committed");
+        } else {
+          toast("Approval accepted; another active device is still required");
+        }
       }
     } catch (error) { showError(root, error); }
   });
@@ -4365,7 +4749,46 @@ async function openLinkedDevicesSettings() {
   root.addEventListener("click", (event) => {
     if (event.target.matches('[data-act="begin-link"]')) openDeviceLinkSource();
     if (event.target.matches('[data-act="join-link"]')) openDeviceLinkTarget();
+    if (event.target.matches('[data-act="approve-link"]')) openDeviceApproval("link");
+    if (event.target.matches('[data-act="approve-authority"]')) openDeviceApproval("authority");
+    if (event.target.matches('[data-act="continue-authority"]')) openPendingAuthorityApproval();
     if (event.target.matches('[data-act="import-sync"]')) openDeviceSyncImport();
+  });
+}
+
+// First-run-only offline account authority. The modal cannot be dismissed
+// until the encrypted package is written and its separate phrase acknowledged.
+function openRecoveryAuthorityOnboarding() {
+  recoveryOnboardingPending = true;
+  const root = openModal("Save your offline account authority", "tpl-recovery-authority");
+  $("#modal-close").hidden = true;
+  root.addEventListener("click", async (event) => {
+    if (event.target.matches('[data-act="export-authority"]')) {
+      const error = root.querySelector('[data-f="error"]');
+      error.hidden = true;
+      try {
+        const mnemonic = await invoke("export_account_recovery_authority", {
+          path: root.querySelector('[data-f="path"]').value.trim(),
+        });
+        const list = root.querySelector('[data-f="mnemonic"]');
+        list.replaceChildren(...mnemonic.split(/\s+/).map((word) => {
+          const item = document.createElement("li");
+          item.textContent = word;
+          return item;
+        }));
+        root.querySelector('[data-f="export-stage"]').hidden = true;
+        root.querySelector('[data-f="result-stage"]').hidden = false;
+      } catch (failure) {
+        error.textContent = String(failure);
+        error.hidden = false;
+      }
+    }
+    if (event.target.matches('[data-act="authority-done"]')) {
+      recoveryOnboardingPending = false;
+      $("#modal-close").hidden = false;
+      closeModal();
+      toast("Offline account authority saved");
+    }
   });
 }
 

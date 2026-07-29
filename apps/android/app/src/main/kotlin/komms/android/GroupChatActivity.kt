@@ -36,9 +36,12 @@ import uniffi.kult_ffi.FolderTargetKind
 import uniffi.kult_ffi.Group
 import uniffi.kult_ffi.GroupAuthority
 import uniffi.kult_ffi.GroupMentionCapability
+import uniffi.kult_ffi.GroupMessageAuthentication
 import uniffi.kult_ffi.GroupMessage
 import uniffi.kult_ffi.GroupPoll
 import uniffi.kult_ffi.GroupRole
+import uniffi.kult_ffi.GroupSecurity
+import uniffi.kult_ffi.GroupSecurityLevel
 import uniffi.kult_ffi.LabelTarget
 import uniffi.kult_ffi.LabelTargetKind
 import uniffi.kult_ffi.MentionSpan
@@ -193,6 +196,13 @@ class GroupChatActivity : SecureActivity() {
             if (body.isEmpty()) return@setOnClickListener
             sendDraft(input, body)
         }
+        findViewById<View>(R.id.chat_group_security_upgrade).setOnClickListener {
+            runNode(work = {
+                NodeHolder.session!!.upgradeGroupSecurity(groupId)
+            }) {
+                refresh()
+            }
+        }
         NodeHolder.addListener(listener)
     }
 
@@ -291,6 +301,7 @@ class GroupChatActivity : SecureActivity() {
                     attachments = session.attachments(),
                     polls = if (group == null) emptyList() else session.groupPolls(groupId),
                     authority = if (group == null) null else session.groupAuthority(groupId),
+                    security = if (group == null) null else session.groupSecurity(groupId),
                 )
             },
         ) { state ->
@@ -308,6 +319,7 @@ class GroupChatActivity : SecureActivity() {
             adapter.submit(state.messages)
             attachmentController.submit(state.attachments)
             renderPolls(state.polls)
+            renderGroupSecurity(state.security)
             renderScheduledOutbox(
                 state.scheduled,
                 edit = { schedule(findViewById(R.id.chat_input), it) },
@@ -315,6 +327,55 @@ class GroupChatActivity : SecureActivity() {
             )
             if (adapter.itemCount > 0) list.scrollToPosition(adapter.itemCount - 1)
             if (draftMentions.isNotEmpty()) revalidateMentionDraft()
+        }
+    }
+
+    private fun renderGroupSecurity(security: GroupSecurity?) {
+        val section = findViewById<View>(R.id.chat_group_security)
+        val text = findViewById<TextView>(R.id.chat_group_security_text)
+        val upgrade = findViewById<Button>(R.id.chat_group_security_upgrade)
+        val blocked = security?.level != GroupSecurityLevel.RECIPIENT_AUTHENTICATED
+        for (id in listOf(
+            R.id.chat_input,
+            R.id.chat_send,
+            R.id.chat_attach,
+            R.id.chat_record,
+            R.id.chat_schedule,
+            R.id.chat_mention,
+            R.id.chat_poll,
+        )) {
+            findViewById<View>(id).isEnabled = !blocked
+        }
+        when {
+            security == null -> {
+                section.visibility = View.GONE
+                upgrade.visibility = View.GONE
+            }
+            security.level == GroupSecurityLevel.UPGRADE_REQUIRED -> {
+                section.visibility = View.VISIBLE
+                text.setText(R.string.group_security_upgrade_required)
+                upgrade.visibility = View.VISIBLE
+            }
+            security.level == GroupSecurityLevel.UPGRADING -> {
+                section.visibility = View.VISIBLE
+                text.text = getString(
+                    R.string.group_security_upgrading,
+                    security.pendingDevices.size,
+                )
+                upgrade.visibility = View.GONE
+            }
+            security.legacyHistoryRows > 0uL -> {
+                section.visibility = View.VISIBLE
+                text.text = getString(
+                    R.string.group_security_authenticated_with_legacy,
+                    security.legacyHistoryRows.toLong(),
+                )
+                upgrade.visibility = View.GONE
+            }
+            else -> {
+                section.visibility = View.GONE
+                upgrade.visibility = View.GONE
+            }
         }
     }
 
@@ -1044,6 +1105,7 @@ private data class GroupScreenState(
     val attachments: List<Attachment>,
     val polls: List<GroupPoll>,
     val authority: GroupAuthority?,
+    val security: GroupSecurity?,
 )
 
 private data class DraftMention(val start: Int, val end: Int, val target: String)
@@ -1107,6 +1169,16 @@ private class GroupMessagesAdapter(
             if (message.edited) {
                 append(" · ")
                 append(context.getString(R.string.message_edited_revision, message.editRevision.toString()))
+            }
+            if (message.authentication == GroupMessageAuthentication.LEGACY_MEMBERSHIP) {
+                append(" · ")
+                append(context.getString(R.string.group_message_legacy_origin))
+            } else if (
+                message.authentication ==
+                    GroupMessageAuthentication.PENDING_RECIPIENT_AUTHENTICATION
+            ) {
+                append(" · ")
+                append(context.getString(R.string.group_message_pending_origin))
             }
             if (message.contentKind == ContentKind.DISAPPEARING_TEXT && message.expiresAt != null) {
                 append(" · removes ")

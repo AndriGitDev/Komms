@@ -15,6 +15,8 @@ package komms.core
 
 import java.io.File
 import uniffi.kult_ffi.Attachment
+import uniffi.kult_ffi.AuthorityResetHistory
+import uniffi.kult_ffi.AuthorityResetPreparation
 import uniffi.kult_ffi.AudioInfo
 import uniffi.kult_ffi.Call
 import uniffi.kult_ffi.CallAudioFrame
@@ -26,6 +28,8 @@ import uniffi.kult_ffi.CustomIcon
 import uniffi.kult_ffi.CustomIconCrop
 import uniffi.kult_ffi.CustomIconQuotaUsage
 import uniffi.kult_ffi.CustomIconTarget
+import uniffi.kult_ffi.DeviceAuthorityConflict
+import uniffi.kult_ffi.ContactAuthorityConflict
 import uniffi.kult_ffi.DeviceLinkAcceptance
 import uniffi.kult_ffi.DeviceLinkSelection
 import uniffi.kult_ffi.Event
@@ -43,6 +47,7 @@ import uniffi.kult_ffi.GroupMentionCapability
 import uniffi.kult_ffi.GroupMessage
 import uniffi.kult_ffi.GroupPoll
 import uniffi.kult_ffi.GroupRole
+import uniffi.kult_ffi.GroupSecurity
 import uniffi.kult_ffi.KdfChoice
 import uniffi.kult_ffi.KultNode
 import uniffi.kult_ffi.Label
@@ -73,6 +78,9 @@ import uniffi.kult_ffi.canonicalizeRecordedAudio
 import uniffi.kult_ffi.editImage as ffiEditImage
 import uniffi.kult_ffi.probeRecordedAudio
 import uniffi.kult_ffi.probeEditedImage
+import uniffi.kult_ffi.prepareAuthorityMigration
+import uniffi.kult_ffi.prepareAuthorityReset
+import uniffi.kult_ffi.prepareLegacyBackupAuthorityReset as ffiPrepareLegacyBackupAuthorityReset
 
 /**
  * Human-readable text for an FFI failure — the node's own words. (The
@@ -166,6 +174,13 @@ fun bundleQrFrames(bundleHex: String): List<String> {
 /** Compact QR text for one opaque C2 link offer. */
 fun deviceLinkQrText(offerHex: String): String = offerHex.uppercase()
 
+/** Camera-friendly animated QR frames for one authority-bound link offer. */
+fun deviceLinkQrFrames(offerHex: String): List<String> {
+    val offer = hexDecode(offerHex)
+        ?: throw IllegalArgumentException("device link offer must be hex")
+    return encodeBundleQrFrames(offer)
+}
+
 /**
  * QR text for a safety number: uppercase hex of the raw 32-byte comparison
  * value — both parties render the identical code, on any platform.
@@ -204,6 +219,35 @@ class Session private constructor(private val node: KultNode) {
     /** Complete account-authorized device list, including revoked rows. */
     fun linkedDevices(): List<LinkedDevice> = node.linkedDevices()
 
+    /** Durable fail-closed authority forks and recovery conflicts. */
+    fun deviceAuthorityConflicts(): List<DeviceAuthorityConflict> =
+        node.deviceAuthorityConflicts()
+
+    /** Contact authority forks and recovery conflicts retained across restart. */
+    fun contactAuthorityConflicts(): List<ContactAuthorityConflict> =
+        node.contactAuthorityConflicts()
+
+    /** Former-identity archive and contacts still needing re-verification. */
+    fun authorityResetHistory(): AuthorityResetHistory? = node.authorityResetHistory()
+
+    /** Export this device's pending rename/revocation proposal for approval. */
+    fun deviceAuthorityApprovalRequest(): String =
+        hexEncode(node.deviceAuthorityApprovalRequest())
+
+    /** Verify and sign another active device's rename/revocation proposal. */
+    fun approveDeviceAuthorityRequest(requestHex: String): String {
+        val request = hexDecode(requestHex)
+            ?: throw IllegalArgumentException("device authority request must be hex")
+        return hexEncode(node.approveDeviceAuthorityRequest(request))
+    }
+
+    /** Merge one detached approval; true means the transition committed. */
+    fun acceptDeviceAuthorityApproval(approvalHex: String): Boolean {
+        val approval = hexDecode(approvalHex)
+            ?: throw IllegalArgumentException("device authority approval must be hex")
+        return node.acceptDeviceAuthorityApproval(approval)
+    }
+
     /** Per-physical-device delivery states for one outbound message. */
     fun messageDeviceDeliveries(message: String): List<MessageDeviceDelivery> =
         node.messageDeviceDeliveries(message)
@@ -221,10 +265,10 @@ class Session private constructor(private val node: KultNode) {
     /** Begin one ten-minute proximate link offer as exact lowercase hex. */
     fun beginDeviceLink(): String = hexEncode(node.beginDeviceLink())
 
-    /** Accept a scanned/pasted offer on a pristine target. */
-    fun acceptDeviceLink(offerHex: String, deviceName: String): DeviceLinkAcceptance {
-        val offer = hexDecode(offerHex)
-            ?: throw IllegalArgumentException("device link offer must be hex")
+    /** Accept an assembled B1 QR or pasted hex offer on a pristine target. */
+    fun acceptDeviceLink(offerText: String, deviceName: String): DeviceLinkAcceptance {
+        val offer = decodeBundleInput(offerText)
+            ?: throw IllegalArgumentException("device link offer must be a Komms QR value or hex")
         return node.acceptDeviceLink(offer, deviceName)
     }
 
@@ -252,6 +296,24 @@ class Session private constructor(private val node: KultNode) {
                 confirmed,
             ),
         )
+    }
+
+    /** Export the pending add-device proposal for another active device. */
+    fun deviceLinkApprovalRequest(): String =
+        hexEncode(node.deviceLinkApprovalRequest())
+
+    /** Verify and sign another active device's exact add-device proposal. */
+    fun approveDeviceLinkRequest(requestHex: String): String {
+        val request = hexDecode(requestHex)
+            ?: throw IllegalArgumentException("device link approval request must be hex")
+        return hexEncode(node.approveDeviceLinkRequest(request))
+    }
+
+    /** Merge a detached add-device approval and return the final package. */
+    fun acceptDeviceLinkApproval(approvalHex: String): String? {
+        val approval = hexDecode(approvalHex)
+            ?: throw IllegalArgumentException("device link approval must be hex")
+        return node.acceptDeviceLinkApproval(approval)?.let(::hexEncode)
     }
 
     /** Confirm and import one source package on the pristine target. */
@@ -714,6 +776,12 @@ class Session private constructor(private val node: KultNode) {
     /** All live groups, excluding secrets and sender chains. */
     fun groups(): List<Group> = node.groups()
 
+    /** Visible recipient-origin upgrade state for one group. */
+    fun groupSecurity(group: String): GroupSecurity = node.groupSecurity(group)
+
+    /** Start the explicit legacy-group recipient-origin upgrade. */
+    fun upgradeGroupSecurity(group: String) = node.upgradeGroupSecurity(group)
+
     /** Message history for a group, including per-member delivery states. */
     fun groupMessages(group: String): List<GroupMessage> = node.groupMessages(group)
 
@@ -808,10 +876,55 @@ class Session private constructor(private val node: KultNode) {
      */
     fun exportBackup(path: File): String = node.exportBackup(path.absolutePath)
 
+    /**
+     * First-run only: write the encrypted offline account authority and
+     * return its separate one-time 24-word phrase.
+     */
+    fun exportAccountRecoveryAuthority(path: File): String =
+        node.exportAccountRecoveryAuthority(path.absolutePath)
+
     /** Stop the node (idempotent; the handle is spent afterwards). */
     fun stop() = node.stop()
 
     companion object {
+        /**
+         * Write a protected offline authority for an explicit single-device
+         * Alpha migration. The live profile is unchanged until [migrateAuthority].
+         */
+        fun prepareAlphaAuthorityMigration(
+            dataDir: File,
+            passphrase: String,
+            recoveryPath: File,
+        ): String = prepareAuthorityMigration(
+            dataDir.absolutePath,
+            passphrase,
+            recoveryPath.absolutePath,
+        )
+
+        /**
+         * Create the separately protected authority for a visible copied-root
+         * reset without changing the live profile.
+         */
+        fun prepareAlphaAuthorityReset(
+            dataDir: File,
+            passphrase: String,
+            recoveryPath: File,
+        ): AuthorityResetPreparation = prepareAuthorityReset(
+            dataDir.absolutePath,
+            passphrase,
+            recoveryPath.absolutePath,
+        )
+
+        /**
+         * Prepare the fresh account authority required to recover a copied-root
+         * legacy backup as a former-identity local archive.
+         */
+        fun prepareLegacyBackupAuthorityReset(
+            recoveryPath: File,
+        ): AuthorityResetPreparation = ffiPrepareLegacyBackupAuthorityReset(
+            recoveryPath.absolutePath,
+        )
+
         /**
          * Open (or create on first run) the store in `dataDir` and start
          * the node. Blocking: Argon2id and transport binding happen before
@@ -838,6 +951,8 @@ class Session private constructor(private val node: KultNode) {
             passphrase: String,
             backupPath: File,
             mnemonic: String,
+            recoveryPackagePath: File,
+            recoveryMnemonic: String,
             settings: NetworkSettings,
             kdf: KdfChoice,
             sink: EventSink,
@@ -846,6 +961,51 @@ class Session private constructor(private val node: KultNode) {
                 buildConfig(dataDir, passphrase, settings, kdf),
                 backupPath.absolutePath,
                 mnemonic,
+                recoveryPackagePath.absolutePath,
+                recoveryMnemonic,
+                Forwarder(sink),
+            ),
+        )
+
+        /**
+         * Complete a prepared single-device Alpha migration and start while
+         * retaining the stable account, physical device, petnames, and history.
+         */
+        fun migrateAuthority(
+            dataDir: File,
+            passphrase: String,
+            recoveryPackagePath: File,
+            recoveryMnemonic: String,
+            settings: NetworkSettings,
+            kdf: KdfChoice,
+            sink: EventSink,
+        ): Session = Session(
+            KultNode.migrateAuthority(
+                buildConfig(dataDir, passphrase, settings, kdf),
+                recoveryPackagePath.absolutePath,
+                recoveryMnemonic,
+                Forwarder(sink),
+            ),
+        )
+
+        /**
+         * Complete the copied-root reset. The account address changes and
+         * preserved petnames remain blocked until new safety numbers are
+         * compared and marked verified.
+         */
+        fun resetAuthority(
+            dataDir: File,
+            passphrase: String,
+            recoveryPackagePath: File,
+            recoveryMnemonic: String,
+            settings: NetworkSettings,
+            kdf: KdfChoice,
+            sink: EventSink,
+        ): Session = Session(
+            KultNode.resetAuthority(
+                buildConfig(dataDir, passphrase, settings, kdf),
+                recoveryPackagePath.absolutePath,
+                recoveryMnemonic,
                 Forwarder(sink),
             ),
         )

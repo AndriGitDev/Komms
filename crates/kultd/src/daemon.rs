@@ -57,6 +57,42 @@ fn rotating_batch<T: Clone>(items: &[T], cursor: &mut usize, limit: usize) -> Ve
     batch
 }
 
+/// Explicit one-time Alpha authority upgrade selected at daemon startup.
+#[derive(Clone)]
+pub enum AuthorityStartup {
+    /// Remove an undistributed legacy root in place while retaining identity.
+    Migrate {
+        /// Protected offline authority package prepared from this profile.
+        package: PathBuf,
+        /// Separately confirmed 24-word phrase.
+        mnemonic: zeroize::Zeroizing<String>,
+    },
+    /// Replace a copied-root profile with a fresh identity and local archive.
+    Reset {
+        /// Protected fresh-identity offline authority package.
+        package: PathBuf,
+        /// Separately confirmed 24-word phrase.
+        mnemonic: zeroize::Zeroizing<String>,
+    },
+}
+
+impl std::fmt::Debug for AuthorityStartup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Migrate { package, .. } => f
+                .debug_struct("Migrate")
+                .field("package", package)
+                .field("mnemonic", &"<redacted>")
+                .finish(),
+            Self::Reset { package, .. } => f
+                .debug_struct("Reset")
+                .field("package", package)
+                .field("mnemonic", &"<redacted>")
+                .finish(),
+        }
+    }
+}
+
 /// Everything the daemon needs to run. Built by the CLI in `bin/kultd.rs`,
 /// or directly by tests.
 #[derive(Clone)]
@@ -75,6 +111,14 @@ pub struct DaemonConfig {
     pub restore_from: Option<PathBuf>,
     /// The 24-word mnemonic sealing `restore_from`. Zeroized on drop.
     pub restore_mnemonic: Option<zeroize::Zeroizing<String>>,
+    /// Separately held encrypted offline account authority required for a
+    /// stable-identity recovery.
+    pub recovery_authority_from: Option<PathBuf>,
+    /// The separate 24-word phrase opening `recovery_authority_from`.
+    pub recovery_authority_mnemonic: Option<zeroize::Zeroizing<String>>,
+    /// Explicit legacy-root migration or copied-root reset to complete before
+    /// any network service starts.
+    pub authority_startup: Option<AuthorityStartup>,
     /// Multiaddrs to listen on.
     pub listen: Vec<String>,
     /// DHT bootstrap peers (multiaddrs with `/p2p/…`). Empty is fine —
@@ -129,6 +173,15 @@ impl std::fmt::Debug for DaemonConfig {
                 "restore_mnemonic",
                 &self.restore_mnemonic.as_ref().map(|_| "<redacted>"),
             )
+            .field("recovery_authority_from", &self.recovery_authority_from)
+            .field(
+                "recovery_authority_mnemonic",
+                &self
+                    .recovery_authority_mnemonic
+                    .as_ref()
+                    .map(|_| "<redacted>"),
+            )
+            .field("authority_startup", &self.authority_startup)
             .field("listen", &self.listen)
             .field("bootstrap", &self.bootstrap)
             .field("relay", &self.relay)
@@ -162,6 +215,9 @@ impl DaemonConfig {
             kdf: kult_crypto::KDF_PROFILE_DESKTOP,
             restore_from: None,
             restore_mnemonic: None,
+            recovery_authority_from: None,
+            recovery_authority_mnemonic: None,
+            authority_startup: None,
             listen: vec![
                 "/ip4/0.0.0.0/udp/0/quic-v1".to_owned(),
                 "/ip4/0.0.0.0/tcp/0".to_owned(),
@@ -255,7 +311,47 @@ impl Daemon {
         let mut node = {
             let cfg = cfg.clone();
             tokio::task::spawn_blocking(move || -> Result<Node, DaemonError> {
-                if let Some(backup_path) = &cfg.restore_from {
+                if cfg.authority_startup.is_some() && cfg.restore_from.is_some() {
+                    return Err(DaemonError::Io(io::Error::other(
+                        "authority upgrade and backup restore are mutually exclusive",
+                    )));
+                }
+                if let Some(authority) = &cfg.authority_startup {
+                    if !cfg.db_path.exists() {
+                        return Err(DaemonError::Io(io::Error::other(format!(
+                            "authority upgrade requires the existing store {}",
+                            cfg.db_path.display()
+                        ))));
+                    }
+                    let (package_path, mnemonic, reset) = match authority {
+                        AuthorityStartup::Migrate { package, mnemonic } => {
+                            (package, mnemonic.as_str(), false)
+                        }
+                        AuthorityStartup::Reset { package, mnemonic } => {
+                            (package, mnemonic.as_str(), true)
+                        }
+                    };
+                    let package = std::fs::read(package_path)?;
+                    if reset {
+                        Ok(Node::complete_authority_reset(
+                            &cfg.db_path,
+                            &cfg.passphrase,
+                            &package,
+                            mnemonic,
+                            now(),
+                            &mut OsRng,
+                        )?)
+                    } else {
+                        Ok(Node::complete_authority_migration(
+                            &cfg.db_path,
+                            &cfg.passphrase,
+                            &package,
+                            mnemonic,
+                            now(),
+                            &mut OsRng,
+                        )?)
+                    }
+                } else if let Some(backup_path) = &cfg.restore_from {
                     // Restore is a first-run operation: an existing store
                     // holds an identity, and silently replacing it would
                     // destroy keys. Refuse; the operator moves it aside.
@@ -269,10 +365,25 @@ impl Daemon {
                         DaemonError::Io(io::Error::other("restore needs its mnemonic"))
                     })?;
                     let backup = std::fs::read(backup_path)?;
-                    Ok(Node::restore(
+                    let recovery_path = cfg.recovery_authority_from.as_ref().ok_or_else(|| {
+                        DaemonError::Io(io::Error::other(
+                            "restore needs the offline recovery authority",
+                        ))
+                    })?;
+                    let recovery_mnemonic =
+                        cfg.recovery_authority_mnemonic.as_deref().ok_or_else(|| {
+                            DaemonError::Io(io::Error::other(
+                                "restore needs the recovery authority mnemonic",
+                            ))
+                        })?;
+                    let recovery_package = std::fs::read(recovery_path)?;
+                    Ok(Node::restore_with_recovery_authority(
                         &cfg.db_path,
                         &backup,
                         mnemonic,
+                        &recovery_package,
+                        recovery_mnemonic,
+                        now(),
                         &cfg.passphrase,
                         cfg.kdf,
                         &mut OsRng,
@@ -783,6 +894,65 @@ async fn handle_op(
                 "current": device.current,
             })).collect::<Vec<_>>()
         })),
+        Op::DeviceAuthorityConflicts => Ok(json!({
+            "conflicts": node.device_authority_conflicts().into_iter().map(|conflict| json!({
+                "kind": match conflict.kind {
+                    kult_node::DeviceAuthorityConflictType::Fork => "fork",
+                    kult_node::DeviceAuthorityConflictType::Recovery => "recovery",
+                },
+                "accepted": wire::hex_encode(&conflict.accepted),
+                "conflicting": wire::hex_encode(&conflict.conflicting),
+                "recovery_epoch": conflict.recovery_epoch,
+                "observed_at": conflict.observed_at,
+            })).collect::<Vec<_>>()
+        })),
+        Op::ContactAuthorityConflicts => Ok(json!({
+            "conflicts": node.contact_authority_conflicts().map_err(fail)?.into_iter().map(|conflict| json!({
+                "account": wire::hex_encode(&conflict.account),
+                "kind": match conflict.kind {
+                    kult_node::DeviceAuthorityConflictType::Fork => "fork",
+                    kult_node::DeviceAuthorityConflictType::Recovery => "recovery",
+                },
+                "accepted": wire::hex_encode(&conflict.accepted),
+                "conflicting": wire::hex_encode(&conflict.conflicting),
+                "recovery_epoch": conflict.recovery_epoch,
+                "observed_at": conflict.observed_at,
+            })).collect::<Vec<_>>()
+        })),
+        Op::AuthorityResetHistory => Ok(json!({
+            "history": node.authority_reset_history().map_err(fail)?.map(|history| json!({
+                "former_peer": wire::hex_encode(&history.former_account),
+                "new_peer": wire::hex_encode(&history.new_account),
+                "reset_at": history.reset_at,
+                "preserved_contacts": history.preserved_contacts,
+                "preserved_pairwise_messages": history.preserved_pairwise_messages,
+                "preserved_note_messages": history.preserved_note_messages,
+                "omitted_groups": history.omitted_groups,
+                "omitted_group_messages": history.omitted_group_messages,
+                "pending_reverification": history.pending_reverification
+                    .iter()
+                    .map(|peer| wire::hex_encode(peer))
+                    .collect::<Vec<_>>(),
+            }))
+        })),
+        Op::DeviceAuthorityApprovalRequest => {
+            let request = node.device_authority_approval_request().map_err(fail)?;
+            Ok(json!({ "request": wire::hex_encode(&request) }))
+        }
+        Op::DeviceAuthorityApprove { request } => {
+            let request = wire::hex_decode(&request).ok_or("request must be hex")?;
+            let approval = node
+                .approve_device_authority_request(&request)
+                .map_err(fail)?;
+            Ok(json!({ "approval": wire::hex_encode(&approval) }))
+        }
+        Op::DeviceAuthorityAccept { approval } => {
+            let approval = wire::hex_decode(&approval).ok_or("approval must be hex")?;
+            let committed = node
+                .accept_device_authority_approval(&approval, &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "committed": committed }))
+        }
         Op::MessageDeviceDeliveries { message } => {
             let message = wire::parse_message(&message)?;
             let deliveries = node
@@ -855,6 +1025,25 @@ async fn handle_op(
                 )
                 .map_err(fail)?;
             Ok(json!({ "package": wire::hex_encode(&package) }))
+        }
+        Op::DeviceLinkApprovalRequest => {
+            let request = node.device_link_approval_request().map_err(fail)?;
+            Ok(json!({ "request": wire::hex_encode(&request) }))
+        }
+        Op::DeviceLinkApproveRequest { request } => {
+            let request = wire::hex_decode(&request).ok_or("request must be hex")?;
+            let approval = node.approve_device_link_request(&request).map_err(fail)?;
+            Ok(json!({ "approval": wire::hex_encode(&approval) }))
+        }
+        Op::DeviceLinkAcceptApproval { approval } => {
+            let approval = wire::hex_decode(&approval).ok_or("approval must be hex")?;
+            let package = node
+                .accept_device_link_approval(&approval, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({
+                "complete": package.is_some(),
+                "package": package.map(|bytes| wire::hex_encode(&bytes)),
+            }))
         }
         Op::DeviceLinkComplete { package, confirmed } => {
             let package = wire::hex_decode(&package).ok_or("package must be hex")?;
@@ -1627,6 +1816,20 @@ async fn handle_op(
                 .map_err(fail)?;
             Ok(json!({ "group": wire::hex_encode(&group) }))
         }
+        Op::GroupSecurity { group } => {
+            let group = wire::parse_group(&group)?;
+            Ok(wire::group_security_json(
+                &node.group_security_info(&group).map_err(fail)?,
+            ))
+        }
+        Op::GroupUpgradeSecurity { group } => {
+            let group = wire::parse_group(&group)?;
+            node.group_upgrade_security(&group, &mut OsRng)
+                .map_err(fail)?;
+            Ok(wire::group_security_json(
+                &node.group_security_info(&group).map_err(fail)?,
+            ))
+        }
         Op::GroupSend { group, body } => {
             let group = wire::parse_group(&group)?;
             let id = node
@@ -1940,6 +2143,12 @@ async fn handle_op(
             let (file, mnemonic) = node.export_backup(now(), &mut OsRng).map_err(fail)?;
             write_private(std::path::Path::new(&path), &file)
                 .map_err(|e| format!("backup write: {e}"))?;
+            Ok(json!({ "path": path, "mnemonic": &*mnemonic }))
+        }
+        Op::RecoveryAuthorityExport { path } => {
+            let mnemonic = node
+                .export_account_recovery_authority(std::path::Path::new(&path))
+                .map_err(fail)?;
             Ok(json!({ "path": path, "mnemonic": &*mnemonic }))
         }
         // Handled at the connection layer; reaching the actor is a bug.

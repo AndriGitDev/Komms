@@ -10,19 +10,27 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use kult_crypto::{
+    derive_kek, mnemonic_from_entropy, open_account_recovery_authority, DeviceCertificate,
+    DeviceManifest, DeviceManifestEntry, Identity, StorageKey, KDF_PROFILE_MOBILE,
+};
 use kult_ffi::{
     attachment_file_presentation, default_config, edit_image, incognito_keyboard_policy,
+    prepare_authority_migration, prepare_authority_reset, prepare_legacy_backup_authority_reset,
     probe_edited_image, probe_recorded_audio, screen_security_policy, AttachmentDirection,
     AttachmentFileKind, AttachmentFileWarning, AttachmentOpenPolicy, AttachmentState,
     CallEndReason, CallPhase, CarrierCapability, Config, ContactNameWarning, ContentKind,
     CustomIconCrop, CustomIconTarget, CustomIconTargetKind, DeliveryState, DeviceLinkSelection,
     Event, EventListener, FfiError, FolderErrorCode, FolderSelection, FolderSelectionKind,
-    FolderTarget, FolderTargetKind, GroupRole, Hint, ImageCrop, ImageEditRecipe, ImageEditRegion,
-    ImageEditRegionKind, IncognitoKeyboardLevel, IncognitoKeyboardPlatform, KdfChoice, KultNode,
-    LabelErrorCode, LabelMatchMode, LabelTarget, LabelTargetKind, MentionSpan, PinErrorCode,
-    PinTarget, PinTargetKind, ScheduledConversation, ScreenSecurityLevel, ScreenSecurityPlatform,
-    TextFormatBlockKind, TextFormatHighlight, ThemePreference,
+    FolderTarget, FolderTargetKind, GroupRole, GroupSecurityLevel, Hint, ImageCrop,
+    ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, IncognitoKeyboardLevel,
+    IncognitoKeyboardPlatform, KdfChoice, KultNode, LabelErrorCode, LabelMatchMode, LabelTarget,
+    LabelTargetKind, MentionSpan, PinErrorCode, PinTarget, PinTargetKind, ScheduledConversation,
+    ScreenSecurityLevel, ScreenSecurityPlatform, TextFormatBlockKind, TextFormatHighlight,
+    ThemePreference,
 };
+use kult_store::{DeviceStateRecord, Store};
+use rand::{rngs::StdRng, RngCore, SeedableRng};
 
 fn file_presentation_parity_fixture() -> serde_json::Value {
     serde_json::from_str(include_str!(
@@ -610,6 +618,153 @@ fn test_config(dir: &Path, name: &str) -> Config {
     cfg
 }
 
+struct LegacyAuthorityFixture {
+    config: Config,
+    former_peer: String,
+    former_address: String,
+    contact_peer: String,
+}
+
+fn test_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Construct released pre-ADR-0026 state solely as test setup. The behavior
+/// under test below uses the exact exported surface available to Kotlin and
+/// Swift callers.
+fn legacy_authority_fixture(
+    directory: &Path,
+    name: &str,
+    copied_root: bool,
+) -> LegacyAuthorityFixture {
+    let config = test_config(directory, name);
+    let data_dir = PathBuf::from(&config.data_dir);
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let db_path = data_dir.join("node.db");
+    let mut rng = StdRng::seed_from_u64(if copied_root {
+        0x2600_6f02
+    } else {
+        0x2600_6f01
+    });
+    let mut node = kult_node::Node::create(
+        &db_path,
+        config.passphrase.as_bytes(),
+        KDF_PROFILE_MOBILE,
+        &mut rng,
+    )
+    .unwrap();
+    let contact_path = directory.join(format!("{name}-contact.db"));
+    let mut contact = kult_node::Node::create(
+        &contact_path,
+        b"contact-passphrase",
+        KDF_PROFILE_MOBILE,
+        &mut rng,
+    )
+    .unwrap();
+    let bundle = contact.handshake_bundle(1_800_000_000, &mut rng).unwrap();
+    let contact_peer = node
+        .add_contact("Preserved petname", &bundle, &[], 1_800_000_001, &mut rng)
+        .unwrap();
+    let recovery_path = directory.join(format!("{name}-setup-authority.kra"));
+    let recovery_mnemonic = node
+        .export_account_recovery_authority(&recovery_path)
+        .unwrap();
+    let recovery_package = std::fs::read(&recovery_path).unwrap();
+    let root = open_account_recovery_authority(&recovery_package, &recovery_mnemonic).unwrap();
+    let former_peer = test_hex(&root.public().ed);
+    let former_address = root.public().address();
+    drop(contact);
+    drop(node);
+
+    let store = Store::open(&db_path, config.passphrase.as_bytes()).unwrap();
+    let authority_state = store.get_device_authority_state().unwrap().unwrap();
+    let secret: [u8; 64] = authority_state
+        .local_device_secret
+        .as_slice()
+        .try_into()
+        .unwrap();
+    let device = Identity::from_bytes(&secret);
+    let certificate = DeviceCertificate::issue(&root, &device, 10, &mut rng);
+    let mut manifest =
+        DeviceManifest::initial(&root, certificate.clone(), "Original device".to_owned(), 10)
+            .unwrap();
+    if copied_root {
+        let former_linked_device = Identity::generate(&mut rng);
+        let former_certificate =
+            DeviceCertificate::issue(&root, &former_linked_device, 11, &mut rng);
+        manifest
+            .add_device(
+                &root,
+                DeviceManifestEntry {
+                    certificate: former_certificate,
+                    name: "Former linked device".to_owned(),
+                    last_seen: 11,
+                    revoked_at: None,
+                    revoked_after_counter: None,
+                },
+            )
+            .unwrap();
+        manifest
+            .revoke_device(&root, &former_linked_device.public().ed, 12, 0)
+            .unwrap();
+    }
+    let legacy_state = DeviceStateRecord {
+        local_device_secret: secret.to_vec(),
+        local_certificate: certificate,
+        manifest,
+        sync_counter: authority_state.sync_counter,
+        channels: Vec::new(),
+    };
+    store.put_legacy_identity_fixture(&root, &mut rng).unwrap();
+    store.put_device_state(&legacy_state, &mut rng).unwrap();
+    assert!(store.contains_legacy_account_root().unwrap());
+    drop(store);
+
+    LegacyAuthorityFixture {
+        config,
+        former_peer,
+        former_address,
+        contact_peer: test_hex(&contact_peer),
+    }
+}
+
+/// Encode a released KKR1 fixture locally so the production store surface
+/// has no copied-root backup exporter.
+fn legacy_backup_v1_fixture(
+    source: &Store,
+    created_at: u64,
+    rng: &mut StdRng,
+) -> (Vec<u8>, String) {
+    let identity = source.get_identity().unwrap().unwrap();
+    let contacts = source.contacts().unwrap();
+    let messages = Vec::<kult_store::MessageRecord>::new();
+    let reset_peers = Vec::<[u8; 32]>::new();
+    let payload = postcard::to_allocvec(&(
+        created_at,
+        identity.to_bytes().to_vec(),
+        contacts,
+        messages,
+        reset_peers,
+    ))
+    .unwrap();
+    let mut entropy = [0u8; 32];
+    rng.fill_bytes(&mut entropy);
+    let mnemonic = mnemonic_from_entropy(&entropy);
+    let mut salt = [0u8; 16];
+    rng.fill_bytes(&mut salt);
+    let key = StorageKey::from_bytes(
+        *derive_kek(&entropy, &salt, KDF_PROFILE_MOBILE).expect("fixture KDF"),
+    );
+    let mut backup = Vec::new();
+    backup.extend_from_slice(b"KKR1");
+    backup.extend_from_slice(&KDF_PROFILE_MOBILE.m_cost_kib.to_le_bytes());
+    backup.extend_from_slice(&KDF_PROFILE_MOBILE.t_cost.to_le_bytes());
+    backup.extend_from_slice(&KDF_PROFILE_MOBILE.p_cost.to_le_bytes());
+    backup.extend_from_slice(&salt);
+    backup.extend_from_slice(&key.seal(b"KK-backup-v1", &payload, rng));
+    (backup, (*mnemonic).clone())
+}
+
 /// Poll `status` until at least one listen address is bound.
 fn listen_addr(node: &KultNode) -> String {
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -725,6 +880,42 @@ fn authority_generation(node: &KultNode, group: &str, generation: u64) -> kult_f
         assert!(
             Instant::now() < deadline,
             "authority generation did not converge"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn wait_group_security_ready(
+    initiator: &KultNode,
+    peer: &KultNode,
+    group: &str,
+    allow_initial_upgrade: bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let mut initiator_security = initiator
+            .group_security(group.to_owned())
+            .expect("initiator group security");
+        if allow_initial_upgrade && initiator_security.level == GroupSecurityLevel::UpgradeRequired
+        {
+            initiator
+                .upgrade_group_security(group.to_owned())
+                .expect("start group security upgrade");
+            initiator_security = initiator
+                .group_security(group.to_owned())
+                .expect("initiator group security after upgrade");
+        }
+        let peer_security = peer
+            .group_security(group.to_owned())
+            .expect("peer group security");
+        if initiator_security.level == GroupSecurityLevel::RecipientAuthenticated
+            && peer_security.level == GroupSecurityLevel::RecipientAuthenticated
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "group origin exchange did not complete: initiator={initiator_security:?}, peer={peer_security:?}"
         );
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -1963,6 +2154,192 @@ fn two_nodes_message_via_ffi_only() {
 }
 
 #[test]
+fn alpha_authority_migration_and_copied_root_reset_use_only_public_ffi_actions() {
+    let directory = tempfile::tempdir().unwrap();
+
+    let migration = legacy_authority_fixture(directory.path(), "legacy-single", false);
+    assert!(matches!(
+        KultNode::start(
+            migration.config.clone(),
+            Box::new(Recorder::default())
+        ),
+        Err(FfiError::Startup { reason }) if reason.contains("offline-authority migration")
+    ));
+    let migration_package = directory.path().join("single-device-authority.kra");
+    let migration_mnemonic = prepare_authority_migration(
+        migration.config.data_dir.clone(),
+        migration.config.passphrase.clone(),
+        migration_package.display().to_string(),
+    )
+    .unwrap();
+    assert_eq!(migration_mnemonic.split_whitespace().count(), 24);
+    assert!(prepare_authority_migration(
+        migration.config.data_dir.clone(),
+        migration.config.passphrase.clone(),
+        migration_package.display().to_string(),
+    )
+    .is_err());
+    let migrated = KultNode::migrate_authority(
+        migration.config.clone(),
+        migration_package.display().to_string(),
+        migration_mnemonic,
+        Box::new(Recorder::default()),
+    )
+    .unwrap();
+    assert_eq!(migrated.peer(), migration.former_peer);
+    assert_eq!(migrated.address(), migration.former_address);
+    migrated.stop();
+    let migrated_store = Store::open(
+        &PathBuf::from(&migration.config.data_dir).join("node.db"),
+        migration.config.passphrase.as_bytes(),
+    )
+    .unwrap();
+    assert!(!migrated_store.contains_legacy_account_root().unwrap());
+    assert!(migrated_store.get_account_identity().unwrap().is_some());
+    drop(migrated_store);
+
+    let reset = legacy_authority_fixture(directory.path(), "legacy-copied", true);
+    assert!(matches!(
+        KultNode::start(reset.config.clone(), Box::new(Recorder::default())),
+        Err(FfiError::Startup { reason }) if reason.contains("authority reset with a new identity")
+    ));
+    let reset_package = directory.path().join("replacement-authority.kra");
+    let prepared = prepare_authority_reset(
+        reset.config.data_dir.clone(),
+        reset.config.passphrase.clone(),
+        reset_package.display().to_string(),
+    )
+    .unwrap();
+    assert_eq!(prepared.recovery_mnemonic.split_whitespace().count(), 24);
+    assert_ne!(prepared.new_peer, reset.former_peer);
+    assert_ne!(prepared.new_address, reset.former_address);
+    assert!(prepare_authority_reset(
+        reset.config.data_dir.clone(),
+        reset.config.passphrase.clone(),
+        reset_package.display().to_string(),
+    )
+    .is_err());
+    assert!(KultNode::reset_authority(
+        reset.config.clone(),
+        reset_package.display().to_string(),
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art".to_owned(),
+        Box::new(Recorder::default()),
+    )
+    .is_err());
+    let replacement = KultNode::reset_authority(
+        reset.config.clone(),
+        reset_package.display().to_string(),
+        prepared.recovery_mnemonic,
+        Box::new(Recorder::default()),
+    )
+    .unwrap();
+    assert_eq!(replacement.peer(), prepared.new_peer);
+    assert_eq!(replacement.address(), prepared.new_address);
+    let history = replacement
+        .authority_reset_history()
+        .unwrap()
+        .expect("permanent reset history");
+    assert_eq!(history.former_peer, reset.former_peer);
+    assert_eq!(history.new_peer, prepared.new_peer);
+    assert_eq!(history.preserved_contacts, 1);
+    assert_eq!(
+        history.pending_reverification,
+        vec![reset.contact_peer.clone()]
+    );
+    let contact = replacement
+        .contacts()
+        .unwrap()
+        .into_iter()
+        .find(|contact| contact.peer == reset.contact_peer)
+        .expect("preserved petname");
+    assert_eq!(contact.name, "Preserved petname");
+    assert!(!contact.verified);
+    let blocked = replacement
+        .send(
+            reset.contact_peer.clone(),
+            "must not use former authority".to_owned(),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        blocked.contains("re-verification"),
+        "unexpected reset send refusal: {blocked}"
+    );
+    replacement
+        .mark_verified(reset.contact_peer.clone())
+        .unwrap();
+    assert!(replacement
+        .authority_reset_history()
+        .unwrap()
+        .unwrap()
+        .pending_reverification
+        .is_empty());
+    replacement.stop();
+    let reset_store = Store::open(
+        &PathBuf::from(&reset.config.data_dir).join("node.db"),
+        reset.config.passphrase.as_bytes(),
+    )
+    .unwrap();
+    assert!(!reset_store.contains_legacy_account_root().unwrap());
+    assert!(reset_store.get_account_identity().unwrap().is_some());
+}
+
+#[test]
+fn legacy_backup_reset_is_visible_and_root_free_through_public_ffi() {
+    let directory = tempfile::tempdir().unwrap();
+    let legacy = legacy_authority_fixture(directory.path(), "legacy-backup-source", true);
+    let source_path = PathBuf::from(&legacy.config.data_dir).join("node.db");
+    let source = Store::open(&source_path, legacy.config.passphrase.as_bytes()).unwrap();
+    let mut rng = StdRng::seed_from_u64(0x2600_6f03);
+    let (backup, backup_mnemonic) = legacy_backup_v1_fixture(&source, 1_800_000_100, &mut rng);
+    drop(source);
+    let backup_path = directory.path().join("legacy-source.kkr");
+    std::fs::write(&backup_path, backup).unwrap();
+
+    let recovery_path = directory.path().join("fresh-archive-authority.kra");
+    let prepared =
+        prepare_legacy_backup_authority_reset(recovery_path.display().to_string()).unwrap();
+    assert_eq!(prepared.recovery_mnemonic.split_whitespace().count(), 24);
+    assert_ne!(prepared.new_peer, legacy.former_peer);
+    assert_ne!(prepared.new_address, legacy.former_address);
+
+    let restored = KultNode::restore(
+        test_config(directory.path(), "legacy-backup-target"),
+        backup_path.display().to_string(),
+        backup_mnemonic.to_string(),
+        recovery_path.display().to_string(),
+        prepared.recovery_mnemonic,
+        Box::new(Recorder::default()),
+    )
+    .unwrap();
+    assert_eq!(restored.peer(), prepared.new_peer);
+    assert_eq!(restored.address(), prepared.new_address);
+    let history = restored
+        .authority_reset_history()
+        .unwrap()
+        .expect("former-identity archive ledger");
+    assert_eq!(history.former_peer, legacy.former_peer);
+    assert_eq!(history.new_peer, prepared.new_peer);
+    assert_eq!(history.preserved_contacts, 1);
+    assert_eq!(history.pending_reverification, vec![legacy.contact_peer]);
+    assert_eq!(restored.contacts().unwrap()[0].name, "Preserved petname");
+    assert!(!restored.contacts().unwrap()[0].verified);
+    restored.stop();
+
+    let target = Store::open(
+        &directory
+            .path()
+            .join("legacy-backup-target")
+            .join("node.db"),
+        b"test-passphrase",
+    )
+    .unwrap();
+    assert!(!target.contains_legacy_account_root().unwrap());
+    assert!(target.get_identity().unwrap().is_none());
+    assert!(target.get_account_identity().unwrap().is_some());
+}
+
+#[test]
 fn backup_and_restore_via_ffi_only() {
     let dir = tempfile::tempdir().unwrap();
     let a_rec = Recorder::default();
@@ -1971,6 +2348,27 @@ fn backup_and_restore_via_ffi_only() {
         .expect("alice starts");
     let bob = KultNode::start(test_config(dir.path(), "bob"), Box::new(b_rec.clone()))
         .expect("bob starts");
+
+    // Genesis produces a separate offline authority exactly once. Routine
+    // backups below remain root-free and cannot recover the stable identity
+    // without these independently held factors.
+    let recovery_path = dir
+        .path()
+        .join("alice-account-authority.kra")
+        .display()
+        .to_string();
+    let recovery_mnemonic = alice
+        .export_account_recovery_authority(recovery_path.clone())
+        .unwrap();
+    assert_eq!(recovery_mnemonic.split_whitespace().count(), 24);
+    assert!(alice
+        .export_account_recovery_authority(
+            dir.path()
+                .join("duplicate-account-authority.kra")
+                .display()
+                .to_string()
+        )
+        .is_err());
 
     // Pair and converse, so the backup carries a contact, history, and a
     // live session to reset.
@@ -2030,6 +2428,20 @@ fn backup_and_restore_via_ffi_only() {
         test_config(dir.path(), "alice-wrong"),
         backup_path.clone(),
         wrong,
+        recovery_path.clone(),
+        recovery_mnemonic.clone(),
+        Box::new(Recorder::default()),
+    )
+    .is_err());
+
+    // The backup phrase cannot substitute for the separately generated
+    // recovery-authority phrase.
+    assert!(KultNode::restore(
+        test_config(dir.path(), "alice-wrong-authority"),
+        backup_path.clone(),
+        mnemonic.clone(),
+        recovery_path.clone(),
+        mnemonic.clone(),
         Box::new(Recorder::default()),
     )
     .is_err());
@@ -2038,8 +2450,15 @@ fn backup_and_restore_via_ffi_only() {
     let a_rec = Recorder::default();
     let mut cfg = test_config(dir.path(), "alice-new");
     cfg.passphrase = "new-passphrase".to_owned();
-    let alice = KultNode::restore(cfg, backup_path, mnemonic, Box::new(a_rec.clone()))
-        .expect("alice restores");
+    let alice = KultNode::restore(
+        cfg,
+        backup_path,
+        mnemonic,
+        recovery_path,
+        recovery_mnemonic,
+        Box::new(a_rec.clone()),
+    )
+    .expect("alice restores");
 
     // Identity, contacts, and history came back.
     assert_eq!(alice.address(), address_before);
@@ -2211,9 +2630,50 @@ fn linked_device_ceremony_and_sync_via_ffi_only() {
         matches!(event, Event::DeviceLinkCompleted { device, .. } if device == &target_device)
     });
 
-    source
-        .rename_linked_device(target_device.clone(), "Travel laptop".to_owned())
+    // Once two devices are active, adding a third cannot be completed by
+    // either one alone. The ordinary scan/compare flow pauses only for the
+    // extra detached approval, then resumes with the same transfer package.
+    let tablet = KultNode::start(
+        test_config(dir.path(), "device-tablet"),
+        Box::new(Recorder::default()),
+    )
+    .unwrap();
+    let offer = source.begin_device_link().unwrap();
+    let accepted = tablet
+        .accept_device_link(offer, "Tablet".to_owned())
         .unwrap();
+    let quorum = source
+        .approve_device_link(
+            accepted.response,
+            DeviceLinkSelection {
+                contacts: false,
+                organization: false,
+                history: false,
+            },
+            true,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(quorum.contains("additional active-device approval"));
+    let request = source.device_link_approval_request().unwrap();
+    let approval = target.approve_device_link_request(request).unwrap();
+    let package = source
+        .accept_device_link_approval(approval)
+        .unwrap()
+        .expect("strict majority finalizes package");
+    tablet.complete_device_link(package, true).unwrap();
+    assert_eq!(source.linked_devices().unwrap().len(), 3);
+    let authority_sync = source.export_device_sync(target_device.clone()).unwrap();
+    target.import_device_sync(authority_sync).unwrap();
+
+    let quorum = source
+        .rename_linked_device(target_device.clone(), "Travel laptop".to_owned())
+        .unwrap_err()
+        .to_string();
+    assert!(quorum.contains("additional active-device approval"));
+    let request = source.device_authority_approval_request().unwrap();
+    let approval = target.approve_device_authority_request(request).unwrap();
+    assert!(source.accept_device_authority_approval(approval).unwrap());
     let sync = source.export_device_sync(target_device.clone()).unwrap();
     target.import_device_sync(sync).unwrap();
     assert!(target
@@ -2221,6 +2681,10 @@ fn linked_device_ceremony_and_sync_via_ffi_only() {
         .unwrap()
         .iter()
         .any(|device| device.id == target_device && device.name == "Travel laptop"));
+    assert!(source.device_authority_conflicts().unwrap().is_empty());
+    assert!(target.device_authority_conflicts().unwrap().is_empty());
+    assert!(source.contact_authority_conflicts().unwrap().is_empty());
+    assert!(target.contact_authority_conflicts().unwrap().is_empty());
     assert!(source
         .message_device_deliveries("00".repeat(16))
         .unwrap()
@@ -2228,6 +2692,7 @@ fn linked_device_ceremony_and_sync_via_ffi_only() {
 
     source.stop();
     target.stop();
+    tablet.stop();
 }
 
 /// F1 group front-door acceptance through only the public UniFFI-shaped API.
@@ -2300,6 +2765,21 @@ fn groups_via_ffi_only() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("no stored group"), "got: {err}");
+
+    wait_group_security_ready(&alice, &bob, &group, true);
+    assert_eq!(
+        alice
+            .group_security(group.clone())
+            .unwrap()
+            .legacy_history_rows,
+        0
+    );
+    assert_eq!(
+        bob.group_security(group.clone())
+            .unwrap()
+            .legacy_history_rows,
+        0
+    );
 
     let message_id = alice
         .send_group(group.clone(), "meet at the pass".to_owned())
@@ -2610,6 +3090,7 @@ fn groups_via_ffi_only() {
     assert_eq!(upgraded.owner, alice_peer);
     assert_eq!(upgraded.my_role, Some(GroupRole::Member));
     assert_eq!(upgraded.members.len(), 2);
+    wait_group_security_ready(&alice, &bob, &group, false);
 
     alice
         .set_group_role(group.clone(), bob_peer.clone(), GroupRole::Admin)
@@ -2619,6 +3100,7 @@ fn groups_via_ffi_only() {
         authority_generation(&bob, &group, admin_generation).my_role,
         Some(GroupRole::Admin)
     );
+    wait_group_security_ready(&alice, &bob, &group, false);
     let error = bob
         .set_group_role(group.clone(), alice_peer.clone(), GroupRole::Member)
         .unwrap_err()
@@ -2644,6 +3126,7 @@ fn groups_via_ffi_only() {
         Event::GroupAdminRequestResolved { accepted: true, .. }
     ));
     authority_generation(&bob, &group, rename_generation);
+    wait_group_security_ready(&alice, &bob, &group, false);
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if bob
@@ -2682,6 +3165,8 @@ fn groups_via_ffi_only() {
             ..
         } if request_id == &moderation_request && *generation == moderation_generation)
     });
+    authority_generation(&bob, &group, moderation_generation);
+    wait_group_security_ready(&alice, &bob, &group, false);
     let moderated = closed_poll(&bob, &group, &moderated_poll);
     assert_eq!(moderated.moderated_by, Some(alice_peer.clone()));
     assert_eq!(moderated.close_policy, "signed_owner_snapshot");
@@ -2694,6 +3179,7 @@ fn groups_via_ffi_only() {
     assert_eq!(bob_owner.owner, bob_peer);
     assert_eq!(bob_owner.owner_epoch, 1);
     assert_eq!(bob_owner.my_role, Some(GroupRole::Owner));
+    wait_group_security_ready(&alice, &bob, &group, false);
     let error = bob.leave_group(group.clone()).unwrap_err().to_string();
     assert!(error.contains("owner"), "got: {error}");
 
@@ -2703,10 +3189,12 @@ fn groups_via_ffi_only() {
     let alice_owner = authority_generation(&alice, &group, alice_owner_generation);
     assert_eq!(alice_owner.owner, alice_peer);
     assert_eq!(alice_owner.owner_epoch, 2);
+    wait_group_security_ready(&alice, &bob, &group, false);
     alice
         .set_group_role(group.clone(), bob_peer.clone(), GroupRole::Member)
         .unwrap();
     authority_generation(&bob, &group, alice_owner_generation + 1);
+    wait_group_security_ready(&alice, &bob, &group, false);
 
     let group_attachment_bytes = canonical_audio(1_600);
     let group_source = dir.path().join("ffi-group-source.bin");

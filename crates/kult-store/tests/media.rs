@@ -4,14 +4,15 @@
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
-use kult_crypto::{Identity, KdfProfile};
+use kult_crypto::{DeviceAuthorityManifest, Identity, KdfProfile};
 use kult_protocol::{
     attachment_chunk_count, encode_attachment, AttachmentManifest, AttachmentObject,
     AttachmentRole, ATTACHMENT_CHUNK_DATA_LEN, ATTACHMENT_SEALED_CHUNK_LEN,
 };
 use kult_store::{
-    DeliveryState, Direction, MediaDirection, MediaLimits, MediaObjectRecord, MediaRecord,
-    MediaScope, MediaTransferRecord, MediaTransferState, MessageRecord, Store, StoreError,
+    DeliveryState, DeviceAuthorityStateRecord, Direction, MediaDirection, MediaLimits,
+    MediaObjectRecord, MediaRecord, MediaScope, MediaTransferRecord, MediaTransferState,
+    MessageRecord, Store, StoreError,
 };
 
 const TEST_KDF: KdfProfile = KdfProfile {
@@ -221,9 +222,36 @@ fn kkr5_carries_ordinary_manifest_but_excludes_media_state_and_files() {
     let db = dir.path().join("old.db");
     let restored_db = dir.path().join("restored.db");
     let (transfer, object) = records();
-    let mut store = Store::create(&db, b"pass", TEST_KDF, &mut rng).unwrap();
     let identity = Identity::generate(&mut rng);
-    store.put_identity(&identity, &mut rng).unwrap();
+    let device = Identity::generate(&mut rng);
+    let authority = DeviceAuthorityManifest::initial(
+        &identity,
+        &device,
+        "Backup device".into(),
+        transfer.updated_at,
+        &mut rng,
+    )
+    .unwrap();
+    let authority_state = DeviceAuthorityStateRecord {
+        local_device_secret: device.to_bytes().to_vec(),
+        local_certificate: authority.devices()[0].certificate.clone(),
+        accepted_recovery_epoch: authority.recovery_epoch(),
+        accepted_recovery_anchor: authority.recovery_anchor_id(),
+        manifest: authority,
+        sync_counter: 0,
+        channels: Vec::new(),
+        conflicts: Vec::new(),
+    };
+    let mut store = Store::create_authority_profile(
+        &db,
+        b"pass",
+        TEST_KDF,
+        &identity.public(),
+        &authority_state,
+        b"source-prekeys",
+        &mut rng,
+    )
+    .unwrap();
 
     let manifest = AttachmentManifest {
         attachment_key: [0x21; 32],
@@ -264,18 +292,24 @@ fn kkr5_carries_ordinary_manifest_but_excludes_media_state_and_files() {
             &mut rng,
         )
         .unwrap();
-    let (backup, words) = store.export_backup(transfer.updated_at, &mut rng).unwrap();
+    let (backup, words) = store
+        .export_authority_backup(transfer.updated_at, &mut rng)
+        .unwrap();
     drop(store);
 
-    let restored = Store::restore_backup(
+    let restored = Store::restore_authority_backup_with_initializer(
         &restored_db,
         &backup,
         &words,
+        &identity,
+        transfer.updated_at + 1,
         b"new-pass",
         TEST_KDF,
         &mut rng,
+        |_store, _rng| Ok(()),
     )
-    .unwrap();
+    .unwrap()
+    .0;
     assert_eq!(
         restored.messages_with(&transfer.peer).unwrap()[0].body,
         frame

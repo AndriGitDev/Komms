@@ -23,6 +23,14 @@ COMMANDS:
     bundle                          export a fresh prekey bundle (hex)
     device-id                       show this exact certified physical-device id
     devices                         list active and revoked account devices
+    authority-reset-history         show former-identity archive and re-verification work
+    device-authority-conflicts      list unresolved fail-closed authority conflicts
+    contact-authority-conflicts     list contacts with unresolved authority conflicts
+    device-authority-request        export pending rename/revocation approval request
+    device-authority-approve REQUEST
+                                    verify and sign another device's exact request
+    device-authority-accept APPROVAL
+                                    merge a detached approval and report commit status
     message-devices MESSAGE_ID      show honest delivery state per recipient device
     device-rename DEVICE_ID NAME... rename an active linked device
     device-revoke DEVICE_ID --yes   permanently revoke another device
@@ -31,6 +39,11 @@ COMMANDS:
     device-link-code RESPONSE       show the source-side comparison code
     device-link-approve RESPONSE --confirm [--no-contacts] [--no-organization] [--no-history]
                                     confirm and create the encrypted transfer package
+    device-link-approval-request    export a pending add-device quorum request
+    device-link-approve-request REQUEST
+                                    verify and sign another device's add proposal
+    device-link-accept-approval APPROVAL
+                                    merge approval; returns package once quorum is met
     device-link-complete PACKAGE --confirm
                                     confirm and import on the pristine target
     device-sync-export DEVICE_ID    export encrypted convergence bytes
@@ -137,6 +150,8 @@ COMMANDS:
     pin-conversations all|unfiled|FOLDER_ID [any|all [LABEL_ID]...]
                                     compose folder, label, then pin ordering
     group-create NAME [MEMBER_HEX]... create a sender-key group
+    group-security GROUP_HEX         show recipient-origin upgrade state
+    group-security-upgrade GROUP_HEX start the visible legacy-group upgrade
     group-send GROUP_HEX TEXT...     queue a group message
     group-send-disappearing GROUP_HEX LIFETIME_SECS TEXT...
                                     queue group text with exact local expiry
@@ -190,6 +205,8 @@ COMMANDS:
     backup PATH                     write an encrypted backup file and print the
                                     one-time 24-word mnemonic that seals it
                                     (write it down; it is shown exactly once)
+    recovery-authority PATH         first-run only: write the encrypted offline
+                                    account authority and show its separate phrase
     watch                           stream events until interrupted
     -h, --help                      this text
 ";
@@ -397,6 +414,22 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
         "bundle" => json!({ "op": "bundle" }),
         "device-id" => json!({ "op": "device_id" }),
         "devices" => json!({ "op": "linked_devices" }),
+        "authority-reset-history" => json!({ "op": "authority_reset_history" }),
+        "device-authority-conflicts" => json!({ "op": "device_authority_conflicts" }),
+        "contact-authority-conflicts" => json!({ "op": "contact_authority_conflicts" }),
+        "device-authority-request" => json!({ "op": "device_authority_approval_request" }),
+        "device-authority-approve" => {
+            if args.len() != 1 {
+                return Err("device-authority-approve: expected REQUEST".to_owned());
+            }
+            json!({ "op": "device_authority_approve", "request": args[0] })
+        }
+        "device-authority-accept" => {
+            if args.len() != 1 {
+                return Err("device-authority-accept: expected APPROVAL".to_owned());
+            }
+            json!({ "op": "device_authority_accept", "approval": args[0] })
+        }
         "message-devices" => {
             if args.len() != 1 {
                 return Err("message-devices: expected MESSAGE_ID".to_owned());
@@ -461,6 +494,19 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
                 );
             }
             json!({ "op": "device_link_complete", "package": args[0], "confirmed": true })
+        }
+        "device-link-approval-request" => json!({ "op": "device_link_approval_request" }),
+        "device-link-approve-request" => {
+            if args.len() != 1 {
+                return Err("device-link-approve-request: expected REQUEST".to_owned());
+            }
+            json!({ "op": "device_link_approve_request", "request": args[0] })
+        }
+        "device-link-accept-approval" => {
+            if args.len() != 1 {
+                return Err("device-link-accept-approval: expected APPROVAL".to_owned());
+            }
+            json!({ "op": "device_link_accept_approval", "approval": args[0] })
         }
         "device-sync-export" => {
             if args.len() != 1 {
@@ -1088,6 +1134,20 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
             need(1)?;
             json!({ "op": "group_create", "name": args[0], "members": args[1..] })
         }
+        "group-security" | "group-security-upgrade" => {
+            need(1)?;
+            if args.len() != 1 {
+                return Err(format!("{command}: expected one group id"));
+            }
+            json!({
+                "op": if command == "group-security" {
+                    "group_security"
+                } else {
+                    "group_upgrade_security"
+                },
+                "group": args[0],
+            })
+        }
         "group-send" => {
             need(2)?;
             json!({ "op": "group_send", "group": args[0], "body": args[1..].join(" ") })
@@ -1319,6 +1379,12 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
             need(1)?;
             json!({ "op": "backup", "path": args[0] })
         }
+        "recovery-authority" => {
+            if args.len() != 1 {
+                return Err("recovery-authority: expected PATH".to_owned());
+            }
+            json!({ "op": "recovery_authority_export", "path": args[0] })
+        }
         "watch" => json!({ "op": "subscribe" }),
         other => return Err(format!("unknown command: {other}\n\n{USAGE}")),
     };
@@ -1525,6 +1591,14 @@ mod tests {
         assert_eq!(
             build_request("devices", &[]).unwrap()["op"],
             "linked_devices"
+        );
+        assert_eq!(
+            build_request("authority-reset-history", &[]).unwrap()["op"],
+            "authority_reset_history"
+        );
+        assert_eq!(
+            build_request("contact-authority-conflicts", &[]).unwrap()["op"],
+            "contact_authority_conflicts"
         );
         let approve = build_request(
             "device-link-approve",

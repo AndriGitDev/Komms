@@ -12,6 +12,13 @@ pub const CAPABILITY_CONTROL_VERSION: u8 = 1;
 pub const MAX_CAPABILITY_FORMATS: usize = 4;
 /// Maximum kinds advertised for one content format.
 pub const MAX_CAPABILITY_KINDS: usize = 64;
+/// Encrypted session-capability namespace for ADR-0029 group origins.
+///
+/// This deliberately reuses the already authenticated, non-public capability
+/// control rather than adding a discovery-visible software fingerprint.
+pub const GROUP_ORIGIN_CAPABILITY_FORMAT: u8 = u8::MAX;
+/// Recipient-authenticated sender-key group origin protocol v1.
+pub const GROUP_ORIGIN_CAPABILITY_KIND: u16 = 1;
 
 /// Kinds supported for one content framing version.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -91,25 +91,27 @@ snapshots, flash remapping, recipient devices, or operating-system artifacts.
 B9 formatting creates no additional durable state. The `messages`,
 `scheduled_messages`, group history, and note-to-self rows retain exact source
 bytes under their existing seals; formatting markers are not rewritten and no
-rendered HTML/attributed text or cache is persisted. `KKR7` therefore carries
+rendered HTML/attributed text or cache is persisted. `KKR8` therefore carries
 the same source it already carried and needs no format or migration change.
 
 C3 edits also add no mutable plaintext projection. Canonical originals and edit
 events remain separate individually sealed pairwise/group history rows; derived
 history hides edit rows and returns the winning text, marker, revision, and
 ordered versions. The winner is rebuilt from accepted rows after restart or
-restore, including edit-before-original order. Pairwise rows have authenticated
-individual origins; current group rows have only membership-level origin until
-ADR-0029. `KKR7` carries those
-history rows, so no backup version or migration changes. The node caps locally
+restore, including edit-before-original order. Pairwise rows and current group
+rows retain authenticated individual origins; legacy group rows retain an
+explicit membership-authenticated marker and are never rewritten. `KKR8`
+carries those history rows without live sender chains or recipient origin keys,
+so restore requires a fresh group-origin exchange. The node caps locally
 authored edits at 64 per target; it retains every accepted inbound edit so
 admission order cannot change convergence. See
 [18: Authenticated Message Editing](18-message-editing.md).
 
 C4 keeps lifecycle state separate from history. Every disappearing/view-once id
 is keyed by exact conversation, accepted author field, and content id. Pairwise
-authors are individually authenticated; current sender-key group authors are
-only membership-authenticated until ADR-0029. The node
+authors and upgraded sender-key group authors are individually authenticated
+to the recipient; legacy group history remains membership-authenticated. The
+node
 sweeps due rows before receive, scheduled activation, attachment work, or queue
 flush. Expiry/first reveal deletes exact history and queue rows plus every
 associated media object/chunk, then retains only a sealed terminal tombstone.
@@ -121,11 +123,11 @@ byte. See [19: Disappearing Messages and View-Once Attachments](19-ephemeral-mes
 C5 polls add no mutable tally or plaintext projection. Creation, vote, and
 closure remain separate individually sealed group-history rows. The node
 rebuilds the fixed electorate, maximum `(revision, event id)` vote per member,
-winning creator-claimed closure, and tally on read, so restart and reordered
+winning creator-authenticated closure, and tally on read, so restart and reordered
 admission cannot change the result. Local authors are capped at 64 vote
-revisions per poll; membership-authenticated inbound history is retained for
-convergence. That retention does not repair member-forged origins; ADR-0029 is
-required before stable. See [20: Group Polls](20-group-polls.md).
+revisions per poll; recipient-authenticated inbound history is retained for
+convergence, while released legacy history retains its weaker label. See
+[20: Group Polls](20-group-polls.md).
 
 C7 live calls add no durable domain. Decoded call control, call/device
 arbitration, master secrets, derived media keys, replay state, Opus queues, and
@@ -138,7 +140,7 @@ B12 stores only the canonical `system`, `light`, or `dark` bytes under the seale
 UI-preference key `appearance.theme`. Missing or unknown legacy values render as
 System without a read-time rewrite. The small shell cache used before unlock is
 non-sensitive presentation state; after unlock the sealed F5 value is
-authoritative. `KKR7` backup and C2 own-device sync carry only that canonical
+authoritative. `KKR8` backup and C2 own-device sync carry only that canonical
 value, never the pre-unlock cache.
 
 ### Protected application transients
@@ -240,30 +242,40 @@ before search is described as available.
   `KKR4` added sealed note-to-self history, `KKR5` added terminal ephemeral
   tombstones while excluding every active ephemeral history row, manifest,
   transfer, and media chunk, `KKR6` added signed group authority plus bounded
-  consumed admin-request ids, and current `KKR7` adds linked-device manifests,
-  certified endpoints, convergence winners, and recovery state. Older `KKR1`
-  through `KKR6` files remain restorable. Restoring resumes the stable account,
-  revokes every device active in the backup, and mints a fresh sole active
-  physical device; sessions re-handshake (ratchet states and reusable device
-  private credentials are deliberately *not* portable). Format
-  and mechanism: ADR-0011. After outer backup decryption, the payload is a
+  consumed admin-request ids, legacy `KKR7` added the former copied-root
+  linked-device layout, and current root-free `KKR8` carries the accepted
+  offline-root authority proof, certified endpoints, convergence winners, and
+  eligible user state. `KKR1` through `KKR7` remain explicit
+  decode-only new-identity-reset inputs; no production API creates another
+  copied-root package. Their copied root is opened only in memory, and the
+  destination sibling is built directly from the bounded archive projection
+  under a newly prepared account. No intermediate or published store contains
+  the former root. A `KKR8` restore additionally requires
+  the separately held `.kra` recovery-authority file and phrase; it opens that
+  root transiently, advances the recovery epoch, revokes every formerly active
+  device, and mints one fresh physical device. Sessions re-handshake; account
+  root, ratchets, prekeys, sender/receiver chains, link-channel roots, queues,
+  wire ids, reusable device credentials, and delivery-resumption state are
+  deliberately *not* portable. Queued or sent history restores only as failed
+  local history. Format and mechanism: ADR-0011 and ADR-0026. After outer backup
+  decryption, the payload is a
   bounded stream of logical records; it contains no source database id, opaque
   index, SQLite page, or wrapped database-row ciphertext. Restore validates the
   complete logical payload and references, writes a fresh-id sibling database,
   syncs and atomically installs it, and then fully reopens it. It never exposes
   a partially restored destination as a valid store.
-- **B18 label backup behavior**: `KKR7` preserves exact label IDs, names, color
+- **B18 label backup behavior**: `KKR8` preserves exact label IDs, names, color
   tokens, insertion order, assignments, and stale-reference behavior. Labels
   have no cloud, server, contact, or taxonomy-sharing path; C2 may converge them
   only between account-authorized owned devices.
-- **B10 folder backup behavior**: `KKR7` preserves exact folder IDs, names,
+- **B10 folder backup behavior**: `KKR8` preserves exact folder IDs, names,
   manual order, single-membership assignments, and stale-reference behavior.
   Folders have no cloud, server, or contact synchronization; C2 may converge
   them only between account-authorized owned devices.
-- **B11 pin backup behavior**: `KKR7` preserves exact typed targets, durable
+- **B11 pin backup behavior**: `KKR8` preserves exact typed targets, durable
   order, and stale/reactivation behavior. Pins have no cloud, server, or contact
   synchronization; C2 may converge them only between authorized owned devices.
-- **B13 custom-icon backup behavior**: `KKR7` preserves each canonical sealed
+- **B13 custom-icon backup behavior**: `KKR8` preserves each canonical sealed
   PNG under its exact typed contact/group/folder/note-to-self target. Restore
   reuses the same strict read verification and generated-initials fallback.
   Icons have no avatar URL, cloud, server, or peer synchronization path; C2 may
@@ -277,9 +289,10 @@ before search is described as available.
   ordinary sealed history. Restore recomputes the deterministic
   winner and prior-version list; it never imports a mutable current-body cache
   or discards stale losing revisions. Pairwise origin authorization survives
-  restore; current group origin remains membership-level pending ADR-0029.
+  restore. Group history preserves its exact origin marker, but live recipient
+  origin capabilities are excluded and must be redistributed after restore.
 - **C4 ephemeral backup behavior**: no live disappearing plaintext, view-once
-  manifest, or associated media enters KKR6. Terminal tombstones do, so restore
+  manifest, or associated media enters `KKR8`. Terminal tombstones do, so restore
   cannot resurrect a removed content id. Active ephemeral content is
   intentionally non-portable and there is no remote-erasure claim.
 - **C5 poll backup behavior**: immutable create, vote, and creator-close rows
@@ -288,17 +301,22 @@ before search is described as available.
   counter, new KKR version, or schema migration is involved.
 - **C6 authority backup behavior**: `KKR6` introduced the winning canonical signed
   authority payload, authority event id, owner-transfer chain, and bounded
-  consumed request ids; `KKR7` carries it forward. `KKR1`-`KKR5` restore with no authority record and remain
-  legacy creator-managed until a capability-gated upgrade. Sender/receiver
-  chains remain excluded and are refreshed after restore.
-- **C2 linked-device backup behavior**: `KKR7` carries the stable account, signed
-  manifest, local device id, certified contact endpoints, convergence winners,
-  and terminal tombstones, but never exports ratchets or a reusable physical
-  device private credential. Current recovery excludes the known device ids
-  active in the backup and mints a fresh device. It does **not** establish
-  permanent adversarial revocation because an already linked device may retain
-  a copied account root and mint a new id. ADR-0026's offline-root authority
-  reset is required before that stronger claim.
+  consumed request ids; `KKR8` carries it forward. The fresh-identity legacy
+  archive reset omits groups rather than accepting their former authority.
+  Sender/receiver chains remain excluded and are refreshed after restore.
+- **C2 linked-device backup behavior**: root-free `KKR8` carries the public
+  stable account trust anchor, accepted `KDA2` proof, certified contact
+  endpoints, convergence winners, eligible ordinary state, and terminal
+  tombstones. It exports no account root, local or contact device private key,
+  prekey, ratchet, group sender/receiver chain, sync/link channel root,
+  rendezvous/wake capability, queue, wire id, or resumable delivery state.
+  Restore requires the separately held recovery authority, creates a higher
+  epoch with one fresh device, rotates live relationship state, and rejects old
+  descendants. Legacy copied-root `KKR7` cannot be relabelled safe: it requires
+  the visible new-identity reset boundary in ADR-0026. Its archive projection
+  clears contact routes and verification, fails unfinished outbound history,
+  omits groups and all live protocol state, and records every contact still
+  needing a new safety-number comparison.
 - **C7 call backup behavior**: no offer/answer/terminal row, call id, device
   arbitration, secret, media key, Opus packet, or decoded audio enters any KKR
   version. Restore never resumes or reveals a prior call.

@@ -20,13 +20,14 @@ use tokio::sync::{mpsc, oneshot, watch};
 use kult_crypto::{KdfProfile, SafetyNumber};
 use kult_node::{
     AttachmentInfo, AttachmentMetadata, CallAudioFrame, CallAvailability, CallInfo,
-    CarrierCapabilitySnapshot, DeviceLinkSelection, Event, FolderConversationInfo,
-    FolderConversationList, FolderInfo, FolderSelection, GroupAuthorityInfo, GroupInfo,
-    GroupMentionCapability, GroupRole, LabelConversationInfo, LabelFilterInfo, LabelInfo,
-    LabelMatchMode, LinkedDeviceInfo, MentionSpan, MessageDeviceDeliveryInfo, Node,
-    PinConversationList, PinInfo, ScheduledMessageInfo, StaleFolderInfo, StaleLabelInfo,
+    CarrierCapabilitySnapshot, ContactAuthorityConflictInfo, DeviceAuthorityConflictInfo,
+    DeviceLinkSelection, Event, FolderConversationInfo, FolderConversationList, FolderInfo,
+    FolderSelection, GroupAuthorityInfo, GroupInfo, GroupMentionCapability, GroupRole,
+    GroupSecurityInfo, LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode,
+    LinkedDeviceInfo, MentionSpan, MessageDeviceDeliveryInfo, Node, PinConversationList, PinInfo,
+    ScheduledMessageInfo, StaleFolderInfo, StaleLabelInfo,
 };
-use kult_store::{ContactRecord, ConversationId, NoteMessageRecord};
+use kult_store::{ContactRecord, ConversationId, NoteMessageRecord, AUTHORITY_BACKUP_MAGIC};
 use kult_transport::{
     DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, Transport, TransportOptions,
 };
@@ -38,6 +39,10 @@ pub(crate) struct RestoreSource {
     pub backup: Vec<u8>,
     /// The 24-word mnemonic sealing it.
     pub mnemonic: String,
+    /// Separately held encrypted offline account authority.
+    pub recovery_package: Vec<u8>,
+    /// The separate 24-word phrase opening the recovery authority.
+    pub recovery_mnemonic: String,
 }
 
 /// Everything the runtime needs, already validated and converted from the
@@ -78,6 +83,26 @@ pub(crate) enum Msg {
     LinkedDevices {
         resp: Resp<Vec<LinkedDeviceInfo>>,
     },
+    DeviceAuthorityConflicts {
+        resp: Resp<Vec<DeviceAuthorityConflictInfo>>,
+    },
+    ContactAuthorityConflicts {
+        resp: Resp<Vec<ContactAuthorityConflictInfo>>,
+    },
+    AuthorityResetHistory {
+        resp: Resp<Option<kult_node::AuthorityResetHistoryRecord>>,
+    },
+    DeviceAuthorityApprovalRequest {
+        resp: Resp<Vec<u8>>,
+    },
+    DeviceAuthorityApprove {
+        request: Vec<u8>,
+        resp: Resp<Vec<u8>>,
+    },
+    DeviceAuthorityAccept {
+        approval: Vec<u8>,
+        resp: Resp<bool>,
+    },
     MessageDeviceDeliveries {
         message: [u8; 16],
         resp: Resp<Vec<MessageDeviceDeliveryInfo>>,
@@ -108,6 +133,17 @@ pub(crate) enum Msg {
         selection: DeviceLinkSelection,
         confirmed: bool,
         resp: Resp<Vec<u8>>,
+    },
+    DeviceLinkApprovalRequest {
+        resp: Resp<Vec<u8>>,
+    },
+    DeviceLinkApproveRequest {
+        request: Vec<u8>,
+        resp: Resp<Vec<u8>>,
+    },
+    DeviceLinkAcceptApproval {
+        approval: Vec<u8>,
+        resp: Resp<Option<Vec<u8>>>,
     },
     DeviceLinkComplete {
         package: Vec<u8>,
@@ -440,6 +476,14 @@ pub(crate) enum Msg {
         members: Vec<[u8; 32]>,
         resp: Resp<[u8; 32]>,
     },
+    GroupSecurity {
+        group: [u8; 32],
+        resp: Resp<GroupSecurityInfo>,
+    },
+    GroupUpgradeSecurity {
+        group: [u8; 32],
+        resp: Resp<()>,
+    },
     GroupSend {
         group: [u8; 32],
         body: Vec<u8>,
@@ -610,6 +654,10 @@ pub(crate) enum Msg {
         path: PathBuf,
         resp: Resp<String>,
     },
+    RecoveryAuthorityExport {
+        path: PathBuf,
+        resp: Resp<String>,
+    },
     RefreshHandshakeBundle {
         cache: Arc<Mutex<PairingBundleCache>>,
     },
@@ -658,7 +706,7 @@ impl Runtime {
         cfg: RuntimeConfig,
         listener: Box<dyn Fn(Event) + Send>,
     ) -> Result<Self, String> {
-        let mut node = if let Some(restore) = &cfg.restore {
+        let node = if let Some(restore) = &cfg.restore {
             // Restore is a first-run operation: an existing store holds an
             // identity, and silently replacing it would destroy keys.
             if cfg.db_path.exists() {
@@ -667,21 +715,97 @@ impl Runtime {
                     cfg.db_path.display()
                 ));
             }
-            Node::restore(
-                &cfg.db_path,
-                &restore.backup,
-                &restore.mnemonic,
-                &cfg.passphrase,
-                cfg.kdf,
-                &mut OsRng,
-            )
+            if restore.backup.starts_with(&AUTHORITY_BACKUP_MAGIC) {
+                Node::restore_with_recovery_authority(
+                    &cfg.db_path,
+                    &restore.backup,
+                    &restore.mnemonic,
+                    &restore.recovery_package,
+                    &restore.recovery_mnemonic,
+                    now(),
+                    &cfg.passphrase,
+                    cfg.kdf,
+                    &mut OsRng,
+                )
+            } else {
+                Node::restore_legacy_backup_with_authority_reset(
+                    &cfg.db_path,
+                    &restore.backup,
+                    &restore.mnemonic,
+                    &restore.recovery_package,
+                    &restore.recovery_mnemonic,
+                    now(),
+                    &cfg.passphrase,
+                    cfg.kdf,
+                    &mut OsRng,
+                )
+            }
         } else if cfg.db_path.exists() {
             Node::open(&cfg.db_path, &cfg.passphrase)
         } else {
             Node::create(&cfg.db_path, &cfg.passphrase, cfg.kdf, &mut OsRng)
         }
         .map_err(|e| format!("store: {e}"))?;
+        Self::start_node(cfg, node, listener)
+    }
 
+    /// Complete an explicit single-device Alpha authority migration and keep
+    /// the same unlocked store handle while the ordinary runtime starts.
+    pub(crate) fn migrate_authority(
+        cfg: RuntimeConfig,
+        recovery_package: &[u8],
+        recovery_mnemonic: &str,
+        listener: Box<dyn Fn(Event) + Send>,
+    ) -> Result<Self, String> {
+        if !cfg.db_path.exists() {
+            return Err(format!(
+                "authority migration requires the existing store {}",
+                cfg.db_path.display()
+            ));
+        }
+        let node = Node::complete_authority_migration(
+            &cfg.db_path,
+            &cfg.passphrase,
+            recovery_package,
+            recovery_mnemonic,
+            now(),
+            &mut OsRng,
+        )
+        .map_err(|e| format!("store: {e}"))?;
+        Self::start_node(cfg, node, listener)
+    }
+
+    /// Complete an explicit copied-root Alpha reset and keep the newly
+    /// replaced store handle while the ordinary runtime starts.
+    pub(crate) fn reset_authority(
+        cfg: RuntimeConfig,
+        recovery_package: &[u8],
+        recovery_mnemonic: &str,
+        listener: Box<dyn Fn(Event) + Send>,
+    ) -> Result<Self, String> {
+        if !cfg.db_path.exists() {
+            return Err(format!(
+                "authority reset requires the existing store {}",
+                cfg.db_path.display()
+            ));
+        }
+        let node = Node::complete_authority_reset(
+            &cfg.db_path,
+            &cfg.passphrase,
+            recovery_package,
+            recovery_mnemonic,
+            now(),
+            &mut OsRng,
+        )
+        .map_err(|e| format!("store: {e}"))?;
+        Self::start_node(cfg, node, listener)
+    }
+
+    fn start_node(
+        cfg: RuntimeConfig,
+        mut node: Node,
+        listener: Box<dyn Fn(Event) + Send>,
+    ) -> Result<Self, String> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -1011,6 +1135,30 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         Msg::LinkedDevices { resp } => {
             let _ = resp.send(Ok(node.linked_devices()));
         }
+        Msg::DeviceAuthorityConflicts { resp } => {
+            let _ = resp.send(Ok(node.device_authority_conflicts()));
+        }
+        Msg::ContactAuthorityConflicts { resp } => {
+            let _ = resp.send(node.contact_authority_conflicts().map_err(fail));
+        }
+        Msg::AuthorityResetHistory { resp } => {
+            let _ = resp.send(node.authority_reset_history().map_err(fail));
+        }
+        Msg::DeviceAuthorityApprovalRequest { resp } => {
+            let _ = resp.send(node.device_authority_approval_request().map_err(fail));
+        }
+        Msg::DeviceAuthorityApprove { request, resp } => {
+            let _ = resp.send(
+                node.approve_device_authority_request(&request)
+                    .map_err(fail),
+            );
+        }
+        Msg::DeviceAuthorityAccept { approval, resp } => {
+            let _ = resp.send(
+                node.accept_device_authority_approval(&approval, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
         Msg::MessageDeviceDeliveries { message, resp } => {
             let _ = resp.send(node.message_device_deliveries(&message).map_err(fail));
         }
@@ -1136,6 +1284,18 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
                     &mut OsRng,
                 )
                 .map_err(fail),
+            );
+        }
+        Msg::DeviceLinkApprovalRequest { resp } => {
+            let _ = resp.send(node.device_link_approval_request().map_err(fail));
+        }
+        Msg::DeviceLinkApproveRequest { request, resp } => {
+            let _ = resp.send(node.approve_device_link_request(&request).map_err(fail));
+        }
+        Msg::DeviceLinkAcceptApproval { approval, resp } => {
+            let _ = resp.send(
+                node.accept_device_link_approval(&approval, now, &mut OsRng)
+                    .map_err(fail),
             );
         }
         Msg::AttachmentSend {
@@ -1601,6 +1761,15 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         } => {
             let _ = resp.send(node.create_group(&name, &members, &mut OsRng).map_err(fail));
         }
+        Msg::GroupSecurity { group, resp } => {
+            let _ = resp.send(node.group_security_info(&group).map_err(fail));
+        }
+        Msg::GroupUpgradeSecurity { group, resp } => {
+            let _ = resp.send(
+                node.group_upgrade_security(&group, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
         Msg::GroupSend { group, body, resp } => {
             let _ = resp.send(
                 node.group_send(&group, &body, now, &mut OsRng)
@@ -1817,6 +1986,13 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
                         .map(|()| (*mnemonic).clone())
                         .map_err(|e| format!("backup write: {e}"))
                 });
+            let _ = resp.send(result);
+        }
+        Msg::RecoveryAuthorityExport { path, resp } => {
+            let result = node
+                .export_account_recovery_authority(&path)
+                .map(|mnemonic| (*mnemonic).clone())
+                .map_err(fail);
             let _ = resp.send(result);
         }
         Msg::RefreshHandshakeBundle { cache } => {

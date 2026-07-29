@@ -8,32 +8,141 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use kult_crypto::{
-    seal_device_link_recovery_package, DeviceCertificate, DeviceLinkOffer, DeviceLinkResponse,
-    DeviceManifest, GroupSenderChain, PendingDeviceLinkSource, PendingDeviceLinkTarget,
+    seal_authority_device_link_recovery_package, AuthorityDeviceLinkApproval,
+    AuthorityDeviceLinkApprovalRequest, AuthorityDeviceLinkOffer as DeviceLinkOffer,
+    AuthorityDeviceLinkResponse as DeviceLinkResponse, DeviceAuthorityManifest,
+    DeviceAuthorityRelation, DeviceAuthorityTransitionKind, GroupSenderChain,
+    PendingAuthorityDeviceLinkSource as PendingDeviceLinkSource,
+    PendingAuthorityDeviceLinkTarget as PendingDeviceLinkTarget,
 };
 use kult_protocol::{
-    decode_content, resolve_device_sync_events, DecodedContent, DeviceSyncBundle, DeviceSyncEvent,
-    DeviceSyncNamespace,
+    decode_content, resolve_device_sync_events, AuthorityDeviceSyncBundle as DeviceSyncBundle,
+    DecodedContent, DeviceSyncEvent, DeviceSyncNamespace,
 };
 use kult_store::{
-    CapabilityDelete, CommitPlan, ContactDeviceRecord, ContactRecord, DeviceChannelRecord,
-    DeviceControlPlan, DeviceLinkPlan, DeviceLinkRecoveryRecord, DeviceLinkRecoveryTransition,
-    DeviceProjection, DeviceProjectionPlan, DeviceStateRecord, DeviceStateTransition,
+    AccountIdentityTransition, AuthorityDeviceControlPlan, AuthorityDeviceLinkPlan,
+    CapabilityDelete, CommitPlan, ContactAuthorityConflictRecord, ContactDeviceRecord,
+    ContactRecord, DeviceAuthorityConflictKind, DeviceAuthorityConflictRecord,
+    DeviceAuthorityStateRecord, DeviceAuthorityStateTransition, DeviceChannelRecord,
+    DeviceLinkRecoveryRecord, DeviceLinkRecoveryTransition, DeviceProjection, DeviceProjectionPlan,
     DeviceTransferGroup, DeviceTransferSelection, DeviceTransferSnapshot, Direction,
     EphemeralRecord, EphemeralTransition, GroupAuthorityRecord, GroupAuthorityStateTransition,
-    GroupMessageDelete, GroupMessageRecord, GroupRecord, GroupStatePlan, GroupStateTransition,
-    GroupTransition, IdentityTransition, LocalMetadataKey, LocalMetadataRecord, MaintenancePlan,
+    GroupMessageDelete, GroupMessageRecord, GroupOriginAuthentication, GroupRecord, GroupStatePlan,
+    GroupStateTransition, GroupTransition, LocalMetadataKey, LocalMetadataRecord, MaintenancePlan,
     MessageDelete, MessageRecord, NoteMessageRecord, PendingAnnounce, QueueDelete, SessionDelete,
-    Store, MAX_DEVICE_CONTROL_MUTATIONS, THEME_PREFERENCE_KEY,
+    Store, MAX_DEVICE_AUTHORITY_CONFLICTS, MAX_DEVICE_CONTROL_MUTATIONS, THEME_PREFERENCE_KEY,
 };
 
 use crate::{
+    ContactAuthorityConflictInfo, DeviceAuthorityConflictInfo, DeviceAuthorityConflictType,
     DeviceLinkSelection, Event, Identity, LinkedDeviceInfo, MessageDeviceDeliveryInfo, Node,
     NodeError, Result,
 };
 
 const LINK_OFFER_LIFETIME_SECS: u64 = 10 * 60;
 const DEFAULT_DEVICE_NAME: &str = "This device";
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn fresh_device_state(
+    account: &Identity,
+    rng: &mut impl CryptoRngCore,
+) -> kult_store::Result<kult_store::DeviceStateRecord> {
+    let device = Identity::generate(rng);
+    let certificate = kult_crypto::DeviceCertificate::issue(account, &device, 0, rng);
+    let manifest = kult_crypto::DeviceManifest::initial(
+        account,
+        certificate.clone(),
+        DEFAULT_DEVICE_NAME.into(),
+        0,
+    )?;
+    Ok(kult_store::DeviceStateRecord {
+        local_device_secret: device.to_bytes().to_vec(),
+        local_certificate: certificate,
+        manifest,
+        sync_counter: 0,
+        channels: Vec::new(),
+    })
+}
+
+pub(crate) fn fresh_authority_device_state(
+    root: &Identity,
+    rng: &mut impl CryptoRngCore,
+) -> kult_store::Result<(Identity, DeviceAuthorityStateRecord)> {
+    let device = Identity::generate(rng);
+    let manifest =
+        DeviceAuthorityManifest::initial(root, &device, DEFAULT_DEVICE_NAME.into(), 0, rng)?;
+    let state = DeviceAuthorityStateRecord {
+        local_device_secret: device.to_bytes().to_vec(),
+        local_certificate: manifest.devices()[0].certificate.clone(),
+        accepted_recovery_epoch: manifest.recovery_epoch(),
+        accepted_recovery_anchor: manifest.recovery_anchor_id(),
+        manifest,
+        sync_counter: 0,
+        channels: Vec::new(),
+        conflicts: Vec::new(),
+    };
+    Ok((device, state))
+}
+
+pub(crate) fn migrate_legacy_authority_device_state(
+    root: &Identity,
+    legacy: &kult_store::DeviceStateRecord,
+    migrated_at: u64,
+    rng: &mut impl CryptoRngCore,
+) -> Result<(Identity, DeviceAuthorityStateRecord)> {
+    if legacy.manifest.devices.len() != 1 || !legacy.channels.is_empty() {
+        return Err(NodeError::AuthorityResetRequired);
+    }
+    let device_bytes: Zeroizing<[u8; 64]> = Zeroizing::new(
+        legacy
+            .local_device_secret
+            .as_slice()
+            .try_into()
+            .map_err(|_| NodeError::CorruptState)?,
+    );
+    let device = Identity::from_bytes(&device_bytes);
+    let local_id = device.public().ed;
+    let old_entry = legacy
+        .manifest
+        .devices
+        .iter()
+        .find(|entry| {
+            entry.certificate.device_id() == local_id
+                && entry.revoked_at.is_none()
+                && entry.certificate == legacy.local_certificate
+        })
+        .ok_or(NodeError::CorruptState)?;
+    let manifest =
+        DeviceAuthorityManifest::initial(root, &device, old_entry.name.clone(), migrated_at, rng)?;
+    let state = DeviceAuthorityStateRecord {
+        local_device_secret: device.to_bytes().to_vec(),
+        local_certificate: manifest.devices()[0].certificate.clone(),
+        accepted_recovery_epoch: manifest.recovery_epoch(),
+        accepted_recovery_anchor: manifest.recovery_anchor_id(),
+        manifest,
+        sync_counter: legacy.sync_counter,
+        channels: Vec::new(),
+        conflicts: Vec::new(),
+    };
+    Ok((device, state))
+}
+
+pub(crate) fn load_authority_device(
+    store: &Store,
+) -> Result<(Identity, DeviceAuthorityStateRecord)> {
+    let state = store
+        .get_device_authority_state()?
+        .ok_or(NodeError::CorruptState)?;
+    let bytes: Zeroizing<[u8; 64]> = Zeroizing::new(
+        state
+            .local_device_secret
+            .as_slice()
+            .try_into()
+            .map_err(|_| NodeError::CorruptState)?,
+    );
+    Ok((Identity::from_bytes(&bytes), state))
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum SyncHistoryValue {
@@ -48,115 +157,218 @@ enum SyncGroupValue {
     Authority(GroupAuthorityRecord),
 }
 
-pub(crate) fn fresh_device_state(
-    account: &Identity,
-    rng: &mut impl CryptoRngCore,
-) -> kult_store::Result<DeviceStateRecord> {
-    let device = Identity::generate(rng);
-    let certificate = DeviceCertificate::issue(account, &device, 0, rng);
-    let manifest =
-        DeviceManifest::initial(account, certificate.clone(), DEFAULT_DEVICE_NAME.into(), 0)?;
-    Ok(DeviceStateRecord {
-        local_device_secret: device.to_bytes().to_vec(),
-        local_certificate: certificate,
-        manifest,
-        sync_counter: 0,
-        channels: Vec::new(),
+fn manifest_contains_certified_device(
+    manifest: &DeviceAuthorityManifest,
+    account: &[u8; 32],
+    device: &[u8; 32],
+) -> bool {
+    manifest.verify().is_ok()
+        && manifest.account().ed == *account
+        && manifest
+            .devices()
+            .iter()
+            .any(|entry| entry.certificate.device_id() == *device)
+}
+
+fn accepted_contact_authority(
+    contacts: &[ContactDeviceRecord],
+    account: &[u8; 32],
+) -> Option<DeviceAuthorityManifest> {
+    let mut accepted: Option<DeviceAuthorityManifest> = None;
+    for endpoint in contacts.iter().filter(|endpoint| {
+        endpoint.account == *account
+            && endpoint.manifest_generation > 0
+            && !endpoint.authority.is_empty()
+    }) {
+        let candidate = DeviceAuthorityManifest::decode(&endpoint.authority).ok()?;
+        if !manifest_contains_certified_device(&candidate, account, &endpoint.device) {
+            return None;
+        }
+        accepted = Some(match accepted {
+            None => candidate,
+            Some(current) => match current.relation(&candidate).ok()? {
+                DeviceAuthorityRelation::Same => current,
+                DeviceAuthorityRelation::Descendant
+                | DeviceAuthorityRelation::RecoverySupersedes => candidate,
+                DeviceAuthorityRelation::Stale | DeviceAuthorityRelation::OldEpoch => current,
+                DeviceAuthorityRelation::Fork | DeviceAuthorityRelation::RecoveryConflict => {
+                    return None;
+                }
+            },
+        });
+    }
+    accepted
+}
+
+fn contact_records_authorize_group_sender(
+    contacts: &[ContactDeviceRecord],
+    account: &[u8; 32],
+    device: &[u8; 32],
+) -> bool {
+    let Some(authority) = accepted_contact_authority(contacts, account) else {
+        return false;
+    };
+    let Some(entry) = authority
+        .devices()
+        .iter()
+        .find(|entry| entry.certificate.device_id() == *device)
+    else {
+        return false;
+    };
+    let Ok(certificate) = postcard::to_allocvec(&entry.certificate) else {
+        return false;
+    };
+    let Ok(encoded_authority) = authority.encode() else {
+        return false;
+    };
+    contacts.iter().any(|endpoint| {
+        endpoint.account == *account
+            && endpoint.device == *device
+            && endpoint.authority == encoded_authority
+            && endpoint.certificate == certificate
+            && endpoint.manifest_generation == authority.generation()
+            && endpoint.manifest_state_id == authority.state_id()
+            && endpoint.revoked_at == entry.revoked_at
+            && endpoint.revoked_after_counter == entry.revoked_after_counter
     })
 }
 
-pub(crate) fn load_or_migrate_device(
-    store: &Store,
-    account: &Identity,
-) -> Result<(Identity, DeviceStateRecord, bool)> {
-    if let Some(state) = store.get_device_state()? {
-        let bytes: Zeroizing<[u8; 64]> = Zeroizing::new(
-            state
-                .local_device_secret
-                .as_slice()
-                .try_into()
-                .map_err(|_| NodeError::CorruptState)?,
-        );
-        return Ok((Identity::from_bytes(&bytes), state, false));
+fn valid_synced_group_origin(
+    local_manifest: &DeviceAuthorityManifest,
+    contacts: &[ContactDeviceRecord],
+    local_account: &[u8; 32],
+    message: &GroupMessageRecord,
+) -> bool {
+    match message.origin {
+        GroupOriginAuthentication::LegacyMembership
+        | GroupOriginAuthentication::PendingOutboundV1 { .. } => false,
+        GroupOriginAuthentication::RecipientV1 {
+            sender_device,
+            recipient_device,
+            chain_key_id,
+        } => {
+            message.direction == Direction::Inbound
+                && message.sender != *local_account
+                && chain_key_id != [0u8; 16]
+                && manifest_contains_certified_device(
+                    local_manifest,
+                    local_account,
+                    &recipient_device,
+                )
+                && contact_records_authorize_group_sender(contacts, &message.sender, &sender_device)
+        }
+        GroupOriginAuthentication::OutboundV1 {
+            sender_device,
+            chain_key_id,
+        } => {
+            message.direction == Direction::Outbound
+                && message.sender == *local_account
+                && chain_key_id != [0u8; 16]
+                && manifest_contains_certified_device(local_manifest, local_account, &sender_device)
+        }
     }
+}
 
-    // A pre-C2 store has only the account key. Treat that exact key as its
-    // legacy physical endpoint until the next tick seals the additive C2
-    // state. The deterministic serial avoids requiring entropy during open.
-    let account_bytes = account.to_bytes();
-    let device = Identity::from_bytes(&account_bytes);
-    let mut hash = Sha256::new();
-    hash.update(b"Komms-legacy-device-serial-v1");
-    hash.update(account.public().ed);
-    hash.update(account.public().x);
-    let digest: [u8; 32] = hash.finalize().into();
-    let mut serial = [0u8; 16];
-    serial.copy_from_slice(&digest[..16]);
-    if serial == [0u8; 16] {
-        serial[0] = 1;
+fn synced_group_history_namespace(message: &GroupMessageRecord) -> Option<DeviceSyncNamespace> {
+    match decode_content(&message.body) {
+        DecodedContent::Edit { .. } => Some(DeviceSyncNamespace::MessageEdits),
+        DecodedContent::Poll { .. } => Some(DeviceSyncNamespace::GroupPolls),
+        DecodedContent::Ephemeral { .. } => None,
+        _ => Some(DeviceSyncNamespace::ConversationHistory),
     }
-    let certificate = DeviceCertificate::issue_with_serial(account, device.public(), serial, 0)?;
-    let manifest =
-        DeviceManifest::initial(account, certificate.clone(), DEFAULT_DEVICE_NAME.into(), 0)?;
-    let state = DeviceStateRecord {
-        local_device_secret: device.to_bytes().to_vec(),
-        local_certificate: certificate,
-        manifest,
-        sync_counter: 0,
-        channels: Vec::new(),
-    };
-    Ok((device, state, true))
 }
 
 impl Node {
-    pub(crate) fn validate_contact_device_manifest(&self, manifest: &DeviceManifest) -> Result<()> {
+    pub(crate) fn validate_contact_device_manifest(
+        &self,
+        manifest: &DeviceAuthorityManifest,
+    ) -> Result<()> {
         manifest.verify()?;
-        let account = manifest.account.ed;
-        let state_id = manifest.state_id();
+        let account = manifest.account().ed;
         let existing: Vec<ContactDeviceRecord> = self
             .store
             .contact_devices()?
             .into_iter()
             .filter(|endpoint| endpoint.account == account)
             .collect();
-        if let Some(latest) = existing
-            .iter()
-            .filter(|endpoint| endpoint.manifest_generation > 0)
-            .max_by_key(|endpoint| (endpoint.manifest_generation, endpoint.manifest_state_id))
-        {
-            if (manifest.generation, state_id)
-                < (latest.manifest_generation, latest.manifest_state_id)
-            {
-                return Err(NodeError::InvalidDeviceManifest);
-            }
-        }
         for old in existing
             .iter()
-            .filter(|endpoint| endpoint.manifest_generation > 0)
+            .filter(|endpoint| !endpoint.authority.is_empty())
         {
-            let Some(next) = manifest
-                .devices
-                .iter()
-                .find(|entry| entry.certificate.device_id() == old.device)
-            else {
-                return Err(NodeError::InvalidDeviceManifest);
-            };
-            let old_certificate: DeviceCertificate =
-                postcard::from_bytes(&old.certificate).map_err(|_| NodeError::CorruptState)?;
-            if next.certificate != old_certificate
-                || (old.revoked_at.is_some()
-                    && (next.revoked_at != old.revoked_at
-                        || next.revoked_after_counter != old.revoked_after_counter))
-            {
-                return Err(NodeError::InvalidDeviceManifest);
+            let accepted = DeviceAuthorityManifest::decode(&old.authority)
+                .map_err(|_| NodeError::CorruptState)?;
+            match accepted.relation(manifest)? {
+                DeviceAuthorityRelation::Same
+                | DeviceAuthorityRelation::Descendant
+                | DeviceAuthorityRelation::RecoverySupersedes => {}
+                DeviceAuthorityRelation::Stale => return Err(NodeError::InvalidDeviceManifest),
+                DeviceAuthorityRelation::OldEpoch => {
+                    return Err(NodeError::OldDeviceAuthorityEpoch)
+                }
+                DeviceAuthorityRelation::Fork => return Err(NodeError::DeviceAuthorityFork),
+                DeviceAuthorityRelation::RecoveryConflict => {
+                    return Err(NodeError::DeviceRecoveryConflict)
+                }
             }
         }
         Ok(())
     }
 
+    pub(crate) fn validate_contact_device_manifest_visible(
+        &mut self,
+        manifest: &DeviceAuthorityManifest,
+        observed_at: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let kind = match self.validate_contact_device_manifest(manifest) {
+            Ok(()) => return Ok(()),
+            Err(NodeError::DeviceAuthorityFork) => DeviceAuthorityConflictKind::Fork,
+            Err(NodeError::DeviceRecoveryConflict) => DeviceAuthorityConflictKind::Recovery,
+            Err(error) => return Err(error),
+        };
+        let account = manifest.account().ed;
+        let existing = self.store.contact_devices_for(&account)?;
+        let mut accepted_state = None;
+        for endpoint in existing
+            .iter()
+            .filter(|endpoint| !endpoint.authority.is_empty())
+        {
+            let accepted = DeviceAuthorityManifest::decode(&endpoint.authority)
+                .map_err(|_| NodeError::CorruptState)?;
+            let relation = accepted.relation(manifest)?;
+            if (kind == DeviceAuthorityConflictKind::Fork
+                && relation == DeviceAuthorityRelation::Fork)
+                || (kind == DeviceAuthorityConflictKind::Recovery
+                    && relation == DeviceAuthorityRelation::RecoveryConflict)
+            {
+                accepted_state = Some(accepted.state_id());
+                break;
+            }
+        }
+        let accepted_state = accepted_state.ok_or(NodeError::CorruptState)?;
+        let inserted = self.store.record_contact_authority_conflict(
+            &ContactAuthorityConflictRecord {
+                account,
+                kind,
+                accepted_state,
+                conflicting_state: manifest.state_id(),
+                recovery_epoch: manifest.recovery_epoch(),
+                observed_at,
+            },
+            rng,
+        )?;
+        if inserted {
+            self.events.push_back(Event::StateResyncRequired);
+        }
+        Err(match kind {
+            DeviceAuthorityConflictKind::Fork => NodeError::DeviceAuthorityFork,
+            DeviceAuthorityConflictKind::Recovery => NodeError::DeviceRecoveryConflict,
+        })
+    }
+
     pub(crate) fn apply_contact_device_manifest(
         &mut self,
-        manifest: &DeviceManifest,
+        manifest: &DeviceAuthorityManifest,
         advertised_device: [u8; 32],
         advertised_bundle: Vec<u8>,
         advertised_hints: Vec<Vec<u8>>,
@@ -164,14 +376,20 @@ impl Node {
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
         self.validate_contact_device_manifest(manifest)?;
-        let account = manifest.account.ed;
+        let account = manifest.account().ed;
         let state_id = manifest.state_id();
+        let encoded_authority = manifest.encode()?;
         let existing: Vec<ContactDeviceRecord> = self
             .store
             .contact_devices()?
             .into_iter()
             .filter(|endpoint| endpoint.account == account)
             .collect();
+        let manifest_devices = manifest
+            .devices()
+            .iter()
+            .map(|entry| entry.certificate.device_id())
+            .collect::<BTreeSet<_>>();
 
         // A pre-C2 raw account bundle represented the original installation
         // under the account id. Bind that compatibility route to the unique
@@ -180,7 +398,7 @@ impl Node {
             .iter()
             .find(|endpoint| endpoint.device == account && endpoint.manifest_generation == 0);
         let mut active_by_issuance: Vec<_> = manifest
-            .devices
+            .devices()
             .iter()
             .filter(|entry| entry.revoked_at.is_none())
             .collect();
@@ -194,7 +412,8 @@ impl Node {
             unique_earliest.then_some(first.certificate.device_id())
         });
 
-        for entry in &manifest.devices {
+        let mut next_endpoints = Vec::with_capacity(manifest.devices().len());
+        for entry in manifest.devices() {
             let device = entry.certificate.device_id();
             let prior = existing
                 .iter()
@@ -219,9 +438,10 @@ impl Node {
                 name: Some(entry.name.clone()),
                 certificate: postcard::to_allocvec(&entry.certificate)
                     .map_err(|_| NodeError::CorruptState)?,
+                authority: encoded_authority.clone(),
                 bundle,
                 hints,
-                manifest_generation: manifest.generation,
+                manifest_generation: manifest.generation(),
                 manifest_state_id: state_id,
                 last_seen: entry
                     .last_seen
@@ -230,6 +450,113 @@ impl Node {
                 revoked_at: entry.revoked_at,
                 revoked_after_counter: entry.revoked_after_counter,
             };
+            next_endpoints.push(endpoint);
+        }
+        // A recovery made from a stale backup can legitimately supersede a
+        // later ordinary descendant whose extra certificates are absent from
+        // the recovery proof. Those old-epoch endpoints are excluded by the
+        // new complete state even though the recovering user never saw their
+        // ids.
+        let orphaned = existing
+            .iter()
+            .filter(|endpoint| {
+                endpoint.manifest_generation > 0 && !manifest_devices.contains(&endpoint.device)
+            })
+            .collect::<Vec<_>>();
+
+        // Once a contact already has versioned device authority, publish the
+        // complete next projection and every live-route retirement together.
+        // Queue rows are retired first in bounded pages; until the projection
+        // commits, the old authority remains the only accepted state.
+        if legacy_alias.is_none() {
+            let cleanup_devices = next_endpoints
+                .iter()
+                .filter(|endpoint| endpoint.revoked_at.is_some())
+                .map(|endpoint| endpoint.device)
+                .chain(orphaned.iter().map(|endpoint| endpoint.device))
+                .collect::<BTreeSet<_>>();
+            let queue = self
+                .store
+                .queue_all()?
+                .into_iter()
+                .filter_map(|(sequence, item)| {
+                    cleanup_devices.contains(&item.peer).then_some(QueueDelete {
+                        sequence,
+                        content_id: item.envelope.content_id(),
+                    })
+                })
+                .collect::<Vec<_>>();
+            self.retire_device_projection_queue(&queue, rng)?;
+
+            let mut projections = Vec::new();
+            for endpoint in &next_endpoints {
+                let before = existing
+                    .iter()
+                    .find(|stored| stored.device == endpoint.device);
+                if before != Some(endpoint) {
+                    projections.push(DeviceProjection::ContactDevice {
+                        before,
+                        after: Some(endpoint),
+                    });
+                }
+            }
+            for &before in &orphaned {
+                projections.push(DeviceProjection::ContactDevice {
+                    before: Some(before),
+                    after: None,
+                });
+            }
+
+            let mut session_rows = Vec::new();
+            let mut capability_rows = Vec::new();
+            for device in &cleanup_devices {
+                if let Some(before) = self.store.get_session(device)? {
+                    session_rows.push((*device, before));
+                }
+                if let Some(before) = self.store.get_capabilities(device)? {
+                    capability_rows.push((*device, before));
+                }
+            }
+            let sessions = session_rows
+                .iter()
+                .map(|(peer_device, before)| SessionDelete {
+                    peer_device: *peer_device,
+                    before,
+                })
+                .collect::<Vec<_>>();
+            let capabilities = capability_rows
+                .iter()
+                .map(|(peer_device, before)| CapabilityDelete {
+                    peer_device: *peer_device,
+                    before,
+                })
+                .collect::<Vec<_>>();
+            if !projections.is_empty() || !sessions.is_empty() || !capabilities.is_empty() {
+                let receipt = self.store.commit_plan(
+                    CommitPlan::DeviceProjection(DeviceProjectionPlan {
+                        projections: &projections,
+                        delete_sessions: &sessions,
+                        delete_capabilities: &capabilities,
+                        delete_queue: &[],
+                        presentation_changed: !projections.is_empty(),
+                    }),
+                    rng,
+                )?;
+                self.before_memory_replacement()?;
+                for device in &cleanup_devices {
+                    self.sessions.remove(device);
+                    self.capabilities_advertised.remove(device);
+                }
+                self.after_memory_replacement()?;
+                self.accept_commit_receipt(receipt, []);
+            }
+            return Ok(());
+        }
+
+        // Pre-C2 account aliases require the separately delimited compatibility
+        // retarget below. New authority states never enter this branch.
+        for endpoint in next_endpoints {
+            let device = endpoint.device;
             self.store.put_contact_device(&endpoint, rng)?;
             if endpoint.revoked_at.is_some() {
                 self.sessions.remove(&device);
@@ -238,6 +565,15 @@ impl Node {
                 self.store.delete_capabilities(&device)?;
                 self.store.queue_remove_peer(&device)?;
             }
+        }
+        for orphaned in orphaned {
+            self.sessions.remove(&orphaned.device);
+            self.capabilities_advertised.remove(&orphaned.device);
+            self.store.delete_session(&orphaned.device)?;
+            self.store.delete_capabilities(&orphaned.device)?;
+            self.store.queue_remove_peer(&orphaned.device)?;
+            self.store
+                .delete_contact_device(&account, &orphaned.device)?;
         }
         if let (Some(alias), Some(replacement)) = (legacy_alias, legacy_replacement) {
             if let Some(session) = self
@@ -290,7 +626,7 @@ impl Node {
         let current = self.device_id();
         self.device_state
             .manifest
-            .devices
+            .devices()
             .iter()
             .map(|entry| LinkedDeviceInfo {
                 id: entry.certificate.device_id(),
@@ -300,6 +636,44 @@ impl Node {
                 current: entry.certificate.device_id() == current,
             })
             .collect()
+    }
+
+    /// Unresolved fail-closed authority conflicts retained across restart.
+    pub fn device_authority_conflicts(&self) -> Vec<DeviceAuthorityConflictInfo> {
+        self.device_state
+            .conflicts
+            .iter()
+            .map(|conflict| DeviceAuthorityConflictInfo {
+                kind: match conflict.kind {
+                    DeviceAuthorityConflictKind::Fork => DeviceAuthorityConflictType::Fork,
+                    DeviceAuthorityConflictKind::Recovery => DeviceAuthorityConflictType::Recovery,
+                },
+                accepted: conflict.accepted_state,
+                conflicting: conflict.conflicting_state,
+                recovery_epoch: conflict.recovery_epoch,
+                observed_at: conflict.observed_at,
+            })
+            .collect()
+    }
+
+    /// Contact authority forks and recovery conflicts retained across restart.
+    pub fn contact_authority_conflicts(&self) -> Result<Vec<ContactAuthorityConflictInfo>> {
+        Ok(self
+            .store
+            .contact_authority_conflicts()?
+            .into_iter()
+            .map(|conflict| ContactAuthorityConflictInfo {
+                account: conflict.account,
+                kind: match conflict.kind {
+                    DeviceAuthorityConflictKind::Fork => DeviceAuthorityConflictType::Fork,
+                    DeviceAuthorityConflictKind::Recovery => DeviceAuthorityConflictType::Recovery,
+                },
+                accepted: conflict.accepted_state,
+                conflicting: conflict.conflicting_state,
+                recovery_epoch: conflict.recovery_epoch,
+                observed_at: conflict.observed_at,
+            })
+            .collect())
     }
 
     /// Honest per-device delivery rows for one account-level message.
@@ -332,13 +706,21 @@ impl Node {
     ) -> Result<()> {
         let before = self.device_state.clone();
         let mut after = before.clone();
-        after
+        let mut proposal = before
             .manifest
-            .rename_device(&self.identity, device, name.to_owned())
+            .propose_rename_device(device, name.to_owned(), rng)
             .map_err(|_| NodeError::UnknownLinkedDevice)?;
+        before
+            .manifest
+            .sign_transition(&mut proposal, &self.device_identity)?;
+        if !before.manifest.has_quorum(&proposal)? {
+            self.pending_authority_transition = Some(proposal);
+            return Err(NodeError::DeviceQuorumRequired);
+        }
+        after.manifest = before.manifest.append(proposal)?;
         let receipt = self.store.commit_plan(
-            CommitPlan::DeviceControl(DeviceControlPlan {
-                state: Some(DeviceStateTransition {
+            CommitPlan::AuthorityDeviceControl(AuthorityDeviceControlPlan {
+                state: Some(DeviceAuthorityStateTransition {
                     before: Some(&before),
                     after: &after,
                 }),
@@ -378,10 +760,18 @@ impl Node {
             .unwrap_or(0);
         let before_state = self.device_state.clone();
         let mut after_state = before_state.clone();
-        after_state
+        let mut proposal = before_state
             .manifest
-            .revoke_device(&self.identity, device, now, cutoff)
+            .propose_revoke_device(device, now, cutoff, rng)
             .map_err(|_| NodeError::UnknownLinkedDevice)?;
+        before_state
+            .manifest
+            .sign_transition(&mut proposal, &self.device_identity)?;
+        if !before_state.manifest.has_quorum(&proposal)? {
+            self.pending_authority_transition = Some(proposal);
+            return Err(NodeError::DeviceQuorumRequired);
+        }
+        after_state.manifest = before_state.manifest.append(proposal)?;
         after_state
             .channels
             .retain(|channel| &channel.peer_device != device);
@@ -400,8 +790,8 @@ impl Node {
             .collect::<Vec<_>>();
         let recovery = self.store.get_device_link_recovery(device)?;
         let receipt = self.store.commit_plan(
-            CommitPlan::DeviceControl(DeviceControlPlan {
-                state: Some(DeviceStateTransition {
+            CommitPlan::AuthorityDeviceControl(AuthorityDeviceControlPlan {
+                state: Some(DeviceAuthorityStateTransition {
                     before: Some(&before_state),
                     after: &after_state,
                 }),
@@ -425,19 +815,150 @@ impl Node {
         Ok(())
     }
 
+    /// Return the exact pending ordinary authority proposal for approval by
+    /// another active device.
+    pub fn device_authority_approval_request(&self) -> Result<Vec<u8>> {
+        let proposal = self
+            .pending_authority_transition
+            .as_ref()
+            .ok_or(NodeError::NoPendingDeviceAuthority)?;
+        Ok(AuthorityDeviceLinkApprovalRequest {
+            link_id: proposal.transition_id,
+            parent_state: self.device_state.manifest.state_id(),
+            proposal: proposal.clone(),
+        }
+        .encode()?)
+    }
+
+    /// Verify and approve another active device's exact ordinary authority
+    /// proposal. The request is bound to the locally accepted parent branch.
+    pub fn approve_device_authority_request(&self, request: &[u8]) -> Result<Vec<u8>> {
+        let request = AuthorityDeviceLinkApprovalRequest::decode(request)?;
+        if request.proposal.kind == DeviceAuthorityTransitionKind::AddDevice {
+            return Err(NodeError::InvalidDeviceAuthority);
+        }
+        let approval = request.approve(&self.device_state.manifest, &self.device_identity)?;
+        Ok(approval.encode()?)
+    }
+
+    /// Merge one detached approval and atomically apply the proposal once its
+    /// previous-active-set strict majority has been reached.
+    pub fn accept_device_authority_approval(
+        &mut self,
+        approval: &[u8],
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<bool> {
+        let approval = AuthorityDeviceLinkApproval::decode(approval)?;
+        let proposal = self
+            .pending_authority_transition
+            .as_mut()
+            .ok_or(NodeError::NoPendingDeviceAuthority)?;
+        if approval.link_id != proposal.transition_id
+            || approval.parent_state != self.device_state.manifest.state_id()
+            || approval.proposal_id != proposal.proposal_id()
+        {
+            return Err(NodeError::InvalidDeviceAuthority);
+        }
+        self.device_state
+            .manifest
+            .merge_approval(proposal, approval.approval)
+            .map_err(|_| NodeError::InvalidDeviceAuthority)?;
+        if !self.device_state.manifest.has_quorum(proposal)? {
+            return Ok(false);
+        }
+        self.finalize_pending_device_authority(rng)?;
+        Ok(true)
+    }
+
+    fn finalize_pending_device_authority(&mut self, rng: &mut impl CryptoRngCore) -> Result<()> {
+        let proposal = self
+            .pending_authority_transition
+            .as_ref()
+            .ok_or(NodeError::NoPendingDeviceAuthority)?
+            .clone();
+        if matches!(
+            proposal.kind,
+            DeviceAuthorityTransitionKind::Genesis
+                | DeviceAuthorityTransitionKind::AddDevice
+                | DeviceAuthorityTransitionKind::Recovery
+        ) {
+            return Err(NodeError::InvalidDeviceAuthority);
+        }
+        let before_state = self.device_state.clone();
+        let mut after_state = before_state.clone();
+        after_state.manifest = before_state.manifest.append(proposal.clone())?;
+
+        let newly_revoked = before_state.manifest.devices().iter().find_map(|before| {
+            let device = before.certificate.device_id();
+            let after = proposal
+                .devices
+                .iter()
+                .find(|after| after.certificate.device_id() == device)?;
+            (before.revoked_at.is_none() && after.revoked_at.is_some()).then_some(device)
+        });
+        if let Some(device) = newly_revoked {
+            after_state
+                .channels
+                .retain(|channel| channel.peer_device != device);
+        }
+
+        let before_groups = self.store.groups()?;
+        let mut after_groups = before_groups.clone();
+        if newly_revoked.is_some() {
+            for group in &mut after_groups {
+                self.rotate_group(group, rng)?;
+            }
+        }
+        let group_transitions = before_groups
+            .iter()
+            .zip(&after_groups)
+            .filter(|(before, after)| before != after)
+            .map(|(before, after)| GroupTransition { before, after })
+            .collect::<Vec<_>>();
+        let recovery = newly_revoked
+            .map(|device| self.store.get_device_link_recovery(&device))
+            .transpose()?
+            .flatten();
+        let receipt = self.store.commit_plan(
+            CommitPlan::AuthorityDeviceControl(AuthorityDeviceControlPlan {
+                state: Some(DeviceAuthorityStateTransition {
+                    before: Some(&before_state),
+                    after: &after_state,
+                }),
+                link_recovery: recovery
+                    .as_ref()
+                    .map(|before| DeviceLinkRecoveryTransition {
+                        before: Some(before),
+                        after: None,
+                    }),
+                groups: &group_transitions,
+                insert_events: &[],
+                delete_events: &[],
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.before_memory_replacement()?;
+        self.device_state = after_state;
+        self.pending_authority_transition = None;
+        self.after_memory_replacement()?;
+        self.accept_commit_receipt(receipt, [Event::DevicesChanged]);
+        Ok(())
+    }
+
     /// Begin a ten-minute account-authenticated QR linking offer.
     pub fn begin_device_link(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<Vec<u8>> {
         let expires_at = now
             .checked_add(LINK_OFFER_LIFETIME_SECS)
             .ok_or(NodeError::InvalidDeviceLink)?;
         let (pending, offer) = PendingDeviceLinkSource::begin(
-            &self.identity,
+            &self.device_identity,
             &self.device_state.manifest,
-            self.device_id(),
             expires_at,
             rng,
         )?;
         self.pending_device_link_source = Some(pending);
+        self.pending_device_link_prepared = None;
         offer.encode().map_err(Into::into)
     }
 
@@ -488,7 +1009,8 @@ impl Node {
     ) -> Result<Vec<u8>> {
         let response_hash: [u8; 32] = Sha256::digest(encoded_response).into();
         let response = DeviceLinkResponse::decode(encoded_response)?;
-        if let Some(recovery) = self.store.get_device_link_recovery(&response.device.ed)? {
+        let target_device = response.certificate.device_id();
+        if let Some(recovery) = self.store.get_device_link_recovery(&target_device)? {
             if !confirmed || recovery.response_hash != response_hash {
                 return Err(NodeError::InvalidDeviceLink);
             }
@@ -501,15 +1023,14 @@ impl Node {
             let snapshot = postcard::to_allocvec(&snapshot).map_err(|_| NodeError::CorruptState)?;
             let durable_state = self
                 .store
-                .get_device_state()?
+                .get_device_authority_state()?
                 .ok_or(NodeError::CorruptState)?;
             let channel = durable_state
                 .channels
                 .iter()
                 .find(|channel| channel.peer_device == recovery.target_device)
                 .ok_or(NodeError::CorruptState)?;
-            let package = seal_device_link_recovery_package(
-                &self.identity,
+            let package = seal_authority_device_link_recovery_package(
                 &durable_state.manifest,
                 &recovery.target_device,
                 &channel.root,
@@ -521,22 +1042,82 @@ impl Node {
             self.pending_device_link_source = None;
             return Ok(package);
         }
-        self.pending_device_link_source
-            .as_ref()
-            .ok_or(NodeError::NoPendingDeviceLink)?
-            .validate_approval(&response, confirmed, now)?;
-        self.capture_device_sync_state(rng)?;
-        let pending = self
+        let prepared = self
             .pending_device_link_source
             .as_ref()
+            .ok_or(NodeError::NoPendingDeviceLink)?
+            .prepare(&self.device_identity, &response, confirmed, now, rng)?;
+        let has_quorum = prepared.has_quorum()?;
+        self.pending_device_link_prepared = Some(prepared);
+        self.pending_device_link_selection = Some(selection);
+        self.pending_device_link_response_hash = Some(response_hash);
+        if !has_quorum {
+            return Err(NodeError::DeviceQuorumRequired);
+        }
+        self.finalize_prepared_device_link(now, rng)
+    }
+
+    /// Return the canonical proposal another active device must approve.
+    pub fn device_link_approval_request(&self) -> Result<Vec<u8>> {
+        let prepared = self
+            .pending_device_link_prepared
+            .as_ref()
             .ok_or(NodeError::NoPendingDeviceLink)?;
+        Ok(prepared.approval_request().encode()?)
+    }
+
+    /// Verify and sign another active device's exact link proposal.
+    pub fn approve_device_link_request(&self, request: &[u8]) -> Result<Vec<u8>> {
+        let request = AuthorityDeviceLinkApprovalRequest::decode(request)?;
+        if request.proposal.kind != DeviceAuthorityTransitionKind::AddDevice {
+            return Err(NodeError::InvalidDeviceAuthority);
+        }
+        let approval = request.approve(&self.device_state.manifest, &self.device_identity)?;
+        Ok(approval.encode()?)
+    }
+
+    /// Merge an additional-device approval and finalize once quorum is met.
+    pub fn accept_device_link_approval(
+        &mut self,
+        approval: &[u8],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Option<Vec<u8>>> {
+        let approval = AuthorityDeviceLinkApproval::decode(approval)?;
+        let prepared = self
+            .pending_device_link_prepared
+            .as_mut()
+            .ok_or(NodeError::NoPendingDeviceLink)?;
+        prepared.merge_approval(approval)?;
+        if !prepared.has_quorum()? {
+            return Ok(None);
+        }
+        self.finalize_prepared_device_link(now, rng).map(Some)
+    }
+
+    fn finalize_prepared_device_link(
+        &mut self,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Vec<u8>> {
+        let selection = self
+            .pending_device_link_selection
+            .ok_or(NodeError::NoPendingDeviceLink)?;
+        let response_hash = self
+            .pending_device_link_response_hash
+            .ok_or(NodeError::NoPendingDeviceLink)?;
+        self.capture_device_sync_state(rng)?;
         let snapshot = self.store.export_device_transfer(DeviceTransferSelection {
             contacts: selection.contacts,
             organization: selection.organization,
             history: selection.history,
         })?;
         let snapshot = postcard::to_allocvec(&snapshot).map_err(|_| NodeError::CorruptState)?;
-        let approved = pending.approve(&self.identity, &response, confirmed, now, snapshot, rng)?;
+        let prepared = self
+            .pending_device_link_prepared
+            .take()
+            .ok_or(NodeError::NoPendingDeviceLink)?;
+        let approved = prepared.finalize(now, snapshot, rng)?;
         let before = self.device_state.clone();
         let mut after = before.clone();
         after.manifest = approved.manifest;
@@ -556,8 +1137,8 @@ impl Node {
             history: selection.history,
         };
         let receipt = self.store.commit_plan(
-            CommitPlan::DeviceControl(DeviceControlPlan {
-                state: Some(DeviceStateTransition {
+            CommitPlan::AuthorityDeviceControl(AuthorityDeviceControlPlan {
+                state: Some(DeviceAuthorityStateTransition {
                     before: Some(&before),
                     after: &after,
                 }),
@@ -575,6 +1156,8 @@ impl Node {
         self.before_memory_replacement()?;
         self.device_state = after;
         self.pending_device_link_source = None;
+        self.pending_device_link_selection = None;
+        self.pending_device_link_response_hash = None;
         self.after_memory_replacement()?;
         self.accept_commit_receipt(receipt, [Event::DevicesChanged]);
         Ok(approved.package)
@@ -603,13 +1186,14 @@ impl Node {
         if !remainder.is_empty() || completed.certificate.device != self.device_identity.public() {
             return Err(NodeError::InvalidDeviceLink);
         }
-        let before_identity_bytes = self.identity.to_bytes();
-        let before_identity = Identity::from_bytes(&before_identity_bytes);
+        let before_account = self.account.clone();
         let before_state = self.device_state.clone();
-        let after_identity = completed.account;
-        let after_state = DeviceStateRecord {
+        let after_account = completed.account;
+        let after_state = DeviceAuthorityStateRecord {
             local_device_secret: self.device_identity.to_bytes().to_vec(),
             local_certificate: completed.certificate,
+            accepted_recovery_epoch: completed.manifest.recovery_epoch(),
+            accepted_recovery_anchor: completed.manifest.recovery_anchor_id(),
             manifest: completed.manifest,
             sync_counter: 0,
             channels: vec![DeviceChannelRecord {
@@ -618,6 +1202,7 @@ impl Node {
                 send_counter: 0,
                 receive_counter: 0,
             }],
+            conflicts: Vec::new(),
         };
         let DeviceTransferSnapshot {
             contacts,
@@ -631,7 +1216,43 @@ impl Node {
             ephemeral_tombstones,
             sync_events,
         } = snapshot;
-        let me = after_identity.public().ed;
+        let mut authenticated_group_messages = Vec::with_capacity(group_messages.len());
+        for mut message in group_messages {
+            if !valid_synced_group_origin(
+                &after_state.manifest,
+                &contact_devices,
+                &after_account.ed,
+                &message,
+            ) {
+                continue;
+            }
+            message.wire_body = None;
+            for delivery in &mut message.deliveries {
+                delivery.wire_id = None;
+            }
+            authenticated_group_messages.push(message);
+        }
+        // A linked target receives public contact bundles but no source
+        // ratchets. Mark every copied route so its first independent session
+        // ignores any one-time prekey the source may already have consumed.
+        let mut reset_peers = contact_devices
+            .iter()
+            .map(|endpoint| endpoint.device)
+            .chain(
+                contacts
+                    .iter()
+                    .filter(|contact| {
+                        !contact.bundle.is_empty()
+                            && !contact_devices
+                                .iter()
+                                .any(|endpoint| endpoint.account == contact.peer)
+                    })
+                    .map(|contact| contact.peer),
+            )
+            .collect::<Vec<_>>();
+        reset_peers.sort_unstable();
+        reset_peers.dedup();
+        let me = after_account.ed;
         let mut groups = Vec::with_capacity(transferred_groups.len());
         for group in transferred_groups {
             let chain = GroupSenderChain::generate(rng);
@@ -663,12 +1284,12 @@ impl Node {
             });
         }
         let receipt = self.store.commit_plan(
-            CommitPlan::DeviceLink(DeviceLinkPlan {
-                identity: IdentityTransition {
-                    before: &before_identity,
-                    after: &after_identity,
+            CommitPlan::AuthorityDeviceLink(AuthorityDeviceLinkPlan {
+                account: AccountIdentityTransition {
+                    before: &before_account,
+                    after: &after_account,
                 },
-                device_state: DeviceStateTransition {
+                device_state: DeviceAuthorityStateTransition {
                     before: Some(&before_state),
                     after: &after_state,
                 },
@@ -676,18 +1297,19 @@ impl Node {
                 devices: &contact_devices,
                 messages: &messages,
                 groups: &groups,
-                group_messages: &group_messages,
+                group_messages: &authenticated_group_messages,
                 authorities: &group_authorities,
                 local_metadata: &local_metadata,
                 notes: &note_messages,
                 ephemeral: &ephemeral_tombstones,
                 sync_events: &sync_events,
+                reset_peers: &reset_peers,
                 presentation_changed: true,
             }),
             rng,
         )?;
         self.before_memory_replacement()?;
-        self.identity = after_identity;
+        self.account = after_account;
         self.device_state = after_state;
         self.pending_device_link_target = None;
         self.sessions.clear();
@@ -697,7 +1319,7 @@ impl Node {
             receipt,
             [
                 Event::DeviceLinkCompleted {
-                    account: self.identity.public().ed,
+                    account: self.account.ed,
                     device: self.device_id(),
                 },
                 Event::DevicesChanged,
@@ -742,8 +1364,8 @@ impl Node {
         )?;
         let encoded = bundle.encode()?;
         let receipt = self.store.commit_plan(
-            CommitPlan::DeviceControl(DeviceControlPlan {
-                state: Some(DeviceStateTransition {
+            CommitPlan::AuthorityDeviceControl(AuthorityDeviceControlPlan {
+                state: Some(DeviceAuthorityStateTransition {
                     before: Some(&before),
                     after: &after,
                 }),
@@ -782,23 +1404,95 @@ impl Node {
             return Err(NodeError::InvalidDeviceSync);
         }
         let opened = bundle.open(&channel.root, &local, &bundle.sender)?;
-        if opened.manifest != self.device_state.manifest
-            && !self
-                .device_state
-                .manifest
-                .accepts_successor(&opened.manifest)?
-        {
-            return Err(NodeError::InvalidDeviceSync);
+        let relation = self.device_state.manifest.relation(&opened.manifest)?;
+        match relation {
+            DeviceAuthorityRelation::Same | DeviceAuthorityRelation::Descendant => {}
+            DeviceAuthorityRelation::RecoverySupersedes => {
+                // Recovery creates one fresh device and rotates every sync
+                // channel. It cannot legitimately arrive over an old channel.
+                return Err(NodeError::InvalidDeviceSync);
+            }
+            DeviceAuthorityRelation::Stale => return Err(NodeError::InvalidDeviceSync),
+            DeviceAuthorityRelation::OldEpoch => return Err(NodeError::OldDeviceAuthorityEpoch),
+            DeviceAuthorityRelation::Fork | DeviceAuthorityRelation::RecoveryConflict => {
+                let accepted = self.device_state.manifest.state_id();
+                let conflicting = opened.manifest.state_id();
+                let recovery_epoch = opened.manifest.recovery_epoch();
+                let kind = if relation == DeviceAuthorityRelation::Fork {
+                    DeviceAuthorityConflictKind::Fork
+                } else {
+                    DeviceAuthorityConflictKind::Recovery
+                };
+                if !self.device_state.conflicts.iter().any(|record| {
+                    record.kind == kind
+                        && record.accepted_state == accepted
+                        && record.conflicting_state == conflicting
+                }) && self.device_state.conflicts.len() < MAX_DEVICE_AUTHORITY_CONFLICTS
+                {
+                    let before = self.device_state.clone();
+                    let mut after = before.clone();
+                    after.conflicts.push(DeviceAuthorityConflictRecord {
+                        kind,
+                        accepted_state: accepted,
+                        conflicting_state: conflicting,
+                        recovery_epoch,
+                        observed_at: 0,
+                    });
+                    after.conflicts.sort_by_key(|record| {
+                        (
+                            record.recovery_epoch,
+                            record.accepted_state,
+                            record.conflicting_state,
+                        )
+                    });
+                    let receipt = self.store.commit_plan(
+                        CommitPlan::AuthorityDeviceControl(AuthorityDeviceControlPlan {
+                            state: Some(DeviceAuthorityStateTransition {
+                                before: Some(&before),
+                                after: &after,
+                            }),
+                            link_recovery: None,
+                            groups: &[],
+                            insert_events: &[],
+                            delete_events: &[],
+                            presentation_changed: true,
+                        }),
+                        rng,
+                    )?;
+                    self.before_memory_replacement()?;
+                    self.device_state = after;
+                    self.after_memory_replacement()?;
+                    let event = if kind == DeviceAuthorityConflictKind::Fork {
+                        Event::DeviceAuthorityFork {
+                            accepted,
+                            conflicting,
+                            recovery_epoch,
+                        }
+                    } else {
+                        Event::DeviceRecoveryConflict {
+                            accepted,
+                            conflicting,
+                            recovery_epoch,
+                        }
+                    };
+                    self.accept_commit_receipt(receipt, [event]);
+                }
+                return Err(if kind == DeviceAuthorityConflictKind::Fork {
+                    NodeError::DeviceAuthorityFork
+                } else {
+                    NodeError::DeviceRecoveryConflict
+                });
+            }
         }
-        let manifest_changed = opened.manifest != self.device_state.manifest;
+        let manifest_changed = relation == DeviceAuthorityRelation::Descendant;
         let newly_revoked = self
             .device_state
             .manifest
-            .devices
+            .devices()
             .iter()
             .filter(|old| old.revoked_at.is_none())
             .any(|old| {
-                opened.manifest.devices.iter().any(|new| {
+                opened.manifest.devices().iter().any(|new| {
                     new.certificate.device_id() == old.certificate.device_id()
                         && new.revoked_at.is_some()
                 })
@@ -820,11 +1514,14 @@ impl Node {
         let before_state = self.device_state.clone();
         let mut after_state = before_state.clone();
         after_state.manifest = opened.manifest;
+        after_state.accepted_recovery_epoch = after_state.manifest.recovery_epoch();
+        after_state.accepted_recovery_anchor = after_state.manifest.recovery_anchor_id();
         after_state.channels[channel_index].receive_counter = bundle.sequence;
         after_state.channels.retain(|channel| {
-            after_state.manifest.devices.iter().any(|entry| {
-                entry.certificate.device_id() == channel.peer_device && entry.revoked_at.is_none()
-            })
+            after_state
+                .manifest
+                .active_certificate(&channel.peer_device)
+                .is_some()
         });
         let before_groups = self.store.groups()?;
         let mut after_groups = before_groups.clone();
@@ -841,8 +1538,8 @@ impl Node {
             .collect::<Vec<_>>();
         let recovery = self.store.get_device_link_recovery(&bundle.sender)?;
         let receipt = self.store.commit_plan(
-            CommitPlan::DeviceControl(DeviceControlPlan {
-                state: Some(DeviceStateTransition {
+            CommitPlan::AuthorityDeviceControl(AuthorityDeviceControlPlan {
+                state: Some(DeviceAuthorityStateTransition {
                     before: Some(&before_state),
                     after: &after_state,
                 }),
@@ -874,6 +1571,7 @@ impl Node {
         let snapshot = self
             .store
             .export_device_transfer(DeviceTransferSelection::default())?;
+        let sync_contact_devices = snapshot.contact_devices.clone();
         let mut current: BTreeMap<(DeviceSyncNamespace, Vec<u8>), Vec<u8>> = BTreeMap::new();
 
         for mut contact in snapshot.contacts {
@@ -935,10 +1633,16 @@ impl Node {
             );
         }
         for message in snapshot.group_messages {
-            let namespace = match decode_content(&message.body) {
-                DecodedContent::Edit { .. } => DeviceSyncNamespace::MessageEdits,
-                DecodedContent::Poll { .. } => DeviceSyncNamespace::GroupPolls,
-                _ => DeviceSyncNamespace::ConversationHistory,
+            if !valid_synced_group_origin(
+                &self.device_state.manifest,
+                &sync_contact_devices,
+                &self.account.ed,
+                &message,
+            ) {
+                continue;
+            }
+            let Some(namespace) = synced_group_history_namespace(&message) else {
+                continue;
             };
             let mut key = Vec::with_capacity(1 + 32 + 32 + 16);
             key.push(b'g');
@@ -1007,7 +1711,7 @@ impl Node {
             let take = redundant.len().min(MAX_DEVICE_CONTROL_MUTATIONS);
             let page = redundant.drain(..take).collect::<Vec<_>>();
             self.store.commit_plan(
-                CommitPlan::DeviceControl(DeviceControlPlan {
+                CommitPlan::AuthorityDeviceControl(AuthorityDeviceControlPlan {
                     state: None,
                     link_recovery: None,
                     groups: &[],
@@ -1053,11 +1757,11 @@ impl Node {
                     .ok_or(NodeError::InvalidDeviceSync)?;
                 lamport = lamport.checked_add(1).ok_or(NodeError::InvalidDeviceSync)?;
                 let event = DeviceSyncEvent::sign(
-                    self.identity.public().ed,
+                    self.account.ed,
                     &self.device_identity,
                     after_state.sync_counter,
                     lamport,
-                    after_state.manifest.generation,
+                    after_state.manifest.generation(),
                     *namespace,
                     key.clone(),
                     value.clone(),
@@ -1065,8 +1769,8 @@ impl Node {
                 insert_events.push(event.encode()?);
             }
             let receipt = self.store.commit_plan(
-                CommitPlan::DeviceControl(DeviceControlPlan {
-                    state: Some(DeviceStateTransition {
+                CommitPlan::AuthorityDeviceControl(AuthorityDeviceControlPlan {
+                    state: Some(DeviceAuthorityStateTransition {
                         before: Some(&before_state),
                         after: &after_state,
                     }),
@@ -1104,7 +1808,7 @@ impl Node {
             let take = redundant.len().min(MAX_DEVICE_CONTROL_MUTATIONS);
             let page = redundant.drain(..take).collect::<Vec<_>>();
             self.store.commit_plan(
-                CommitPlan::DeviceControl(DeviceControlPlan {
+                CommitPlan::AuthorityDeviceControl(AuthorityDeviceControlPlan {
                     state: None,
                     link_recovery: None,
                     groups: &[],
@@ -1452,7 +2156,7 @@ impl Node {
                 DeviceSyncNamespace::ConversationHistory
                 | DeviceSyncNamespace::MessageEdits
                 | DeviceSyncNamespace::GroupPolls => {
-                    self.apply_sync_history(&key, event.value.as_deref(), rng)?;
+                    self.apply_sync_history(namespace, &key, event.value.as_deref(), rng)?;
                 }
                 DeviceSyncNamespace::Groups => {
                     self.apply_sync_group(&key, event.value.as_deref(), rng)?;
@@ -1481,7 +2185,7 @@ impl Node {
                         let mut delete_group_messages = Vec::new();
                         match tombstone.conversation {
                             kult_store::EphemeralConversation::Pairwise(peer) => {
-                                let direction = if tombstone.author == self.identity.public().ed {
+                                let direction = if tombstone.author == self.account.ed {
                                     Direction::Outbound
                                 } else {
                                     Direction::Inbound
@@ -1567,6 +2271,7 @@ impl Node {
 
     fn apply_sync_history(
         &mut self,
+        namespace: DeviceSyncNamespace,
         key: &[u8],
         value: Option<&[u8]>,
         rng: &mut impl CryptoRngCore,
@@ -1687,6 +2392,16 @@ impl Node {
                 }
             }
             SyncHistoryValue::Group(mut message) => {
+                if synced_group_history_namespace(&message) != Some(namespace)
+                    || !valid_synced_group_origin(
+                        &self.device_state.manifest,
+                        &self.store.contact_devices()?,
+                        &self.account.ed,
+                        &message,
+                    )
+                {
+                    return Ok(());
+                }
                 let mut expected = Vec::with_capacity(81);
                 expected.push(b'g');
                 expected.extend_from_slice(&message.group);
@@ -1875,7 +2590,7 @@ impl Node {
                         }
                     }
                 } else {
-                    let me = self.identity.public().ed;
+                    let me = self.account.ed;
                     let chain = GroupSenderChain::generate(rng);
                     let (key_id, chain_key, iteration) = chain.snapshot();
                     let pending = group

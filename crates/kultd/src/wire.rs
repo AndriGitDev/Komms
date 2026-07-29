@@ -16,12 +16,13 @@ use kult_node::{
     CarrierCapabilitySnapshot, ContactNameAssessment, ContactNameWarning, ContentStatus,
     CustomIconInfo, CustomIconTarget, CustomIconUsage, Event, FolderConversationInfo,
     FolderConversationList, FolderInfo, FolderSelection, GroupAuthorityInfo, GroupInfo,
-    GroupMentionCapability, GroupRole, IncognitoKeyboardPlatform, IncognitoKeyboardPolicy,
-    LabelConversationInfo, LabelFilterInfo, LabelInfo, MentionCapabilityIssueReason,
-    NodeStaleFolderReason, NodeStaleLabelReason, PinConversationInfo, PinConversationList, PinInfo,
-    PollInfo, ResolvedGroupMessage, ResolvedMessage, ScheduledConversation, ScheduledMessageInfo,
-    ScreenSecurityPlatform, ScreenSecurityPolicy, StaleFolderInfo, StaleLabelInfo,
-    TextFormatBlockKind, TextFormatHighlight, TextFormatStyle, NOTE_TO_SELF_CONVERSATION_ID,
+    GroupMentionCapability, GroupRole, GroupSecurityInfo, GroupSecurityLevel,
+    IncognitoKeyboardPlatform, IncognitoKeyboardPolicy, LabelConversationInfo, LabelFilterInfo,
+    LabelInfo, MentionCapabilityIssueReason, NodeStaleFolderReason, NodeStaleLabelReason,
+    PinConversationInfo, PinConversationList, PinInfo, PollInfo, ResolvedGroupMessage,
+    ResolvedMessage, ScheduledConversation, ScheduledMessageInfo, ScreenSecurityPlatform,
+    ScreenSecurityPolicy, StaleFolderInfo, StaleLabelInfo, TextFormatBlockKind,
+    TextFormatHighlight, TextFormatStyle, NOTE_TO_SELF_CONVERSATION_ID,
 };
 use kult_store::{
     valid_folder_name, valid_label_color, valid_label_name, ConversationId, DeliveryState,
@@ -83,15 +84,27 @@ fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
         "rename_contact" => Some(&["id", "op", "peer", "name", "accept_warnings"]),
         "screen_security_policy" | "incognito_keyboard_policy" => Some(&["id", "op", "platform"]),
         "theme" => Some(&["id", "op"]),
-        "device_id" | "linked_devices" | "device_link_begin" => Some(&["id", "op"]),
+        "device_id"
+        | "linked_devices"
+        | "device_authority_conflicts"
+        | "contact_authority_conflicts"
+        | "authority_reset_history"
+        | "device_authority_approval_request"
+        | "device_link_begin"
+        | "device_link_approval_request" => Some(&["id", "op"]),
+        "device_authority_approve" => Some(&["id", "op", "request"]),
+        "device_authority_accept" => Some(&["id", "op", "approval"]),
         "message_device_deliveries" => Some(&["id", "op", "message"]),
         "device_rename" => Some(&["id", "op", "device", "name"]),
         "device_revoke" | "device_sync_export" => Some(&["id", "op", "device"]),
         "device_link_accept" => Some(&["id", "op", "offer", "name"]),
         "device_link_code" => Some(&["id", "op", "response"]),
         "device_link_approve" => Some(&["id", "op", "response", "selection", "confirmed"]),
+        "device_link_approve_request" => Some(&["id", "op", "request"]),
+        "device_link_accept_approval" => Some(&["id", "op", "approval"]),
         "device_link_complete" => Some(&["id", "op", "package", "confirmed"]),
         "device_sync_import" => Some(&["id", "op", "bundle"]),
+        "recovery_authority_export" => Some(&["id", "op", "path"]),
         "theme_set" => Some(&["id", "op", "preference"]),
         "custom_icon" | "custom_icon_clear" => Some(&["id", "op", "target"]),
         "custom_icon_set_path" => Some(&["id", "op", "target", "path", "crop"]),
@@ -164,6 +177,7 @@ fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
             "target_content_id",
             "text",
         ]),
+        "group_security" | "group_upgrade_security" => Some(&["id", "op", "group"]),
         "group_send_disappearing" => Some(&["id", "op", "group", "body", "lifetime_secs"]),
         "group_poll_create" => Some(&["id", "op", "group", "question", "options"]),
         "group_polls" => Some(&["id", "op", "group"]),
@@ -210,6 +224,25 @@ pub enum Op {
     DeviceId,
     /// Complete account-authorized local device list.
     LinkedDevices,
+    /// Unresolved fail-closed authority conflicts retained across restart.
+    DeviceAuthorityConflicts,
+    /// Contact authority forks and recovery conflicts retained across restart.
+    ContactAuthorityConflicts,
+    /// Permanent local record of a copied-root new-identity reset.
+    AuthorityResetHistory,
+    /// Export the exact pending rename/revocation proposal for another active
+    /// device to approve.
+    DeviceAuthorityApprovalRequest,
+    /// Verify and sign another device's exact rename/revocation proposal.
+    DeviceAuthorityApprove {
+        /// Hex-encoded canonical request.
+        request: String,
+    },
+    /// Merge one detached rename/revocation approval.
+    DeviceAuthorityAccept {
+        /// Hex-encoded canonical approval.
+        approval: String,
+    },
     /// Per-device delivery state for one account-level message.
     MessageDeviceDeliveries {
         /// Stable message id (hex).
@@ -249,6 +282,19 @@ pub enum Op {
         selection: DeviceLinkSelectionInput,
         /// Both users explicitly confirmed the comparison code.
         confirmed: bool,
+    },
+    /// Export the canonical pending add-device proposal when quorum requires
+    /// another active device.
+    DeviceLinkApprovalRequest,
+    /// Verify and sign another active device's exact add-device proposal.
+    DeviceLinkApproveRequest {
+        /// Hex-encoded canonical request.
+        request: String,
+    },
+    /// Merge one detached add-device approval.
+    DeviceLinkAcceptApproval {
+        /// Hex-encoded canonical approval.
+        approval: String,
     },
     /// Confirm and import one encrypted link package on the pristine target.
     DeviceLinkComplete {
@@ -742,6 +788,16 @@ pub enum Op {
         /// Initial co-members (hex peer ids).
         members: Vec<String>,
     },
+    /// Inspect the visible recipient-origin upgrade state.
+    GroupSecurity {
+        /// Group id (hex).
+        group: String,
+    },
+    /// Start the explicit legacy-group recipient-origin upgrade.
+    GroupUpgradeSecurity {
+        /// Group id (hex).
+        group: String,
+    },
     /// Queue a group message.
     GroupSend {
         /// Group id (hex).
@@ -971,6 +1027,12 @@ pub enum Op {
         /// is never overwritten).
         path: String,
     },
+    /// First-run only: write the encrypted offline account authority to a
+    /// new protected file and return its separate opening phrase.
+    RecoveryAuthorityExport {
+        /// New destination file; never overwritten.
+        path: String,
+    },
     /// Turn this connection into an event stream.
     Subscribe,
 }
@@ -1139,6 +1201,26 @@ pub fn event_line(event: &Event) -> String {
         }),
         Event::DevicesChanged => json!({
             "type": "devices_changed",
+        }),
+        Event::DeviceAuthorityFork {
+            accepted,
+            conflicting,
+            recovery_epoch,
+        } => json!({
+            "type": "device_authority_fork",
+            "accepted": hex_encode(accepted),
+            "conflicting": hex_encode(conflicting),
+            "recovery_epoch": recovery_epoch,
+        }),
+        Event::DeviceRecoveryConflict {
+            accepted,
+            conflicting,
+            recovery_epoch,
+        } => json!({
+            "type": "device_recovery_conflict",
+            "accepted": hex_encode(accepted),
+            "conflicting": hex_encode(conflicting),
+            "recovery_epoch": recovery_epoch,
         }),
         Event::DeviceLinkCompleted { account, device } => json!({
             "type": "device_link_completed",
@@ -1835,7 +1917,26 @@ pub fn group_json(group: &GroupInfo) -> Value {
         "name": group.name,
         "creator": hex_encode(&group.creator),
         "members": group.members.iter().map(|peer| hex_encode(peer)).collect::<Vec<_>>(),
+        "security": group_security_level_str(group.security),
     })
+}
+
+/// Visible group recipient-origin state without any capability material.
+pub fn group_security_json(security: &GroupSecurityInfo) -> Value {
+    json!({
+        "group": hex_encode(&security.group),
+        "level": group_security_level_str(security.level),
+        "pending_devices": security.pending_devices.iter().map(|device| hex_encode(device)).collect::<Vec<_>>(),
+        "legacy_history_rows": security.legacy_history_rows,
+    })
+}
+
+fn group_security_level_str(level: GroupSecurityLevel) -> &'static str {
+    match level {
+        GroupSecurityLevel::UpgradeRequired => "upgrade_required",
+        GroupSecurityLevel::Upgrading => "upgrading",
+        GroupSecurityLevel::RecipientAuthenticated => "recipient_authenticated",
+    }
 }
 
 /// Current group authority without identities, secrets, signatures, or chains.
@@ -2005,6 +2106,14 @@ pub fn group_message_json(message: &ResolvedGroupMessage) -> Value {
         },
         "timestamp": rec.timestamp,
         "body": body,
+        "authentication": match rec.origin {
+            kult_store::GroupOriginAuthentication::LegacyMembership => "legacy_membership",
+            kult_store::GroupOriginAuthentication::PendingOutboundV1 { .. } =>
+                "pending_recipient_authentication",
+            kult_store::GroupOriginAuthentication::RecipientV1 { .. }
+            | kult_store::GroupOriginAuthentication::OutboundV1 { .. } =>
+                "recipient_authenticated",
+        },
         "content_kind": content_kind,
         "expires_at": expires_at,
         "mention_spans": mention_spans,
@@ -2546,6 +2655,16 @@ mod tests {
                 .op,
             Op::LinkedDevices
         ));
+        assert!(matches!(
+            parse_request(r#"{"id":34,"op":"authority_reset_history"}"#)
+                .unwrap()
+                .op,
+            Op::AuthorityResetHistory
+        ));
+        assert!(
+            parse_request(r#"{"id":35,"op":"authority_reset_history","peer":"ambiguous"}"#)
+                .is_err()
+        );
     }
 
     #[test]

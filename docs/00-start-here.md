@@ -103,9 +103,12 @@ not the exact deadline or content. See
 Groups can also create encrypted single-choice polls. Votes and voter identities
 are visible to members—Komms does not call them anonymous—and the apparent
 creator closes the exact vote snapshot they have received. Offline, duplicate,
-and reordered events still converge locally. In the current Alpha, another
-group member can forge an apparent voter or creator; ADR-0029 is required before
-stable. See [Group Polls](20-group-polls.md).
+and reordered events still converge locally. Current Alpha groups authenticate
+each claimed voter and creator separately to every recipient device while
+retaining one shared sender-key ciphertext and recipient deniability. Legacy
+group history remains labelled as membership-authenticated. See
+[Group Polls](20-group-polls.md) and
+[ADR-0029](adr/0029-recipient-authenticated-groups.md).
 
 Groups can upgrade to signed owner, admin, and member roles. There is always one
 owner. Admins can request common work while the owner is offline, but the owner
@@ -117,10 +120,12 @@ close. There is no server account or hidden moderator behind these roles. See
 
 One Komms identity can authorize up to eight independently keyed devices through
 a mutually confirmed QR or paste ceremony. Sync is explicit and encrypted
-between those devices; there is no cloud account. Current Alpha revocation
-excludes one known id but cannot permanently contain a compromised device that
-retained the copied account root. Recovery creates fresh device credentials
-rather than reviving credentials from a backup. See
+between those devices; there is no cloud account. The stable account root is a
+separately held offline recovery authority and never enters ordinary device
+linking. Routine changes require a strict majority of the previous active set;
+forks remain visible and fail closed. Recovery revokes the former set and
+creates fresh device credentials rather than reviving credentials from a
+backup. See
 [Linked Devices](22-linked-devices.md).
 
 Already paired contacts can also make alpha live-audio calls when both devices

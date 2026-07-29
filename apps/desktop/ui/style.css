@@ -412,6 +412,17 @@ button.settings-row:hover { border-color: var(--accent-dim); background: var(--b
     radial-gradient(circle at 78% 12%, rgba(242, 183, 5, 0.055), transparent 28rem),
     var(--bg);
 }
+.authority-reset-banner {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.7rem 1.25rem;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, var(--surface));
+  border-bottom: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line));
+  font-size: 0.86rem;
+}
+.authority-reset-banner[hidden] { display: none; }
+.authority-reset-banner span { color: var(--text); }
 #chat-empty {
   flex: 1;
   display: flex; align-items: center; justify-content: center;

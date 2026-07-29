@@ -53,11 +53,12 @@ local scheduled-message operation until activation creates an ordinary message.
 ### Authorization and resolution
 
 The event's sender field must equal `target_author`. In a pairwise lane that
-sender has an authenticated individual origin. In the current shared sender-key
-group lane it proves only that some member produced the event, so another member
-can forge the claimed author. Resolution is scoped to the same exact pairwise or
-group conversation. The target must decode as canonical v1 `Text` and have that
-author and content id. A cross-author, cross-conversation, self-referential, or
+sender has an authenticated individual origin. In the shared sender-key group
+lane, ADR-0029 requires the runtime to derive the sender from the verified
+pairwise device certificate and exact recipient origin tag before applying this
+rule. Resolution is scoped to the same exact pairwise or group conversation.
+The target must decode as canonical v1 `Text` and have that author and content
+id. A cross-author, cross-conversation, self-referential, or
 wrong-kind edit is retained as an invalid edit event for diagnostics but never
 changes presentation.
 
@@ -80,10 +81,10 @@ kind. Group edit is refused until every current co-member advertises it and the
 author is still a current member. One canonical edit plaintext is encrypted
 once through the existing sender-key fan-out.
 
-This Accepted ADR defines the immutable edit state machine and pairwise
-authorization. Its original individual-authorship goal is not met for groups by
-the current sender-key construction. ADR-0029 must add recipient-verifiable
-group origins before stable group-edit authorship is claimed.
+This Accepted ADR defines the immutable edit state machine. ADR-0029 supplies
+the recipient-verifiable group-origin prerequisite while retaining the
+encrypt-once sender-key construction and recipient deniability. Released legacy
+group history keeps its membership-authenticated marker.
 
 A pre-edit client never receives an edit through the supported send path. If a
 capability race or future source delivers one anyway, ADR-0014 requires durable
@@ -94,7 +95,7 @@ mesh, or group-control format changes.
 ### Storage, API, and lifecycle
 
 Raw originals and edits stay individually sealed in the existing message/group
-history tables and ride `KKR7` unchanged. Derived views are recomputed from
+history tables and ride `KKR8` unchanged. Derived views are recomputed from
 authenticated records after restart/restore; no plaintext index or mutable
 "current body" column is added. Search and notifications use the derived winner
 only after authorization succeeds. An inbound edit emits a typed local event so

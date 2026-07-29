@@ -93,6 +93,11 @@ async fn pairwise_group_and_backup_views_resolve_immutable_edits() {
     let bob_db = dir.path().join("bob.db");
     let net: Net = Arc::new(Mutex::new(HashMap::new()));
     let mut alice = Node::create(&alice_db, b"alice", TEST_KDF, &mut rng).unwrap();
+    let recovery_path = dir.path().join("alice-account-authority.kra");
+    let recovery_mnemonic = alice
+        .export_account_recovery_authority(&recovery_path)
+        .unwrap();
+    let recovery_package = std::fs::read(&recovery_path).unwrap();
     let mut bob = Node::create(&bob_db, b"bob", TEST_KDF, &mut rng).unwrap();
     alice.add_transport(Arc::new(Link {
         net: net.clone(),
@@ -322,10 +327,13 @@ async fn pairwise_group_and_backup_views_resolve_immutable_edits() {
     assert!(bob.resolved_group_messages(&group).unwrap()[0].edited);
 
     let (backup, mnemonic) = alice.export_backup(NOW + 110, &mut rng).unwrap();
-    let restored = Node::restore(
+    let restored = Node::restore_with_recovery_authority(
         &dir.path().join("alice-restored.db"),
         &backup,
         &mnemonic,
+        &recovery_package,
+        &recovery_mnemonic,
+        NOW + 110,
         b"restored",
         TEST_KDF,
         &mut rng,

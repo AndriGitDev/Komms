@@ -184,10 +184,15 @@ fn exact_ids_errors_atomic_delete_and_delete_recreate_are_honest() {
 }
 
 #[test]
-fn kkr5_backup_restores_exact_ids_order_names_colors_and_memberships() {
+fn root_free_backup_restores_exact_ids_order_names_colors_and_memberships() {
     let mut rng = StdRng::seed_from_u64(0xb1803);
     let directory = tempfile::tempdir().unwrap();
     let (mut node, peer, group) = node_with_contact_and_group(directory.path(), &mut rng);
+    let recovery_path = directory.path().join("account-authority.kra");
+    let recovery_mnemonic = node
+        .export_account_recovery_authority(&recovery_path)
+        .unwrap();
+    let recovery_package = std::fs::read(&recovery_path).unwrap();
     let first = node
         .create_label("e\u{301}\u{2067}עברית\u{2069}", "teal", &mut rng)
         .unwrap();
@@ -202,12 +207,15 @@ fn kkr5_backup_restores_exact_ids_order_names_colors_and_memberships() {
         .unwrap();
     let before = node.labels().unwrap();
     let (backup, mnemonic) = node.export_backup(NOW + 1, &mut rng).unwrap();
-    assert_eq!(&backup[..4], b"KKR7");
+    assert_eq!(&backup[..4], b"KKR8");
 
-    let restored = Node::restore(
+    let restored = Node::restore_with_recovery_authority(
         &directory.path().join("restored.db"),
         &backup,
         &mnemonic,
+        &recovery_package,
+        &recovery_mnemonic,
+        NOW + 1,
         b"restored",
         TEST_KDF,
         &mut rng,

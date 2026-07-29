@@ -12,7 +12,8 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 
 use kult_crypto::{
-    Identity, KdfProfile, OneTimePrekeySecret, PqPrekeySecret, PrekeyBundle, SignedPrekeySecret,
+    AuthorityDevicePrekeyBundle, Identity, KdfProfile, OneTimePrekeySecret, PqPrekeySecret,
+    PrekeyBundle, SignedPrekeySecret,
 };
 use kult_node::{ContentStatus, Event, Node};
 use kult_protocol::{
@@ -65,8 +66,9 @@ fn pairing_bundle_carries_signed_first_message_routes() {
     let encoded = node
         .handshake_bundle_with_hints(&hints, NOW, &mut rng)
         .unwrap();
-    let bundle = PrekeyBundle::decode(&encoded).unwrap();
+    let bundle = AuthorityDevicePrekeyBundle::decode(&encoded).unwrap();
     let decoded = bundle
+        .prekey
         .relay_hints
         .iter()
         .map(|bytes| postcard::from_bytes::<DeliveryHint>(bytes).unwrap())

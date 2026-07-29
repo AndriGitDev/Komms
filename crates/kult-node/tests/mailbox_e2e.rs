@@ -38,6 +38,7 @@ async fn offline_recipient_via_relay_mailbox() {
 
     let mut alice = Node::create(&dir.path().join("a.db"), b"a", TEST_KDF, &mut rng).unwrap();
     let mut bob = Node::create(&dir.path().join("b.db"), b"b", TEST_KDF, &mut rng).unwrap();
+    let bob_device = bob.device_id();
 
     let a_net = Arc::new(Libp2pTransport::new(LISTEN).await.unwrap());
     alice.add_transport(Arc::clone(&a_net) as Arc<dyn Transport>);
@@ -96,7 +97,7 @@ async fn offline_recipient_via_relay_mailbox() {
     assert_eq!(stored.len(), 1);
     let env = Envelope::decode(&stored[0]).unwrap();
     assert_eq!(env.kind, EnvelopeKind::Handshake);
-    assert_eq!(env.token, intro_token(&bob_id, epoch_day(NOW)));
+    assert_eq!(env.token, intro_token(&bob_device, epoch_day(NOW)));
     assert!(
         !stored[0]
             .windows(plaintext.len())

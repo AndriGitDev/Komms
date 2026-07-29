@@ -44,14 +44,14 @@ version=1 || operation=2 || reserved(2)=0
 poll_author(32) || poll_id(16) || option_id(16) || revision(8)
 ```
 
-The enclosing sender-key event protects the vote from outsiders and binds a
-claimed voter, but it provides only membership-level authenticity: another
-member can forge that claim. Structurally, a vote is valid only for a listed
-electorate member and a stable option id. For each apparent voter, the current
-head is the maximum `(revision, vote content id)`. Revisions are positive;
+The enclosing shared sender-key ciphertext protects the vote from outsiders.
+ADR-0029's recipient wrapper binds the verified voter account/device separately
+for every recipient before this poll state is applied. Structurally, a vote is
+valid only for a listed electorate member and a stable option id. For each
+voter, the current head is the maximum `(revision, vote content id)`. Revisions are positive;
 supported local authors increment their own maximum and are capped at 64 vote
 events per poll. Duplicate and reordered records therefore converge without
-clocks. Votes and apparent voter identities are visible to every member that
+clocks. Votes and voter identities are visible to every member that
 holds the poll. Polls are single-choice and explicitly **not anonymous**.
 
 Closure (`operation = 3`) carries:
@@ -72,10 +72,10 @@ structurally valid creator closures exist, the smallest closure content id wins.
 Closure is not proof that the creator authored it, observed every vote, or
 counted fairly.
 
-This Accepted ADR defines deterministic replicated poll state. It does not
-satisfy individual-origin authentication under the current sender-key group
-construction. ADR-0029 must add recipient-verifiable origins before stable
-claims about authenticated voters or creator closures.
+This Accepted ADR defines deterministic replicated poll state. ADR-0029 now
+supplies recipient-verifiable voter and creator origins around the unchanged
+shared sender-key ciphertext. That authentication is recipient-deniable and
+does not make the poll anonymous, fair, complete, or publicly verifiable.
 
 Question text is exact non-empty UTF-8 up to 1,024 bytes. A poll has 2–12
 non-empty exact UTF-8 choices of at most 256 bytes each and 1–64 sorted unique
@@ -101,7 +101,7 @@ being guessed as text.
 
 Poll events remain individually sealed ordinary group-history rows. The node
 derives cards, visible vote heads, and tallies on read; it persists no mutable
-tally. Current `KKR7` carries those rows unchanged, so restart and restore recompute the
+tally. Current `KKR8` carries those rows unchanged, so restart and restore recompute the
 same result without a backup version or database migration.
 
 ## Alternatives considered
@@ -127,6 +127,9 @@ observed snapshot; Komms guarantees deterministic convergence, not
 malicious-member origin, election fairness, or secret ballots. The fixed
 electorate and visible identities must be shown before creation and voting.
 Parser fuzzing, changed/duplicate/reordered vote tests, membership and old-client
-gates, closure conflicts, KKR1–KKR7 restore, C2 owned-device convergence, strict
-RPC/CLI, UniFFI, and all shell contracts are release requirements. ADR-0029 and
-member-forgery tests are additionally required for stable origin claims.
+gates, closure conflicts, current `KKR8` restore, legacy archive omission of
+groups, C2 owned-device convergence, strict
+RPC/CLI, UniFFI, and all shell contracts are release requirements. ADR-0029
+wrong-recipient/device/context, malicious-member, replay/reorder, rotation,
+restore, and announcement-race tests are additionally required for origin
+claims.

@@ -17,6 +17,8 @@ struct KommsApp: App {
                 Group {
                     if model.session == nil {
                         GateView().environmentObject(model)
+                    } else if model.requiresRecoveryAuthorityExport {
+                        RecoveryAuthorityView().environmentObject(model)
                     } else {
                         MainView().environmentObject(model)
                     }

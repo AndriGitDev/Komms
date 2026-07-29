@@ -1,6 +1,6 @@
 # ADR-0026: Offline account authority and quorum-authorized devices
 
-- **Status**: Proposed
+- **Status**: Accepted; implemented for Alpha
 - **Date**: 2026-07-26
 - **Supersedes on acceptance**: the device-authority and recovery rules in
   [ADR-0024](0024-account-authorized-linked-devices.md); its per-device
@@ -155,3 +155,94 @@ not for choosing which attacker-controlled device set owns an identity.
 - Acceptance requires stolen-device, offline-majority, fork, replay, old
   backup, and recovery-conflict tests before ADR-0024's permanent-revocation
   claim can return.
+
+## Implemented Alpha profile
+
+The accepted wire profile is `KDA2`. A manifest contains at most 64 transitions,
+at most 64 lifetime certificate/tombstone entries, at most eight active
+devices, and at most 1 MiB of encoded authority proof. Decoders reject trailing
+bytes, unknown versions, invalid ordering, incomplete state, duplicate
+signatures, non-majority transitions, and allocations above those bounds.
+This Alpha profile carries a bounded proof from genesis rather than a compact
+checkpoint. Reaching a lifetime bound fails closed; it does not discard old
+authority evidence or select a branch. A future checkpoint format requires a
+new version and compatibility decision.
+
+Fresh profiles write only the account public identity, one independent local
+device secret, the accepted `KDA2` chain, and live device-scoped protocol state.
+The generated account root is immediately sealed into a separately exported
+`.kra` recovery-authority file protected by its own one-time 24-word phrase.
+The root is not written to the live profile. The export is available once,
+creates a new owner-only file without overwrite, and is explicitly described
+as an account-takeover secret.
+
+Routine backups use root-free `KKR8`. A restore requires both the `KKR8` file
+and phrase and the separately held recovery-authority file and phrase. Restore
+opens the root only for one higher recovery-epoch transition, revokes the
+former active set, creates one fresh device, generates new prekeys, and retires
+live session, queue, delivery, group-chain, link, and service-capability state.
+Queued or sent history remains only as failed local history without a reusable
+wire id. The backup plaintext excludes account-root, device, prekey, ratchet,
+sender-chain, link-channel, rendezvous, wake, and delivery-resumption secrets.
+
+Ordinary link, rename, observation, and revocation proposals are bound to the
+exact parent hash and generation and require a strict majority of the previous
+active set. A two-device account therefore requires both devices. Detached
+approvals are proposal-bound and duplicate or revoked signers are rejected.
+The superseded C2 root-carrying link codec is confined to unit-test regression
+coverage and is not exported by the production cryptography library.
+Root-bearing store constructors and superseded root-carrying commit variants
+are likewise available only through the explicit `legacy-test-fixtures`
+feature. The default production store exposes legacy detection, reading, and
+migration, but no public root-writing fixture API.
+Contacts retain visible bounded fork or same-epoch recovery-conflict evidence,
+clear verification, and refuse authority advancement until explicit recovery
+and safety-number comparison.
+
+Legacy single-device profiles with no durable evidence that the root was
+copied may migrate in place only after exporting and confirming the offline
+authority. Any durable multi-device/channel evidence requires a new-identity
+authority reset. The conservative reset is also available when a person knows
+that a legacy `KKR7` file or another root copy exists despite a single-device
+live store. Reset preserves only accurately labelled local petnames, eligible
+local organization, note-to-self, and non-ephemeral pairwise history; contacts
+lose verification and routes, and every safety number requires comparison.
+
+If a legacy `KKR1`–`KKR7` backup is the only surviving artifact, the shells
+require that same new-identity ceremony before import. A fresh `.kra`, address,
+and phrase are reviewed and confirmed first. The old backup is then decrypted
+only in memory and projected directly into a root-free unpublished sibling.
+These formats are decode-only in production; there is no API to create or
+publish another copied-root backup. The copied root is never written to an
+intermediate or final store. Groups, sessions, devices, queues, service
+capabilities, routes, verification, and unfinished delivery state are omitted,
+while the durable reset ledger records the former account and every pending
+contact re-verification.
+
+Opening recovery material is locally throttled to five failed attempts per
+minute for each package, with a bounded process-local table. Restart can clear
+that usability/CPU throttle; the 24-word entropy and protected offline file,
+not the throttle, are the security boundary.
+
+The pre-C2 account-alias contact conversion remains an explicitly delimited
+legacy compatibility path pending ADR-0030. It is not part of the accepted
+stable-v1 contact-admission contract.
+
+## Acceptance evidence and remaining gates
+
+Deterministic Rust tests cover codec and signature validation, strict-majority
+approval, stolen-minority revocation, quorum loss, root theft, stale backup,
+old epoch, replay, ordinary forks, recovery conflicts, link confirmation,
+selective transfer, independent per-device ratchets/delivery, root-free backup
+exclusions, and restart at every typed transaction and profile-publication
+failpoint. The strict RPC/CLI and UniFFI suites drive migration, reset, linking,
+sync, recovery, and backup only through their public contracts. Desktop,
+Android host, Swift host, Android APK, and iOS Simulator builds exercise the
+same surface. The dated host, scale, fuzz, Android-emulator, and iOS Simulator
+development run is recorded in the
+[release evidence ledger](../31-release-evidence-ledger.md#session-6-local-development-validation).
+
+These are local implementation and simulator results. Named physical-device
+recovery/linking runs, sudden-power-loss qualification, independent security
+review, and independently produced interoperability evidence remain release
+gates.

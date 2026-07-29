@@ -24,6 +24,8 @@ mod anonbox;
 mod attachment;
 mod call;
 mod device;
+mod device_authority;
+mod device_link_authority;
 mod error;
 mod fingerprint;
 mod group;
@@ -33,6 +35,7 @@ mod kdf;
 mod mnemonic;
 mod prekeys;
 mod ratchet;
+mod recovery_authority;
 mod sealed;
 mod util;
 mod wordlist;
@@ -50,17 +53,31 @@ pub use call::{
     MAX_CALL_MEDIA_FRAME_LEN, MAX_CALL_MEDIA_PAYLOAD_LEN,
 };
 pub use device::{
-    seal_device_link_recovery_package, ApprovedDeviceLink, CompletedDeviceLink, DeviceCertificate,
-    DeviceLinkCode, DeviceLinkOffer, DeviceLinkResponse, DeviceManifest, DeviceManifestEntry,
-    DevicePrekeyBundle, PendingDeviceLinkSource, PendingDeviceLinkTarget,
+    DeviceCertificate, DeviceManifest, DeviceManifestEntry, DevicePrekeyBundle,
     MAX_DEVICE_MANIFEST_ENTRIES, MAX_DEVICE_NAME_BYTES, MAX_LINKED_DEVICES,
-    MAX_LINK_TRANSFER_BYTES,
+};
+pub use device_authority::{
+    DeviceAuthorityAuthorization, DeviceAuthorityCertificate, DeviceAuthorityEntry,
+    DeviceAuthorityManifest, DeviceAuthorityRelation, DeviceAuthorityRootSignature,
+    DeviceAuthoritySignature, DeviceAuthorityTransition, DeviceAuthorityTransitionKind,
+    DEVICE_AUTHORITY_VERSION, MAX_AUTHORITY_DEVICES, MAX_AUTHORITY_DEVICE_NAME_BYTES,
+    MAX_AUTHORITY_ENTRIES, MAX_DEVICE_AUTHORITY_BYTES, MAX_DEVICE_AUTHORITY_TRANSITIONS,
+};
+pub use device_link_authority::{
+    seal_authority_device_link_recovery_package, ApprovedAuthorityDeviceLink,
+    AuthorityDeviceLinkApproval, AuthorityDeviceLinkApprovalRequest, AuthorityDeviceLinkCode,
+    AuthorityDeviceLinkOffer, AuthorityDeviceLinkResponse, AuthorityDevicePrekeyBundle,
+    CompletedAuthorityDeviceLink, PendingAuthorityDeviceLinkSource,
+    PendingAuthorityDeviceLinkTarget, PreparedAuthorityDeviceLink,
+    MAX_AUTHORITY_LINK_TRANSFER_BYTES,
 };
 pub use error::CryptoError;
 pub use fingerprint::{safety_number, SafetyNumber};
 pub use group::{
-    GroupHeaderKey, GroupMessage, GroupReceiverChain, GroupSenderChain, GROUP_MAX_SKIP,
-    GROUP_MAX_STORED_SKIPPED, GROUP_SKIPPED_TTL_SECS,
+    group_origin_tag, GroupHeaderKey, GroupMessage, GroupMessageHeader, GroupOriginContext,
+    GroupOriginEnvelope, GroupReceiverChain, GroupSenderChain, GROUP_MAX_SKIP,
+    GROUP_MAX_STORED_SKIPPED, GROUP_MESSAGE_VERSION_LEGACY, GROUP_MESSAGE_VERSION_ORIGIN,
+    GROUP_ORIGIN_ENVELOPE_MAGIC, GROUP_ORIGIN_TAG_LEN, GROUP_SKIPPED_TTL_SECS,
 };
 pub use handshake::{initiate, respond, InitialMessage};
 pub use identity::{
@@ -76,6 +93,11 @@ pub use prekeys::{
 };
 pub use ratchet::{RatchetMessage, Session};
 pub use ratchet::{MAX_SKIP, MAX_STORED_SKIPPED, SKIPPED_KEY_TTL_SECS};
+pub use recovery_authority::{
+    account_recovery_authority_public, open_account_recovery_authority,
+    seal_account_recovery_authority, ACCOUNT_RECOVERY_AUTHORITY_VERSION,
+    MAX_ACCOUNT_RECOVERY_AUTHORITY_BYTES,
+};
 pub use sealed::StorageKey;
 
 /// Protocol version tag mixed into every associated-data string.

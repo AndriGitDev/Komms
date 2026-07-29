@@ -1,15 +1,19 @@
 # ADR-0024: Account-authorized linked devices and convergent local sync
 
-- **Status**: Accepted for Alpha data/sync mechanics; permanent-revocation
-  claim withdrawn
+- **Status**: Superseded by ADR-0026 for device authority and recovery;
+  accepted for per-device data, delivery, and sync mechanics
 - **Date**: 2026-07-16
 
-> **Security correction (2026-07-26):** distributing the account private key
+> **Security correction (2026-07-26; replacement implemented 2026-07-29):**
+> distributing the account private key
 > to every linked device lets a compromised revoked device mint a new
 > certificate and higher manifest. Exact known-id exclusion works among honest
-> participants, but the “permanent revocation” statements below are not a
-> security guarantee. [ADR-0026](0026-revocable-device-authority.md) specifies
-> the required offline-root and majority-authorized replacement before stable.
+> participants, but the “permanent revocation” statements in the legacy design
+> below are not a security guarantee. Accepted
+> [ADR-0026](0026-revocable-device-authority.md) replaces that authority with
+> an offline root, strict-majority transitions, recovery epochs, and root-free
+> `KKR8`. The per-device ratchet, delivery, group-chain, and convergent-sync
+> boundaries in this ADR remain current.
 
 ## Context
 
@@ -26,6 +30,11 @@ conversation identity while encrypting independently to every authorized
 physical endpoint.
 
 ## Decision
+
+The account-signed certificate/manifest and `KKR7` recovery paragraphs below
+describe the legacy `KDA1` Alpha format retained only for explicit migration.
+Current profiles use ADR-0026 `KDA2`; no live linked device receives the account
+private key, and authority forks are never selected by state-id ordering.
 
 ### Stable account, independent device identities
 
@@ -119,13 +128,17 @@ the replay log while preserving convergence for a new device.
 
 ### Recovery and revocation
 
-`KKR7` stores the account, current manifest, local device id, convergence
+Legacy `KKR7` stores the account root, current manifest, local device id, convergence
 winners, certified contact endpoints, ordinary state, and terminal tombstones;
 it never stores live ratchets or the local device private key as a reusable
 credential. Restoring mints a fresh device certificate and atomically revokes
 every device active in the backup at the backup creation time. The recovered
 installation is the sole active row until another device is explicitly linked.
-`KKR1` through `KKR7` remain readable and migrate to the same model.
+`KKR1` through `KKR7` remain readable only through the explicit migration or
+new-identity reset boundary. A legacy-only-artifact reset decrypts the old root
+only in memory and publishes a fresh root-free archive profile; it never resumes
+the former identity. Current routine backup is root-free `KKR8` and requires
+the separately held offline recovery authority to restore.
 
 Revocation is exact-id targeted, explicitly confirmed in every shell, and
 cannot revoke the current or last active device. Among honest participants it
@@ -142,23 +155,22 @@ already seen.
 - Initial history transfer and later sync are bounded explicit operations; the
   current UI does not claim continuous background cloud sync.
 - Account private-key availability on each linked device was an unsafe Alpha
-  authority tradeoff. Independent device credentials still separate delivery
-  and ratchets, but cannot make adversarial revocation enforceable while every
-  device can mint a replacement credential.
-- Same-generation manifest forks converge deterministically, not fairly. A
-  malicious account-authorized device can race authority changes until revoked.
+  authority tradeoff and is no longer part of a live or routine-backup profile.
+- Ordinary replicated-data conflicts still converge deterministically.
+  Device-authority forks instead remain visible, retain the accepted branch,
+  clear verification, and require root recovery.
 - Last-seen, sync completion, and per-device delivery indicators must retain
   their narrow meanings and must not become presence or remote-erasure claims.
 
 ## Acceptance evidence
 
 The implementation includes strict codec and fuzz targets, no-std crypto and
-protocol checks, KKR1–KKR7 migration tests, three-device partition/rejoin,
+protocol checks, legacy KKR1–KKR7 migration/reset and current KKR8 restore tests,
+three-device partition/rejoin,
 concurrent pairwise/group sends, independent ratchets and sender chains,
 edit/poll/tombstone convergence, rollback and replay rejection, restart and
-revocation exclusion, and backup recovery that never resurrects old
-credentials. The ceremony is driven end to end through node, strict JSON RPC,
+quorum revocation, and backup recovery that never resurrects old credentials.
+The ceremony is driven end to end through node, strict JSON RPC,
 CLI parsing, UniFFI, desktop Session, Android Session, and iOS Session surfaces.
-Android debug-APK assembly is automated, while real Android/iOS device
-qualification remains a release gate; it does not weaken the shared-core
-acceptance.
+Android and iOS simulator builds are local implementation evidence; real
+Android/iOS device qualification remains a release gate.

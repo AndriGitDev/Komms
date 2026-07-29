@@ -7,13 +7,14 @@ use std::sync::{
 use async_trait::async_trait;
 use rand::{rngs::StdRng, SeedableRng};
 
-use kult_crypto::{GroupSenderChain, KdfProfile};
+use kult_crypto::{GroupHeaderKey, GroupSenderChain, KdfProfile};
 use kult_protocol::{Envelope, EnvelopeKind};
 use kult_store::{
-    AttachmentStagePlan, AttachmentStatePlan, CommitFailpoint, CommitFailure, DeliveryState,
-    DeviceLinkPlan, DeviceProjection, DeviceProjectionPlan, DeviceStateTransition, Direction,
-    GroupDelivery, GroupMember, GroupMessageRecord, GroupRecord, GroupSendPlan, GroupStatePlan,
-    GroupStateTransition, GroupTransition, IdentityTransition, MediaDirection, MediaObjectRecord,
+    AccountIdentityTransition, AttachmentStagePlan, AttachmentStatePlan, AuthorityDeviceLinkPlan,
+    AuthorityMigrationPlan, AuthorityProfileBootstrapPlan, CommitFailpoint, CommitFailure,
+    DeliveryState, DeviceAuthorityStateTransition, DeviceProjection, DeviceProjectionPlan,
+    Direction, GroupDelivery, GroupMember, GroupMessageRecord, GroupRecord, GroupSendPlan,
+    GroupStatePlan, GroupStateTransition, GroupTransition, MediaDirection, MediaObjectRecord,
     MediaRecord, MediaScope, MediaTransferRecord, MediaTransferState, MediaTransferTransition,
     MessageDeviceDeliveryRecord, MessageRecord, ProfileBootstrapPlan, QueueClass, QueueItem, Store,
 };
@@ -70,6 +71,8 @@ impl Transport for CountingTransport {
 #[derive(Clone, Copy, Debug)]
 enum Target {
     ProfileBootstrap,
+    AuthorityProfileBootstrap,
+    AuthorityMigration,
     PrekeyPublish,
     PairwiseSend,
     HandshakeReceive,
@@ -173,6 +176,143 @@ fn queued_control(node: &Node) -> (i64, Envelope) {
         .expect("control envelope")
 }
 
+fn queued_kind(node: &Node, kind: EnvelopeKind) -> (i64, Envelope) {
+    node.store
+        .queue_all()
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find_map(|(sequence, item)| {
+            (item.msg_id.is_none() && item.group_msg_id.is_none() && item.envelope.kind == kind)
+                .then_some((sequence, item.envelope))
+        })
+        .unwrap_or_else(|| panic!("queued {kind:?} envelope"))
+}
+
+fn prepare_origin_group(fixture: &mut Fixture, name: &str, now: u64) -> [u8; 32] {
+    fixture.establish();
+
+    // Exchange the authenticated capability controls that gate the explicit
+    // legacy-group upgrade.
+    fixture
+        .alice
+        .advertise_capabilities(now, &mut fixture.rng)
+        .unwrap();
+    fixture
+        .bob
+        .advertise_capabilities(now + 1, &mut fixture.rng)
+        .unwrap();
+    let (alice_capability_sequence, alice_capability) =
+        queued_kind(&fixture.alice, EnvelopeKind::Receipt);
+    let (bob_capability_sequence, bob_capability) =
+        queued_kind(&fixture.bob, EnvelopeKind::Receipt);
+    consume(
+        &mut fixture.bob,
+        &alice_capability,
+        None,
+        now + 2,
+        &mut fixture.rng,
+    )
+    .unwrap();
+    consume(
+        &mut fixture.alice,
+        &bob_capability,
+        None,
+        now + 3,
+        &mut fixture.rng,
+    )
+    .unwrap();
+    fixture
+        .alice
+        .store
+        .queue_ack(alice_capability_sequence)
+        .unwrap();
+    fixture
+        .bob
+        .store
+        .queue_ack(bob_capability_sequence)
+        .unwrap();
+
+    let group = fixture
+        .alice
+        .create_group(name, &[fixture.bob_id], &mut fixture.rng)
+        .unwrap();
+    fixture
+        .alice
+        .group_upgrade_security(&group, &mut fixture.rng)
+        .unwrap();
+
+    futures::executor::block_on(fixture.alice.tick_groups(now + 4, &mut fixture.rng)).unwrap();
+    let (alice_announce_sequence, alice_announce) =
+        queued_kind(&fixture.alice, EnvelopeKind::GroupControl);
+    consume(
+        &mut fixture.bob,
+        &alice_announce,
+        None,
+        now + 5,
+        &mut fixture.rng,
+    )
+    .unwrap();
+    fixture
+        .alice
+        .store
+        .queue_ack(alice_announce_sequence)
+        .unwrap();
+    fixture
+        .bob
+        .apply_deferred_controls(now + 6, &mut fixture.rng)
+        .unwrap();
+    let (bob_ack_sequence, bob_ack) = queued_kind(&fixture.bob, EnvelopeKind::Receipt);
+    consume(
+        &mut fixture.alice,
+        &bob_ack,
+        None,
+        now + 7,
+        &mut fixture.rng,
+    )
+    .unwrap();
+    fixture.bob.store.queue_ack(bob_ack_sequence).unwrap();
+
+    futures::executor::block_on(fixture.bob.tick_groups(now + 8, &mut fixture.rng)).unwrap();
+    let (bob_announce_sequence, bob_announce) =
+        queued_kind(&fixture.bob, EnvelopeKind::GroupControl);
+    consume(
+        &mut fixture.alice,
+        &bob_announce,
+        None,
+        now + 9,
+        &mut fixture.rng,
+    )
+    .unwrap();
+    fixture.bob.store.queue_ack(bob_announce_sequence).unwrap();
+    fixture
+        .alice
+        .apply_deferred_controls(now + 10, &mut fixture.rng)
+        .unwrap();
+    let (alice_ack_sequence, alice_ack) = queued_kind(&fixture.alice, EnvelopeKind::Receipt);
+    consume(
+        &mut fixture.bob,
+        &alice_ack,
+        None,
+        now + 11,
+        &mut fixture.rng,
+    )
+    .unwrap();
+    fixture.alice.store.queue_ack(alice_ack_sequence).unwrap();
+
+    assert_eq!(
+        fixture.alice.group_security_info(&group).unwrap().level,
+        GroupSecurityLevel::RecipientAuthenticated
+    );
+    assert_eq!(
+        fixture.bob.group_security_info(&group).unwrap().level,
+        GroupSecurityLevel::RecipientAuthenticated
+    );
+    fixture.alice.drain_events();
+    fixture.bob.drain_events();
+    group
+}
+
 fn pending_contains(node: &Node, sequence: i64, content_id: [u8; 16]) -> bool {
     node.store
         .pending_all()
@@ -181,6 +321,12 @@ fn pending_contains(node: &Node, sequence: i64, content_id: [u8; 16]) -> bool {
         .any(|(candidate_sequence, envelope, _)| {
             *candidate_sequence == sequence && envelope.content_id() == content_id
         })
+}
+
+fn sole_contact_device(node: &Node, account: &[u8; 32]) -> [u8; 32] {
+    let endpoints = node.store.contact_devices_for(account).unwrap();
+    assert_eq!(endpoints.len(), 1);
+    endpoints[0].device
 }
 
 fn consume(
@@ -211,6 +357,8 @@ fn run_store_case(
 ) -> bool {
     match target {
         Target::ProfileBootstrap => run_profile_bootstrap(point, failure, seed),
+        Target::AuthorityProfileBootstrap => run_authority_profile_bootstrap(point, failure, seed),
+        Target::AuthorityMigration => run_authority_migration(point, failure, seed),
         Target::PrekeyPublish => run_prekey_publish(point, failure, seed),
         Target::PairwiseSend => run_pairwise_send(point, failure, seed),
         Target::HandshakeReceive => run_handshake_receive(point, failure, seed),
@@ -276,6 +424,144 @@ fn run_profile_bootstrap(point: CommitFailpoint, failure: CommitFailure, seed: u
         identity.public()
     );
     assert_eq!(store.get_device_state().unwrap(), Some(device_state));
+    assert_eq!(
+        store.get_prekeys().unwrap().unwrap().as_slice(),
+        prekeys.as_slice()
+    );
+    result_ok
+}
+
+fn run_authority_profile_bootstrap(
+    point: CommitFailpoint,
+    failure: CommitFailure,
+    seed: u64,
+) -> bool {
+    let mut rng = StdRng::seed_from_u64(seed);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("authority-profile.db");
+    let store = Store::create(&path, b"profile", TEST_KDF, &mut rng).unwrap();
+    let root = Identity::generate(&mut rng);
+    let account = root.public();
+    let (_, device_state) = devices::fresh_authority_device_state(&root, &mut rng).unwrap();
+    let prekeys = PrekeyVault::generate(&mut rng).encode();
+    store.arm_commit_failpoint(point, failure);
+    let result = store.commit_plan(
+        CommitPlan::AuthorityProfileBootstrap(AuthorityProfileBootstrapPlan {
+            account: &account,
+            device_state: &device_state,
+            prekeys: &prekeys,
+        }),
+        &mut rng,
+    );
+    let result_ok = result.is_ok();
+    let committed = store.get_account_identity().unwrap().is_some();
+    assert_eq!(committed, expected_committed(result_ok, point));
+    assert!(store.get_identity().unwrap().is_none());
+    assert_eq!(
+        store.get_device_authority_state().unwrap().is_some(),
+        committed
+    );
+    assert_eq!(store.get_prekeys().unwrap().is_some(), committed);
+    drop(store);
+
+    let store = Store::open(&path, b"profile").unwrap();
+    if !committed {
+        store
+            .commit_plan(
+                CommitPlan::AuthorityProfileBootstrap(AuthorityProfileBootstrapPlan {
+                    account: &account,
+                    device_state: &device_state,
+                    prekeys: &prekeys,
+                }),
+                &mut rng,
+            )
+            .unwrap();
+    }
+    assert!(store.get_identity().unwrap().is_none());
+    assert_eq!(store.get_account_identity().unwrap(), Some(account));
+    assert_eq!(
+        store.get_device_authority_state().unwrap(),
+        Some(device_state)
+    );
+    assert_eq!(
+        store.get_prekeys().unwrap().unwrap().as_slice(),
+        prekeys.as_slice()
+    );
+    result_ok
+}
+
+fn run_authority_migration(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
+    let mut rng = StdRng::seed_from_u64(seed);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("authority-migration.db");
+    let legacy_identity = Identity::generate(&mut rng);
+    let legacy_state = devices::fresh_device_state(&legacy_identity, &mut rng).unwrap();
+    let prekeys = PrekeyVault::generate(&mut rng).encode();
+    let store = Store::create_legacy_profile_fixture(
+        &path,
+        b"profile",
+        TEST_KDF,
+        &legacy_identity,
+        &legacy_state,
+        &prekeys,
+        &mut rng,
+    )
+    .unwrap();
+    let account = legacy_identity.public();
+    let (_, authority_state) = devices::migrate_legacy_authority_device_state(
+        &legacy_identity,
+        &legacy_state,
+        NOW,
+        &mut rng,
+    )
+    .unwrap();
+    store.arm_commit_failpoint(point, failure);
+    let result = store.commit_plan(
+        CommitPlan::AuthorityMigration(AuthorityMigrationPlan {
+            legacy_identity: &legacy_identity,
+            legacy_device_state: &legacy_state,
+            account: &account,
+            device_state: &authority_state,
+        }),
+        &mut rng,
+    );
+    let result_ok = result.is_ok();
+    let committed = !store.contains_legacy_account_root().unwrap();
+    assert_eq!(committed, expected_committed(result_ok, point));
+    assert_eq!(
+        store.get_account_identity().unwrap().as_ref() == Some(&account),
+        committed
+    );
+    assert_eq!(
+        store.get_device_authority_state().unwrap().as_ref() == Some(&authority_state),
+        committed
+    );
+    assert_eq!(
+        store.get_device_state().unwrap().as_ref() == Some(&legacy_state),
+        !committed
+    );
+    drop(store);
+
+    let store = Store::open(&path, b"profile").unwrap();
+    if !committed {
+        store
+            .commit_plan(
+                CommitPlan::AuthorityMigration(AuthorityMigrationPlan {
+                    legacy_identity: &legacy_identity,
+                    legacy_device_state: &legacy_state,
+                    account: &account,
+                    device_state: &authority_state,
+                }),
+                &mut rng,
+            )
+            .unwrap();
+    }
+    assert!(!store.contains_legacy_account_root().unwrap());
+    assert_eq!(store.get_account_identity().unwrap(), Some(account));
+    assert_eq!(
+        store.get_device_authority_state().unwrap(),
+        Some(authority_state)
+    );
     assert_eq!(
         store.get_prekeys().unwrap().unwrap().as_slice(),
         prekeys.as_slice()
@@ -355,14 +641,15 @@ fn run_pairwise_send(point: CommitFailpoint, failure: CommitFailure, seed: u64) 
     } = fixture;
     drop(alice);
     let mut alice = Node::open(&alice_path, b"alice").unwrap();
-    let session_before = alice.store.get_session(&bob_id).unwrap().unwrap();
+    let bob_device = sole_contact_device(&alice, &bob_id);
+    let session_before = alice.store.get_session(&bob_device).unwrap().unwrap();
     let retry =
         alice.send_message_with_id(&bob_id, b"planned send", id, NOW + 10, NOW + 10, &mut rng);
     if committed {
         assert!(retry.is_err());
         assert_eq!(
             postcard::to_allocvec(&session_before).unwrap(),
-            postcard::to_allocvec(&alice.store.get_session(&bob_id).unwrap().unwrap()).unwrap()
+            postcard::to_allocvec(&alice.store.get_session(&bob_device).unwrap().unwrap()).unwrap()
         );
     } else {
         retry.unwrap();
@@ -436,11 +723,12 @@ fn run_handshake_receive(point: CommitFailpoint, failure: CommitFailure, seed: u
             .len(),
         usize::from(committed)
     );
+    let alice_device = sole_contact_device(&fixture.bob, &fixture.alice_id);
     assert_eq!(
         fixture
             .bob
             .store
-            .get_session(&fixture.alice_id)
+            .get_session(&alice_device)
             .unwrap()
             .is_some(),
         committed
@@ -727,14 +1015,11 @@ fn prepare_unconfirmed_reset(fixture: &mut Fixture, id: [u8; 16]) {
             &mut fixture.rng,
         )
         .unwrap();
+    let bob_device = sole_contact_device(&fixture.alice, &fixture.bob_id);
     fixture
         .alice
         .store
-        .put_capabilities(
-            &fixture.bob_id,
-            &Node::local_capabilities(),
-            &mut fixture.rng,
-        )
+        .put_capabilities(&bob_device, &Node::local_capabilities(), &mut fixture.rng)
         .unwrap();
 }
 
@@ -764,13 +1049,14 @@ fn run_maintenance_reset(point: CommitFailpoint, failure: CommitFailure, seed: u
     fixture.establish();
     let id = [0x62; 16];
     prepare_unconfirmed_reset(&mut fixture, id);
+    let bob_device = sole_contact_device(&fixture.alice, &fixture.bob_id);
     fixture.alice.arm_commit_failpoint(point, failure);
     let result =
         fixture
             .alice
-            .reset_unconfirmed_session(&fixture.bob_id, &fixture.bob_id, &mut fixture.rng);
+            .reset_unconfirmed_session(&fixture.bob_id, &bob_device, &mut fixture.rng);
     let result_ok = result.is_ok();
-    let committed = reset_is_committed(&fixture.alice, &fixture.bob_id, id);
+    let committed = reset_is_committed(&fixture.alice, &bob_device, id);
     assert_eq!(committed, expected_committed(result_ok, point));
 
     let Fixture {
@@ -786,11 +1072,13 @@ fn run_maintenance_reset(point: CommitFailpoint, failure: CommitFailure, seed: u
     drop(alice);
     let mut alice = Node::open(&alice_path, b"alice").unwrap();
     if !committed {
+        let bob_device = sole_contact_device(&alice, &bob_id);
         alice
-            .reset_unconfirmed_session(&bob_id, &bob_id, &mut rng)
+            .reset_unconfirmed_session(&bob_id, &bob_device, &mut rng)
             .unwrap();
     }
-    assert!(reset_is_committed(&alice, &bob_id, id));
+    let bob_device = sole_contact_device(&alice, &bob_id);
+    assert!(reset_is_committed(&alice, &bob_device, id));
     result_ok
 }
 
@@ -817,14 +1105,11 @@ fn expiry_is_committed(node: &Node, peer: &[u8; 32], id: [u8; 16]) -> bool {
 fn run_maintenance_expiry(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
     let mut fixture = Fixture::new(seed);
     fixture.establish();
+    let bob_device = sole_contact_device(&fixture.alice, &fixture.bob_id);
     fixture
         .alice
         .store
-        .put_capabilities(
-            &fixture.bob_id,
-            &Node::local_capabilities(),
-            &mut fixture.rng,
-        )
+        .put_capabilities(&bob_device, &Node::local_capabilities(), &mut fixture.rng)
         .unwrap();
     let id = fixture
         .alice
@@ -927,11 +1212,7 @@ fn run_group_state(point: CommitFailpoint, failure: CommitFailure, seed: u64) ->
 
 fn run_group_send(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
     let mut fixture = Fixture::new(seed);
-    fixture.establish();
-    let group = fixture
-        .alice
-        .create_group("planned send", &[fixture.bob_id], &mut fixture.rng)
-        .unwrap();
+    let group = prepare_origin_group(&mut fixture, "planned send", NOW + 60);
     fixture.alice.arm_commit_failpoint(point, failure);
     let result =
         fixture
@@ -975,34 +1256,7 @@ fn run_group_send(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> 
 
 fn run_group_receive(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
     let mut fixture = Fixture::new(seed);
-    fixture.establish();
-    let group = fixture
-        .alice
-        .create_group("planned receive", &[fixture.bob_id], &mut fixture.rng)
-        .unwrap();
-    futures::executor::block_on(fixture.alice.tick_groups(NOW + 90, &mut fixture.rng)).unwrap();
-    let announce = fixture
-        .alice
-        .store
-        .queue_all()
-        .unwrap()
-        .into_iter()
-        .find_map(|(_, item)| {
-            (item.envelope.kind == EnvelopeKind::GroupControl).then_some(item.envelope)
-        })
-        .expect("group announce");
-    consume(
-        &mut fixture.bob,
-        &announce,
-        None,
-        NOW + 91,
-        &mut fixture.rng,
-    )
-    .unwrap();
-    fixture
-        .bob
-        .apply_deferred_controls(NOW + 91, &mut fixture.rng)
-        .unwrap();
+    let group = prepare_origin_group(&mut fixture, "planned receive", NOW + 70);
     let message_id = fixture
         .alice
         .group_send(&group, b"group planned receive", NOW + 92, &mut fixture.rng)
@@ -1258,11 +1512,11 @@ fn run_device_control(point: CommitFailpoint, failure: CommitFailure, seed: u64)
     let committed = fixture
         .alice
         .store
-        .get_device_state()
+        .get_device_authority_state()
         .unwrap()
         .unwrap()
         .manifest
-        .devices
+        .devices()
         .iter()
         .any(|entry| entry.certificate.device_id() == device && entry.name == "Renamed device");
     assert_eq!(committed, expected_committed(result_ok, point));
@@ -1297,18 +1551,19 @@ fn run_device_link(point: CommitFailpoint, failure: CommitFailure, seed: u64) ->
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("target.db");
     let target = Node::create(&path, b"target", TEST_KDF, &mut rng).unwrap();
-    let before_identity = Identity::from_bytes(&target.identity.to_bytes());
+    let before_account = target.account.clone();
     let before_state = target.device_state.clone();
-    let after_identity = Identity::generate(&mut rng);
-    let after_state = devices::fresh_device_state(&after_identity, &mut rng).unwrap();
+    let after_root = Identity::generate(&mut rng);
+    let after_account = after_root.public();
+    let (_, after_state) = devices::fresh_authority_device_state(&after_root, &mut rng).unwrap();
     target.store.arm_commit_failpoint(point, failure);
     let result = target.store.commit_plan(
-        CommitPlan::DeviceLink(DeviceLinkPlan {
-            identity: IdentityTransition {
-                before: &before_identity,
-                after: &after_identity,
+        CommitPlan::AuthorityDeviceLink(AuthorityDeviceLinkPlan {
+            account: AccountIdentityTransition {
+                before: &before_account,
+                after: &after_account,
             },
-            device_state: DeviceStateTransition {
+            device_state: DeviceAuthorityStateTransition {
                 before: Some(&before_state),
                 after: &after_state,
             },
@@ -1322,13 +1577,13 @@ fn run_device_link(point: CommitFailpoint, failure: CommitFailure, seed: u64) ->
             notes: &[],
             ephemeral: &[],
             sync_events: &[],
+            reset_peers: &[],
             presentation_changed: true,
         }),
         &mut rng,
     );
     let result_ok = result.is_ok();
-    let committed =
-        target.store.get_identity().unwrap().unwrap().public() == after_identity.public();
+    let committed = target.store.get_account_identity().unwrap() == Some(after_account.clone());
     assert_eq!(committed, expected_committed(result_ok, point));
     drop(target);
 
@@ -1336,12 +1591,12 @@ fn run_device_link(point: CommitFailpoint, failure: CommitFailure, seed: u64) ->
     if !committed {
         store
             .commit_plan(
-                CommitPlan::DeviceLink(DeviceLinkPlan {
-                    identity: IdentityTransition {
-                        before: &before_identity,
-                        after: &after_identity,
+                CommitPlan::AuthorityDeviceLink(AuthorityDeviceLinkPlan {
+                    account: AccountIdentityTransition {
+                        before: &before_account,
+                        after: &after_account,
                     },
-                    device_state: DeviceStateTransition {
+                    device_state: DeviceAuthorityStateTransition {
                         before: Some(&before_state),
                         after: &after_state,
                     },
@@ -1355,17 +1610,18 @@ fn run_device_link(point: CommitFailpoint, failure: CommitFailure, seed: u64) ->
                     notes: &[],
                     ephemeral: &[],
                     sync_events: &[],
+                    reset_peers: &[],
                     presentation_changed: true,
                 }),
                 &mut rng,
             )
             .unwrap();
     }
+    assert_eq!(store.get_account_identity().unwrap(), Some(after_account));
     assert_eq!(
-        store.get_identity().unwrap().unwrap().public(),
-        after_identity.public()
+        store.get_device_authority_state().unwrap(),
+        Some(after_state)
     );
-    assert_eq!(store.get_device_state().unwrap(), Some(after_state));
     result_ok
 }
 
@@ -1513,13 +1769,20 @@ fn prepare_large_group_fanout(fixture: &mut Fixture) -> LargeGroupFanout {
         )
         .unwrap();
 
-    let mut after_group = before_group.clone();
-    fixture
-        .alice
-        .rotate_group(&mut after_group, &mut fixture.rng)
-        .unwrap();
     let id = [0xb1; 16];
-    let wire = vec![0xc7; 96];
+    let mut sender: GroupSenderChain =
+        postcard::from_bytes(&before_group.sender_chain).expect("released sender chain");
+    let wire = sender
+        .seal(
+            &GroupHeaderKey::derive(&before_group.secret),
+            &group,
+            &pad(b"maximum bounded group fan-out").unwrap(),
+            &mut fixture.rng,
+        )
+        .encode();
+    let mut after_group = before_group.clone();
+    after_group.sender_chain = postcard::to_allocvec(&sender).unwrap();
+    after_group.sent_since_rotation = after_group.sent_since_rotation.saturating_add(1);
     let mut account_deliveries = Vec::new();
     let mut deliveries = Vec::new();
     let mut queue = Vec::new();
@@ -1577,6 +1840,7 @@ fn prepare_large_group_fanout(fixture: &mut Fixture) -> LargeGroupFanout {
             body: b"maximum bounded group fan-out".to_vec(),
             deliveries: account_deliveries,
             wire_body: None,
+            origin: kult_store::GroupOriginAuthentication::LegacyMembership,
         },
         deliveries,
         queue,
@@ -1728,7 +1992,8 @@ fn run_handshake_transition(point: TransitionFailpoint, seed: u64) -> bool {
         &mut rng,
     )
     .unwrap();
-    assert!(bob.store.get_session(&alice_id).unwrap().is_some());
+    let alice_device = sole_contact_device(&bob, &alice_id);
+    assert!(bob.store.get_session(&alice_device).unwrap().is_some());
     assert_eq!(bob.store.messages_with(&alice_id).unwrap().len(), 1);
     fired
 }
@@ -1889,11 +2154,7 @@ fn run_receipt_transition(point: TransitionFailpoint, seed: u64) -> bool {
 
 fn run_group_send_transition(point: TransitionFailpoint, seed: u64) -> bool {
     let mut fixture = Fixture::new(seed);
-    fixture.establish();
-    let group = fixture
-        .alice
-        .create_group("group send checkpoint", &[fixture.bob_id], &mut fixture.rng)
-        .unwrap();
+    let group = prepare_origin_group(&mut fixture, "group send checkpoint", NOW + 4);
     let id = [0x79; 16];
     fixture.alice.arm_transition_failpoint(point);
     let result = fixture.alice.group_send_with_id(
@@ -1995,38 +2256,7 @@ fn run_prekey_publish_transition(point: TransitionFailpoint, seed: u64) -> bool 
 
 fn run_group_receive_transition(point: TransitionFailpoint, seed: u64) -> bool {
     let mut fixture = Fixture::new(seed);
-    fixture.establish();
-    let group = fixture
-        .alice
-        .create_group(
-            "group receive checkpoint",
-            &[fixture.bob_id],
-            &mut fixture.rng,
-        )
-        .unwrap();
-    futures::executor::block_on(fixture.alice.tick_groups(NOW + 25, &mut fixture.rng)).unwrap();
-    let announce = fixture
-        .alice
-        .store
-        .queue_all()
-        .unwrap()
-        .into_iter()
-        .find_map(|(_, item)| {
-            (item.envelope.kind == EnvelopeKind::GroupControl).then_some(item.envelope)
-        })
-        .expect("group announce");
-    consume(
-        &mut fixture.bob,
-        &announce,
-        None,
-        NOW + 26,
-        &mut fixture.rng,
-    )
-    .unwrap();
-    fixture
-        .bob
-        .apply_deferred_controls(NOW + 26, &mut fixture.rng)
-        .unwrap();
+    let group = prepare_origin_group(&mut fixture, "group receive checkpoint", NOW + 4);
     let id = [0x7a; 16];
     fixture
         .alice
@@ -2098,15 +2328,11 @@ fn run_group_receive_transition(point: TransitionFailpoint, seed: u64) -> bool {
         matches!(retry, Consumed::Done | Consumed::DoneAtomic),
         "group receive retry remained deferred at {point:?}"
     );
+    let messages = bob.store.group_messages(&group).unwrap();
     assert_eq!(
-        bob.store
-            .group_messages(&group)
-            .unwrap()
-            .iter()
-            .filter(|message| message.body == b"group receive checkpoint")
-            .count(),
+        messages.iter().filter(|message| message.id == id).count(),
         1,
-        "group receive restart did not converge at {point:?}; fired={fired}, committed={committed}"
+        "group receive restart did not converge at {point:?}; fired={fired}, committed={committed}, messages={messages:?}"
     );
     fired
 }
@@ -2116,13 +2342,14 @@ fn run_maintenance_reset_transition(point: TransitionFailpoint, seed: u64) -> bo
     fixture.establish();
     let id = [0x78; 16];
     prepare_unconfirmed_reset(&mut fixture, id);
+    let bob_device = sole_contact_device(&fixture.alice, &fixture.bob_id);
     fixture.alice.arm_transition_failpoint(point);
     let result =
         fixture
             .alice
-            .reset_unconfirmed_session(&fixture.bob_id, &fixture.bob_id, &mut fixture.rng);
+            .reset_unconfirmed_session(&fixture.bob_id, &bob_device, &mut fixture.rng);
     let fired = fixture.alice.transition_failpoint_fired();
-    let committed = reset_is_committed(&fixture.alice, &fixture.bob_id, id);
+    let committed = reset_is_committed(&fixture.alice, &bob_device, id);
     if fired {
         assert!(result.is_err());
         assert_eq!(committed, transition_commits_when_fired(point));
@@ -2143,11 +2370,13 @@ fn run_maintenance_reset_transition(point: TransitionFailpoint, seed: u64) -> bo
     drop(alice);
     let mut alice = Node::open(&alice_path, b"alice").unwrap();
     if !committed {
+        let bob_device = sole_contact_device(&alice, &bob_id);
         alice
-            .reset_unconfirmed_session(&bob_id, &bob_id, &mut rng)
+            .reset_unconfirmed_session(&bob_id, &bob_device, &mut rng)
             .unwrap();
     }
-    assert!(reset_is_committed(&alice, &bob_id, id));
+    let bob_device = sole_contact_device(&alice, &bob_id);
+    assert!(reset_is_committed(&alice, &bob_device, id));
     fired
 }
 
@@ -2155,6 +2384,8 @@ fn run_maintenance_reset_transition(point: TransitionFailpoint, seed: u64) -> bo
 fn every_transaction_statement_is_all_or_nothing_after_restart() {
     let targets = [
         Target::ProfileBootstrap,
+        Target::AuthorityProfileBootstrap,
+        Target::AuthorityMigration,
         Target::PrekeyPublish,
         Target::PairwiseSend,
         Target::HandshakeReceive,
@@ -2378,7 +2609,10 @@ fn stable_protocol_modules_cannot_call_raw_state_setters() {
             continue;
         }
         let source = std::fs::read_to_string(&path).unwrap();
-        let production = source.split("#[cfg(test)]").next().unwrap_or(&source);
+        let production = source
+            .split("\n#[cfg(test)]\nmod ")
+            .next()
+            .unwrap_or(&source);
         let audited = if filename == "devices.rs" {
             // The pre-C2 contact-admission compatibility bridge remains an
             // explicit ADR-0030 quarantine. No other device path may inherit
@@ -2493,7 +2727,8 @@ fn scheduled_activation_commits_before_transport_or_presentation() {
                 &mut fixture.rng,
             )
             .unwrap();
-        fixture.alice.capabilities_advertised.insert(fixture.bob_id);
+        let bob_device = sole_contact_device(&fixture.alice, &fixture.bob_id);
+        fixture.alice.capabilities_advertised.insert(bob_device);
         let id = fixture
             .alice
             .schedule_message(
@@ -2723,6 +2958,8 @@ fn reordered_deferred_and_duplicate_input_converges_after_restart() {
 fn disk_constraint_and_duplicate_failures_leave_retryable_inputs() {
     let targets = [
         Target::ProfileBootstrap,
+        Target::AuthorityProfileBootstrap,
+        Target::AuthorityMigration,
         Target::PrekeyPublish,
         Target::PairwiseSend,
         Target::HandshakeReceive,
@@ -2765,12 +3002,13 @@ fn device_link_group_quota_rejects_without_publishing_partial_state() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("group-quota-target.db");
     let target = Node::create(&path, b"target", TEST_KDF, &mut rng).unwrap();
-    let before_identity = Identity::from_bytes(&target.identity.to_bytes());
+    let before_account = target.account.clone();
     let before_state = target.device_state.clone();
-    let after_identity = Identity::generate(&mut rng);
-    let after_state = devices::fresh_device_state(&after_identity, &mut rng).unwrap();
+    let after_root = Identity::generate(&mut rng);
+    let after_account = after_root.public();
+    let (_, after_state) = devices::fresh_authority_device_state(&after_root, &mut rng).unwrap();
     let sender_chain = postcard::to_allocvec(&GroupSenderChain::generate(&mut rng)).unwrap();
-    let member_identity = postcard::to_allocvec(&after_identity.public()).unwrap();
+    let member_identity = postcard::to_allocvec(&after_account).unwrap();
     let mut groups = Vec::with_capacity(kult_store::MAX_PROFILE_GROUPS + 1);
     for index in 0..=kult_store::MAX_PROFILE_GROUPS {
         let mut id = [0u8; 32];
@@ -2778,9 +3016,9 @@ fn device_link_group_quota_rejects_without_publishing_partial_state() {
         groups.push(GroupRecord {
             id,
             name: "bounded profile group".to_owned(),
-            creator: after_identity.public().ed,
+            creator: after_account.ed,
             members: vec![GroupMember {
-                peer: after_identity.public().ed,
+                peer: after_account.ed,
                 identity: member_identity.clone(),
             }],
             secret: [0x61; 32],
@@ -2793,12 +3031,12 @@ fn device_link_group_quota_rejects_without_publishing_partial_state() {
     }
 
     let result = target.store.commit_plan(
-        CommitPlan::DeviceLink(DeviceLinkPlan {
-            identity: IdentityTransition {
-                before: &before_identity,
-                after: &after_identity,
+        CommitPlan::AuthorityDeviceLink(AuthorityDeviceLinkPlan {
+            account: AccountIdentityTransition {
+                before: &before_account,
+                after: &after_account,
             },
-            device_state: DeviceStateTransition {
+            device_state: DeviceAuthorityStateTransition {
                 before: Some(&before_state),
                 after: &after_state,
             },
@@ -2812,23 +3050,27 @@ fn device_link_group_quota_rejects_without_publishing_partial_state() {
             notes: &[],
             ephemeral: &[],
             sync_events: &[],
+            reset_peers: &[],
             presentation_changed: true,
         }),
         &mut rng,
     );
     assert!(matches!(result, Err(kult_store::StoreError::GroupLimit)));
     assert_eq!(
-        target.store.get_identity().unwrap().unwrap().public(),
-        before_identity.public()
+        target.store.get_account_identity().unwrap(),
+        Some(before_account.clone())
     );
     assert!(target.store.groups().unwrap().is_empty());
     drop(target);
 
     let target = Node::open(&path, b"target").unwrap();
     assert_eq!(
-        target.store.get_identity().unwrap().unwrap().public(),
-        before_identity.public()
+        target.store.get_account_identity().unwrap(),
+        Some(before_account)
     );
-    assert_eq!(target.store.get_device_state().unwrap(), Some(before_state));
+    assert_eq!(
+        target.store.get_device_authority_state().unwrap(),
+        Some(before_state)
+    );
     assert!(target.store.groups().unwrap().is_empty());
 }

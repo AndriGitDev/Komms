@@ -24,8 +24,11 @@ use rusqlite::{Connection, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use kult_crypto::{derive_kek, CryptoError, Identity, KdfProfile, Session, StorageKey};
-use kult_protocol::{CapabilityControl, Envelope};
+use kult_crypto::{
+    derive_kek, CryptoError, GroupMessage, Identity, IdentityPublic, KdfProfile, Session,
+    StorageKey, GROUP_MESSAGE_VERSION_LEGACY, GROUP_MESSAGE_VERSION_ORIGIN,
+};
+use kult_protocol::{CapabilityControl, Envelope, MAX_GROUP_AUTHORITY_MEMBERS};
 
 mod backup;
 mod commit;
@@ -43,19 +46,23 @@ mod scale_bench;
 mod scheduled;
 mod store_v2;
 
-pub use backup::BACKUP_MAGIC;
+const ACCOUNT_PUBLIC_MAGIC: &[u8; 4] = b"KAP2";
+
+pub use backup::{AUTHORITY_BACKUP_MAGIC, BACKUP_MAGIC};
 pub use commit::{
-    AttachmentStagePlan, AttachmentStatePlan, CapabilityDelete, CommitPlan, CommitReceipt,
-    CommittedRecordIds, ContactDeviceDelete, ContactTransition, DeferredControlKind,
-    DeferredControlRecord, DeliveryTransition, DeviceControlPlan, DeviceLinkPlan,
+    AccountIdentityTransition, AttachmentStagePlan, AttachmentStatePlan,
+    AuthorityDeviceControlPlan, AuthorityDeviceLinkPlan, AuthorityMigrationPlan,
+    AuthorityProfileBootstrapPlan, CapabilityDelete, CommitPlan, CommitReceipt, CommittedRecordIds,
+    ContactDeviceDelete, ContactTransition, DeferredControlKind, DeferredControlRecord,
+    DeliveryTransition, DeviceAuthorityStateTransition, DeviceControlPlan,
     DeviceLinkRecoveryTransition, DeviceProjection, DeviceProjectionPlan, DeviceStateTransition,
     EphemeralTransition, GroupAuthorityStateTransition, GroupAuthorityTransition,
     GroupChainStateTransition, GroupChainTransition, GroupMessageDelete, GroupMessageTransition,
     GroupReceivePlan, GroupSendPlan, GroupStatePlan, GroupStateTransition, GroupTransition,
-    HandshakeReceivePlan, IdentityTransition, MaintenancePlan, MediaDelete, MediaObjectTransition,
+    HandshakeReceivePlan, MaintenancePlan, MediaDelete, MediaObjectTransition,
     MediaTransferTransition, MessageDelete, MessageTransition, PairwiseReceivePlan,
-    PairwiseSendPlan, PendingDelete, PrekeyPublishPlan, PrekeyTransition, ProfileBootstrapPlan,
-    QueueDelete, QueueTransition, ReceiptReceivePlan, SessionDelete, SessionTransition,
+    PairwiseSendPlan, PendingDelete, PrekeyPublishPlan, PrekeyTransition, QueueDelete,
+    QueueTransition, ReceiptReceivePlan, SessionDelete, SessionTransition,
     MAX_ATTACHMENT_STAGE_MUTATIONS, MAX_COMMIT_MUTATIONS, MAX_COMMIT_QUEUE_ROWS,
     MAX_DEFERRED_CONTROLS, MAX_DEVICE_CONTROL_MUTATIONS, MAX_DEVICE_LINK_MUTATIONS,
     MAX_DEVICE_PROJECTION_MUTATIONS, MAX_GROUP_COMMIT_MUTATIONS, MAX_GROUP_COMMIT_QUEUE_ROWS,
@@ -64,25 +71,30 @@ pub use commit::{
 };
 #[cfg(feature = "test-failpoints")]
 pub use commit::{CommitFailpoint, CommitFailure};
+#[cfg(any(test, feature = "legacy-test-fixtures"))]
+pub use commit::{DeviceLinkPlan, IdentityTransition, ProfileBootstrapPlan};
 pub use devices::{
-    ContactDeviceRecord, DeviceChannelRecord, DeviceLinkRecoveryRecord, DeviceStateRecord,
+    ContactDeviceRecord, DeviceAuthorityConflictKind, DeviceAuthorityConflictRecord,
+    DeviceAuthorityStateRecord, DeviceChannelRecord, DeviceLinkRecoveryRecord, DeviceStateRecord,
     DeviceTransferGroup, DeviceTransferSelection, DeviceTransferSnapshot,
-    MessageDeviceDeliveryRecord, MAX_DEVICE_SYNC_EVENTS, MAX_DEVICE_SYNC_EVENT_BYTES,
+    MessageDeviceDeliveryRecord, MAX_DEVICE_AUTHORITY_CONFLICTS, MAX_DEVICE_SYNC_EVENTS,
+    MAX_DEVICE_SYNC_EVENT_BYTES,
 };
 pub use ephemeral::{EphemeralConversation, EphemeralMode, EphemeralRecord, EphemeralState};
 pub use local_metadata::{
-    render_label_color, valid_folder_name, valid_label_color, valid_label_name, ConversationId,
+    render_label_color, valid_folder_name, valid_label_color, valid_label_name,
+    AuthorityResetHistoryRecord, ContactAuthorityConflictRecord, ConversationId,
     ConversationMetadata, CustomIconRecord, CustomIconTarget, DraftRecord, FolderAssignment,
     FolderConversationResult, FolderRecord, FolderSelection, LabelAssignment, LabelFilterMode,
     LabelFilterResult, LabelRecord, LocalMetadataKey, LocalMetadataRecord, PinConversationRecord,
     PinConversationResult, PinRecord, PinStatusRecord, StaleFolderAssignment, StaleFolderReason,
     StaleLabelAssignment, StaleLabelReason, ThemePreference, UiPreferenceRecord,
-    CUSTOM_ICON_BUNDLED_GLYPHS, CUSTOM_ICON_DIMENSION, CUSTOM_ICON_MEDIA_TYPE,
-    FOLDER_ID_RETRY_LIMIT, LABEL_COLORS, LABEL_ID_RETRY_LIMIT, MAX_CUSTOM_ICONS,
-    MAX_CUSTOM_ICON_BYTES, MAX_CUSTOM_ICON_TOTAL_BYTES, MAX_DRAFT_BYTES, MAX_FOLDERS,
-    MAX_FOLDER_ASSIGNMENTS, MAX_LABELS, MAX_LABELS_PER_CONVERSATION, MAX_LABEL_ASSIGNMENTS,
-    MAX_LOCAL_METADATA_STRING_BYTES, MAX_PINS, MAX_UI_PREFERENCE_VALUE_BYTES, THEME_PREFERENCES,
-    THEME_PREFERENCE_KEY, THEME_SEMANTIC_ROLES,
+    AUTHORITY_RESET_HISTORY_KEY, CONTACT_AUTHORITY_CONFLICTS_KEY, CUSTOM_ICON_BUNDLED_GLYPHS,
+    CUSTOM_ICON_DIMENSION, CUSTOM_ICON_MEDIA_TYPE, FOLDER_ID_RETRY_LIMIT, LABEL_COLORS,
+    LABEL_ID_RETRY_LIMIT, MAX_AUTHORITY_RESET_CONTACTS, MAX_CUSTOM_ICONS, MAX_CUSTOM_ICON_BYTES,
+    MAX_CUSTOM_ICON_TOTAL_BYTES, MAX_DRAFT_BYTES, MAX_FOLDERS, MAX_FOLDER_ASSIGNMENTS, MAX_LABELS,
+    MAX_LABELS_PER_CONVERSATION, MAX_LABEL_ASSIGNMENTS, MAX_LOCAL_METADATA_STRING_BYTES, MAX_PINS,
+    MAX_UI_PREFERENCE_VALUE_BYTES, THEME_PREFERENCES, THEME_PREFERENCE_KEY, THEME_SEMANTIC_ROLES,
 };
 pub use maintenance::{
     StorageMaintenanceOptions, StorageMaintenanceReport, MAX_MAINTENANCE_VACUUM_PAGES,
@@ -558,6 +570,151 @@ pub struct GroupDelivery {
     pub state: DeliveryState,
 }
 
+/// Authentication level retained with one sealed group-history row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GroupOriginAuthentication {
+    /// Legacy ADR-0012 membership authentication. Any member that held the
+    /// sender chain could have produced the row.
+    #[default]
+    LegacyMembership,
+    /// ADR-0029 recipient-device origin authentication was verified before
+    /// the sender chain advanced.
+    RecipientV1 {
+        /// Exact certified sender device from the pairwise session.
+        sender_device: [u8; 32],
+        /// Exact local recipient device named by the origin capability.
+        recipient_device: [u8; 32],
+        /// Exact sender-chain id bound by the recipient tag.
+        chain_key_id: [u8; 16],
+    },
+    /// A locally authored v1 row whose fan-out carries one independently
+    /// authenticated wrapper per exact recipient device.
+    OutboundV1 {
+        /// Exact certified local sending device.
+        sender_device: [u8; 32],
+        /// Exact sender-chain id shared by all recipient wrappers.
+        chain_key_id: [u8; 16],
+    },
+    /// Locally authored attachment manifest staged before its shared
+    /// ciphertext and recipient tags can be committed atomically.
+    PendingOutboundV1 {
+        /// Exact certified local device that must author the eventual wrapper.
+        sender_device: [u8; 32],
+    },
+}
+
+impl GroupOriginAuthentication {
+    /// Whether this row has individual recipient-authenticated origin.
+    pub fn is_recipient_authenticated(self) -> bool {
+        matches!(self, Self::RecipientV1 { .. } | Self::OutboundV1 { .. })
+    }
+
+    /// Whether this row is released membership-authenticated history.
+    pub fn is_legacy_membership(self) -> bool {
+        self == Self::LegacyMembership
+    }
+
+    /// Whether this row is local content waiting to be origin-wrapped.
+    pub fn is_recipient_authentication_pending(self) -> bool {
+        matches!(self, Self::PendingOutboundV1 { .. })
+    }
+}
+
+/// Versioned local-only encoding for a shared group ciphertext whose exact
+/// recipient-device copies have not all reached the durable transport queue.
+pub const GROUP_PENDING_FANOUT_MAGIC: &[u8; 4] = b"KGF2";
+/// Maximum exact recipient-device routes retained for one group ciphertext.
+pub const MAX_GROUP_PENDING_FANOUT_ROUTES: usize =
+    MAX_GROUP_AUTHORITY_MEMBERS * MAX_PAIRWISE_COMMIT_DEVICES;
+
+/// One exact recipient-device copy still owed from a shared group ciphertext.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupPendingFanoutRoute {
+    /// Stable recipient account.
+    pub account: [u8; 32],
+    /// Certified recipient device selected when the message was created.
+    pub device: [u8; 32],
+    /// ADR-0029 tag for this exact recipient, or `None` for a legacy group.
+    pub origin_tag: Option<[u8; 32]>,
+}
+
+/// Local pending-fan-out state that keeps the encrypt-once ciphertext and
+/// recipient tags without retaining any origin key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupPendingFanout {
+    /// The one sender-key ciphertext shared by every recipient wrapper.
+    pub shared_ciphertext: Vec<u8>,
+    /// Exact recipient-device copies that have not reached a durable queue.
+    pub routes: Vec<GroupPendingFanoutRoute>,
+}
+
+impl GroupPendingFanout {
+    /// Validate and canonicalize a pending fan-out value.
+    pub fn new(
+        shared_ciphertext: Vec<u8>,
+        mut routes: Vec<GroupPendingFanoutRoute>,
+    ) -> Result<Self> {
+        routes.sort_by_key(|route| (route.account, route.device));
+        let pending = Self {
+            shared_ciphertext,
+            routes,
+        };
+        pending.validate()?;
+        Ok(pending)
+    }
+
+    /// Decode the exact versioned local representation.
+    pub fn decode(encoded: &[u8]) -> Result<Self> {
+        let body = encoded
+            .strip_prefix(GROUP_PENDING_FANOUT_MAGIC)
+            .ok_or(StoreError::InvalidTransition)?;
+        let pending: Self = decode_exact(body)?;
+        pending.validate()?;
+        Ok(pending)
+    }
+
+    /// Encode the exact versioned local representation.
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        let body = postcard::to_allocvec(self).map_err(|_| StoreError::Serialization)?;
+        let mut encoded = Vec::with_capacity(GROUP_PENDING_FANOUT_MAGIC.len() + body.len());
+        encoded.extend_from_slice(GROUP_PENDING_FANOUT_MAGIC);
+        encoded.extend_from_slice(&body);
+        Ok(encoded)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.shared_ciphertext.is_empty()
+            || self.shared_ciphertext.len() > kult_protocol::MAX_ENVELOPE_BYTES
+            || self.routes.is_empty()
+            || self.routes.len() > MAX_GROUP_PENDING_FANOUT_ROUTES
+            || self
+                .routes
+                .windows(2)
+                .any(|pair| (pair[0].account, pair[0].device) >= (pair[1].account, pair[1].device))
+            || self
+                .routes
+                .iter()
+                .any(|route| route.account == [0u8; 32] || route.device == [0u8; 32])
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        let shared = GroupMessage::decode(&self.shared_ciphertext)
+            .map_err(|_| StoreError::InvalidTransition)?;
+        let origin = self.routes[0].origin_tag.is_some();
+        if self
+            .routes
+            .iter()
+            .any(|route| route.origin_tag.is_some() != origin)
+            || (origin && shared.version() != GROUP_MESSAGE_VERSION_ORIGIN)
+            || (!origin && shared.version() != GROUP_MESSAGE_VERSION_LEGACY)
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        Ok(())
+    }
+}
+
 /// A group message record (sealed as one blob in the `group_msgs` table).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupMessageRecord {
@@ -575,10 +732,48 @@ pub struct GroupMessageRecord {
     pub body: Vec<u8>,
     /// Outbound only: one entry per co-member.
     pub deliveries: Vec<GroupDelivery>,
-    /// The encrypted wire body, retained while any member's copy could not
-    /// be created yet (their session is still forming); dropped once every
-    /// member is served.
+    /// Versioned local pending-fan-out state retained while any exact
+    /// recipient-device copy could not be queued; never exported in backup.
+    ///
+    /// Released Alpha rows may still contain one raw legacy ciphertext.
     pub wire_body: Option<Vec<u8>>,
+    /// Durable, accurately labelled author-authentication evidence.
+    ///
+    /// The default preserves decoding of released membership-authenticated
+    /// rows without rewriting their security meaning.
+    #[serde(default)]
+    pub origin: GroupOriginAuthentication,
+}
+
+/// Released postcard row shape before durable origin evidence was added.
+#[derive(Serialize, Deserialize)]
+struct ReleasedGroupMessageRecord {
+    id: [u8; 16],
+    group: [u8; 32],
+    sender: [u8; 32],
+    direction: Direction,
+    timestamp: u64,
+    body: Vec<u8>,
+    deliveries: Vec<GroupDelivery>,
+    wire_body: Option<Vec<u8>>,
+}
+
+fn decode_group_message_payload(payload: &[u8]) -> Result<GroupMessageRecord> {
+    if let Ok(record) = decode_exact::<GroupMessageRecord>(payload) {
+        return Ok(record);
+    }
+    let released: ReleasedGroupMessageRecord = decode_exact(payload)?;
+    Ok(GroupMessageRecord {
+        id: released.id,
+        group: released.group,
+        sender: released.sender,
+        direction: released.direction,
+        timestamp: released.timestamp,
+        body: released.body,
+        deliveries: released.deliveries,
+        wire_body: released.wire_body,
+        origin: GroupOriginAuthentication::LegacyMembership,
+    })
 }
 
 /// Legacy queue row: `(peer, msg_id, group_msg_id, envelope)`.
@@ -855,6 +1050,7 @@ impl Store {
         migration::cleanup_completed_replacement(path)?;
         backup::cleanup_completed_restore(path)?;
         backup::cleanup_completed_initialization(path)?;
+        backup::cleanup_completed_authority_reset(path)?;
         Ok(store)
     }
 
@@ -939,10 +1135,20 @@ impl Store {
         self.validate_rows::<store_v2::IdentityRows, _>(|row| {
             row.verify_key(&store_v2::SingletonKey)?;
             row.verify_indexes(&store_v2::IndexKeys::none())?;
-            let bytes: [u8; 64] = row.payload[..]
-                .try_into()
-                .map_err(|_| StoreError::Serialization)?;
-            let _ = Identity::from_bytes(&bytes);
+            if let Some(encoded) = row.payload.strip_prefix(ACCOUNT_PUBLIC_MAGIC) {
+                let account: IdentityPublic = decode_exact(encoded)?;
+                account.verify()?;
+            } else {
+                // Legacy pre-ADR-0026 stores are admitted only so the explicit
+                // Alpha migration can inspect them. New/live profiles never
+                // write this root-secret shape.
+                let bytes: Zeroizing<[u8; 64]> = Zeroizing::new(
+                    row.payload[..]
+                        .try_into()
+                        .map_err(|_| StoreError::Serialization)?,
+                );
+                let _ = Identity::from_bytes(&bytes);
+            }
             Ok(())
         })?;
         self.validate_rows::<store_v2::SessionRows, _>(|row| {
@@ -1038,8 +1244,9 @@ impl Store {
 
     // ---- identity ---------------------------------------------------------
 
-    /// Persist the device identity (sealed).
-    pub fn put_identity(&self, id: &Identity, rng: &mut impl CryptoRngCore) -> Result<()> {
+    /// Persist a legacy account root while upgrading a released pre-ADR-0026
+    /// store. This is deliberately not part of the production public API.
+    fn put_identity(&self, id: &Identity, rng: &mut impl CryptoRngCore) -> Result<()> {
         self.put_equality::<store_v2::IdentityRows>(
             &store_v2::SingletonKey,
             id.to_bytes().as_ref(),
@@ -1048,16 +1255,74 @@ impl Store {
         )
     }
 
-    /// Load the device identity, if one was stored.
+    /// Construct released root-bearing store fixtures for migration tests.
+    #[cfg(feature = "legacy-test-fixtures")]
+    #[doc(hidden)]
+    pub fn put_legacy_identity_fixture(
+        &self,
+        id: &Identity,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        self.put_identity(id, rng)
+    }
+
+    /// Load a legacy account root, if this is a pre-ADR-0026 profile.
     pub fn get_identity(&self) -> Result<Option<Identity>> {
         let Some(row) = self.get_equality::<store_v2::IdentityRows>(&store_v2::SingletonKey)?
         else {
             return Ok(None);
         };
+        if row.payload.starts_with(ACCOUNT_PUBLIC_MAGIC) {
+            return Ok(None);
+        }
         let bytes: [u8; 64] = row.payload[..]
             .try_into()
             .map_err(|_| StoreError::Serialization)?;
         Ok(Some(Identity::from_bytes(&bytes)))
+    }
+
+    /// Persist only the stable public account trust anchor.
+    pub fn put_account_identity(
+        &self,
+        account: &IdentityPublic,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        account.verify()?;
+        let encoded = postcard::to_allocvec(account).map_err(|_| StoreError::Serialization)?;
+        let mut payload = Zeroizing::new(Vec::with_capacity(
+            ACCOUNT_PUBLIC_MAGIC.len() + encoded.len(),
+        ));
+        payload.extend_from_slice(ACCOUNT_PUBLIC_MAGIC);
+        payload.extend_from_slice(&encoded);
+        self.put_equality::<store_v2::IdentityRows>(
+            &store_v2::SingletonKey,
+            &payload,
+            store_v2::IndexKeys::none(),
+            rng,
+        )
+    }
+
+    /// Load the stable public account trust anchor from a live v2 profile.
+    pub fn get_account_identity(&self) -> Result<Option<IdentityPublic>> {
+        let Some(row) = self.get_equality::<store_v2::IdentityRows>(&store_v2::SingletonKey)?
+        else {
+            return Ok(None);
+        };
+        let Some(encoded) = row.payload.strip_prefix(ACCOUNT_PUBLIC_MAGIC) else {
+            return Ok(None);
+        };
+        let account: IdentityPublic = decode_exact(encoded)?;
+        account.verify()?;
+        Ok(Some(account))
+    }
+
+    /// Whether the profile still contains the pre-ADR-0026 account root.
+    pub fn contains_legacy_account_root(&self) -> Result<bool> {
+        let Some(row) = self.get_equality::<store_v2::IdentityRows>(&store_v2::SingletonKey)?
+        else {
+            return Ok(false);
+        };
+        Ok(!row.payload.starts_with(ACCOUNT_PUBLIC_MAGIC))
     }
 
     // ---- sessions ---------------------------------------------------------
@@ -1876,7 +2141,7 @@ impl Store {
     }
 
     fn decode_group_message_row(&self, row: &store_v2::RawRow) -> Result<GroupMessageRecord> {
-        let record: GroupMessageRecord = decode_exact(&row.payload)?;
+        let record = decode_group_message_payload(&row.payload)?;
         row.verify_key(&store_v2::GroupMessageKey::new(
             record.group,
             record.sender,
@@ -1984,6 +2249,28 @@ impl Store {
         }
         tx.commit()?;
         Ok(expired.len())
+    }
+}
+
+#[cfg(test)]
+mod group_message_compat_tests {
+    use super::*;
+
+    #[test]
+    fn released_group_rows_decode_as_membership_authenticated() {
+        let released = ReleasedGroupMessageRecord {
+            id: [1; 16],
+            group: [2; 32],
+            sender: [3; 32],
+            direction: Direction::Inbound,
+            timestamp: 4,
+            body: b"released history".to_vec(),
+            deliveries: Vec::new(),
+            wire_body: None,
+        };
+        let encoded = postcard::to_allocvec(&released).unwrap();
+        let decoded = decode_group_message_payload(&encoded).unwrap();
+        assert_eq!(decoded.origin, GroupOriginAuthentication::LegacyMembership);
     }
 }
 

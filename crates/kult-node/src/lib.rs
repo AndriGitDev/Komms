@@ -36,17 +36,20 @@
 #[cfg(feature = "test-failpoints")]
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use futures::future::{select, Either};
 use rand_core::CryptoRngCore;
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use kult_crypto::{
-    initiate, open_anonymous, respond, safety_number, seal_anonymous, DevicePrekeyBundle, Identity,
-    IdentityPublic, InitialMessage, KdfProfile, PendingDeviceLinkSource, PendingDeviceLinkTarget,
-    PrekeyBundle, RatchetMessage, SafetyNumber, Session,
+    initiate, open_account_recovery_authority, open_anonymous, respond, safety_number,
+    seal_account_recovery_authority, seal_anonymous,
+    AuthorityDevicePrekeyBundle as DevicePrekeyBundle, Identity, IdentityPublic, InitialMessage,
+    KdfProfile, PendingAuthorityDeviceLinkSource, PendingAuthorityDeviceLinkTarget, PrekeyBundle,
+    PreparedAuthorityDeviceLink, RatchetMessage, SafetyNumber, Session,
 };
 use kult_protocol::{
     decode_content, delivery_token, encode_disappearing_text_payload, encode_edit,
@@ -59,18 +62,18 @@ use kult_protocol::{
     MIN_EPHEMERAL_LIFETIME_SECS, REASSEMBLY_WINDOW_SECS,
 };
 use kult_store::{
-    AttachmentStatePlan, CommitPlan, CommitReceipt, ContactDeviceDelete, ContactDeviceRecord,
-    ContactRecord, ConversationId, ConversationMetadata, DeferredControlKind,
-    DeferredControlRecord, DeliveryState, DeliveryTransition, DeviceStateRecord, Direction,
-    EphemeralConversation, EphemeralMode, EphemeralRecord, EphemeralState, EphemeralTransition,
-    GroupMessageDelete, GroupMessageRecord, GroupMessageTransition, GroupRecord, GroupTransition,
-    HandshakeReceivePlan, LocalMetadataKey, LocalMetadataRecord, MaintenancePlan, MediaDelete,
-    MediaObjectRecord, MediaObjectTransition, MediaTransferRecord, MediaTransferTransition,
-    MessageDelete, MessageDeviceDeliveryRecord, MessageRecord, MessageTransition,
-    NoteMessageRecord, PairwiseReceivePlan, PairwiseSendPlan, PendingDelete, PrekeyPublishPlan,
-    PrekeyTransition, QueueClass, QueueDelete, QueueItem, QueueTransition, ReceiptReceivePlan,
-    ScheduledConversation as StoreScheduledConversation, ScheduledMessageRecord, SessionTransition,
-    Store, MAX_MAINTENANCE_TRANSITIONS,
+    AttachmentStatePlan, AuthorityMigrationPlan, CommitPlan, CommitReceipt, ContactDeviceDelete,
+    ContactDeviceRecord, ContactRecord, ConversationId, ConversationMetadata, DeferredControlKind,
+    DeferredControlRecord, DeliveryState, DeliveryTransition, DeviceAuthorityStateRecord,
+    Direction, EphemeralConversation, EphemeralMode, EphemeralRecord, EphemeralState,
+    EphemeralTransition, GroupMessageDelete, GroupMessageRecord, GroupMessageTransition,
+    GroupRecord, GroupTransition, HandshakeReceivePlan, LocalMetadataKey, LocalMetadataRecord,
+    MaintenancePlan, MediaDelete, MediaObjectRecord, MediaObjectTransition, MediaTransferRecord,
+    MediaTransferTransition, MessageDelete, MessageDeviceDeliveryRecord, MessageRecord,
+    MessageTransition, NoteMessageRecord, PairwiseReceivePlan, PairwiseSendPlan, PendingDelete,
+    PrekeyPublishPlan, PrekeyTransition, QueueClass, QueueDelete, QueueItem, QueueTransition,
+    ReceiptReceivePlan, ScheduledConversation as StoreScheduledConversation,
+    ScheduledMessageRecord, SessionTransition, Store, MAX_MAINTENANCE_TRANSITIONS,
 };
 use kult_transport::{CostClass, DeliveryHint, Discovery, Reachability, Transport};
 
@@ -102,15 +105,16 @@ pub use api::{
     AttachmentConversation, AttachmentDirection, AttachmentInfo, AttachmentMetadata,
     AttachmentObjectInfo, CallAudioFrame, CallAvailability, CallDirection, CallEndReason, CallInfo,
     CallPhase, CallUnavailableReason, CarrierCapability, CarrierCapabilitySnapshot, Command,
-    ContentStatus, CustomIconCrop, CustomIconInfo, CustomIconUsage, DeviceLinkSelection,
-    EditVersionInfo, Event, FolderConversationInfo, FolderConversationList, FolderInfo,
-    FolderSelection, GroupAuthorityInfo, GroupInfo, GroupMemberRoleInfo, GroupMentionCapability,
-    LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode, LinkedDeviceInfo,
-    MentionCapabilityIssue, MentionCapabilityIssueReason, MentionSpan, MessageDeviceDeliveryInfo,
-    PinConversationInfo, PinConversationList, PinInfo, PollInfo, PollOptionInfo, PollVoteInfo,
-    ResolvedGroupMessage, ResolvedMessage, ScheduledConversation, ScheduledMessageInfo,
-    StaleFolderInfo, StaleFolderReason as NodeStaleFolderReason, StaleLabelInfo,
-    StaleLabelReason as NodeStaleLabelReason,
+    ContactAuthorityConflictInfo, ContentStatus, CustomIconCrop, CustomIconInfo, CustomIconUsage,
+    DeviceAuthorityConflictInfo, DeviceAuthorityConflictType, DeviceLinkSelection, EditVersionInfo,
+    Event, FolderConversationInfo, FolderConversationList, FolderInfo, FolderSelection,
+    GroupAuthorityInfo, GroupInfo, GroupMemberRoleInfo, GroupMentionCapability, GroupSecurityInfo,
+    GroupSecurityLevel, LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode,
+    LinkedDeviceInfo, MentionCapabilityIssue, MentionCapabilityIssueReason, MentionSpan,
+    MessageDeviceDeliveryInfo, PinConversationInfo, PinConversationList, PinInfo, PollInfo,
+    PollOptionInfo, PollVoteInfo, ResolvedGroupMessage, ResolvedMessage, ScheduledConversation,
+    ScheduledMessageInfo, StaleFolderInfo, StaleFolderReason as NodeStaleFolderReason,
+    StaleLabelInfo, StaleLabelReason as NodeStaleLabelReason,
 };
 pub use calls::{CALL_OFFER_LIFETIME_SECS, MAX_CALL_OFFER_LIFETIME_SECS};
 pub use contact_names::{ContactNameAssessment, ContactNameWarning, MAX_CONTACT_NAME_BYTES};
@@ -125,17 +129,17 @@ pub use incognito_keyboard::{
     IncognitoKeyboardPolicy, INCOGNITO_KEYBOARD_PROTECTED_FIELDS,
 };
 pub use kult_protocol::GroupRole;
-#[cfg(feature = "test-failpoints")]
-#[doc(hidden)]
-pub use kult_store::{CommitFailpoint, CommitFailure};
 pub use kult_store::{
-    ConversationId as LabelConversationId, CustomIconTarget, ThemePreference,
-    CUSTOM_ICON_BUNDLED_GLYPHS, CUSTOM_ICON_DIMENSION, CUSTOM_ICON_MEDIA_TYPE,
+    AuthorityResetHistoryRecord, ConversationId as LabelConversationId, CustomIconTarget,
+    ThemePreference, CUSTOM_ICON_BUNDLED_GLYPHS, CUSTOM_ICON_DIMENSION, CUSTOM_ICON_MEDIA_TYPE,
     FOLDER_ID_RETRY_LIMIT, LABEL_COLORS, MAX_CUSTOM_ICONS, MAX_CUSTOM_ICON_BYTES,
     MAX_CUSTOM_ICON_TOTAL_BYTES, MAX_FOLDERS, MAX_FOLDER_ASSIGNMENTS, MAX_LABELS,
     MAX_LABELS_PER_CONVERSATION, MAX_LABEL_ASSIGNMENTS, MAX_LOCAL_METADATA_STRING_BYTES, MAX_PINS,
     NOTE_TO_SELF_CONVERSATION_ID, THEME_PREFERENCES, THEME_PREFERENCE_KEY, THEME_SEMANTIC_ROLES,
 };
+#[cfg(feature = "test-failpoints")]
+#[doc(hidden)]
+pub use kult_store::{CommitFailpoint, CommitFailure};
 pub use polls::MAX_POLL_VOTE_REVISIONS;
 pub use screen_security::{
     screen_security_policy, ScreenSecurityLevel, ScreenSecurityPlatform, ScreenSecurityPolicy,
@@ -204,14 +208,6 @@ struct AccountInitialFlight {
     return_bundle: Vec<u8>,
 }
 
-fn encode_account_initial(flight: &AccountInitialFlight) -> Result<Vec<u8>> {
-    let body = postcard::to_allocvec(flight).map_err(|_| NodeError::CorruptState)?;
-    let mut out = Vec::with_capacity(ACCOUNT_INITIAL_MAGIC.len() + body.len());
-    out.extend_from_slice(ACCOUNT_INITIAL_MAGIC);
-    out.extend_from_slice(&body);
-    Ok(out)
-}
-
 fn decode_account_initial(bytes: &[u8]) -> Option<AccountInitialFlight> {
     let body = bytes.strip_prefix(ACCOUNT_INITIAL_MAGIC)?;
     let (flight, remainder): (AccountInitialFlight, &[u8]) =
@@ -262,11 +258,22 @@ const HINT_REFRESH_MIN_ATTEMPTS: u32 = 1;
 /// of one per queued item per tick.
 const HINT_REFRESH_INTERVAL_SECS: u64 = 60;
 
-/// Envelopes above this size never ride an airtime-budgeted (LoRa) link:
-/// they are held for a faster carrier, with honest feedback
-/// ([`Event::AwaitingFasterLink`]), instead of silently hogging the mesh
-/// (docs/05-transports.md §4.2 rule 3).
+/// Ordinary encrypted content above this size never rides an
+/// airtime-budgeted (LoRa) link: it is held for a faster carrier with honest
+/// feedback instead of silently hogging the mesh.
 const AIRTIME_CEILING_BYTES: usize = 4 * 1024;
+/// A PQ first flight is security control traffic rather than user media. Give
+/// the authority-wrapped handshake one still-small, explicit allowance so a
+/// QR-paired contact can establish over the mesh-only golden path.
+const AIRTIME_HANDSHAKE_CEILING_BYTES: usize = 8 * 1024;
+
+fn airtime_ceiling(envelope: &Envelope) -> usize {
+    if envelope.kind == EnvelopeKind::Handshake {
+        AIRTIME_HANDSHAKE_CEILING_BYTES
+    } else {
+        AIRTIME_CEILING_BYTES
+    }
+}
 
 /// How long a partial message may sit incomplete before the receiver NACKs
 /// its missing fragment indices (selective retransmission,
@@ -463,9 +470,9 @@ impl Bridge {
             return;
         }
         let encoded_len = envelope.header_len() + envelope.body.len();
-        // Anything over the airtime ceiling could neither ride the mesh nor
-        // have come off it whole — never transit (§4.2 rule 3).
-        if encoded_len > AIRTIME_CEILING_BYTES {
+        // Anything over its bounded airtime class could neither ride the
+        // mesh nor have come off it whole — never transit (§4.2 rule 3).
+        if encoded_len > airtime_ceiling(envelope) {
             return;
         }
         let id = envelope.content_id();
@@ -495,17 +502,114 @@ impl Bridge {
     }
 }
 
-/// The Komms runtime: one identity, one store, any number of transports.
+/// One-time account authority retained only until the explicit offline-file
+/// export completes.
+struct PendingAccountRecoveryMaterial {
+    package: Vec<u8>,
+    mnemonic: zeroize::Zeroizing<String>,
+}
+
+/// Prepared copied-root Alpha reset that the user must review and confirm
+/// before the live profile is replaced.
+pub struct AuthorityResetPreparation {
+    /// Fresh public account that will replace the irrevocable former account.
+    pub new_account: IdentityPublic,
+    /// Human-readable address derived from `new_account`.
+    pub new_address: String,
+    /// One-time 24-word phrase opening the separately written recovery file.
+    pub mnemonic: zeroize::Zeroizing<String>,
+}
+
+const RECOVERY_ATTEMPT_WINDOW: Duration = Duration::from_secs(60);
+const MAX_RECOVERY_ATTEMPTS_PER_WINDOW: usize = 5;
+const MAX_RECOVERY_ATTEMPT_KEYS: usize = 64;
+
+struct RecoveryAttemptState {
+    failures: VecDeque<Instant>,
+    last_seen: Instant,
+}
+
+static RECOVERY_ATTEMPTS: OnceLock<Mutex<HashMap<[u8; 32], RecoveryAttemptState>>> =
+    OnceLock::new();
+
+fn open_account_recovery_authority_throttled(package: &[u8], mnemonic: &str) -> Result<Identity> {
+    let key: [u8; 32] = Sha256::digest(package).into();
+    let now = Instant::now();
+    {
+        let attempts = RECOVERY_ATTEMPTS.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut attempts = attempts.lock().map_err(|_| NodeError::CorruptState)?;
+        attempts.retain(|_, state| now.duration_since(state.last_seen) < RECOVERY_ATTEMPT_WINDOW);
+        if !attempts.contains_key(&key) && attempts.len() >= MAX_RECOVERY_ATTEMPT_KEYS {
+            if let Some(oldest) = attempts
+                .iter()
+                .min_by_key(|(_, state)| state.last_seen)
+                .map(|(key, _)| *key)
+            {
+                attempts.remove(&oldest);
+            }
+        }
+        let state = attempts.entry(key).or_insert_with(|| RecoveryAttemptState {
+            failures: VecDeque::new(),
+            last_seen: now,
+        });
+        while state
+            .failures
+            .front()
+            .is_some_and(|failure| now.duration_since(*failure) >= RECOVERY_ATTEMPT_WINDOW)
+        {
+            state.failures.pop_front();
+        }
+        if state.failures.len() >= MAX_RECOVERY_ATTEMPTS_PER_WINDOW {
+            return Err(NodeError::RecoveryAttemptLimited);
+        }
+        state.failures.push_back(now);
+        state.last_seen = now;
+    }
+
+    let opened = open_account_recovery_authority(package, mnemonic);
+    if opened.is_ok() {
+        RECOVERY_ATTEMPTS
+            .get()
+            .expect("attempt map initialized")
+            .lock()
+            .map_err(|_| NodeError::CorruptState)?
+            .remove(&key);
+    }
+    opened.map_err(Into::into)
+}
+
+fn write_new_private_file(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let io_error = |error| NodeError::Store(kult_store::StoreError::Io(error));
+    atomicwrites::AtomicFile::new(path, atomicwrites::DisallowOverwrite)
+        .write_with_options(|file| file.write_all(bytes), options)
+        .map_err(std::io::Error::from)
+        .map_err(io_error)
+}
+
+/// The Komms runtime: one public account, one device key, and one store.
 pub struct Node {
     store: Store,
-    /// Stable account identity used for conversation ids and existing wire compatibility.
-    identity: Identity,
+    /// Stable public account trust anchor used for conversations and safety numbers.
+    account: IdentityPublic,
     /// Separately authenticated key unique to this physical installation.
     device_identity: Identity,
-    device_state: DeviceStateRecord,
-    device_state_dirty: bool,
-    pending_device_link_source: Option<PendingDeviceLinkSource>,
-    pending_device_link_target: Option<PendingDeviceLinkTarget>,
+    device_state: DeviceAuthorityStateRecord,
+    pending_device_link_source: Option<PendingAuthorityDeviceLinkSource>,
+    pending_device_link_target: Option<PendingAuthorityDeviceLinkTarget>,
+    pending_device_link_prepared: Option<PreparedAuthorityDeviceLink>,
+    pending_device_link_selection: Option<DeviceLinkSelection>,
+    pending_device_link_response_hash: Option<[u8; 32]>,
+    pending_authority_transition: Option<kult_crypto::DeviceAuthorityTransition>,
+    pending_recovery_material: Option<PendingAccountRecoveryMaterial>,
     vault: PrekeyVault,
     /// Current signed return routes included in anonymous first flights.
     own_hints: Vec<DeliveryHint>,
@@ -650,36 +754,336 @@ impl Node {
         }
     }
 
-    /// Create a brand-new node: fresh store, fresh identity, fresh prekeys.
+    /// Create a brand-new node and retain its one-time recovery export.
     pub fn create(
         path: &std::path::Path,
         passphrase: &[u8],
         profile: KdfProfile,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Self> {
-        let identity = Identity::generate(rng);
-        let device_state = devices::fresh_device_state(&identity, rng)?;
+        let root = Identity::generate(rng);
+        let account = root.public();
+        let (device_identity, device_state) = devices::fresh_authority_device_state(&root, rng)?;
+        let (package, mnemonic) = seal_account_recovery_authority(&root, rng)?;
         let vault = PrekeyVault::generate(rng);
         let encoded_vault = vault.encode();
-        let store = Store::create_profile(
+        let store = Store::create_authority_profile(
             path,
             passphrase,
             profile,
-            &identity,
+            &account,
             &device_state,
             &encoded_vault,
             rng,
         )?;
-        Self::assemble(store, identity, vault)
+        Self::assemble(
+            store,
+            account,
+            device_identity,
+            device_state,
+            vault,
+            Some(PendingAccountRecoveryMaterial { package, mnemonic }),
+        )
     }
 
     /// Open an existing node.
     pub fn open(path: &std::path::Path, passphrase: &[u8]) -> Result<Self> {
         let store = Store::open(path, passphrase)?;
-        let identity = store.get_identity()?.ok_or(NodeError::CorruptState)?;
+        if store.contains_legacy_account_root()? {
+            let copied = store.get_device_state()?.is_some_and(|state| {
+                state.manifest.devices.len() > 1 || !state.channels.is_empty()
+            });
+            return Err(if copied {
+                NodeError::AuthorityResetRequired
+            } else {
+                NodeError::AuthorityMigrationRequired
+            });
+        }
+        let account = store
+            .get_account_identity()?
+            .ok_or(NodeError::CorruptState)?;
+        let (device_identity, device_state) = devices::load_authority_device(&store)?;
         let vault_blob = store.get_prekeys()?.ok_or(NodeError::CorruptState)?;
         let vault = PrekeyVault::decode(&vault_blob)?;
-        Self::assemble(store, identity, vault)
+        Self::assemble(store, account, device_identity, device_state, vault, None)
+    }
+
+    /// Prepare an honest single-device Alpha migration by writing a new
+    /// encrypted offline authority while leaving the live store untouched.
+    ///
+    /// The caller must show and confirm the returned phrase before invoking
+    /// [`Self::complete_authority_migration`]. A crash or cancellation before
+    /// completion therefore leaves the original profile openable by this
+    /// preparation flow and permits a fresh export to another new path.
+    pub fn prepare_authority_migration(
+        path: &std::path::Path,
+        passphrase: &[u8],
+        recovery_path: &std::path::Path,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<zeroize::Zeroizing<String>> {
+        let store = Store::open(path, passphrase)?;
+        let root = store.get_identity()?.ok_or(NodeError::CorruptState)?;
+        let legacy_state = store.get_device_state()?.ok_or(NodeError::CorruptState)?;
+        if legacy_state.manifest.devices.len() != 1 || !legacy_state.channels.is_empty() {
+            return Err(NodeError::AuthorityResetRequired);
+        }
+        let (package, mnemonic) = seal_account_recovery_authority(&root, rng)?;
+        write_new_private_file(recovery_path, &package)?;
+        Ok(mnemonic)
+    }
+
+    /// Finish a prepared single-device Alpha migration atomically.
+    ///
+    /// The separately exported authority and its confirmed phrase must open
+    /// the exact root still present in the legacy store. The transaction then
+    /// replaces that root with its public trust anchor and a root-authorized
+    /// generation-one manifest for the same physical-device key. Conversation
+    /// state, petnames, verification, ratchets, and prekeys remain local and
+    /// unchanged because no account root was ever distributed.
+    #[allow(clippy::too_many_arguments)]
+    pub fn complete_authority_migration(
+        path: &std::path::Path,
+        passphrase: &[u8],
+        recovery_package: &[u8],
+        recovery_mnemonic: &str,
+        migrated_at: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Self> {
+        let store = Store::open(path, passphrase)?;
+        let opened_root =
+            open_account_recovery_authority_throttled(recovery_package, recovery_mnemonic)?;
+        let Some(legacy_root) = store.get_identity()? else {
+            let account = store
+                .get_account_identity()?
+                .ok_or(NodeError::CorruptState)?;
+            if opened_root.public() != account {
+                return Err(NodeError::RecoveryAuthorityRequired);
+            }
+            let (device_identity, device_state) = devices::load_authority_device(&store)?;
+            let vault_blob = store.get_prekeys()?.ok_or(NodeError::CorruptState)?;
+            let vault = PrekeyVault::decode(&vault_blob)?;
+            drop(opened_root);
+            return Self::assemble(store, account, device_identity, device_state, vault, None);
+        };
+        let legacy_state = store.get_device_state()?.ok_or(NodeError::CorruptState)?;
+        if legacy_state.manifest.devices.len() != 1 || !legacy_state.channels.is_empty() {
+            return Err(NodeError::AuthorityResetRequired);
+        }
+        if opened_root.public() != legacy_root.public() {
+            return Err(NodeError::RecoveryAuthorityRequired);
+        }
+        let account = legacy_root.public();
+        let (device_identity, device_state) = devices::migrate_legacy_authority_device_state(
+            &opened_root,
+            &legacy_state,
+            migrated_at,
+            rng,
+        )?;
+        let vault_blob = store.get_prekeys()?.ok_or(NodeError::CorruptState)?;
+        let vault = PrekeyVault::decode(&vault_blob)?;
+        store.commit_plan(
+            CommitPlan::AuthorityMigration(AuthorityMigrationPlan {
+                legacy_identity: &legacy_root,
+                legacy_device_state: &legacy_state,
+                account: &account,
+                device_state: &device_state,
+            }),
+            rng,
+        )?;
+        if store.contains_legacy_account_root()?
+            || store.get_account_identity()?.as_ref() != Some(&account)
+            || store.get_device_authority_state()?.as_ref() != Some(&device_state)
+        {
+            return Err(NodeError::CorruptState);
+        }
+        drop(opened_root);
+        drop(legacy_root);
+        Self::assemble(store, account, device_identity, device_state, vault, None)
+    }
+
+    /// Prepare an explicit copied-root Alpha reset without mutating the live
+    /// database.
+    ///
+    /// A completely new account root is written to `recovery_path` with
+    /// owner-only permissions. The caller must show the new address, explain
+    /// that every safety number changes, and confirm the returned phrase
+    /// before invoking [`Self::complete_authority_reset`]. This conservative
+    /// path is also available for a single-device profile when the user knows
+    /// that a legacy KKR7 backup or another root copy exists even though the
+    /// live store contains no linked-device evidence.
+    pub fn prepare_authority_reset(
+        path: &std::path::Path,
+        passphrase: &[u8],
+        recovery_path: &std::path::Path,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<AuthorityResetPreparation> {
+        let store = Store::open(path, passphrase)?;
+        let former_root = store.get_identity()?.ok_or(NodeError::CorruptState)?;
+        store.get_device_state()?.ok_or(NodeError::CorruptState)?;
+        let new_root = Identity::generate(rng);
+        if new_root.public() == former_root.public() {
+            return Err(NodeError::CorruptState);
+        }
+        let new_account = new_root.public();
+        let new_address = new_account.address();
+        let (package, mnemonic) = seal_account_recovery_authority(&new_root, rng)?;
+        write_new_private_file(recovery_path, &package)?;
+        Ok(AuthorityResetPreparation {
+            new_account,
+            new_address,
+            mnemonic,
+        })
+    }
+
+    /// Prepare a fresh root-free identity for recovering only the safe local
+    /// archive projection from a copied-root `KKR1` through `KKR7` backup.
+    ///
+    /// There is no live store to inspect in this flow. The caller must show
+    /// the new address and explain that the backup's former identity and all
+    /// of its safety numbers are permanently abandoned before calling
+    /// [`Self::restore_legacy_backup_with_authority_reset`].
+    pub fn prepare_legacy_backup_authority_reset(
+        recovery_path: &std::path::Path,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<AuthorityResetPreparation> {
+        let new_root = Identity::generate(rng);
+        let new_account = new_root.public();
+        let new_address = new_account.address();
+        let (package, mnemonic) = seal_account_recovery_authority(&new_root, rng)?;
+        write_new_private_file(recovery_path, &package)?;
+        Ok(AuthorityResetPreparation {
+            new_account,
+            new_address,
+            mnemonic,
+        })
+    }
+
+    /// Complete a copied-root Alpha reset with one atomic database replacement.
+    ///
+    /// The confirmed recovery file becomes the offline authority for a fresh
+    /// account. Only local petnames, non-ephemeral pairwise history,
+    /// note-to-self history, and eligible local organization are copied.
+    /// Contacts lose all routes and verification; groups, sessions, delivery
+    /// work, device state, media, and service capabilities are not transferred.
+    #[allow(clippy::too_many_arguments)]
+    pub fn complete_authority_reset(
+        path: &std::path::Path,
+        passphrase: &[u8],
+        recovery_package: &[u8],
+        recovery_mnemonic: &str,
+        reset_at: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Self> {
+        let store = Store::open(path, passphrase)?;
+        let new_root =
+            open_account_recovery_authority_throttled(recovery_package, recovery_mnemonic)?;
+        let new_account = new_root.public();
+        if store.get_identity()?.is_none() {
+            let account = store
+                .get_account_identity()?
+                .ok_or(NodeError::CorruptState)?;
+            let reset = store
+                .authority_reset_history()?
+                .ok_or(NodeError::RecoveryAuthorityRequired)?;
+            if account != new_account || reset.new_account != account.ed {
+                return Err(NodeError::RecoveryAuthorityRequired);
+            }
+            let (device_identity, device_state) = devices::load_authority_device(&store)?;
+            let vault_blob = store.get_prekeys()?.ok_or(NodeError::CorruptState)?;
+            let vault = PrekeyVault::decode(&vault_blob)?;
+            drop(new_root);
+            return Self::assemble(store, account, device_identity, device_state, vault, None);
+        }
+        store.get_device_state()?.ok_or(NodeError::CorruptState)?;
+        let former_account = store
+            .get_identity()?
+            .ok_or(NodeError::CorruptState)?
+            .public();
+        if former_account == new_account {
+            return Err(NodeError::AuthorityResetRequired);
+        }
+
+        let (device_identity, device_state) =
+            devices::fresh_authority_device_state(&new_root, rng)?;
+        let vault = PrekeyVault::generate(rng);
+        let encoded_vault = vault.encode();
+        let (store, reset) = store.replace_copied_root_profile(
+            passphrase,
+            &new_account,
+            &device_state,
+            &encoded_vault,
+            reset_at,
+            rng,
+        )?;
+        if reset.former_account != former_account.ed
+            || reset.new_account != new_account.ed
+            || store.contains_legacy_account_root()?
+        {
+            return Err(NodeError::CorruptState);
+        }
+        drop(new_root);
+        Self::assemble(
+            store,
+            new_account,
+            device_identity,
+            device_state,
+            vault,
+            None,
+        )
+    }
+
+    /// Recover a legacy backup as a visible new-identity local archive.
+    ///
+    /// The copied account root is authenticated and decoded only in memory
+    /// by the store migration. The published database contains a fresh KDA2
+    /// account/device profile, cleared contact trust and routes, and only the
+    /// accurately labelled local history/petname projection.
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore_legacy_backup_with_authority_reset(
+        path: &std::path::Path,
+        backup: &[u8],
+        backup_mnemonic: &str,
+        recovery_package: &[u8],
+        recovery_mnemonic: &str,
+        reset_at: u64,
+        passphrase: &[u8],
+        profile: KdfProfile,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Self> {
+        let new_root =
+            open_account_recovery_authority_throttled(recovery_package, recovery_mnemonic)?;
+        let new_account = new_root.public();
+        let (device_identity, device_state) =
+            devices::fresh_authority_device_state(&new_root, rng)?;
+        let vault = PrekeyVault::generate(rng);
+        let encoded_vault = vault.encode();
+        let (store, reset) = Store::restore_legacy_backup_as_authority_reset(
+            path,
+            backup,
+            backup_mnemonic,
+            passphrase,
+            profile,
+            &new_account,
+            &device_state,
+            &encoded_vault,
+            reset_at,
+            rng,
+        )?;
+        if reset.new_account != new_account.ed
+            || store.contains_legacy_account_root()?
+            || store.get_account_identity()?.as_ref() != Some(&new_account)
+        {
+            return Err(NodeError::CorruptState);
+        }
+        drop(new_root);
+        Self::assemble(
+            store,
+            new_account,
+            device_identity,
+            device_state,
+            vault,
+            None,
+        )
     }
 
     /// Restore a node from an encrypted backup file onto a **new** store at
@@ -696,33 +1100,53 @@ impl Node {
         profile: KdfProfile,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Self> {
-        let (store, vault) = Store::restore_backup_with_initializer(
-            path,
-            backup,
-            mnemonic,
-            passphrase,
-            profile,
-            rng,
-            |store, rng| {
-                if store.get_identity()?.is_none() || store.get_device_state()?.is_none() {
-                    return Err(kult_store::StoreError::NotAStore);
-                }
-                let vault = PrekeyVault::generate(rng);
-                let encoded = vault.encode();
-                store.commit_plan(
-                    CommitPlan::PrekeyPublish(PrekeyPublishPlan {
-                        prekeys: PrekeyTransition {
-                            before: None,
-                            after: &encoded,
-                        },
-                    }),
-                    rng,
-                )?;
-                Ok(vault)
-            },
-        )?;
-        let identity = store.get_identity()?.ok_or(NodeError::CorruptState)?;
-        Self::assemble(store, identity, vault)
+        let _ = (path, backup, mnemonic, passphrase, profile, rng);
+        Err(NodeError::RecoveryAuthorityRequired)
+    }
+
+    /// Restore a root-free backup by explicitly opening the separately held
+    /// offline account authority for one recovery-epoch transition.
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore_with_recovery_authority(
+        path: &std::path::Path,
+        backup: &[u8],
+        backup_mnemonic: &str,
+        recovery_package: &[u8],
+        recovery_mnemonic: &str,
+        recovered_at: u64,
+        passphrase: &[u8],
+        profile: KdfProfile,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Self> {
+        let root = open_account_recovery_authority_throttled(recovery_package, recovery_mnemonic)?;
+        let account = root.public();
+        let (store, device_identity, device_state, vault) =
+            Store::restore_authority_backup_with_initializer(
+                path,
+                backup,
+                backup_mnemonic,
+                &root,
+                recovered_at,
+                passphrase,
+                profile,
+                rng,
+                |store, rng| {
+                    let vault = PrekeyVault::generate(rng);
+                    let encoded = vault.encode();
+                    store.commit_plan(
+                        CommitPlan::PrekeyPublish(PrekeyPublishPlan {
+                            prekeys: PrekeyTransition {
+                                before: None,
+                                after: &encoded,
+                            },
+                        }),
+                        rng,
+                    )?;
+                    Ok(vault)
+                },
+            )?;
+        drop(root);
+        Self::assemble(store, account, device_identity, device_state, vault, None)
     }
 
     /// Export this node's encrypted backup (docs/07-storage.md §4):
@@ -736,15 +1160,20 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<(Vec<u8>, zeroize::Zeroizing<String>)> {
-        Ok(self.store.export_backup(now, rng)?)
+        Ok(self.store.export_authority_backup(now, rng)?)
     }
 
-    fn assemble(store: Store, identity: Identity, vault: PrekeyVault) -> Result<Self> {
+    fn assemble(
+        store: Store,
+        account: IdentityPublic,
+        device_identity: Identity,
+        device_state: DeviceAuthorityStateRecord,
+        vault: PrekeyVault,
+        pending_recovery_material: Option<PendingAccountRecoveryMaterial>,
+    ) -> Result<Self> {
         // Call controls are transient and their in-memory state and secrets
         // deliberately do not survive a process restart. The first bounded
         // flush retires any sealed realtime rows through Maintenance.
-        let (device_identity, device_state, device_state_dirty) =
-            devices::load_or_migrate_device(&store, &identity)?;
         let mut sessions = HashMap::new();
         let contact_devices = store.contact_devices()?;
         for endpoint in &contact_devices {
@@ -772,12 +1201,16 @@ impl Node {
         }
         Ok(Self {
             store,
-            identity,
+            account,
             device_identity,
             device_state,
-            device_state_dirty,
             pending_device_link_source: None,
             pending_device_link_target: None,
+            pending_device_link_prepared: None,
+            pending_device_link_selection: None,
+            pending_device_link_response_hash: None,
+            pending_authority_transition: None,
+            pending_recovery_material,
             vault,
             own_hints: Vec::new(),
             transports: Vec::new(),
@@ -853,17 +1286,17 @@ impl Node {
     /// This node's peer id (Ed25519 identity key bytes) — what contacts key
     /// conversations by.
     pub fn peer_id(&self) -> [u8; 32] {
-        self.identity.public().ed
+        self.account.ed
     }
 
     /// This node's public identity.
     pub fn public(&self) -> IdentityPublic {
-        self.identity.public()
+        self.account.clone()
     }
 
     /// This node's human-shareable kult address.
     pub fn address(&self) -> String {
-        self.identity.public().address()
+        self.account.address()
     }
 
     /// The safety number for out-of-band verification with a contact
@@ -875,7 +1308,33 @@ impl Node {
             .ok_or(NodeError::UnknownPeer)?;
         let their: IdentityPublic =
             postcard::from_bytes(&contact.identity).map_err(|_| NodeError::CorruptState)?;
-        Ok(safety_number(&self.identity.public(), &their))
+        Ok(safety_number(&self.account, &their))
+    }
+
+    /// Local-only record describing a copied-root Alpha reset and contacts
+    /// whose new safety numbers still require comparison.
+    pub fn authority_reset_history(&self) -> Result<Option<AuthorityResetHistoryRecord>> {
+        Ok(self.store.authority_reset_history()?)
+    }
+
+    /// Write the one-time encrypted offline account authority to a new
+    /// caller-selected file and return the separate 24-word opening phrase.
+    ///
+    /// The destination is created with owner-only permissions on Unix and is
+    /// never overwritten. A failed write leaves the in-memory material
+    /// available for a retry; a successful write consumes it permanently.
+    pub fn export_account_recovery_authority(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<zeroize::Zeroizing<String>> {
+        let material = self
+            .pending_recovery_material
+            .as_ref()
+            .ok_or(NodeError::RecoveryAuthorityUnavailable)?;
+        write_new_private_file(path, &material.package)?;
+        let mnemonic = material.mnemonic.clone();
+        self.pending_recovery_material = None;
+        Ok(mnemonic)
     }
 
     /// Export a fresh signed prekey bundle for out-of-band sharing (QR, file,
@@ -903,30 +1362,20 @@ impl Node {
         let step = self.begin_crypto_step()?;
         let opk = candidate_vault.fresh_opk(rng);
         self.finish_crypto_step(step)?;
-        let linked = self.device_state.manifest.devices.len() > 1;
-        let signing_identity = if linked {
-            &self.device_identity
-        } else {
-            &self.identity
-        };
         let bundle = PrekeyBundle::build(
-            signing_identity,
+            &self.device_identity,
             &candidate_vault.spk(),
             &candidate_vault.pqspk()?,
             Some(&opk),
             now + BUNDLE_TTL_SECS,
             encode_hints(hints),
         );
-        let encoded = if linked {
-            DevicePrekeyBundle::new(
-                self.device_state.local_certificate.clone(),
-                self.device_state.manifest.clone(),
-                bundle,
-            )?
-            .encode()?
-        } else {
-            bundle.encode()
-        };
+        let encoded = DevicePrekeyBundle::new(
+            self.device_state.local_certificate.clone(),
+            self.device_state.manifest.clone(),
+            bundle,
+        )?
+        .encode()?;
         let after_vault = candidate_vault.encode();
         self.store.commit_plan(
             CommitPlan::PrekeyPublish(PrekeyPublishPlan {
@@ -968,15 +1417,20 @@ impl Node {
             return Err(NodeError::NoDiscovery);
         }
         let bundle = PrekeyBundle::build(
-            &self.identity,
+            &self.device_identity,
             &self.vault.spk(),
             &self.vault.pqspk()?,
             None,
             now + BUNDLE_TTL_SECS,
             encode_hints(hints),
         );
-        let key = self.identity.public().address_digest();
-        let value = bundle.encode();
+        let key = self.account.address_digest();
+        let value = DevicePrekeyBundle::new(
+            self.device_state.local_certificate.clone(),
+            self.device_state.manifest.clone(),
+            bundle,
+        )?
+        .encode()?;
         let mut published = false;
         for discovery in &self.discoveries {
             if discovery.publish(key, value.clone()).await.is_ok() {
@@ -1012,29 +1466,31 @@ impl Node {
             .lookup_bundle(digest, now)
             .await
             .ok_or(NodeError::BundleNotFound)?;
-        let hints = decode_hints(&bundle.relay_hints);
-        self.add_contact(name, &bundle.encode(), &hints, now, rng)
+        let hints = decode_hints(&bundle.prekey.relay_hints);
+        self.add_contact(name, &bundle.encode()?, &hints, now, rng)
     }
 
     /// Fetch, verify, and select the freshest prekey bundle for `digest`
     /// across all discovery planes. `None` means no candidate survived
     /// verification — never that a record was accepted unverified.
-    async fn lookup_bundle(&self, digest: [u8; 32], now: u64) -> Option<PrekeyBundle> {
-        let mut best: Option<PrekeyBundle> = None;
+    async fn lookup_bundle(&self, digest: [u8; 32], now: u64) -> Option<DevicePrekeyBundle> {
+        let mut best: Option<DevicePrekeyBundle> = None;
         for discovery in &self.discoveries {
             let Ok(candidates) = discovery.lookup(digest).await else {
                 continue;
             };
             for bytes in candidates {
-                let Ok(bundle) = PrekeyBundle::decode(&bytes) else {
+                let Ok(bundle) = DevicePrekeyBundle::decode(&bytes) else {
                     continue;
                 };
-                if bundle.verify(now).is_err() || bundle.identity.address_digest() != digest {
+                if bundle.verify(now).is_err()
+                    || bundle.manifest.account().address_digest() != digest
+                {
                     continue;
                 }
                 if best
                     .as_ref()
-                    .is_none_or(|b| bundle.expires_at > b.expires_at)
+                    .is_none_or(|b| bundle.prekey.expires_at > b.prekey.expires_at)
                 {
                     best = Some(bundle);
                 }
@@ -1053,7 +1509,7 @@ impl Node {
     /// is offline). Every token is scoped to this node as recipient
     /// (ADR-0007), so a check-in can only ever drain mail addressed to us.
     pub fn mailbox_tokens(&self, now: u64) -> Vec<[u8; 32]> {
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         let device = self.device_id();
         let today = epoch_day(now);
         let lo = today.saturating_sub(TOKEN_LOOKBACK_EPOCHS);
@@ -1101,23 +1557,25 @@ impl Node {
                 let device_bundle = DevicePrekeyBundle::decode(bundle_bytes)?;
                 device_bundle.verify(now)?;
                 let advertised_hints = decode_hints(&device_bundle.prekey.relay_hints);
-                let peer = device_bundle.manifest.account.ed;
-                let identity = postcard::to_allocvec(&device_bundle.manifest.account)
+                let peer = device_bundle.manifest.account().ed;
+                let identity = postcard::to_allocvec(device_bundle.manifest.account())
                     .map_err(|_| NodeError::CorruptState)?;
+                let authority = device_bundle.manifest.encode()?;
                 let endpoint = ContactDeviceRecord {
                     account: peer,
                     device: device_bundle.certificate.device_id(),
                     name: device_bundle
                         .manifest
-                        .devices
+                        .devices()
                         .iter()
                         .find(|entry| entry.certificate == device_bundle.certificate)
                         .map(|entry| entry.name.clone()),
                     certificate: postcard::to_allocvec(&device_bundle.certificate)
                         .map_err(|_| NodeError::CorruptState)?,
+                    authority,
                     bundle: device_bundle.prekey.encode(),
                     hints: Vec::new(),
-                    manifest_generation: device_bundle.manifest.generation,
+                    manifest_generation: device_bundle.manifest.generation(),
                     manifest_state_id: device_bundle.manifest.state_id(),
                     last_seen: now,
                     revoked_at: None,
@@ -1142,6 +1600,7 @@ impl Node {
                     device: peer,
                     name: None,
                     certificate: Vec::new(),
+                    authority: Vec::new(),
                     bundle: bundle_bytes.to_vec(),
                     hints: Vec::new(),
                     manifest_generation: 0,
@@ -1178,7 +1637,7 @@ impl Node {
         if let Some(manifest) = manifest.as_ref() {
             // A rollback/fork-losing manifest must not mutate even the
             // account-level petname, verification bit, or delivery hints.
-            self.validate_contact_device_manifest(manifest)?;
+            self.validate_contact_device_manifest_visible(manifest, now, rng)?;
         }
         self.store.put_contact(
             &ContactRecord {
@@ -1429,6 +1888,12 @@ impl Node {
 
     /// Record that safety numbers were verified out-of-band.
     pub fn mark_verified(&mut self, peer: &[u8; 32], rng: &mut impl CryptoRngCore) -> Result<()> {
+        if self.store.authority_reset_reverification_required(peer)? {
+            if !self.store.confirm_authority_reset_contact(peer, rng)? {
+                return Err(NodeError::CorruptState);
+            }
+            return Ok(());
+        }
         let mut contact = self
             .store
             .get_contact(peer)?
@@ -1453,7 +1918,7 @@ impl Node {
     pub fn resolved_messages_with(&self, peer: &[u8; 32]) -> Result<Vec<ResolvedMessage>> {
         Ok(edits::resolve_pairwise(
             self.store.messages_with(peer)?,
-            self.identity.public().ed,
+            self.account.ed,
         ))
     }
 
@@ -1629,7 +2094,7 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 16]> {
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         if target_author != me || text.is_empty() || text.len() > MAX_EDIT_TEXT_LEN {
             return Err(NodeError::InvalidEdit);
         }
@@ -1763,6 +2228,9 @@ impl Node {
             .store
             .get_contact(peer)?
             .ok_or(NodeError::UnknownPeer)?;
+        if self.store.authority_reset_reverification_required(peer)? {
+            return Err(NodeError::ContactReverificationRequired);
+        }
         let endpoints = self.store.contact_devices_for(peer)?;
         let mut routes = endpoints;
         if routes.is_empty() {
@@ -1771,6 +2239,7 @@ impl Node {
                 device: *peer,
                 name: None,
                 certificate: Vec::new(),
+                authority: Vec::new(),
                 bundle: contact.bundle.clone(),
                 hints: contact.hints.clone(),
                 manifest_generation: 0,
@@ -1925,7 +2394,7 @@ impl Node {
                 ephemeral: Ephemeral::DisappearingText { expires_at, .. },
             } => Some(EphemeralRecord {
                 conversation: EphemeralConversation::Pairwise(*peer),
-                author: self.identity.public().ed,
+                author: self.account.ed,
                 content_id,
                 expires_at,
                 mode: EphemeralMode::DisappearingText,
@@ -2205,24 +2674,6 @@ impl Node {
     /// the transport scheduler. Returns all events produced.
     pub async fn tick(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<Vec<Event>> {
         self.acknowledge_presentation(rng)?;
-        if self.device_state_dirty {
-            let receipt = self.store.commit_plan(
-                CommitPlan::DeviceControl(kult_store::DeviceControlPlan {
-                    state: Some(kult_store::DeviceStateTransition {
-                        before: None,
-                        after: &self.device_state,
-                    }),
-                    link_recovery: None,
-                    groups: &[],
-                    insert_events: &[],
-                    delete_events: &[],
-                    presentation_changed: false,
-                }),
-                rng,
-            )?;
-            self.device_state_dirty = false;
-            self.accept_commit_receipt(receipt, []);
-        }
         self.apply_resolved_device_sync(rng)?;
         if !self.media_reconciled {
             let batch = self
@@ -2795,54 +3246,31 @@ impl Node {
     ) -> Result<(Session, Envelope)> {
         let mut bundle = PrekeyBundle::decode(bundle_bytes)?.verify(now)?;
         let reset_markers = self.store.reset_markers()?;
-        if (reset_markers.contains(account) || reset_markers.contains(device))
-            || self.device_state.manifest.devices.len() > 1
-        {
+        if reset_markers.contains(account) || reset_markers.contains(device) {
             bundle = bundle.without_opk();
         }
-        let linked = self.device_state.manifest.devices.len() > 1;
-        let initiator = if linked {
-            &self.device_identity
-        } else {
-            &self.identity
-        };
         let step = self.begin_crypto_step()?;
-        let initiated = initiate(initiator, &bundle, padded, now, rng);
+        let initiated = initiate(&self.device_identity, &bundle, padded, now, rng);
         self.finish_crypto_step(step)?;
         let (session, init) = initiated?;
-        let initial_bytes = if linked {
-            let return_prekey = PrekeyBundle::build(
-                &self.device_identity,
-                &self.vault.spk(),
-                &self.vault.pqspk()?,
-                None,
-                now + BUNDLE_TTL_SECS,
-                Vec::new(),
-            );
-            let return_bundle = DevicePrekeyBundle::new(
-                self.device_state.local_certificate.clone(),
-                self.device_state.manifest.clone(),
-                return_prekey,
-            )?
-            .encode()?;
-            encode_device_initial(&DeviceInitialFlight {
-                initial: init.encode(),
-                return_bundle,
-            })?
-        } else {
-            let return_bundle = PrekeyBundle::build(
-                &self.identity,
-                &self.vault.spk(),
-                &self.vault.pqspk()?,
-                None,
-                now + BUNDLE_TTL_SECS,
-                encode_hints(&self.own_hints),
-            );
-            encode_account_initial(&AccountInitialFlight {
-                initial: init.encode(),
-                return_bundle: return_bundle.encode(),
-            })?
-        };
+        let return_prekey = PrekeyBundle::build(
+            &self.device_identity,
+            &self.vault.spk(),
+            &self.vault.pqspk()?,
+            None,
+            now + BUNDLE_TTL_SECS,
+            encode_hints(&self.own_hints),
+        );
+        let return_bundle = DevicePrekeyBundle::new(
+            self.device_state.local_certificate.clone(),
+            self.device_state.manifest.clone(),
+            return_prekey,
+        )?
+        .encode()?;
+        let initial_bytes = encode_device_initial(&DeviceInitialFlight {
+            initial: init.encode(),
+            return_bundle,
+        })?;
         let step = self.begin_crypto_step()?;
         let sealed = seal_anonymous(&bundle.bundle().identity, HS_AD, &initial_bytes, rng);
         self.finish_crypto_step(step)?;
@@ -2867,7 +3295,7 @@ impl Node {
         if due.is_empty() {
             return Ok(());
         }
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         let queue = self.store.queue_all()?;
         let mut tombstones = Vec::new();
         let mut pairwise_deletes = Vec::new();
@@ -3112,6 +3540,7 @@ impl Node {
                         device: account,
                         name: None,
                         certificate: Vec::new(),
+                        authority: Vec::new(),
                         bundle: contact.bundle,
                         hints: contact.hints,
                         manifest_generation: 0,
@@ -3461,7 +3890,7 @@ impl Node {
             .store
             .deferred_controls(MAX_DEFERRED_CONTROLS_PER_TICK)?
         {
-            let (applied, acknowledged) = match control.kind {
+            let (applied, deleted_atomically) = match control.kind {
                 DeferredControlKind::AttachmentBulk => {
                     let acknowledged = self.apply_attachment_bulk(
                         control.peer,
@@ -3482,8 +3911,25 @@ impl Node {
                 continue;
             }
             made_progress = true;
-            if acknowledged {
+            if deleted_atomically {
                 continue;
+            }
+            if control.kind == DeferredControlKind::GroupControl
+                && self.accepted_group_origin_control(&control)?
+            {
+                let acknowledgement = ReceiptPayload {
+                    acks: vec![control.content_id],
+                    nacks: Vec::new(),
+                }
+                .encode();
+                if !self.commit_pairwise_control_send(
+                    &control.peer_device,
+                    &acknowledgement,
+                    now,
+                    rng,
+                )? {
+                    continue;
+                }
             }
             let receipt = self.store.commit_plan(
                 CommitPlan::Maintenance(MaintenancePlan {
@@ -3721,14 +4167,7 @@ impl Node {
         let (recipient, init_bytes) = if let Ok(bytes) = device_open {
             (&self.device_identity, bytes)
         } else {
-            let step = self.begin_crypto_step()?;
-            let account_open = open_anonymous(&self.identity, HS_AD, &env.body);
-            self.finish_crypto_step(step)?;
-            if let Ok(bytes) = account_open {
-                (&self.identity, bytes)
-            } else {
-                return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
-            }
+            return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
         };
         let (raw_initial, sender_bundle, sender_account_bundle) =
             if let Some(flight) = decode_device_initial(&init_bytes) {
@@ -3792,7 +4231,12 @@ impl Node {
         let peer_device = init.initiator.ed;
         let (peer, account_identity) = sender_bundle.as_ref().map_or_else(
             || (peer_device, init.initiator.clone()),
-            |bundle| (bundle.manifest.account.ed, bundle.manifest.account.clone()),
+            |bundle| {
+                (
+                    bundle.manifest.account().ed,
+                    bundle.manifest.account().clone(),
+                )
+            },
         );
         let identity =
             postcard::to_allocvec(&account_identity).map_err(|_| NodeError::CorruptState)?;
@@ -3827,14 +4271,14 @@ impl Node {
         let mut delete_endpoint_records = Vec::new();
         let mut cleanup_devices = Vec::new();
         if let Some(bundle) = sender_bundle.as_ref() {
-            self.validate_contact_device_manifest(&bundle.manifest)?;
+            self.validate_contact_device_manifest_visible(&bundle.manifest, now, rng)?;
             let state_id = bundle.manifest.state_id();
             let legacy_alias = existing_endpoints
                 .iter()
                 .find(|endpoint| endpoint.device == peer && endpoint.manifest_generation == 0);
             let mut active_by_issuance = bundle
                 .manifest
-                .devices
+                .devices()
                 .iter()
                 .filter(|entry| entry.revoked_at.is_none())
                 .collect::<Vec<_>>();
@@ -3847,7 +4291,8 @@ impl Node {
                 });
                 unique_earliest.then_some(first.certificate.device_id())
             });
-            for entry in &bundle.manifest.devices {
+            let encoded_authority = bundle.manifest.encode()?;
+            for entry in bundle.manifest.devices() {
                 let device = entry.certificate.device_id();
                 let prior = existing_endpoints
                     .iter()
@@ -3873,9 +4318,10 @@ impl Node {
                     name: Some(entry.name.clone()),
                     certificate: postcard::to_allocvec(&entry.certificate)
                         .map_err(|_| NodeError::CorruptState)?,
+                    authority: encoded_authority.clone(),
                     bundle: endpoint_bundle,
                     hints,
-                    manifest_generation: bundle.manifest.generation,
+                    manifest_generation: bundle.manifest.generation(),
                     manifest_state_id: state_id,
                     last_seen: entry
                         .last_seen
@@ -3893,6 +4339,12 @@ impl Node {
                 .iter()
                 .map(|endpoint| endpoint.device)
                 .collect::<HashSet<_>>();
+            for orphaned in existing_endpoints.iter().filter(|endpoint| {
+                endpoint.manifest_generation > 0 && !manifest_devices.contains(&endpoint.device)
+            }) {
+                delete_endpoint_records.push(orphaned.clone());
+                cleanup_devices.push(orphaned.device);
+            }
             for legacy in existing_endpoints.iter().filter(|endpoint| {
                 endpoint.manifest_generation == 0
                     && !manifest_devices.contains(&endpoint.device)
@@ -3910,6 +4362,7 @@ impl Node {
                 device: peer_device,
                 name: None,
                 certificate: Vec::new(),
+                authority: Vec::new(),
                 bundle: account_return_bundle,
                 hints: account_return_hints,
                 manifest_generation: 0,
@@ -3927,6 +4380,9 @@ impl Node {
                 }
                 if endpoint.certificate.is_empty() {
                     endpoint.certificate.clone_from(&prior.certificate);
+                }
+                if endpoint.authority.is_empty() {
+                    endpoint.authority.clone_from(&prior.authority);
                 }
                 if endpoint.name.is_none() {
                     endpoint.name.clone_from(&prior.name);
@@ -3960,7 +4416,7 @@ impl Node {
                 })
             })
             .collect::<Vec<_>>();
-        let group_candidates = self.prepare_groups_on_session_established(&peer)?;
+        let group_candidates = self.prepare_groups_on_session_established(&peer, rng)?;
         let group_transitions = group_candidates
             .iter()
             .map(|(before, after)| GroupTransition { before, after })
@@ -4740,19 +5196,25 @@ impl Node {
 
     fn local_capabilities() -> CapabilityControl {
         CapabilityControl {
-            formats: vec![FormatCapabilities {
-                format_version: CONTENT_FORMAT_V1,
-                kinds: vec![
-                    CONTENT_KIND_TEXT,
-                    CONTENT_KIND_ATTACHMENT,
-                    CONTENT_KIND_MENTION,
-                    CONTENT_KIND_EDIT,
-                    CONTENT_KIND_EPHEMERAL,
-                    CONTENT_KIND_POLL,
-                    CONTENT_KIND_GROUP_AUTHORITY,
-                    CONTENT_KIND_CALL_CONTROL,
-                ],
-            }],
+            formats: vec![
+                FormatCapabilities {
+                    format_version: CONTENT_FORMAT_V1,
+                    kinds: vec![
+                        CONTENT_KIND_TEXT,
+                        CONTENT_KIND_ATTACHMENT,
+                        CONTENT_KIND_MENTION,
+                        CONTENT_KIND_EDIT,
+                        CONTENT_KIND_EPHEMERAL,
+                        CONTENT_KIND_POLL,
+                        CONTENT_KIND_GROUP_AUTHORITY,
+                        CONTENT_KIND_CALL_CONTROL,
+                    ],
+                },
+                FormatCapabilities {
+                    format_version: kult_protocol::GROUP_ORIGIN_CAPABILITY_FORMAT,
+                    kinds: vec![kult_protocol::GROUP_ORIGIN_CAPABILITY_KIND],
+                },
+            ],
         }
     }
 
@@ -5083,6 +5545,11 @@ impl Node {
                 after_group.pending.retain(|pending| {
                     !(pending.peer == peer && pending.wire_id.as_ref().is_some_and(acked))
                 });
+                if let Some(origin_after) =
+                    self.prepare_group_origin_ack(&after_group, &peer, peer_device, &receipt.acks)?
+                {
+                    after_group = origin_after;
+                }
                 if after_group != before_group {
                     groups.push((before_group, after_group));
                 }
@@ -5138,7 +5605,7 @@ impl Node {
     /// are recipient-scoped (ADR-0007), so only envelopes addressed to *this*
     /// node match — never multipath echoes of our own outbound.
     fn match_session(&self, token: &[u8; 32], now: u64) -> Option<[u8; 32]> {
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         let device = self.device_id();
         let today = epoch_day(now);
         let lo = today.saturating_sub(TOKEN_LOOKBACK_EPOCHS);
@@ -5165,7 +5632,7 @@ impl Node {
         if self.match_session(token, now).is_some() {
             return true;
         }
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         let device = self.device_id();
         let today = epoch_day(now);
         let lo = today.saturating_sub(TOKEN_LOOKBACK_EPOCHS);
@@ -5357,7 +5824,7 @@ impl Node {
                         break;
                     }
                 };
-            let oversize = item.envelope.encode().len() > AIRTIME_CEILING_BYTES;
+            let oversize = item.envelope.encode().len() > airtime_ceiling(&item.envelope);
             let mut held_for_airtime = false;
 
             // Scheduler: rank every (transport, hint) pair by reachability
@@ -5757,7 +6224,7 @@ impl Node {
         let Some(bundle) = self.lookup_bundle(identity.address_digest(), now).await else {
             return Ok(hints);
         };
-        let found = decode_hints(&bundle.relay_hints);
+        let found = decode_hints(&bundle.prekey.relay_hints);
         if found.is_empty() {
             return Ok(hints);
         }
@@ -5943,7 +6410,7 @@ mod edit_tests {
         let original = alice
             .send_message(&bob_peer, b"legacy first flight", 1_800_000_001, &mut rng)
             .unwrap();
-        let alice_peer = alice.identity.public().ed;
+        let alice_peer = alice.account.ed;
 
         assert!(matches!(
             alice.edit_message(
@@ -5955,6 +6422,481 @@ mod edit_tests {
                 &mut rng,
             ),
             Err(NodeError::EditUnsupported)
+        ));
+    }
+}
+
+#[cfg(test)]
+mod authority_migration_tests {
+    use rand::{rngs::StdRng, RngCore, SeedableRng};
+
+    use kult_crypto::{
+        derive_kek, mnemonic_from_entropy, DeviceCertificate, DeviceManifest, DeviceManifestEntry,
+        StorageKey,
+    };
+    use kult_store::{
+        ContactRecord, DeliveryState, DeviceStateRecord, Direction, MessageRecord,
+        NoteMessageRecord,
+    };
+
+    use super::*;
+
+    const TEST_KDF: KdfProfile = KdfProfile {
+        m_cost_kib: 8,
+        t_cost: 1,
+        p_cost: 1,
+    };
+
+    fn legacy_backup_v1_fixture(
+        identity: &Identity,
+        contacts: Vec<ContactRecord>,
+        messages: Vec<MessageRecord>,
+        created_at: u64,
+        rng: &mut StdRng,
+    ) -> (Vec<u8>, String) {
+        let reset_peers = Vec::<[u8; 32]>::new();
+        let payload = postcard::to_allocvec(&(
+            created_at,
+            identity.to_bytes().to_vec(),
+            contacts,
+            messages,
+            reset_peers,
+        ))
+        .unwrap();
+        let mut entropy = [0u8; 32];
+        rng.fill_bytes(&mut entropy);
+        let mnemonic = mnemonic_from_entropy(&entropy);
+        let mut salt = [0u8; 16];
+        rng.fill_bytes(&mut salt);
+        let key =
+            StorageKey::from_bytes(*derive_kek(&entropy, &salt, TEST_KDF).expect("fixture KDF"));
+        let mut backup = Vec::new();
+        backup.extend_from_slice(b"KKR1");
+        backup.extend_from_slice(&TEST_KDF.m_cost_kib.to_le_bytes());
+        backup.extend_from_slice(&TEST_KDF.t_cost.to_le_bytes());
+        backup.extend_from_slice(&TEST_KDF.p_cost.to_le_bytes());
+        backup.extend_from_slice(&salt);
+        backup.extend_from_slice(&key.seal(b"KK-backup-v1", &payload, rng));
+        (backup, (*mnemonic).clone())
+    }
+
+    fn create_legacy_profile(
+        path: &std::path::Path,
+        copied_root: bool,
+        rng: &mut StdRng,
+    ) -> (Identity, [u8; 32], ContactRecord) {
+        let root = Identity::generate(rng);
+        let device = Identity::generate(rng);
+        let certificate = DeviceCertificate::issue(&root, &device, 10, rng);
+        let mut manifest =
+            DeviceManifest::initial(&root, certificate.clone(), "Original phone".into(), 10)
+                .unwrap();
+        if copied_root {
+            let copied_device = Identity::generate(rng);
+            let copied_certificate = DeviceCertificate::issue(&root, &copied_device, 11, rng);
+            manifest
+                .add_device(
+                    &root,
+                    DeviceManifestEntry {
+                        certificate: copied_certificate,
+                        name: "Former laptop".into(),
+                        last_seen: 11,
+                        revoked_at: None,
+                        revoked_after_counter: None,
+                    },
+                )
+                .unwrap();
+            manifest
+                .revoke_device(&root, &copied_device.public().ed, 12, 0)
+                .unwrap();
+        }
+        let state = DeviceStateRecord {
+            local_device_secret: device.to_bytes().to_vec(),
+            local_certificate: certificate,
+            manifest,
+            sync_counter: 7,
+            channels: Vec::new(),
+        };
+        let prekeys = PrekeyVault::generate(rng).encode();
+        let store = Store::create_legacy_profile_fixture(
+            path, b"legacy", TEST_KDF, &root, &state, &prekeys, rng,
+        )
+        .unwrap();
+        let contact_identity = Identity::generate(rng).public();
+        let contact = ContactRecord {
+            peer: contact_identity.ed,
+            identity: postcard::to_allocvec(&contact_identity).unwrap(),
+            name: "Preserved petname".into(),
+            bundle: Vec::new(),
+            hints: Vec::new(),
+            verified: true,
+        };
+        store.put_contact(&contact, rng).unwrap();
+        drop(store);
+        (root, device.public().ed, contact)
+    }
+
+    #[test]
+    fn single_device_alpha_migration_is_explicit_atomic_and_root_free() {
+        let mut rng = StdRng::seed_from_u64(0x2600_6001);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("legacy.db");
+        let recovery_path = directory.path().join("offline.kra");
+        let (root, old_device, contact) = create_legacy_profile(&path, false, &mut rng);
+
+        assert!(matches!(
+            Node::open(&path, b"legacy"),
+            Err(NodeError::AuthorityMigrationRequired)
+        ));
+        let mnemonic =
+            Node::prepare_authority_migration(&path, b"legacy", &recovery_path, &mut rng).unwrap();
+        assert!(recovery_path.is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&recovery_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+
+        // Preparing the protected package never mutates the live database.
+        let store = Store::open(&path, b"legacy").unwrap();
+        assert_eq!(
+            store.get_identity().unwrap().unwrap().public(),
+            root.public()
+        );
+        assert!(store.get_account_identity().unwrap().is_none());
+        drop(store);
+
+        // An unrelated valid authority cannot authorize the conversion.
+        let unrelated = Identity::generate(&mut rng);
+        let (wrong_package, wrong_words) =
+            seal_account_recovery_authority(&unrelated, &mut rng).unwrap();
+        assert!(matches!(
+            Node::complete_authority_migration(
+                &path,
+                b"legacy",
+                &wrong_package,
+                &wrong_words,
+                20,
+                &mut rng,
+            ),
+            Err(NodeError::RecoveryAuthorityRequired)
+        ));
+        let store = Store::open(&path, b"legacy").unwrap();
+        assert!(store.contains_legacy_account_root().unwrap());
+        drop(store);
+
+        let package = std::fs::read(&recovery_path).unwrap();
+        let mut node =
+            Node::complete_authority_migration(&path, b"legacy", &package, &mnemonic, 20, &mut rng)
+                .unwrap();
+        assert_eq!(node.peer_id(), root.public().ed);
+        assert_eq!(node.device_id(), old_device);
+        assert_eq!(node.linked_devices().len(), 1);
+        assert_eq!(node.linked_devices()[0].name, "Original phone");
+        assert!(matches!(
+            node.export_account_recovery_authority(
+                &directory.path().join("unexpected-second-authority.kra")
+            ),
+            Err(NodeError::RecoveryAuthorityUnavailable)
+        ));
+        drop(node);
+
+        let store = Store::open(&path, b"legacy").unwrap();
+        assert!(!store.contains_legacy_account_root().unwrap());
+        assert!(store.get_identity().unwrap().is_none());
+        assert_eq!(store.get_account_identity().unwrap(), Some(root.public()));
+        assert_eq!(store.get_contact(&contact.peer).unwrap(), Some(contact));
+        assert_eq!(
+            store
+                .get_device_authority_state()
+                .unwrap()
+                .unwrap()
+                .sync_counter,
+            7
+        );
+        drop(store);
+
+        let reopened = Node::open(&path, b"legacy").unwrap();
+        assert_eq!(reopened.peer_id(), root.public().ed);
+        assert_eq!(reopened.device_id(), old_device);
+        drop(reopened);
+
+        // A retry after an AfterCommit-style interruption is idempotent.
+        let reopened =
+            Node::complete_authority_migration(&path, b"legacy", &package, &mnemonic, 21, &mut rng)
+                .unwrap();
+        assert_eq!(reopened.peer_id(), root.public().ed);
+        assert_eq!(reopened.device_id(), old_device);
+    }
+
+    #[test]
+    fn any_durable_evidence_of_a_copied_alpha_root_requires_new_identity_reset() {
+        let mut rng = StdRng::seed_from_u64(0x2600_6002);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("copied-root.db");
+        let recovery_path = directory.path().join("must-not-exist.kra");
+        create_legacy_profile(&path, true, &mut rng);
+
+        assert!(matches!(
+            Node::open(&path, b"legacy"),
+            Err(NodeError::AuthorityResetRequired)
+        ));
+        assert!(matches!(
+            Node::prepare_authority_migration(&path, b"legacy", &recovery_path, &mut rng),
+            Err(NodeError::AuthorityResetRequired)
+        ));
+        assert!(!recovery_path.exists());
+    }
+
+    #[test]
+    fn copied_root_reset_creates_new_identity_and_preserves_only_local_archive() {
+        let mut rng = StdRng::seed_from_u64(0x2600_6003);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("copied-root.db");
+        let recovery_path = directory.path().join("new-offline-authority.kra");
+        let (former_root, former_device, contact) = create_legacy_profile(&path, true, &mut rng);
+        let message = MessageRecord {
+            id: [0x61; 16],
+            peer: contact.peer,
+            direction: Direction::Outbound,
+            state: DeliveryState::Queued,
+            timestamp: 13,
+            body: b"local history from the former identity".to_vec(),
+            wire_id: Some([0x62; 16]),
+        };
+        let note = NoteMessageRecord {
+            id: [0x63; 16],
+            timestamp: 14,
+            body: "device-local note".into(),
+        };
+        let store = Store::open(&path, b"legacy").unwrap();
+        store.put_message(&message, &mut rng).unwrap();
+        store.put_note_message(&note, &mut rng).unwrap();
+        drop(store);
+
+        let prepared =
+            Node::prepare_authority_reset(&path, b"legacy", &recovery_path, &mut rng).unwrap();
+        assert_ne!(prepared.new_account, former_root.public());
+        assert_eq!(prepared.new_address, prepared.new_account.address());
+        assert!(recovery_path.is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&recovery_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+
+        // Preparation never changes the copied-root source.
+        let store = Store::open(&path, b"legacy").unwrap();
+        assert_eq!(
+            store.get_identity().unwrap().unwrap().public(),
+            former_root.public()
+        );
+        assert!(store.get_account_identity().unwrap().is_none());
+        drop(store);
+
+        let package = std::fs::read(&recovery_path).unwrap();
+        let node = Node::complete_authority_reset(
+            &path,
+            b"legacy",
+            &package,
+            &prepared.mnemonic,
+            20,
+            &mut rng,
+        )
+        .unwrap();
+        assert_eq!(node.peer_id(), prepared.new_account.ed);
+        assert_ne!(node.peer_id(), former_root.public().ed);
+        assert_ne!(node.device_id(), former_device);
+        assert_eq!(node.linked_devices().len(), 1);
+        let reset = node.authority_reset_history().unwrap().unwrap();
+        assert_eq!(reset.former_account, former_root.public().ed);
+        assert_eq!(reset.new_account, node.peer_id());
+        assert_eq!(reset.preserved_contacts, 1);
+        assert_eq!(reset.preserved_pairwise_messages, 1);
+        assert_eq!(reset.preserved_note_messages, 1);
+        assert_eq!(reset.pending_reverification, vec![contact.peer]);
+        drop(node);
+
+        let store = Store::open(&path, b"legacy").unwrap();
+        assert!(!store.contains_legacy_account_root().unwrap());
+        assert!(store.get_identity().unwrap().is_none());
+        let preserved = store.get_contact(&contact.peer).unwrap().unwrap();
+        assert_eq!(preserved.name, contact.name);
+        assert_eq!(preserved.identity, contact.identity);
+        assert!(preserved.bundle.is_empty());
+        assert!(preserved.hints.is_empty());
+        assert!(!preserved.verified);
+        let archived = store.messages_with(&contact.peer).unwrap();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].body, message.body);
+        assert_eq!(archived[0].state, DeliveryState::Failed);
+        assert_eq!(archived[0].wire_id, None);
+        assert_eq!(store.note_messages().unwrap(), vec![note]);
+        assert!(store.groups().unwrap().is_empty());
+        assert!(store.contact_devices().unwrap().is_empty());
+        assert!(store.queue_all().unwrap().is_empty());
+        drop(store);
+
+        let mut node = Node::open(&path, b"legacy").unwrap();
+        assert!(matches!(
+            node.send_message(&contact.peer, b"must re-verify first", 21, &mut rng),
+            Err(NodeError::ContactReverificationRequired)
+        ));
+        node.mark_verified(&contact.peer, &mut rng).unwrap();
+        let reset = node.authority_reset_history().unwrap().unwrap();
+        assert!(reset.pending_reverification.is_empty());
+        assert!(node.contacts().unwrap()[0].verified);
+        assert!(matches!(
+            node.send_message(&contact.peer, b"still needs a fresh route", 22, &mut rng),
+            Err(NodeError::NoSession)
+        ));
+        drop(node);
+
+        // Retrying after the atomic replacement returns the same new profile.
+        let reopened = Node::complete_authority_reset(
+            &path,
+            b"legacy",
+            &package,
+            &prepared.mnemonic,
+            23,
+            &mut rng,
+        )
+        .unwrap();
+        assert_eq!(reopened.peer_id(), prepared.new_account.ed);
+        assert!(reopened
+            .authority_reset_history()
+            .unwrap()
+            .unwrap()
+            .pending_reverification
+            .is_empty());
+    }
+
+    #[test]
+    fn single_device_profile_can_choose_conservative_new_identity_reset() {
+        let mut rng = StdRng::seed_from_u64(0x2600_6004);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("single-device.db");
+        let recovery_path = directory.path().join("conservative-reset.kra");
+        let (former_root, _, contact) = create_legacy_profile(&path, false, &mut rng);
+        let prepared =
+            Node::prepare_authority_reset(&path, b"legacy", &recovery_path, &mut rng).unwrap();
+        assert_ne!(prepared.new_account, former_root.public());
+        let package = std::fs::read(&recovery_path).unwrap();
+        let node = Node::complete_authority_reset(
+            &path,
+            b"legacy",
+            &package,
+            &prepared.mnemonic,
+            20,
+            &mut rng,
+        )
+        .unwrap();
+        let reset = node.authority_reset_history().unwrap().unwrap();
+        assert_eq!(reset.former_account, former_root.public().ed);
+        assert_eq!(reset.new_account, prepared.new_account.ed);
+        assert_eq!(reset.pending_reverification, vec![contact.peer]);
+    }
+
+    #[test]
+    fn legacy_backup_recovers_only_as_a_visible_new_identity_archive() {
+        let mut rng = StdRng::seed_from_u64(0x2600_6005);
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("legacy-source.db");
+        let target_path = directory.path().join("fresh-target.db");
+        let recovery_path = directory.path().join("fresh-authority.kra");
+        let (former_root, former_device, contact) =
+            create_legacy_profile(&source_path, true, &mut rng);
+        let message = MessageRecord {
+            id: [0x81; 16],
+            peer: contact.peer,
+            direction: Direction::Outbound,
+            state: DeliveryState::Sent,
+            timestamp: 15,
+            body: b"legacy backup archive".to_vec(),
+            wire_id: Some([0x82; 16]),
+        };
+        let source = Store::open(&source_path, b"legacy").unwrap();
+        source.put_message(&message, &mut rng).unwrap();
+        let (backup, backup_mnemonic) = legacy_backup_v1_fixture(
+            &former_root,
+            vec![contact.clone()],
+            vec![message.clone()],
+            16,
+            &mut rng,
+        );
+        drop(source);
+
+        let prepared =
+            Node::prepare_legacy_backup_authority_reset(&recovery_path, &mut rng).unwrap();
+        assert_ne!(prepared.new_account, former_root.public());
+        assert_eq!(prepared.new_address, prepared.new_account.address());
+        let package = std::fs::read(&recovery_path).unwrap();
+        let node = Node::restore_legacy_backup_with_authority_reset(
+            &target_path,
+            &backup,
+            &backup_mnemonic,
+            &package,
+            &prepared.mnemonic,
+            17,
+            b"fresh-pass",
+            TEST_KDF,
+            &mut rng,
+        )
+        .unwrap();
+
+        assert_eq!(node.peer_id(), prepared.new_account.ed);
+        assert_ne!(node.peer_id(), former_root.public().ed);
+        assert_ne!(node.device_id(), former_device);
+        let reset = node.authority_reset_history().unwrap().unwrap();
+        assert_eq!(reset.former_account, former_root.public().ed);
+        assert_eq!(reset.new_account, prepared.new_account.ed);
+        assert_eq!(reset.pending_reverification, vec![contact.peer]);
+        drop(node);
+
+        let store = Store::open(&target_path, b"fresh-pass").unwrap();
+        assert!(!store.contains_legacy_account_root().unwrap());
+        assert!(store.get_identity().unwrap().is_none());
+        let archived = store.messages_with(&contact.peer).unwrap();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].state, DeliveryState::Failed);
+        assert_eq!(archived[0].wire_id, None);
+        assert!(!store.get_contact(&contact.peer).unwrap().unwrap().verified);
+    }
+
+    #[test]
+    fn offline_recovery_attempts_are_locally_bounded() {
+        let mut rng = StdRng::seed_from_u64(0x2600_6006);
+        let root = Identity::generate(&mut rng);
+        let other = Identity::generate(&mut rng);
+        let (package, correct_mnemonic) = seal_account_recovery_authority(&root, &mut rng).unwrap();
+        let (_, wrong_mnemonic) = seal_account_recovery_authority(&other, &mut rng).unwrap();
+        for _ in 0..MAX_RECOVERY_ATTEMPTS_PER_WINDOW {
+            assert!(matches!(
+                open_account_recovery_authority_throttled(&package, &wrong_mnemonic),
+                Err(NodeError::Crypto(_))
+            ));
+        }
+        assert!(matches!(
+            open_account_recovery_authority_throttled(&package, &wrong_mnemonic),
+            Err(NodeError::RecoveryAttemptLimited)
+        ));
+        assert!(matches!(
+            open_account_recovery_authority_throttled(&package, &correct_mnemonic),
+            Err(NodeError::RecoveryAttemptLimited)
         ));
     }
 }

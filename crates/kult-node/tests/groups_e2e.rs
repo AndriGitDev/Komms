@@ -10,13 +10,18 @@ use async_trait::async_trait;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
-use kult_crypto::KdfProfile;
-use kult_node::{ContentStatus, Event, GroupRole, MentionSpan, Node, NodeError};
+use kult_crypto::{GroupHeaderKey, GroupOriginEnvelope, GroupSenderChain, KdfProfile};
+use kult_node::{
+    ContentStatus, Event, GroupRole, GroupSecurityLevel, MentionSpan, Node, NodeError,
+};
 use kult_protocol::{
-    decode_content, encode_mention, encode_poll, encode_poll_vote_payload, DecodedContent,
+    decode_content, encode_mention, encode_poll, encode_poll_vote_payload, pad, DecodedContent,
     Envelope, EnvelopeKind, PollVote, CONTENT_HEADER_LEN, CONTENT_MAGIC,
 };
-use kult_store::DeliveryState;
+use kult_store::{
+    DeliveryState, Direction, GroupDelivery, GroupMessageRecord, GroupOriginAuthentication,
+    QueueClass, QueueItem, Store,
+};
 use kult_transport::{
     CostClass, DeliveryHint, LatencyClass, LinkProfile, Reachability, SendReceipt, Transport,
     TransportError,
@@ -104,6 +109,46 @@ fn delivered_to(events: &[Event]) -> Vec<([u8; 16], [u8; 32])> {
         .collect()
 }
 
+fn take_group_controls(net: &Net, recipient: u32) -> Vec<Envelope> {
+    let mut network = net.lock().unwrap();
+    let inbox = network.entry(recipient).or_default();
+    let mut controls = Vec::new();
+    let mut retained = Vec::new();
+    for envelope in inbox.drain(..) {
+        if envelope.kind == EnvelopeKind::GroupControl {
+            controls.push(envelope);
+        } else {
+            retained.push(envelope);
+        }
+    }
+    *inbox = retained;
+    controls
+}
+
+fn take_group_messages(net: &Net, recipient: u32) -> Vec<Envelope> {
+    let mut network = net.lock().unwrap();
+    let inbox = network.entry(recipient).or_default();
+    let mut messages = Vec::new();
+    let mut retained = Vec::new();
+    for envelope in inbox.drain(..) {
+        if envelope.kind == EnvelopeKind::GroupMessage {
+            messages.push(envelope);
+        } else {
+            retained.push(envelope);
+        }
+    }
+    *inbox = retained;
+    messages
+}
+
+fn deliver_envelopes(net: &Net, recipient: u32, envelopes: Vec<Envelope>) {
+    net.lock()
+        .unwrap()
+        .entry(recipient)
+        .or_default()
+        .extend(envelopes);
+}
+
 /// Three nodes, full kitchen-table contact exchange (everyone has everyone's
 /// bundle and hint — the documented v1 reachability requirement).
 async fn trio(
@@ -181,9 +226,17 @@ async fn settle_trio(
     for round in 0..6 {
         let now = start + round * 3;
         for events in [
-            alice.tick(now, rng).await.unwrap(),
-            bob.tick(now + 1, rng).await.unwrap(),
-            carol.tick(now + 2, rng).await.unwrap(),
+            alice
+                .tick(now, rng)
+                .await
+                .unwrap_or_else(|error| panic!("alice settle round {round}: {error:?}")),
+            bob.tick(now + 1, rng)
+                .await
+                .unwrap_or_else(|error| panic!("bob settle round {round}: {error:?}")),
+            carol
+                .tick(now + 2, rng)
+                .await
+                .unwrap_or_else(|error| panic!("carol settle round {round}: {error:?}")),
         ] {
             assert!(
                 !events
@@ -193,6 +246,112 @@ async fn settle_trio(
             );
         }
     }
+}
+
+async fn settle_group_security(
+    alice: &mut Node,
+    bob: &mut Node,
+    carol: &mut Node,
+    group: [u8; 32],
+    rng: &mut StdRng,
+    start: u64,
+) {
+    settle_trio(alice, bob, carol, rng, start).await;
+    if alice.group_security_info(&group).unwrap().level == GroupSecurityLevel::UpgradeRequired {
+        alice.group_upgrade_security(&group, rng).unwrap();
+    }
+    settle_trio(alice, bob, carol, rng, start + 18).await;
+    let device_ids = [
+        ("alice", alice.device_id()),
+        ("bob", bob.device_id()),
+        ("carol", carol.device_id()),
+    ];
+    let states = [
+        ("alice", alice.group_security_info(&group).ok()),
+        ("bob", bob.group_security_info(&group).ok()),
+        ("carol", carol.group_security_info(&group).ok()),
+    ];
+    for (name, node) in [("alice", alice), ("bob", bob), ("carol", carol)] {
+        if node
+            .groups()
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate.id == group)
+        {
+            let security = node.group_security_info(&group).unwrap();
+            assert_eq!(
+                security.level,
+                GroupSecurityLevel::RecipientAuthenticated,
+                "{name} did not complete group-origin exchange: {security:?}; devices: {device_ids:?}; states: {states:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn released_legacy_fanout_is_retired_before_transport_scheduling() {
+    let mut rng = StdRng::seed_from_u64(0x0029_1e6a);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("legacy.db");
+    let mut node = Node::create(&path, b"a", TEST_KDF, &mut rng).unwrap();
+    let group = node.create_group("legacy", &[], &mut rng).unwrap();
+    let account = node.peer_id();
+    drop(node);
+
+    let store = Store::open(&path, b"a").unwrap();
+    let stored_group = store.get_group(&group).unwrap().unwrap();
+    let mut sender: GroupSenderChain = postcard::from_bytes(&stored_group.sender_chain).unwrap();
+    let wire = sender
+        .seal(
+            &GroupHeaderKey::derive(&stored_group.secret),
+            &group,
+            &pad(b"released pending plaintext").unwrap(),
+            &mut rng,
+        )
+        .encode();
+    let envelope = Envelope::new(EnvelopeKind::GroupMessage, [7; 32], wire.clone());
+    let wire_id = envelope.content_id();
+    let record = GroupMessageRecord {
+        id: [8; 16],
+        group,
+        sender: account,
+        direction: Direction::Outbound,
+        timestamp: NOW,
+        body: b"released pending plaintext".to_vec(),
+        deliveries: vec![GroupDelivery {
+            peer: [10; 32],
+            wire_id: Some(wire_id),
+            state: DeliveryState::Queued,
+        }],
+        wire_body: Some(wire),
+        origin: GroupOriginAuthentication::LegacyMembership,
+    };
+    store.put_group_message(&record, &mut rng).unwrap();
+    store
+        .queue_push(
+            &QueueItem {
+                peer: [10; 32],
+                msg_id: None,
+                group_msg_id: Some(record.id),
+                class: QueueClass::Interactive,
+                created_at: NOW,
+                attempts: 0,
+                next_attempt_at: NOW,
+                envelope,
+            },
+            &mut rng,
+        )
+        .unwrap();
+    drop(store);
+
+    let mut node = Node::open(&path, b"a").unwrap();
+    assert_eq!(node.queued().unwrap(), 1);
+    node.tick(NOW + 1, &mut rng).await.unwrap();
+    assert_eq!(node.queued().unwrap(), 0);
+    let retired = node.group_messages(&group).unwrap().pop().unwrap();
+    assert_eq!(retired.wire_body, None);
+    assert_eq!(retired.deliveries[0].wire_id, None);
+    assert_eq!(retired.deliveries[0].state, DeliveryState::Failed);
 }
 
 // ---------------------------------------------------------------------------
@@ -207,27 +366,34 @@ async fn group_round_trip_receipts_and_restart() {
     let dir = tempfile::tempdir().unwrap();
     let net: Net = Arc::new(Mutex::new(HashMap::new()));
     let (mut alice, mut bob, mut carol, _a_id, b_id, c_id) = trio(dir.path(), &net, &mut rng).await;
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW).await;
 
     let gid = alice
         .create_group("expedition", &[b_id, c_id], &mut rng)
         .unwrap();
     assert_eq!(alice.groups().unwrap().len(), 1);
 
-    // Queue a message before any announce has even left: the fan-out must
-    // wait for sessions, then flow without further prompting.
+    assert!(matches!(
+        alice.group_send(&gid, b"too early", NOW, &mut rng),
+        Err(NodeError::GroupSecurityUpgradeRequired)
+    ));
+    settle_group_security(&mut alice, &mut bob, &mut carol, gid, &mut rng, NOW + 1).await;
+
     let m1 = alice
         .group_send(&gid, b"meet at the pass at dawn", NOW, &mut rng)
         .unwrap();
     assert!(matches!(
         decode_content(&alice.group_messages(&gid).unwrap()[0].body),
-        DecodedContent::LegacyText("meet at the pass at dawn")
+        DecodedContent::Text {
+            text: "meet at the pass at dawn",
+            ..
+        }
     ));
 
-    // Alice's first tick: handshakes + announces queued and flushed.
+    // One shared sender-key ciphertext is wrapped with a different recipient
+    // tag for each exact device.
     alice.tick(NOW + 1, &mut rng).await.unwrap();
 
-    // Encrypt-once: the copies addressed to Bob and Carol carry the *same*
-    // group ciphertext body under different delivery tokens.
     {
         let net = net.lock().unwrap();
         let mut bodies = Vec::new();
@@ -239,14 +405,17 @@ async fn group_round_trip_receipts_and_restart() {
             }
         }
         assert_eq!(bodies.len(), 2, "one copy per co-member");
-        assert_eq!(bodies[0], bodies[1], "single ciphertext, fanned out");
+        assert_ne!(bodies[0], bodies[1], "recipient tags are distinct");
+        let shared = bodies
+            .iter()
+            .map(|body| GroupOriginEnvelope::decode(body).unwrap().shared().encode())
+            .collect::<Vec<_>>();
+        assert_eq!(shared[0], shared[1], "single ciphertext, fanned out");
     }
 
-    // Bob and Carol: handshake unlocks announce unlocks message — one tick.
+    // Bob and Carol receive the message after the already-completed origin
+    // exchange. The earlier settlement consumed the group-update events.
     let events = bob.tick(NOW + 5, &mut rng).await.unwrap();
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, Event::GroupUpdated { group } if *group == gid)));
     assert_eq!(
         group_bodies(&events),
         vec![b"meet at the pass at dawn".to_vec()]
@@ -317,15 +486,144 @@ async fn group_round_trip_receipts_and_restart() {
 }
 
 #[tokio::test]
+async fn delayed_origin_announce_cannot_replace_a_newer_sender_chain_on_shared_mesh() {
+    let mut rng = StdRng::seed_from_u64(0x0029_a11c);
+    let dir = tempfile::tempdir().unwrap();
+    let net: Net = Arc::new(Mutex::new(HashMap::new()));
+    let (mut alice, mut bob, mut carol, _a_id, b_id, c_id) = trio(dir.path(), &net, &mut rng).await;
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW).await;
+    let gid = alice
+        .create_group("announce race", &[b_id, c_id], &mut rng)
+        .unwrap();
+    settle_group_security(&mut alice, &mut bob, &mut carol, gid, &mut rng, NOW + 1).await;
+    assert!(
+        take_group_controls(&net, 2).is_empty(),
+        "initial origin exchange must be fully drained"
+    );
+
+    // Two roster transitions rotate Alice's sender chain and recipient
+    // capabilities twice. Hold Bob's first pairwise-authenticated announce
+    // while allowing the second one to overtake it on the shared mesh.
+    alice
+        .group_remove(&gid, &c_id, NOW + 100, &mut rng)
+        .unwrap();
+    alice.tick(NOW + 101, &mut rng).await.unwrap();
+    let older = take_group_controls(&net, 2);
+    assert_eq!(older.len(), 1);
+
+    alice.group_add(&gid, &c_id, NOW + 102, &mut rng).unwrap();
+    alice.tick(NOW + 103, &mut rng).await.unwrap();
+    let newer = take_group_controls(&net, 2);
+    assert_eq!(newer.len(), 1);
+
+    deliver_envelopes(&net, 2, newer);
+    bob.tick(NOW + 104, &mut rng).await.unwrap();
+    assert_eq!(bob.groups().unwrap()[0].members.len(), 3);
+
+    deliver_envelopes(&net, 2, older);
+    bob.tick(NOW + 105, &mut rng).await.unwrap();
+    assert_eq!(bob.groups().unwrap()[0].members.len(), 3);
+
+    // Bob acknowledged the newer announce before the stale one arrived, so
+    // Alice will not resend it. Delivery succeeding after convergence proves
+    // the delayed announce did not replace the accepted chain.
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 106).await;
+    for (name, node) in [("alice", &alice), ("bob", &bob)] {
+        assert_eq!(
+            node.group_security_info(&gid).unwrap().level,
+            GroupSecurityLevel::RecipientAuthenticated,
+            "{name} did not retain the current origin generation"
+        );
+    }
+    alice
+        .group_send(
+            &gid,
+            b"newest origin generation survives",
+            NOW + 150,
+            &mut rng,
+        )
+        .unwrap();
+    alice.tick(NOW + 151, &mut rng).await.unwrap();
+    let events = bob.tick(NOW + 152, &mut rng).await.unwrap();
+    assert_eq!(
+        group_bodies(&events),
+        vec![b"newest origin generation survives".to_vec()]
+    );
+}
+
+#[tokio::test]
+async fn another_members_wrapper_cannot_forge_bob_or_burn_his_receiving_chain() {
+    let mut rng = StdRng::seed_from_u64(0x0029_f076);
+    let dir = tempfile::tempdir().unwrap();
+    let net: Net = Arc::new(Mutex::new(HashMap::new()));
+    let (mut alice, mut bob, mut carol, _a_id, b_id, c_id) = trio(dir.path(), &net, &mut rng).await;
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW).await;
+    let gid = alice
+        .create_group("recipient forgery", &[b_id, c_id], &mut rng)
+        .unwrap();
+    settle_group_security(&mut alice, &mut bob, &mut carol, gid, &mut rng, NOW + 1).await;
+
+    alice
+        .group_send(&gid, b"authentic after forgery", NOW + 100, &mut rng)
+        .unwrap();
+    alice.tick(NOW + 101, &mut rng).await.unwrap();
+    let mut bob_copy = take_group_messages(&net, 2);
+    let carol_copy = take_group_messages(&net, 3);
+    assert_eq!(bob_copy.len(), 1);
+    assert_eq!(carol_copy.len(), 1);
+
+    // Carol is entitled to the same shared sender-key ciphertext, but only
+    // to her recipient-specific tag. Reusing her valid wrapper under Bob's
+    // valid delivery token must fail before Bob advances Alice's chain.
+    let authentic_bob = bob_copy.pop().unwrap();
+    let mut forged_bob = authentic_bob.clone();
+    forged_bob.body = carol_copy[0].body.clone();
+    deliver_envelopes(&net, 2, vec![forged_bob]);
+    let events = bob.tick(NOW + 102, &mut rng).await.unwrap();
+    assert!(group_bodies(&events).is_empty());
+    assert!(bob.group_messages(&gid).unwrap().is_empty());
+
+    deliver_envelopes(&net, 2, vec![authentic_bob]);
+    let events = bob.tick(NOW + 103, &mut rng).await.unwrap();
+    assert_eq!(
+        group_bodies(&events),
+        vec![b"authentic after forgery".to_vec()]
+    );
+
+    // The same verified chain remains loss/reorder tolerant and replay safe.
+    alice
+        .group_send(&gid, b"first reordered", NOW + 110, &mut rng)
+        .unwrap();
+    alice
+        .group_send(&gid, b"second reordered", NOW + 111, &mut rng)
+        .unwrap();
+    alice.tick(NOW + 112, &mut rng).await.unwrap();
+    let reordered = take_group_messages(&net, 2);
+    assert_eq!(reordered.len(), 2);
+
+    deliver_envelopes(&net, 2, vec![reordered[1].clone()]);
+    let events = bob.tick(NOW + 113, &mut rng).await.unwrap();
+    assert_eq!(group_bodies(&events), vec![b"second reordered".to_vec()]);
+    deliver_envelopes(&net, 2, vec![reordered[0].clone()]);
+    let events = bob.tick(NOW + 114, &mut rng).await.unwrap();
+    assert_eq!(group_bodies(&events), vec![b"first reordered".to_vec()]);
+    deliver_envelopes(&net, 2, vec![reordered[0].clone()]);
+    let events = bob.tick(NOW + 115, &mut rng).await.unwrap();
+    assert!(group_bodies(&events).is_empty());
+    assert_eq!(bob.group_messages(&gid).unwrap().len(), 3);
+}
+
+#[tokio::test]
 async fn partial_carrier_handoff_survives_sender_restart() {
     let mut rng = StdRng::seed_from_u64(18);
     let dir = tempfile::tempdir().unwrap();
     let net: Net = Arc::new(Mutex::new(HashMap::new()));
     let (mut alice, mut bob, mut carol, _a_id, b_id, c_id) = trio(dir.path(), &net, &mut rng).await;
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW).await;
     let gid = alice
         .create_group("partial handoff", &[b_id, c_id], &mut rng)
         .unwrap();
-    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 1).await;
+    settle_group_security(&mut alice, &mut bob, &mut carol, gid, &mut rng, NOW + 1).await;
 
     let id = alice
         .group_send(&gid, b"survives one lost carrier copy", NOW + 30, &mut rng)
@@ -404,9 +702,11 @@ async fn membership_changes_rotate_and_exclude() {
     let dir = tempfile::tempdir().unwrap();
     let net: Net = Arc::new(Mutex::new(HashMap::new()));
     let (mut alice, mut bob, mut carol, _a_id, b_id, c_id) = trio(dir.path(), &net, &mut rng).await;
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW).await;
 
     // Start with Alice + Bob only.
     let gid = alice.create_group("committee", &[b_id], &mut rng).unwrap();
+    settle_group_security(&mut alice, &mut bob, &mut carol, gid, &mut rng, NOW + 1).await;
     alice
         .group_send(&gid, b"before carol", NOW, &mut rng)
         .unwrap();
@@ -428,6 +728,7 @@ async fn membership_changes_rotate_and_exclude() {
     bob.tick(NOW + 14, &mut rng).await.unwrap(); // bob learns roster, announces to carol
     alice.tick(NOW + 15, &mut rng).await.unwrap();
     bob.tick(NOW + 16, &mut rng).await.unwrap();
+    settle_group_security(&mut alice, &mut bob, &mut carol, gid, &mut rng, NOW + 17).await;
 
     alice
         .group_send(&gid, b"with carol", NOW + 20, &mut rng)
@@ -460,6 +761,7 @@ async fn membership_changes_rotate_and_exclude() {
     );
     bob.tick(NOW + 34, &mut rng).await.unwrap(); // bob's rotated announce to alice
     alice.tick(NOW + 35, &mut rng).await.unwrap();
+    settle_group_security(&mut alice, &mut bob, &mut carol, gid, &mut rng, NOW + 36).await;
 
     alice
         .group_send(&gid, b"carol must not read this", NOW + 40, &mut rng)
@@ -502,7 +804,7 @@ async fn membership_changes_rotate_and_exclude() {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Backup/restore (KKR6): groups and ordinary history ride the backup; the
+// 3. Root-free backup/restore: groups and ordinary history ride the backup; the
 //    restored node re-handshakes, announces a fresh chain, co-members
 //    redistribute theirs, and messaging resumes in both directions.
 // ---------------------------------------------------------------------------
@@ -513,9 +815,16 @@ async fn restore_from_backup_reannounces_and_resumes() {
     let dir = tempfile::tempdir().unwrap();
     let net: Net = Arc::new(Mutex::new(HashMap::new()));
     let (mut alice, mut bob, mut carol, a_id, b_id, _c_id) = trio(dir.path(), &net, &mut rng).await;
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW).await;
+    let recovery_path = dir.path().join("alice-account-authority.kra");
+    let recovery_mnemonic = alice
+        .export_account_recovery_authority(&recovery_path)
+        .unwrap();
+    let recovery_package = std::fs::read(&recovery_path).unwrap();
     drop(carol.drain_events());
 
     let gid = alice.create_group("survivors", &[b_id], &mut rng).unwrap();
+    settle_group_security(&mut alice, &mut bob, &mut carol, gid, &mut rng, NOW + 1).await;
     alice
         .group_send(&gid, b"pre-backup", NOW, &mut rng)
         .unwrap();
@@ -616,10 +925,13 @@ async fn restore_from_backup_reannounces_and_resumes() {
     let pre_backup_record_count = pre_backup_history.len();
     let (backup, mnemonic) = alice.export_backup(NOW + 20, &mut rng).unwrap();
     drop(alice);
-    let mut alice = Node::restore(
+    let mut alice = Node::restore_with_recovery_authority(
         &dir.path().join("a2.db"),
         &backup,
         &mnemonic,
+        &recovery_package,
+        &recovery_mnemonic,
+        NOW + 20,
         b"new-pass",
         TEST_KDF,
         &mut rng,
@@ -700,38 +1012,43 @@ async fn restore_from_backup_reannounces_and_resumes() {
 
     let fresh_capability = alice.group_mention_capability(&gid).unwrap();
     assert!(fresh_capability.supported());
+    assert_eq!(
+        alice.group_security_info(&gid).unwrap().level,
+        GroupSecurityLevel::Upgrading
+    );
+    settle_group_security(&mut alice, &mut bob, &mut carol, gid, &mut rng, NOW + 26).await;
     let restored_mention = alice
         .group_send_mention(
             &gid,
             mention_text,
             &mention_spans,
             fresh_capability.review_token,
-            NOW + 26,
+            NOW + 50,
             &mut rng,
         )
         .unwrap();
-    alice.tick(NOW + 27, &mut rng).await.unwrap();
-    let events = bob.tick(NOW + 28, &mut rng).await.unwrap();
+    alice.tick(NOW + 51, &mut rng).await.unwrap();
+    let events = bob.tick(NOW + 52, &mut rng).await.unwrap();
     assert!(events.iter().any(|event| matches!(
         event,
         Event::MentionReceived { id } if *id == restored_mention
     )));
-    alice.tick(NOW + 29, &mut rng).await.unwrap();
+    alice.tick(NOW + 53, &mut rng).await.unwrap();
 
     // Both directions flow again.
     alice
-        .group_send(&gid, b"back from the dead", NOW + 30, &mut rng)
+        .group_send(&gid, b"back from the dead", NOW + 60, &mut rng)
         .unwrap();
-    alice.tick(NOW + 31, &mut rng).await.unwrap();
+    alice.tick(NOW + 61, &mut rng).await.unwrap();
     assert_eq!(
-        group_bodies(&bob.tick(NOW + 32, &mut rng).await.unwrap()),
+        group_bodies(&bob.tick(NOW + 62, &mut rng).await.unwrap()),
         vec![b"back from the dead".to_vec()]
     );
-    bob.group_send(&gid, b"good to have you back", NOW + 40, &mut rng)
+    bob.group_send(&gid, b"good to have you back", NOW + 70, &mut rng)
         .unwrap();
-    bob.tick(NOW + 41, &mut rng).await.unwrap();
+    bob.tick(NOW + 71, &mut rng).await.unwrap();
     assert_eq!(
-        group_bodies(&alice.tick(NOW + 42, &mut rng).await.unwrap()),
+        group_bodies(&alice.tick(NOW + 72, &mut rng).await.unwrap()),
         vec![b"good to have you back".to_vec()]
     );
 }
@@ -759,25 +1076,33 @@ async fn mention_is_capability_gated_roster_bound_and_notifies_exact_target() {
     assert!(!unknown.supported());
     assert_eq!(unknown.issues.len(), 2);
 
-    // The explicit readable fallback remains permanent legacy UTF-8 while
-    // even one current co-member has no authenticated Text capability.
-    // It carries no target table or semantic notification relevance.
+    // A legacy Alpha group remains readable but cannot author new content
+    // before the visible recipient-authentication upgrade completes.
     let legacy_fallback = "👋 @Alex and @Alex";
-    alice
-        .group_send(&gid, legacy_fallback.as_bytes(), NOW, &mut rng)
-        .unwrap();
     assert!(matches!(
-        decode_content(&alice.group_messages(&gid).unwrap()[0].body),
-        DecodedContent::LegacyText(text) if text == legacy_fallback
+        alice.group_send(&gid, legacy_fallback.as_bytes(), NOW, &mut rng),
+        Err(NodeError::GroupSecurityUpgradeRequired)
     ));
+    assert!(alice.group_messages(&gid).unwrap().is_empty());
 
     settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 1).await;
-    assert!(bob.group_messages(&gid).unwrap().iter().any(|record| {
-        matches!(
-            decode_content(&record.body),
-            DecodedContent::LegacyText(text) if text == legacy_fallback
-        )
-    }));
+    assert_eq!(
+        alice.group_security_info(&gid).unwrap().level,
+        GroupSecurityLevel::UpgradeRequired
+    );
+    alice.group_upgrade_security(&gid, &mut rng).unwrap();
+    assert_eq!(
+        alice.group_security_info(&gid).unwrap().level,
+        GroupSecurityLevel::Upgrading
+    );
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 10).await;
+    for (name, node) in [("alice", &alice), ("bob", &bob), ("carol", &carol)] {
+        assert_eq!(
+            node.group_security_info(&gid).unwrap().level,
+            GroupSecurityLevel::RecipientAuthenticated,
+            "{name} did not complete group-origin exchange"
+        );
+    }
     let supported = alice.group_mention_capability(&gid).unwrap();
     assert!(supported.supported());
     assert_ne!(unknown.review_token, supported.review_token);
@@ -842,7 +1167,18 @@ async fn mention_is_capability_gated_roster_bound_and_notifies_exact_target() {
             .map(|env| env.body.clone())
             .collect::<Vec<_>>();
         assert_eq!(bodies.len(), 2, "exactly one fan-out copy per co-member");
-        assert_eq!(bodies[0], bodies[1], "one sender-key ciphertext is reused");
+        assert_ne!(bodies[0], bodies[1], "recipient tags are distinct");
+        assert_eq!(
+            GroupOriginEnvelope::decode(&bodies[0])
+                .unwrap()
+                .shared()
+                .encode(),
+            GroupOriginEnvelope::decode(&bodies[1])
+                .unwrap()
+                .shared()
+                .encode(),
+            "one sender-key ciphertext is reused"
+        );
         assert!(
             !bodies[0]
                 .windows(text.len())
@@ -1073,6 +1409,18 @@ async fn polls_converge_across_changed_votes_roster_changes_and_closure() {
         Err(NodeError::PollUnsupported)
     ));
     settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 1).await;
+    assert_eq!(
+        alice.group_security_info(&gid).unwrap().level,
+        GroupSecurityLevel::UpgradeRequired
+    );
+    alice.group_upgrade_security(&gid, &mut rng).unwrap();
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 12).await;
+    for node in [&alice, &bob] {
+        assert_eq!(
+            node.group_security_info(&gid).unwrap().level,
+            GroupSecurityLevel::RecipientAuthenticated
+        );
+    }
 
     let poll_id = alice
         .group_create_poll(
@@ -1126,7 +1474,7 @@ async fn polls_converge_across_changed_votes_roster_changes_and_closure() {
 
     // Additions do not silently join an existing electorate.
     alice.group_add(&gid, &c_id, 9, &mut rng).unwrap();
-    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 34).await;
+    settle_group_security(&mut alice, &mut bob, &mut carol, gid, &mut rng, NOW + 34).await;
     assert!(
         carol.group_polls(&gid).unwrap().is_empty(),
         "a new member is not backfilled old group history or electorate state"
@@ -1158,15 +1506,16 @@ async fn polls_converge_across_changed_votes_roster_changes_and_closure() {
     // creator's closure snapshot carries the exact final head to the original
     // remaining voter, independent of later delivery order.
     alice.group_remove(&gid, &c_id, NOW + 80, &mut rng).unwrap();
+    settle_group_security(&mut alice, &mut bob, &mut carol, gid, &mut rng, NOW + 81).await;
     let close_id = alice
-        .group_close_poll(&gid, a_id, poll_id, NOW + 81, &mut rng)
+        .group_close_poll(&gid, a_id, poll_id, NOW + 120, &mut rng)
         .unwrap();
     assert!(matches!(
-        alice.group_vote_poll(&gid, a_id, poll_id, soup, NOW + 82, &mut rng),
+        alice.group_vote_poll(&gid, a_id, poll_id, soup, NOW + 121, &mut rng),
         Err(NodeError::PollClosed)
     ));
-    alice.tick(NOW + 83, &mut rng).await.unwrap();
-    let bob_events = bob.tick(NOW + 84, &mut rng).await.unwrap();
+    alice.tick(NOW + 122, &mut rng).await.unwrap();
+    let bob_events = bob.tick(NOW + 123, &mut rng).await.unwrap();
     assert!(bob_events.iter().any(|event| matches!(
         event,
         Event::PollUpdated { poll_id: event_poll, .. } if *event_poll == poll_id
@@ -1180,7 +1529,9 @@ async fn polls_converge_across_changed_votes_roster_changes_and_closure() {
         assert_eq!(poll.votes[0].option_id, salad);
         assert_eq!(poll.options[1].votes, 1);
     }
-    alice.group_remove(&gid, &b_id, NOW + 85, &mut rng).unwrap();
+    alice
+        .group_remove(&gid, &b_id, NOW + 124, &mut rng)
+        .unwrap();
     assert_eq!(
         alice.group_polls(&gid).unwrap()[0].votes,
         final_alice.votes,
@@ -1199,10 +1550,11 @@ async fn signed_roles_owner_transfer_and_stale_admin_requests_converge() {
     let dir = tempfile::tempdir().unwrap();
     let net: Net = Arc::new(Mutex::new(HashMap::new()));
     let (mut alice, mut bob, mut carol, a_id, b_id, c_id) = trio(dir.path(), &net, &mut rng).await;
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW).await;
     let gid = alice
         .create_group("legacy roles", &[b_id, c_id], &mut rng)
         .unwrap();
-    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 1).await;
+    settle_group_security(&mut alice, &mut bob, &mut carol, gid, &mut rng, NOW + 1).await;
 
     alice
         .group_upgrade_authority(&gid, NOW + 30, &mut rng)

@@ -98,12 +98,23 @@ independent interoperability.
 | **Optional mobile convenience** | ADR-0017 through ADR-0019 propose reversible post-pairing rendezvous and content-free native wake. The layer is design-only: no optional service is implemented or required by the sovereign core. |
 | **Trust and governance** | The project is founder-directed by design during construction and stabilization under a nonprofit public-benefit mission. The founder retains product and release authority. Independent security and interoperability evidence is still missing. The [stabilization program](docs/29-stabilization-program.md) defines the evidence required before stable claims. |
 
-Older `KKR1` through `KKR6` backups remain restorable; current backups are
-`KKR7`. KKR6 added signed group authority state and consumed admin-request ids.
-KKR7 adds linked-device authority, convergence state, and recovery semantics;
-all current backups exclude live ephemeral plaintext/media and carry terminal
-tombstones so restore does not recreate those records in Komms. This is
-automated implementation evidence, not a promise to erase copies retained by
+Older `KKR1` through legacy copied-root `KKR7` backups remain explicit
+migration/reset inputs: they never resume the former account, and the guided
+flow publishes a fresh identity containing only cleared petnames, accurately
+labelled non-ephemeral pairwise history, notes, and eligible local
+organization. They are decode-only compatibility formats: production APIs
+cannot mint or publish a new copied-root backup. Current routine backups are
+root-free `KKR8`. KKR6
+added signed group authority state, KKR7 added the former linked-device
+authority/convergence layout, and KKR8 carries eligible user state plus the
+accepted offline-root authority proof without any account root or reusable
+device, ratchet, prekey, sender-chain, link, or delivery-resumption secret.
+Stable-identity `KKR8` restore requires the separately held offline
+recovery-authority file and phrase, creates one fresh recovery device, and
+rejects descendants of the old epoch. Current backups also exclude live
+ephemeral plaintext/media and carry
+terminal tombstones so restore does not recreate those records in Komms. This
+is local implementation evidence, not a promise to erase copies retained by
 peers, screenshots, exported backups, or compromised endpoints.
 
 The [stabilization program](docs/29-stabilization-program.md) now takes priority
@@ -165,11 +176,11 @@ status of any particular proposal.
 | [15: Private Contact Names](docs/15-contact-petnames.md) | B5 local petname rename contract, warnings, privacy boundary, and qualification matrix |
 | [16: Safe Text Formatting](docs/16-safe-text-formatting.md) | B9 source subset, active-content boundary, limits, compatibility, and qualification matrix |
 | [17: Safe File Presentation](docs/17-safe-file-presentation.md) | C1 filename/type policy, open/export boundary, lifecycle, and qualification matrix |
-| [18: Authenticated Message Editing](docs/18-message-editing.md) | C3 immutable edit events, pairwise authorship, group Alpha limit, convergence, retained versions, compatibility, and qualification |
-| [19: Disappearing Messages and View-Once Attachments](docs/19-ephemeral-messages.md) | C4 exact local expiry, coarse relay retention, tombstones, KKR6 exclusion, honest limits, and qualification |
-| [20: Group Polls](docs/20-group-polls.md) | C5 visible votes, current member-forgery limit, fixed electorate, deterministic convergence, creator closure, and qualification |
+| [18: Authenticated Message Editing](docs/18-message-editing.md) | C3 immutable edit events, pairwise and recipient-authenticated group authorship, convergence, retained versions, compatibility, and qualification |
+| [19: Disappearing Messages and View-Once Attachments](docs/19-ephemeral-messages.md) | C4 exact local expiry, coarse relay retention, tombstones, KKR8 exclusion, honest limits, and qualification |
+| [20: Group Polls](docs/20-group-polls.md) | C5 visible recipient-authenticated votes, fixed electorate, deterministic convergence, creator closure, and qualification |
 | [21: Group Roles, Ownership, and Moderation](docs/21-group-roles.md) | C6 signed owner/admin/member authority, transfer, rotation, moderation, backup, and qualification |
-| [22: Linked Devices](docs/22-linked-devices.md) | C2 device certificates, confirmed linking, per-device delivery, sync, recovery, and the open permanent-revocation flaw |
+| [22: Linked Devices](docs/22-linked-devices.md) | C2 strict-majority device authority, confirmed linking, per-device delivery, sync, offline recovery, revocation, and honest Alpha migration |
 | [23: Live Audio Calls](docs/23-live-audio-calls.md) | C7 direct-QUIC gating, transient signaling, authenticated Opus media, platform behavior, privacy limits, and qualification |
 | [24: Local Release Gate](docs/24-local-release-gate.md) | Toolchains, complete local validation, CI/advisory evidence, SDK deferrals, signing boundary, and publication discipline |
 | [25: Release Runbook](docs/25-release-runbook.md) | Versioning, native desktop/APK artifact builds, signing inputs, qualification, and explicit publication |

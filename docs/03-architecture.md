@@ -99,12 +99,13 @@ choices and honest local-only language. See
 C5 polls follow the immutable replicated-state shape: `kult-protocol` owns
 content-v1 kind 6 create/vote/close frames; `kult-node` validates the claimed
 group member and derives fixed-electorate vote heads and final tallies; existing
-sealed group rows and `KKR7` carry the source events; RPC/UniFFI expose typed
+sealed group rows and `KKR8` carry the source events; RPC/UniFFI expose typed
 snapshots; shells render and refresh cards without resolving votes. The
 sender-key path hides poll content from transports, while authenticated
-capability intersection keeps old clients off the typed send path. Because
-sender keys are shared, another member can forge the claimed voter until
-ADR-0029 adds recipient-verifiable origins. See
+capability intersection keeps old clients off the typed send path. ADR-0029
+adds one recipient-specific origin tag to the unchanged shared ciphertext;
+the node derives the voter from the verified pairwise sender device before
+applying poll state. See
 [20: Group Polls](20-group-polls.md) and
 [ADR-0029](adr/0029-recipient-authenticated-groups.md).
 
@@ -117,20 +118,22 @@ the one current owner; `kult-store` seals the winning state and consumed request
 ids separately from legacy group records. RPC/UniFFI expose render-safe roles
 and typed commands/events. Apps display roles and invoke those commands but
 never see group secrets, signatures, identity blobs, or chain state. `KKR6`
-introduced authority records and `KKR7` carries them forward, while
-`KKR1`-`KKR5` restore as legacy groups. See
+introduced authority records and `KKR8` carries them forward, while
+the fresh-identity `KKR1`–`KKR7` archive boundary omits groups. See
 [21: Group Roles, Ownership, and Moderation](21-group-roles.md).
 
 C2 linked devices separate stable account identity from physical endpoint
-cryptography. `kult-crypto` owns certificates, manifests, link transcripts, and
-sync sealing; `kult-protocol` owns bounded endpoint bundles and sync events;
-`kult-store` seals device authority, per-endpoint delivery state, sync counters,
-and deterministic winners; `kult-node` enforces fan-out, capability intersection,
-known-id exclusion, convergence, and recovery. Current Alpha authority still
-copies the account root and cannot permanently contain a compromised device;
-ADR-0026 replaces that boundary. RPC/UniFFI expose opaque ceremony bytes
-and strict render-safe device models; shells compare codes and collect explicit
-approvals without implementing authority rules. See
+cryptography. `kult-crypto` owns the offline-root `KDA2` proof, independent
+device certificates, strict-majority transitions, recovery epochs, link
+transcripts, and sync sealing; `kult-protocol` owns bounded endpoint bundles and
+sync events; `kult-store` seals public account authority, per-endpoint delivery
+state, sync counters, conflicts, and deterministic ordinary-data winners;
+`kult-node` enforces quorum, fail-closed fork/recovery conflict handling,
+fan-out, capability intersection, convergence, rotation, and recovery. Routine
+`KKR8` and link packages contain no account root. RPC/UniFFI expose opaque
+ceremony/approval/recovery bytes and strict render-safe device/conflict models;
+shells compare codes and collect explicit approvals without implementing
+authority rules. See
 [22: Linked Devices](22-linked-devices.md) and
 [ADR-0026](adr/0026-revocable-device-authority.md).
 

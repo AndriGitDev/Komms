@@ -6,9 +6,10 @@ use rand::{rngs::StdRng, SeedableRng};
 
 use kult_crypto::KdfProfile;
 use kult_store::{
-    ConversationId, ConversationMetadata, CustomIconRecord, CustomIconTarget, DraftRecord,
-    FolderAssignment, FolderRecord, LabelAssignment, LabelRecord, LocalMetadataKey,
-    LocalMetadataRecord, PinRecord, Store, StoreError, ThemePreference, UiPreferenceRecord,
+    ContactAuthorityConflictRecord, ContactRecord, ConversationId, ConversationMetadata,
+    CustomIconRecord, CustomIconTarget, DeviceAuthorityConflictKind, DraftRecord, FolderAssignment,
+    FolderRecord, LabelAssignment, LabelRecord, LocalMetadataKey, LocalMetadataRecord, PinRecord,
+    Store, StoreError, ThemePreference, UiPreferenceRecord, MAX_DEVICE_AUTHORITY_CONFLICTS,
     MAX_DRAFT_BYTES,
 };
 
@@ -110,6 +111,69 @@ fn theme_preference_is_canonical_idempotent_and_unknown_legacy_is_safe() {
         store.theme_preference().unwrap(),
         Some(ThemePreference::Dark)
     );
+}
+
+#[test]
+fn contact_authority_conflicts_are_bounded_durable_and_clear_verification() {
+    let mut rng = StdRng::seed_from_u64(0x2606_c011);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("contact-authority-conflicts.db");
+    let store = Store::create(&path, b"passphrase", TEST_KDF, &mut rng).unwrap();
+    let account = [9; 32];
+    store
+        .put_contact(
+            &ContactRecord {
+                peer: account,
+                identity: vec![7],
+                name: "Conflict contact".to_owned(),
+                bundle: Vec::new(),
+                hints: Vec::new(),
+                verified: true,
+            },
+            &mut rng,
+        )
+        .unwrap();
+    let first = ContactAuthorityConflictRecord {
+        account,
+        kind: DeviceAuthorityConflictKind::Recovery,
+        accepted_state: [1; 32],
+        conflicting_state: [2; 32],
+        recovery_epoch: 1,
+        observed_at: 100,
+    };
+    assert!(store
+        .record_contact_authority_conflict(&first, &mut rng)
+        .unwrap());
+    assert!(!store
+        .record_contact_authority_conflict(&first, &mut rng)
+        .unwrap());
+    assert_eq!(
+        store.contact_authority_conflicts().unwrap(),
+        vec![first.clone()]
+    );
+    assert!(!store.get_contact(&account).unwrap().unwrap().verified);
+
+    for value in 3..=u8::try_from(MAX_DEVICE_AUTHORITY_CONFLICTS + 2).unwrap() {
+        let conflict = ContactAuthorityConflictRecord {
+            account,
+            kind: DeviceAuthorityConflictKind::Fork,
+            accepted_state: [1; 32],
+            conflicting_state: [value; 32],
+            recovery_epoch: 1,
+            observed_at: u64::from(value),
+        };
+        assert!(store
+            .record_contact_authority_conflict(&conflict, &mut rng)
+            .unwrap());
+    }
+    let retained = store.contact_authority_conflicts().unwrap();
+    assert_eq!(retained.len(), MAX_DEVICE_AUTHORITY_CONFLICTS);
+    assert!(!retained.iter().any(|conflict| conflict == &first));
+    drop(store);
+
+    let reopened = Store::open(&path, b"passphrase").unwrap();
+    assert_eq!(reopened.contact_authority_conflicts().unwrap(), retained);
+    assert!(!reopened.get_contact(&account).unwrap().unwrap().verified);
 }
 
 #[test]

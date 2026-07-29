@@ -21,8 +21,8 @@ struct SettingsView: View {
             Form {
                 Section("Account & devices") {
                     SettingsActionRow(
-                        title: "Encrypted backup",
-                        detail: "Export identity, contacts, and history",
+                        title: "Root-free encrypted backup",
+                        detail: "Export identity, contacts, and history; recovery also needs the separate offline authority",
                         systemImage: "externaldrive.badge.timemachine"
                     ) { showBackup = true }
                     SettingsActionRow(

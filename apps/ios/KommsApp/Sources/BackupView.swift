@@ -1,6 +1,6 @@
-// Backup: one encrypted `.kkr` file (ADR-0011), shared wherever the user
-// wants it via the system share sheet. The sealing mnemonic is shown exactly
-// once and stored nowhere — write it down, then dismiss.
+// Root-free backup: one encrypted `.kkr` file shared wherever the user wants
+// it. The backup mnemonic is shown once; stable-identity recovery separately
+// requires the offline account-authority package and its different phrase.
 
 import KommsCore
 import SwiftUI
@@ -19,7 +19,7 @@ struct BackupView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if let mnemonic, let fileURL {
-                        Text("Your backup is sealed with these 24 words. They are shown exactly once and stored nowhere — write them down on paper.")
+                        Text("Your root-free backup is sealed with these 24 backup words. They are shown exactly once and stored nowhere — write them down separately.")
                             .font(.footnote)
 
                         Text(mnemonic)
@@ -33,11 +33,11 @@ struct BackupView: View {
                             Label("Save the backup file…", systemImage: "square.and.arrow.up")
                         }
 
-                        Text("Restoring needs the file and the words. Ratchet sessions are deliberately not included — a restored node re-handshakes with your contacts automatically.")
+                        Text("Restoring the stable identity also needs the separately held offline .kra authority file and its different 24 words. Live device, ratchet, rendezvous, wake, group, and delivery secrets are excluded; recovery starts a fresh epoch and re-handshakes.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     } else {
-                        Text("Writes one encrypted file carrying your identity, contacts, and history. Anyone with the file still needs the 24-word mnemonic it is sealed with.")
+                        Text("Writes one root-free encrypted file carrying the stable public identity, contacts, and non-ephemeral history. It cannot recover the identity without the separately held offline authority.")
                             .font(.footnote)
 
                         if let error {

@@ -44,6 +44,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use rand::rngs::OsRng;
 use tokio::sync::oneshot;
 
 use kult_transport::DeliveryHint;
@@ -406,6 +407,138 @@ pub fn default_config(data_dir: String, passphrase: String) -> Config {
         checkin_secs: 300,
         nat_secs: 30,
     }
+}
+
+/// Prepare a pre-ADR-0026 single-device profile for explicit migration.
+///
+/// This writes a new protected `.kra` file but deliberately leaves the live
+/// database unchanged. The returned words must be shown and confirmed before
+/// starting [`KultNode::migrate_authority`].
+#[uniffi::export]
+pub fn prepare_authority_migration(
+    data_dir: String,
+    passphrase: String,
+    recovery_path: String,
+) -> Result<String, FfiError> {
+    let db_path = PathBuf::from(data_dir).join("node.db");
+    kult_node::Node::prepare_authority_migration(
+        &db_path,
+        passphrase.as_bytes(),
+        &PathBuf::from(recovery_path),
+        &mut OsRng,
+    )
+    .map(|mnemonic| mnemonic.to_string())
+    .map_err(|error| FfiError::Startup {
+        reason: format!("store: {error}"),
+    })
+}
+
+/// User-reviewed output of a copied-root Alpha reset preparation.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct AuthorityResetPreparation {
+    /// Fresh human-shareable account address.
+    pub new_address: String,
+    /// Fresh account public id in lowercase hex.
+    pub new_peer: String,
+    /// One-time phrase opening the separately written recovery authority.
+    pub recovery_mnemonic: String,
+}
+
+/// Local-only evidence and remaining contact work after a copied-root reset.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct AuthorityResetHistory {
+    /// Former account id in lowercase hex.
+    pub former_peer: String,
+    /// Fresh account id in lowercase hex.
+    pub new_peer: String,
+    /// Display-only Unix time at which the reset was confirmed.
+    pub reset_at: u64,
+    /// Petnames/public identities copied with routes and trust cleared.
+    pub preserved_contacts: u32,
+    /// Pairwise rows retained as former-identity local archive.
+    pub preserved_pairwise_messages: u64,
+    /// Device-local notes retained.
+    pub preserved_note_messages: u64,
+    /// Active group records deliberately omitted.
+    pub omitted_groups: u64,
+    /// Group history rows deliberately omitted.
+    pub omitted_group_messages: u64,
+    /// Preserved contacts still needing new safety-number comparison.
+    pub pending_reverification: Vec<String>,
+}
+
+impl AuthorityResetHistory {
+    fn from_node(record: kult_node::AuthorityResetHistoryRecord) -> Self {
+        Self {
+            former_peer: hex_encode(&record.former_account),
+            new_peer: hex_encode(&record.new_account),
+            reset_at: record.reset_at,
+            preserved_contacts: record.preserved_contacts,
+            preserved_pairwise_messages: record.preserved_pairwise_messages,
+            preserved_note_messages: record.preserved_note_messages,
+            omitted_groups: record.omitted_groups,
+            omitted_group_messages: record.omitted_group_messages,
+            pending_reverification: record
+                .pending_reverification
+                .iter()
+                .map(|peer| hex_encode(peer))
+                .collect(),
+        }
+    }
+}
+
+/// Prepare a copied-root Alpha profile for a visible new-identity reset.
+///
+/// The new protected `.kra` file is created without changing the live
+/// database. Shells must disclose that the address and every safety number
+/// change and confirm the returned phrase before starting
+/// [`KultNode::reset_authority`].
+#[uniffi::export]
+pub fn prepare_authority_reset(
+    data_dir: String,
+    passphrase: String,
+    recovery_path: String,
+) -> Result<AuthorityResetPreparation, FfiError> {
+    let db_path = PathBuf::from(data_dir).join("node.db");
+    kult_node::Node::prepare_authority_reset(
+        &db_path,
+        passphrase.as_bytes(),
+        &PathBuf::from(recovery_path),
+        &mut OsRng,
+    )
+    .map(|prepared| AuthorityResetPreparation {
+        new_address: prepared.new_address,
+        new_peer: hex_encode(&prepared.new_account.ed),
+        recovery_mnemonic: prepared.mnemonic.to_string(),
+    })
+    .map_err(|error| FfiError::Startup {
+        reason: format!("store: {error}"),
+    })
+}
+
+/// Prepare a fresh account authority for importing a copied-root legacy
+/// backup as a visible former-identity local archive.
+///
+/// Shells must display the returned new address, disclose that all former
+/// safety numbers and live capabilities are abandoned, and obtain explicit
+/// confirmation before calling [`KultNode::restore`] with a `KKR1` through
+/// `KKR7` file and this newly written authority.
+#[uniffi::export]
+pub fn prepare_legacy_backup_authority_reset(
+    recovery_path: String,
+) -> Result<AuthorityResetPreparation, FfiError> {
+    kult_node::Node::prepare_legacy_backup_authority_reset(
+        &PathBuf::from(recovery_path),
+        &mut OsRng,
+    )
+    .map(|prepared| AuthorityResetPreparation {
+        new_address: prepared.new_address,
+        new_peer: hex_encode(&prepared.new_account.ed),
+        recovery_mnemonic: prepared.mnemonic.to_string(),
+    })
+    .map_err(|error| FfiError::Startup {
+        reason: format!("store: {error}"),
+    })
 }
 
 /// How to reach a contact, per transport (docs/05-transports.md).
@@ -1611,6 +1744,72 @@ pub struct Group {
     pub creator: String,
     /// Full roster, this node included (hex peer ids).
     pub members: Vec<String>,
+    /// Honest security state for newly authored group content.
+    pub security: GroupSecurityLevel,
+}
+
+/// Recipient-origin security state for one sender-key group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum GroupSecurityLevel {
+    /// Legacy history is readable, but new content waits for an explicit
+    /// upgrade.
+    UpgradeRequired,
+    /// Fresh per-recipient origin capabilities are still being exchanged.
+    Upgrading,
+    /// Every current exact recipient device has acknowledged the fresh
+    /// origin capability.
+    RecipientAuthenticated,
+}
+
+impl From<kult_node::GroupSecurityLevel> for GroupSecurityLevel {
+    fn from(level: kult_node::GroupSecurityLevel) -> Self {
+        match level {
+            kult_node::GroupSecurityLevel::UpgradeRequired => Self::UpgradeRequired,
+            kult_node::GroupSecurityLevel::Upgrading => Self::Upgrading,
+            kult_node::GroupSecurityLevel::RecipientAuthenticated => Self::RecipientAuthenticated,
+        }
+    }
+}
+
+/// Render-safe details for the visible group-security upgrade.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct GroupSecurity {
+    /// Group id (hex).
+    pub group: String,
+    /// Current local security state.
+    pub level: GroupSecurityLevel,
+    /// Exact current devices whose origin exchange is incomplete (hex).
+    pub pending_devices: Vec<String>,
+    /// Retained history rows accurately labelled membership-authenticated.
+    pub legacy_history_rows: u64,
+}
+
+impl GroupSecurity {
+    fn from_node(security: kult_node::GroupSecurityInfo) -> Self {
+        Self {
+            group: hex_encode(&security.group),
+            level: security.level.into(),
+            pending_devices: security
+                .pending_devices
+                .iter()
+                .map(|device| hex_encode(device))
+                .collect(),
+            legacy_history_rows: security.legacy_history_rows as u64,
+        }
+    }
+}
+
+/// Authentication level retained with one group-history row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum GroupMessageAuthentication {
+    /// Any member holding the legacy sender chain could have produced it.
+    LegacyMembership,
+    /// Local attachment content is staged but has not entered a tagged
+    /// recipient wrapper or transport queue yet.
+    PendingRecipientAuthentication,
+    /// A recipient-device origin tag was verified, or this device authored
+    /// every recipient's tagged wrapper.
+    RecipientAuthenticated,
 }
 
 /// Fixed C6 group role.
@@ -1876,6 +2075,9 @@ pub struct GroupMessage {
     pub timestamp: u64,
     /// Message body (UTF-8 text).
     pub body: String,
+    /// Whether this immutable row has individual recipient-origin
+    /// authentication or only legacy membership authentication.
+    pub authentication: GroupMessageAuthentication,
     /// Explicit content interpretation.
     pub content_kind: ContentKind,
     /// Exact authenticated local expiry for ephemeral content.
@@ -1965,6 +2167,82 @@ impl From<kult_node::LinkedDeviceInfo> for LinkedDevice {
     }
 }
 
+/// Render-safe category for a fail-closed account device-authority conflict.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum DeviceAuthorityConflictKind {
+    /// Concurrent valid ordinary transitions diverged from one parent.
+    Fork,
+    /// Different root-authorized transitions claimed the same recovery epoch.
+    Recovery,
+}
+
+/// Durable authority conflict that remains visible across restart.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct DeviceAuthorityConflict {
+    /// Conflict category.
+    pub kind: DeviceAuthorityConflictKind,
+    /// Locally retained branch tip (hex).
+    pub accepted: String,
+    /// Rejected conflicting branch tip (hex).
+    pub conflicting: String,
+    /// Recovery epoch shared by both claims.
+    pub recovery_epoch: u64,
+    /// Coarse local observation time, or zero when unavailable.
+    pub observed_at: u64,
+}
+
+impl From<kult_node::DeviceAuthorityConflictInfo> for DeviceAuthorityConflict {
+    fn from(conflict: kult_node::DeviceAuthorityConflictInfo) -> Self {
+        Self {
+            kind: match conflict.kind {
+                kult_node::DeviceAuthorityConflictType::Fork => DeviceAuthorityConflictKind::Fork,
+                kult_node::DeviceAuthorityConflictType::Recovery => {
+                    DeviceAuthorityConflictKind::Recovery
+                }
+            },
+            accepted: hex_encode(&conflict.accepted),
+            conflicting: hex_encode(&conflict.conflicting),
+            recovery_epoch: conflict.recovery_epoch,
+            observed_at: conflict.observed_at,
+        }
+    }
+}
+
+/// Durable contact-authority conflict that remains visible across restart.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ContactAuthorityConflict {
+    /// Stable affected contact account (hex).
+    pub account: String,
+    /// Conflict category.
+    pub kind: DeviceAuthorityConflictKind,
+    /// Locally retained branch tip (hex).
+    pub accepted: String,
+    /// Rejected conflicting branch tip (hex).
+    pub conflicting: String,
+    /// Recovery epoch shared by both claims.
+    pub recovery_epoch: u64,
+    /// Coarse local observation time.
+    pub observed_at: u64,
+}
+
+impl From<kult_node::ContactAuthorityConflictInfo> for ContactAuthorityConflict {
+    fn from(conflict: kult_node::ContactAuthorityConflictInfo) -> Self {
+        Self {
+            account: hex_encode(&conflict.account),
+            kind: match conflict.kind {
+                kult_node::DeviceAuthorityConflictType::Fork => DeviceAuthorityConflictKind::Fork,
+                kult_node::DeviceAuthorityConflictType::Recovery => {
+                    DeviceAuthorityConflictKind::Recovery
+                }
+            },
+            accepted: hex_encode(&conflict.accepted),
+            conflicting: hex_encode(&conflict.conflicting),
+            recovery_epoch: conflict.recovery_epoch,
+            observed_at: conflict.observed_at,
+        }
+    }
+}
+
 /// Honest delivery state for one exact recipient physical device.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct MessageDeviceDelivery {
@@ -2015,6 +2293,24 @@ pub enum Event {
     StateResyncRequired,
     /// Account-authorized device list, name, or revocation changed.
     DevicesChanged,
+    /// Concurrent valid ordinary authority branches were detected.
+    DeviceAuthorityFork {
+        /// Locally retained branch tip (hex).
+        accepted: String,
+        /// Rejected conflicting branch tip (hex).
+        conflicting: String,
+        /// Recovery epoch shared by both branches.
+        recovery_epoch: u64,
+    },
+    /// Different root-authorized transitions claimed one recovery epoch.
+    DeviceRecoveryConflict {
+        /// Locally retained recovery branch (hex).
+        accepted: String,
+        /// Rejected conflicting recovery branch (hex).
+        conflicting: String,
+        /// Conflicting recovery epoch.
+        recovery_epoch: u64,
+    },
     /// This pristine installation completed a confirmed device link.
     DeviceLinkCompleted {
         /// Stable account id (hex).
@@ -2235,6 +2531,24 @@ impl Event {
         Some(match event {
             kult_node::Event::StateResyncRequired => Self::StateResyncRequired,
             kult_node::Event::DevicesChanged => Self::DevicesChanged,
+            kult_node::Event::DeviceAuthorityFork {
+                accepted,
+                conflicting,
+                recovery_epoch,
+            } => Self::DeviceAuthorityFork {
+                accepted: hex_encode(&accepted),
+                conflicting: hex_encode(&conflicting),
+                recovery_epoch,
+            },
+            kult_node::Event::DeviceRecoveryConflict {
+                accepted,
+                conflicting,
+                recovery_epoch,
+            } => Self::DeviceRecoveryConflict {
+                accepted: hex_encode(&accepted),
+                conflicting: hex_encode(&conflicting),
+                recovery_epoch,
+            },
             kult_node::Event::DeviceLinkCompleted { account, device } => {
                 Self::DeviceLinkCompleted {
                     account: hex_encode(&account),
@@ -2447,24 +2761,91 @@ impl KultNode {
         Self::boot(runtime_config(config, None)?, listener)
     }
 
-    /// First run only: restore the node from an encrypted backup file
-    /// (docs/07-storage.md §4) instead of creating a fresh identity, then
-    /// start it exactly like [`KultNode::start`]. The exported identity
-    /// resumes with contacts and history intact; every peer that had a
-    /// live session at export time is re-handshaked automatically.
+    /// First run only: restore an encrypted backup with an explicitly opened
+    /// offline authority. A root-free `KKR8` resumes the stable identity in a
+    /// fresh recovery epoch. A copied-root `KKR1` through `KKR7` is accepted
+    /// only with a newly prepared, different authority and publishes a fresh
+    /// identity containing the bounded former-identity local archive.
+    ///
     /// Refused when the data directory already holds a store.
     #[uniffi::constructor]
     pub fn restore(
         config: Config,
         backup_path: String,
         mnemonic: String,
+        recovery_package_path: String,
+        recovery_mnemonic: String,
         listener: Box<dyn EventListener>,
     ) -> Result<Arc<Self>, FfiError> {
         let backup = std::fs::read(&backup_path).map_err(|e| FfiError::Startup {
             reason: format!("backup file: {e}"),
         })?;
-        let restore = RestoreSource { backup, mnemonic };
+        let recovery_package =
+            std::fs::read(&recovery_package_path).map_err(|e| FfiError::Startup {
+                reason: format!("offline recovery authority: {e}"),
+            })?;
+        let restore = RestoreSource {
+            backup,
+            mnemonic,
+            recovery_package,
+            recovery_mnemonic,
+        };
         Self::boot(runtime_config(config, Some(restore))?, listener)
+    }
+
+    /// Complete a prepared single-device Alpha migration and start the node.
+    ///
+    /// The stable account and physical-device ids are retained. The supplied
+    /// `.kra` file and confirmed words must open the exact root still present
+    /// in the legacy store; copied-root profiles are refused and require the
+    /// separate new-identity reset flow.
+    #[uniffi::constructor]
+    pub fn migrate_authority(
+        config: Config,
+        recovery_package_path: String,
+        recovery_mnemonic: String,
+        listener: Box<dyn EventListener>,
+    ) -> Result<Arc<Self>, FfiError> {
+        let recovery_package =
+            std::fs::read(&recovery_package_path).map_err(|e| FfiError::Startup {
+                reason: format!("offline recovery authority: {e}"),
+            })?;
+        let cfg = runtime_config(config, None)?;
+        let sink: Box<dyn Fn(kult_node::Event) + Send> = Box::new(move |event| {
+            if let Some(event) = Event::from_node(event) {
+                listener.on_event(event);
+            }
+        });
+        let rt = Runtime::migrate_authority(cfg, &recovery_package, &recovery_mnemonic, sink)
+            .map_err(|reason| FfiError::Startup { reason })?;
+        Ok(Self::wrap(rt))
+    }
+
+    /// Complete a prepared copied-root Alpha reset and start the fresh account.
+    ///
+    /// This permanently changes the account address and safety numbers. The
+    /// runtime preserves only the explicitly marked local archive and
+    /// petnames; every preserved contact requires re-verification.
+    #[uniffi::constructor]
+    pub fn reset_authority(
+        config: Config,
+        recovery_package_path: String,
+        recovery_mnemonic: String,
+        listener: Box<dyn EventListener>,
+    ) -> Result<Arc<Self>, FfiError> {
+        let recovery_package =
+            std::fs::read(&recovery_package_path).map_err(|e| FfiError::Startup {
+                reason: format!("offline recovery authority: {e}"),
+            })?;
+        let cfg = runtime_config(config, None)?;
+        let sink: Box<dyn Fn(kult_node::Event) + Send> = Box::new(move |event| {
+            if let Some(event) = Event::from_node(event) {
+                listener.on_event(event);
+            }
+        });
+        let rt = Runtime::reset_authority(cfg, &recovery_package, &recovery_mnemonic, sink)
+            .map_err(|reason| FfiError::Startup { reason })?;
+        Ok(Self::wrap(rt))
     }
 
     /// This node's human-shareable kult address.
@@ -2557,6 +2938,42 @@ impl KultNode {
             .map(|devices| devices.into_iter().map(Into::into).collect())
     }
 
+    /// Unresolved fail-closed authority conflicts retained across restart.
+    pub fn device_authority_conflicts(&self) -> Result<Vec<DeviceAuthorityConflict>, FfiError> {
+        self.call(|resp| Msg::DeviceAuthorityConflicts { resp })
+            .map(|conflicts| conflicts.into_iter().map(Into::into).collect())
+    }
+
+    /// Contact authority forks and recovery conflicts retained across restart.
+    pub fn contact_authority_conflicts(&self) -> Result<Vec<ContactAuthorityConflict>, FfiError> {
+        self.call(|resp| Msg::ContactAuthorityConflicts { resp })
+            .map(|conflicts| conflicts.into_iter().map(Into::into).collect())
+    }
+
+    /// Visible former-identity archive and pending contact re-verification.
+    pub fn authority_reset_history(&self) -> Result<Option<AuthorityResetHistory>, FfiError> {
+        self.call(|resp| Msg::AuthorityResetHistory { resp })
+            .map(|record| record.map(AuthorityResetHistory::from_node))
+    }
+
+    /// Export the exact pending rename/revocation proposal for another active
+    /// device to approve after this device reports that quorum is required.
+    pub fn device_authority_approval_request(&self) -> Result<Vec<u8>, FfiError> {
+        self.call(|resp| Msg::DeviceAuthorityApprovalRequest { resp })
+    }
+
+    /// Verify and sign another active device's exact rename/revocation
+    /// proposal.
+    pub fn approve_device_authority_request(&self, request: Vec<u8>) -> Result<Vec<u8>, FfiError> {
+        self.call(|resp| Msg::DeviceAuthorityApprove { request, resp })
+    }
+
+    /// Merge one detached authority approval. Returns true only when the
+    /// strict-majority transition was atomically committed.
+    pub fn accept_device_authority_approval(&self, approval: Vec<u8>) -> Result<bool, FfiError> {
+        self.call(|resp| Msg::DeviceAuthorityAccept { approval, resp })
+    }
+
     /// Honest per-recipient-device delivery state for one message id.
     pub fn message_device_deliveries(
         &self,
@@ -2623,6 +3040,27 @@ impl KultNode {
             confirmed,
             resp,
         })
+    }
+
+    /// Export the canonical pending add-device proposal when another active
+    /// device's approval is required.
+    pub fn device_link_approval_request(&self) -> Result<Vec<u8>, FfiError> {
+        self.call(|resp| Msg::DeviceLinkApprovalRequest { resp })
+    }
+
+    /// Verify and sign another active device's exact add-device proposal.
+    pub fn approve_device_link_request(&self, request: Vec<u8>) -> Result<Vec<u8>, FfiError> {
+        self.call(|resp| Msg::DeviceLinkApproveRequest { request, resp })
+    }
+
+    /// Merge one detached add-device approval. Returns the final encrypted
+    /// transfer package only once the previous active set's strict majority
+    /// is present.
+    pub fn accept_device_link_approval(
+        &self,
+        approval: Vec<u8>,
+    ) -> Result<Option<Vec<u8>>, FfiError> {
+        self.call(|resp| Msg::DeviceLinkAcceptApproval { approval, resp })
     }
 
     /// Confirm and import one encrypted link package on the pristine target.
@@ -3658,6 +4096,20 @@ impl KultNode {
         .map(|group| hex_encode(&group))
     }
 
+    /// Inspect the visible recipient-origin upgrade state for one group.
+    pub fn group_security(&self, group: String) -> Result<GroupSecurity, FfiError> {
+        let group = parse_group(&group)?;
+        self.call(|resp| Msg::GroupSecurity { group, resp })
+            .map(GroupSecurity::from_node)
+    }
+
+    /// Start the explicit legacy-group security upgrade. Progress continues
+    /// through ordinary ticks and is visible through [`Self::group_security`].
+    pub fn upgrade_group_security(&self, group: String) -> Result<(), FfiError> {
+        let group = parse_group(&group)?;
+        self.call(|resp| Msg::GroupUpgradeSecurity { group, resp })
+    }
+
     /// Queue a message to a group. Returns its record id (hex); per-member
     /// progress arrives as [`Event::GroupDeliveryUpdated`].
     pub fn send_group(&self, group: String, body: String) -> Result<String, FfiError> {
@@ -3938,6 +4390,7 @@ impl KultNode {
                 name: group.name.clone(),
                 creator: hex_encode(&group.creator),
                 members: group.members.iter().map(|peer| hex_encode(peer)).collect(),
+                security: group.security.into(),
             })
             .collect())
     }
@@ -3963,6 +4416,18 @@ impl KultNode {
                     },
                     timestamp: record.timestamp,
                     body,
+                    authentication: match record.origin {
+                        kult_store::GroupOriginAuthentication::LegacyMembership => {
+                            GroupMessageAuthentication::LegacyMembership
+                        }
+                        kult_store::GroupOriginAuthentication::PendingOutboundV1 { .. } => {
+                            GroupMessageAuthentication::PendingRecipientAuthentication
+                        }
+                        kult_store::GroupOriginAuthentication::RecipientV1 { .. }
+                        | kult_store::GroupOriginAuthentication::OutboundV1 { .. } => {
+                            GroupMessageAuthentication::RecipientAuthenticated
+                        }
+                    },
                     content_kind,
                     expires_at,
                     mention_spans,
@@ -4159,6 +4624,18 @@ impl KultNode {
         })
     }
 
+    /// First-run only: write the encrypted offline account authority to a
+    /// new protected file and return its separate one-time 24-word phrase.
+    ///
+    /// This is not a routine backup: anyone holding both parts can take over
+    /// the stable identity and revoke every current device.
+    pub fn export_account_recovery_authority(&self, path: String) -> Result<String, FfiError> {
+        self.call(|resp| Msg::RecoveryAuthorityExport {
+            path: PathBuf::from(path),
+            resp,
+        })
+    }
+
     /// Stop the node and release everything. Idempotent; every later call
     /// on this handle fails with [`FfiError::Stopped`].
     pub fn stop(&self) {
@@ -4177,10 +4654,14 @@ impl KultNode {
             }
         });
         let rt = Runtime::start(cfg, sink).map_err(|reason| FfiError::Startup { reason })?;
-        Ok(Arc::new(Self {
+        Ok(Self::wrap(rt))
+    }
+
+    fn wrap(rt: Runtime) -> Arc<Self> {
+        Arc::new(Self {
             identity: Mutex::new((rt.address.clone(), hex_encode(&rt.peer))),
             inner: Mutex::new(Some(rt)),
-        }))
+        })
     }
 
     /// Send one typed operation to the actor and wait for its reply.

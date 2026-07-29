@@ -49,6 +49,8 @@ struct GroupChatView: View {
     }
     private var polls: [GroupPoll] { model.groupPolls[groupId] ?? [] }
     private var authority: GroupAuthority? { model.groupAuthorities[groupId] }
+    private var security: GroupSecurity? { model.groupSecurities[groupId] }
+    private var securityReady: Bool { security?.level == .recipientAuthenticated }
 
     var body: some View {
         presentedContent
@@ -88,7 +90,7 @@ struct GroupChatView: View {
                     Button("Members") { showMembers = true }
                         .disabled(group == nil)
                     Button("Poll") { showCreatePoll = true }
-                        .disabled(group == nil)
+                        .disabled(group == nil || !securityReady)
                 }
             }
             .sheet(isPresented: $showMembers) { GroupMembersView(groupId: groupId) }
@@ -153,6 +155,7 @@ struct GroupChatView: View {
     private var conversationContent: some View {
         VStack(spacing: 0) {
             LabelBadgeRow(labels: model.labelsForTarget(LabelTarget(kind: .group, id: groupId)))
+            groupSecurityBanner
             historyContent
 
             if let error {
@@ -163,6 +166,49 @@ struct GroupChatView: View {
             }
 
             composerContent
+        }
+    }
+
+    @ViewBuilder
+    private var groupSecurityBanner: some View {
+        if let security {
+            switch security.level {
+            case .upgradeRequired:
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Group security upgrade required")
+                        .font(.headline)
+                    Text("New messages and author-sensitive actions stay blocked until every current device receives a fresh recipient-specific origin capability.")
+                        .font(.footnote)
+                    Button("Upgrade group security") {
+                        Task {
+                            do {
+                                try await model.upgradeGroupSecurity(group: groupId)
+                            } catch {
+                                self.error = errorText(error)
+                            }
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .padding()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.yellow.opacity(0.16))
+            case .upgrading:
+                Text("Upgrading group security. \(security.pendingDevices.count) device(s) are still waiting; Komms will continue automatically.")
+                    .font(.footnote)
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.yellow.opacity(0.16))
+                    .accessibilityAddTraits(.updatesFrequently)
+            case .recipientAuthenticated where security.legacyHistoryRows > 0:
+                Text("New messages are recipient-authenticated. \(security.legacyHistoryRows) older message(s) remain labelled as legacy membership-authenticated history.")
+                    .font(.footnote)
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.secondary.opacity(0.08))
+            case .recipientAuthenticated:
+                EmptyView()
+            }
         }
     }
 
@@ -205,6 +251,7 @@ struct GroupChatView: View {
                                 self.error = errorText(error)
                             }
                         })
+                        .disabled(!securityReady)
                 }
                 ForEach(history, id: \.id) { message in
                     GroupMessageBubble(
@@ -253,20 +300,20 @@ struct GroupChatView: View {
         HStack {
             AttachmentPickerButton(
                 destination: .group(groupId),
-                disabled: group == nil
+                disabled: group == nil || !securityReady
             ) { error in
                 self.error = error
             }
             AudioComposerButton(destination: .group(groupId)) { error in
                 self.error = error
             }
-            .disabled(group == nil)
+            .disabled(group == nil || !securityReady)
             Button {
                 prepareMentionPicker()
             } label: {
                 Image(systemName: "person.badge.plus").font(.title2)
             }
-            .disabled(group == nil)
+            .disabled(group == nil || !securityReady)
             .accessibilityLabel("Mention an exact current group member")
             mentionEditor
             Button {
@@ -298,6 +345,7 @@ struct GroupChatView: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 7)
                     .stroke(.secondary.opacity(0.45)))
+            .disabled(!securityReady)
             .accessibilityLabel("Group message")
     }
 
@@ -319,12 +367,15 @@ struct GroupChatView: View {
 
     private var scheduleDisabled: Bool {
         group == nil
+            || !securityReady
             || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || !draftMentions.isEmpty
     }
 
     private var sendDisabled: Bool {
-        group == nil || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        group == nil
+            || !securityReady
+            || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func memberName(_ peer: String) -> String {
@@ -966,6 +1017,19 @@ private struct GroupMessageBubble: View {
                 Text(Date(timeIntervalSince1970: TimeInterval(message.timestamp)), style: .time)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                if message.authentication == .legacyMembership {
+                    Text("Legacy group origin")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .accessibilityHint(
+                            "Membership-authenticated history; not proof of the individual sender")
+                } else if message.authentication == .pendingRecipientAuthentication {
+                    Text("Securing recipients")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .accessibilityHint(
+                            "Local only until every recipient wrapper is authenticated and queued")
+                }
                 if message.contentKind == .disappearingText, let expiresAt = message.expiresAt {
                     Text("Removes \(Date(timeIntervalSince1970: TimeInterval(expiresAt)), style: .relative)")
                         .font(.caption2)
@@ -1161,7 +1225,12 @@ private struct GroupMembersView: View {
         let count = "\(group.members.count) "
             + (group.members.count == 1 ? "member" : "members")
         guard let authority else { return count }
-        return "\(count) · \(memberName(authority.owner)) owns this group · generation \(authority.generation) · \(authority.signed ? "signed authority" : "legacy authority")."
+        let origin = switch group.security {
+        case .upgradeRequired: "security upgrade required"
+        case .upgrading: "origin upgrade in progress"
+        case .recipientAuthenticated: "recipient-authenticated origins"
+        }
+        return "\(count) · \(memberName(authority.owner)) owns this group · generation \(authority.generation) · \(authority.signed ? "signed authority" : "legacy authority") · \(origin)."
     }
 
     private func roleName(_ role: GroupRole) -> String {

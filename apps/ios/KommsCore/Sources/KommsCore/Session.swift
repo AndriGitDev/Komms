@@ -91,6 +91,12 @@ public func bundleQrFrames(_ bundleHex: String) -> [String] {
 /// Compact QR text for one opaque C2 device-link offer.
 public func deviceLinkQrText(_ offerHex: String) -> String { offerHex.uppercased() }
 
+/// Camera-friendly animated QR frames for one authority-bound link offer.
+public func deviceLinkQrFrames(_ offerHex: String) -> [String] {
+    guard let offer = hexDecode(offerHex) else { return [] }
+    return encodeBundleQrFrames(offer)
+}
+
 /// QR text for a safety number: uppercase hex of the raw 32-byte comparison
 /// value — both parties render the identical code, on any platform.
 public func safetyQrText(_ sn: SafetyNumber) -> String { hexEncode(sn.qr).uppercased() }
@@ -132,6 +138,42 @@ public final class Session: @unchecked Sendable {
     /// Complete account-authorized device list, including revoked rows.
     public func linkedDevices() throws -> [LinkedDevice] { try node.linkedDevices() }
 
+    /// Durable fail-closed authority forks and recovery conflicts.
+    public func deviceAuthorityConflicts() throws -> [DeviceAuthorityConflict] {
+        try node.deviceAuthorityConflicts()
+    }
+
+    /// Contact authority forks and recovery conflicts retained across restart.
+    public func contactAuthorityConflicts() throws -> [ContactAuthorityConflict] {
+        try node.contactAuthorityConflicts()
+    }
+
+    /// Former-identity archive and contacts still needing re-verification.
+    public func authorityResetHistory() throws -> AuthorityResetHistory? {
+        try node.authorityResetHistory()
+    }
+
+    /// Export this device's pending rename/revocation proposal for approval.
+    public func deviceAuthorityApprovalRequest() throws -> String {
+        hexEncode(try node.deviceAuthorityApprovalRequest())
+    }
+
+    /// Verify and sign another active device's rename/revocation proposal.
+    public func approveDeviceAuthorityRequest(requestHex: String) throws -> String {
+        guard let request = hexDecode(requestHex) else {
+            throw InputError("device authority request must be hex")
+        }
+        return hexEncode(try node.approveDeviceAuthorityRequest(request: request))
+    }
+
+    /// Merge one detached approval; true means the transition committed.
+    public func acceptDeviceAuthorityApproval(approvalHex: String) throws -> Bool {
+        guard let approval = hexDecode(approvalHex) else {
+            throw InputError("device authority approval must be hex")
+        }
+        return try node.acceptDeviceAuthorityApproval(approval: approval)
+    }
+
     /// Per-physical-device delivery states for one outbound message.
     public func messageDeviceDeliveries(message: String) throws -> [MessageDeviceDelivery] {
         try node.messageDeviceDeliveries(message: message)
@@ -155,12 +197,12 @@ public final class Session: @unchecked Sendable {
         hexEncode(try node.beginDeviceLink())
     }
 
-    /// Accept a scanned or pasted offer on a pristine target.
+    /// Accept an assembled B1 QR or pasted hex offer on a pristine target.
     public func acceptDeviceLink(
-        offerHex: String, deviceName: String
+        offerHex offerText: String, deviceName: String
     ) throws -> DeviceLinkAcceptance {
-        guard let offer = hexDecode(offerHex) else {
-            throw InputError("device link offer must be hex")
+        guard let offer = decodeBundleInput(offerText) else {
+            throw InputError("device link offer must be a Komms QR value or hex")
         }
         return try node.acceptDeviceLink(offer: offer, deviceName: deviceName)
     }
@@ -189,6 +231,27 @@ public final class Session: @unchecked Sendable {
             selection: DeviceLinkSelection(
                 contacts: contacts, organization: organization, history: history),
             confirmed: confirmed))
+    }
+
+    /// Export the pending add-device proposal for another active device.
+    public func deviceLinkApprovalRequest() throws -> String {
+        hexEncode(try node.deviceLinkApprovalRequest())
+    }
+
+    /// Verify and sign another active device's exact add-device proposal.
+    public func approveDeviceLinkRequest(requestHex: String) throws -> String {
+        guard let request = hexDecode(requestHex) else {
+            throw InputError("device link approval request must be hex")
+        }
+        return hexEncode(try node.approveDeviceLinkRequest(request: request))
+    }
+
+    /// Merge a detached add-device approval and return the final package.
+    public func acceptDeviceLinkApproval(approvalHex: String) throws -> String? {
+        guard let approval = hexDecode(approvalHex) else {
+            throw InputError("device link approval must be hex")
+        }
+        return try node.acceptDeviceLinkApproval(approval: approval).map { hexEncode($0) }
     }
 
     /// Confirm and import one source package on the pristine target.
@@ -760,6 +823,16 @@ public final class Session: @unchecked Sendable {
     /// All live groups, excluding secrets and sender chains.
     public func groups() throws -> [Group] { try node.groups() }
 
+    /// Visible recipient-origin upgrade state for one group.
+    public func groupSecurity(group: String) throws -> GroupSecurity {
+        try node.groupSecurity(group: group)
+    }
+
+    /// Start the explicit legacy-group recipient-origin upgrade.
+    public func upgradeGroupSecurity(group: String) throws {
+        try node.upgradeGroupSecurity(group: group)
+    }
+
     /// Message history for a group, including per-member delivery states.
     public func groupMessages(group: String) throws -> [GroupMessage] {
         try node.groupMessages(group: group)
@@ -899,8 +972,48 @@ public final class Session: @unchecked Sendable {
         try node.exportBackup(path: path.path)
     }
 
+    /// First-run only: write the encrypted offline account authority and
+    /// return its separate one-time 24-word phrase.
+    public func exportAccountRecoveryAuthority(to path: URL) throws -> String {
+        try node.exportAccountRecoveryAuthority(path: path.path)
+    }
+
     /// Stop the node (idempotent; the handle is spent afterwards).
     public func stop() { node.stop() }
+
+    /// Write a protected offline authority for a single-device Alpha
+    /// migration. The live profile remains unchanged until ``migrateAuthority``.
+    public static func prepareAlphaAuthorityMigration(
+        dataDir: URL,
+        passphrase: String,
+        recoveryPath: URL
+    ) throws -> String {
+        try prepareAuthorityMigration(
+            dataDir: dataDir.path,
+            passphrase: passphrase,
+            recoveryPath: recoveryPath.path)
+    }
+
+    /// Create the protected authority for a visible copied-root reset without
+    /// changing the live profile.
+    public static func prepareAlphaAuthorityReset(
+        dataDir: URL,
+        passphrase: String,
+        recoveryPath: URL
+    ) throws -> AuthorityResetPreparation {
+        try prepareAuthorityReset(
+            dataDir: dataDir.path,
+            passphrase: passphrase,
+            recoveryPath: recoveryPath.path)
+    }
+
+    /// Create the fresh protected authority required to recover a copied-root
+    /// legacy backup as a former-identity local archive.
+    public static func prepareLegacyArchiveReset(
+        recoveryPath: URL
+    ) throws -> AuthorityResetPreparation {
+        try prepareLegacyBackupAuthorityReset(recoveryPath: recoveryPath.path)
+    }
 
     /// Open (or create on first run) the store in `dataDir` and start the
     /// node. Blocking: Argon2id and transport binding happen before this
@@ -928,6 +1041,8 @@ public final class Session: @unchecked Sendable {
         passphrase: String,
         backupPath: URL,
         mnemonic: String,
+        recoveryPackagePath: URL,
+        recoveryMnemonic: String,
         settings: NetworkSettings,
         kdf: KdfChoice,
         sink: @escaping EventSink
@@ -938,6 +1053,49 @@ public final class Session: @unchecked Sendable {
                                     settings: settings, kdf: kdf),
                 backupPath: backupPath.path,
                 mnemonic: mnemonic,
+                recoveryPackagePath: recoveryPackagePath.path,
+                recoveryMnemonic: recoveryMnemonic,
+                listener: Forwarder(sink)))
+    }
+
+    /// Complete a prepared single-device Alpha migration and start while
+    /// retaining the stable account, physical device, petnames, and history.
+    public static func migrateAuthority(
+        dataDir: URL,
+        passphrase: String,
+        recoveryPackagePath: URL,
+        recoveryMnemonic: String,
+        settings: NetworkSettings,
+        kdf: KdfChoice,
+        sink: @escaping EventSink
+    ) throws -> Session {
+        Session(
+            node: try KultNode.migrateAuthority(
+                config: buildConfig(dataDir: dataDir, passphrase: passphrase,
+                                    settings: settings, kdf: kdf),
+                recoveryPackagePath: recoveryPackagePath.path,
+                recoveryMnemonic: recoveryMnemonic,
+                listener: Forwarder(sink)))
+    }
+
+    /// Complete the copied-root reset. The account address changes and every
+    /// preserved petname remains blocked until its new safety number is
+    /// compared and marked verified.
+    public static func resetAuthority(
+        dataDir: URL,
+        passphrase: String,
+        recoveryPackagePath: URL,
+        recoveryMnemonic: String,
+        settings: NetworkSettings,
+        kdf: KdfChoice,
+        sink: @escaping EventSink
+    ) throws -> Session {
+        Session(
+            node: try KultNode.resetAuthority(
+                config: buildConfig(dataDir: dataDir, passphrase: passphrase,
+                                    settings: settings, kdf: kdf),
+                recoveryPackagePath: recoveryPackagePath.path,
+                recoveryMnemonic: recoveryMnemonic,
                 listener: Forwarder(sink)))
     }
 

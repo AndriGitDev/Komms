@@ -409,7 +409,7 @@ impl Node {
             None => encode_attachment(content_id, &manifest)
                 .map_err(|_| NodeError::InvalidAttachment)?,
         };
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         let scope_id = attachment_pairwise_scope_id(&me, peer);
         let transfer = MediaTransferRecord {
             local_id: transfer_id,
@@ -616,7 +616,8 @@ impl Node {
             .store
             .get_group(group)?
             .ok_or(NodeError::UnknownGroup)?;
-        let me = self.identity.public().ed;
+        self.require_recipient_authenticated_group(group)?;
+        let me = self.account.ed;
         let peers: Vec<[u8; 32]> = group_record
             .members
             .iter()
@@ -709,6 +710,9 @@ impl Node {
                 })
                 .collect(),
             wire_body: None,
+            origin: kult_store::GroupOriginAuthentication::PendingOutboundV1 {
+                sender_device: self.device_id(),
+            },
         };
 
         let primary_context = AttachmentChunkContext {
@@ -975,7 +979,7 @@ impl Node {
 
         let before = record.clone();
         record.state = EphemeralState::Consumed;
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         let mut pairwise_message = None;
         let mut group_message = None;
         match record.conversation {
@@ -1262,7 +1266,7 @@ impl Node {
     ) -> Result<(MediaTransferRecord, Vec<MediaObjectRecord>)> {
         let mut transfer_id = [0u8; 16];
         rng.fill_bytes(&mut transfer_id);
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         let transfer = MediaTransferRecord {
             local_id: transfer_id,
             peer,
@@ -1951,6 +1955,7 @@ impl Node {
                 device: transfer.peer,
                 name: None,
                 certificate: Vec::new(),
+                authority: Vec::new(),
                 bundle: Vec::new(),
                 hints: Vec::new(),
                 manifest_generation: 0,

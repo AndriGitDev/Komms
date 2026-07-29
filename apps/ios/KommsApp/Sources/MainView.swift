@@ -19,6 +19,23 @@ struct MainView: View {
     var body: some View {
         NavigationStack(path: $navigation) {
             List {
+                if let reset = model.authorityResetHistory {
+                    Section("Former-identity local archive") {
+                        Label(
+                            "\(reset.preservedPairwiseMessages) pairwise rows and \(reset.preservedNoteMessages) notes were copied locally. They are not newly authenticated history of this account.",
+                            systemImage: "exclamationmark.shield"
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(ThemePalette.warning)
+                        Text(
+                            "\(reset.omittedGroups) active groups were not transferred. "
+                            + "\(reset.pendingReverification.count) contact(s) still require a new safety-number comparison."
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(ThemePalette.textSecondary)
+                    }
+                }
+
                 if !model.notices.isEmpty {
                     Section("Notices") {
                         ForEach(model.notices.indices, id: \.self) { i in

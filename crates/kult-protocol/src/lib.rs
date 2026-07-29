@@ -69,7 +69,8 @@ pub use call::{
 };
 pub use capability::{
     is_capability_control, CapabilityControl, FormatCapabilities, CAPABILITY_CONTROL_VERSION,
-    CAPABILITY_MAGIC, MAX_CAPABILITY_FORMATS, MAX_CAPABILITY_KINDS,
+    CAPABILITY_MAGIC, GROUP_ORIGIN_CAPABILITY_FORMAT, GROUP_ORIGIN_CAPABILITY_KIND,
+    MAX_CAPABILITY_FORMATS, MAX_CAPABILITY_KINDS,
 };
 pub use content::{
     decode_content, encode_attachment, encode_call_control, encode_edit, encode_ephemeral,
@@ -80,9 +81,10 @@ pub use content::{
     MAX_CONTENT_FRAME_LEN, MAX_CONTENT_PAYLOAD_LEN, MAX_NESTING_DEPTH,
 };
 pub use device_sync::{
-    resolve_device_sync_events, DeviceSyncBundle, DeviceSyncEvent, DeviceSyncNamespace,
-    OpenedDeviceSyncBundle, MAX_DEVICE_SYNC_BUNDLE_BYTES, MAX_DEVICE_SYNC_BUNDLE_EVENTS,
-    MAX_DEVICE_SYNC_KEY_BYTES, MAX_DEVICE_SYNC_VALUE_BYTES,
+    resolve_device_sync_events, AuthorityDeviceSyncBundle, DeviceSyncAuthority, DeviceSyncBundle,
+    DeviceSyncEvent, DeviceSyncNamespace, OpenedAuthorityDeviceSyncBundle, OpenedDeviceSyncBundle,
+    MAX_DEVICE_SYNC_BUNDLE_BYTES, MAX_DEVICE_SYNC_BUNDLE_EVENTS, MAX_DEVICE_SYNC_KEY_BYTES,
+    MAX_DEVICE_SYNC_VALUE_BYTES,
 };
 pub use edit::{
     decode_edit_payload, encode_edit_payload, DecodedEdit, Edit, EDIT_HEADER_LEN,
@@ -105,13 +107,15 @@ pub use fragmentation::{
 pub use group::{
     group_admin_request_signing_bytes, GroupAdminAction, GroupAdminRequest, GroupAdminResult,
     GroupAnnounce, GroupAuthorityAnnounce, GroupControlPayload, GroupMemberInfo,
-    MAX_GROUP_ADMIN_REQUESTS,
+    GroupOriginAnnounce, GroupOriginAuthorityAnnounce, MAX_GROUP_ADMIN_REQUESTS,
 };
 pub use group_authority::{
     decode_group_authority, encode_group_authority_state, group_authority_state_signing_bytes,
-    owner_transfer_signing_bytes, DecodedGroupAuthority, GroupAuthorityMember, GroupRole,
-    OwnerTransferCertificate, SignedGroupAuthorityState, GROUP_AUTHORITY_VERSION,
-    MAX_GROUP_AUTHORITY_MEMBERS, MAX_GROUP_MEMBER_IDENTITY_LEN, MAX_GROUP_NAME_LEN,
+    owner_transfer_device_signing_bytes, owner_transfer_signing_bytes, DecodedGroupAuthority,
+    GroupAuthorityMember, GroupRole, OwnerTransferCertificate, SignedGroupAuthorityState,
+    GROUP_AUTHORITY_VERSION, LEGACY_GROUP_AUTHORITY_VERSION, MAX_GROUP_AUTHORITY_MEMBERS,
+    MAX_GROUP_AUTHORITY_STATE_BYTES, MAX_GROUP_DEVICE_AUTHORITY_BYTES,
+    MAX_GROUP_MEMBER_IDENTITY_LEN, MAX_GROUP_NAME_LEN,
 };
 pub use mention::{
     decode_mention_payload, encode_mention_payload, DecodedMention, Mention, MentionSpan,

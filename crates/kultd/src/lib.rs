@@ -18,5 +18,5 @@ mod daemon;
 mod secret;
 pub mod wire;
 
-pub use daemon::{Daemon, DaemonConfig, DaemonError};
+pub use daemon::{AuthorityStartup, Daemon, DaemonConfig, DaemonError};
 pub use secret::read_secret_file;

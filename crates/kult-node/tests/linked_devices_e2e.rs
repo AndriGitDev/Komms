@@ -1,17 +1,22 @@
 //! C2 proximate linking, selected initial transfer, convergence, restart,
 //! and revocation exclusion through the real sealed store boundary.
 
-use kult_crypto::KdfProfile;
+use kult_crypto::{Identity, KdfProfile};
+use kult_protocol::{AuthorityDeviceSyncBundle, DeviceSyncEvent, DeviceSyncNamespace};
+use serde::Serialize;
 use std::io::Cursor;
 use std::sync::Arc;
 
 use kult_node::{
-    AttachmentMetadata, ContentStatus, DeviceLinkSelection, Event, LinkedDeviceInfo, Node,
-    NodeError,
+    AttachmentMetadata, ContentStatus, DeviceAuthorityConflictType, DeviceLinkSelection, Event,
+    LinkedDeviceInfo, Node, NodeError,
 };
-use kult_store::MediaTransferState;
 #[cfg(feature = "test-failpoints")]
 use kult_store::{CommitFailpoint, CommitFailure};
+use kult_store::{
+    Direction, GroupMessageRecord, GroupOriginAuthentication, MediaTransferState, MessageRecord,
+    NoteMessageRecord, Store,
+};
 use kult_transport::{DeliveryHint, SneakernetTransport};
 use rand::{rngs::StdRng, SeedableRng};
 use tempfile::TempDir;
@@ -52,11 +57,59 @@ fn link(
         .unwrap();
 }
 
+fn link_with_approval(
+    source: &mut Node,
+    approver: &Node,
+    target: &mut Node,
+    target_name: &str,
+    selection: DeviceLinkSelection,
+    now: u64,
+    rng: &mut StdRng,
+) {
+    let offer = source.begin_device_link(now, rng).unwrap();
+    let (response, target_code) = target
+        .accept_device_link(&offer, target_name, now + 1, rng)
+        .unwrap();
+    assert_eq!(
+        source.device_link_confirmation_code(&response).unwrap(),
+        target_code
+    );
+    assert!(matches!(
+        source.approve_device_link(&response, selection, true, now + 2, rng),
+        Err(NodeError::DeviceQuorumRequired)
+    ));
+    let request = source.device_link_approval_request().unwrap();
+    let approval = approver.approve_device_link_request(&request).unwrap();
+    let package = source
+        .accept_device_link_approval(&approval, now + 3, rng)
+        .unwrap()
+        .expect("strict majority reached");
+    target
+        .complete_device_link(&package, true, now + 4, rng)
+        .unwrap();
+}
+
+fn approve_pending_authority(proposer: &mut Node, approver: &Node, rng: &mut StdRng) {
+    let request = proposer.device_authority_approval_request().unwrap();
+    let approval = approver.approve_device_authority_request(&request).unwrap();
+    assert!(proposer
+        .accept_device_authority_approval(&approval, rng)
+        .unwrap());
+}
+
 fn authority(devices: Vec<LinkedDeviceInfo>) -> Vec<([u8; 32], String, u64, Option<u64>)> {
     devices
         .into_iter()
         .map(|device| (device.id, device.name, device.last_seen, device.revoked_at))
         .collect()
+}
+
+#[allow(dead_code)]
+#[derive(Serialize)]
+enum SyncHistoryFixture {
+    Pairwise(MessageRecord),
+    Group(GroupMessageRecord),
+    Note(NoteMessageRecord),
 }
 
 #[test]
@@ -103,8 +156,9 @@ fn three_devices_link_transfer_converge_restart_and_revoke() {
     // Link a third partitioned device through the source. The first target
     // learns the new signed manifest on rejoin without any cloud log.
     let tablet_device = tablet.device_id();
-    link(
+    link_with_approval(
         &mut source,
+        &laptop,
         &mut tablet,
         "Tablet",
         DeviceLinkSelection {
@@ -156,25 +210,18 @@ fn three_devices_link_transfer_converge_restart_and_revoke() {
         laptop.note_to_self_messages().unwrap()
     );
 
-    // Concurrent generation forks converge by the signed state-id order.
-    source
-        .rename_linked_device(&tablet_device, "Travel tablet", &mut rng)
-        .unwrap();
+    // Authority mutations do not choose a branch by state-id ordering. The
+    // proposer retains the exact operation until another active device
+    // approves it, then peers accept the resulting descendant.
+    assert!(matches!(
+        source.rename_linked_device(&tablet_device, "Travel tablet", &mut rng),
+        Err(NodeError::DeviceQuorumRequired)
+    ));
+    approve_pending_authority(&mut source, &laptop, &mut rng);
+    let authority_update = source.export_device_sync(&laptop_device, &mut rng).unwrap();
     laptop
-        .rename_linked_device(&source_device, "Home desktop", &mut rng)
+        .import_device_sync(&authority_update, &mut rng)
         .unwrap();
-    let a = source.export_device_sync(&laptop_device, &mut rng).unwrap();
-    let b = laptop.export_device_sync(&source_device, &mut rng).unwrap();
-    let source_result = source.import_device_sync(&b, &mut rng);
-    let laptop_result = laptop.import_device_sync(&a, &mut rng);
-    assert!(source_result.is_ok() ^ laptop_result.is_ok());
-    if source_result.is_ok() {
-        let final_state = source.export_device_sync(&laptop_device, &mut rng).unwrap();
-        laptop.import_device_sync(&final_state, &mut rng).unwrap();
-    } else {
-        let final_state = laptop.export_device_sync(&source_device, &mut rng).unwrap();
-        source.import_device_sync(&final_state, &mut rng).unwrap();
-    }
     assert_eq!(
         authority(source.linked_devices()),
         authority(laptop.linked_devices())
@@ -194,9 +241,11 @@ fn three_devices_link_transfer_converge_restart_and_revoke() {
         authority(laptop.linked_devices())
     );
 
-    source
-        .revoke_linked_device(&tablet_device, 200, &mut rng)
-        .unwrap();
+    assert!(matches!(
+        source.revoke_linked_device(&tablet_device, 200, &mut rng),
+        Err(NodeError::DeviceQuorumRequired)
+    ));
+    approve_pending_authority(&mut source, &laptop, &mut rng);
     let tablet_row = source
         .linked_devices()
         .into_iter()
@@ -211,6 +260,165 @@ fn three_devices_link_transfer_converge_restart_and_revoke() {
         source.revoke_linked_device(&source_device, 201, &mut rng),
         Err(NodeError::CannotRevokeCurrentDevice)
     ));
+}
+
+#[test]
+fn concurrent_quorum_authorized_children_fail_closed_and_remain_visible() {
+    let dir = TempDir::new().unwrap();
+    let mut rng = StdRng::seed_from_u64(0x2606_0001);
+    let (_, mut phone) = create(&dir, "fork-phone", &mut rng);
+    let (laptop_path, mut laptop) = create(&dir, "fork-laptop", &mut rng);
+    let phone_device = phone.device_id();
+    let laptop_device = laptop.device_id();
+    link(
+        &mut phone,
+        &mut laptop,
+        "Laptop",
+        DeviceLinkSelection::default(),
+        100,
+        &mut rng,
+    );
+    phone.drain_events();
+    laptop.drain_events();
+
+    assert!(matches!(
+        phone.rename_linked_device(&phone_device, "Phone branch", &mut rng),
+        Err(NodeError::DeviceQuorumRequired)
+    ));
+    assert!(matches!(
+        laptop.rename_linked_device(&laptop_device, "Laptop branch", &mut rng),
+        Err(NodeError::DeviceQuorumRequired)
+    ));
+
+    // Both valid strict-majority approvals are collected against the same
+    // parent before either partition learns the other's child.
+    let phone_request = phone.device_authority_approval_request().unwrap();
+    let laptop_request = laptop.device_authority_approval_request().unwrap();
+    let phone_approval = laptop
+        .approve_device_authority_request(&phone_request)
+        .unwrap();
+    let laptop_approval = phone
+        .approve_device_authority_request(&laptop_request)
+        .unwrap();
+    assert!(phone
+        .accept_device_authority_approval(&phone_approval, &mut rng)
+        .unwrap());
+    assert!(laptop
+        .accept_device_authority_approval(&laptop_approval, &mut rng)
+        .unwrap());
+    phone.drain_events();
+    laptop.drain_events();
+
+    let retained = authority(laptop.linked_devices());
+    let conflicting_bundle = phone.export_device_sync(&laptop_device, &mut rng).unwrap();
+    assert!(matches!(
+        laptop.import_device_sync(&conflicting_bundle, &mut rng),
+        Err(NodeError::DeviceAuthorityFork)
+    ));
+    assert_eq!(authority(laptop.linked_devices()), retained);
+    let conflicts = laptop.device_authority_conflicts();
+    assert_eq!(conflicts.len(), 1);
+    assert_eq!(conflicts[0].kind, DeviceAuthorityConflictType::Fork);
+    assert_eq!(conflicts[0].recovery_epoch, 0);
+    assert!(laptop.drain_events().iter().any(|event| matches!(
+        event,
+        Event::DeviceAuthorityFork {
+            accepted,
+            conflicting,
+            recovery_epoch: 0,
+        } if *accepted == conflicts[0].accepted && *conflicting == conflicts[0].conflicting
+    )));
+
+    drop(laptop);
+    let mut laptop = Node::open(&laptop_path, b"pass").unwrap();
+    assert_eq!(laptop.device_authority_conflicts(), conflicts);
+    laptop.drain_events();
+    assert!(matches!(
+        laptop.import_device_sync(&conflicting_bundle, &mut rng),
+        Err(NodeError::DeviceAuthorityFork)
+    ));
+    assert!(
+        laptop.drain_events().is_empty(),
+        "an already-retained conflict must not create an event storm"
+    );
+}
+
+#[test]
+fn stolen_minority_device_cannot_reenter_after_majority_revocation() {
+    let dir = TempDir::new().unwrap();
+    let mut rng = StdRng::seed_from_u64(0x2606_0003);
+    let (_, mut phone) = create(&dir, "stolen-phone", &mut rng);
+    let (_, mut laptop) = create(&dir, "stolen-laptop", &mut rng);
+    let (_, mut stolen) = create(&dir, "stolen-tablet", &mut rng);
+    link(
+        &mut phone,
+        &mut laptop,
+        "Laptop",
+        DeviceLinkSelection::default(),
+        100,
+        &mut rng,
+    );
+    link_with_approval(
+        &mut phone,
+        &laptop,
+        &mut stolen,
+        "Stolen tablet",
+        DeviceLinkSelection::default(),
+        110,
+        &mut rng,
+    );
+    let laptop_device = laptop.device_id();
+    let stolen_device = stolen.device_id();
+    let sync = phone.export_device_sync(&laptop_device, &mut rng).unwrap();
+    laptop.import_device_sync(&sync, &mut rng).unwrap();
+
+    let (_, mut contact) = create(&dir, "stolen-contact", &mut rng);
+    let before_revocation = phone.handshake_bundle(120, &mut rng).unwrap();
+    let account = contact
+        .add_contact("Phone account", &before_revocation, &[], 120, &mut rng)
+        .unwrap();
+
+    assert!(matches!(
+        phone.revoke_linked_device(&stolen_device, 130, &mut rng),
+        Err(NodeError::DeviceQuorumRequired)
+    ));
+    approve_pending_authority(&mut phone, &laptop, &mut rng);
+    let after_revocation = phone.handshake_bundle(131, &mut rng).unwrap();
+    assert_eq!(
+        contact
+            .add_contact("Phone account", &after_revocation, &[], 131, &mut rng)
+            .unwrap(),
+        account
+    );
+
+    // The stolen installation can still sign with its physical key and its
+    // stale local proof, but neither is sufficient to regain authority.
+    assert!(matches!(
+        stolen.rename_linked_device(&stolen_device, "Re-entered", &mut rng),
+        Err(NodeError::DeviceQuorumRequired)
+    ));
+    let request = stolen.device_authority_approval_request().unwrap();
+    let duplicate_self_approval = stolen.approve_device_authority_request(&request).unwrap();
+    assert!(matches!(
+        stolen.accept_device_authority_approval(&duplicate_self_approval, &mut rng),
+        Err(NodeError::InvalidDeviceAuthority)
+    ));
+    let stale_bundle = stolen.handshake_bundle(132, &mut rng).unwrap();
+    assert!(matches!(
+        contact.add_contact("Phone account", &stale_bundle, &[], 132, &mut rng),
+        Err(NodeError::InvalidDeviceManifest)
+    ));
+    let stale_sync = stolen
+        .export_device_sync(&phone.device_id(), &mut rng)
+        .unwrap();
+    assert!(matches!(
+        phone.import_device_sync(&stale_sync, &mut rng),
+        Err(NodeError::UnknownLinkedDevice)
+    ));
+    assert!(phone
+        .linked_devices()
+        .iter()
+        .any(|device| device.id == stolen_device && device.revoked_at == Some(130)));
 }
 
 #[test]
@@ -407,10 +615,15 @@ fn link_secrets_and_return_value_recovery_follow_the_committed_session() {
 }
 
 #[test]
-fn backup_recovery_mints_new_device_and_never_resurrects_old_credentials() {
+fn quorum_loss_recovery_mints_new_device_and_never_resurrects_old_credentials() {
     let dir = TempDir::new().unwrap();
     let mut rng = StdRng::seed_from_u64(93);
     let (_, mut source) = create(&dir, "source", &mut rng);
+    let recovery_path = dir.path().join("source-account-authority.kra");
+    let recovery_mnemonic = source
+        .export_account_recovery_authority(&recovery_path)
+        .unwrap();
+    let recovery_package = std::fs::read(&recovery_path).unwrap();
     let (_, mut laptop) = create(&dir, "laptop", &mut rng);
     link(
         &mut source,
@@ -426,14 +639,23 @@ fn backup_recovery_mints_new_device_and_never_resurrects_old_credentials() {
         .filter(|device| device.revoked_at.is_none())
         .map(|device| device.id)
         .collect();
+    let source_device = source.device_id();
+    assert!(matches!(
+        source.rename_linked_device(&source_device, "Unavailable quorum", &mut rng),
+        Err(NodeError::DeviceQuorumRequired)
+    ));
+    assert!(source.device_authority_approval_request().is_ok());
     let account = source.peer_id();
     let (backup, mnemonic) = source.export_backup(200, &mut rng).unwrap();
-    assert_eq!(&backup[..4], b"KKR7");
+    assert_eq!(&backup[..4], b"KKR8");
     let recovered_path = dir.path().join("recovered.db");
-    let recovered = Node::restore(
+    let recovered = Node::restore_with_recovery_authority(
         &recovered_path,
         &backup,
         &mnemonic,
+        &recovery_package,
+        &recovery_mnemonic,
+        200,
         b"new-pass",
         profile(),
         &mut rng,
@@ -457,6 +679,231 @@ fn backup_recovery_mints_new_device_and_never_resurrects_old_credentials() {
             .count(),
         1
     );
+}
+
+#[test]
+fn stale_backup_recovery_supersedes_old_epoch_and_root_theft_conflicts_fail_closed() {
+    let dir = TempDir::new().unwrap();
+    let mut rng = StdRng::seed_from_u64(0x2606_0002);
+    let (_, mut source) = create(&dir, "stale-source", &mut rng);
+    let account = source.peer_id();
+    let recovery_path = dir.path().join("stale-source-account-authority.kra");
+    let recovery_mnemonic = source
+        .export_account_recovery_authority(&recovery_path)
+        .unwrap();
+    let recovery_package = std::fs::read(&recovery_path).unwrap();
+    let (_, mut laptop) = create(&dir, "stale-laptop", &mut rng);
+    link(
+        &mut source,
+        &mut laptop,
+        "Laptop",
+        DeviceLinkSelection::default(),
+        100,
+        &mut rng,
+    );
+
+    let (contact_path, mut contact) = create(&dir, "stale-contact", &mut rng);
+    let source_bundle = source.handshake_bundle(110, &mut rng).unwrap();
+    assert_eq!(
+        contact
+            .add_contact("Recovered account", &source_bundle, &[], 110, &mut rng)
+            .unwrap(),
+        account
+    );
+
+    // This backup names the two-device generation. A later third-device
+    // descendant makes it stale before the offline root is opened.
+    let (backup, backup_mnemonic) = source.export_backup(120, &mut rng).unwrap();
+    let (_, mut tablet) = create(&dir, "stale-tablet", &mut rng);
+    let tablet_device = tablet.device_id();
+    link_with_approval(
+        &mut source,
+        &laptop,
+        &mut tablet,
+        "Tablet added after backup",
+        DeviceLinkSelection::default(),
+        130,
+        &mut rng,
+    );
+    let later_bundle = source.handshake_bundle(140, &mut rng).unwrap();
+    contact
+        .add_contact("Recovered account", &later_bundle, &[], 140, &mut rng)
+        .unwrap();
+
+    let recovered_a_path = dir.path().join("recovered-a.db");
+    let mut recovered_a = Node::restore_with_recovery_authority(
+        &recovered_a_path,
+        &backup,
+        &backup_mnemonic,
+        &recovery_package,
+        &recovery_mnemonic,
+        150,
+        b"recovered-a",
+        profile(),
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(recovered_a.peer_id(), account);
+    assert_eq!(
+        recovered_a
+            .linked_devices()
+            .iter()
+            .filter(|device| device.revoked_at.is_none())
+            .count(),
+        1
+    );
+    let recovered_a_bundle = recovered_a.handshake_bundle(151, &mut rng).unwrap();
+    contact
+        .add_contact("Recovered account", &recovered_a_bundle, &[], 151, &mut rng)
+        .unwrap();
+    let recovered_device = recovered_a.device_id();
+    drop(contact);
+    let contact_store = Store::open(&contact_path, b"pass").unwrap();
+    let active_endpoints = contact_store.contact_devices_for(&account).unwrap();
+    assert_eq!(active_endpoints.len(), 1);
+    assert_eq!(active_endpoints[0].device, recovered_device);
+    assert!(!contact_store
+        .contact_devices()
+        .unwrap()
+        .iter()
+        .any(|endpoint| endpoint.device == tablet_device));
+    drop(contact_store);
+    let mut contact = Node::open(&contact_path, b"pass").unwrap();
+    contact.mark_verified(&account, &mut rng).unwrap();
+    assert!(
+        contact
+            .contacts()
+            .unwrap()
+            .into_iter()
+            .find(|stored| stored.peer == account)
+            .unwrap()
+            .verified
+    );
+    contact.drain_events();
+
+    // Even the later ordinary descendant is now from an old epoch.
+    let old_epoch_bundle = source.handshake_bundle(152, &mut rng).unwrap();
+    assert!(matches!(
+        contact.add_contact("Recovered account", &old_epoch_bundle, &[], 152, &mut rng,),
+        Err(NodeError::OldDeviceAuthorityEpoch)
+    ));
+
+    // Anyone who steals the same offline root and stale backup can sign a
+    // competing transition, but cannot make clients choose it by ordering.
+    let recovered_b_path = dir.path().join("recovered-b.db");
+    let mut recovered_b = Node::restore_with_recovery_authority(
+        &recovered_b_path,
+        &backup,
+        &backup_mnemonic,
+        &recovery_package,
+        &recovery_mnemonic,
+        150,
+        b"recovered-b",
+        profile(),
+        &mut rng,
+    )
+    .unwrap();
+    let recovered_b_bundle = recovered_b.handshake_bundle(153, &mut rng).unwrap();
+    assert!(matches!(
+        contact.add_contact("Recovered account", &recovered_b_bundle, &[], 153, &mut rng,),
+        Err(NodeError::DeviceRecoveryConflict)
+    ));
+    let conflicts = contact.contact_authority_conflicts().unwrap();
+    assert_eq!(conflicts.len(), 1);
+    assert_eq!(conflicts[0].account, account);
+    assert_eq!(conflicts[0].kind, DeviceAuthorityConflictType::Recovery);
+    assert_eq!(conflicts[0].recovery_epoch, 1);
+    assert_eq!(conflicts[0].observed_at, 153);
+    assert!(contact
+        .drain_events()
+        .iter()
+        .any(|event| matches!(event, Event::StateResyncRequired)));
+    assert!(
+        !contact
+            .contacts()
+            .unwrap()
+            .into_iter()
+            .find(|stored| stored.peer == account)
+            .unwrap()
+            .verified
+    );
+
+    drop(contact);
+    let mut contact = Node::open(&contact_path, b"pass").unwrap();
+    assert_eq!(contact.contact_authority_conflicts().unwrap(), conflicts);
+    contact.drain_events();
+    assert!(matches!(
+        contact.add_contact("Recovered account", &recovered_b_bundle, &[], 154, &mut rng,),
+        Err(NodeError::DeviceRecoveryConflict)
+    ));
+    assert!(contact.drain_events().is_empty());
+}
+
+#[cfg(feature = "test-failpoints")]
+#[test]
+fn contact_authority_projection_is_atomic_across_restart() {
+    let dir = TempDir::new().unwrap();
+    let mut rng = StdRng::seed_from_u64(0x2606_0004);
+    let (_, mut source) = create(&dir, "projection-source", &mut rng);
+    let (_, mut laptop) = create(&dir, "projection-laptop", &mut rng);
+    link(
+        &mut source,
+        &mut laptop,
+        "Laptop",
+        DeviceLinkSelection::default(),
+        100,
+        &mut rng,
+    );
+    let laptop_device = laptop.device_id();
+    let (contact_path, mut contact) = create(&dir, "projection-contact", &mut rng);
+    let account = source.peer_id();
+    let before = source.handshake_bundle(110, &mut rng).unwrap();
+    contact
+        .add_contact("Source", &before, &[], 110, &mut rng)
+        .unwrap();
+    drop(contact);
+    let store = Store::open(&contact_path, b"pass").unwrap();
+    assert_eq!(store.contact_devices_for(&account).unwrap().len(), 2);
+    drop(store);
+    let mut contact = Node::open(&contact_path, b"pass").unwrap();
+
+    assert!(matches!(
+        source.revoke_linked_device(&laptop_device, 120, &mut rng),
+        Err(NodeError::DeviceQuorumRequired)
+    ));
+    approve_pending_authority(&mut source, &laptop, &mut rng);
+    let after = source.handshake_bundle(121, &mut rng).unwrap();
+    contact.arm_commit_failpoint(
+        CommitFailpoint::AfterStatement(0),
+        CommitFailure::Interrupted,
+    );
+    assert!(contact
+        .add_contact("Source", &after, &[], 121, &mut rng)
+        .is_err());
+    drop(contact);
+
+    let store = Store::open(&contact_path, b"pass").unwrap();
+    let retained = store.contact_devices_for(&account).unwrap();
+    assert_eq!(retained.len(), 2);
+    assert!(retained
+        .iter()
+        .all(|endpoint| endpoint.revoked_at.is_none()));
+    drop(store);
+
+    let mut contact = Node::open(&contact_path, b"pass").unwrap();
+    contact
+        .add_contact("Source", &after, &[], 122, &mut rng)
+        .unwrap();
+    drop(contact);
+    let store = Store::open(&contact_path, b"pass").unwrap();
+    assert_eq!(store.contact_devices_for(&account).unwrap().len(), 1);
+    let laptop = store
+        .contact_devices()
+        .unwrap()
+        .into_iter()
+        .find(|endpoint| endpoint.device == laptop_device)
+        .unwrap();
+    assert_eq!(laptop.revoked_at, Some(120));
 }
 
 #[tokio::test]
@@ -760,8 +1207,9 @@ async fn linked_devices_use_distinct_external_ratchet_sessions_for_one_account()
     let tablet_spool = dir.path().join("tablet-spool");
     tablet.add_transport(Arc::new(SneakernetTransport::new(&tablet_spool).unwrap()));
     let tablet_device = tablet.device_id();
-    link(
+    link_with_approval(
         &mut phone,
+        &laptop,
         &mut tablet,
         "Tablet",
         DeviceLinkSelection {
@@ -772,6 +1220,10 @@ async fn linked_devices_use_distinct_external_ratchet_sessions_for_one_account()
         151,
         &mut rng,
     );
+    let expanded_sync = phone
+        .export_device_sync(&laptop.device_id(), &mut rng)
+        .unwrap();
+    laptop.import_device_sync(&expanded_sync, &mut rng).unwrap();
     let expanded_manifest = phone.handshake_bundle(160, &mut rng).unwrap();
     carol
         .add_contact(
@@ -839,9 +1291,11 @@ async fn linked_devices_use_distinct_external_ratchet_sessions_for_one_account()
         carol.send_disappearing_message(&account, "must reach every device", 3_600, 166, &mut rng),
         Err(NodeError::EphemeralUnsupported)
     ));
-    phone
-        .revoke_linked_device(&tablet_device, 167, &mut rng)
-        .unwrap();
+    assert!(matches!(
+        phone.revoke_linked_device(&tablet_device, 167, &mut rng),
+        Err(NodeError::DeviceQuorumRequired)
+    ));
+    approve_pending_authority(&mut phone, &laptop, &mut rng);
     let revoked_manifest = phone.handshake_bundle(168, &mut rng).unwrap();
     carol
         .add_contact(
@@ -936,4 +1390,120 @@ async fn linked_devices_use_distinct_external_ratchet_sessions_for_one_account()
     assert!(restart_deliveries
         .iter()
         .all(|delivery| delivery.device != tablet_device));
+}
+
+#[test]
+fn device_link_and_sync_refuse_legacy_or_uncertified_group_origin_history() {
+    let dir = TempDir::new().unwrap();
+    let mut rng = StdRng::seed_from_u64(0x6f72_6967_696e);
+    let (source_path, mut source) = create(&dir, "origin-source", &mut rng);
+    let (target_path, mut target) = create(&dir, "origin-target", &mut rng);
+    let group = source
+        .create_group("Authenticated history only", &[], &mut rng)
+        .unwrap();
+    let account = source.peer_id();
+    let source_device = source.device_id();
+    let target_device = target.device_id();
+
+    drop(source);
+    let store = Store::open(&source_path, b"pass").unwrap();
+    store
+        .put_group_message(
+            &GroupMessageRecord {
+                id: [0x31; 16],
+                group,
+                sender: account,
+                direction: Direction::Outbound,
+                timestamp: 10,
+                body: b"released membership-authenticated history".to_vec(),
+                deliveries: Vec::new(),
+                wire_body: None,
+                origin: GroupOriginAuthentication::LegacyMembership,
+            },
+            &mut rng,
+        )
+        .unwrap();
+    drop(store);
+    let mut source = Node::open(&source_path, b"pass").unwrap();
+
+    link(
+        &mut source,
+        &mut target,
+        "Target",
+        DeviceLinkSelection::default(),
+        20,
+        &mut rng,
+    );
+    assert!(target.group_messages(&group).unwrap().is_empty());
+
+    drop(source);
+    drop(target);
+    let source_store = Store::open(&source_path, b"pass").unwrap();
+    let source_state = source_store.get_device_authority_state().unwrap().unwrap();
+    let source_secret: [u8; 64] = source_state
+        .local_device_secret
+        .as_slice()
+        .try_into()
+        .unwrap();
+    let source_identity = Identity::from_bytes(&source_secret);
+    let channel = source_state
+        .channels
+        .iter()
+        .find(|channel| channel.peer_device == target_device)
+        .unwrap();
+
+    let forged = GroupMessageRecord {
+        id: [0x32; 16],
+        group,
+        sender: account,
+        direction: Direction::Outbound,
+        timestamp: 30,
+        body: b"marker names an uncertified sender device".to_vec(),
+        deliveries: Vec::new(),
+        wire_body: None,
+        origin: GroupOriginAuthentication::OutboundV1 {
+            sender_device: [0xf1; 32],
+            chain_key_id: [0xf2; 16],
+        },
+    };
+    let mut key = Vec::with_capacity(81);
+    key.push(b'g');
+    key.extend_from_slice(&forged.group);
+    key.extend_from_slice(&forged.sender);
+    key.extend_from_slice(&forged.id);
+    let event = DeviceSyncEvent::sign(
+        account,
+        &source_identity,
+        source_state.sync_counter + 1,
+        source_state.sync_counter + 10_000,
+        source_state.manifest.generation(),
+        DeviceSyncNamespace::ConversationHistory,
+        key,
+        Some(
+            postcard::to_allocvec(&SyncHistoryFixture::Group(forged))
+                .expect("fixture matches the versioned history value"),
+        ),
+    )
+    .unwrap();
+    let sequence = channel.send_counter + 1;
+    let bundle = AuthorityDeviceSyncBundle::seal(
+        &channel.root,
+        source_device,
+        target_device,
+        sequence,
+        source_state.manifest,
+        vec![event],
+        &mut rng,
+    )
+    .unwrap()
+    .encode()
+    .unwrap();
+    drop(source_store);
+
+    let mut target = Node::open(&target_path, b"pass").unwrap();
+    assert_eq!(target.import_device_sync(&bundle, &mut rng).unwrap(), 1);
+    assert!(target.group_messages(&group).unwrap().is_empty());
+    drop(target);
+    let target = Node::open(&target_path, b"pass").unwrap();
+    assert!(target.group_messages(&group).unwrap().is_empty());
 }

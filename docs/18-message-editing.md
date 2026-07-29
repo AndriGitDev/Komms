@@ -5,17 +5,16 @@ across `kult-protocol`, `kult-node`, `kultd` RPC/CLI, UniFFI, desktop, Android,
 and iOS. It follows [ADR-0020](adr/0020-authenticated-message-edits.md): an edit
 is a new encrypted authenticated event, never an invisible rewrite of history.
 
-> **Alpha group-authorship limit:** pairwise edit authorship is authenticated.
-> In the current sender-key group design, every member knows the shared content
-> key and can forge another member's apparent edit. Group editing is therefore
-> security-limited until
-> [ADR-0029](adr/0029-recipient-authenticated-groups.md) is implemented.
+> **Legacy-history boundary:** current groups authenticate each edit origin
+> separately to every recipient device under
+> [ADR-0029](adr/0029-recipient-authenticated-groups.md). Released
+> membership-authenticated history keeps that weaker label and is never
+> rewritten as individually authenticated.
 
 ## User promise
 
-- In a pairwise conversation, only the authenticated author of a canonical
-  Komms `Text` event can edit it. The current Alpha cannot make that promise
-  against a malicious member inside a sender-key group.
+- In a pairwise conversation or upgraded group, only the authenticated author
+  of a canonical Komms `Text` event can edit it for an honest recipient.
 - A successful edit keeps the original message row, shows an **edited** marker,
   and offers the original plus every valid version for inspection.
 - Pairwise and group edits work through the ordinary queued → sent → delivered
@@ -52,12 +51,11 @@ inside the existing pairwise Double Ratchet or group sender-key ciphertext and
 the existing padding buckets. Relays, mailboxes, bridges, mesh repeaters, and
 sneakernet carriers cannot distinguish an edit from another encrypted message.
 
-An accepted edit must satisfy all of these conditions. In current groups,
-condition 1 is membership attribution rather than cryptographic proof of the
-individual origin:
+An accepted edit must satisfy all of these conditions:
 
-1. its event sender field equals `target_author` (individually authenticated
-   pairwise; only a claimed member in current groups);
+1. its verified pairwise account/device origin equals `target_author`; a group
+   recipient must also verify the exact recipient origin tag before advancing
+   the sender chain;
 2. target author and content id identify an exact canonical `Text` in the same
    pairwise or group conversation;
 3. revision and replacement text obey the canonical bounds; and
@@ -78,7 +76,7 @@ revision zero. This gives the same result for:
 - duplicate delivery;
 - stale revisions arriving late;
 - two same-revision edits minted concurrently by linked devices;
-- restart and `KKR7` backup/restore; and
+- restart and `KKR8` backup/restore; and
 - different carrier paths delivering records in different orders.
 
 The random id is only a deterministic tie-breaker; it does not claim causal or
@@ -91,7 +89,7 @@ so would make endpoints disagree.
 
 The existing sealed pairwise/group history rows retain exact originals and edit
 events. No plaintext `current_body` column, mutable source row, or new
-edit-specific equality index exists. `KKR7` carries those sealed history records
+edit-specific equality index exists. `KKR8` carries those sealed history records
 unchanged and the derived winner is rebuilt after open or restore. The broader
 locked-database metadata and row-binding limitations are documented in
 [07: Local Storage](07-storage.md) and
@@ -156,10 +154,12 @@ Automated coverage includes:
 - proof that raw edit records remain durable while rendered histories contain
   only the resolved original row.
 
-That matrix proves deterministic processing and pairwise authorization; it does
-not establish malicious-member origin authentication for sender-key group
-events. ADR-0029 and its adversarial member-forgery tests are a stable-release
-prerequisite for the group authorship promise.
+That matrix proves deterministic processing and exercises pairwise plus
+recipient-authenticated group authorization, including another member reusing
+a valid wrapper for the wrong recipient, wrong device/context bindings,
+reorder, replay, and stale announcement races. Independent cryptographic review,
+independent interoperability, revision-bound CI retention, and physical-device
+qualification remain open.
 
 Manual release qualification must still exercise screen readers, keyboard-only
 operation, Dynamic Type/font scaling, Unicode and bidirectional replacement

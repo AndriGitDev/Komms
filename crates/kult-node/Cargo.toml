@@ -12,6 +12,7 @@ default = []
 test-failpoints = ["kult-store/test-failpoints"]
 
 [dependencies]
+atomicwrites = "0.4.4"
 blake3 = "1"
 futures = "0.3"
 futures-timer = "3"
@@ -30,6 +31,7 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 
 [dev-dependencies]
 async-trait = "0.1"
+kult-store = { version = "0.3.0", path = "../kult-store", features = ["legacy-test-fixtures"] }
 rand = "0.8"
 serde_json = "1"
 tempfile = "3"

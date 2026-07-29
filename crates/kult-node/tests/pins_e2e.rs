@@ -68,9 +68,10 @@ fn node_with_contact_and_group(
     let peer_id = node
         .add_contact("Duplicate name", &bundle, &[], NOW, rng)
         .unwrap();
-    let group = node
-        .create_group("Duplicate name", &[peer_id], rng)
-        .unwrap();
+    // Pin composition does not exercise group transport. Keep this fixture
+    // self-only so its setup does not depend on completing the separate
+    // recipient-origin upgrade ceremony with the unused peer node.
+    let group = node.create_group("Duplicate name", &[], rng).unwrap();
     node.drain_events();
     (node, peer_id, group)
 }
@@ -171,10 +172,15 @@ fn typed_pin_order_folder_label_composition_restart_and_zero_network_work() {
 }
 
 #[test]
-fn stale_pin_reactivation_cleanup_errors_and_kkr5_round_trip_are_honest() {
+fn stale_pin_reactivation_cleanup_errors_and_root_free_round_trip_are_honest() {
     let mut rng = StdRng::seed_from_u64(0xb1102);
     let directory = tempfile::tempdir().unwrap();
     let (mut node, _peer, group) = node_with_contact_and_group(directory.path(), &mut rng);
+    let recovery_path = directory.path().join("account-authority.kra");
+    let recovery_mnemonic = node
+        .export_account_recovery_authority(&recovery_path)
+        .unwrap();
+    let recovery_package = std::fs::read(&recovery_path).unwrap();
     let group_target = LabelConversationId::Group(group);
     let note_target = LabelConversationId::NoteToSelf;
     node.pin_conversation(&group_target, &mut rng).unwrap();
@@ -192,11 +198,14 @@ fn stale_pin_reactivation_cleanup_errors_and_kkr5_round_trip_are_honest() {
     ));
 
     let (backup, mnemonic) = node.export_backup(NOW + 2, &mut rng).unwrap();
-    assert_eq!(&backup[..4], b"KKR7");
-    let mut restored = Node::restore(
+    assert_eq!(&backup[..4], b"KKR8");
+    let mut restored = Node::restore_with_recovery_authority(
         &directory.path().join("restored.db"),
         &backup,
         &mnemonic,
+        &recovery_package,
+        &recovery_mnemonic,
+        NOW + 2,
         b"restored",
         TEST_KDF,
         &mut rng,

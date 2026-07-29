@@ -25,6 +25,21 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content" />
 
+    <TextView
+        android:id="@+id/main_authority_reset_history"
+        android:visibility="gone"
+        android:accessibilityLiveRegion="polite"
+        android:textColor="@color/warning"
+        android:textSize="14sp"
+        android:background="@drawable/bg_brand_panel"
+        android:layout_marginHorizontal="12dp"
+        android:layout_marginTop="8dp"
+        android:layout_marginBottom="4dp"
+        android:paddingHorizontal="16dp"
+        android:paddingVertical="12dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
     <Button
         android:id="@+id/main_filter_toggle"
         style="?attr/borderlessButtonStyle"

@@ -27,6 +27,11 @@ fn rename_is_normalized_duplicate_capable_durable_and_delivery_free() {
     let directory = tempfile::tempdir().unwrap();
     let alice_path = directory.path().join("alice.db");
     let mut alice = Node::create(&alice_path, b"alice", TEST_KDF, &mut rng).unwrap();
+    let recovery_path = directory.path().join("alice-account-authority.kra");
+    let recovery_mnemonic = alice
+        .export_account_recovery_authority(&recovery_path)
+        .unwrap();
+    let recovery_package = std::fs::read(&recovery_path).unwrap();
     let bob_path = directory.path().join("bob.db");
     let mut bob = Node::create(&bob_path, b"bob", TEST_KDF, &mut rng).unwrap();
     let carol_path = directory.path().join("carol.db");
@@ -121,11 +126,14 @@ fn rename_is_normalized_duplicate_capable_durable_and_delivery_free() {
     );
 
     let (backup, mnemonic) = reopened.export_backup(NOW + 1, &mut rng).unwrap();
-    assert_eq!(&backup[..4], b"KKR7");
-    let restored = Node::restore(
+    assert_eq!(&backup[..4], b"KKR8");
+    let restored = Node::restore_with_recovery_authority(
         &directory.path().join("restored.db"),
         &backup,
         &mnemonic,
+        &recovery_package,
+        &recovery_mnemonic,
+        NOW + 1,
         b"restored",
         TEST_KDF,
         &mut rng,

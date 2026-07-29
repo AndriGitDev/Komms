@@ -11,16 +11,17 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::session::{
-    NetworkSettings, Session, UiAttachment, UiAudioMedia, UiBundle, UiCall, UiCallAudioFrame,
-    UiCallAvailability, UiContact, UiContactNameAssessment, UiCustomIcon, UiCustomIconCrop,
-    UiCustomIconTarget, UiCustomIconUsage, UiDeviceLinkAcceptance, UiDeviceLinkOffer,
-    UiDeviceLinkSelection, UiFolder, UiFolderConversation, UiFolderConversationResult,
-    UiFolderSelection, UiFolderTarget, UiFormattedText, UiGroup, UiGroupAuthority, UiGroupMessage,
-    UiGroupPoll, UiHint, UiImageEditRecipe, UiImageReview, UiLabel, UiLabelConversation,
-    UiLabelFilterResult, UiLabelTarget, UiLinkedDevice, UiMentionCapability, UiMentionSpan,
-    UiMessage, UiMessageDeviceDelivery, UiNoteMessage, UiPin, UiPinConversationResult, UiPinTarget,
-    UiSafetyNumber, UiScheduledMessage, UiStaleFolder, UiStaleLabel, UiStatus,
-    UiTextFormatHighlight, UiThemeInfo, UiThemePreference,
+    NetworkSettings, Session, UiAttachment, UiAudioMedia, UiAuthorityResetHistory,
+    UiAuthorityResetPreparation, UiBundle, UiCall, UiCallAudioFrame, UiCallAvailability, UiContact,
+    UiContactAuthorityConflict, UiContactNameAssessment, UiCustomIcon, UiCustomIconCrop,
+    UiCustomIconTarget, UiCustomIconUsage, UiDeviceAuthorityConflict, UiDeviceLinkAcceptance,
+    UiDeviceLinkOffer, UiDeviceLinkSelection, UiFolder, UiFolderConversation,
+    UiFolderConversationResult, UiFolderSelection, UiFolderTarget, UiFormattedText, UiGroup,
+    UiGroupAuthority, UiGroupMessage, UiGroupPoll, UiGroupSecurity, UiHint, UiImageEditRecipe,
+    UiImageReview, UiLabel, UiLabelConversation, UiLabelFilterResult, UiLabelTarget,
+    UiLinkedDevice, UiMentionCapability, UiMentionSpan, UiMessage, UiMessageDeviceDelivery,
+    UiNoteMessage, UiPin, UiPinConversationResult, UiPinTarget, UiSafetyNumber, UiScheduledMessage,
+    UiStaleFolder, UiStaleLabel, UiStatus, UiTextFormatHighlight, UiThemeInfo, UiThemePreference,
 };
 
 /// Render-safe shared B14 policy shown before unlock.
@@ -186,6 +187,7 @@ pub async fn unlock(
 
 /// First run only: restore from an encrypted backup, then start.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn restore(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -193,6 +195,8 @@ pub async fn restore(
     passphrase: String,
     backup_path: String,
     mnemonic: String,
+    recovery_package_path: String,
+    recovery_mnemonic: String,
     settings: NetworkSettings,
 ) -> Result<String, String> {
     start_session(
@@ -206,6 +210,108 @@ pub async fn restore(
                 passphrase,
                 backup_path,
                 mnemonic,
+                recovery_package_path,
+                recovery_mnemonic,
+                settings,
+                KdfChoice::Desktop,
+                sink,
+            )
+        },
+    )
+    .await
+}
+
+/// Write a protected authority for the safe single-device Alpha migration.
+#[tauri::command]
+pub async fn prepare_authority_migration(
+    data_dir: String,
+    passphrase: String,
+    recovery_path: String,
+) -> Result<String, String> {
+    blocking(move || {
+        Session::prepare_alpha_authority_migration(
+            &PathBuf::from(data_dir),
+            passphrase,
+            recovery_path,
+        )
+    })
+    .await
+}
+
+/// Write a protected authority for a visible copied-root identity reset.
+#[tauri::command]
+pub async fn prepare_authority_reset(
+    data_dir: String,
+    passphrase: String,
+    recovery_path: String,
+) -> Result<UiAuthorityResetPreparation, String> {
+    blocking(move || {
+        Session::prepare_alpha_authority_reset(&PathBuf::from(data_dir), passphrase, recovery_path)
+    })
+    .await
+}
+
+/// Write a fresh protected authority for a visible legacy-backup reset.
+#[tauri::command]
+pub async fn prepare_legacy_backup_authority_reset(
+    recovery_path: String,
+) -> Result<UiAuthorityResetPreparation, String> {
+    blocking(move || Session::prepare_legacy_backup_authority_reset(recovery_path)).await
+}
+
+/// Complete the prepared single-device migration and start the node.
+#[tauri::command]
+pub async fn migrate_authority(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    data_dir: String,
+    passphrase: String,
+    recovery_package_path: String,
+    recovery_mnemonic: String,
+    settings: NetworkSettings,
+) -> Result<String, String> {
+    start_session(
+        &app,
+        &state,
+        data_dir,
+        settings,
+        move |dir, settings, sink| {
+            Session::migrate_authority(
+                dir,
+                passphrase,
+                recovery_package_path,
+                recovery_mnemonic,
+                settings,
+                KdfChoice::Desktop,
+                sink,
+            )
+        },
+    )
+    .await
+}
+
+/// Complete the prepared copied-root reset and start the fresh account.
+#[tauri::command]
+pub async fn reset_authority(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    data_dir: String,
+    passphrase: String,
+    recovery_package_path: String,
+    recovery_mnemonic: String,
+    settings: NetworkSettings,
+) -> Result<String, String> {
+    start_session(
+        &app,
+        &state,
+        data_dir,
+        settings,
+        move |dir, settings, sink| {
+            Session::reset_authority(
+                dir,
+                passphrase,
+                recovery_package_path,
+                recovery_mnemonic,
                 settings,
                 KdfChoice::Desktop,
                 sink,
@@ -263,6 +369,15 @@ pub async fn lock(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+/// Visible former-identity archive and remaining safety-number work.
+#[tauri::command]
+pub async fn authority_reset_history(
+    state: State<'_, AppState>,
+) -> Result<Option<UiAuthorityResetHistory>, String> {
+    let session = state.session()?;
+    blocking(move || session.authority_reset_history()).await
+}
+
 macro_rules! forward {
     ($(#[$doc:meta])* $name:ident($($arg:ident: $ty:ty),*) -> $ret:ty, |$s:ident| $body:expr) => {
         $(#[$doc])*
@@ -286,6 +401,31 @@ forward!(
 forward!(
     /// Complete signed linked-device list, including revoked rows.
     linked_devices() -> Vec<UiLinkedDevice>, |s| s.linked_devices()
+);
+forward!(
+    /// Unresolved fail-closed device-authority conflicts.
+    device_authority_conflicts() -> Vec<UiDeviceAuthorityConflict>,
+    |s| s.device_authority_conflicts()
+);
+forward!(
+    /// Contact authority forks and recovery conflicts.
+    contact_authority_conflicts() -> Vec<UiContactAuthorityConflict>,
+    |s| s.contact_authority_conflicts()
+);
+forward!(
+    /// Export a pending rename/revocation quorum request.
+    device_authority_approval_request() -> String,
+    |s| s.device_authority_approval_request()
+);
+forward!(
+    /// Verify and sign another device's rename/revocation request.
+    approve_device_authority_request(request_hex: String) -> String,
+    |s| s.approve_device_authority_request(request_hex)
+);
+forward!(
+    /// Merge a detached rename/revocation approval.
+    accept_device_authority_approval(approval_hex: String) -> bool,
+    |s| s.accept_device_authority_approval(approval_hex)
 );
 forward!(
     /// Per-device delivery states for one outbound message.
@@ -320,6 +460,21 @@ forward!(
     /// Confirm matching codes and build the encrypted selective transfer.
     approve_device_link(response_hex: String, selection: UiDeviceLinkSelection, confirmed: bool) -> String,
     |s| s.approve_device_link(response_hex, selection, confirmed)
+);
+forward!(
+    /// Export a pending add-device quorum request.
+    device_link_approval_request() -> String,
+    |s| s.device_link_approval_request()
+);
+forward!(
+    /// Verify and sign another device's add-device request.
+    approve_device_link_request(request_hex: String) -> String,
+    |s| s.approve_device_link_request(request_hex)
+);
+forward!(
+    /// Merge a detached add-device approval.
+    accept_device_link_approval(approval_hex: String) -> Option<String>,
+    |s| s.accept_device_link_approval(approval_hex)
 );
 forward!(
     /// Confirm and import a link package on the pristine target.
@@ -778,6 +933,14 @@ forward!(
     groups() -> Vec<UiGroup>, |s| s.groups()
 );
 forward!(
+    /// Visible recipient-origin upgrade state.
+    group_security(group: String) -> UiGroupSecurity, |s| s.group_security(group)
+);
+forward!(
+    /// Start the explicit legacy-group security upgrade.
+    upgrade_group_security(group: String) -> (), |s| s.upgrade_group_security(group)
+);
+forward!(
     /// Group history with per-member delivery states.
     group_messages(group: String) -> Vec<UiGroupMessage>, |s| s.group_messages(group)
 );
@@ -888,4 +1051,9 @@ forward!(
 forward!(
     /// Encrypted backup to `path`; returns the one-time 24-word mnemonic.
     export_backup(path: String) -> String, |s| s.export_backup(path)
+);
+forward!(
+    /// One-time encrypted offline account authority export.
+    export_account_recovery_authority(path: String) -> String,
+    |s| s.export_account_recovery_authority(path)
 );

@@ -422,6 +422,47 @@ pub struct LinkedDeviceInfo {
     pub current: bool,
 }
 
+/// Render-safe category for a fail-closed device-authority conflict.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceAuthorityConflictType {
+    /// Concurrent valid ordinary transitions diverged from one accepted parent.
+    Fork,
+    /// Different root-authorized transitions claimed the same recovery epoch.
+    Recovery,
+}
+
+/// Durable device-authority conflict shown until the user resolves it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceAuthorityConflictInfo {
+    /// Conflict category.
+    pub kind: DeviceAuthorityConflictType,
+    /// Locally retained branch tip.
+    pub accepted: [u8; 32],
+    /// Rejected conflicting branch tip.
+    pub conflicting: [u8; 32],
+    /// Recovery epoch shared by both claims.
+    pub recovery_epoch: u64,
+    /// Coarse local observation time, or zero when the transport supplied no clock.
+    pub observed_at: u64,
+}
+
+/// Durable conflict presented by one contact account's device-authority proof.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContactAuthorityConflictInfo {
+    /// Stable contact account whose authority diverged.
+    pub account: [u8; 32],
+    /// Conflict category.
+    pub kind: DeviceAuthorityConflictType,
+    /// Locally retained branch tip.
+    pub accepted: [u8; 32],
+    /// Rejected conflicting branch tip.
+    pub conflicting: [u8; 32],
+    /// Recovery epoch shared by both claims.
+    pub recovery_epoch: u64,
+    /// Coarse local observation time.
+    pub observed_at: u64,
+}
+
 /// Honest delivery state for one exact recipient physical device.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MessageDeviceDeliveryInfo {
@@ -717,6 +758,37 @@ pub struct GroupInfo {
     pub creator: [u8; 32],
     /// Full roster, this node included.
     pub members: Vec<[u8; 32]>,
+    /// Current honest recipient-origin security state.
+    pub security: GroupSecurityLevel,
+}
+
+/// Visible ADR-0029 upgrade state for one sender-key group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupSecurityLevel {
+    /// Legacy membership-authenticated history/current chain; author-sensitive
+    /// operations are disabled.
+    UpgradeRequired,
+    /// The local v2 chain exists but one or more exact member devices has not
+    /// acknowledged a fresh origin capability.
+    Upgrading,
+    /// Every current exact recipient device has acknowledged this sender
+    /// chain's distinct origin capability.
+    RecipientAuthenticated,
+}
+
+/// Render-safe details for the visible group security upgrade.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupSecurityInfo {
+    /// Exact group id.
+    pub group: [u8; 32],
+    /// Current local upgrade state.
+    pub level: GroupSecurityLevel,
+    /// Active exact devices that have missing/unsupported pairwise capability
+    /// or have not acknowledged this chain's origin key.
+    pub pending_devices: Vec<[u8; 32]>,
+    /// Retained rows accurately labelled as legacy membership-authenticated
+    /// history.
+    pub legacy_history_rows: usize,
 }
 
 /// One exact member role in signed C6 authority state.
@@ -999,6 +1071,24 @@ pub enum Event {
     StateResyncRequired,
     /// Account-authorized physical-device list, name, or revocation changed.
     DevicesChanged,
+    /// A concurrent valid ordinary device-authority branch was retained as a safety event.
+    DeviceAuthorityFork {
+        /// Locally retained authority tip.
+        accepted: [u8; 32],
+        /// Rejected conflicting authority tip.
+        conflicting: [u8; 32],
+        /// Recovery epoch shared by both branches.
+        recovery_epoch: u64,
+    },
+    /// Different account-root transitions claimed the same recovery epoch.
+    DeviceRecoveryConflict {
+        /// Locally retained recovery branch.
+        accepted: [u8; 32],
+        /// Rejected conflicting recovery branch.
+        conflicting: [u8; 32],
+        /// Conflicting recovery epoch.
+        recovery_epoch: u64,
+    },
     /// This installation completed a confirmed proximate account link.
     DeviceLinkCompleted {
         /// Stable account identity now active on this installation.

@@ -168,6 +168,7 @@ fn locked_database_has_only_opaque_identifier_columns() {
                 body: b"group body".to_vec(),
                 deliveries: Vec::new(),
                 wire_body: None,
+                origin: crate::GroupOriginAuthentication::LegacyMembership,
             },
             &mut rng,
         )

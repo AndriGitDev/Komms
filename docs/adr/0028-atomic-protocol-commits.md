@@ -31,13 +31,17 @@ work only on those candidate values and creates one bounded typed commit plan:
 - `PairwiseSend`;
 - `PairwiseReceive`;
 - `ProfileBootstrap`;
+- `AuthorityProfileBootstrap`;
+- `AuthorityMigration`;
 - `PrekeyPublish`;
 - `HandshakeReceive`;
 - `GroupSend`;
 - `GroupReceive`;
 - `GroupState`;
 - `DeviceControl`;
+- `AuthorityDeviceControl`;
 - `DeviceLink`;
+- `AuthorityDeviceLink`;
 - `DeviceProjection`;
 - `AttachmentStage`;
 - `AttachmentState`;
@@ -150,7 +154,10 @@ or plaintext consequence.
 
 ### 7. Implementation and evidence status
 
-The implementation now provides all fifteen plan kinds above. They cover
+The implementation now provides all nineteen plan kinds above. Legacy
+`ProfileBootstrap`, `DeviceControl`, and `DeviceLink` remain explicit
+migration/restore compatibility surfaces; current profiles use the matching
+`Authority*` variants. Together they cover
 pairwise and group text, edits, polls, roles, authority changes, group
 announcements and bounded fan-out, pairwise and group attachments, missing
 ranges, ephemeral/view-once state, scheduled activation, call signalling,
@@ -161,23 +168,27 @@ presentation recovery. Fresh out-of-band one-time-prekey issuance uses
 `PrekeyPublish`; inbound consumption uses `HandshakeReceive` and cannot commit
 without the established session.
 
-`ProfileBootstrap` commits a fresh account identity, physical-device authority
-state, and prekey vault inside an unpublished sibling database. The sibling is
-file- and directory-synchronized before one atomic replacement publishes the
-profile, so interruption leaves either no destination or one complete openable
-profile. Recovery initializes fresh device state and fresh prekeys before the
-same sibling-publication boundary.
+`AuthorityProfileBootstrap` commits a public account trust anchor, independent
+`KDA2` device state, and prekey vault inside an unpublished sibling database.
+The sibling is file- and directory-synchronized before one atomic replacement
+publishes the root-free profile, so interruption leaves either no destination
+or one complete openable profile. `AuthorityMigration` atomically removes an
+eligible legacy live root only after its separately exported authority is
+confirmed. Recovery initializes a higher epoch, one fresh device and fresh
+prekeys before the same sibling-publication boundary.
 
-`DeviceControl`, `DeviceLink`, and `DeviceProjection` cover the current
-ADR-0024 implementation without endorsing its authority design. Manifest
-rename/revocation, channel counters, convergence events and group rotations
-commit together; a confirmed pristine target switches identity, authority and
-its bounded selected snapshot in one transaction; accepted event winners are
-projected through exact idempotent before/after plans. A link ceremony secret
+`AuthorityDeviceControl`, `AuthorityDeviceLink`, and `DeviceProjection` cover
+accepted ADR-0026. Quorum approvals, manifest rename/revocation/recovery,
+channel counters, convergence events, capability/session retirement and group
+rotations commit together; a confirmed pristine target switches public
+identity, authority and its bounded selected snapshot in one transaction;
+accepted event winners are projected through exact idempotent before/after
+plans. Established `KDA2` contact endpoint replacement, stale-orphan removal,
+and exact capability/session deletion publish as one projection. A link ceremony secret
 is retained until its channel commits. The source also commits a small sealed
 recovery handle with link approval, allowing a package return value lost after
 commit to be resealed after restart. Authenticated target sync removes that
-handle. Profiles admit at most 4,094 groups, leaving one `DeviceControl`
+handle. Profiles admit at most 4,094 groups, leaving one `AuthorityDeviceControl`
 transaction enough space for every group-chain rotation, a maximum
 4,096-event sync bundle, device authority and recovery retirement.
 
@@ -211,11 +222,10 @@ initialization.
 The complete path-by-path disposition is the
 [atomic transition inventory](../34-atomic-transition-inventory.md).
 
-This is not full ADR acceptance. The current linked-device Alpha implementation
-still uses the authority design that ADR-0026 must replace. The pre-C2 contact
-manifest bridge and current automatic-contact flow remain quarantined outside
-stable-v1 pending ADR-0030. Mailbox-v1 cannot yet acknowledge leased relay
-custody after endpoint commit, and live call state remains intentionally
+This is not full ADR acceptance. ADR-0026 authority is covered, but the pre-C2
+contact-manifest bridge and current automatic-contact flow remain quarantined
+outside stable-v1 pending ADR-0030. Mailbox-v1 cannot yet acknowledge leased
+relay custody after endpoint commit, and live call state remains intentionally
 process-local. Independent review and supported-platform sudden-power-loss
 qualification are also absent. These gaps keep this ADR Proposed and prevent
 the implemented matrix from being presented as universal protocol atomicity.

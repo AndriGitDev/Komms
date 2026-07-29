@@ -7,11 +7,17 @@
 use std::path::Path;
 use std::time::Duration;
 
+use kult_crypto::{
+    open_account_recovery_authority, DeviceCertificate, DeviceManifest, DeviceManifestEntry,
+    Identity,
+};
+use kult_store::{DeviceStateRecord, Store};
+use rand::{rngs::StdRng, SeedableRng};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-use kultd::{Daemon, DaemonConfig};
+use kultd::{AuthorityStartup, Daemon, DaemonConfig};
 
 // Each scenario launches one or more full libp2p daemons whose node actors
 // permanently occupy Tokio blocking threads. Running the whole file with the
@@ -91,6 +97,92 @@ fn file_presentation_parity_fixture() -> Value {
 fn ephemeral_parity_fixture() -> Value {
     serde_json::from_str(include_str!("../../../fixtures/c4-ephemeral-parity.json"))
         .expect("valid shared C4 ephemeral fixture")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn alpha_authority_migration_and_copied_root_reset_are_visible_over_rpc() {
+    let _serial = serial_rpc_test().await;
+    let directory = tempfile::tempdir().unwrap();
+
+    let migration = legacy_daemon_fixture(directory.path(), "rpc-legacy-single", false);
+    let migration_package = directory.path().join("rpc-single-authority.kra");
+    let migration_mnemonic = kult_node::Node::prepare_authority_migration(
+        &migration.config.db_path,
+        &migration.config.passphrase,
+        &migration_package,
+        &mut rand::rngs::OsRng,
+    )
+    .unwrap();
+    let mut migration_config = migration.config.clone();
+    migration_config.authority_startup = Some(AuthorityStartup::Migrate {
+        package: migration_package,
+        mnemonic: migration_mnemonic,
+    });
+    let migrated = Daemon::start(migration_config).await.unwrap();
+    assert_eq!(rpc_hex(&migrated.peer), migration.former_peer);
+    assert_eq!(migrated.address, migration.former_address);
+    let mut migration_client = Client::connect(&migrated.socket_path).await;
+    assert!(migration_client
+        .ok(json!({ "op": "authority_reset_history" }))
+        .await["history"]
+        .is_null());
+    migrated.shutdown().await;
+    let migrated_store =
+        Store::open(&migration.config.db_path, &migration.config.passphrase).unwrap();
+    assert!(!migrated_store.contains_legacy_account_root().unwrap());
+    drop(migrated_store);
+
+    let reset = legacy_daemon_fixture(directory.path(), "rpc-legacy-copied", true);
+    let reset_package = directory.path().join("rpc-replacement-authority.kra");
+    let prepared = kult_node::Node::prepare_authority_reset(
+        &reset.config.db_path,
+        &reset.config.passphrase,
+        &reset_package,
+        &mut rand::rngs::OsRng,
+    )
+    .unwrap();
+    let mut wrong_config = reset.config.clone();
+    wrong_config.authority_startup = Some(AuthorityStartup::Reset {
+        package: reset_package.clone(),
+        mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art".to_owned().into(),
+    });
+    assert!(Daemon::start(wrong_config).await.is_err());
+
+    let mut reset_config = reset.config.clone();
+    reset_config.authority_startup = Some(AuthorityStartup::Reset {
+        package: reset_package,
+        mnemonic: prepared.mnemonic,
+    });
+    let replacement = Daemon::start(reset_config).await.unwrap();
+    assert_eq!(replacement.address, prepared.new_address);
+    assert_ne!(rpc_hex(&replacement.peer), reset.former_peer);
+    let mut reset_client = Client::connect(&replacement.socket_path).await;
+    let history = reset_client
+        .ok(json!({ "op": "authority_reset_history" }))
+        .await["history"]
+        .clone();
+    assert_eq!(history["former_peer"], reset.former_peer);
+    assert_eq!(history["new_peer"], rpc_hex(&replacement.peer));
+    assert_eq!(history["preserved_contacts"], 1);
+    assert_eq!(
+        history["pending_reverification"],
+        json!([reset.contact_peer.clone()])
+    );
+    let contacts = reset_client.ok(json!({ "op": "contacts" })).await;
+    assert_eq!(contacts["contacts"][0]["name"], "Preserved petname");
+    assert_eq!(contacts["contacts"][0]["verified"], false);
+    let blocked = reset_client
+        .call(json!({
+            "op": "send",
+            "peer": reset.contact_peer,
+            "body": "must not use former authority",
+        }))
+        .await
+        .unwrap_err();
+    assert!(blocked.contains("re-verification"), "{blocked}");
+    replacement.shutdown().await;
+    let reset_store = Store::open(&reset.config.db_path, &reset.config.passphrase).unwrap();
+    assert!(!reset_store.contains_legacy_account_root().unwrap());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -183,13 +275,95 @@ async fn linked_device_ceremony_and_sync_via_strict_rpc_only() {
         })
         .await;
 
-    source_client
+    // The second active device makes a later add-device transition require
+    // one additional detached approval.
+    let tablet = Daemon::start(test_config(directory.path(), "device-rpc-tablet"))
+        .await
+        .unwrap();
+    let mut tablet_client = Client::connect(&tablet.socket_path).await;
+    let offer = source_client.ok(json!({ "op": "device_link_begin" })).await["offer"].clone();
+    let acceptance = tablet_client
         .ok(json!({
+            "op": "device_link_accept",
+            "offer": offer,
+            "name": "Tablet",
+        }))
+        .await;
+    let quorum = source_client
+        .call(json!({
+            "op": "device_link_approve",
+            "response": acceptance["response"],
+            "selection": {
+                "contacts": false,
+                "organization": false,
+                "history": false,
+            },
+            "confirmed": true,
+        }))
+        .await
+        .unwrap_err();
+    assert!(quorum.contains("additional active-device approval"));
+    let request = source_client
+        .ok(json!({ "op": "device_link_approval_request" }))
+        .await;
+    let approval = target_client
+        .ok(json!({
+            "op": "device_link_approve_request",
+            "request": request["request"],
+        }))
+        .await;
+    let finalized = source_client
+        .ok(json!({
+            "op": "device_link_accept_approval",
+            "approval": approval["approval"],
+        }))
+        .await;
+    assert_eq!(finalized["complete"], true);
+    tablet_client
+        .ok(json!({
+            "op": "device_link_complete",
+            "package": finalized["package"],
+            "confirmed": true,
+        }))
+        .await;
+    let authority_sync = source_client
+        .ok(json!({
+            "op": "device_sync_export",
+            "device": target_device,
+        }))
+        .await;
+    target_client
+        .ok(json!({
+            "op": "device_sync_import",
+            "bundle": authority_sync["bundle"],
+        }))
+        .await;
+
+    let quorum = source_client
+        .call(json!({
             "op": "device_rename",
             "device": target_device,
             "name": "Travel laptop",
         }))
         .await;
+    let quorum = quorum.unwrap_err();
+    assert!(quorum.contains("additional active-device approval"));
+    let request = source_client
+        .ok(json!({ "op": "device_authority_approval_request" }))
+        .await;
+    let approval = target_client
+        .ok(json!({
+            "op": "device_authority_approve",
+            "request": request["request"],
+        }))
+        .await;
+    let accepted = source_client
+        .ok(json!({
+            "op": "device_authority_accept",
+            "approval": approval["approval"],
+        }))
+        .await;
+    assert_eq!(accepted["committed"], true);
     let sync = source_client
         .ok(json!({
             "op": "device_sync_export",
@@ -209,9 +383,26 @@ async fn linked_device_ceremony_and_sync_via_strict_rpc_only() {
             .iter()
             .any(|device| device["id"] == target_device && device["name"] == "Travel laptop")
     );
+    assert!(source_client
+        .ok(json!({ "op": "device_authority_conflicts" }))
+        .await["conflicts"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(source_client
+        .ok(json!({ "op": "contact_authority_conflicts" }))
+        .await["conflicts"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(source_client
+        .ok(json!({ "op": "authority_reset_history" }))
+        .await["history"]
+        .is_null());
 
     source.shutdown().await;
     target.shutdown().await;
+    tablet.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -827,6 +1018,103 @@ fn test_config(dir: &Path, name: &str) -> DaemonConfig {
     cfg
 }
 
+struct LegacyDaemonFixture {
+    config: DaemonConfig,
+    former_peer: String,
+    former_address: String,
+    contact_peer: String,
+}
+
+fn rpc_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Build released legacy state only as setup for the public daemon/RPC
+/// migration test. Every observed behavior still crosses daemon startup or
+/// the strict RPC socket.
+fn legacy_daemon_fixture(directory: &Path, name: &str, copied_root: bool) -> LegacyDaemonFixture {
+    let config = test_config(directory, name);
+    let mut rng = StdRng::seed_from_u64(if copied_root {
+        0x2600_6d02
+    } else {
+        0x2600_6d01
+    });
+    let mut node =
+        kult_node::Node::create(&config.db_path, &config.passphrase, TEST_KDF, &mut rng).unwrap();
+    let contact_path = directory.join(format!("{name}-contact.db"));
+    let mut contact =
+        kult_node::Node::create(&contact_path, b"contact-passphrase", TEST_KDF, &mut rng).unwrap();
+    let bundle = contact.handshake_bundle(1_800_000_000, &mut rng).unwrap();
+    let contact_peer = node
+        .add_contact("Preserved petname", &bundle, &[], 1_800_000_001, &mut rng)
+        .unwrap();
+    let recovery_path = directory.join(format!("{name}-setup-authority.kra"));
+    let recovery_mnemonic = node
+        .export_account_recovery_authority(&recovery_path)
+        .unwrap();
+    let recovery_package = std::fs::read(&recovery_path).unwrap();
+    let root = open_account_recovery_authority(&recovery_package, &recovery_mnemonic).unwrap();
+    let former_peer = rpc_hex(&root.public().ed);
+    let former_address = root.public().address();
+    drop(contact);
+    drop(node);
+
+    let store = Store::open(&config.db_path, &config.passphrase).unwrap();
+    let authority_state = store.get_device_authority_state().unwrap().unwrap();
+    let secret: [u8; 64] = authority_state
+        .local_device_secret
+        .as_slice()
+        .try_into()
+        .unwrap();
+    let device = Identity::from_bytes(&secret);
+    let certificate = DeviceCertificate::issue(&root, &device, 10, &mut rng);
+    let mut manifest =
+        DeviceManifest::initial(&root, certificate.clone(), "Original device".to_owned(), 10)
+            .unwrap();
+    if copied_root {
+        let former_linked_device = Identity::generate(&mut rng);
+        let former_certificate =
+            DeviceCertificate::issue(&root, &former_linked_device, 11, &mut rng);
+        manifest
+            .add_device(
+                &root,
+                DeviceManifestEntry {
+                    certificate: former_certificate,
+                    name: "Former linked device".to_owned(),
+                    last_seen: 11,
+                    revoked_at: None,
+                    revoked_after_counter: None,
+                },
+            )
+            .unwrap();
+        manifest
+            .revoke_device(&root, &former_linked_device.public().ed, 12, 0)
+            .unwrap();
+    }
+    store.put_legacy_identity_fixture(&root, &mut rng).unwrap();
+    store
+        .put_device_state(
+            &DeviceStateRecord {
+                local_device_secret: secret.to_vec(),
+                local_certificate: certificate,
+                manifest,
+                sync_counter: authority_state.sync_counter,
+                channels: Vec::new(),
+            },
+            &mut rng,
+        )
+        .unwrap();
+    assert!(store.contains_legacy_account_root().unwrap());
+    drop(store);
+
+    LegacyDaemonFixture {
+        config,
+        former_peer,
+        former_address,
+        contact_peer: rpc_hex(&contact_peer),
+    }
+}
+
 /// A minimal RPC client: one connection, sequential request/response,
 /// with any interleaved event lines collected on the side.
 struct Client {
@@ -1076,6 +1364,41 @@ async fn wait_authority_generation(client: &mut Client, group: &str, generation:
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     panic!("group authority did not reach generation {generation}");
+}
+
+async fn wait_group_security_ready(
+    initiator: &mut Client,
+    peer: &mut Client,
+    group: &str,
+    allow_initial_upgrade: bool,
+) -> (Value, Value) {
+    let mut upgrade_started = false;
+    let mut last_initiator = Value::Null;
+    let mut last_peer = Value::Null;
+    for _ in 0..200 {
+        last_initiator = initiator
+            .ok(json!({ "op": "group_security", "group": group }))
+            .await;
+        if allow_initial_upgrade
+            && !upgrade_started
+            && last_initiator["level"] == json!("upgrade_required")
+        {
+            last_initiator = initiator
+                .ok(json!({ "op": "group_upgrade_security", "group": group }))
+                .await;
+            upgrade_started = true;
+        }
+        last_peer = peer
+            .ok(json!({ "op": "group_security", "group": group }))
+            .await;
+        if last_initiator["level"] == json!("recipient_authenticated")
+            && last_peer["level"] == json!("recipient_authenticated")
+        {
+            return (last_initiator, last_peer);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("group origin exchange did not complete: initiator={last_initiator}, peer={last_peer}");
 }
 
 async fn wait_group_presence(client: &mut Client, group: &str, present: bool) {
@@ -1697,6 +2020,24 @@ async fn backup_and_restore_via_rpc() {
     // Pair and converse, so the backup has a session to reset.
     let mut a = Client::connect(&alice.socket_path).await;
     let mut b = Client::connect(&bob.socket_path).await;
+    let recovery_path = dir.path().join("alice-account-authority.kra");
+    let recovery = a
+        .ok(json!({
+            "op": "recovery_authority_export",
+            "path": recovery_path.display().to_string(),
+        }))
+        .await;
+    let recovery_mnemonic = recovery["mnemonic"].as_str().unwrap().to_owned();
+    assert_eq!(recovery_mnemonic.split_whitespace().count(), 24);
+    assert!(recovery_path.exists());
+    assert!(a
+        .call(json!({
+            "op": "recovery_authority_export",
+            "path": dir.path().join("duplicate-authority.kra").display().to_string(),
+        }))
+        .await
+        .unwrap_err()
+        .contains("no unexported"));
     let a_addr = listen_addr(&mut a).await;
     let b_addr = listen_addr(&mut b).await;
     let a_bundle = a.ok(json!({ "op": "bundle" })).await["bundle"]
@@ -1765,9 +2106,13 @@ async fn backup_and_restore_via_rpc() {
     restored_cfg.passphrase = b"new-passphrase".to_vec().into();
     restored_cfg.restore_from = Some(backup_path.clone());
     restored_cfg.restore_mnemonic = Some(mnemonic.clone().into());
+    restored_cfg.recovery_authority_from = Some(recovery_path.clone());
+    restored_cfg.recovery_authority_mnemonic = Some(recovery_mnemonic.clone().into());
     let mut over_existing = test_config(dir.path(), "alice");
     over_existing.restore_from = Some(backup_path.clone());
     over_existing.restore_mnemonic = Some(mnemonic.into());
+    over_existing.recovery_authority_from = Some(recovery_path);
+    over_existing.recovery_authority_mnemonic = Some(recovery_mnemonic.into());
     assert!(Daemon::start(over_existing).await.is_err());
     let alice = Daemon::start(restored_cfg).await.unwrap();
     assert_eq!(alice.address, address_before);
@@ -1897,6 +2242,11 @@ async fn groups_via_rpc_only() {
         .await
         .unwrap_err();
     assert!(err.contains("no stored group"), "got: {err}");
+
+    let (alice_security, bob_security) =
+        wait_group_security_ready(&mut a, &mut b, &group, true).await;
+    assert_eq!(alice_security["legacy_history_rows"], json!(0));
+    assert_eq!(bob_security["legacy_history_rows"], json!(0));
 
     let sent = a
         .ok(json!({ "op": "group_send", "group": group, "body": "meet at the pass" }))
@@ -2200,6 +2550,7 @@ async fn groups_via_rpc_only() {
     assert_eq!(upgraded["owner"], json!(alice_peer));
     assert_eq!(upgraded["my_role"], json!("member"));
     assert_eq!(upgraded["members"].as_array().unwrap().len(), 2);
+    wait_group_security_ready(&mut a, &mut b, &group, false).await;
 
     a.ok(json!({
         "op": "group_set_role",
@@ -2211,6 +2562,7 @@ async fn groups_via_rpc_only() {
     let admin_generation = upgrade_generation + 1;
     let administered = wait_authority_generation(&mut b, &group, admin_generation).await;
     assert_eq!(administered["my_role"], json!("admin"));
+    wait_group_security_ready(&mut a, &mut b, &group, false).await;
     let err = b
         .call(json!({
             "op": "group_set_role",
@@ -2243,6 +2595,7 @@ async fn groups_via_rpc_only() {
     assert_eq!(rename_result["generation"], json!(rename_generation));
     assert!(rename_result["state_id"].as_str().is_some());
     wait_authority_generation(&mut b, &group, rename_generation).await;
+    wait_group_security_ready(&mut a, &mut b, &group, false).await;
     let renamed_groups = b.ok(json!({ "op": "groups" })).await;
     assert!(renamed_groups["groups"]
         .as_array()
@@ -2291,6 +2644,8 @@ async fn groups_via_rpc_only() {
         moderation_result["generation"],
         json!(moderation_generation)
     );
+    wait_authority_generation(&mut b, &group, moderation_generation).await;
+    wait_group_security_ready(&mut a, &mut b, &group, false).await;
     let moderated = wait_poll_closed(&mut b, &group, &moderated_poll).await;
     assert_eq!(moderated["moderated_by"], json!(alice_peer));
     assert_eq!(moderated["close_policy"], json!("signed_owner_snapshot"));
@@ -2306,6 +2661,7 @@ async fn groups_via_rpc_only() {
     assert_eq!(bob_owner["owner"], json!(bob_peer));
     assert_eq!(bob_owner["owner_epoch"], json!(1));
     assert_eq!(bob_owner["my_role"], json!("owner"));
+    wait_group_security_ready(&mut a, &mut b, &group, false).await;
     let err = b
         .call(json!({ "op": "group_leave", "group": group }))
         .await
@@ -2322,6 +2678,7 @@ async fn groups_via_rpc_only() {
     let alice_owner = wait_authority_generation(&mut a, &group, alice_owner_generation).await;
     assert_eq!(alice_owner["owner"], json!(alice_peer));
     assert_eq!(alice_owner["owner_epoch"], json!(2));
+    wait_group_security_ready(&mut a, &mut b, &group, false).await;
     a.ok(json!({
         "op": "group_set_role",
         "group": group,
@@ -2330,6 +2687,7 @@ async fn groups_via_rpc_only() {
     }))
     .await;
     wait_authority_generation(&mut b, &group, alice_owner_generation + 1).await;
+    wait_group_security_ready(&mut a, &mut b, &group, false).await;
 
     // B10 stays local and structured through RPC: explicit random folder ids,
     // complete-set reorder, and exact typed targets without name inference.

@@ -66,11 +66,11 @@ portable live chain state.
 
 ## Poll moderation
 
-Ordinary closure remains the apparent poll creator's visible vote-head snapshot
-and is vulnerable to sender-key member forgery until ADR-0029. Owner moderation
-is a distinct operation. An admin may request it, but the owner sequences the
-authority generation and emits the closure. The exact group id, poll author/id
-target, authority generation, and final visible vote heads are signed under
+Ordinary closure remains the recipient-authenticated poll creator's visible
+vote-head snapshot under ADR-0029. Owner moderation is a distinct attributable
+operation. An admin may request it, but the owner sequences the authority
+generation and emits the closure. The exact group id, poll author/id target,
+authority generation, and final visible vote heads are signed under
 `Komms-group-poll-moderation-v1`.
 
 Resolution accepts moderation only when the signature matches the owner in the
@@ -85,10 +85,11 @@ a separately sealed `group_authority` record. This preserves legacy group-record
 encoding and adds no public database index or transport metadata.
 
 `KKR6` introduced signed authority records and consumed request ids; current
-`KKR7` carries them forward with linked-device recovery state, while continuing KKR5's terminal ephemeral
+`KKR8` carries them forward with linked-device recovery state, while continuing KKR5's terminal ephemeral
 tombstones and exclusion of live ephemeral plaintext/media. `KKR1` through
-`KKR5` remain restorable as legacy creator-managed groups. Sender and receiver
-chains are never portable.
+`KKR7` remain readable through the new-identity archive boundary, which omits
+groups rather than relabelling their authority under the fresh account. Sender
+and receiver chains are never portable.
 
 ## Interface behavior
 
@@ -116,7 +117,8 @@ or claim that owner action is fair.
 Local acceptance covers canonical and arbitrary decoding, signature/domain
 failure, stale and duplicate requests, concurrent admins, transfer-chain forks,
 last-owner refusal, offline delivery, removal and re-keying, signed moderation,
-reorder and C2 owned-device convergence, KKR1-KKR7 restore, RPC/CLI, UniFFI, desktop, Android host
+reorder and C2 owned-device convergence, current `KKR8` restore, RPC/CLI,
+UniFFI, desktop, Android host
 core/APK assembly, and iOS host/app builds. Real Android/iOS device execution
 remains part of the common hands-on platform gate; it does not weaken the
 implemented Android surface or shared protocol contract.

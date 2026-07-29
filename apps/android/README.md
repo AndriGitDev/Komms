@@ -18,7 +18,10 @@ own, verbatim.
   mnemonics are masked. Settings state honestly that third-party IMEs may ignore
   the request.
 - **Create / unlock / restore** an encrypted store at the gate; restoring
-  takes a `.kkr` backup file plus its 24-word mnemonic.
+  current root-free `KKR8` takes the backup and its phrase plus the separately
+  held authority and phrase. A visibly separate legacy `KKR1`–`KKR7` path
+  prepares a fresh address, requires identity-change confirmation, and imports
+  only the former-identity local archive.
 - **Pair out-of-band**: show your prekey bundle as a compact, versioned
   Base45 QR, scan a friend's with the camera, or paste the interoperable
   hex used by the desktop app and `kult bundle` / `kult add`. Legacy hex
@@ -34,7 +37,7 @@ own, verbatim.
   accessible row action. Android targets the exact peer key, uses an incognito
   field, previews shared NFC normalization and duplicate/confusable/bidi/
   invisible warnings, and confirms before accepting risk. Duplicate names remain
-  separate; restart/`KKR7` preserves the rename with zero delivery work.
+  separate; restart/`KKR8` preserves the rename with zero delivery work.
 - **Message** with honest delivery states: `queued` → `sent` (handed to a
   link) → `delivered` (end-to-end encrypted receipt came back). Sealed
   ciphertext retries passively after recent failures so fresh taps remain
@@ -98,7 +101,10 @@ own, verbatim.
   group history, send messages, add/remove members as the creator, and leave
   as any member while local history remains stored. Inbound rows name the
   sender; outbound rows show every recipient's actual delivery state instead
-  of a misleading group-level checkmark.
+  of a misleading group-level checkmark. A TalkBack-labelled security banner
+  blocks the composer while current devices exchange recipient-specific
+  origins, then labels new rows as recipient-authenticated without relabelling
+  legacy membership-authenticated history.
 - **Create and vote in encrypted group polls** through dedicated TalkBack-
   labelled cards and a bounded exact-Unicode composer. The current roster is
   fixed at creation; votes and identities are visible to members, explicitly
@@ -136,7 +142,7 @@ own, verbatim.
 - **Choose System, Light, or Dark appearance** from Settings, including before
   unlock. AppCompat DayNight is applied in `Application.onCreate` so the gate
   does not flash the wrong palette; after unlock the sealed F5 value wins and is
-  restored by `KKR7`. Light/night resources use semantic roles and WCAG-tested
+  restored by `KKR8`. Light/night resources use semantic roles and WCAG-tested
   reference contrast, Android high-contrast text and disabled-animation settings
   remain native, and delivery/security rows retain non-color cues.
 - **Manage private custom icons** for contacts, groups, folders, and note-to-self.
@@ -146,7 +152,7 @@ own, verbatim.
   app-private file before the shared core emits a 256×256 RGBA PNG re-encoded
   without source metadata.
   The 512 KiB/1,024-record/64 MiB limits and corrupt fallback are shared with
-  every shell; `KKR7` and authenticated own-device C2 sync are the only
+  every shell; `KKR8` and authenticated own-device C2 sync are the only
   portability paths, and no icon creates network,
   permission beyond the picker, notification, capability, or transport work.
 - **Verify** contacts by safety number: identical digits and QR on both
@@ -205,7 +211,7 @@ peer/group/note targets, stable order, any/all results, restart, and errors.
 Labels request no Contacts, clipboard, broad-storage, notification, nearby, or
 network permission. Label data never appears in notification channels, lock
 screen metadata, recent-task titles, logs, crash/analytics payloads, or
-unprotected state. `KKR7` preserves exact definitions and memberships; C2 can
+unprotected state. `KKR8` preserves exact definitions and memberships; C2 can
 converge them only between authorized owned devices, while message labels remain
 deferred.
 
@@ -213,25 +219,25 @@ Folder acceptance drives the shared B10 fixture through Rust RPC, UniFFI,
 Kotlin, and Swift, including exact Unicode, duplicate names, stable manual order,
 typed peer/group/note targets, single membership, label composition, restart,
 deletion, and structured errors. Folder state requests no additional permission,
-never leaves sealed owned-device storage. Portability is limited to `KKR7` and
+never leaves sealed owned-device storage. Portability is limited to `KKR8` and
 authenticated own-device C2 sync.
 
 Pin acceptance drives the shared B11 fixture through Rust RPC, UniFFI, Kotlin,
 and Swift, covering exact typed peer/group/note targets, append and complete-set
 reorder, folder/label composition, activity ordering, stale cleanup/reactivation,
-restart, structured limits/errors, and zero delivery work. `KKR7` together with
+restart, structured limits/errors, and zero delivery work. `KKR8` together with
 authenticated own-device C2 sync are the only portability paths; message pins
 remain deferred.
 
 Theme acceptance drives the shared B12 fixture through Rust RPC, UniFFI, Kotlin,
 and Swift: exact vocabulary/roles, first-run System, idempotency, restart,
-`KKR7`, one local event, and zero queued or transport work. The ordinary private
+`KKR8`, one local event, and zero queued or transport work. The ordinary private
 preference cache carries no identity, message, contact, or network data.
 
 Custom-icon acceptance drives the shared B13 fixture through Rust RPC, UniFFI,
 Kotlin, and Swift: all four exact target types, canonical PNG output that omits
 source metadata,
-quota accounting, restart/`KKR7`, generated-initials fallback, local events, and
+quota accounting, restart/`KKR8`, generated-initials fallback, local events, and
 zero delivery work. The Android manager uses SAF access only for the explicit
 selection and deletes its app-private transient after the blocking core call.
 

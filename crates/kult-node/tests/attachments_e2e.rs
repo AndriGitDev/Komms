@@ -10,10 +10,10 @@ use async_trait::async_trait;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
-use kult_crypto::KdfProfile;
+use kult_crypto::{GroupOriginEnvelope, KdfProfile};
 use kult_node::{AttachmentDirection, AttachmentMetadata, ContentStatus, Event, Node};
 use kult_protocol::{Envelope, EnvelopeKind};
-use kult_store::MediaTransferState;
+use kult_store::{GroupOriginAuthentication, MediaTransferState};
 use kult_transport::{
     CostClass, DeliveryHint, LatencyClass, LinkProfile, Reachability, SendReceipt, Transport,
     TransportError,
@@ -516,9 +516,6 @@ async fn group_attachment_encrypts_once_and_members_progress_independently() {
     let group = alice
         .create_group("attachments", &[ids[1], ids[2]], &mut rng)
         .unwrap();
-    alice
-        .group_send(&group, b"session warmup", NOW, &mut rng)
-        .unwrap();
     alice.tick(NOW + 1, &mut rng).await.unwrap();
     bob.tick(NOW + 5, &mut rng).await.unwrap();
     carol.tick(NOW + 5, &mut rng).await.unwrap();
@@ -526,6 +523,14 @@ async fn group_attachment_encrypts_once_and_members_progress_independently() {
     bob.tick(NOW + 11, &mut rng).await.unwrap();
     carol.tick(NOW + 11, &mut rng).await.unwrap();
     alice.tick(NOW + 12, &mut rng).await.unwrap();
+    alice.group_upgrade_security(&group, &mut rng).unwrap();
+    alice.tick(NOW + 13, &mut rng).await.unwrap();
+    bob.tick(NOW + 14, &mut rng).await.unwrap();
+    carol.tick(NOW + 14, &mut rng).await.unwrap();
+    alice.tick(NOW + 15, &mut rng).await.unwrap();
+    bob.tick(NOW + 16, &mut rng).await.unwrap();
+    carol.tick(NOW + 16, &mut rng).await.unwrap();
+    alice.tick(NOW + 17, &mut rng).await.unwrap();
 
     let bytes = vec![0x5a; kult_crypto::ATTACHMENT_CHUNK_DATA_LEN + 1];
     let preview = b"group jpeg preview".to_vec();
@@ -548,7 +553,29 @@ async fn group_attachment_encrypts_once_and_members_progress_independently() {
             &mut rng,
         )
         .unwrap();
+    assert!(matches!(
+        alice
+            .group_messages(&group)
+            .unwrap()
+            .into_iter()
+            .find(|message| message.id == content_id)
+            .unwrap()
+            .origin,
+        GroupOriginAuthentication::PendingOutboundV1 { sender_device }
+            if sender_device == alice.device_id()
+    ));
     alice.tick(NOW + 21, &mut rng).await.unwrap();
+    assert!(matches!(
+        alice
+            .group_messages(&group)
+            .unwrap()
+            .into_iter()
+            .find(|message| message.id == content_id)
+            .unwrap()
+            .origin,
+        GroupOriginAuthentication::OutboundV1 { sender_device, chain_key_id }
+            if sender_device == alice.device_id() && chain_key_id != [0; 16]
+    ));
     {
         let network = net.lock().unwrap();
         let copies: Vec<_> = [2u32, 3]
@@ -558,8 +585,19 @@ async fn group_attachment_encrypts_once_and_members_progress_independently() {
             .map(|envelope| envelope.body.clone())
             .collect();
         assert_eq!(copies.len(), 2);
-        assert_eq!(
+        assert_ne!(
             copies[0], copies[1],
+            "recipient-scoped origin tags are distinct"
+        );
+        assert_eq!(
+            GroupOriginEnvelope::decode(&copies[0])
+                .unwrap()
+                .shared()
+                .encode(),
+            GroupOriginEnvelope::decode(&copies[1])
+                .unwrap()
+                .shared()
+                .encode(),
             "manifest is sender-key encrypted once"
         );
     }

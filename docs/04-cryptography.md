@@ -144,9 +144,13 @@ exact author/content reference, revision, and replacement UTF-8 are protected by
 the same Double Ratchet or group sender-key AEAD as the original. Nothing in the
 outer envelope identifies an edit. Pairwise authorization uses the authenticated
 content sender and exact target bytes; visible names and local timestamps are
-excluded. In sender-key groups the same check is only membership-level because
-every member holds the content key; ADR-0029 is required for individual group
-origins. Resolution by maximum `(revision, edit_content_id)` is application
+excluded. A bare sender-key group would provide only membership-level
+authenticity because every member holds the content key. ADR-0029 therefore
+adds a distinct pairwise-distributed origin key and recipient tag around the
+shared ciphertext. The recipient verifies that tag against the certified
+sender device before advancing the sender chain or applying the edit.
+Resolution by maximum
+`(revision, edit_content_id)` is application
 convergence, not a new cryptographic primitive or signature. The normative
 encoding and compatibility contract are
 [ADR-0020](adr/0020-authenticated-message-edits.md),

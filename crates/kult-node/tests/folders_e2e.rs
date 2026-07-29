@@ -196,10 +196,15 @@ fn delete_cascade_exact_errors_and_recreate_isolation_are_honest() {
 }
 
 #[test]
-fn kkr5_restores_exact_ids_names_order_membership_and_stale_behavior() {
+fn root_free_backup_restores_exact_ids_names_order_membership_and_stale_behavior() {
     let mut rng = StdRng::seed_from_u64(0xb1003);
     let directory = tempfile::tempdir().unwrap();
     let (mut node, peer, group) = node_with_contact_and_group(directory.path(), &mut rng);
+    let recovery_path = directory.path().join("account-authority.kra");
+    let recovery_mnemonic = node
+        .export_account_recovery_authority(&recovery_path)
+        .unwrap();
+    let recovery_package = std::fs::read(&recovery_path).unwrap();
     let first = node
         .create_folder("e\u{301}\u{2067}עברית\u{2069}", &mut rng)
         .unwrap();
@@ -216,11 +221,14 @@ fn kkr5_restores_exact_ids_names_order_membership_and_stale_behavior() {
         .unwrap();
     let before = node.folders().unwrap();
     let (backup, mnemonic) = node.export_backup(NOW + 1, &mut rng).unwrap();
-    assert_eq!(&backup[..4], b"KKR7");
-    let restored = Node::restore(
+    assert_eq!(&backup[..4], b"KKR8");
+    let restored = Node::restore_with_recovery_authority(
         &directory.path().join("restored.db"),
         &backup,
         &mnemonic,
+        &recovery_package,
+        &recovery_mnemonic,
+        NOW + 1,
         b"restored",
         TEST_KDF,
         &mut rng,

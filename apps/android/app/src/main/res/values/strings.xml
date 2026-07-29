@@ -25,14 +25,28 @@
     <string name="gate_passphrase_create_help">Choose a passphrase for the encrypted store on this device.</string>
     <string name="gate_passphrase_unlock_help">Unlock your encrypted store on this device.</string>
     <string name="gate_restore_toggle">Restore from encrypted backup</string>
-    <string name="gate_restore_heading">Restore encrypted backup</string>
+    <string name="gate_restore_heading">Restore a root-free encrypted backup</string>
     <string name="gate_pick_backup">Choose .kkr backup file</string>
     <string name="gate_no_backup">no backup file chosen</string>
-    <string name="gate_mnemonic">24-word recovery mnemonic</string>
+    <string name="gate_backup_mnemonic">24-word backup mnemonic</string>
+    <string name="gate_legacy_backup">This is a legacy KKR1–KKR7 copied-root backup</string>
+    <string name="gate_legacy_warning">The former address cannot safely resume. Komms will require a fresh identity, preserve only a clearly marked local archive and petnames, clear routes and trust, and require every contact to compare a new safety number.</string>
+    <string name="gate_pick_recovery_authority">Choose offline .kra authority file</string>
+    <string name="gate_no_recovery_authority">no offline authority file chosen</string>
+    <string name="gate_recovery_mnemonic">Different 24-word authority mnemonic</string>
     <string name="gate_restore">Restore</string>
     <string name="gate_settings">Advanced network settings</string>
     <string name="gate_starting_title">Starting Komms</string>
     <string name="gate_starting_message">Opening your encrypted store and starting the node can take up to 30 seconds. Keep Komms open while this finishes.</string>
+    <string name="recovery_authority_filename">komms-account-authority.kra</string>
+    <string name="recovery_authority_required_title">Save your offline account authority</string>
+    <string name="recovery_authority_required_body">This step is required before messaging. Anyone holding both this encrypted file and its 24 words can take over your stable identity and revoke every current device. Save the file on offline or removable storage, separate from the words.</string>
+    <string name="recovery_authority_choose">Choose offline location</string>
+    <string name="recovery_authority_retry_body">The offline authority was not saved: %1$s\n\nChoose an offline or removable location and try again. This profile cannot continue until both parts are saved.</string>
+    <string name="recovery_authority_interrupted">The first-run authority handoff was interrupted. This profile stays blocked because Komms cannot prove that both recovery parts were saved. Try the export once; if it is no longer available, use the guided new-identity reset when offered.</string>
+    <string name="recovery_authority_done_title">Offline authority written — phrase shown once</string>
+    <string name="recovery_authority_done_body">Write these 24 words down separately from the .kra file. Anyone with both parts controls this identity.\n\n%1$s</string>
+    <string name="recovery_authority_done_ack">I stored both parts separately</string>
 
     <!-- Main -->
     <string name="status_line">%1$s · NAT %2$s · %3$d LAN · %4$d scheduled · %5$d queued · %6$d transit</string>
@@ -44,6 +58,8 @@
     <string name="discovery_dht_configured">%1$d trusted bootstrap peers configured</string>
     <string name="discovery_dht_local_only">no bootstrap configured — LAN and shared delivery hints only</string>
     <string name="node_details_title">Node details</string>
+    <string name="authority_reset_archive_title">Former-identity local archive</string>
+    <string name="authority_reset_archive_summary">%1$s\n%2$d pairwise rows and %3$d notes were copied locally. They are not newly authenticated history of this account.\n%4$d active groups and %5$d group-message rows were not transferred. %6$d contact(s) still require a new safety-number comparison.</string>
     <string name="main_filters_show">Filter conversations</string>
     <string name="main_filters_hide">Hide conversation filters</string>
     <string name="nat_public">directly reachable</string>
@@ -91,7 +107,7 @@
     <string name="key_changed_title">Security notice</string>
     <string name="key_changed_body">A new encryption session was established with %1$s. If they did not just reinstall or restore, verify safety numbers before trusting new messages.</string>
     <string name="backup_done_title">Backup written — recovery mnemonic</string>
-    <string name="backup_done_body">Write these 24 words down on paper. They are shown exactly once and stored nowhere:\n\n%1$s</string>
+    <string name="backup_done_body">Write these 24 backup words down. They are shown once and stored nowhere. This root-free backup excludes live sessions, device keys, rendezvous secrets, and the offline account authority; recovery also requires the separately held .kra file and its different phrase.\n\n%1$s</string>
     <string name="backup_done_ack">I wrote them down</string>
 
     <!-- Private local labels -->
@@ -334,6 +350,12 @@
     <string name="group_authority_summary">%1$d members · %2$s owns this group · generation %3$s · %4$s</string>
     <string name="group_authority_signed">signed authority</string>
     <string name="group_authority_legacy">legacy authority</string>
+    <string name="group_security_upgrade_action">Upgrade group security</string>
+    <string name="group_security_upgrade_required">Group security upgrade required. New messages and author-sensitive actions stay blocked until every current device receives a fresh recipient-specific origin capability.</string>
+    <string name="group_security_upgrading">Upgrading group security. %1$d device(s) are still waiting; Komms will continue automatically.</string>
+    <string name="group_security_authenticated_with_legacy">New messages are recipient-authenticated. %1$d older message(s) remain labelled as legacy membership-authenticated history.</string>
+    <string name="group_message_legacy_origin">legacy group origin</string>
+    <string name="group_message_pending_origin">securing recipients</string>
     <string name="group_rename_hint">Group name</string>
     <string name="group_rename_action">Rename</string>
     <string name="group_rename_request_action">Request rename</string>
@@ -412,8 +434,8 @@
     <string name="settings_title">Settings</string>
     <string name="settings_account_devices">Account &amp; devices</string>
     <string name="settings_backup_title">Encrypted backup</string>
-    <string name="settings_backup_summary">Export identity, contacts, and history</string>
-    <string name="settings_backup_accessibility">Encrypted backup. Export identity, contacts, and history</string>
+    <string name="settings_backup_summary">Export a root-free copy of identity, contacts, and history; restore also needs the separate offline authority</string>
+    <string name="settings_backup_accessibility">Root-free encrypted backup. Export identity, contacts, and history; restore also requires the separately held offline authority</string>
     <string name="settings_devices_title">Linked devices</string>
     <string name="settings_devices_summary">Link, sync, rename, or revoke installations</string>
     <string name="settings_devices_accessibility">Linked devices. Link, sync, rename, or revoke installations</string>

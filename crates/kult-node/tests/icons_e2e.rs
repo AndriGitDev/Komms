@@ -110,6 +110,11 @@ fn every_target_source_restart_restore_fallback_and_zero_network_work() {
     let directory = tempfile::tempdir().unwrap();
     let database = directory.path().join("node.db");
     let mut node = Node::create(&database, b"pass", TEST_KDF, &mut rng).unwrap();
+    let recovery_path = directory.path().join("account-authority.kra");
+    let recovery_mnemonic = node
+        .export_account_recovery_authority(&recovery_path)
+        .unwrap();
+    let recovery_package = std::fs::read(&recovery_path).unwrap();
     let mut peer_node = Node::create(
         &directory.path().join("peer.db"),
         b"peer",
@@ -214,11 +219,14 @@ fn every_target_source_restart_restore_fallback_and_zero_network_work() {
     assert!(reopened.custom_icon(&targets[2]).unwrap().is_none());
 
     let (backup, mnemonic) = reopened.export_backup(NOW, &mut rng).unwrap();
-    assert_eq!(&backup[..4], b"KKR7");
-    let restored = Node::restore(
+    assert_eq!(&backup[..4], b"KKR8");
+    let restored = Node::restore_with_recovery_authority(
         &directory.path().join("restored.db"),
         &backup,
         &mnemonic,
+        &recovery_package,
+        &recovery_mnemonic,
+        NOW,
         b"restored",
         TEST_KDF,
         &mut rng,

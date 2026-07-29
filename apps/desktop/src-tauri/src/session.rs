@@ -24,7 +24,8 @@ use image::{ImageFormat, ImageReader};
 use serde::{Deserialize, Serialize};
 
 use kult_ffi::{
-    canonicalize_recorded_audio, default_config, edit_image, probe_edited_image,
+    canonicalize_recorded_audio, default_config, edit_image, prepare_authority_migration,
+    prepare_authority_reset, prepare_legacy_backup_authority_reset, probe_edited_image,
     probe_recorded_audio, Attachment, AttachmentConversation, AttachmentDirection,
     AttachmentFileKind as FfiAttachmentFileKind,
     AttachmentFilePresentation as FfiAttachmentFilePresentation,
@@ -37,13 +38,16 @@ use kult_ffi::{
     ContactNameWarning as FfiContactNameWarning, ContentKind, CustomIcon as FfiCustomIcon,
     CustomIconCrop as FfiCustomIconCrop, CustomIconTarget as FfiCustomIconTarget,
     CustomIconTargetKind as FfiCustomIconTargetKind, DeliveryState,
+    DeviceAuthorityConflictKind as FfiDeviceAuthorityConflictKind,
     DeviceLinkSelection as FfiDeviceLinkSelection, Direction, Event, EventListener,
     Folder as FfiFolder, FolderConversation as FfiFolderConversation,
     FolderConversationResult as FfiFolderConversationResult, FolderSelection as FfiFolderSelection,
     FolderSelectionKind as FfiFolderSelectionKind, FolderTarget as FfiFolderTarget,
     FolderTargetKind as FfiFolderTargetKind, GroupAuthority as FfiGroupAuthority,
-    GroupPoll as FfiGroupPoll, GroupRole as FfiGroupRole, Hint, ImageCrop, ImageEditRecipe,
-    ImageEditRegion, ImageEditRegionKind, ImageInfo, KdfChoice, KultNode, Label as FfiLabel,
+    GroupMessageAuthentication as FfiGroupMessageAuthentication, GroupPoll as FfiGroupPoll,
+    GroupRole as FfiGroupRole, GroupSecurity as FfiGroupSecurity,
+    GroupSecurityLevel as FfiGroupSecurityLevel, Hint, ImageCrop, ImageEditRecipe, ImageEditRegion,
+    ImageEditRegionKind, ImageInfo, KdfChoice, KultNode, Label as FfiLabel,
     LabelConversation as FfiLabelConversation, LabelFilterResult as FfiLabelFilterResult,
     LabelMatchMode as FfiLabelMatchMode, LabelTarget as FfiLabelTarget,
     LabelTargetKind as FfiLabelTargetKind, MentionCapabilityIssueReason, MentionSpan, NatVerdict,
@@ -1146,6 +1150,21 @@ pub struct UiGroup {
     pub creator: String,
     /// Full roster, this node included (hex peer ids).
     pub members: Vec<String>,
+    /// `upgrade_required`, `upgrading`, or `recipient_authenticated`.
+    pub security: &'static str,
+}
+
+/// Render-safe group recipient-origin upgrade details.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiGroupSecurity {
+    /// Group id (hex).
+    pub group: String,
+    /// `upgrade_required`, `upgrading`, or `recipient_authenticated`.
+    pub level: &'static str,
+    /// Exact device ids that have not completed the exchange.
+    pub pending_devices: Vec<String>,
+    /// Historical rows that remain membership-authenticated.
+    pub legacy_history_rows: u64,
 }
 
 /// One exact member role for desktop rendering and controls.
@@ -1205,6 +1224,24 @@ fn group_role_str(role: FfiGroupRole) -> &'static str {
         FfiGroupRole::Owner => "owner",
         FfiGroupRole::Admin => "admin",
         FfiGroupRole::Member => "member",
+    }
+}
+
+fn group_security_str(level: FfiGroupSecurityLevel) -> &'static str {
+    match level {
+        FfiGroupSecurityLevel::UpgradeRequired => "upgrade_required",
+        FfiGroupSecurityLevel::Upgrading => "upgrading",
+        FfiGroupSecurityLevel::RecipientAuthenticated => "recipient_authenticated",
+    }
+}
+
+fn group_message_authentication_str(authentication: FfiGroupMessageAuthentication) -> &'static str {
+    match authentication {
+        FfiGroupMessageAuthentication::LegacyMembership => "legacy_membership",
+        FfiGroupMessageAuthentication::PendingRecipientAuthentication => {
+            "pending_recipient_authentication"
+        }
+        FfiGroupMessageAuthentication::RecipientAuthenticated => "recipient_authenticated",
     }
 }
 
@@ -1360,6 +1397,8 @@ pub struct UiGroupMessage {
     pub timestamp: u64,
     /// Message text.
     pub body: String,
+    /// `legacy_membership` or `recipient_authenticated`.
+    pub authentication: &'static str,
     /// `legacy_text`, `text`, `unsupported`, or `malformed`.
     pub content_kind: &'static str,
     /// Exact authenticated local expiry for ephemeral content.
@@ -1442,6 +1481,38 @@ pub struct UiLinkedDevice {
     pub current: bool,
 }
 
+/// One durable fail-closed account device-authority conflict.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiDeviceAuthorityConflict {
+    /// `fork` or `recovery`.
+    pub kind: &'static str,
+    /// Locally retained branch tip (hex).
+    pub accepted: String,
+    /// Rejected conflicting branch tip (hex).
+    pub conflicting: String,
+    /// Recovery epoch shared by both claims.
+    pub recovery_epoch: u64,
+    /// Coarse local observation time.
+    pub observed_at: u64,
+}
+
+/// One durable fail-closed conflict presented by a contact account.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiContactAuthorityConflict {
+    /// Stable affected contact account (hex).
+    pub account: String,
+    /// `fork` or `recovery`.
+    pub kind: &'static str,
+    /// Locally retained branch tip (hex).
+    pub accepted: String,
+    /// Rejected conflicting branch tip (hex).
+    pub conflicting: String,
+    /// Recovery epoch shared by both claims.
+    pub recovery_epoch: u64,
+    /// Coarse local observation time.
+    pub observed_at: u64,
+}
+
 /// Per-physical-device delivery state for one outbound message.
 #[derive(Clone, Debug, Serialize)]
 pub struct UiMessageDeviceDelivery {
@@ -1460,6 +1531,8 @@ pub struct UiDeviceLinkOffer {
     pub hex: String,
     /// QR carrying the same bytes in uppercase hex.
     pub qr_svg: String,
+    /// Camera-friendly order-independent frames for larger authority proofs.
+    pub qr_svgs: Vec<String>,
 }
 
 /// Target-side response and human comparison code.
@@ -1662,6 +1735,24 @@ pub enum UiEvent {
     StateResyncRequired,
     /// Account-authorized device list, name, or revocation changed.
     DevicesChanged,
+    /// Concurrent valid ordinary authority branches were retained visibly.
+    DeviceAuthorityFork {
+        /// Locally retained branch tip (hex).
+        accepted: String,
+        /// Rejected conflicting branch tip (hex).
+        conflicting: String,
+        /// Recovery epoch shared by both branches.
+        recovery_epoch: u64,
+    },
+    /// Different root-authorized transitions claimed one recovery epoch.
+    DeviceRecoveryConflict {
+        /// Locally retained recovery branch (hex).
+        accepted: String,
+        /// Rejected conflicting recovery branch (hex).
+        conflicting: String,
+        /// Conflicting recovery epoch.
+        recovery_epoch: u64,
+    },
     /// This pristine installation completed a confirmed account link.
     DeviceLinkCompleted {
         /// Stable account id (hex).
@@ -1880,6 +1971,24 @@ impl UiEvent {
         match event {
             Event::StateResyncRequired => Self::StateResyncRequired,
             Event::DevicesChanged => Self::DevicesChanged,
+            Event::DeviceAuthorityFork {
+                accepted,
+                conflicting,
+                recovery_epoch,
+            } => Self::DeviceAuthorityFork {
+                accepted,
+                conflicting,
+                recovery_epoch,
+            },
+            Event::DeviceRecoveryConflict {
+                accepted,
+                conflicting,
+                recovery_epoch,
+            } => Self::DeviceRecoveryConflict {
+                accepted,
+                conflicting,
+                recovery_epoch,
+            },
             Event::DeviceLinkCompleted { account, device } => {
                 Self::DeviceLinkCompleted { account, device }
             }
@@ -2264,6 +2373,40 @@ impl EventListener for Forwarder {
     }
 }
 
+/// User-reviewed copied-root reset preparation shown before replacement.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiAuthorityResetPreparation {
+    /// Fresh human-shareable account address.
+    pub new_address: String,
+    /// Fresh account public id.
+    pub new_peer: String,
+    /// One-time phrase opening the separately written authority file.
+    pub recovery_mnemonic: String,
+}
+
+/// Visible former-identity archive and remaining contact verification work.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiAuthorityResetHistory {
+    /// Former account id.
+    pub former_peer: String,
+    /// Fresh account id.
+    pub new_peer: String,
+    /// Display-only reset time.
+    pub reset_at: u64,
+    /// Petnames/public identities retained.
+    pub preserved_contacts: u32,
+    /// Former-identity pairwise rows retained as local archive.
+    pub preserved_pairwise_messages: u64,
+    /// Device-local note rows retained.
+    pub preserved_note_messages: u64,
+    /// Active group records deliberately omitted.
+    pub omitted_groups: u64,
+    /// Group history rows deliberately omitted.
+    pub omitted_group_messages: u64,
+    /// Contacts still requiring new safety-number comparison.
+    pub pending_reverification: Vec<String>,
+}
+
 /// A running node plus the shell-side conveniences the UI needs.
 pub struct Session {
     node: Arc<KultNode>,
@@ -2273,6 +2416,47 @@ pub struct Session {
 }
 
 impl Session {
+    /// Write a protected authority for an in-place single-device migration
+    /// while leaving the live profile unchanged.
+    pub fn prepare_alpha_authority_migration(
+        data_dir: &Path,
+        passphrase: String,
+        recovery_path: String,
+    ) -> Result<String, String> {
+        prepare_authority_migration(data_dir.display().to_string(), passphrase, recovery_path)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Write a protected authority for a copied-root new-identity reset while
+    /// leaving the live profile unchanged.
+    pub fn prepare_alpha_authority_reset(
+        data_dir: &Path,
+        passphrase: String,
+        recovery_path: String,
+    ) -> Result<UiAuthorityResetPreparation, String> {
+        prepare_authority_reset(data_dir.display().to_string(), passphrase, recovery_path)
+            .map(|prepared| UiAuthorityResetPreparation {
+                new_address: prepared.new_address,
+                new_peer: prepared.new_peer,
+                recovery_mnemonic: prepared.recovery_mnemonic,
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    /// Write the fresh protected authority required to import a copied-root
+    /// legacy backup as a former-identity local archive.
+    pub fn prepare_legacy_backup_authority_reset(
+        recovery_path: String,
+    ) -> Result<UiAuthorityResetPreparation, String> {
+        prepare_legacy_backup_authority_reset(recovery_path)
+            .map(|prepared| UiAuthorityResetPreparation {
+                new_address: prepared.new_address,
+                new_peer: prepared.new_peer,
+                recovery_mnemonic: prepared.recovery_mnemonic,
+            })
+            .map_err(|error| error.to_string())
+    }
+
     /// Open (or create on first run) the store in `data_dir` and start the
     /// node. Blocking — call off the UI thread. `kdf` is the Argon2id cost
     /// profile for store *creation* (the app passes the desktop profile;
@@ -2297,25 +2481,109 @@ impl Session {
 
     /// First run only: restore from an encrypted backup file instead of
     /// creating a fresh identity, then start.
+    #[allow(clippy::too_many_arguments)]
     pub fn restore(
         data_dir: &Path,
         passphrase: String,
         backup_path: String,
         mnemonic: String,
+        recovery_package_path: String,
+        recovery_mnemonic: String,
         settings: &NetworkSettings,
         kdf: KdfChoice,
         sink: EventSink,
     ) -> Result<Self, String> {
         cleanup_media_temps_once();
         let config = build_config(data_dir, passphrase, settings, kdf);
-        let node = KultNode::restore(config, backup_path, mnemonic, Box::new(Forwarder(sink)))
-            .map_err(|e| e.to_string())?;
+        let node = KultNode::restore(
+            config,
+            backup_path,
+            mnemonic,
+            recovery_package_path,
+            recovery_mnemonic,
+            Box::new(Forwarder(sink)),
+        )
+        .map_err(|e| e.to_string())?;
         Ok(Self {
             node,
             network_settings: settings.clone(),
             pending_images: Mutex::new(HashMap::new()),
             opened_attachments: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Complete a prepared single-device migration and start the node.
+    pub fn migrate_authority(
+        data_dir: &Path,
+        passphrase: String,
+        recovery_package_path: String,
+        recovery_mnemonic: String,
+        settings: &NetworkSettings,
+        kdf: KdfChoice,
+        sink: EventSink,
+    ) -> Result<Self, String> {
+        cleanup_media_temps_once();
+        let config = build_config(data_dir, passphrase, settings, kdf);
+        let node = KultNode::migrate_authority(
+            config,
+            recovery_package_path,
+            recovery_mnemonic,
+            Box::new(Forwarder(sink)),
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(Self {
+            node,
+            network_settings: settings.clone(),
+            pending_images: Mutex::new(HashMap::new()),
+            opened_attachments: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Complete a copied-root new-identity reset and start the node.
+    pub fn reset_authority(
+        data_dir: &Path,
+        passphrase: String,
+        recovery_package_path: String,
+        recovery_mnemonic: String,
+        settings: &NetworkSettings,
+        kdf: KdfChoice,
+        sink: EventSink,
+    ) -> Result<Self, String> {
+        cleanup_media_temps_once();
+        let config = build_config(data_dir, passphrase, settings, kdf);
+        let node = KultNode::reset_authority(
+            config,
+            recovery_package_path,
+            recovery_mnemonic,
+            Box::new(Forwarder(sink)),
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(Self {
+            node,
+            network_settings: settings.clone(),
+            pending_images: Mutex::new(HashMap::new()),
+            opened_attachments: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Visible former-identity archive and remaining safety-number work.
+    pub fn authority_reset_history(&self) -> Result<Option<UiAuthorityResetHistory>, String> {
+        self.node
+            .authority_reset_history()
+            .map(|record| {
+                record.map(|record| UiAuthorityResetHistory {
+                    former_peer: record.former_peer,
+                    new_peer: record.new_peer,
+                    reset_at: record.reset_at,
+                    preserved_contacts: record.preserved_contacts,
+                    preserved_pairwise_messages: record.preserved_pairwise_messages,
+                    preserved_note_messages: record.preserved_note_messages,
+                    omitted_groups: record.omitted_groups,
+                    omitted_group_messages: record.omitted_group_messages,
+                    pending_reverification: record.pending_reverification,
+                })
+            })
+            .map_err(|error| error.to_string())
     }
 
     /// This node's human-shareable kult address.
@@ -2411,6 +2679,72 @@ impl Session {
             .collect())
     }
 
+    /// Unresolved authority forks and recovery conflicts retained on disk.
+    pub fn device_authority_conflicts(&self) -> Result<Vec<UiDeviceAuthorityConflict>, String> {
+        Ok(self
+            .node
+            .device_authority_conflicts()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|conflict| UiDeviceAuthorityConflict {
+                kind: match conflict.kind {
+                    FfiDeviceAuthorityConflictKind::Fork => "fork",
+                    FfiDeviceAuthorityConflictKind::Recovery => "recovery",
+                },
+                accepted: conflict.accepted,
+                conflicting: conflict.conflicting,
+                recovery_epoch: conflict.recovery_epoch,
+                observed_at: conflict.observed_at,
+            })
+            .collect())
+    }
+
+    /// Contact authority forks and recovery conflicts retained on disk.
+    pub fn contact_authority_conflicts(&self) -> Result<Vec<UiContactAuthorityConflict>, String> {
+        Ok(self
+            .node
+            .contact_authority_conflicts()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|conflict| UiContactAuthorityConflict {
+                account: conflict.account,
+                kind: match conflict.kind {
+                    FfiDeviceAuthorityConflictKind::Fork => "fork",
+                    FfiDeviceAuthorityConflictKind::Recovery => "recovery",
+                },
+                accepted: conflict.accepted,
+                conflicting: conflict.conflicting,
+                recovery_epoch: conflict.recovery_epoch,
+                observed_at: conflict.observed_at,
+            })
+            .collect())
+    }
+
+    /// Export the pending rename/revocation proposal for another active device.
+    pub fn device_authority_approval_request(&self) -> Result<String, String> {
+        self.node
+            .device_authority_approval_request()
+            .map(|request| hex_encode(&request))
+            .map_err(|error| error.to_string())
+    }
+
+    /// Verify and sign another active device's rename/revocation proposal.
+    pub fn approve_device_authority_request(&self, request_hex: String) -> Result<String, String> {
+        let request = hex_decode(&request_hex).ok_or("authority request must be hex")?;
+        self.node
+            .approve_device_authority_request(request)
+            .map(|approval| hex_encode(&approval))
+            .map_err(|error| error.to_string())
+    }
+
+    /// Merge a detached authority approval and report whether it committed.
+    pub fn accept_device_authority_approval(&self, approval_hex: String) -> Result<bool, String> {
+        let approval = hex_decode(&approval_hex).ok_or("authority approval must be hex")?;
+        self.node
+            .accept_device_authority_approval(approval)
+            .map_err(|error| error.to_string())
+    }
+
     /// Per-physical-device states for one outbound message.
     pub fn message_device_deliveries(
         &self,
@@ -2453,8 +2787,19 @@ impl Session {
             .begin_device_link()
             .map_err(|error| error.to_string())?;
         let hex = hex_encode(&bytes);
-        let qr_svg = qr::svg(hex.to_uppercase().as_bytes())?;
-        Ok(UiDeviceLinkOffer { hex, qr_svg })
+        let qr_svgs = qr::bundle_frames(&bytes)
+            .into_iter()
+            .map(|frame| qr::svg(frame.as_bytes()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let qr_svg = qr_svgs
+            .first()
+            .cloned()
+            .ok_or("device link offer produced no QR frames")?;
+        Ok(UiDeviceLinkOffer {
+            hex,
+            qr_svg,
+            qr_svgs,
+        })
     }
 
     /// Accept a pasted or scanned offer on a pristine target.
@@ -2463,7 +2808,9 @@ impl Session {
         offer_hex: String,
         device_name: String,
     ) -> Result<UiDeviceLinkAcceptance, String> {
-        let offer = hex_decode(&offer_hex).ok_or("device link offer must be hex")?;
+        let offer = qr::decode_bundle_text(&offer_hex)
+            .or_else(|| hex_decode(&offer_hex))
+            .ok_or("device link offer must be hex or Komms QR text")?;
         let accepted = self
             .node
             .accept_device_link(offer, device_name)
@@ -2501,6 +2848,35 @@ impl Session {
                 confirmed,
             )
             .map(|package| hex_encode(&package))
+            .map_err(|error| error.to_string())
+    }
+
+    /// Export a pending add-device proposal when another approval is needed.
+    pub fn device_link_approval_request(&self) -> Result<String, String> {
+        self.node
+            .device_link_approval_request()
+            .map(|request| hex_encode(&request))
+            .map_err(|error| error.to_string())
+    }
+
+    /// Verify and sign another active device's add-device proposal.
+    pub fn approve_device_link_request(&self, request_hex: String) -> Result<String, String> {
+        let request = hex_decode(&request_hex).ok_or("device link approval request must be hex")?;
+        self.node
+            .approve_device_link_request(request)
+            .map(|approval| hex_encode(&approval))
+            .map_err(|error| error.to_string())
+    }
+
+    /// Merge an add-device approval; returns the package once quorum is met.
+    pub fn accept_device_link_approval(
+        &self,
+        approval_hex: String,
+    ) -> Result<Option<String>, String> {
+        let approval = hex_decode(&approval_hex).ok_or("device link approval must be hex")?;
+        self.node
+            .accept_device_link_approval(approval)
+            .map(|package| package.map(|bytes| hex_encode(&bytes)))
             .map_err(|error| error.to_string())
     }
 
@@ -3936,6 +4312,29 @@ impl Session {
             .map_err(|e| e.to_string())
     }
 
+    /// Visible recipient-origin upgrade state for one group.
+    pub fn group_security(&self, group: String) -> Result<UiGroupSecurity, String> {
+        let FfiGroupSecurity {
+            group,
+            level,
+            pending_devices,
+            legacy_history_rows,
+        } = self.node.group_security(group).map_err(|e| e.to_string())?;
+        Ok(UiGroupSecurity {
+            group,
+            level: group_security_str(level),
+            pending_devices,
+            legacy_history_rows,
+        })
+    }
+
+    /// Start the explicit legacy-group security upgrade.
+    pub fn upgrade_group_security(&self, group: String) -> Result<(), String> {
+        self.node
+            .upgrade_group_security(group)
+            .map_err(|e| e.to_string())
+    }
+
     /// All locally stored groups, excluding every secret and chain value.
     pub fn groups(&self) -> Result<Vec<UiGroup>, String> {
         Ok(self
@@ -3948,6 +4347,7 @@ impl Session {
                 name: group.name,
                 creator: group.creator,
                 members: group.members,
+                security: group_security_str(group.security),
             })
             .collect())
     }
@@ -3966,6 +4366,7 @@ impl Session {
                 outbound: message.direction == Direction::Outbound,
                 timestamp: message.timestamp,
                 body: message.body,
+                authentication: group_message_authentication_str(message.authentication),
                 content_kind: content_kind_str(message.content_kind),
                 expires_at: message.expires_at,
                 mention_spans: message
@@ -4241,6 +4642,14 @@ impl Session {
     /// mnemonic. The shell shows it exactly once and keeps no copy.
     pub fn export_backup(&self, path: String) -> Result<String, String> {
         self.node.export_backup(path).map_err(|e| e.to_string())
+    }
+
+    /// First-run only: write the encrypted offline account authority and
+    /// return its separate opening phrase.
+    pub fn export_account_recovery_authority(&self, path: String) -> Result<String, String> {
+        self.node
+            .export_account_recovery_authority(path)
+            .map_err(|e| e.to_string())
     }
 
     /// Stop the node (idempotent).
