@@ -55,8 +55,8 @@ device. They should be kept offline and separately from an unlocked device.
 Opening attempts are locally throttled, but the phrase entropy and protected
 offline file—not that restartable throttle—are the security boundary.
 
-Routine `KKR8` backup has its own file and one-time phrase. Restore requires
-both the `KKR8` pair and the `.kra` pair so the account root is opened only for
+Routine `KKR9` backup has its own file and one-time phrase. Restore requires
+both the `KKR9` pair and the `.kra` pair so the account root is opened only for
 one explicit recovery epoch.
 
 ## Link flow
@@ -128,15 +128,18 @@ installation, but it cannot make a stolen root harmless.
 
 ## Backup and Alpha migration
 
-`KKR8` preserves the public account, accepted authority proof, accurately
+Current `KKR9` and its directly restorable root-free `KKR8` predecessor
+preserve the public account, accepted authority proof, accurately
 eligible local history and organization, certified contact endpoints, and
-terminal tombstones. It excludes the account root, physical-device private
+terminal tombstones. KKR9 additionally preserves bounded local block rules;
+KKR8 naturally restores none. Both exclude the account root, physical-device private
 keys, prekeys, pairwise ratchets, group sender/receiver chains, link-channel
 roots, live rendezvous or wake capabilities, wire ids, queues, and resumable
 delivery state. Queued or sent local history restores as failed history and
 contacts re-handshake.
 
-Legacy `KKR1` through `KKR7` inputs remain an explicit compatibility boundary.
+Legacy copied-root `KKR1` through `KKR7` inputs remain a separate explicit
+compatibility boundary.
 A legacy single-device profile with no durable evidence that the account root
 was copied may migrate in place after exporting and confirming its `.kra`.
 Durable multi-device or link-channel evidence requires a visible

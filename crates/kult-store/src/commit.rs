@@ -11,19 +11,19 @@ use kult_crypto::{
     GROUP_MESSAGE_VERSION_LEGACY,
 };
 use kult_protocol::{
-    CapabilityControl, DeviceSyncEvent, Envelope, EnvelopeKind, MAX_DEVICE_SYNC_BUNDLE_EVENTS,
+    CapabilityControl, DeviceSyncEvent, EnvelopeKind, MAX_DEVICE_SYNC_BUNDLE_EVENTS,
     MAX_GROUP_ADMIN_REQUESTS, MAX_GROUP_AUTHORITY_MEMBERS, MAX_GROUP_MEMBER_IDENTITY_LEN,
     MAX_GROUP_NAME_LEN,
 };
 
 use crate::{
-    decode_exact, direction_code, store_v2, ContactDeviceRecord, ContactRecord, DeliveryState,
-    DeviceAuthorityStateRecord, DeviceLinkRecoveryRecord, DeviceStateRecord, Direction,
-    EphemeralRecord, EphemeralState, GroupAuthorityRecord, GroupMessageRecord,
-    GroupOriginAuthentication, GroupPendingFanout, GroupRecord, LocalMetadataRecord,
-    MediaObjectRecord, MediaRecord, MediaTransferRecord, MessageDeviceDeliveryRecord,
-    MessageRecord, NoteMessageRecord, QueueItem, Result, ScheduledMessageRecord, Store, StoreError,
-    MAX_DEVICE_SYNC_EVENT_BYTES,
+    decode_exact, direction_code, store_v2, AdmissionReplayTombstone, BlockedIdentityRecord,
+    ContactDeviceRecord, ContactRecord, DeliveryState, DeviceAuthorityStateRecord,
+    DeviceLinkRecoveryRecord, DeviceStateRecord, Direction, EphemeralRecord, EphemeralState,
+    GroupAuthorityRecord, GroupMessageRecord, GroupOriginAuthentication, GroupPendingFanout,
+    GroupRecord, LocalMetadataRecord, MediaObjectRecord, MediaRecord, MediaTransferRecord,
+    MessageDeviceDeliveryRecord, MessageRecord, NoteMessageRecord, ProvisionalRequestRecord,
+    QueueItem, Result, ScheduledMessageRecord, Store, StoreError, MAX_DEVICE_SYNC_EVENT_BYTES,
 };
 
 /// Maximum logical durable mutations accepted by one typed commit plan.
@@ -799,6 +799,73 @@ pub struct HandshakeReceivePlan<'a> {
     pub presentation_changed: bool,
 }
 
+/// Atomic admission of one cryptographically valid stranger into the sealed
+/// provisional request domain.
+pub struct AdmissionStagePlan<'a> {
+    /// Optional one-time-prekey consumption.
+    pub prekeys: Option<PrekeyTransition<'a>>,
+    /// Exact prior request for this account when deterministic replacement occurs.
+    pub before: Option<&'a ProvisionalRequestRecord>,
+    /// Complete detached candidate state.
+    pub after: &'a ProvisionalRequestRecord,
+    /// Exact introduction content id.
+    pub content_id: [u8; 16],
+    /// Deferred source row staged before cryptographic work.
+    pub source_pending: Option<PendingDelete>,
+    /// Whether presentation must be recoverable after commit.
+    pub presentation_changed: bool,
+}
+
+/// Atomic promotion of one provisional request into normal contact state.
+pub struct AdmissionAcceptPlan<'a> {
+    /// Exact sealed request being promoted.
+    pub request: &'a ProvisionalRequestRecord,
+    /// Detached session decoded from the request before acceptance encryption.
+    pub session_before: &'a Session,
+    /// Newly live session after the encrypted acceptance result was queued.
+    pub session: SessionTransition<'a>,
+    /// User-named normal contact.
+    pub contact: &'a ContactRecord,
+    /// Verified physical-device endpoints copied from provisional state.
+    pub devices: &'a [ContactDeviceRecord],
+    /// Group announce state changed only after consent.
+    pub groups: &'a [GroupTransition<'a>],
+    /// Optional bounded first message promoted to normal history.
+    pub message: Option<&'a MessageRecord>,
+    /// Encrypted acceptance/delivery result.
+    pub queue: &'a [QueueItem],
+    /// Local acceptance time.
+    pub accepted_at: u64,
+    /// Whether presentation must be recoverable after commit.
+    pub presentation_changed: bool,
+}
+
+/// Atomic Delete or Block transition for one provisional request.
+pub struct AdmissionDiscardPlan<'a> {
+    /// Exact sealed request being removed.
+    pub request: &'a ProvisionalRequestRecord,
+    /// Short replay absorber that replaces it.
+    pub tombstone: &'a AdmissionReplayTombstone,
+    /// Oldest tombstone retired when the fixed domain is full.
+    pub retire_tombstone: Option<&'a AdmissionReplayTombstone>,
+    /// Exact local block rule for Block; absent for Delete.
+    pub block: Option<&'a BlockedIdentityRecord>,
+    /// Whether presentation must be recoverable after commit.
+    pub presentation_changed: bool,
+}
+
+/// Bounded expiry of provisional keys/content and replay tombstones.
+pub struct AdmissionSweepPlan<'a> {
+    /// Exact expired live requests.
+    pub requests: &'a [ProvisionalRequestRecord],
+    /// Exact expired replay tombstones.
+    pub tombstones: &'a [AdmissionReplayTombstone],
+    /// Sweep time used for expiry validation.
+    pub now: u64,
+    /// Whether presentation must be recoverable after commit.
+    pub presentation_changed: bool,
+}
+
 /// Complete durable consequences of an encrypted receipt/control receive.
 pub struct ReceiptReceivePlan<'a> {
     /// Detached session after receive and any response encryption.
@@ -913,6 +980,14 @@ pub enum CommitPlan<'a> {
     DeviceProjection(DeviceProjectionPlan<'a>),
     /// Handshake receive.
     HandshakeReceive(HandshakeReceivePlan<'a>),
+    /// Valid first contact staged behind the consent boundary.
+    AdmissionStage(AdmissionStagePlan<'a>),
+    /// Explicit user acceptance of one provisional request.
+    AdmissionAccept(AdmissionAcceptPlan<'a>),
+    /// Explicit user deletion or block of one provisional request.
+    AdmissionDiscard(AdmissionDiscardPlan<'a>),
+    /// Bounded provisional/tombstone expiry.
+    AdmissionSweep(AdmissionSweepPlan<'a>),
     /// Receipt or authenticated pairwise control receive.
     ReceiptReceive(ReceiptReceivePlan<'a>),
     /// Bounded maintenance.
@@ -1013,6 +1088,10 @@ impl Store {
             CommitPlan::AuthorityDeviceLink(plan) => plan.presentation_changed,
             CommitPlan::DeviceProjection(plan) => plan.presentation_changed,
             CommitPlan::HandshakeReceive(plan) => plan.presentation_changed,
+            CommitPlan::AdmissionStage(plan) => plan.presentation_changed,
+            CommitPlan::AdmissionAccept(plan) => plan.presentation_changed,
+            CommitPlan::AdmissionDiscard(plan) => plan.presentation_changed,
+            CommitPlan::AdmissionSweep(plan) => plan.presentation_changed,
             CommitPlan::ReceiptReceive(plan) => plan.presentation_changed,
             CommitPlan::Maintenance(plan) => plan.presentation_changed,
         };
@@ -1058,6 +1137,10 @@ impl Store {
                 CommitPlan::AuthorityDeviceLink(plan) => writer.authority_device_link(&plan)?,
                 CommitPlan::DeviceProjection(plan) => writer.device_projection(&plan)?,
                 CommitPlan::HandshakeReceive(plan) => writer.handshake_receive(&plan)?,
+                CommitPlan::AdmissionStage(plan) => writer.admission_stage(&plan)?,
+                CommitPlan::AdmissionAccept(plan) => writer.admission_accept(&plan)?,
+                CommitPlan::AdmissionDiscard(plan) => writer.admission_discard(&plan)?,
+                CommitPlan::AdmissionSweep(plan) => writer.admission_sweep(&plan)?,
                 CommitPlan::ReceiptReceive(plan) => writer.receipt_receive(&plan)?,
                 CommitPlan::Maintenance(plan) => writer.maintenance(&plan)?,
             }
@@ -1160,6 +1243,10 @@ impl Store {
             CommitPlan::AuthorityDeviceLink(plan) => self.validate_authority_device_link(plan),
             CommitPlan::DeviceProjection(plan) => self.validate_device_projection(plan),
             CommitPlan::HandshakeReceive(plan) => self.validate_handshake_receive(plan),
+            CommitPlan::AdmissionStage(plan) => self.validate_admission_stage(plan),
+            CommitPlan::AdmissionAccept(plan) => self.validate_admission_accept(plan),
+            CommitPlan::AdmissionDiscard(plan) => self.validate_admission_discard(plan),
+            CommitPlan::AdmissionSweep(plan) => self.validate_admission_sweep(plan),
             CommitPlan::ReceiptReceive(plan) => self.validate_receipt_receive(plan),
             CommitPlan::Maintenance(plan) => self.validate_maintenance(plan),
         }
@@ -2581,6 +2668,9 @@ impl Store {
             self.count_rows::<store_v2::PresentationMarkerRows>()?,
             self.count_rows::<store_v2::DeferredControlRows>()?,
             self.count_rows::<store_v2::DeviceLinkRecoveryRows>()?,
+            self.count_rows::<store_v2::ProvisionalRequestRows>()?,
+            self.count_rows::<store_v2::AdmissionReplayRows>()?,
+            self.count_rows::<store_v2::BlockedIdentityRows>()?,
         ];
         if self.get_prekeys()?.is_none() || pristine_tables.into_iter().any(|count| count != 0) {
             return Err(StoreError::InvalidTransition);
@@ -2727,6 +2817,9 @@ impl Store {
             self.count_rows::<store_v2::PresentationMarkerRows>()?,
             self.count_rows::<store_v2::DeferredControlRows>()?,
             self.count_rows::<store_v2::DeviceLinkRecoveryRows>()?,
+            self.count_rows::<store_v2::ProvisionalRequestRows>()?,
+            self.count_rows::<store_v2::AdmissionReplayRows>()?,
+            self.count_rows::<store_v2::BlockedIdentityRows>()?,
         ];
         if self.get_prekeys()?.is_none() || pristine_tables.into_iter().any(|count| count != 0) {
             return Err(StoreError::InvalidTransition);
@@ -3099,6 +3192,189 @@ impl Store {
         Ok(())
     }
 
+    fn validate_admission_stage(&self, plan: &AdmissionStagePlan<'_>) -> Result<()> {
+        plan.after.validate()?;
+        let current = self.get_provisional_request(&plan.after.account)?;
+        if plan.content_id == [0u8; 16]
+            || plan.content_id != plan.after.request_id
+            || current.as_ref() != plan.before
+            || self.is_seen(&plan.content_id)?
+            || self
+                .get_admission_tombstone(&plan.content_id)?
+                .is_some_and(|record| record.expires_at > plan.after.arrived_at)
+            || self.get_contact(&plan.after.account)?.is_some()
+            || self.get_session(&plan.after.device)?.is_some()
+            || self.is_blocked_identity(&plan.after.account)?
+            || mutation_count([
+                usize::from(plan.prekeys.is_some()),
+                1,
+                1,
+                usize::from(plan.source_pending.is_some()),
+            ])? > MAX_COMMIT_MUTATIONS
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        if let Some(before) = plan.before {
+            if (plan.after.arrived_at, plan.after.request_id)
+                <= (before.arrived_at, before.request_id)
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        if let Some(prekeys) = &plan.prekeys {
+            let current = self.get_prekeys()?;
+            if prekeys.before.is_none()
+                || prekeys.before == Some(prekeys.after)
+                || current.as_ref().map(|value| value.as_slice()) != prekeys.before
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        self.validate_pending(plan.source_pending)
+    }
+
+    fn validate_admission_accept(&self, plan: &AdmissionAcceptPlan<'_>) -> Result<()> {
+        plan.request.validate()?;
+        let encoded_before =
+            postcard::to_allocvec(plan.session_before).map_err(|_| StoreError::Serialization)?;
+        if self
+            .get_provisional_request(&plan.request.account)?
+            .as_ref()
+            != Some(plan.request)
+            || encoded_before != plan.request.session
+            || plan.accepted_at < plan.request.arrived_at
+            || plan.accepted_at > plan.request.expires_at
+            || plan.session.peer_device != plan.request.device
+            || plan.session.before.is_some()
+            || self.get_contact(&plan.request.account)?.is_some()
+            || self.is_blocked_identity(&plan.request.account)?
+            || plan.contact.peer != plan.request.account
+            || plan.contact.identity != plan.request.contact.identity
+            || plan.contact.bundle != plan.request.contact.bundle
+            || plan.contact.hints != plan.request.contact.hints
+            || plan.contact.name.is_empty()
+            || plan.contact.verified
+            || plan.devices != plan.request.devices
+            || plan.queue.is_empty()
+            || plan.queue.len() > MAX_COMMIT_QUEUE_ROWS
+            || plan.queue.iter().any(|item| {
+                item.peer != plan.request.device
+                    || item.msg_id.is_some()
+                    || item.group_msg_id.is_some()
+                    || item.envelope.kind != EnvelopeKind::Receipt
+            })
+            || mutation_count([
+                1,
+                1,
+                plan.devices.len(),
+                plan.groups.len(),
+                usize::from(plan.message.is_some()),
+                plan.queue.len(),
+                1,
+                1,
+            ])? > MAX_COMMIT_MUTATIONS
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        self.validate_session_transition(&plan.session)?;
+        for group in plan.groups {
+            self.validate_group_transition(group)?;
+        }
+        if let Some(message) = plan.message {
+            if message.peer != plan.request.account {
+                return Err(StoreError::InvalidTransition);
+            }
+            self.validate_new_message(message)?;
+        }
+        Ok(())
+    }
+
+    fn validate_admission_discard(&self, plan: &AdmissionDiscardPlan<'_>) -> Result<()> {
+        plan.request.validate()?;
+        plan.tombstone.validate()?;
+        if self
+            .get_provisional_request(&plan.request.account)?
+            .as_ref()
+            != Some(plan.request)
+            || plan.tombstone.request_id != plan.request.request_id
+            || plan.tombstone.account != plan.request.account
+            || plan.tombstone.device != plan.request.device
+            || self
+                .get_admission_tombstone(&plan.tombstone.request_id)?
+                .is_some()
+            || mutation_count([
+                1,
+                1,
+                usize::from(plan.retire_tombstone.is_some()),
+                usize::from(plan.block.is_some()),
+            ])? > MAX_COMMIT_MUTATIONS
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        if let Some(retire) = plan.retire_tombstone {
+            if retire.request_id == plan.tombstone.request_id
+                || self.get_admission_tombstone(&retire.request_id)?.as_ref() != Some(retire)
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        } else if self.count_rows::<store_v2::AdmissionReplayRows>()?
+            >= crate::MAX_ADMISSION_REPLAY_TOMBSTONES as u64
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        if let Some(block) = plan.block {
+            block.validate()?;
+            if block.account != plan.request.account
+                || block.device != plan.request.device
+                || block.created_at != plan.tombstone.rejected_at
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_admission_sweep(&self, plan: &AdmissionSweepPlan<'_>) -> Result<()> {
+        if plan.now == 0
+            || plan.requests.len() + plan.tombstones.len() > MAX_MAINTENANCE_TRANSITIONS
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        let request_accounts = plan
+            .requests
+            .iter()
+            .map(|request| request.account)
+            .collect::<HashSet<_>>();
+        let tombstone_ids = plan
+            .tombstones
+            .iter()
+            .map(|record| record.request_id)
+            .collect::<HashSet<_>>();
+        if request_accounts.len() != plan.requests.len()
+            || tombstone_ids.len() != plan.tombstones.len()
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        for request in plan.requests {
+            if request.expires_at > plan.now
+                || self.get_provisional_request(&request.account)?.as_ref() != Some(request)
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        for tombstone in plan.tombstones {
+            if tombstone.expires_at > plan.now
+                || self
+                    .get_admission_tombstone(&tombstone.request_id)?
+                    .as_ref()
+                    != Some(tombstone)
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        Ok(())
+    }
+
     fn validate_receipt_receive(&self, plan: &ReceiptReceivePlan<'_>) -> Result<()> {
         self.validate_session_transition(&plan.session)?;
         if plan.queue.len() > MAX_COMMIT_QUEUE_ROWS
@@ -3340,8 +3616,8 @@ impl Store {
         let row = self
             .row_by_rowid::<store_v2::PendingRows>(pending.sequence)?
             .ok_or(StoreError::InvalidTransition)?;
-        let (encoded, _): (Vec<u8>, u64) = decode_exact(&row.payload)?;
-        if Envelope::decode(&encoded)?.content_id() != pending.content_id {
+        let (envelope, _, _) = crate::decode_pending_envelope(&row.payload)?;
+        if envelope.content_id() != pending.content_id {
             return Err(StoreError::InvalidTransition);
         }
         Ok(())
@@ -4396,6 +4672,99 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
             })?;
         }
         self.pending(plan.source_pending)
+    }
+
+    fn admission_stage(&mut self, plan: &AdmissionStagePlan<'_>) -> Result<()> {
+        if let Some(prekeys) = &plan.prekeys {
+            self.write(|store, rng| store.put_prekeys(prekeys.after, rng))?;
+        }
+        self.write(|store, rng| store.put_provisional_request(plan.after, rng))?;
+        self.write(|store, rng| {
+            store.put_equality::<store_v2::SeenRows>(
+                &store_v2::ContentKey::new(plan.content_id),
+                &plan.content_id,
+                store_v2::IndexKeys::none(),
+                rng,
+            )
+        })?;
+        self.pending(plan.source_pending)
+    }
+
+    fn admission_accept(&mut self, plan: &AdmissionAcceptPlan<'_>) -> Result<()> {
+        self.session(&plan.session)?;
+        self.write(|store, rng| store.put_contact(plan.contact, rng))?;
+        for device in plan.devices {
+            self.write(|store, rng| store.put_contact_device(device, rng))?;
+        }
+        for group in plan.groups {
+            self.write(|store, rng| store.put_group(group.after, rng))?;
+        }
+        if let Some(message) = plan.message {
+            self.write(|store, rng| store.put_message(message, rng))?;
+            self.records.messages.push(message.id);
+        }
+        self.queue(plan.queue)?;
+        self.write(|store, rng| {
+            store.put_receipt_replay(
+                &plan.request.request_id,
+                &plan.request.device,
+                plan.accepted_at,
+                rng,
+            )
+        })?;
+        self.write(|store, _| {
+            if store.delete_provisional_request(&plan.request.account)? {
+                Ok(())
+            } else {
+                Err(StoreError::InvalidTransition)
+            }
+        })
+    }
+
+    fn admission_discard(&mut self, plan: &AdmissionDiscardPlan<'_>) -> Result<()> {
+        self.write(|store, _| {
+            if store.delete_provisional_request(&plan.request.account)? {
+                Ok(())
+            } else {
+                Err(StoreError::InvalidTransition)
+            }
+        })?;
+        if let Some(retire) = plan.retire_tombstone {
+            self.write(|store, _| {
+                if store.delete_admission_tombstone(&retire.request_id)? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+        }
+        self.write(|store, rng| store.put_admission_tombstone(plan.tombstone, rng))?;
+        if let Some(block) = plan.block {
+            self.write(|store, rng| store.put_blocked_identity(block, rng))?;
+        }
+        Ok(())
+    }
+
+    fn admission_sweep(&mut self, plan: &AdmissionSweepPlan<'_>) -> Result<()> {
+        for request in plan.requests {
+            self.write(|store, _| {
+                if store.delete_provisional_request(&request.account)? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+        }
+        for tombstone in plan.tombstones {
+            self.write(|store, _| {
+                if store.delete_admission_tombstone(&tombstone.request_id)? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+        }
+        Ok(())
     }
 
     fn receipt_receive(&mut self, plan: &ReceiptReceivePlan<'_>) -> Result<()> {

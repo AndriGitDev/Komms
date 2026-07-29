@@ -126,7 +126,7 @@ fn rename_is_normalized_duplicate_capable_durable_and_delivery_free() {
     );
 
     let (backup, mnemonic) = reopened.export_backup(NOW + 1, &mut rng).unwrap();
-    assert_eq!(&backup[..4], b"KKR8");
+    assert_eq!(&backup[..4], b"KKR9");
     let restored = Node::restore_with_recovery_authority(
         &directory.path().join("restored.db"),
         &backup,

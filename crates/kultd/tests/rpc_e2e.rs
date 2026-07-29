@@ -1628,17 +1628,27 @@ async fn two_daemons_message_via_rpc_only() {
     assert_eq!(record["direction"], json!("out"));
     assert_eq!(record["body"], json!("hello over the daemon"));
 
-    let disappearing = a
-        .ok(json!({
-            "op": "send_disappearing",
-            "peer": bob_peer,
-            "body": "temporary over strict RPC",
-            "lifetime_secs": hour,
-        }))
-        .await["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let capability_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let disappearing = loop {
+        match a
+            .call(json!({
+                "op": "send_disappearing",
+                "peer": bob_peer,
+                "body": "temporary over strict RPC",
+                "lifetime_secs": hour,
+            }))
+            .await
+        {
+            Ok(value) => break value["id"].as_str().unwrap().to_owned(),
+            Err(error)
+                if error.contains("does not support ephemeral content")
+                    && tokio::time::Instant::now() < capability_deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(error) => panic!("disappearing send failed: {error}"),
+        }
+    };
     let temporary = b_events
         .wait_event(|event| event["type"] == json!("message") && event["id"] == json!(disappearing))
         .await;
@@ -2158,6 +2168,134 @@ async fn backup_and_restore_via_rpc() {
     bob.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn message_requests_are_bounded_explicit_rpc_state() {
+    let _serial = serial_rpc_test().await;
+    let directory = tempfile::tempdir().unwrap();
+    let bob = Daemon::start(test_config(directory.path(), "request-bob"))
+        .await
+        .unwrap();
+    let accept_sender = Daemon::start(test_config(directory.path(), "request-accept"))
+        .await
+        .unwrap();
+    let delete_sender = Daemon::start(test_config(directory.path(), "request-delete"))
+        .await
+        .unwrap();
+    let block_sender = Daemon::start(test_config(directory.path(), "request-block"))
+        .await
+        .unwrap();
+
+    let mut b = Client::connect(&bob.socket_path).await;
+    let mut b_events = Client::connect(&bob.socket_path).await;
+    b_events.ok(json!({ "op": "subscribe" })).await;
+    let bob_addr = listen_addr(&mut b).await;
+    let mut accept = Client::connect(&accept_sender.socket_path).await;
+    let mut delete = Client::connect(&delete_sender.socket_path).await;
+    let mut block = Client::connect(&block_sender.socket_path).await;
+    let _ = listen_addr(&mut accept).await;
+    let _ = listen_addr(&mut delete).await;
+    let _ = listen_addr(&mut block).await;
+
+    for (client, preview) in [
+        (&mut accept, "please accept"),
+        (&mut delete, "please delete"),
+        (&mut block, "please block"),
+    ] {
+        // A fresh target bundle carries an independently consumable
+        // invitation and one-time prekey. Exporting the sender bundle first
+        // also records its authenticated return route.
+        let _ = client.ok(json!({ "op": "bundle" })).await;
+        let bob_bundle = b.ok(json!({ "op": "bundle" })).await["bundle"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let bob_peer = client
+            .ok(json!({
+                "op": "add_contact",
+                "name": "Bob",
+                "bundle": bob_bundle,
+                "hints": [{ "multiaddr": bob_addr.clone() }],
+            }))
+            .await["peer"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        client
+            .ok(json!({ "op": "send", "peer": bob_peer, "body": preview }))
+            .await;
+    }
+
+    b_events
+        .wait_event_count(
+            |event| event["type"] == json!("message_request_received"),
+            3,
+        )
+        .await;
+    let listed = b.ok(json!({ "op": "message_requests" })).await;
+    assert_eq!(listed["requests"].as_array().unwrap().len(), 3);
+    assert!(b.ok(json!({ "op": "contacts" })).await["contacts"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let request_id = |preview: &str| {
+        listed["requests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|request| request["preview"] == json!(preview))
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let accepted = b
+        .ok(json!({
+            "op": "message_request_accept",
+            "request": request_id("please accept"),
+            "name": "Accepted sender",
+        }))
+        .await;
+    b.ok(json!({
+        "op": "message_request_delete",
+        "request": request_id("please delete"),
+    }))
+    .await;
+    b.ok(json!({
+        "op": "message_request_block",
+        "request": request_id("please block"),
+    }))
+    .await;
+
+    assert!(b.ok(json!({ "op": "message_requests" })).await["requests"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let contacts = b.ok(json!({ "op": "contacts" })).await;
+    assert_eq!(contacts["contacts"].as_array().unwrap().len(), 1);
+    assert_eq!(contacts["contacts"][0]["name"], json!("Accepted sender"));
+    let history = b
+        .ok(json!({
+            "op": "messages",
+            "peer": accepted["peer"].as_str().unwrap(),
+        }))
+        .await;
+    assert_eq!(history["messages"][0]["body"], json!("please accept"));
+    b_events
+        .wait_event(|event| event["type"] == json!("message_request_accepted"))
+        .await;
+    b_events
+        .wait_event(|event| event["type"] == json!("message_request_deleted"))
+        .await;
+    b_events
+        .wait_event(|event| event["type"] == json!("message_request_blocked"))
+        .await;
+
+    accept_sender.shutdown().await;
+    delete_sender.shutdown().await;
+    block_sender.shutdown().await;
+    bob.shutdown().await;
+}
+
 /// F1 group front-door acceptance: every group operation, record, event,
 /// and per-member delivery state crosses only the public RPC boundary.
 #[tokio::test(flavor = "multi_thread")]
@@ -2217,8 +2355,25 @@ async fn groups_via_rpc_only() {
         .to_owned();
     a.ok(json!({ "op": "group_add", "group": group, "peer": bob_peer }))
         .await;
+    let invitation_event = b_events
+        .wait_event(|event| event["type"] == json!("group_invitation_received"))
+        .await;
+    assert_eq!(invitation_event["group"], json!(group));
+    assert!(b.ok(json!({ "op": "groups" })).await["groups"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let invitation = b.ok(json!({ "op": "group_invitations" })).await["invitations"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    b.ok(json!({
+        "op": "group_invitation_accept",
+        "invitation": invitation,
+    }))
+    .await;
     b_events
-        .wait_event(|event| event["type"] == json!("group_updated"))
+        .wait_event(|event| event["type"] == json!("group_invitation_accepted"))
         .await;
     let listed = b.ok(json!({ "op": "groups" })).await;
     assert_eq!(listed["groups"][0]["id"], json!(group));
@@ -3186,6 +3341,32 @@ async fn groups_via_rpc_only() {
         .as_str()
         .unwrap()
         .to_owned();
+    let invitation_event = b_events
+        .wait_event(|event| {
+            event["type"] == json!("group_invitation_received")
+                && event["group"] == json!(leave_group)
+        })
+        .await;
+    assert_eq!(invitation_event["group"], json!(leave_group));
+    assert!(b.ok(json!({ "op": "groups" })).await["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|candidate| candidate["id"] != json!(leave_group)));
+    let invitation = b.ok(json!({ "op": "group_invitations" })).await["invitations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|invitation| invitation["group"] == json!(leave_group))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    b.ok(json!({
+        "op": "group_invitation_accept",
+        "invitation": invitation,
+    }))
+    .await;
     wait_group_presence(&mut b, &leave_group, true).await;
     assert_eq!(
         b.ok(json!({ "op": "group_leave", "group": leave_group }))

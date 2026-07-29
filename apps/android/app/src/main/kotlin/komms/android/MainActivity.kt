@@ -23,6 +23,8 @@ import android.widget.TextView
 import android.widget.ScrollView
 import android.widget.RadioGroup
 import android.widget.RadioButton
+import java.text.DateFormat
+import java.util.Date
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -91,7 +93,28 @@ class MainActivity : SecureActivity() {
                 is Event.ContactAdded, is Event.ContactRenamed -> refreshLabelsAndLists(false)
                 is Event.SessionEstablished -> onSessionEstablished(event.peer)
                 is Event.MessageReceived -> refreshLabelsAndLists(false)
+                is Event.MessageRequestReceived -> {
+                    toast(getString(R.string.message_request_received))
+                    invalidateOptionsMenu()
+                }
+                is Event.MessageRequestAccepted,
+                is Event.MessageRequestDeleted,
+                is Event.MessageRequestBlocked,
+                is Event.MessageRequestExpired -> {
+                    refreshLabelsAndLists(false)
+                    invalidateOptionsMenu()
+                }
                 is Event.GroupUpdated -> refreshLabelsAndLists(false)
+                is Event.GroupInvitationReceived -> {
+                    toast(getString(R.string.group_invitation_received))
+                    invalidateOptionsMenu()
+                }
+                is Event.GroupInvitationAccepted,
+                is Event.GroupInvitationDeleted,
+                is Event.GroupInvitationExpired -> {
+                    refreshLabelsAndLists(false)
+                    invalidateOptionsMenu()
+                }
                 is Event.GroupMessageReceived -> refreshLabelsAndLists(false)
                 is Event.FoldersChanged -> refreshLabelsAndLists(true)
                 is Event.LabelsChanged -> refreshLabelsAndLists(true)
@@ -211,6 +234,7 @@ class MainActivity : SecureActivity() {
         when (item.itemId) {
             R.id.menu_add -> startActivity(Intent(this, AddContactActivity::class.java))
             R.id.menu_create_group -> showCreateGroup()
+            R.id.menu_message_requests -> showMessageRequests()
             R.id.menu_pins -> showPinManager()
             R.id.menu_my_qr -> showMyQr()
             R.id.menu_settings -> startActivity(Intent(this, SettingsActivity::class.java))
@@ -218,6 +242,184 @@ class MainActivity : SecureActivity() {
             else -> return super.onOptionsItemSelected(item)
         }
         return true
+    }
+
+    private fun requestExpiry(expiresAt: ULong): String =
+        DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+            .format(Date(expiresAt.toLong() * 1000L))
+
+    private fun showMessageRequests() {
+        val session = NodeHolder.session ?: return
+        runNode(
+            work = { session.messageRequests() to session.groupInvitations() },
+        ) { (requests, invitations) ->
+            val root = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                val spacing = (resources.displayMetrics.density * 12).toInt()
+                setPadding(spacing, spacing, spacing, spacing)
+            }
+            root.addView(TextView(this).apply {
+                setText(R.string.message_requests_intro)
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            })
+            lateinit var dialog: AlertDialog
+            if (requests.isEmpty() && invitations.isEmpty()) {
+                root.addView(TextView(this).apply { setText(R.string.message_requests_empty) })
+            }
+            for (request in requests) {
+                val card = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    val spacing = (resources.displayMetrics.density * 8).toInt()
+                    setPadding(0, spacing, 0, spacing)
+                }
+                card.addView(TextView(this).apply {
+                    setText(R.string.message_request_from_new)
+                    textSize = 18f
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        setAccessibilityHeading(true)
+                    }
+                })
+                card.addView(TextView(this).apply {
+                    text = getString(
+                        R.string.message_request_expires,
+                        requestExpiry(request.expiresAt),
+                    )
+                })
+                card.addView(TextView(this).apply {
+                    text = request.preview.ifBlank { getString(R.string.message_requests_empty) }
+                    textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+                    setPadding(0, 8, 0, 8)
+                })
+                card.addView(TextView(this).apply {
+                    text = getString(R.string.message_request_safety, request.safetyNumber)
+                })
+                val name = IncognitoEditText(this).apply {
+                    id = View.generateViewId()
+                    hint = getString(R.string.message_request_name_hint)
+                    setText(R.string.message_request_default_name)
+                    inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
+                    filters = arrayOf(InputFilter.LengthFilter(256))
+                }
+                card.addView(TextView(this).apply {
+                    text = getString(R.string.message_request_name_hint)
+                    labelFor = name.id
+                })
+                card.addView(name)
+                val actions = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                }
+                actions.addView(Button(this).apply {
+                    setText(R.string.message_request_accept)
+                    setOnClickListener {
+                        val localName = name.text.toString().trim()
+                        if (localName.isEmpty()) {
+                            name.error = getString(R.string.message_request_name_hint)
+                            return@setOnClickListener
+                        }
+                        runNode(work = {
+                            session.acceptMessageRequest(request.id, localName)
+                        }) { peer ->
+                            dialog.dismiss()
+                            refreshLabelsAndLists(false)
+                            startActivity(
+                                Intent(this@MainActivity, ChatActivity::class.java)
+                                    .putExtra("peer", peer)
+                                    .putExtra("name", localName),
+                            )
+                        }
+                    }
+                })
+                actions.addView(Button(this).apply {
+                    setText(R.string.message_request_delete)
+                    setOnClickListener {
+                        runNode(work = { session.deleteMessageRequest(request.id) }) {
+                            dialog.dismiss()
+                            showMessageRequests()
+                        }
+                    }
+                })
+                actions.addView(Button(this).apply {
+                    setText(R.string.message_request_block)
+                    setOnClickListener {
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle(R.string.message_request_block_title)
+                            .setMessage(R.string.message_request_block_explanation)
+                            .setPositiveButton(R.string.message_request_block) { _, _ ->
+                                runNode(work = { session.blockMessageRequest(request.id) }) {
+                                    dialog.dismiss()
+                                    showMessageRequests()
+                                }
+                            }
+                            .setNegativeButton(android.R.string.cancel, null)
+                            .show()
+                    }
+                })
+                card.addView(actions)
+                root.addView(card)
+            }
+            for (invitation in invitations) {
+                val card = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    val spacing = (resources.displayMetrics.density * 8).toInt()
+                    setPadding(0, spacing, 0, spacing)
+                }
+                card.addView(TextView(this).apply {
+                    setText(R.string.group_invitation_title)
+                    textSize = 18f
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        setAccessibilityHeading(true)
+                    }
+                })
+                card.addView(TextView(this).apply {
+                    text = invitation.name
+                    textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+                })
+                card.addView(TextView(this).apply {
+                    text = getString(
+                        R.string.group_invitation_members,
+                        invitation.memberCount.toLong(),
+                        requestExpiry(invitation.expiresAt),
+                    )
+                })
+                card.addView(TextView(this).apply {
+                    setText(R.string.group_invitation_explanation)
+                })
+                val actions = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                }
+                actions.addView(Button(this).apply {
+                    setText(R.string.group_invitation_accept)
+                    setOnClickListener {
+                        runNode(work = {
+                            session.acceptGroupInvitation(invitation.id)
+                        }) { group ->
+                            dialog.dismiss()
+                            refreshLabelsAndLists(false)
+                            openGroup(group, invitation.name)
+                        }
+                    }
+                })
+                actions.addView(Button(this).apply {
+                    setText(R.string.message_request_delete)
+                    setOnClickListener {
+                        runNode(work = {
+                            session.deleteGroupInvitation(invitation.id)
+                        }) {
+                            dialog.dismiss()
+                            showMessageRequests()
+                        }
+                    }
+                })
+                card.addView(actions)
+                root.addView(card)
+            }
+            dialog = AlertDialog.Builder(this)
+                .setTitle(R.string.message_requests_title)
+                .setView(ScrollView(this).apply { addView(root) })
+                .setNegativeButton(android.R.string.cancel, null)
+                .create()
+            dialog.show()
+        }
     }
 
     private fun refreshStatus() {

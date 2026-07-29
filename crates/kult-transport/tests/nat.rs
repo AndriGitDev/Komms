@@ -71,13 +71,11 @@ async fn envelope_via_relay_circuit() {
     assert!(recipient.listen_addrs().contains(&circuit));
 
     let env = test_envelope(7);
-    let receipt = sender
-        .send(&DeliveryHint::Multiaddr(circuit), &env)
-        .await
-        .unwrap();
+    let hint = DeliveryHint::Multiaddr(circuit);
+    let (receipt, received) = tokio::join!(sender.send(&hint, &env), recv_within(&recipient));
     // Honest signal: the recipient acked over the relayed connection.
-    assert_eq!(receipt, SendReceipt::AckedByNextHop);
-    assert_eq!(recv_within(&recipient).await, vec![env]);
+    assert_eq!(receipt.unwrap(), SendReceipt::AckedByNextHop);
+    assert_eq!(received, vec![env]);
 
     // The relay itself stored and learned nothing envelope-shaped.
     assert!(relay.recv().await.unwrap().is_empty());

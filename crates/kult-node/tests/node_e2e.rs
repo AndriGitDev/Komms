@@ -67,9 +67,13 @@ fn pairing_bundle_carries_signed_first_message_routes() {
         .handshake_bundle_with_hints(&hints, NOW, &mut rng)
         .unwrap();
     let bundle = AuthorityDevicePrekeyBundle::decode(&encoded).unwrap();
+    assert!(
+        bundle.prekey.relay_hints.len() > hints.len(),
+        "the signed bundle also carries its bounded admission extension"
+    );
     let decoded = bundle
         .prekey
-        .relay_hints
+        .transport_hints()
         .iter()
         .map(|bytes| postcard::from_bytes::<DeliveryHint>(bytes).unwrap())
         .collect::<Vec<_>>();
@@ -157,7 +161,23 @@ async fn rescanning_a_fresh_bundle_rekeys_and_retries_unconfirmed_messages() {
 
     sender.tick(NOW + 4, &mut rng).await.unwrap();
     let events = receiver.tick(NOW + 5, &mut rng).await.unwrap();
+    assert_eq!(count_received(&events), 0);
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, Event::MessageRequestReceived { .. })));
+    let request = receiver.message_requests().unwrap().remove(0);
+    assert_eq!(request.preview, "first attempt");
+    receiver
+        .accept_message_request(&request.id, "sender", NOW + 6, &mut rng)
+        .unwrap();
+    let events = receiver.tick(NOW + 7, &mut rng).await.unwrap();
     assert_eq!(count_received(&events), 2);
+    let history = receiver.messages_with(&request.account).unwrap();
+    assert_eq!(history.len(), 2);
+    assert!(history
+        .iter()
+        .any(|message| message.body == b"first attempt"));
+    assert!(history.iter().any(|message| message.body == b"follow-up"));
 }
 
 #[tokio::test]
@@ -199,8 +219,21 @@ async fn one_way_pairing_imports_the_initiators_signed_return_route() {
 
     phone.tick(NOW + 1, &mut rng).await.unwrap();
     let events = desktop.tick(NOW + 2, &mut rng).await.unwrap();
-    assert_eq!(count_received(&events), 1);
+    assert_eq!(count_received(&events), 0);
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, Event::MessageRequestReceived { .. })));
+    assert!(desktop.contacts().unwrap().is_empty());
+    let request = desktop.message_requests().unwrap().remove(0);
+    assert_eq!(request.preview, "one scan is bidirectional");
+    desktop
+        .accept_message_request(&request.id, "phone", NOW + 2, &mut rng)
+        .unwrap();
     assert_eq!(desktop.contacts().unwrap().len(), 1);
+    assert_eq!(
+        desktop.messages_with(&request.account).unwrap()[0].body,
+        b"one scan is bidirectional"
+    );
     desktop.tick(NOW + 3, &mut rng).await.unwrap();
     let events = phone.tick(NOW + 4, &mut rng).await.unwrap();
     assert!(delivered_ids(&events).contains(&message));
@@ -971,17 +1004,30 @@ async fn out_of_order_arrival_survives_restart() {
     let mut bob = Node::open(&bob_db, b"b").unwrap();
     bob.add_transport(Arc::new(mesh(2)));
 
-    // Handshake arrives: the same tick consumes it AND the stashed message.
+    // Handshake arrives: the first message becomes one sealed request while
+    // the out-of-order session message stays under its original pending row.
     net.lock().unwrap().entry(2).or_default().push(handshake);
     let events = bob.tick(NOW + 20, &mut rng).await.unwrap();
-    assert_eq!(count_received(&events), 2, "stash replays after handshake");
-    let bodies: Vec<Vec<u8>> = events
+    assert_eq!(count_received(&events), 0);
+    assert!(events
         .iter()
-        .filter_map(|e| match e {
-            Event::MessageReceived { body, .. } => Some(body.clone()),
-            _ => None,
-        })
-        .collect();
+        .any(|event| matches!(event, Event::MessageRequestReceived { .. })));
+    let request = bob.message_requests().unwrap().remove(0);
+    assert_eq!(request.preview, "first (handshake)");
+    bob.accept_message_request(&request.id, "alice", NOW + 21, &mut rng)
+        .unwrap();
+    let events = bob.tick(NOW + 22, &mut rng).await.unwrap();
+    assert_eq!(
+        count_received(&events),
+        2,
+        "stash replays only after explicit promotion"
+    );
+    let bodies = bob
+        .messages_with(&request.account)
+        .unwrap()
+        .into_iter()
+        .map(|message| message.body)
+        .collect::<Vec<_>>();
     assert!(bodies.contains(&b"first (handshake)".to_vec()));
     assert!(bodies.contains(&b"second (session)".to_vec()));
     drop(bob);

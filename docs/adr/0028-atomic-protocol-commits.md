@@ -35,6 +35,10 @@ work only on those candidate values and creates one bounded typed commit plan:
 - `AuthorityMigration`;
 - `PrekeyPublish`;
 - `HandshakeReceive`;
+- `AdmissionStage`;
+- `AdmissionAccept`;
+- `AdmissionDiscard`;
+- `AdmissionSweep`;
 - `GroupSend`;
 - `GroupReceive`;
 - `GroupState`;
@@ -80,9 +84,13 @@ The store applies a plan in one `BEGIN IMMEDIATE` transaction.
 - acknowledgement of the exact deferred-inbox row, if present.
 
 `HandshakeReceive` additionally commits one-time-prekey removal and the new
-session. An unknown sender enters the bounded contact-request quarantine; it
-does not become a trusted contact merely because the cryptographic handshake
-was valid.
+session for an already accepted or compatibility-path first flight. An unknown
+sender instead uses `AdmissionStage`, which commits one-time-prekey removal,
+the isolated candidate session/identity/safety number, bounded first content
+and preview, and one sealed provisional request. `AdmissionAccept` promotes
+that exact state; `AdmissionDiscard` applies Delete or Block; and
+`AdmissionSweep` expires a bounded page. A cryptographically valid stranger
+does not become a trusted contact merely because the handshake succeeded.
 
 Group plans commit the group sender/receiver chain, group generation or pending
 announcement state, immutable history/control state, all fan-out envelopes and
@@ -154,7 +162,7 @@ or plaintext consequence.
 
 ### 7. Implementation and evidence status
 
-The implementation now provides all nineteen plan kinds above. Legacy
+The implementation now provides all twenty-three plan kinds above. Legacy
 `ProfileBootstrap`, `DeviceControl`, and `DeviceLink` remain explicit
 migration/restore compatibility surfaces; current profiles use the matching
 `Authority*` variants. Together they cover
@@ -164,9 +172,11 @@ ranges, ephemeral/view-once state, scheduled activation, call signalling,
 late-device delivery, exact deferred-control acknowledgement, retry/expiry,
 session repair, current linked-device authority/counter changes, confirmed link
 imports, convergence projection, media reconciliation, profile bootstrap, and
-presentation recovery. Fresh out-of-band one-time-prekey issuance uses
+presentation recovery. ADR-0030 adds atomic provisional stage, explicit
+promotion, Delete/Block retirement, and bounded expiry. Fresh out-of-band one-time-prekey issuance uses
 `PrekeyPublish`; inbound consumption uses `HandshakeReceive` and cannot commit
-without the established session.
+without the established session, or uses `AdmissionStage` and cannot commit
+without the isolated provisional request that owns it.
 
 `AuthorityProfileBootstrap` commits a public account trust anchor, independent
 `KDA2` device state, and prekey vault inside an unpublished sibling database.
@@ -222,10 +232,10 @@ initialization.
 The complete path-by-path disposition is the
 [atomic transition inventory](../34-atomic-transition-inventory.md).
 
-This is not full ADR acceptance. ADR-0026 authority is covered, but the pre-C2
-contact-manifest bridge and current automatic-contact flow remain quarantined
-outside stable-v1 pending ADR-0030. Mailbox-v1 cannot yet acknowledge leased
-relay custody after endpoint commit, and live call state remains intentionally
+This is not full ADR acceptance. ADR-0026 authority and ADR-0030 first-contact
+consent are covered, but the pre-C2 contact-manifest alias bridge remains
+quarantined compatibility code. Mailbox-v1 cannot yet acknowledge leased relay
+custody after endpoint commit, and live call state remains intentionally
 process-local. Independent review and supported-platform sudden-power-loss
 qualification are also absent. These gaps keep this ADR Proposed and prevent
 the implemented matrix from being presented as universal protocol atomicity.

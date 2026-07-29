@@ -1029,6 +1029,38 @@ fieldset.hints legend { color: var(--text-dim); font-size: 0.85em; padding: 0 0.
 }
 .toast.error { border-left-color: var(--danger); }
 
+.request-inbox { display: grid; gap: 1rem; }
+.request-list { display: grid; gap: .75rem; }
+.request-list:empty { display: none; }
+.request-card {
+  display: grid;
+  gap: .65rem;
+  padding: .9rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-raised);
+}
+.request-card h3, .request-card p, .request-card blockquote { margin: 0; }
+.request-preview {
+  padding: .7rem .85rem;
+  border-inline-start: 3px solid var(--brand);
+  border-radius: 4px;
+  background: var(--bg-hover);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.request-safety {
+  color: var(--text-dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .82rem;
+}
+.request-group-name { font-size: 1.05rem; font-weight: 650; overflow-wrap: anywhere; }
+.request-actions { flex-wrap: wrap; }
+.request-actions button {
+  min-block-size: 44px;
+  min-inline-size: 44px;
+}
+
 [data-resolved-theme="light"] {
     --bg: #fafafa; --bg-raised: #ffffff; --bg-hover: #fff8dc; --line: #e4e1d8;
     --text: #1a1a1a; --text-dim: #6b6b6b; --brand: #f2b705;

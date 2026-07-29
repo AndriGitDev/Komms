@@ -46,8 +46,10 @@ extension ThemePreference {
 final class AppModel: ObservableObject {
     @Published private(set) var session: Session?
     @Published private(set) var contacts: [Contact] = []
+    @Published private(set) var messageRequests: [MessageRequest] = []
     @Published private(set) var histories: [String: [Message]] = [:] // peer → history
     @Published private(set) var groups: [KommsCore.Group] = []
+    @Published private(set) var groupInvitations: [GroupInvitation] = []
     @Published private(set) var groupHistories: [String: [GroupMessage]] = [:]
     @Published private(set) var groupPolls: [String: [GroupPoll]] = [:]
     @Published private(set) var groupAuthorities: [String: GroupAuthority] = [:]
@@ -301,8 +303,10 @@ final class AppModel: ObservableObject {
         session?.stop()
         session = nil
         contacts = []
+        messageRequests = []
         histories = [:]
         groups = []
+        groupInvitations = []
         groupHistories = [:]
         scheduledMessages = []
         attachments = []
@@ -393,6 +397,17 @@ final class AppModel: ObservableObject {
              .pollUpdated, .groupAuthorityUpdated,
              .attachmentUpdated, .ephemeralRemoved,
              .foldersChanged, .labelsChanged, .pinsChanged:
+            Task { await refresh() }
+        case .messageRequestReceived:
+            notices.append("New message request.")
+            Task { await refresh() }
+        case .messageRequestAccepted, .messageRequestDeleted,
+             .messageRequestBlocked, .messageRequestExpired:
+            Task { await refresh() }
+        case .groupInvitationReceived:
+            notices.append("New group invitation.")
+            Task { await refresh() }
+        case .groupInvitationAccepted, .groupInvitationDeleted, .groupInvitationExpired:
             Task { await refresh() }
         case .mentionReceived:
             notices.append("You were mentioned in a group.")
@@ -730,8 +745,11 @@ final class AppModel: ObservableObject {
                     if let icon = try session.customIcon(target: target) { icons[target] = icon }
                 }
                 return AppRefreshSnapshot(
-                    status: try session.status(), contacts: liveContacts, histories: fresh,
-                    groups: liveGroups, groupHistories: freshGroups,
+                    status: try session.status(), contacts: liveContacts,
+                    messageRequests: try session.messageRequests(), histories: fresh,
+                    groups: liveGroups,
+                    groupInvitations: try session.groupInvitations(),
+                    groupHistories: freshGroups,
                     groupPolls: freshPolls,
                     groupAuthorities: freshAuthorities,
                     groupSecurities: freshSecurities,
@@ -745,8 +763,10 @@ final class AppModel: ObservableObject {
             }
             status = snapshot.status
             contacts = snapshot.contacts
+            messageRequests = snapshot.messageRequests
             histories.merge(snapshot.histories) { _, new in new }
             groups = snapshot.groups
+            groupInvitations = snapshot.groupInvitations
             groupHistories.merge(snapshot.groupHistories) { _, new in new }
             groupPolls.merge(snapshot.groupPolls) { _, new in new }
             groupAuthorities = snapshot.groupAuthorities
@@ -1351,6 +1371,21 @@ final class AppModel: ObservableObject {
         return id
     }
 
+    func acceptGroupInvitation(_ invitation: String) async throws -> String {
+        guard let session else { throw InputError("node is locked") }
+        let group = try await run {
+            try session.acceptGroupInvitation(invitation: invitation)
+        }
+        await refresh()
+        return group
+    }
+
+    func deleteGroupInvitation(_ invitation: String) async throws {
+        guard let session else { throw InputError("node is locked") }
+        try await run { try session.deleteGroupInvitation(invitation: invitation) }
+        await refresh()
+    }
+
     func sendGroup(group: String, body: String) async throws {
         guard let session else { return }
         _ = try await run { try session.sendGroup(group: group, body: body) }
@@ -1489,6 +1524,27 @@ final class AppModel: ObservableObject {
     func addContact(name: String, address: String) async throws {
         guard let session else { return }
         _ = try await run { try session.addContact(name: name, address: address) }
+        await refresh()
+    }
+
+    func acceptMessageRequest(_ request: String, name: String) async throws -> String {
+        guard let session else { throw InputError("node is locked") }
+        let peer = try await run {
+            try session.acceptMessageRequest(request: request, name: name)
+        }
+        await refresh()
+        return peer
+    }
+
+    func deleteMessageRequest(_ request: String) async throws {
+        guard let session else { throw InputError("node is locked") }
+        try await run { try session.deleteMessageRequest(request: request) }
+        await refresh()
+    }
+
+    func blockMessageRequest(_ request: String) async throws {
+        guard let session else { throw InputError("node is locked") }
+        try await run { try session.blockMessageRequest(request: request) }
         await refresh()
     }
 
@@ -1643,8 +1699,10 @@ final class AppModel: ObservableObject {
 private struct AppRefreshSnapshot: Sendable {
     let status: Status
     let contacts: [Contact]
+    let messageRequests: [MessageRequest]
     let histories: [String: [Message]]
     let groups: [KommsCore.Group]
+    let groupInvitations: [GroupInvitation]
     let groupHistories: [String: [GroupMessage]]
     let groupPolls: [String: [GroupPoll]]
     let groupAuthorities: [String: GroupAuthority]

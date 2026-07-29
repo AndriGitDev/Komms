@@ -85,7 +85,7 @@ group secret; the previous one is kept for header-decrypting in-flight
 traffic, one generation deep.
 
 **Backup** (introduced in format `KKR2`; stable-identity restore now uses
-root-free `KKR8`): carries each group's
+root-free `KKR9`): carries each group's
 identity (id, name, creator, roster, secret, generation) and the group
 message history, but never chains, mirroring ADR-0011: a restored node mints
 a fresh sending chain and announces it, and co-members redistribute theirs

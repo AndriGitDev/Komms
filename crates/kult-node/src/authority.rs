@@ -23,10 +23,19 @@ use kult_store::{
     GroupChainStateTransition, GroupMember, GroupRecord, GroupStatePlan, GroupStateTransition,
 };
 
-use crate::groups::{AuthenticatedGroupSender, GroupOriginMaterial, GroupReceiverChainMaterial};
+use crate::groups::{
+    AuthenticatedGroupSender, GroupControlAnnounceContext, GroupReceiverChainMaterial,
+};
 use crate::{CommitPlan, Event, GroupAuthorityInfo, GroupMemberRoleInfo, Node, NodeError, Result};
 
 const ID_RETRY_LIMIT: usize = 16;
+
+pub(crate) struct AuthorityInvitationSummary {
+    pub(crate) name: String,
+    pub(crate) creator: [u8; 32],
+    pub(crate) members: usize,
+    pub(crate) generation: u64,
+}
 
 impl Node {
     /// Current render-safe C6 authority, synthesizing legacy creator/member roles.
@@ -615,15 +624,46 @@ impl Node {
         Err(NodeError::InvalidGroupAuthority)
     }
 
+    pub(crate) fn authority_invitation_summary(
+        &self,
+        peer: [u8; 32],
+        announce: &GroupAuthorityAnnounce,
+    ) -> Result<Option<AuthorityInvitationSummary>> {
+        let DecodedGroupAuthority::State(state) = decode_group_authority(&announce.state_payload)
+        else {
+            return Ok(None);
+        };
+        if state.group != announce.group
+            || !state.members.iter().any(|member| member.peer == peer)
+            || !state
+                .members
+                .iter()
+                .any(|member| member.peer == self.account.ed)
+            || verify_authority_state(&state, Some(&announce.secret)).is_err()
+        {
+            return Ok(None);
+        }
+        Ok(Some(AuthorityInvitationSummary {
+            name: state.name,
+            creator: state.owner,
+            members: state.members.len(),
+            generation: state.generation,
+        }))
+    }
+
     pub(crate) fn apply_authority_announce(
         &mut self,
         sender: AuthenticatedGroupSender,
         announce: &GroupAuthorityAnnounce,
-        origin: Option<GroupOriginMaterial>,
-        control: &DeferredControlRecord,
+        context: GroupControlAnnounceContext<'_>,
         rng: &mut impl CryptoRngCore,
         established: &mut bool,
     ) -> Result<(bool, bool)> {
+        let GroupControlAnnounceContext {
+            origin,
+            control,
+            accept_invitation,
+        } = context;
         let peer = sender.account;
         let DecodedGroupAuthority::State(state) = decode_group_authority(&announce.state_payload)
         else {
@@ -679,8 +719,11 @@ impl Node {
         let mut rec = match before_group.as_ref() {
             Some(rec) => rec.clone(),
             None => {
-                if !adopt {
-                    return Err(NodeError::CorruptState);
+                if !adopt || !accept_invitation {
+                    if !adopt {
+                        return Err(NodeError::CorruptState);
+                    }
+                    return Ok((false, false));
                 }
                 let chain = GroupSenderChain::generate(rng);
                 GroupRecord {
@@ -820,7 +863,7 @@ impl Node {
                 chains: &chain_transitions,
                 contacts: &contact_transitions,
                 authorities: &authority_transitions,
-                delete_controls: if origin.is_some() {
+                delete_controls: if origin.is_some() && !accept_invitation {
                     &[]
                 } else {
                     core::slice::from_ref(control)
@@ -833,7 +876,7 @@ impl Node {
         if after_chain.is_some() {
             *established = true;
         }
-        Ok((true, origin.is_none()))
+        Ok((true, origin.is_none() || accept_invitation))
     }
 
     pub(crate) fn apply_authority_remove(

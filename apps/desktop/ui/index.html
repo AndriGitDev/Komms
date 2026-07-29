@@ -188,6 +188,16 @@
           </nav>
         </section>
         <section class="conversation-section">
+          <nav aria-label="Message requests">
+            <button id="btn-message-requests" class="contact" type="button">
+              <span class="avatar" aria-hidden="true">?</span>
+              <span class="c-name">Message requests</span>
+              <span id="request-summary" class="c-detail">Checking…</span>
+              <span id="request-count" class="unread" hidden></span>
+            </button>
+          </nav>
+        </section>
+        <section class="conversation-section">
           <div class="contacts-head">
             <span>Contacts</span>
             <button id="btn-add-contact" class="ghost">+ Add</button>
@@ -334,6 +344,16 @@
           <button class="ghost" data-act="publish">Publish to DHT</button>
         </div>
       </div>
+    </section>
+  </template>
+
+  <template id="tpl-message-requests">
+    <section class="request-inbox" aria-describedby="request-inbox-note">
+      <p id="request-inbox-note" class="modal-note">People you have not accepted stay separate from contacts and conversation history. Review the preview and safety number before deciding.</p>
+      <p data-f="request-status" class="sr-status" role="status" aria-live="polite"></p>
+      <div data-f="direct-requests" class="request-list" role="list" aria-label="Message requests"></div>
+      <div data-f="group-requests" class="request-list" role="list" aria-label="Group invitations"></div>
+      <p data-f="request-empty" class="modal-note" hidden>No pending requests.</p>
     </section>
   </template>
 

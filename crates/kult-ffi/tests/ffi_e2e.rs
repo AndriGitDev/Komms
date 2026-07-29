@@ -25,9 +25,9 @@ use kult_ffi::{
     FolderTarget, FolderTargetKind, GroupRole, GroupSecurityLevel, Hint, ImageCrop,
     ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, IncognitoKeyboardLevel,
     IncognitoKeyboardPlatform, KdfChoice, KultNode, LabelErrorCode, LabelMatchMode, LabelTarget,
-    LabelTargetKind, MentionSpan, PinErrorCode, PinTarget, PinTargetKind, ScheduledConversation,
-    ScreenSecurityLevel, ScreenSecurityPlatform, TextFormatBlockKind, TextFormatHighlight,
-    ThemePreference,
+    LabelTargetKind, MentionSpan, MessageRequestTransport, PinErrorCode, PinTarget, PinTargetKind,
+    ScheduledConversation, ScreenSecurityLevel, ScreenSecurityPlatform, TextFormatBlockKind,
+    TextFormatHighlight, ThemePreference,
 };
 use kult_store::{DeviceStateRecord, Store};
 use rand::{rngs::StdRng, RngCore, SeedableRng};
@@ -2548,8 +2548,16 @@ fn restart_persists_history_and_refuses_wrong_passphrase() {
     alice
         .send(bob_peer.clone(), "before restart".to_owned())
         .unwrap();
-    b_rec.wait("bob's message event", |e| {
-        matches!(e, Event::MessageReceived { .. })
+    let request = b_rec.wait("bob's message request", |event| {
+        matches!(event, Event::MessageRequestReceived { .. })
+    });
+    let Event::MessageRequestReceived { request } = request else {
+        unreachable!("wait predicate returned the requested event");
+    };
+    bob.accept_message_request(request, "alice".to_owned())
+        .unwrap();
+    b_rec.wait("bob's accepted request", |event| {
+        matches!(event, Event::MessageRequestAccepted { .. })
     });
 
     let address_before = alice.address();
@@ -2695,6 +2703,102 @@ fn linked_device_ceremony_and_sync_via_ffi_only() {
     tablet.stop();
 }
 
+/// Unknown senders remain isolated until the user chooses a bounded action.
+#[test]
+fn message_requests_via_ffi_require_explicit_consent() {
+    let dir = tempfile::tempdir().unwrap();
+    let bob_events = Recorder::default();
+    let bob = KultNode::start(
+        test_config(dir.path(), "request-bob"),
+        Box::new(bob_events.clone()),
+    )
+    .expect("bob starts");
+    let accept = KultNode::start(
+        test_config(dir.path(), "request-accept"),
+        Box::new(Recorder::default()),
+    )
+    .expect("accept sender starts");
+    let delete = KultNode::start(
+        test_config(dir.path(), "request-delete"),
+        Box::new(Recorder::default()),
+    )
+    .expect("delete sender starts");
+    let block = KultNode::start(
+        test_config(dir.path(), "request-block"),
+        Box::new(Recorder::default()),
+    )
+    .expect("block sender starts");
+
+    let bob_addr = listen_addr(&bob);
+    for (sender, preview) in [
+        (&accept, "please accept"),
+        (&delete, "please delete"),
+        (&block, "please block"),
+    ] {
+        let _ = listen_addr(sender);
+        let _ = sender.handshake_bundle().unwrap();
+        let bob_bundle = bob.handshake_bundle().unwrap();
+        let bob_peer = sender
+            .add_contact(
+                "Bob".to_owned(),
+                bob_bundle,
+                vec![Hint::Multiaddr {
+                    addr: bob_addr.clone(),
+                }],
+            )
+            .unwrap();
+        sender.send(bob_peer, preview.to_owned()).unwrap();
+    }
+    bob_events.wait_count(
+        "three message requests",
+        |event| matches!(event, Event::MessageRequestReceived { .. }),
+        3,
+    );
+    assert!(bob.contacts().unwrap().is_empty());
+    let requests = bob.message_requests().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(requests
+        .iter()
+        .all(|request| request.transport == MessageRequestTransport::Direct));
+    let request_id = |preview: &str| {
+        requests
+            .iter()
+            .find(|request| request.preview == preview)
+            .unwrap()
+            .id
+            .clone()
+    };
+    let peer = bob
+        .accept_message_request(request_id("please accept"), "Accepted sender".to_owned())
+        .unwrap();
+    bob.delete_message_request(request_id("please delete"))
+        .unwrap();
+    bob.block_message_request(request_id("please block"))
+        .unwrap();
+
+    assert!(bob.message_requests().unwrap().is_empty());
+    let contacts = bob.contacts().unwrap();
+    assert_eq!(contacts.len(), 1);
+    assert_eq!(contacts[0].name, "Accepted sender");
+    let history = bob.messages_with(peer).unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].body, "please accept");
+    bob_events.wait("request accepted", |event| {
+        matches!(event, Event::MessageRequestAccepted { .. })
+    });
+    bob_events.wait("request deleted", |event| {
+        matches!(event, Event::MessageRequestDeleted { .. })
+    });
+    bob_events.wait("request blocked", |event| {
+        matches!(event, Event::MessageRequestBlocked { .. })
+    });
+
+    accept.stop();
+    delete.stop();
+    block.stop();
+    bob.stop();
+}
+
 /// F1 group front-door acceptance through only the public UniFFI-shaped API.
 #[test]
 fn groups_via_ffi_only() {
@@ -2740,7 +2844,21 @@ fn groups_via_ffi_only() {
         .unwrap();
     b_rec.wait(
         "bob's group invite",
-        |event| matches!(event, Event::GroupUpdated { group: id } if *id == group),
+        |event| matches!(event, Event::GroupInvitationReceived { group: id, .. } if *id == group),
+    );
+    assert!(bob.groups().unwrap().is_empty());
+    let invitations = bob.group_invitations().unwrap();
+    assert_eq!(invitations.len(), 1);
+    assert_eq!(invitations[0].group, group);
+    assert_eq!(invitations[0].name, "trail crew");
+    assert_eq!(
+        bob.accept_group_invitation(invitations[0].id.clone())
+            .unwrap(),
+        group
+    );
+    b_rec.wait(
+        "bob accepted group invite",
+        |event| matches!(event, Event::GroupInvitationAccepted { group: id, .. } if *id == group),
     );
     let groups = bob.groups().unwrap();
     assert_eq!(groups.len(), 1);
@@ -3290,6 +3408,21 @@ fn groups_via_ffi_only() {
     let leave_group = alice
         .create_group("short trip".to_owned(), vec![bob_peer])
         .unwrap();
+    b_rec.wait("bob's second group invite", |event| {
+        matches!(event, Event::GroupInvitationReceived { group: id, .. } if *id == leave_group)
+    });
+    assert!(bob
+        .groups()
+        .unwrap()
+        .iter()
+        .all(|candidate| candidate.id != leave_group));
+    let invitation = bob
+        .group_invitations()
+        .unwrap()
+        .into_iter()
+        .find(|invitation| invitation.group == leave_group)
+        .unwrap();
+    bob.accept_group_invitation(invitation.id).unwrap();
     wait_group_presence(&bob, &leave_group, true);
     bob.leave_group(leave_group).unwrap();
 

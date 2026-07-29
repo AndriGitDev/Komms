@@ -191,6 +191,54 @@ pub trait Discovery: Send + Sync {
     async fn lookup(&self, key: [u8; 32]) -> Result<Vec<Vec<u8>>>;
 }
 
+/// Opaque handle for one interactive inbound request awaiting durable
+/// endpoint admission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct InboundReceipt(u64);
+
+impl InboundReceipt {
+    /// Construct a carrier-scoped handle.
+    ///
+    /// The carrier must reject handles it did not issue or has already
+    /// settled; the numeric value has no protocol meaning outside that
+    /// carrier instance.
+    pub fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub(crate) fn value(self) -> u64 {
+        self.0
+    }
+}
+
+/// Coarse, privacy-preserving ingress class for endpoint admission budgets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IngressClass {
+    /// The carrier does not expose a more specific class.
+    Unknown,
+    /// Interactive direct delivery awaiting endpoint settlement.
+    Direct,
+    /// Durable mailbox collection.
+    Mailbox,
+    /// Low-bandwidth mesh delivery.
+    Mesh,
+    /// Explicit file or sneakernet import.
+    Delayed,
+    /// Content-blind bridge delivery.
+    Bridge,
+}
+
+/// One received envelope plus an optional interactive response handle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReceivedEnvelope {
+    /// Parsed bounded envelope.
+    pub envelope: Envelope,
+    /// Present only when the carrier has not yet told the sender “accepted”.
+    pub receipt: Option<InboundReceipt>,
+    /// Coarse class used only for bounded local admission policy.
+    pub ingress: IngressClass,
+}
+
 /// The contract every carrier implements (docs/05-transports.md §1).
 ///
 /// Event-driven integration with the delivery engine (an `EventSink` instead
@@ -200,6 +248,11 @@ pub trait Discovery: Send + Sync {
 pub trait Transport: Send + Sync {
     /// Static link properties for scheduler ranking.
     fn profile(&self) -> LinkProfile;
+
+    /// Coarse class assigned to ordinary receives on this carrier.
+    fn ingress_class(&self) -> IngressClass {
+        IngressClass::Unknown
+    }
 
     /// Can this transport deliver to `peer`, and how?
     async fn reachable(&self, peer: &DeliveryHint) -> Reachability;
@@ -213,6 +266,30 @@ pub trait Transport: Send + Sync {
     /// Duplicates are permitted (multipath is normal); dedup is the
     /// delivery engine's job via content ids.
     async fn recv(&self) -> Result<Vec<Envelope>>;
+
+    /// Drain envelopes while retaining interactive next-hop response handles.
+    ///
+    /// Carriers without an interactive acknowledgement boundary inherit the
+    /// ordinary receive behavior. Internet direct delivery overrides this so
+    /// the node can settle a request only after durable staging or complete
+    /// consumption.
+    async fn recv_staged(&self) -> Result<Vec<ReceivedEnvelope>> {
+        Ok(self
+            .recv()
+            .await?
+            .into_iter()
+            .map(|envelope| ReceivedEnvelope {
+                envelope,
+                receipt: None,
+                ingress: self.ingress_class(),
+            })
+            .collect())
+    }
+
+    /// Settle one interactive receive handle with a bounded uniform result.
+    async fn settle_recv(&self, _receipt: InboundReceipt, _accepted: bool) -> Result<()> {
+        Ok(())
+    }
 
     /// Drain envelopes this carrier holds **in transit for third parties**
     /// (docs/05-transports.md §4.2 rule 5, ADR-0009): sealed envelopes that

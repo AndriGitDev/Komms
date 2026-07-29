@@ -304,6 +304,26 @@ public final class Session: @unchecked Sendable {
     /// All stored contacts.
     public func contacts() throws -> [Contact] { try node.contacts() }
 
+    /// Sealed unknown-sender requests awaiting an explicit local decision.
+    public func messageRequests() throws -> [MessageRequest] {
+        try node.messageRequests()
+    }
+
+    /// Atomically promote one request to a named contact and history.
+    public func acceptMessageRequest(request: String, name: String) throws -> String {
+        try node.acceptMessageRequest(request: request, name: name)
+    }
+
+    /// Delete one request and retain only its bounded replay tombstone.
+    public func deleteMessageRequest(request: String) throws {
+        try node.deleteMessageRequest(request: request)
+    }
+
+    /// Block one verified sender and remove its local request capabilities.
+    public func blockMessageRequest(request: String) throws {
+        try node.blockMessageRequest(request: request)
+    }
+
     /// Every current and briefly retained terminal direct-QUIC call.
     public func calls() throws -> [Call] { try node.calls() }
 
@@ -818,6 +838,21 @@ public final class Session: @unchecked Sendable {
     /// Create a sender-key group from stored contacts; returns its id.
     public func createGroup(name: String, members: [String]) throws -> String {
         try node.createGroup(name: name, members: members)
+    }
+
+    /// Authenticated group proposals awaiting explicit membership consent.
+    public func groupInvitations() throws -> [GroupInvitation] {
+        try node.groupInvitations()
+    }
+
+    /// Accept one proposal and atomically create its group.
+    public func acceptGroupInvitation(invitation: String) throws -> String {
+        try node.acceptGroupInvitation(invitation: invitation)
+    }
+
+    /// Delete one proposal without creating group state.
+    public func deleteGroupInvitation(invitation: String) throws {
+        try node.deleteGroupInvitation(invitation: invitation)
     }
 
     /// All live groups, excluding secrets and sender chains.

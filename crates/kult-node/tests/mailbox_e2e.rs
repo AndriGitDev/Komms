@@ -105,7 +105,8 @@ async fn offline_recipient_via_relay_mailbox() {
         "plaintext must not appear in what the relay stores"
     );
 
-    // Bob reconnects, checks in, and the message is delivered.
+    // Bob reconnects and checks in. An unknown sender remains in the sealed
+    // request domain until Bob explicitly accepts it.
     let b_net = Arc::new(Libp2pTransport::new(LISTEN).await.unwrap());
     let collected = b_net
         .mailbox_checkin(&relay_addr, &bob.mailbox_tokens(NOW + 2))
@@ -116,14 +117,21 @@ async fn offline_recipient_via_relay_mailbox() {
     let events = bob.tick(NOW + 3, &mut rng).await.unwrap();
     assert!(events
         .iter()
-        .any(|e| matches!(e, Event::MessageReceived { body, .. } if body == plaintext)));
-    let alice_id = events
+        .any(|event| matches!(event, Event::MessageRequestReceived { .. })));
+    assert!(!events
         .iter()
-        .find_map(|e| match e {
-            Event::SessionEstablished { peer } => Some(*peer),
-            _ => None,
-        })
+        .any(|event| matches!(event, Event::MessageReceived { .. })));
+    assert!(bob.contacts().unwrap().is_empty());
+    let request = bob.message_requests().unwrap().remove(0);
+    assert_eq!(request.preview.as_bytes(), plaintext);
+    assert_eq!(
+        request.transport,
+        kult_store::AdmissionTransportClass::Mailbox
+    );
+    let alice_id = request.account;
+    bob.accept_message_request(&request.id, "alice", NOW + 4, &mut rng)
         .unwrap();
+    assert_eq!(bob.messages_with(&alice_id).unwrap()[0].body, plaintext);
 
     // Bob's encrypted receipt and terminal capability control take the same
     // path back: sealed sender gave

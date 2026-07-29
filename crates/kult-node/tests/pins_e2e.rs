@@ -198,7 +198,7 @@ fn stale_pin_reactivation_cleanup_errors_and_root_free_round_trip_are_honest() {
     ));
 
     let (backup, mnemonic) = node.export_backup(NOW + 2, &mut rng).unwrap();
-    assert_eq!(&backup[..4], b"KKR8");
+    assert_eq!(&backup[..4], b"KKR9");
     let mut restored = Node::restore_with_recovery_authority(
         &directory.path().join("restored.db"),
         &backup,

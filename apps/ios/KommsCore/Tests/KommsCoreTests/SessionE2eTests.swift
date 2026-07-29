@@ -413,6 +413,30 @@ private func waitGroupSecurityReady(
     }
 }
 
+private func acceptGroupInvitation(
+    _ session: Session,
+    _ events: Events,
+    group: String,
+    what: String
+) throws {
+    _ = try events.wait(what) { event -> Void? in
+        if case let .groupInvitationReceived(_, invitedGroup, _) = event,
+           invitedGroup == group { return () }
+        return nil
+    }
+    let invitation = try session.groupInvitations().first { $0.group == group }
+    XCTAssertNotNil(invitation)
+    XCTAssertEqual(
+        group,
+        try session.acceptGroupInvitation(invitation: invitation!.id)
+    )
+    _ = try events.wait("group invitation acceptance") { event -> Void? in
+        if case let .groupInvitationAccepted(_, joinedGroup) = event,
+           joinedGroup == group { return () }
+        return nil
+    }
+}
+
 private func multiaddrHint(_ addr: String) -> [HintSpec] { [HintSpec("multiaddr", addr)] }
 
 private func canonicalAudio(samples: Int = 1_600) -> Data {
@@ -673,7 +697,7 @@ final class SessionE2eTests: XCTestCase {
         let text = try files.map { try String(contentsOf: $0, encoding: .utf8) }.joined(separator: "\n")
         let occurrences = { (needle: String) in text.components(separatedBy: needle).count - 1 }
         let editors = occurrences("TextField(") + occurrences("SecureField(") + occurrences("TextEditor(")
-        XCTAssertEqual(35, editors)
+        XCTAssertEqual(36, editors)
         XCTAssertEqual(editors, occurrences(".incognitoKeyboard("))
         let gate = try String(contentsOf: source.appendingPathComponent("GateView.swift"), encoding: .utf8)
         XCTAssertTrue(gate.contains("SecureField(\"24-word backup mnemonic\""))
@@ -1158,6 +1182,64 @@ final class SessionE2eTests: XCTestCase {
         session.stop()
     }
 
+    func testMessageRequestsRequireExplicitAcceptDeleteOrBlock() throws {
+        let dir = try tempDir()
+        let bobEvents = Events()
+        let bob = try open(dir, "request-bob", bobEvents)
+        defer { bob.stop() }
+        let bobAddress = try listenAddr(bob)
+
+        func sendRequest(_ name: String, _ preview: String) throws {
+            let sender = try open(dir, name, Events())
+            defer { sender.stop() }
+            _ = try listenAddr(sender)
+            _ = try sender.myBundleHex()
+            let bobPeer = try sender.addContact(
+                name: "Bob",
+                bundleHex: try bob.myBundleHex(),
+                hints: multiaddrHint(bobAddress)
+            )
+            _ = try sender.send(peer: bobPeer, body: preview)
+            let deadline = Date().addingTimeInterval(30)
+            while try bob.messageRequests().contains(where: { $0.preview == preview }) == false {
+                guard Date() < deadline else {
+                    throw Timeout(what: "request preview in sealed inbox")
+                }
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+        }
+
+        try sendRequest("request-accept", "please accept")
+        try sendRequest("request-delete", "please delete")
+        try sendRequest("request-block", "please block")
+
+        XCTAssertTrue(try bob.contacts().isEmpty)
+        let requests = try bob.messageRequests()
+        XCTAssertEqual(3, requests.count)
+        func id(_ preview: String) -> String {
+            requests.first(where: { $0.preview == preview })!.id
+        }
+        let peer = try bob.acceptMessageRequest(
+            request: id("please accept"), name: "Accepted sender")
+        try bob.deleteMessageRequest(request: id("please delete"))
+        try bob.blockMessageRequest(request: id("please block"))
+        XCTAssertTrue(try bob.messageRequests().isEmpty)
+        XCTAssertEqual("Accepted sender", try bob.contacts().first?.name)
+        XCTAssertEqual("please accept", try bob.messages(peer: peer).first?.body)
+        _ = try bobEvents.wait("request accepted") { event -> Void? in
+            if case .messageRequestAccepted = event { return () }
+            return nil
+        }
+        _ = try bobEvents.wait("request deleted") { event -> Void? in
+            if case .messageRequestDeleted = event { return () }
+            return nil
+        }
+        _ = try bobEvents.wait("request blocked") { event -> Void? in
+            if case .messageRequestBlocked = event { return () }
+            return nil
+        }
+    }
+
     func testGroupUXUpgradesOriginsAndBlocksAnUnreadyRoster() throws {
         let dir = try tempDir()
         let aEv = Events()
@@ -1191,10 +1273,7 @@ final class SessionE2eTests: XCTestCase {
         // The create flow selects one stored contact; the creator then adds
         // another from the members screen.
         let group = try alice.createGroup(name: "Trail crew", members: [bobPeer])
-        _ = try bEv.wait("Bob's group invite") { event -> Void? in
-            if case let .groupUpdated(updated) = event, updated == group { return () }
-            return nil
-        }
+        try acceptGroupInvitation(bob, bEv, group: group, what: "Bob's group invite")
         var listed = try alice.groups()
         XCTAssertEqual(1, listed.count)
         XCTAssertEqual(group, listed[0].id)
@@ -1570,10 +1649,7 @@ final class SessionE2eTests: XCTestCase {
         let aliceAtBob = try bob.addContact(
             name: "Same name", bundleHex: alice.myBundleHex(), hints: multiaddrHint(aliceAddr))
         let group = try alice.createGroup(name: "Unicode crew", members: [bobPeer])
-        _ = try bEv.wait("mention group invite") { event -> Void? in
-            if case let .groupUpdated(updated) = event, updated == group { return () }
-            return nil
-        }
+        try acceptGroupInvitation(bob, bEv, group: group, what: "mention group invite")
 
         let handshake = try alice.send(peer: bobPeer, body: "mention capability handshake")
         _ = try bEv.wait("mention capability handshake") { event -> Void? in

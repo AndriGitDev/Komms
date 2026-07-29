@@ -25,7 +25,7 @@ which choice their current vote selects.
 - Duplicate, delayed, and reordered events converge without trusting clocks.
 - Poll events are encrypted and padded through the ordinary group path. Relays
   and transports do not learn the question, choices, voters, or tally.
-- Polls survive restart and encrypted `KKR8` backup/restore as ordinary sealed
+- Polls survive restart and encrypted `KKR9` backup/restore as ordinary sealed
   group history. They do not appear as chat-message bubbles.
 
 This is not a secret ballot, proof of universal participation, or proof that a
@@ -76,7 +76,7 @@ The local acceptance matrix covers canonical and arbitrary-input decoding,
 malformed lengths and bounds, duplicate/reordered/changed votes, outsiders,
 fixed electorates, removal/addition, conflicting closure, partitions,
 cross-node convergence, raw-send refusal, RPC/CLI/UniFFI parity, desktop and
-host-mobile bindings, signed owner moderation, exact current `KKR8` restore,
+host-mobile bindings, signed owner moderation, exact current `KKR9` restore,
 legacy archive omission of groups, and C2
 owned-device convergence. Android debug-APK assembly is automated; real-device
 poll interaction remains part of the platform release gate.

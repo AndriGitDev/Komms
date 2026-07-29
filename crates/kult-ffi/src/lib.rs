@@ -906,6 +906,72 @@ pub struct Contact {
     pub verified: bool,
 }
 
+/// Coarse ingress class shown for a sealed message request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum MessageRequestTransport {
+    /// The carrier did not provide a safe classification.
+    Unknown,
+    /// Authenticated direct transport.
+    Direct,
+    /// Durable mailbox collection.
+    Mailbox,
+    /// Authenticated local mesh carrier.
+    Mesh,
+    /// Another bounded delayed carrier.
+    Delayed,
+    /// A configured bridge carrier.
+    Bridge,
+}
+
+impl From<kult_store::AdmissionTransportClass> for MessageRequestTransport {
+    fn from(value: kult_store::AdmissionTransportClass) -> Self {
+        match value {
+            kult_store::AdmissionTransportClass::Unknown => Self::Unknown,
+            kult_store::AdmissionTransportClass::Direct => Self::Direct,
+            kult_store::AdmissionTransportClass::Mailbox => Self::Mailbox,
+            kult_store::AdmissionTransportClass::Mesh => Self::Mesh,
+            kult_store::AdmissionTransportClass::Delayed => Self::Delayed,
+            kult_store::AdmissionTransportClass::Bridge => Self::Bridge,
+        }
+    }
+}
+
+/// Render-safe entry in the sealed first-contact request inbox.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct MessageRequest {
+    /// Stable opaque request id (hex).
+    pub id: String,
+    /// Verified stable sender account (hex).
+    pub account: String,
+    /// Verified exact sender device (hex).
+    pub device: String,
+    /// Bounded UTF-8 first-message preview.
+    pub preview: String,
+    /// Symmetric safety number grouped for display.
+    pub safety_number: String,
+    /// Local arrival time (Unix seconds).
+    pub arrived_at: u64,
+    /// Local expiry time (Unix seconds).
+    pub expires_at: u64,
+    /// Privacy-preserving carrier class.
+    pub transport: MessageRequestTransport,
+}
+
+impl From<kult_node::MessageRequestInfo> for MessageRequest {
+    fn from(request: kult_node::MessageRequestInfo) -> Self {
+        Self {
+            id: hex_encode(&request.id),
+            account: hex_encode(&request.account),
+            device: hex_encode(&request.device),
+            preview: request.preview,
+            safety_number: request.safety_number,
+            arrived_at: request.arrived_at,
+            expires_at: request.expires_at,
+            transport: request.transport.into(),
+        }
+    }
+}
+
 /// One deterministic local warning for a proposed contact petname.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum ContactNameWarning {
@@ -1748,6 +1814,54 @@ pub struct Group {
     pub security: GroupSecurityLevel,
 }
 
+/// Render-safe entry in the sealed group-invitation inbox.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct GroupInvitation {
+    /// Stable opaque invitation id (hex).
+    pub id: String,
+    /// Proposed group id (hex).
+    pub group: String,
+    /// Pairwise-authenticated inviting account (hex).
+    pub inviter: String,
+    /// Pairwise-authenticated inviting physical device (hex).
+    pub inviter_device: String,
+    /// Bounded authenticated group name.
+    pub name: String,
+    /// Proposed managing account (hex).
+    pub creator: String,
+    /// Complete proposed roster size.
+    pub member_count: u32,
+    /// Proposed group generation.
+    pub generation: u64,
+    /// Whether the sender-chain capability is scoped to this device.
+    pub recipient_scoped: bool,
+    /// Whether signed group authority was supplied.
+    pub signed_authority: bool,
+    /// Local arrival time (Unix seconds).
+    pub arrived_at: u64,
+    /// Local expiry time (Unix seconds).
+    pub expires_at: u64,
+}
+
+impl From<kult_node::GroupInvitationInfo> for GroupInvitation {
+    fn from(invitation: kult_node::GroupInvitationInfo) -> Self {
+        Self {
+            id: hex_encode(&invitation.id),
+            group: hex_encode(&invitation.group),
+            inviter: hex_encode(&invitation.inviter),
+            inviter_device: hex_encode(&invitation.inviter_device),
+            name: invitation.name,
+            creator: hex_encode(&invitation.creator),
+            member_count: invitation.member_count,
+            generation: invitation.generation,
+            recipient_scoped: invitation.recipient_scoped,
+            signed_authority: invitation.signed_authority,
+            arrived_at: invitation.arrived_at,
+            expires_at: invitation.expires_at,
+        }
+    }
+}
+
 /// Recipient-origin security state for one sender-key group.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum GroupSecurityLevel {
@@ -2373,6 +2487,33 @@ pub enum Event {
         /// Original canonical Text content id (hex).
         target_content_id: String,
     },
+    /// A valid unknown sender entered the sealed request inbox.
+    MessageRequestReceived {
+        /// Stable opaque request id (hex).
+        request: String,
+    },
+    /// A request was explicitly accepted and promoted.
+    MessageRequestAccepted {
+        /// Stable opaque request id (hex).
+        request: String,
+        /// Verified stable sender account now present as a contact (hex).
+        peer: String,
+    },
+    /// A request was explicitly deleted locally.
+    MessageRequestDeleted {
+        /// Stable opaque request id (hex).
+        request: String,
+    },
+    /// A request sender was blocked locally.
+    MessageRequestBlocked {
+        /// Stable opaque request id (hex).
+        request: String,
+    },
+    /// A provisional request and its isolated keys expired locally.
+    MessageRequestExpired {
+        /// Stable opaque request id (hex).
+        request: String,
+    },
     /// Text was appended to the reserved local note-to-self conversation.
     NoteToSelfMessageAdded {
         /// Stable reserved identity: `note_to_self`.
@@ -2420,6 +2561,32 @@ pub enum Event {
     CallUpdated {
         /// Current render-safe call snapshot.
         call: Call,
+    },
+    /// An authenticated group proposal entered the invitation inbox.
+    GroupInvitationReceived {
+        /// Stable opaque invitation id (hex).
+        invitation: String,
+        /// Proposed group id (hex).
+        group: String,
+        /// Pairwise-authenticated inviter (hex).
+        inviter: String,
+    },
+    /// A group invitation was explicitly accepted.
+    GroupInvitationAccepted {
+        /// Stable opaque invitation id (hex).
+        invitation: String,
+        /// Joined group id (hex).
+        group: String,
+    },
+    /// A group invitation was explicitly deleted locally.
+    GroupInvitationDeleted {
+        /// Stable opaque invitation id (hex).
+        invitation: String,
+    },
+    /// A group invitation expired without changing membership.
+    GroupInvitationExpired {
+        /// Stable opaque invitation id (hex).
+        invitation: String,
     },
     /// A group was created, joined, re-keyed, re-rostered, or left.
     GroupUpdated {
@@ -2594,6 +2761,24 @@ impl Event {
                 peer: hex_encode(&peer),
                 target_content_id: hex_encode(&target_content_id),
             },
+            kult_node::Event::MessageRequestReceived { request } => Self::MessageRequestReceived {
+                request: hex_encode(&request),
+            },
+            kult_node::Event::MessageRequestAccepted { request, peer } => {
+                Self::MessageRequestAccepted {
+                    request: hex_encode(&request),
+                    peer: hex_encode(&peer),
+                }
+            }
+            kult_node::Event::MessageRequestDeleted { request } => Self::MessageRequestDeleted {
+                request: hex_encode(&request),
+            },
+            kult_node::Event::MessageRequestBlocked { request } => Self::MessageRequestBlocked {
+                request: hex_encode(&request),
+            },
+            kult_node::Event::MessageRequestExpired { request } => Self::MessageRequestExpired {
+                request: hex_encode(&request),
+            },
             kult_node::Event::NoteToSelfMessageAdded {
                 id,
                 timestamp,
@@ -2625,6 +2810,31 @@ impl Event {
             kult_node::Event::CallUpdated { call } => Self::CallUpdated {
                 call: Call::from_node(call),
             },
+            kult_node::Event::GroupInvitationReceived {
+                invitation,
+                group,
+                inviter,
+            } => Self::GroupInvitationReceived {
+                invitation: hex_encode(&invitation),
+                group: hex_encode(&group),
+                inviter: hex_encode(&inviter),
+            },
+            kult_node::Event::GroupInvitationAccepted { invitation, group } => {
+                Self::GroupInvitationAccepted {
+                    invitation: hex_encode(&invitation),
+                    group: hex_encode(&group),
+                }
+            }
+            kult_node::Event::GroupInvitationDeleted { invitation } => {
+                Self::GroupInvitationDeleted {
+                    invitation: hex_encode(&invitation),
+                }
+            }
+            kult_node::Event::GroupInvitationExpired { invitation } => {
+                Self::GroupInvitationExpired {
+                    invitation: hex_encode(&invitation),
+                }
+            }
             kult_node::Event::GroupUpdated { group } => Self::GroupUpdated {
                 group: hex_encode(&group),
             },
@@ -2762,7 +2972,7 @@ impl KultNode {
     }
 
     /// First run only: restore an encrypted backup with an explicitly opened
-    /// offline authority. A root-free `KKR8` resumes the stable identity in a
+    /// offline authority. A root-free `KKR9` resumes the stable identity in a
     /// fresh recovery epoch. A copied-root `KKR1` through `KKR7` is accepted
     /// only with a newly prepared, different authority and publishes a fresh
     /// identity containing the bounded former-identity local archive.
@@ -4380,6 +4590,28 @@ impl KultNode {
         self.call(|resp| Msg::GroupLeave { group, resp })
     }
 
+    /// Authenticated proposals awaiting explicit group-membership consent.
+    pub fn group_invitations(&self) -> Result<Vec<GroupInvitation>, FfiError> {
+        Ok(self
+            .call(|resp| Msg::GroupInvitations { resp })?
+            .into_iter()
+            .map(GroupInvitation::from)
+            .collect())
+    }
+
+    /// Accept one invitation and atomically create its proposed group.
+    pub fn accept_group_invitation(&self, invitation: String) -> Result<String, FfiError> {
+        let invitation = parse_request(&invitation)?;
+        self.call(|resp| Msg::GroupInvitationAccept { invitation, resp })
+            .map(|group| hex_encode(&group))
+    }
+
+    /// Delete one invitation without creating membership or history.
+    pub fn delete_group_invitation(&self, invitation: String) -> Result<(), FfiError> {
+        let invitation = parse_request(&invitation)?;
+        self.call(|resp| Msg::GroupInvitationDelete { invitation, resp })
+    }
+
     /// All stored groups, excluding secrets and sender chains.
     pub fn groups(&self) -> Result<Vec<Group>, FfiError> {
         Ok(self
@@ -4462,6 +4694,42 @@ impl KultNode {
                 verified: c.verified,
             })
             .collect())
+    }
+
+    /// Sealed first-contact requests, excluding session and route secrets.
+    pub fn message_requests(&self) -> Result<Vec<MessageRequest>, FfiError> {
+        Ok(self
+            .call(|resp| Msg::MessageRequests { resp })?
+            .into_iter()
+            .map(MessageRequest::from)
+            .collect())
+    }
+
+    /// Accept and atomically promote one request to contact and history.
+    pub fn accept_message_request(
+        &self,
+        request: String,
+        name: String,
+    ) -> Result<String, FfiError> {
+        let request = parse_request(&request)?;
+        self.call(|resp| Msg::MessageRequestAccept {
+            request,
+            name,
+            resp,
+        })
+        .map(|peer| hex_encode(&peer))
+    }
+
+    /// Delete one request and retain only its bounded replay tombstone.
+    pub fn delete_message_request(&self, request: String) -> Result<(), FfiError> {
+        let request = parse_request(&request)?;
+        self.call(|resp| Msg::MessageRequestDelete { request, resp })
+    }
+
+    /// Block the verified request sender and remove its local capabilities.
+    pub fn block_message_request(&self, request: String) -> Result<(), FfiError> {
+        let request = parse_request(&request)?;
+        self.call(|resp| Msg::MessageRequestBlock { request, resp })
     }
 
     /// Fresh, safe carrier snapshots for all stored contacts. Expired
@@ -5392,6 +5660,12 @@ fn parse_message(s: &str) -> Result<[u8; 16], FfiError> {
         out[i] = ((pair[0] << 4) | pair[1]) as u8;
     }
     Ok(out)
+}
+
+fn parse_request(s: &str) -> Result<[u8; 16], FfiError> {
+    parse_message(s).map_err(|_| FfiError::Node {
+        reason: "request id must be 32 hex chars".to_owned(),
+    })
 }
 
 fn parse_call(s: &str) -> Result<[u8; 16], FfiError> {

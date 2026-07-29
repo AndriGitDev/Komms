@@ -43,14 +43,18 @@ icons), `KKR4` added sealed note-to-self history, and `KKR5` added terminal C4
 ephemeral tombstones while excluding live ephemeral plaintext/manifests/media.
 `KKR6` added C6 signed group authority state and consumed admin-request ids.
 Legacy `KKR7` added the copied-root linked-device authority, certified
-endpoints, convergence winners, and recovery state. Accepted ADR-0026 adds
+endpoints, convergence winners, and recovery state. Accepted ADR-0026 added
 root-free `KKR8`: the public account trust anchor, accepted `KDA2` proof,
 eligible user state, certified contact endpoints, convergence winners, and
 terminal tombstones remain, while the account root and all reusable live
-authority/delivery material are absent. `KKR1` through `KKR7` remain explicit
+authority/delivery material are absent. `KKR9` carries that same root-free
+authority shape and adds sealed, bounded local account/device block rules;
+provisional requests, admission replay tombstones, invitation capabilities,
+and request notifications remain excluded. `KKR1` through `KKR7` remain explicit
 decode-only migration or new-identity-reset inputs; production code cannot mint
 another copied-root file, silently relabel one as root-free, or allow one to
-resume the former account. The legacy-only-artifact flow decrypts the copied
+resume the former account. Root-free `KKR8` remains directly restorable and
+naturally restores no `KKR9` block rows. The legacy-only-artifact flow decrypts the copied
 root in memory, projects the bounded local archive directly into a fresh
 root-free sibling, and publishes no intermediate legacy store. Live
 cryptographic/session state and re-creatable caches remain excluded.
@@ -69,8 +73,9 @@ history/manifests/media, and stashes. Queued or sent ordinary history remains
 only as failed local history.
 
 **Restore** (`kult-node`): requires the separately held `.kra` offline account
-authority and its independent phrase in addition to the `KKR8` file and backup
-phrase. It opens the root transiently, builds a fresh store under a new
+authority and its independent phrase in addition to the compatible root-free
+`KKR8` or current `KKR9` file and backup phrase. It opens the root transiently,
+builds a fresh store under a new
 passphrase, creates a higher recovery epoch with one fresh device, revokes the
 former active set, and mints a fresh prekey vault. On the first tick each reset
 marker becomes a
@@ -117,7 +122,7 @@ use, on both the tick path and a send racing ahead of it.
 - A restored node listens on new addresses; peers with stale hints reach it
   again via the DHT republish (or out-of-band, as the tests do). Hint
   staleness is a pre-existing property of moving devices, not introduced here.
-- Anyone holding a `KKR8` file and its phrase can read the eligible backup
+- Anyone holding a `KKR9` file and its phrase can read the eligible backup
   content but cannot authorize the stable identity without the separately held
   recovery authority. Anyone holding the `.kra` file and its phrase controls
   the identity and can revoke every device. No service can recover either pair

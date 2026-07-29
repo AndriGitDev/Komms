@@ -252,14 +252,27 @@ async fn pairwise_group_and_backup_views_resolve_immutable_edits() {
         .create_group("edited group", &[bob_id], &mut rng)
         .unwrap();
     settle(&mut alice, &mut bob, &mut rng, NOW + 60).await;
+    let invitation = bob
+        .group_invitations()
+        .unwrap()
+        .into_iter()
+        .find(|invitation| invitation.group == group)
+        .expect("group invitation");
+    bob.accept_group_invitation(&invitation.id, NOW + 76, &mut rng)
+        .unwrap();
+    alice.group_upgrade_security(&group, &mut rng).unwrap();
+    bob.tick(NOW + 77, &mut rng).await.unwrap();
+    alice.tick(NOW + 78, &mut rng).await.unwrap();
+    bob.tick(NOW + 79, &mut rng).await.unwrap();
+    alice.tick(NOW + 80, &mut rng).await.unwrap();
     let group_original = alice
-        .group_send(&group, b"group original", NOW + 80, &mut rng)
+        .group_send(&group, b"group original", NOW + 81, &mut rng)
         .unwrap();
     assert!(matches!(
         decode_content(&alice.group_messages(&group).unwrap().last().unwrap().body),
         DecodedContent::Text { id, text: "group original" } if id == group_original
     ));
-    settle(&mut alice, &mut bob, &mut rng, NOW + 81).await;
+    settle(&mut alice, &mut bob, &mut rng, NOW + 82).await;
     let group_edit = alice
         .group_edit_message(
             &group,

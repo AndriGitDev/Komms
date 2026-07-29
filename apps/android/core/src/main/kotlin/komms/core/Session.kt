@@ -43,6 +43,7 @@ import uniffi.kult_ffi.FolderTarget
 import uniffi.kult_ffi.FormattedText
 import uniffi.kult_ffi.Group
 import uniffi.kult_ffi.GroupAuthority
+import uniffi.kult_ffi.GroupInvitation
 import uniffi.kult_ffi.GroupMentionCapability
 import uniffi.kult_ffi.GroupMessage
 import uniffi.kult_ffi.GroupPoll
@@ -65,6 +66,7 @@ import uniffi.kult_ffi.StaleFolder
 import uniffi.kult_ffi.ImageEditRecipe
 import uniffi.kult_ffi.ImageInfo
 import uniffi.kult_ffi.Message
+import uniffi.kult_ffi.MessageRequest
 import uniffi.kult_ffi.MentionSpan
 import uniffi.kult_ffi.NoteMessage
 import uniffi.kult_ffi.SafetyNumber
@@ -358,6 +360,19 @@ class Session private constructor(private val node: KultNode) {
 
     /** All stored contacts. */
     fun contacts(): List<Contact> = node.contacts()
+
+    /** Sealed unknown-sender requests awaiting an explicit local decision. */
+    fun messageRequests(): List<MessageRequest> = node.messageRequests()
+
+    /** Atomically promote one request to a named contact and history. */
+    fun acceptMessageRequest(request: String, name: String): String =
+        node.acceptMessageRequest(request, name)
+
+    /** Delete one request and retain only its bounded replay tombstone. */
+    fun deleteMessageRequest(request: String) = node.deleteMessageRequest(request)
+
+    /** Block one verified sender and remove its local request capabilities. */
+    fun blockMessageRequest(request: String) = node.blockMessageRequest(request)
 
     /** Every current and briefly retained terminal direct-QUIC call. */
     fun calls(): List<Call> = node.calls()
@@ -772,6 +787,17 @@ class Session private constructor(private val node: KultNode) {
     /** Create a sender-key group from stored contacts; returns its id. */
     fun createGroup(name: String, members: List<String>): String =
         node.createGroup(name, members)
+
+    /** Authenticated group proposals awaiting explicit membership consent. */
+    fun groupInvitations(): List<GroupInvitation> = node.groupInvitations()
+
+    /** Accept one proposal and atomically create its group. */
+    fun acceptGroupInvitation(invitation: String): String =
+        node.acceptGroupInvitation(invitation)
+
+    /** Delete one proposal without creating group state. */
+    fun deleteGroupInvitation(invitation: String) =
+        node.deleteGroupInvitation(invitation)
 
     /** All live groups, excluding secrets and sender chains. */
     fun groups(): List<Group> = node.groups()

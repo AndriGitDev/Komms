@@ -31,6 +31,8 @@ jobs:
         run: python3 scripts/check-release-version.py
       - name: documentation controls
         run: python3 scripts/check-docs.py
+      - name: message-request accessibility contract
+        run: python3 scripts/check-message-request-accessibility.py
       - name: clippy
         run: cargo clippy --workspace --all-targets --all-features
       - name: tests
@@ -138,7 +140,7 @@ jobs:
       - name: fuzz kult-protocol targets
         working-directory: crates/kult-protocol
         run: |
-          for t in protocol_envelope_decode bundle_import reassembler_insert content_decode capability_decode attachment_manifest_decode attachment_bulk_decode attachment_ranges mention_decode edit_decode ephemeral_decode poll_decode group_authority_decode group_control_decode device_sync_bundle_decode call_control_decode; do
+          for t in protocol_envelope_decode admission_envelope_decode bundle_import reassembler_insert content_decode capability_decode attachment_manifest_decode attachment_bulk_decode attachment_ranges mention_decode edit_decode ephemeral_decode poll_decode group_authority_decode group_control_decode device_sync_bundle_decode call_control_decode; do
             cargo +nightly fuzz run "$t" -- -max_total_time=60
           done
 

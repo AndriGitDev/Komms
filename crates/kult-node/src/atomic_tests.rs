@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 
 use async_trait::async_trait;
@@ -19,7 +19,8 @@ use kult_store::{
     MessageDeviceDeliveryRecord, MessageRecord, ProfileBootstrapPlan, QueueClass, QueueItem, Store,
 };
 use kult_transport::{
-    CostClass, DeliveryHint, LatencyClass, LinkProfile, Reachability, SendReceipt, Transport,
+    CostClass, DeliveryHint, InboundReceipt, IngressClass, LatencyClass, LinkProfile, Reachability,
+    ReceivedEnvelope, SendReceipt, Transport,
 };
 
 use super::*;
@@ -76,12 +77,18 @@ enum Target {
     PrekeyPublish,
     PairwiseSend,
     HandshakeReceive,
+    AdmissionStage,
+    AdmissionAccept,
+    AdmissionDiscard,
+    AdmissionSweep,
     PairwiseReceive,
     ReceiptReceive,
     Maintenance,
     MaintenanceReset,
     MaintenanceExpiry,
     GroupState,
+    GroupInvitationAccept,
+    GroupInvitationDelete,
     GroupSend,
     GroupReceive,
     AttachmentStage,
@@ -89,6 +96,71 @@ enum Target {
     DeviceControl,
     DeviceLink,
     DeviceProjection,
+}
+
+#[derive(Default)]
+struct StagedDirectTransport {
+    inbox: Mutex<Vec<ReceivedEnvelope>>,
+    settled: Mutex<Vec<bool>>,
+}
+
+impl StagedDirectTransport {
+    fn push(&self, envelope: Envelope, receipt: u64) {
+        self.inbox.lock().unwrap().push(ReceivedEnvelope {
+            envelope,
+            receipt: Some(InboundReceipt::new(receipt)),
+            ingress: IngressClass::Direct,
+        });
+    }
+
+    fn settled(&self) -> Vec<bool> {
+        self.settled.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl Transport for StagedDirectTransport {
+    fn profile(&self) -> LinkProfile {
+        LinkProfile {
+            mtu: kult_protocol::MAX_ENVELOPE_BYTES,
+            latency: LatencyClass::Millis,
+            cost: CostClass::Metered,
+            broadcast: false,
+        }
+    }
+
+    fn ingress_class(&self) -> IngressClass {
+        IngressClass::Direct
+    }
+
+    async fn reachable(&self, _hint: &DeliveryHint) -> Reachability {
+        Reachability::Unreachable
+    }
+
+    async fn send(
+        &self,
+        _hint: &DeliveryHint,
+        _envelope: &Envelope,
+    ) -> kult_transport::Result<SendReceipt> {
+        Err(kult_transport::TransportError::UnsupportedHint)
+    }
+
+    async fn recv(&self) -> kult_transport::Result<Vec<Envelope>> {
+        Ok(Vec::new())
+    }
+
+    async fn recv_staged(&self) -> kult_transport::Result<Vec<ReceivedEnvelope>> {
+        Ok(self.inbox.lock().unwrap().drain(..).collect())
+    }
+
+    async fn settle_recv(
+        &self,
+        _receipt: InboundReceipt,
+        accepted: bool,
+    ) -> kult_transport::Result<()> {
+        self.settled.lock().unwrap().push(accepted);
+        Ok(())
+    }
 }
 
 struct Fixture {
@@ -149,6 +221,67 @@ impl Fixture {
         self.bob.store.queue_ack(receipt_sequence).unwrap();
         self.alice.drain_events();
         self.bob.drain_events();
+    }
+}
+
+struct AdmissionFixture {
+    _directory: tempfile::TempDir,
+    bob_path: PathBuf,
+    alice: Node,
+    bob: Node,
+    alice_id: [u8; 32],
+    envelope: Envelope,
+    rng: StdRng,
+}
+
+impl AdmissionFixture {
+    fn new(seed: u64) -> Self {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let directory = tempfile::tempdir().unwrap();
+        let alice_path = directory.path().join("admission-alice.db");
+        let bob_path = directory.path().join("admission-bob.db");
+        let mut alice = Node::create(&alice_path, b"alice", TEST_KDF, &mut rng).unwrap();
+        let mut bob = Node::create(&bob_path, b"bob", TEST_KDF, &mut rng).unwrap();
+        let alice_id = alice.account.ed;
+        let bob_bundle = bob.handshake_bundle(NOW, &mut rng).unwrap();
+        let bob_id = alice
+            .add_contact("bob", &bob_bundle, &[], NOW, &mut rng)
+            .unwrap();
+        let message_id = [0x3a; 16];
+        alice
+            .send_message_with_id(
+                &bob_id,
+                b"bounded first contact",
+                message_id,
+                NOW + 1,
+                NOW + 1,
+                &mut rng,
+            )
+            .unwrap();
+        let envelope = queued_message(&alice, message_id);
+        assert!(bob.store.get_contact(&alice_id).unwrap().is_none());
+        Self {
+            _directory: directory,
+            bob_path,
+            alice,
+            bob,
+            alice_id,
+            envelope,
+            rng,
+        }
+    }
+
+    fn stage(&mut self, now: u64) -> ProvisionalRequestRecord {
+        consume(&mut self.bob, &self.envelope, None, now, &mut self.rng).unwrap();
+        let requests = self.bob.store.provisional_requests().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(self
+            .bob
+            .store
+            .get_contact(&self.alice_id)
+            .unwrap()
+            .is_none());
+        requests.into_iter().next().unwrap()
     }
 }
 
@@ -258,9 +391,11 @@ fn prepare_origin_group(fixture: &mut Fixture, name: &str, now: u64) -> [u8; 32]
         .store
         .queue_ack(alice_announce_sequence)
         .unwrap();
+    let invitation = fixture.bob.group_invitations().unwrap().remove(0);
+    assert_eq!(invitation.group, group);
     fixture
         .bob
-        .apply_deferred_controls(now + 6, &mut fixture.rng)
+        .accept_group_invitation(&invitation.id, now + 6, &mut fixture.rng)
         .unwrap();
     let (bob_ack_sequence, bob_ack) = queued_kind(&fixture.bob, EnvelopeKind::Receipt);
     consume(
@@ -313,6 +448,21 @@ fn prepare_origin_group(fixture: &mut Fixture, name: &str, now: u64) -> [u8; 32]
     group
 }
 
+fn prepare_group_invitation(fixture: &mut Fixture, now: u64) -> ([u8; 32], [u8; 16]) {
+    fixture.establish();
+    let group = fixture
+        .alice
+        .create_group("consent crash matrix", &[fixture.bob_id], &mut fixture.rng)
+        .unwrap();
+    futures::executor::block_on(fixture.alice.tick_groups(now, &mut fixture.rng)).unwrap();
+    let (_, announce) = queued_kind(&fixture.alice, EnvelopeKind::GroupControl);
+    consume(&mut fixture.bob, &announce, None, now + 1, &mut fixture.rng).unwrap();
+    let invitations = fixture.bob.group_invitations().unwrap();
+    assert_eq!(invitations.len(), 1);
+    assert_eq!(invitations[0].group, group);
+    (group, invitations[0].id)
+}
+
 fn pending_contains(node: &Node, sequence: i64, content_id: [u8; 16]) -> bool {
     node.store
         .pending_all()
@@ -336,12 +486,31 @@ fn consume(
     now: u64,
     rng: &mut StdRng,
 ) -> Result<Consumed> {
+    consume_with_transport(
+        node,
+        envelope,
+        pending_sequence,
+        AdmissionTransportClass::Unknown,
+        now,
+        rng,
+    )
+}
+
+fn consume_with_transport(
+    node: &mut Node,
+    envelope: &Envelope,
+    pending_sequence: Option<i64>,
+    transport: AdmissionTransportClass,
+    now: u64,
+    rng: &mut StdRng,
+) -> Result<Consumed> {
     let mut established = false;
     node.consume(
         envelope,
         ConsumeOrigin {
             depth: 0,
             pending_sequence,
+            transport,
         },
         now,
         rng,
@@ -362,12 +531,18 @@ fn run_store_case(
         Target::PrekeyPublish => run_prekey_publish(point, failure, seed),
         Target::PairwiseSend => run_pairwise_send(point, failure, seed),
         Target::HandshakeReceive => run_handshake_receive(point, failure, seed),
+        Target::AdmissionStage => run_admission_stage(point, failure, seed),
+        Target::AdmissionAccept => run_admission_accept(point, failure, seed),
+        Target::AdmissionDiscard => run_admission_discard(point, failure, seed),
+        Target::AdmissionSweep => run_admission_sweep(point, failure, seed),
         Target::PairwiseReceive => run_pairwise_receive(point, failure, seed),
         Target::ReceiptReceive => run_receipt_receive(point, failure, seed),
         Target::Maintenance => run_maintenance(point, failure, seed),
         Target::MaintenanceReset => run_maintenance_reset(point, failure, seed),
         Target::MaintenanceExpiry => run_maintenance_expiry(point, failure, seed),
         Target::GroupState => run_group_state(point, failure, seed),
+        Target::GroupInvitationAccept => run_group_invitation_accept(point, failure, seed),
+        Target::GroupInvitationDelete => run_group_invitation_delete(point, failure, seed),
         Target::GroupSend => run_group_send(point, failure, seed),
         Target::GroupReceive => run_group_receive(point, failure, seed),
         Target::AttachmentStage => run_attachment_stage(point, failure, seed),
@@ -760,6 +935,287 @@ fn run_handshake_receive(point: CommitFailpoint, failure: CommitFailure, seed: u
     .unwrap();
     assert_eq!(bob.store.messages_with(&alice_id).unwrap().len(), 1);
     assert!(!pending_contains(&bob, pending_sequence, content_id));
+    result_ok
+}
+
+fn run_admission_stage(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
+    let mut fixture = AdmissionFixture::new(seed);
+    let content_id = fixture.envelope.content_id();
+    let alice_device = fixture.alice.device_identity.public().ed;
+    let pending_sequence = fixture
+        .bob
+        .store
+        .pending_push(&fixture.envelope, NOW + 1, &mut fixture.rng)
+        .unwrap();
+    let prekeys_before = fixture.bob.store.get_prekeys().unwrap().unwrap();
+    fixture.bob.arm_commit_failpoint(point, failure);
+    let result = consume(
+        &mut fixture.bob,
+        &fixture.envelope,
+        Some(pending_sequence),
+        NOW + 2,
+        &mut fixture.rng,
+    );
+    let result_ok = result.is_ok();
+    let request = fixture
+        .bob
+        .store
+        .get_provisional_request(&fixture.alice_id)
+        .unwrap();
+    let committed = request.is_some();
+    assert_eq!(committed, expected_committed(result_ok, point));
+    assert_eq!(fixture.bob.store.is_seen(&content_id).unwrap(), committed);
+    assert_eq!(
+        fixture.bob.store.get_prekeys().unwrap().unwrap() != prekeys_before,
+        committed
+    );
+    assert_eq!(
+        pending_contains(&fixture.bob, pending_sequence, content_id),
+        !committed
+    );
+    assert!(fixture
+        .bob
+        .store
+        .get_contact(&fixture.alice_id)
+        .unwrap()
+        .is_none());
+    assert!(fixture
+        .bob
+        .store
+        .get_session(&alice_device)
+        .unwrap()
+        .is_none());
+
+    let AdmissionFixture {
+        _directory,
+        bob_path,
+        alice: _,
+        bob,
+        alice_id,
+        envelope,
+        mut rng,
+    } = fixture;
+    drop(bob);
+    let mut bob = Node::open(&bob_path, b"bob").unwrap();
+    if !committed {
+        consume(
+            &mut bob,
+            &envelope,
+            Some(pending_sequence),
+            NOW + 3,
+            &mut rng,
+        )
+        .unwrap();
+    }
+    assert_eq!(bob.store.provisional_requests().unwrap().len(), 1);
+    assert!(bob.store.get_contact(&alice_id).unwrap().is_none());
+    assert!(bob.store.get_session(&alice_device).unwrap().is_none());
+    assert!(!pending_contains(&bob, pending_sequence, content_id));
+    result_ok
+}
+
+fn run_admission_accept(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
+    let mut fixture = AdmissionFixture::new(seed);
+    let request = fixture.stage(NOW + 2);
+    fixture.bob.arm_commit_failpoint(point, failure);
+    let result =
+        fixture
+            .bob
+            .accept_message_request(&request.request_id, "alice", NOW + 3, &mut fixture.rng);
+    let result_ok = result.is_ok();
+    let committed = fixture
+        .bob
+        .store
+        .get_contact(&fixture.alice_id)
+        .unwrap()
+        .is_some();
+    assert_eq!(committed, expected_committed(result_ok, point));
+    assert_eq!(
+        fixture
+            .bob
+            .store
+            .get_provisional_request(&fixture.alice_id)
+            .unwrap()
+            .is_none(),
+        committed
+    );
+    assert_eq!(
+        fixture
+            .bob
+            .store
+            .get_session(&request.device)
+            .unwrap()
+            .is_some(),
+        committed
+    );
+    assert_eq!(
+        fixture
+            .bob
+            .store
+            .messages_with(&fixture.alice_id)
+            .unwrap()
+            .len(),
+        usize::from(committed)
+    );
+    assert_eq!(
+        !fixture.bob.store.queue_all().unwrap().is_empty(),
+        committed
+    );
+
+    let request_id = request.request_id;
+    let device = request.device;
+    let AdmissionFixture {
+        _directory,
+        bob_path,
+        alice: _,
+        bob,
+        alice_id,
+        envelope: _,
+        mut rng,
+    } = fixture;
+    drop(bob);
+    let mut bob = Node::open(&bob_path, b"bob").unwrap();
+    if !committed {
+        bob.accept_message_request(&request_id, "alice", NOW + 4, &mut rng)
+            .unwrap();
+    }
+    assert!(bob
+        .store
+        .get_provisional_request(&alice_id)
+        .unwrap()
+        .is_none());
+    assert!(bob.store.get_contact(&alice_id).unwrap().is_some());
+    assert!(bob.store.get_session(&device).unwrap().is_some());
+    assert_eq!(bob.store.messages_with(&alice_id).unwrap().len(), 1);
+    assert!(!bob.store.queue_all().unwrap().is_empty());
+    result_ok
+}
+
+fn run_admission_discard(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
+    let mut fixture = AdmissionFixture::new(seed);
+    let request = fixture.stage(NOW + 2);
+    fixture.bob.arm_commit_failpoint(point, failure);
+    let result = fixture
+        .bob
+        .block_message_request(&request.request_id, NOW + 3, &mut fixture.rng);
+    let result_ok = result.is_ok();
+    let tombstone = fixture
+        .bob
+        .store
+        .get_admission_tombstone(&request.request_id)
+        .unwrap();
+    let committed = tombstone.is_some();
+    assert_eq!(committed, expected_committed(result_ok, point));
+    assert_eq!(
+        fixture
+            .bob
+            .store
+            .get_provisional_request(&fixture.alice_id)
+            .unwrap()
+            .is_none(),
+        committed
+    );
+    assert_eq!(
+        fixture
+            .bob
+            .store
+            .is_blocked_identity(&fixture.alice_id)
+            .unwrap(),
+        committed
+    );
+    assert!(fixture
+        .bob
+        .store
+        .get_contact(&fixture.alice_id)
+        .unwrap()
+        .is_none());
+    assert!(fixture
+        .bob
+        .store
+        .messages_with(&fixture.alice_id)
+        .unwrap()
+        .is_empty());
+
+    let request_id = request.request_id;
+    let AdmissionFixture {
+        _directory,
+        bob_path,
+        alice: _,
+        bob,
+        alice_id,
+        envelope: _,
+        mut rng,
+    } = fixture;
+    drop(bob);
+    let mut bob = Node::open(&bob_path, b"bob").unwrap();
+    if !committed {
+        bob.block_message_request(&request_id, NOW + 4, &mut rng)
+            .unwrap();
+    }
+    assert!(bob
+        .store
+        .get_provisional_request(&alice_id)
+        .unwrap()
+        .is_none());
+    assert!(bob
+        .store
+        .get_admission_tombstone(&request_id)
+        .unwrap()
+        .is_some());
+    assert!(bob.store.is_blocked_identity(&alice_id).unwrap());
+    assert!(bob.store.get_contact(&alice_id).unwrap().is_none());
+    result_ok
+}
+
+fn run_admission_sweep(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
+    let mut fixture = AdmissionFixture::new(seed);
+    let request = fixture.stage(NOW + 2);
+    fixture.bob.arm_commit_failpoint(point, failure);
+    let result = fixture
+        .bob
+        .sweep_admission(request.expires_at, &mut fixture.rng);
+    let result_ok = result.is_ok();
+    let committed = fixture
+        .bob
+        .store
+        .get_provisional_request(&fixture.alice_id)
+        .unwrap()
+        .is_none();
+    assert_eq!(committed, expected_committed(result_ok, point));
+    assert!(fixture
+        .bob
+        .store
+        .get_admission_tombstone(&request.request_id)
+        .unwrap()
+        .is_none());
+    assert!(fixture
+        .bob
+        .store
+        .get_contact(&fixture.alice_id)
+        .unwrap()
+        .is_none());
+
+    let expires_at = request.expires_at;
+    let AdmissionFixture {
+        _directory,
+        bob_path,
+        alice: _,
+        bob,
+        alice_id,
+        envelope: _,
+        mut rng,
+    } = fixture;
+    drop(bob);
+    let mut bob = Node::open(&bob_path, b"bob").unwrap();
+    if !committed {
+        bob.sweep_admission(expires_at, &mut rng).unwrap();
+    }
+    assert!(bob
+        .store
+        .get_provisional_request(&alice_id)
+        .unwrap()
+        .is_none());
+    assert!(bob.store.get_contact(&alice_id).unwrap().is_none());
     result_ok
 }
 
@@ -1207,6 +1663,94 @@ fn run_group_state(point: CommitFailpoint, failure: CommitFailure, seed: u64) ->
             .unwrap();
     }
     assert_eq!(alice.store.get_group(&group).unwrap(), Some(after));
+    result_ok
+}
+
+fn run_group_invitation_accept(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
+    let mut fixture = Fixture::new(seed);
+    let (group, invitation) = prepare_group_invitation(&mut fixture, NOW + 40);
+    fixture.bob.arm_commit_failpoint(point, failure);
+    let result = fixture
+        .bob
+        .accept_group_invitation(&invitation, NOW + 42, &mut fixture.rng);
+    let result_ok = result.is_ok();
+    let committed = fixture.bob.store.get_group(&group).unwrap().is_some();
+    assert_eq!(committed, expected_committed(result_ok, point));
+    assert_eq!(
+        fixture
+            .bob
+            .store
+            .get_deferred_control(&invitation)
+            .unwrap()
+            .is_none(),
+        committed
+    );
+
+    let Fixture {
+        _directory,
+        alice_path: _,
+        bob_path,
+        alice: _,
+        bob,
+        alice_id: _,
+        bob_id: _,
+        mut rng,
+    } = fixture;
+    drop(bob);
+    let mut bob = Node::open(&bob_path, b"bob").unwrap();
+    if !committed {
+        bob.accept_group_invitation(&invitation, NOW + 43, &mut rng)
+            .unwrap();
+    }
+    assert!(bob.store.get_group(&group).unwrap().is_some());
+    assert!(bob
+        .store
+        .get_deferred_control(&invitation)
+        .unwrap()
+        .is_none());
+    assert!(bob.group_invitations().unwrap().is_empty());
+    result_ok
+}
+
+fn run_group_invitation_delete(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
+    let mut fixture = Fixture::new(seed);
+    let (group, invitation) = prepare_group_invitation(&mut fixture, NOW + 40);
+    fixture.bob.arm_commit_failpoint(point, failure);
+    let result = fixture
+        .bob
+        .delete_group_invitation(&invitation, &mut fixture.rng);
+    let result_ok = result.is_ok();
+    let committed = fixture
+        .bob
+        .store
+        .get_deferred_control(&invitation)
+        .unwrap()
+        .is_none();
+    assert_eq!(committed, expected_committed(result_ok, point));
+    assert!(fixture.bob.store.get_group(&group).unwrap().is_none());
+
+    let Fixture {
+        _directory,
+        alice_path: _,
+        bob_path,
+        alice: _,
+        bob,
+        alice_id: _,
+        bob_id: _,
+        mut rng,
+    } = fixture;
+    drop(bob);
+    let mut bob = Node::open(&bob_path, b"bob").unwrap();
+    if !committed {
+        bob.delete_group_invitation(&invitation, &mut rng).unwrap();
+    }
+    assert!(bob.store.get_group(&group).unwrap().is_none());
+    assert!(bob
+        .store
+        .get_deferred_control(&invitation)
+        .unwrap()
+        .is_none());
+    assert!(bob.group_invitations().unwrap().is_empty());
     result_ok
 }
 
@@ -2389,12 +2933,18 @@ fn every_transaction_statement_is_all_or_nothing_after_restart() {
         Target::PrekeyPublish,
         Target::PairwiseSend,
         Target::HandshakeReceive,
+        Target::AdmissionStage,
+        Target::AdmissionAccept,
+        Target::AdmissionDiscard,
+        Target::AdmissionSweep,
         Target::PairwiseReceive,
         Target::ReceiptReceive,
         Target::Maintenance,
         Target::MaintenanceReset,
         Target::MaintenanceExpiry,
         Target::GroupState,
+        Target::GroupInvitationAccept,
+        Target::GroupInvitationDelete,
         Target::GroupSend,
         Target::GroupReceive,
         Target::AttachmentStage,
@@ -2963,12 +3513,18 @@ fn disk_constraint_and_duplicate_failures_leave_retryable_inputs() {
         Target::PrekeyPublish,
         Target::PairwiseSend,
         Target::HandshakeReceive,
+        Target::AdmissionStage,
+        Target::AdmissionAccept,
+        Target::AdmissionDiscard,
+        Target::AdmissionSweep,
         Target::PairwiseReceive,
         Target::ReceiptReceive,
         Target::Maintenance,
         Target::MaintenanceReset,
         Target::MaintenanceExpiry,
         Target::GroupState,
+        Target::GroupInvitationAccept,
+        Target::GroupInvitationDelete,
         Target::GroupSend,
         Target::GroupReceive,
         Target::AttachmentStage,
@@ -2994,6 +3550,369 @@ fn disk_constraint_and_duplicate_failures_leave_retryable_inputs() {
             ));
         }
     }
+}
+
+#[test]
+fn invalid_admission_proof_is_terminal_without_consuming_prekeys() {
+    let mut fixture = AdmissionFixture::new(0xa280_9001);
+    let before = fixture.bob.store.get_prekeys().unwrap().unwrap();
+    let mut wrapper = AdmissionEnvelope::decode(&fixture.envelope.body).unwrap();
+    wrapper.proof[0] ^= 0x80;
+    let invalid = Envelope {
+        body: wrapper.encode().unwrap(),
+        ..fixture.envelope.clone()
+    };
+    let content_id = invalid.content_id();
+    let pending = fixture
+        .bob
+        .store
+        .pending_push(&invalid, NOW + 1, &mut fixture.rng)
+        .unwrap();
+
+    assert!(matches!(
+        consume(
+            &mut fixture.bob,
+            &invalid,
+            Some(pending),
+            NOW + 2,
+            &mut fixture.rng,
+        )
+        .unwrap(),
+        Consumed::RejectedAtomic
+    ));
+    assert!(fixture.bob.store.is_seen(&content_id).unwrap());
+    assert!(!pending_contains(&fixture.bob, pending, content_id));
+    assert_eq!(fixture.bob.store.get_prekeys().unwrap().unwrap(), before);
+    assert!(fixture.bob.store.provisional_requests().unwrap().is_empty());
+    assert!(fixture
+        .bob
+        .store
+        .get_contact(&fixture.alice_id)
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn direct_admission_accepts_only_the_first_durably_staged_candidate() {
+    let mut fixture = AdmissionFixture::new(0xa280_9006);
+    let valid = fixture.envelope.clone();
+    let mut wrapper = AdmissionEnvelope::decode(&valid.body).unwrap();
+    wrapper.proof[0] ^= 0x80;
+    let invalid = Envelope {
+        body: wrapper.encode().unwrap(),
+        ..valid.clone()
+    };
+    let invalid_id = invalid.content_id();
+    let transport = Arc::new(StagedDirectTransport::default());
+    transport.push(valid.clone(), 1);
+    transport.push(valid.clone(), 2);
+    transport.push(invalid, 3);
+    fixture
+        .bob
+        .add_transport(Arc::clone(&transport) as Arc<dyn Transport>);
+
+    let events = fixture.bob.tick(NOW + 2, &mut fixture.rng).await.unwrap();
+
+    assert_eq!(transport.settled(), vec![true, false, false]);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::MessageRequestReceived { .. }))
+            .count(),
+        1
+    );
+    let requests = fixture.bob.store.provisional_requests().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].request_id, valid.content_id());
+    assert_eq!(requests[0].transport, AdmissionTransportClass::Direct);
+    assert!(fixture.bob.store.is_seen(&invalid_id).unwrap());
+    assert!(fixture.bob.store.pending_all().unwrap().is_empty());
+}
+
+#[test]
+fn admission_work_budgets_defer_before_prekey_consumption() {
+    let mut fixture = AdmissionFixture::new(0xa280_9002);
+    let before = fixture.bob.store.get_prekeys().unwrap().unwrap();
+    let content_id = fixture.envelope.content_id();
+    let pending = fixture
+        .bob
+        .store
+        .pending_push(&fixture.envelope, NOW + 1, &mut fixture.rng)
+        .unwrap();
+
+    fixture.bob.admission_puzzles_remaining = 0;
+    assert!(matches!(
+        consume(
+            &mut fixture.bob,
+            &fixture.envelope,
+            Some(pending),
+            NOW + 2,
+            &mut fixture.rng,
+        )
+        .unwrap(),
+        Consumed::Later
+    ));
+    assert_eq!(fixture.bob.store.get_prekeys().unwrap().unwrap(), before);
+    assert!(!fixture.bob.store.is_seen(&content_id).unwrap());
+    assert!(pending_contains(&fixture.bob, pending, content_id));
+
+    fixture.bob.admission_puzzles_remaining = 1;
+    fixture.bob.admission_kems_remaining = 0;
+    assert!(matches!(
+        consume(
+            &mut fixture.bob,
+            &fixture.envelope,
+            Some(pending),
+            NOW + 3,
+            &mut fixture.rng,
+        )
+        .unwrap(),
+        Consumed::Later
+    ));
+    assert_eq!(fixture.bob.store.get_prekeys().unwrap().unwrap(), before);
+    assert!(!fixture.bob.store.is_seen(&content_id).unwrap());
+    assert!(pending_contains(&fixture.bob, pending, content_id));
+
+    fixture.bob.admission_puzzles_remaining = 1;
+    fixture.bob.admission_kems_remaining = 1;
+    assert!(matches!(
+        consume(
+            &mut fixture.bob,
+            &fixture.envelope,
+            Some(pending),
+            NOW + 4,
+            &mut fixture.rng,
+        )
+        .unwrap(),
+        Consumed::DoneAtomic
+    ));
+    assert_ne!(fixture.bob.store.get_prekeys().unwrap().unwrap(), before);
+    assert!(fixture.bob.store.is_seen(&content_id).unwrap());
+    assert_eq!(fixture.bob.store.provisional_requests().unwrap().len(), 1);
+    assert!(!pending_contains(&fixture.bob, pending, content_id));
+}
+
+#[test]
+fn admission_carrier_and_time_budgets_defer_before_prekey_consumption() {
+    let mut fixture = AdmissionFixture::new(0xa280_9004);
+    let before = fixture.bob.store.get_prekeys().unwrap().unwrap();
+    let content_id = fixture.envelope.content_id();
+    let pending = fixture
+        .bob
+        .store
+        .pending_push_with_transport(
+            &fixture.envelope,
+            NOW + 1,
+            AdmissionTransportClass::Direct,
+            &mut fixture.rng,
+        )
+        .unwrap();
+    let direct = admission_transport_index(AdmissionTransportClass::Direct);
+
+    fixture.bob.admission_carrier_remaining[direct] = 0;
+    assert!(matches!(
+        consume_with_transport(
+            &mut fixture.bob,
+            &fixture.envelope,
+            Some(pending),
+            AdmissionTransportClass::Direct,
+            NOW + 2,
+            &mut fixture.rng,
+        )
+        .unwrap(),
+        Consumed::Later
+    ));
+    assert_eq!(fixture.bob.store.get_prekeys().unwrap().unwrap(), before);
+    assert!(!fixture.bob.store.is_seen(&content_id).unwrap());
+    assert!(pending_contains(&fixture.bob, pending, content_id));
+
+    fixture.bob.admission_carrier_remaining[direct] = 1;
+    fixture.bob.admission_deadline = Some(Instant::now() - Duration::from_millis(1));
+    assert!(matches!(
+        consume_with_transport(
+            &mut fixture.bob,
+            &fixture.envelope,
+            Some(pending),
+            AdmissionTransportClass::Direct,
+            NOW + 3,
+            &mut fixture.rng,
+        )
+        .unwrap(),
+        Consumed::Later
+    ));
+    assert_eq!(fixture.bob.store.get_prekeys().unwrap().unwrap(), before);
+    assert!(!fixture.bob.store.is_seen(&content_id).unwrap());
+    assert!(pending_contains(&fixture.bob, pending, content_id));
+
+    fixture.bob.admission_deadline = None;
+    assert!(matches!(
+        consume_with_transport(
+            &mut fixture.bob,
+            &fixture.envelope,
+            Some(pending),
+            AdmissionTransportClass::Direct,
+            NOW + 4,
+            &mut fixture.rng,
+        )
+        .unwrap(),
+        Consumed::DoneAtomic
+    ));
+    let request = fixture
+        .bob
+        .store
+        .provisional_request_by_id(&content_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(request.transport, AdmissionTransportClass::Direct);
+    assert_ne!(fixture.bob.store.get_prekeys().unwrap().unwrap(), before);
+    assert!(!pending_contains(&fixture.bob, pending, content_id));
+}
+
+#[test]
+fn duplicate_admission_flight_cannot_replace_or_advance_request_state() {
+    let mut fixture = AdmissionFixture::new(0xa280_9003);
+    let request = fixture.stage(NOW + 2);
+    let prekeys = fixture.bob.store.get_prekeys().unwrap().unwrap();
+    let request_bytes = postcard::to_allocvec(&request).unwrap();
+
+    consume(
+        &mut fixture.bob,
+        &fixture.envelope,
+        None,
+        NOW + 3,
+        &mut fixture.rng,
+    )
+    .unwrap();
+
+    let requests = fixture.bob.store.provisional_requests().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(postcard::to_allocvec(&requests[0]).unwrap(), request_bytes);
+    assert_eq!(fixture.bob.store.get_prekeys().unwrap().unwrap(), prekeys);
+    assert!(fixture
+        .bob
+        .store
+        .get_contact(&fixture.alice_id)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn admission_flood_caps_rows_kem_work_and_notifications() {
+    let mut rng = StdRng::seed_from_u64(0xa280_9004);
+    let directory = tempfile::tempdir().unwrap();
+    let bob_path = directory.path().join("flood-bob.db");
+    let mut bob = Node::create(&bob_path, b"bob", TEST_KDF, &mut rng).unwrap();
+
+    for index in 0..=kult_store::MAX_PROVISIONAL_REQUESTS {
+        let sender_path = directory.path().join(format!("flood-sender-{index}.db"));
+        let mut sender = Node::create(&sender_path, b"sender", TEST_KDF, &mut rng).unwrap();
+        let sender_id = sender.account.ed;
+        let bob_bundle = bob.handshake_bundle(NOW + index as u64, &mut rng).unwrap();
+        let bob_id = sender
+            .add_contact("bob", &bob_bundle, &[], NOW + index as u64, &mut rng)
+            .unwrap();
+        let message_id = sender
+            .send_message(
+                &bob_id,
+                format!("request {index}").as_bytes(),
+                NOW + index as u64 + 1,
+                &mut rng,
+            )
+            .unwrap();
+        let envelope = queued_message(&sender, message_id);
+        let content_id = envelope.content_id();
+        let before_prekeys = bob.store.get_prekeys().unwrap().unwrap();
+        bob.admission_puzzles_remaining = 1;
+        bob.admission_kems_remaining = 1;
+        bob.admission_carrier_remaining = MAX_ADMISSION_CANDIDATES_PER_CARRIER;
+        bob.admission_deadline = None;
+        consume(&mut bob, &envelope, None, NOW + index as u64 + 2, &mut rng).unwrap();
+
+        if index < kult_store::MAX_PROVISIONAL_REQUESTS {
+            assert!(bob
+                .store
+                .get_provisional_request(&sender_id)
+                .unwrap()
+                .is_some());
+            assert_ne!(bob.store.get_prekeys().unwrap().unwrap(), before_prekeys);
+        } else {
+            assert!(bob
+                .store
+                .get_provisional_request(&sender_id)
+                .unwrap()
+                .is_none());
+            assert_eq!(bob.store.get_prekeys().unwrap().unwrap(), before_prekeys);
+            assert!(bob.store.is_seen(&content_id).unwrap());
+        }
+        assert_eq!(
+            bob.store.provisional_requests().unwrap().len(),
+            (index + 1).min(kult_store::MAX_PROVISIONAL_REQUESTS)
+        );
+    }
+
+    let notifications = bob
+        .drain_events()
+        .into_iter()
+        .filter(|event| matches!(event, Event::MessageRequestReceived { .. }))
+        .count();
+    assert_eq!(notifications, MAX_ADMISSION_NOTIFICATIONS_PER_TICK);
+}
+
+#[test]
+fn consumed_invitation_and_one_time_prekey_cannot_admit_a_second_sender() {
+    let mut rng = StdRng::seed_from_u64(0xa280_9005);
+    let directory = tempfile::tempdir().unwrap();
+    let mut bob = Node::create(
+        &directory.path().join("one-time-bob.db"),
+        b"bob",
+        TEST_KDF,
+        &mut rng,
+    )
+    .unwrap();
+    let bob_bundle = bob.handshake_bundle(NOW, &mut rng).unwrap();
+    let mut flights = Vec::new();
+    let mut senders = Vec::new();
+    for index in 0..2 {
+        let mut sender = Node::create(
+            &directory.path().join(format!("one-time-sender-{index}.db")),
+            b"sender",
+            TEST_KDF,
+            &mut rng,
+        )
+        .unwrap();
+        let sender_id = sender.account.ed;
+        let bob_id = sender
+            .add_contact("bob", &bob_bundle, &[], NOW, &mut rng)
+            .unwrap();
+        let message_id = sender
+            .send_message(
+                &bob_id,
+                format!("sender {index}").as_bytes(),
+                NOW + 1,
+                &mut rng,
+            )
+            .unwrap();
+        flights.push(queued_message(&sender, message_id));
+        senders.push(sender_id);
+    }
+
+    consume(&mut bob, &flights[0], None, NOW + 2, &mut rng).unwrap();
+    assert!(bob
+        .store
+        .get_provisional_request(&senders[0])
+        .unwrap()
+        .is_some());
+    let after_first = bob.store.get_prekeys().unwrap().unwrap();
+    bob.admission_puzzles_remaining = 1;
+    bob.admission_kems_remaining = 1;
+    consume(&mut bob, &flights[1], None, NOW + 3, &mut rng).unwrap();
+    assert!(bob
+        .store
+        .get_provisional_request(&senders[1])
+        .unwrap()
+        .is_none());
+    assert_eq!(bob.store.get_prekeys().unwrap().unwrap(), after_first);
+    assert!(bob.store.is_seen(&flights[1].content_id()).unwrap());
 }
 
 #[test]

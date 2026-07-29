@@ -39,8 +39,8 @@ use kult_protocol::Envelope;
 
 use crate::airtime::{time_on_air, AirtimeBudget, ModemParams, DUTY_CYCLE_WINDOW};
 use crate::{
-    CostClass, DeliveryHint, LatencyClass, LinkProfile, Reachability, Result, SendReceipt,
-    Transport, TransportError,
+    CostClass, DeliveryHint, IngressClass, LatencyClass, LinkProfile, Reachability, Result,
+    SendReceipt, Transport, TransportError,
 };
 
 /// The Meshtastic broadcast node number. `DeliveryHint::MeshNode(MESH_BROADCAST)`
@@ -215,6 +215,10 @@ impl Transport for MeshtasticTransport {
             cost: CostClass::Airtime,
             broadcast: true,
         }
+    }
+
+    fn ingress_class(&self) -> IngressClass {
+        IngressClass::Mesh
     }
 
     async fn reachable(&self, peer: &DeliveryHint) -> Reachability {

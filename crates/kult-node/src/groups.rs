@@ -45,7 +45,7 @@ use kult_store::{
 };
 
 use crate::api::{
-    GroupInfo, GroupMentionCapability, GroupSecurityInfo, GroupSecurityLevel,
+    GroupInfo, GroupInvitationInfo, GroupMentionCapability, GroupSecurityInfo, GroupSecurityLevel,
     MentionCapabilityIssue, MentionCapabilityIssueReason, MentionSpan, ResolvedGroupMessage,
 };
 use crate::{
@@ -68,6 +68,13 @@ const LEGACY_GROUP_SENDER_ORIGIN_MAGIC: &[u8; 4] = b"KGS2";
 const GROUP_SENDER_ORIGIN_MAGIC: &[u8; 4] = b"KGS3";
 const MAX_DEVICE_GROUP_CHAINS: usize = 64;
 const MAX_GROUP_ORIGIN_ROUTES: usize = MAX_GROUP_AUTHORITY_MEMBERS * 8;
+/// Maximum live group invitations retained outside normal group state.
+pub const MAX_GROUP_INVITATION_REQUESTS: usize = 32;
+/// Maximum aggregate decrypted group-control bytes retained for invitations.
+pub const MAX_GROUP_INVITATION_BYTES: usize = 512 * 1024;
+/// Maximum local lifetime of a group invitation.
+pub const MAX_GROUP_INVITATION_LIFETIME_SECS: u64 = 7 * 86_400;
+const MAX_GROUP_INVITATION_EXPIRIES_PER_TICK: usize = 16;
 
 #[derive(Serialize, Deserialize)]
 struct DeviceGroupReceiverChain {
@@ -155,6 +162,13 @@ pub(crate) struct AuthenticatedGroupSender {
 pub(crate) struct GroupOriginMaterial {
     pub(crate) key: [u8; 32],
     pub(crate) generation: u64,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct GroupControlAnnounceContext<'a> {
+    pub(crate) origin: Option<GroupOriginMaterial>,
+    pub(crate) control: &'a DeferredControlRecord,
+    pub(crate) accept_invitation: bool,
 }
 
 pub(crate) struct GroupReceiverChainMaterial {
@@ -2957,34 +2971,439 @@ impl Node {
     /// it was applied — unapplied controls are **not** acknowledged, so the
     /// sender's paced resend arrives after the missing context (e.g. a
     /// co-member's announce racing the creator's invite).
+    fn group_invitation_info_for_control(
+        &self,
+        control: &DeferredControlRecord,
+    ) -> Result<Option<GroupInvitationInfo>> {
+        if control.kind != kult_store::DeferredControlKind::GroupControl
+            || self.store.is_blocked_identity(&control.peer)?
+        {
+            return Ok(None);
+        }
+        let Ok(payload) = GroupControlPayload::decode(&control.body) else {
+            return Ok(None);
+        };
+        let me = self.account.ed;
+        let (group, name, creator, member_count, generation, recipient_scoped, signed_authority) =
+            match &payload {
+                GroupControlPayload::Announce(announce) => {
+                    if announce.creator != control.peer
+                        || announce.group == [0u8; 32]
+                        || announce.name.is_empty()
+                        || announce.name.len() > kult_protocol::MAX_GROUP_NAME_LEN
+                        || !announce.members.iter().any(|member| member.peer == me)
+                        || !announce
+                            .members
+                            .iter()
+                            .any(|member| member.peer == control.peer)
+                        || !valid_roster(&announce.members)
+                    {
+                        return Ok(None);
+                    }
+                    (
+                        announce.group,
+                        announce.name.clone(),
+                        announce.creator,
+                        announce.members.len(),
+                        announce.generation,
+                        false,
+                        false,
+                    )
+                }
+                GroupControlPayload::OriginAnnounce(origin) => {
+                    let announce = &origin.announce;
+                    if origin.recipient_account != me
+                        || origin.recipient_device != self.device_id()
+                        || self.verified_group_sender_account(&control.peer_device)?
+                            != Some(control.peer)
+                        || announce.creator != control.peer
+                        || announce.group == [0u8; 32]
+                        || announce.name.is_empty()
+                        || announce.name.len() > kult_protocol::MAX_GROUP_NAME_LEN
+                        || !announce.members.iter().any(|member| member.peer == me)
+                        || !announce
+                            .members
+                            .iter()
+                            .any(|member| member.peer == control.peer)
+                        || !valid_roster(&announce.members)
+                    {
+                        return Ok(None);
+                    }
+                    (
+                        announce.group,
+                        announce.name.clone(),
+                        announce.creator,
+                        announce.members.len(),
+                        announce.generation,
+                        true,
+                        false,
+                    )
+                }
+                GroupControlPayload::AuthorityAnnounce(announce) => {
+                    let Some(summary) =
+                        self.authority_invitation_summary(control.peer, announce)?
+                    else {
+                        return Ok(None);
+                    };
+                    (
+                        announce.group,
+                        summary.name,
+                        summary.creator,
+                        summary.members,
+                        summary.generation,
+                        false,
+                        true,
+                    )
+                }
+                GroupControlPayload::OriginAuthorityAnnounce(origin) => {
+                    if origin.recipient_account != me
+                        || origin.recipient_device != self.device_id()
+                        || self.verified_group_sender_account(&control.peer_device)?
+                            != Some(control.peer)
+                    {
+                        return Ok(None);
+                    }
+                    let Some(summary) =
+                        self.authority_invitation_summary(control.peer, &origin.announce)?
+                    else {
+                        return Ok(None);
+                    };
+                    (
+                        origin.announce.group,
+                        summary.name,
+                        summary.creator,
+                        summary.members,
+                        summary.generation,
+                        true,
+                        true,
+                    )
+                }
+                _ => return Ok(None),
+            };
+        if self.store.get_group(&group)?.is_some() {
+            return Ok(None);
+        }
+        Ok(Some(GroupInvitationInfo {
+            id: control.content_id,
+            group,
+            inviter: control.peer,
+            inviter_device: control.peer_device,
+            name,
+            creator,
+            member_count: u32::try_from(member_count).map_err(|_| NodeError::CorruptState)?,
+            generation,
+            recipient_scoped,
+            signed_authority,
+            arrived_at: control.received_at,
+            expires_at: control
+                .received_at
+                .saturating_add(MAX_GROUP_INVITATION_LIFETIME_SECS),
+        }))
+    }
+
+    fn unknown_group_control_group(
+        &self,
+        control: &DeferredControlRecord,
+    ) -> Result<Option<[u8; 32]>> {
+        if control.kind != kult_store::DeferredControlKind::GroupControl {
+            return Ok(None);
+        }
+        let Ok(payload) = GroupControlPayload::decode(&control.body) else {
+            return Ok(None);
+        };
+        let group = match &payload {
+            GroupControlPayload::Announce(announce) => announce.group,
+            GroupControlPayload::AuthorityAnnounce(announce) => announce.group,
+            GroupControlPayload::OriginAnnounce(origin) => origin.announce.group,
+            GroupControlPayload::OriginAuthorityAnnounce(origin) => origin.announce.group,
+            _ => return Ok(None),
+        };
+        Ok(self.store.get_group(&group)?.is_none().then_some(group))
+    }
+
+    /// List authenticated proposals that have not entered normal group state.
+    pub fn group_invitations(&self) -> Result<Vec<GroupInvitationInfo>> {
+        let mut groups = HashSet::new();
+        let mut invitations = Vec::new();
+        for control in self
+            .store
+            .deferred_controls(kult_store::MAX_DEFERRED_CONTROLS)?
+        {
+            let Some(info) = self.group_invitation_info_for_control(&control)? else {
+                continue;
+            };
+            if groups.insert(info.group) {
+                invitations.push(info);
+            }
+            if invitations.len() == MAX_GROUP_INVITATION_REQUESTS {
+                break;
+            }
+        }
+        invitations.sort_by_key(|info| (info.arrived_at, info.id));
+        Ok(invitations)
+    }
+
+    pub(crate) fn admit_group_control(
+        &self,
+        control: &DeferredControlRecord,
+    ) -> Result<(bool, Option<Event>)> {
+        if self.store.is_blocked_identity(&control.peer)? {
+            return Ok((false, None));
+        }
+        let Some(group) = self.unknown_group_control_group(control)? else {
+            return Ok((true, None));
+        };
+        let info = self.group_invitation_info_for_control(control)?;
+        let mut count = 0usize;
+        let mut bytes = 0usize;
+        let mut duplicate_invitation = false;
+        for existing in self
+            .store
+            .deferred_controls(kult_store::MAX_DEFERRED_CONTROLS)?
+        {
+            if self.unknown_group_control_group(&existing)?.is_none() {
+                continue;
+            }
+            count = count.checked_add(1).ok_or(NodeError::CorruptState)?;
+            bytes = bytes
+                .checked_add(existing.body.len())
+                .ok_or(NodeError::CorruptState)?;
+            if info.is_some()
+                && self
+                    .group_invitation_info_for_control(&existing)?
+                    .is_some_and(|candidate| candidate.group == group)
+            {
+                duplicate_invitation = true;
+            }
+        }
+        if duplicate_invitation
+            || count >= MAX_GROUP_INVITATION_REQUESTS
+            || bytes
+                .checked_add(control.body.len())
+                .is_none_or(|total| total > MAX_GROUP_INVITATION_BYTES)
+        {
+            return Ok((false, None));
+        }
+        Ok((
+            true,
+            info.map(|info| Event::GroupInvitationReceived {
+                invitation: info.id,
+                group: info.group,
+                inviter: info.inviter,
+            }),
+        ))
+    }
+
+    /// Explicitly join one authenticated, unexpired invitation.
+    pub fn accept_group_invitation(
+        &mut self,
+        invitation: &[u8; 16],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 32]> {
+        let control = self
+            .store
+            .get_deferred_control(invitation)?
+            .ok_or(NodeError::UnknownGroupInvitation)?;
+        let info = self
+            .group_invitation_info_for_control(&control)?
+            .ok_or(NodeError::UnknownGroupInvitation)?;
+        if info.expires_at <= now {
+            return Err(NodeError::UnknownGroupInvitation);
+        }
+        let mut established = false;
+        let (applied, deleted_atomically) =
+            self.apply_group_control(&control, now, rng, &mut established, true)?;
+        if !applied || !deleted_atomically {
+            return Err(NodeError::UnknownGroupInvitation);
+        }
+        if info.recipient_scoped {
+            let acknowledgement = ReceiptPayload {
+                acks: vec![control.content_id],
+                nacks: Vec::new(),
+            }
+            .encode();
+            // Membership is already committed. If this best-effort
+            // sender-chain acknowledgement cannot be queued, the sender's
+            // paced retry remains safe and will be acknowledged after the
+            // now-existing group consumes it normally.
+            let _ =
+                self.commit_pairwise_control_send(&control.peer_device, &acknowledgement, now, rng);
+        }
+        self.events.push_back(Event::GroupInvitationAccepted {
+            invitation: *invitation,
+            group: info.group,
+        });
+        Ok(info.group)
+    }
+
+    /// Delete one invitation without creating group, contact, or history state.
+    pub fn delete_group_invitation(
+        &mut self,
+        invitation: &[u8; 16],
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let control = self
+            .store
+            .get_deferred_control(invitation)?
+            .ok_or(NodeError::UnknownGroupInvitation)?;
+        self.group_invitation_info_for_control(&control)?
+            .ok_or(NodeError::UnknownGroupInvitation)?;
+        let receipt = self.store.commit_plan(
+            CommitPlan::Maintenance(MaintenancePlan {
+                seen: &[],
+                delete_pending: &[],
+                delete_queue: &[],
+                update_queue: &[],
+                delete_replay: &[],
+                messages: &[],
+                deliveries: &[],
+                group_messages: &[],
+                groups: &[],
+                ephemeral: &[],
+                delete_messages: &[],
+                delete_group_messages: &[],
+                delete_media: &[],
+                delete_scheduled: &[],
+                delete_sessions: &[],
+                delete_capabilities: &[],
+                clear_reset_markers: &[],
+                delete_controls: &[control],
+                acknowledge_presentation: None,
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.accept_commit_receipt(
+            receipt,
+            [Event::GroupInvitationDeleted {
+                invitation: *invitation,
+            }],
+        );
+        Ok(())
+    }
+
+    pub(crate) fn sweep_group_invitations(
+        &mut self,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let mut expired = Vec::new();
+        let mut events = Vec::new();
+        for control in self
+            .store
+            .deferred_controls(kult_store::MAX_DEFERRED_CONTROLS)?
+        {
+            if self.unknown_group_control_group(&control)?.is_none()
+                || control
+                    .received_at
+                    .saturating_add(MAX_GROUP_INVITATION_LIFETIME_SECS)
+                    > now
+            {
+                continue;
+            }
+            if let Some(info) = self.group_invitation_info_for_control(&control)? {
+                events.push(Event::GroupInvitationExpired {
+                    invitation: info.id,
+                });
+            }
+            expired.push(control);
+            if expired.len() == MAX_GROUP_INVITATION_EXPIRIES_PER_TICK {
+                break;
+            }
+        }
+        if expired.is_empty() {
+            return Ok(());
+        }
+        let receipt = self.store.commit_plan(
+            CommitPlan::Maintenance(MaintenancePlan {
+                seen: &[],
+                delete_pending: &[],
+                delete_queue: &[],
+                update_queue: &[],
+                delete_replay: &[],
+                messages: &[],
+                deliveries: &[],
+                group_messages: &[],
+                groups: &[],
+                ephemeral: &[],
+                delete_messages: &[],
+                delete_group_messages: &[],
+                delete_media: &[],
+                delete_scheduled: &[],
+                delete_sessions: &[],
+                delete_capabilities: &[],
+                clear_reset_markers: &[],
+                delete_controls: &expired,
+                acknowledge_presentation: None,
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.accept_commit_receipt(receipt, events);
+        Ok(())
+    }
+
     pub(crate) fn apply_group_control(
         &mut self,
         control: &DeferredControlRecord,
         now: u64,
         rng: &mut impl CryptoRngCore,
         established: &mut bool,
+        accept_invitation: bool,
     ) -> Result<(bool, bool)> {
         let Ok(payload) = GroupControlPayload::decode(&control.body) else {
             return Ok((true, false)); // malformed is terminal
         };
         let peer = control.peer;
+        if self.store.is_blocked_identity(&peer)? {
+            return Ok((true, false));
+        }
+        let unknown_group = self.unknown_group_control_group(control)?;
+        if unknown_group.is_some()
+            && control
+                .received_at
+                .saturating_add(MAX_GROUP_INVITATION_LIFETIME_SECS)
+                <= now
+        {
+            return Ok((true, false));
+        }
+        if self.group_invitation_info_for_control(control)?.is_some() && !accept_invitation {
+            return Ok((false, false));
+        }
         let sender = AuthenticatedGroupSender {
             account: peer,
             device: control.peer_device,
         };
         match &payload {
-            GroupControlPayload::Announce(a) => {
-                self.apply_group_announce(sender, a, None, control, rng, established)
-            }
+            GroupControlPayload::Announce(a) => self.apply_group_announce(
+                sender,
+                a,
+                GroupControlAnnounceContext {
+                    origin: None,
+                    control,
+                    accept_invitation,
+                },
+                rng,
+                established,
+            ),
             GroupControlPayload::Leave { group } => {
                 self.apply_group_leave(peer, group, control, rng)
             }
             GroupControlPayload::Remove { group } => {
                 self.apply_group_remove_notice(peer, group, control, rng)
             }
-            GroupControlPayload::AuthorityAnnounce(announce) => {
-                self.apply_authority_announce(sender, announce, None, control, rng, established)
-            }
+            GroupControlPayload::AuthorityAnnounce(announce) => self.apply_authority_announce(
+                sender,
+                announce,
+                GroupControlAnnounceContext {
+                    origin: None,
+                    control,
+                    accept_invitation,
+                },
+                rng,
+                established,
+            ),
             GroupControlPayload::AdminRequest(request) => {
                 self.apply_group_admin_request(peer, request, control, now, rng)
             }
@@ -3006,11 +3425,14 @@ impl Node {
                 self.apply_group_announce(
                     sender,
                     &origin.announce,
-                    Some(GroupOriginMaterial {
-                        key: origin.origin_key,
-                        generation: origin.origin_generation,
-                    }),
-                    control,
+                    GroupControlAnnounceContext {
+                        origin: Some(GroupOriginMaterial {
+                            key: origin.origin_key,
+                            generation: origin.origin_generation,
+                        }),
+                        control,
+                        accept_invitation,
+                    },
                     rng,
                     established,
                 )
@@ -3025,11 +3447,14 @@ impl Node {
                 self.apply_authority_announce(
                     sender,
                     &origin.announce,
-                    Some(GroupOriginMaterial {
-                        key: origin.origin_key,
-                        generation: origin.origin_generation,
-                    }),
-                    control,
+                    GroupControlAnnounceContext {
+                        origin: Some(GroupOriginMaterial {
+                            key: origin.origin_key,
+                            generation: origin.origin_generation,
+                        }),
+                        control,
+                        accept_invitation,
+                    },
                     rng,
                     established,
                 )
@@ -3041,11 +3466,15 @@ impl Node {
         &mut self,
         sender: AuthenticatedGroupSender,
         a: &GroupAnnounce,
-        origin: Option<GroupOriginMaterial>,
-        control: &DeferredControlRecord,
+        context: GroupControlAnnounceContext<'_>,
         rng: &mut impl CryptoRngCore,
         established: &mut bool,
     ) -> Result<(bool, bool)> {
+        let GroupControlAnnounceContext {
+            origin,
+            control,
+            accept_invitation,
+        } = context;
         let peer = sender.account;
         let me = self.account.ed;
         let before_group = self.store.get_group(&a.group)?;
@@ -3060,6 +3489,9 @@ impl Node {
                     || !a.members.iter().any(|m| m.peer == peer)
                     || !valid_roster(&a.members)
                 {
+                    return Ok((false, false));
+                }
+                if !accept_invitation {
                     return Ok((false, false));
                 }
                 contact_records = self.prepare_roster_stubs(&a.members)?;
@@ -3225,7 +3657,7 @@ impl Node {
                 chains: &chain_transitions,
                 contacts: &contact_transitions,
                 authorities: &[],
-                delete_controls: if origin.is_some() {
+                delete_controls: if origin.is_some() && !accept_invitation {
                     &[]
                 } else {
                     core::slice::from_ref(control)
@@ -3239,7 +3671,7 @@ impl Node {
             // Stashed group messages on this chain may decrypt now.
             *established = true;
         }
-        Ok((true, origin.is_none()))
+        Ok((true, origin.is_none() || accept_invitation))
     }
 
     pub(crate) fn accepted_group_origin_control(
@@ -4419,7 +4851,7 @@ impl Node {
             return Ok(());
         };
         let mut contact = before.clone();
-        contact.hints = bundle.prekey.relay_hints.clone();
+        contact.hints = bundle.prekey.transport_hints();
         contact.bundle = bundle.prekey.encode();
         let receipt = self.store.commit_plan(
             CommitPlan::GroupState(GroupStatePlan {

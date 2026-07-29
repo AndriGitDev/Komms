@@ -30,6 +30,7 @@ use kult_crypto::{
 };
 use kult_protocol::{CapabilityControl, Envelope, MAX_GROUP_AUTHORITY_MEMBERS};
 
+mod admission;
 mod backup;
 mod commit;
 mod devices;
@@ -47,23 +48,39 @@ mod scheduled;
 mod store_v2;
 
 const ACCOUNT_PUBLIC_MAGIC: &[u8; 4] = b"KAP2";
+const PENDING_ENVELOPE_RECORD_VERSION: u8 = 1;
 
+#[derive(Serialize, Deserialize)]
+struct PendingEnvelopeRecord {
+    version: u8,
+    encoded: Vec<u8>,
+    first_seen: u64,
+    transport: AdmissionTransportClass,
+}
+
+pub use admission::{
+    AdmissionReplayTombstone, AdmissionTransportClass, BlockedIdentityRecord,
+    ProvisionalRequestRecord, MAX_ADMISSION_REPLAY_LIFETIME_SECS, MAX_ADMISSION_REPLAY_TOMBSTONES,
+    MAX_BLOCKED_IDENTITIES, MAX_PROVISIONAL_CONTENT_BYTES, MAX_PROVISIONAL_LIFETIME_SECS,
+    MAX_PROVISIONAL_PREVIEW_BYTES, MAX_PROVISIONAL_REQUESTS, MAX_PROVISIONAL_REQUEST_BYTES,
+    MAX_PROVISIONAL_SESSION_BYTES, PROVISIONAL_REQUEST_VERSION,
+};
 pub use backup::{AUTHORITY_BACKUP_MAGIC, BACKUP_MAGIC};
 pub use commit::{
-    AccountIdentityTransition, AttachmentStagePlan, AttachmentStatePlan,
-    AuthorityDeviceControlPlan, AuthorityDeviceLinkPlan, AuthorityMigrationPlan,
-    AuthorityProfileBootstrapPlan, CapabilityDelete, CommitPlan, CommitReceipt, CommittedRecordIds,
-    ContactDeviceDelete, ContactTransition, DeferredControlKind, DeferredControlRecord,
-    DeliveryTransition, DeviceAuthorityStateTransition, DeviceControlPlan,
-    DeviceLinkRecoveryTransition, DeviceProjection, DeviceProjectionPlan, DeviceStateTransition,
-    EphemeralTransition, GroupAuthorityStateTransition, GroupAuthorityTransition,
-    GroupChainStateTransition, GroupChainTransition, GroupMessageDelete, GroupMessageTransition,
-    GroupReceivePlan, GroupSendPlan, GroupStatePlan, GroupStateTransition, GroupTransition,
-    HandshakeReceivePlan, MaintenancePlan, MediaDelete, MediaObjectTransition,
-    MediaTransferTransition, MessageDelete, MessageTransition, PairwiseReceivePlan,
-    PairwiseSendPlan, PendingDelete, PrekeyPublishPlan, PrekeyTransition, QueueDelete,
-    QueueTransition, ReceiptReceivePlan, SessionDelete, SessionTransition,
-    MAX_ATTACHMENT_STAGE_MUTATIONS, MAX_COMMIT_MUTATIONS, MAX_COMMIT_QUEUE_ROWS,
+    AccountIdentityTransition, AdmissionAcceptPlan, AdmissionDiscardPlan, AdmissionStagePlan,
+    AdmissionSweepPlan, AttachmentStagePlan, AttachmentStatePlan, AuthorityDeviceControlPlan,
+    AuthorityDeviceLinkPlan, AuthorityMigrationPlan, AuthorityProfileBootstrapPlan,
+    CapabilityDelete, CommitPlan, CommitReceipt, CommittedRecordIds, ContactDeviceDelete,
+    ContactTransition, DeferredControlKind, DeferredControlRecord, DeliveryTransition,
+    DeviceAuthorityStateTransition, DeviceControlPlan, DeviceLinkRecoveryTransition,
+    DeviceProjection, DeviceProjectionPlan, DeviceStateTransition, EphemeralTransition,
+    GroupAuthorityStateTransition, GroupAuthorityTransition, GroupChainStateTransition,
+    GroupChainTransition, GroupMessageDelete, GroupMessageTransition, GroupReceivePlan,
+    GroupSendPlan, GroupStatePlan, GroupStateTransition, GroupTransition, HandshakeReceivePlan,
+    MaintenancePlan, MediaDelete, MediaObjectTransition, MediaTransferTransition, MessageDelete,
+    MessageTransition, PairwiseReceivePlan, PairwiseSendPlan, PendingDelete, PrekeyPublishPlan,
+    PrekeyTransition, QueueDelete, QueueTransition, ReceiptReceivePlan, SessionDelete,
+    SessionTransition, MAX_ATTACHMENT_STAGE_MUTATIONS, MAX_COMMIT_MUTATIONS, MAX_COMMIT_QUEUE_ROWS,
     MAX_DEFERRED_CONTROLS, MAX_DEVICE_CONTROL_MUTATIONS, MAX_DEVICE_LINK_MUTATIONS,
     MAX_DEVICE_PROJECTION_MUTATIONS, MAX_GROUP_COMMIT_MUTATIONS, MAX_GROUP_COMMIT_QUEUE_ROWS,
     MAX_GROUP_STATE_MUTATIONS, MAX_MAINTENANCE_TRANSITIONS, MAX_PAIRWISE_COMMIT_DEVICES,
@@ -137,6 +154,8 @@ pub enum StoreError {
     GroupLimit,
     /// The bounded deferred-inbox item or sealed-byte quota is exhausted.
     PendingQuota,
+    /// The bounded provisional-request, replay, or local-block quota is exhausted.
+    AdmissionQuota,
     /// Configured or protocol-hard media quota would be exceeded.
     MediaQuota,
     /// Committing a media chunk would violate the free-space reserve.
@@ -238,6 +257,7 @@ impl std::fmt::Display for StoreError {
             Self::InvalidTransition => f.write_str("invalid durable protocol transition"),
             Self::GroupLimit => f.write_str("profile group limit exhausted"),
             Self::PendingQuota => f.write_str("deferred inbox quota exhausted"),
+            Self::AdmissionQuota => f.write_str("first-contact admission quota exhausted"),
             Self::MediaQuota => f.write_str("media quota exceeded"),
             Self::LowStorage => f.write_str("insufficient reserved filesystem space"),
             Self::MediaState => f.write_str("invalid media transfer state"),
@@ -336,6 +356,25 @@ where
         return Err(StoreError::Serialization);
     }
     Ok(value)
+}
+
+fn decode_pending_envelope(bytes: &[u8]) -> Result<(Envelope, u64, AdmissionTransportClass)> {
+    if let Ok(record) = decode_exact::<PendingEnvelopeRecord>(bytes) {
+        if record.version != PENDING_ENVELOPE_RECORD_VERSION {
+            return Err(StoreError::RecordBounds);
+        }
+        return Ok((
+            Envelope::decode(&record.encoded)?,
+            record.first_seen,
+            record.transport,
+        ));
+    }
+    let (encoded, first_seen): (Vec<u8>, u64) = decode_exact(bytes)?;
+    Ok((
+        Envelope::decode(&encoded)?,
+        first_seen,
+        AdmissionTransportClass::Unknown,
+    ))
 }
 
 fn direction_code(direction: Direction) -> u8 {
@@ -1127,6 +1166,7 @@ impl Store {
         self.validate_scheduled_logical_rows()?;
         self.validate_ephemeral_logical_rows()?;
         self.validate_device_logical_rows()?;
+        self.validate_admission_logical_rows()?;
         self.validate_presentation_marker()?;
         self.validate_deferred_controls()
     }
@@ -1199,8 +1239,7 @@ impl Store {
         })?;
         self.validate_rows::<store_v2::PendingRows, _>(|row| {
             row.verify_indexes(&store_v2::IndexKeys::none())?;
-            let (encoded, _): (Vec<u8>, u64) = decode_exact(&row.payload)?;
-            let _ = Envelope::decode(&encoded)?;
+            let _ = decode_pending_envelope(&row.payload)?;
             Ok(())
         })?;
         self.validate_rows::<store_v2::ResetRows, _>(|row| {
@@ -1722,9 +1761,26 @@ impl Store {
         first_seen: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<i64> {
+        self.pending_push_with_transport(env, first_seen, AdmissionTransportClass::Unknown, rng)
+    }
+
+    /// Stash an inbound envelope with its coarse privacy-preserving carrier
+    /// class so deferred admission remains accurately budgeted after restart.
+    pub fn pending_push_with_transport(
+        &self,
+        env: &Envelope,
+        first_seen: u64,
+        transport: AdmissionTransportClass,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<i64> {
         let encoded = env.try_encode()?;
-        let plain =
-            postcard::to_allocvec(&(encoded, first_seen)).map_err(|_| StoreError::Serialization)?;
+        let plain = postcard::to_allocvec(&PendingEnvelopeRecord {
+            version: PENDING_ENVELOPE_RECORD_VERSION,
+            encoded,
+            first_seen,
+            transport,
+        })
+        .map_err(|_| StoreError::Serialization)?;
         if plain.len() > MAX_PENDING_BYTES {
             return Err(StoreError::PendingQuota);
         }
@@ -1759,11 +1815,22 @@ impl Store {
     /// after the envelope is consumed or has expired. This gives deferred
     /// receive processing at-least-once crash semantics.
     pub fn pending_all(&self) -> Result<Vec<(i64, Envelope, u64)>> {
+        Ok(self
+            .pending_all_with_transport()?
+            .into_iter()
+            .map(|(sequence, envelope, first_seen, _)| (sequence, envelope, first_seen))
+            .collect())
+    }
+
+    /// Return every stashed envelope with its coarse ingress class.
+    pub fn pending_all_with_transport(
+        &self,
+    ) -> Result<Vec<(i64, Envelope, u64, AdmissionTransportClass)>> {
         self.rows::<store_v2::PendingRows>()?
             .into_iter()
             .map(|row| {
-                let (env_bytes, first_seen): (Vec<u8>, u64) = decode_exact(&row.payload)?;
-                Ok((row.rowid, Envelope::decode(&env_bytes)?, first_seen))
+                let (envelope, first_seen, transport) = decode_pending_envelope(&row.payload)?;
+                Ok((row.rowid, envelope, first_seen, transport))
             })
             .collect()
     }
@@ -2419,8 +2486,21 @@ mod queue_tests {
         let second = Envelope::new(EnvelopeKind::Receipt, [3; 32], vec![4]);
 
         let first_sequence = store.pending_push(&first, 100, &mut rng).unwrap();
-        let second_sequence = store.pending_push(&second, 200, &mut rng).unwrap();
+        let second_sequence = store
+            .pending_push_with_transport(&second, 200, AdmissionTransportClass::Mailbox, &mut rng)
+            .unwrap();
         assert_ne!(first_sequence, second_sequence);
+        let legacy = Envelope::new(EnvelopeKind::GroupControl, [5; 32], vec![6]);
+        let legacy_payload =
+            postcard::to_allocvec(&(legacy.try_encode().unwrap(), 300u64)).unwrap();
+        let legacy_sequence = store
+            .append_opaque::<store_v2::PendingRows>(
+                &legacy_payload,
+                store_v2::IndexKeys::none(),
+                &mut rng,
+            )
+            .unwrap()
+            .rowid;
 
         let first_read = store.pending_all().unwrap();
         let second_read = store.pending_all().unwrap();
@@ -2430,19 +2510,49 @@ mod queue_tests {
             vec![
                 (first_sequence, first.clone(), 100),
                 (second_sequence, second.clone(), 200),
+                (legacy_sequence, legacy.clone(), 300),
             ]
         );
+        let with_transport = vec![
+            (
+                first_sequence,
+                first.clone(),
+                100,
+                AdmissionTransportClass::Unknown,
+            ),
+            (
+                second_sequence,
+                second.clone(),
+                200,
+                AdmissionTransportClass::Mailbox,
+            ),
+            (
+                legacy_sequence,
+                legacy.clone(),
+                300,
+                AdmissionTransportClass::Unknown,
+            ),
+        ];
+        assert_eq!(store.pending_all_with_transport().unwrap(), with_transport);
 
         drop(store);
         let reopened = Store::open(&path, b"pass").unwrap();
         assert_eq!(reopened.pending_all().unwrap(), first_read);
+        assert_eq!(
+            reopened.pending_all_with_transport().unwrap(),
+            with_transport
+        );
 
         reopened.pending_ack(first_sequence).unwrap();
         assert_eq!(
             reopened.pending_all().unwrap(),
-            vec![(second_sequence, second, 200)]
+            vec![
+                (second_sequence, second, 200),
+                (legacy_sequence, legacy, 300),
+            ]
         );
         reopened.pending_ack(second_sequence).unwrap();
+        reopened.pending_ack(legacy_sequence).unwrap();
         assert!(reopened.pending_all().unwrap().is_empty());
     }
 

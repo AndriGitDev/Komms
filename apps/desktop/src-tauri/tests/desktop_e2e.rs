@@ -193,6 +193,100 @@ fn complete_group_security(session: &Session, group: &str) {
     }
 }
 
+fn accept_group_invitation(session: &Session, events: &Events, group: &str, what: &str) {
+    events.wait(
+        what,
+        |event| matches!(event, UiEvent::GroupInvitationReceived { group: id, .. } if id == group),
+    );
+    let invitation = session
+        .group_invitations()
+        .unwrap()
+        .into_iter()
+        .find(|invitation| invitation.group == group)
+        .expect("group invitation is listed");
+    assert_eq!(
+        session.accept_group_invitation(invitation.id).unwrap(),
+        group
+    );
+    events.wait(
+        "group invitation acceptance",
+        |event| matches!(event, UiEvent::GroupInvitationAccepted { group: id, .. } if id == group),
+    );
+}
+
+#[test]
+fn desktop_message_request_inbox_keeps_unknown_senders_separate() {
+    let directory = tempfile::tempdir().unwrap();
+    let bob_events = Events::default();
+    let bob = open(directory.path(), "request-bob", &bob_events);
+    let accept = open(directory.path(), "request-accept", &Events::default());
+    let delete = open(directory.path(), "request-delete", &Events::default());
+    let block = open(directory.path(), "request-block", &Events::default());
+    let bob_addr = listen_addr(&bob);
+    for (sender, preview) in [
+        (&accept, "please accept"),
+        (&delete, "please delete"),
+        (&block, "please block"),
+    ] {
+        let _ = listen_addr(sender);
+        let _ = sender.my_bundle().unwrap();
+        let bundle = bob.my_bundle().unwrap();
+        let peer = sender
+            .add_contact(
+                "Bob".to_owned(),
+                &bundle.hex,
+                &multiaddr_hint(bob_addr.clone()),
+            )
+            .unwrap();
+        sender.send(peer, preview.to_owned()).unwrap();
+    }
+    bob_events.wait("message request", |event| {
+        matches!(event, UiEvent::MessageRequestReceived { .. })
+    });
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let requests = loop {
+        let requests = bob.message_requests().unwrap();
+        if requests.len() == 3 {
+            break requests;
+        }
+        assert!(Instant::now() < deadline, "three requests were not listed");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(bob.contacts().unwrap().is_empty());
+    let request_id = |preview: &str| {
+        requests
+            .iter()
+            .find(|request| request.preview == preview)
+            .unwrap()
+            .id
+            .clone()
+    };
+    let peer = bob
+        .accept_message_request(request_id("please accept"), "Accepted sender".to_owned())
+        .unwrap();
+    bob.delete_message_request(request_id("please delete"))
+        .unwrap();
+    bob.block_message_request(request_id("please block"))
+        .unwrap();
+    assert!(bob.message_requests().unwrap().is_empty());
+    assert_eq!(bob.contacts().unwrap()[0].name, "Accepted sender");
+    assert_eq!(bob.messages(peer).unwrap()[0].body, "please accept");
+    bob_events.wait("request accepted", |event| {
+        matches!(event, UiEvent::MessageRequestAccepted { .. })
+    });
+    bob_events.wait("request deleted", |event| {
+        matches!(event, UiEvent::MessageRequestDeleted { .. })
+    });
+    bob_events.wait("request blocked", |event| {
+        matches!(event, UiEvent::MessageRequestBlocked { .. })
+    });
+
+    accept.stop();
+    delete.stop();
+    block.stop();
+    bob.stop();
+}
+
 #[test]
 fn desktop_linked_device_ceremony_and_sync_use_only_session_surface() {
     let directory = tempfile::tempdir().unwrap();
@@ -1190,6 +1284,20 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
         "attachment setup delivered",
         |event| matches!(event, UiEvent::DeliveryUpdated { id, state: "delivered" } if *id == hello),
     );
+    let capability_reply = bob
+        .send(
+            alice_peer.clone(),
+            "attachment capability confirmation".to_owned(),
+        )
+        .unwrap();
+    a_ev.wait("attachment capability confirmation", |event| {
+        matches!(event, UiEvent::MessageReceived { body, .. }
+            if body == "attachment capability confirmation")
+    });
+    b_ev.wait("attachment capability confirmation delivered", |event| {
+        matches!(event, UiEvent::DeliveryUpdated { id, state: "delivered" }
+            if id == &capability_reply)
+    });
 
     // The path chosen by the desktop dialog stays a path across the shell
     // boundary. The render model carries only honest object metadata and
@@ -1454,10 +1562,9 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
     let group = alice
         .create_group("Attachment crew".to_owned(), vec![outbound[0].peer.clone()])
         .unwrap();
-    b_ev.wait(
-        "group invite",
-        |event| matches!(event, UiEvent::GroupUpdated { group: id } if *id == group),
-    );
+    accept_group_invitation(&bob, &b_ev, &group, "group invite");
+    complete_group_security(&alice, &group);
+    complete_group_security(&bob, &group);
     let group_review = alice
         .begin_image_edit(source.display().to_string())
         .unwrap();
@@ -1533,10 +1640,7 @@ fn desktop_group_mentions_preserve_exact_utf8_spans_and_notify_only_the_target()
     let group = alice
         .create_group("Unicode crew".to_owned(), vec![bob_peer.clone()])
         .unwrap();
-    b_ev.wait(
-        "mention group invite",
-        |event| matches!(event, UiEvent::GroupUpdated { group: updated } if updated == &group),
-    );
+    accept_group_invitation(&bob, &b_ev, &group, "mention group invite");
 
     let handshake = alice
         .send(bob_peer.clone(), "mention capability handshake".to_owned())
@@ -1747,14 +1851,8 @@ fn desktop_group_ux_create_roster_message_and_partial_delivery() {
             vec![bob_peer.clone(), carol_peer.clone()],
         )
         .unwrap();
-    c_ev.wait(
-        "Carol's group invite",
-        |event| matches!(event, UiEvent::GroupUpdated { group: id } if *id == group),
-    );
-    b_ev.wait(
-        "Bob's group invite",
-        |event| matches!(event, UiEvent::GroupUpdated { group: id } if *id == group),
-    );
+    accept_group_invitation(&carol, &c_ev, &group, "Carol's group invite");
+    accept_group_invitation(&bob, &b_ev, &group, "Bob's group invite");
     alice.upgrade_group_security(group.clone()).unwrap();
     let bob_origin_nudge = bob
         .send(

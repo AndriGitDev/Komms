@@ -80,24 +80,31 @@ alternate peer and an out-of-band path.
 Direct sealed-envelope delivery negotiates `/komms/envelope/2`. One encoded
 envelope is capped at **128 KiB** across carriers. The receiver keeps at most
 256 unsolicited direct envelopes and 8 MiB of their encoded bytes between
-delivery-engine drains. Its response has only two meanings:
+delivery-engine drains as a bounded prefilter, but keeps the interactive
+response open until the node has completed its admission decision. Its
+response has only two meanings:
 
-- `accepted`: the bounded in-process next-hop inbox retained the envelope for
-  the delivery engine;
-- `refused`: the request was understood but the next hop did not retain it,
-  for example because that inbox was full.
+- `accepted`: the node fully consumed the envelope or transactionally staged
+  that exact envelope in bounded durable state;
+- `refused`: the request was understood but the next hop did not durably
+  retain or consume it.
 
 A timeout, dial error, malformed response, or response-write failure is neither
 answer and never becomes an acknowledgement. The sender keeps the durable
 envelope retryable and may try another supported path. Version 2 deliberately
 does not negotiate the older `/komms/envelope/1` unit response, which could not
 distinguish retention from refusal; Alpha peers must be upgraded together.
-These bounds protect one ingress surface. They do not replace first-contact
-admission, identity blocking, mailbox durability, or operator abuse controls in
-the [stabilization program](29-stabilization-program.md). In particular, the
-current `accepted` boundary is volatile RAM rather than ADR-0030's target
-transactional admission boundary, so it is Alpha next-hop evidence—not a
-durability or end-to-end receipt.
+The response is still only a next-hop custody result: it is not a delivery,
+read, or end-to-end receipt. Unknown introductions are checked against the
+signed admission descriptor, invitation or puzzle proof, carrier/work budgets,
+exact-bundle binding, size, expiry, and replay state before KEM work where
+possible. Invalid, expired, under-difficulty, oversized, duplicate, and
+over-budget introductions receive the same bounded refusal shape and never
+enter the generic pending domain. A valid stranger is atomically sealed into
+the fixed provisional request domain rather than contacts or normal history.
+These controls implement the local and direct-carrier boundary in
+[ADR-0030](adr/0030-first-contact-admission.md); mailbox-v1 custody and
+operator-level abuse qualification remain separate open gates.
 
 The libp2p swarm also caps pending inbound/outbound connections at 32 each,
 established inbound connections at 64, established connections at 96 total,
@@ -105,14 +112,13 @@ and connections per peer at 8. Envelope and mailbox protocols independently
 cap active streams per connection. These are memory/concurrency containment,
 not first-contact rate limits or Sybil resistance.
 
-Unknown-token envelopes that survive that volatile boundary enter an encrypted
-deferred inbox only when their exact content id is not already present. The
-interim store ceiling is 2,048 envelopes and 64 MiB of sealed rows, with the
-older of exact multipath duplicates retained under one stable row id. Reaching
-that ceiling prevents further persistence, but current `/komms/envelope/2`
-cannot relay the late refusal back after it has already answered `accepted`.
-That semantic gap is why these quotas are containment rather than closure of
-ADR-0030.
+Non-introduction envelopes with no currently consumable token enter an
+encrypted deferred inbox only when their exact content id is not already
+present. The store ceiling is 2,048 envelopes and 64 MiB of sealed rows, with
+the older of exact multipath duplicates retained under one stable row id.
+Reaching that ceiling prevents persistence and the held direct response is
+`refused`. Delayed carriers preserve their ingress class in the sealed row so a
+later admission pass applies the correct per-carrier budget after restart.
 
 Mailbox-v1 collection is likewise bounded while its crash-safe replacement is
 designed: one check-in carries at most 4,096 token filters and returns at most

@@ -32,11 +32,11 @@ product promise merely because the file exists.
 | [0023](0023-group-roles-and-owner-authority.md) | Accepted | Owner-serialized roles, signed generation-bound admin requests, and authority transfer |
 | [0024](0024-account-authorized-linked-devices.md) | Accepted Alpha; security-limited | Confirmed linking, per-device cryptography, sync, exact-id exclusion, and recovery; permanent-revocation claim withdrawn |
 | [0025](0025-optional-freenet-carrier.md) | Proposed | Optional epoch-scoped Freenet store-and-forward carrier and metadata boundary |
-| [0026](0026-revocable-device-authority.md) | Accepted; implemented for Alpha | Offline account-root recovery, strict-majority device manifests, visible conflicts, honest copied-root reset, and root-free `KKR8` |
+| [0026](0026-revocable-device-authority.md) | Accepted; implemented for Alpha | Offline account-root recovery, strict-majority device manifests, visible conflicts, honest copied-root reset, and root-free KKR8/KKR9 |
 | [0027](0027-opaque-indexed-store.md) | Accepted; implemented | Versioned keyed indexes, row-bound sealing, transactional migration, and honest local deletion limits |
 | [0028](0028-atomic-protocol-commits.md) | Proposed; stable-profile inventory implemented with open boundaries | Transactional ratchet, handshake, group-chain, queue, replay, attachment, maintenance, and deferred-inbox state transitions |
 | [0029](0029-recipient-authenticated-groups.md) | Accepted; implemented for Alpha | Per-recipient origin authentication for sender-key group messages and author-sensitive state |
-| [0030](0030-first-contact-admission.md) | Proposed | Bounded public introductions, provisional message requests, blocking, and group-invite consent |
+| [0030](0030-first-contact-admission.md) | Accepted; implemented for Alpha | Bounded public introductions, provisional message requests, blocking, and group-invite consent |
 | [0031](0031-capability-scoped-dht-discovery.md) | Proposed | Capability-scoped, encrypted DHT first contact with mailbox-only public routes |
 | [0032](0032-leased-mailbox-delivery.md) | Proposed | Durable deposits, leased collection pages, and acknowledgement-after-endpoint-commit |
 | [0033](0033-nonprofit-founder-stewardship.md) | Accepted | Nonprofit public-benefit mission, founder-directed incubation, AGPL reciprocity limits, and adoption-triggered governance evolution |

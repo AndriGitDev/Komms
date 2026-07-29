@@ -22,6 +22,7 @@ export RUSTFLAGS="${RUSTFLAGS:--D warnings}"
 
 run_in "$root" python3 scripts/check-release-version.py
 run_in "$root" python3 scripts/check-docs.py
+run_in "$root" python3 scripts/check-message-request-accessibility.py
 run_in "$root" cargo fmt --all -- --check
 run_in "$root" cargo clippy --workspace --all-targets --all-features
 run_in "$root" cargo test --workspace --all-features
@@ -97,7 +98,8 @@ for target in "${crypto_fuzz[@]}"; do
 done
 
 protocol_fuzz=(
-    protocol_envelope_decode bundle_import reassembler_insert content_decode
+    protocol_envelope_decode admission_envelope_decode bundle_import
+    reassembler_insert content_decode
     capability_decode attachment_manifest_decode attachment_bulk_decode
     attachment_ranges mention_decode edit_decode ephemeral_decode poll_decode
     group_authority_decode group_control_decode device_sync_bundle_decode

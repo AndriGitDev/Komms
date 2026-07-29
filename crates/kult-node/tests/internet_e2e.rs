@@ -4,6 +4,7 @@
 //! prefers the faster one.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -28,6 +29,35 @@ fn received_bodies(events: &[Event]) -> Vec<Vec<u8>> {
             _ => None,
         })
         .collect()
+}
+
+async fn drive_direct_pair(
+    alice: &mut Node,
+    bob: &mut Node,
+    alice_rng: &mut StdRng,
+    bob_rng: &mut StdRng,
+    start: u64,
+    rounds: u64,
+) -> (Vec<Event>, Vec<Event>) {
+    tokio::join!(
+        async {
+            let mut events = Vec::new();
+            for round in 0..rounds {
+                events.extend(alice.tick(start + round * 40, alice_rng).await.unwrap());
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            events
+        },
+        async {
+            let mut events = Vec::new();
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            for round in 0..rounds {
+                events.extend(bob.tick(start + round * 40 + 1, bob_rng).await.unwrap());
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            events
+        }
+    )
 }
 
 #[tokio::test]
@@ -82,25 +112,33 @@ async fn nodes_exchange_over_localhost_quic() {
     let m2 = alice
         .send_message(&bob_id, b"and a second one", NOW, &mut rng)
         .unwrap();
-    alice.tick(NOW + 1, &mut rng).await.unwrap();
+    let mut alice_ticks = StdRng::seed_from_u64(0x3000_0001);
+    let mut bob_ticks = StdRng::seed_from_u64(0x3000_0002);
+    let (alice_events, bob_events) = drive_direct_pair(
+        &mut alice,
+        &mut bob,
+        &mut alice_ticks,
+        &mut bob_ticks,
+        NOW + 1,
+        8,
+    )
+    .await;
     assert_eq!(
         alice.queued().unwrap(),
         0,
         "both envelopes acked by next hop"
     );
 
-    let events = bob.tick(NOW + 2, &mut rng).await.unwrap();
-    assert!(events
+    assert!(bob_events
         .iter()
         .any(|e| matches!(e, Event::SessionEstablished { peer } if *peer == alice_id)));
-    let bodies = received_bodies(&events);
+    let bodies = received_bodies(&bob_events);
     assert!(bodies.contains(&b"hello over quic".to_vec()));
     assert!(bodies.contains(&b"and a second one".to_vec()));
 
-    // Bob's encrypted receipt flowed back in the same tick's flush; Alice's
-    // records reach Delivered — end-to-end proof, not transport ack.
-    let events = alice.tick(NOW + 3, &mut rng).await.unwrap();
-    let delivered: Vec<[u8; 16]> = events
+    // Bob's encrypted receipt flowed back through durable direct admission;
+    // Alice's records reach Delivered — end-to-end proof, not transport ack.
+    let delivered: Vec<[u8; 16]> = alice_events
         .iter()
         .filter_map(|e| match e {
             Event::DeliveryUpdated {
@@ -115,9 +153,16 @@ async fn nodes_exchange_over_localhost_quic() {
     // Bob replies over the established session.
     bob.send_message(&alice_id, b"loud and clear", NOW + 4, &mut rng)
         .unwrap();
-    bob.tick(NOW + 5, &mut rng).await.unwrap();
-    let events = alice.tick(NOW + 6, &mut rng).await.unwrap();
-    assert_eq!(received_bodies(&events), vec![b"loud and clear".to_vec()]);
+    let (_, alice_events) = drive_direct_pair(
+        &mut bob,
+        &mut alice,
+        &mut bob_ticks,
+        &mut alice_ticks,
+        NOW + 400,
+        5,
+    )
+    .await;
+    assert!(received_bodies(&alice_events).contains(&b"loud and clear".to_vec()));
 }
 
 /// M3 acceptance slice: no manual configuration beyond sharing kult
@@ -185,25 +230,54 @@ async fn contact_by_kult_address_alone_via_dht() {
     let m1 = alice
         .send_message(&bob_id, b"found you by address", NOW, &mut rng)
         .unwrap();
-    alice.tick(NOW + 1, &mut rng).await.unwrap();
-    let events = bob.tick(NOW + 2, &mut rng).await.unwrap();
+    let mut alice_ticks = StdRng::seed_from_u64(0x3000_1001);
+    let mut bob_ticks = StdRng::seed_from_u64(0x3000_1002);
+    let (alice_events, bob_events) = drive_direct_pair(
+        &mut alice,
+        &mut bob,
+        &mut alice_ticks,
+        &mut bob_ticks,
+        NOW + 1,
+        8,
+    )
+    .await;
+    assert!(received_bodies(&bob_events).is_empty());
+    assert!(bob_events
+        .iter()
+        .any(|event| matches!(event, Event::MessageRequestReceived { .. })));
+    assert!(bob.contacts().unwrap().is_empty());
+    let request = bob.message_requests().unwrap().remove(0);
+    assert_eq!(request.preview, "found you by address");
+    bob.accept_message_request(&request.id, "alice", NOW + 320, &mut bob_ticks)
+        .unwrap();
     assert_eq!(
-        received_bodies(&events),
-        vec![b"found you by address".to_vec()]
+        bob.messages_with(&request.account).unwrap()[0].body,
+        b"found you by address"
     );
 
     // Bob's encrypted receipt drives Alice's record to Delivered.
-    let events = alice.tick(NOW + 3, &mut rng).await.unwrap();
-    assert!(events.iter().any(|e| matches!(
-        e,
-        Event::DeliveryUpdated { id, state: DeliveryState::Delivered } if *id == m1
-    )));
+    let (_, accepted_events) = drive_direct_pair(
+        &mut bob,
+        &mut alice,
+        &mut bob_ticks,
+        &mut alice_ticks,
+        NOW + 321,
+        6,
+    )
+    .await;
+    assert!(alice_events
+        .iter()
+        .chain(accepted_events.iter())
+        .any(|e| matches!(
+            e,
+            Event::DeliveryUpdated { id, state: DeliveryState::Delivered } if *id == m1
+        )));
 
     // An address nobody published resolves to an honest BundleNotFound.
     let ghost = Node::create(&dir.path().join("g.db"), b"g", TEST_KDF, &mut rng).unwrap();
     assert!(matches!(
         alice
-            .add_contact_by_address("ghost", &ghost.address(), NOW, &mut rng)
+            .add_contact_by_address("ghost", &ghost.address(), NOW + 600, &mut rng)
             .await,
         Err(kult_node::NodeError::BundleNotFound)
     ));
@@ -254,15 +328,33 @@ async fn scheduler_prefers_fast_link_over_sneakernet() {
     alice
         .send_message(&bob_id, b"take the fast lane", NOW, &mut rng)
         .unwrap();
-    alice.tick(NOW + 1, &mut rng).await.unwrap();
+    let mut alice_ticks = StdRng::seed_from_u64(0x3000_2001);
+    let mut bob_ticks = StdRng::seed_from_u64(0x3000_2002);
+    let (_, bob_events) = drive_direct_pair(
+        &mut alice,
+        &mut bob,
+        &mut alice_ticks,
+        &mut bob_ticks,
+        NOW + 1,
+        8,
+    )
+    .await;
 
     // The envelope went over the wire, not into the spool directory.
     let spool_files = std::fs::read_dir(&bob_spool).unwrap().count();
     assert_eq!(spool_files, 0, "millis link outranks human-scale link");
-    let events = bob.tick(NOW + 2, &mut rng).await.unwrap();
+    assert!(received_bodies(&bob_events).is_empty());
+    let request = bob.message_requests().unwrap().remove(0);
+    assert_eq!(request.preview, "take the fast lane");
     assert_eq!(
-        received_bodies(&events),
-        vec![b"take the fast lane".to_vec()]
+        request.transport,
+        kult_store::AdmissionTransportClass::Direct
+    );
+    bob.accept_message_request(&request.id, "alice", NOW + 320, &mut bob_ticks)
+        .unwrap();
+    assert_eq!(
+        bob.messages_with(&request.account).unwrap()[0].body,
+        b"take the fast lane"
     );
 }
 
@@ -363,19 +455,35 @@ async fn stale_pairing_hint_heals_via_discovery_refresh() {
 
     // Past the backoff, the failing route triggers a discovery refresh:
     // Bob's published bundle carries his live address and delivery heals.
-    alice.tick(NOW + 40, &mut rng).await.unwrap();
-    let events = bob.tick(NOW + 41, &mut rng).await.unwrap();
-    assert_eq!(
-        received_bodies(&events),
-        vec![b"through the refresh".to_vec()]
-    );
-    assert_eq!(alice.queued().unwrap(), 0, "queue drained after refresh");
+    let mut alice_ticks = StdRng::seed_from_u64(0x3000_3001);
+    let mut bob_ticks = StdRng::seed_from_u64(0x3000_3002);
+    let (alice_events, bob_events) = drive_direct_pair(
+        &mut alice,
+        &mut bob,
+        &mut alice_ticks,
+        &mut bob_ticks,
+        NOW + 40,
+        8,
+    )
+    .await;
+    assert!(received_bodies(&bob_events).contains(&b"through the refresh".to_vec()));
+    let (_, receipt_events) = drive_direct_pair(
+        &mut bob,
+        &mut alice,
+        &mut bob_ticks,
+        &mut alice_ticks,
+        NOW + 400,
+        6,
+    )
+    .await;
 
     // Bob's encrypted receipt drives Alice's record to Delivered over the
     // refreshed route.
-    let events = alice.tick(NOW + 42, &mut rng).await.unwrap();
-    assert!(events.iter().any(|e| matches!(
-        e,
-        Event::DeliveryUpdated { id, state: DeliveryState::Delivered } if *id == m1
-    )));
+    assert!(alice_events
+        .iter()
+        .chain(receipt_events.iter())
+        .any(|e| matches!(
+            e,
+            Event::DeliveryUpdated { id, state: DeliveryState::Delivered } if *id == m1
+        )));
 }

@@ -14,11 +14,19 @@ use crate::{NodeError, Result};
 /// first — a dropped OPK only means that particular handshake bundle can no
 /// longer be answered).
 const MAX_OPKS: usize = 32;
+const MAX_INVITATIONS: usize = 32;
 
 #[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 struct Opk {
     id: u32,
     secret: [u8; 32],
+}
+
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+struct Invitation {
+    bundle_digest: [u8; 32],
+    secret: [u8; 32],
+    expires_at: u64,
 }
 
 /// All prekey secrets this device can answer handshakes with.
@@ -27,6 +35,18 @@ pub(crate) struct PrekeyVault {
     pub spk_id: u32,
     spk: [u8; 32],
     pub pqspk_id: u32,
+    pq_dk: Vec<u8>,
+    pq_ek: Vec<u8>,
+    opks: Vec<Opk>,
+    next_opk_id: u32,
+    invitations: Vec<Invitation>,
+}
+
+#[derive(Deserialize)]
+struct LegacyPrekeyVault {
+    spk_id: u32,
+    spk: [u8; 32],
+    pqspk_id: u32,
     pq_dk: Vec<u8>,
     pq_ek: Vec<u8>,
     opks: Vec<Opk>,
@@ -45,6 +65,7 @@ impl PrekeyVault {
             pq_ek: pqspk.public().to_vec(),
             opks: Vec::new(),
             next_opk_id: 1,
+            invitations: Vec::new(),
         }
     }
 
@@ -53,7 +74,21 @@ impl PrekeyVault {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        postcard::from_bytes(bytes).map_err(|_| NodeError::CorruptState)
+        if let Ok(vault) = postcard::from_bytes(bytes) {
+            return Ok(vault);
+        }
+        let legacy: LegacyPrekeyVault =
+            postcard::from_bytes(bytes).map_err(|_| NodeError::CorruptState)?;
+        Ok(Self {
+            spk_id: legacy.spk_id,
+            spk: legacy.spk,
+            pqspk_id: legacy.pqspk_id,
+            pq_dk: legacy.pq_dk,
+            pq_ek: legacy.pq_ek,
+            opks: legacy.opks,
+            next_opk_id: legacy.next_opk_id,
+            invitations: Vec::new(),
+        })
     }
 
     pub fn spk(&self) -> SignedPrekeySecret {
@@ -92,5 +127,40 @@ impl PrekeyVault {
     /// flight: once used, the secret must not survive).
     pub fn remove_opk(&mut self, id: u32) {
         self.opks.retain(|o| o.id != id);
+    }
+
+    pub fn add_invitation(
+        &mut self,
+        bundle_digest: [u8; 32],
+        secret: [u8; 32],
+        expires_at: u64,
+        now: u64,
+    ) {
+        self.invitations
+            .retain(|invitation| invitation.expires_at >= now);
+        self.invitations
+            .retain(|invitation| invitation.bundle_digest != bundle_digest);
+        self.invitations.push(Invitation {
+            bundle_digest,
+            secret,
+            expires_at,
+        });
+        if self.invitations.len() > MAX_INVITATIONS {
+            self.invitations.remove(0);
+        }
+    }
+
+    pub fn invitation(&self, bundle_digest: &[u8; 32], now: u64) -> Option<[u8; 32]> {
+        self.invitations
+            .iter()
+            .find(|invitation| {
+                &invitation.bundle_digest == bundle_digest && invitation.expires_at >= now
+            })
+            .map(|invitation| invitation.secret)
+    }
+
+    pub fn remove_invitation(&mut self, bundle_digest: &[u8; 32]) {
+        self.invitations
+            .retain(|invitation| &invitation.bundle_digest != bundle_digest);
     }
 }

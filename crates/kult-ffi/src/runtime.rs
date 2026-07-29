@@ -22,10 +22,10 @@ use kult_node::{
     AttachmentInfo, AttachmentMetadata, CallAudioFrame, CallAvailability, CallInfo,
     CarrierCapabilitySnapshot, ContactAuthorityConflictInfo, DeviceAuthorityConflictInfo,
     DeviceLinkSelection, Event, FolderConversationInfo, FolderConversationList, FolderInfo,
-    FolderSelection, GroupAuthorityInfo, GroupInfo, GroupMentionCapability, GroupRole,
-    GroupSecurityInfo, LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode,
-    LinkedDeviceInfo, MentionSpan, MessageDeviceDeliveryInfo, Node, PinConversationList, PinInfo,
-    ScheduledMessageInfo, StaleFolderInfo, StaleLabelInfo,
+    FolderSelection, GroupAuthorityInfo, GroupInfo, GroupInvitationInfo, GroupMentionCapability,
+    GroupRole, GroupSecurityInfo, LabelConversationInfo, LabelFilterInfo, LabelInfo,
+    LabelMatchMode, LinkedDeviceInfo, MentionSpan, MessageDeviceDeliveryInfo, MessageRequestInfo,
+    Node, PinConversationList, PinInfo, ScheduledMessageInfo, StaleFolderInfo, StaleLabelInfo,
 };
 use kult_store::{ContactRecord, ConversationId, NoteMessageRecord, AUTHORITY_BACKUP_MAGIC};
 use kult_transport::{
@@ -580,6 +580,17 @@ pub(crate) enum Msg {
         group: [u8; 32],
         resp: Resp<()>,
     },
+    GroupInvitations {
+        resp: Resp<Vec<GroupInvitationInfo>>,
+    },
+    GroupInvitationAccept {
+        invitation: [u8; 16],
+        resp: Resp<[u8; 32]>,
+    },
+    GroupInvitationDelete {
+        invitation: [u8; 16],
+        resp: Resp<()>,
+    },
     Groups {
         resp: Resp<Vec<GroupInfo>>,
     },
@@ -589,6 +600,22 @@ pub(crate) enum Msg {
     },
     Contacts {
         resp: Resp<Vec<ContactRecord>>,
+    },
+    MessageRequests {
+        resp: Resp<Vec<MessageRequestInfo>>,
+    },
+    MessageRequestAccept {
+        request: [u8; 16],
+        name: String,
+        resp: Resp<[u8; 32]>,
+    },
+    MessageRequestDelete {
+        request: [u8; 16],
+        resp: Resp<()>,
+    },
+    MessageRequestBlock {
+        request: [u8; 16],
+        resp: Resp<()>,
     },
     CarrierCapabilities {
         resp: Resp<Vec<CarrierCapabilitySnapshot>>,
@@ -1913,6 +1940,21 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         Msg::GroupLeave { group, resp } => {
             let _ = resp.send(node.group_leave(&group, now, &mut OsRng).map_err(fail));
         }
+        Msg::GroupInvitations { resp } => {
+            let _ = resp.send(node.group_invitations().map_err(fail));
+        }
+        Msg::GroupInvitationAccept { invitation, resp } => {
+            let _ = resp.send(
+                node.accept_group_invitation(&invitation, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::GroupInvitationDelete { invitation, resp } => {
+            let _ = resp.send(
+                node.delete_group_invitation(&invitation, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
         Msg::Groups { resp } => {
             let _ = resp.send(node.groups().map_err(fail));
         }
@@ -1921,6 +1963,31 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         }
         Msg::Contacts { resp } => {
             let _ = resp.send(node.contacts().map_err(fail));
+        }
+        Msg::MessageRequests { resp } => {
+            let _ = resp.send(node.message_requests().map_err(fail));
+        }
+        Msg::MessageRequestAccept {
+            request,
+            name,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.accept_message_request(&request, &name, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::MessageRequestDelete { request, resp } => {
+            let _ = resp.send(
+                node.delete_message_request(&request, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::MessageRequestBlock { request, resp } => {
+            let _ = resp.send(
+                node.block_message_request(&request, now, &mut OsRng)
+                    .map_err(fail),
+            );
         }
         Msg::CarrierCapabilities { resp } => {
             let _ = resp.send(node.carrier_capabilities(now).map_err(fail));

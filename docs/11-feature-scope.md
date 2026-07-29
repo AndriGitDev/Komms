@@ -50,7 +50,7 @@ status and prerequisites are tracked in the delivery plan.
   work. An optional signed self-display name may later be advertised as a
   non-unique suggestion, but it is not implemented and could never silently
   override the recipient's petname.
-- **Secure backups.** Implemented: the `KKR8` mnemonic-sealed backup (Argon2id under a
+- **Secure backups.** Implemented: the `KKR9` mnemonic-sealed backup (Argon2id under a
   24-word BIP-39 phrase, ADR-0011/ADR-0012), including sealed local metadata and
   note-to-self history, terminal ephemeral tombstones, and signed group
   authority plus linked-device recovery state. `KKR1` through copied-root
@@ -80,7 +80,7 @@ status and prerequisites are tracked in the delivery plan.
   manual order, idempotent append/unpin, complete-set reorder including stale
   targets, deterministic activity tie-breaking, cleanup, and reactivation stay
   local. Folder selection and label filtering precede one leading pinned block.
-  The limit is 8,192; `KKR8` and authenticated own-device C2 sync are the only
+  The limit is 8,192; `KKR9` and authenticated own-device C2 sync are the only
   portability paths, and every operation
   creates zero network, notification, crypto, or transport work. Message pins
   remain a separate design because they require stable message references.
@@ -90,7 +90,7 @@ status and prerequisites are tracked in the delivery plan.
   changes live; desktop uses semantic CSS roles, Android uses DayNight resources,
   and iOS uses adaptive system colors. Reference palettes meet WCAG normal-text
   contrast, high-contrast and reduced-motion behavior remains native, and color
-  is never the only security or delivery signal. `KKR8` is the authoritative
+  is never the only security or delivery signal. `KKR9` is the authoritative
   portability path; a small non-sensitive device cache exists only to style the
   pre-unlock gate without a flash.
 - **Custom icons.** Implemented for contacts, groups, folders, and note-to-self over
@@ -99,7 +99,7 @@ status and prerequisites are tracked in the delivery plan.
   256×256 RGBA PNGs that omit source metadata after orientation normalization and square
   crop. Animated/decompression-heavy inputs fail closed. Limits are 512 KiB per
   icon, 1,024 records, and 64 MiB aggregate; reads safely fall back after corrupt
-  or legacy non-canonical bytes. Portability is limited to `KKR8` and authenticated
+  or legacy non-canonical bytes. Portability is limited to `KKR9` and authenticated
   own-device C2 sync. Icons never
   enter avatar URLs, peer sync, envelopes, capabilities, queues, notifications,
   DHT state, or transport work.
@@ -140,7 +140,7 @@ status and prerequisites are tracked in the delivery plan.
   managers, non-color badges, assignment actions, stale-record cleanup, and
   deterministic match-any/match-all filters are local presentation only. Limits
   are 128 live labels, 8,192 assignments, 32 labels per conversation, and 256
-  UTF-8 bytes per name. `KKR8` preserves exact identity, ordering, membership,
+  UTF-8 bytes per name. `KKR9` preserves exact identity, ordering, membership,
   and stale behavior. Labels do not affect messages, delivery, search, unread
   truth, notifications, or transports and do not sync to contacts or services.
   C2 may converge them only between authorized devices of the same account.
@@ -153,7 +153,7 @@ status and prerequisites are tracked in the delivery plan.
   never display-name inference. Create, rename, complete-set reorder, move,
   unfile, deletion review/cascade, and stale cleanup are atomic local operations.
   Folder selection runs before the independent B18 any/all label filter. Limits
-  are 128 folders, 8,192 assignments, and 256 UTF-8 bytes per name. `KKR8`
+  are 128 folders, 8,192 assignments, and 256 UTF-8 bytes per name. `KKR9`
   preserves exact identity, order, membership, and stale behavior. Folders do
   not affect messages, delivery, search, unread truth, notifications, transports,
   or contact/service state; C2 may converge them only between authorized devices
@@ -180,7 +180,7 @@ and degrade honestly, exactly as the delivery ladder already does.
   happens proximately through a mutually confirmed QR/paste ceremony, never by
   copying the account root, live ratchet databases, or depending on cloud sync.
   Forks and same-epoch recovery conflicts remain visible and fail closed;
-  routine `KKR8` is root-free. Physical-device, independent-review, and
+  routine `KKR9` is root-free. Physical-device, independent-review, and
   independent-interoperability qualification remain P0 gates. See
   [22: Linked Devices](22-linked-devices.md) and
   [ADR-0026](adr/0026-revocable-device-authority.md).
@@ -220,7 +220,7 @@ and degrade honestly, exactly as the delivery ladder already does.
   ownership-transfer certificates, admin requests, and moderation snapshots are
   identity-signed; the sole owner serializes transitions and every accepted
   change re-keys. Stale/demoted requests and losing transfer forks fail closed;
-  `KKR6` introduced authority and `KKR8` carries it forward. The new-identity
+  `KKR6` introduced authority and `KKR9` carries it forward. The new-identity
   legacy archive reset omits groups. See
   [21: Group Roles, Ownership, and Moderation](21-group-roles.md) and
   [ADR-0023](adr/0023-group-roles-and-owner-authority.md).

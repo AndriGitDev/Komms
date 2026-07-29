@@ -20,6 +20,7 @@
 
 extern crate alloc;
 
+mod admission;
 mod anonbox;
 mod attachment;
 mod call;
@@ -40,6 +41,14 @@ mod sealed;
 mod util;
 mod wordlist;
 
+pub use admission::{
+    admission_bundle_digest, is_admission_extension, AdmissionDescriptor, AdmissionPolicy,
+    AdmissionPuzzleProfile, VerifiedAdmission, ADMISSION_DESCRIPTOR_VERSION, ADMISSION_EPOCH_SECS,
+    DEFAULT_ADMISSION_CLOCK_SKEW_SECS, DEFAULT_ADMISSION_DIFFICULTY,
+    DEFAULT_ADMISSION_FIRST_CIPHERTEXT, MAX_ADMISSION_CLOCK_SKEW_SECS,
+    MAX_ADMISSION_DESCRIPTOR_BYTES, MAX_ADMISSION_DIFFICULTY, MAX_ADMISSION_FIRST_CIPHERTEXT,
+    MAX_ADMISSION_TOKEN_ISSUERS, MIN_ADMISSION_DIFFICULTY,
+};
 pub use anonbox::{open_anonymous, seal_anonymous};
 pub use attachment::{
     attachment_pairwise_scope_id, open_attachment_chunk, seal_attachment_chunk,
@@ -89,7 +98,8 @@ pub use kdf::{derive_kek, KdfProfile, KDF_PROFILE_DESKTOP, KDF_PROFILE_MOBILE};
 pub use mnemonic::{mnemonic_from_entropy, mnemonic_to_entropy, MNEMONIC_WORDS};
 pub use prekeys::{
     OneTimePrekeySecret, PqPrekeySecret, PrekeyBundle, SignedPrekeySecret, VerifiedBundle,
-    MLKEM768_CT_LEN, MLKEM768_DK_LEN, MLKEM768_EK_LEN,
+    MAX_PREKEY_BUNDLE_BYTES, MAX_PREKEY_RELAY_HINTS, MAX_PREKEY_RELAY_HINT_BYTES,
+    MAX_PREKEY_RELAY_HINT_TOTAL_BYTES, MLKEM768_CT_LEN, MLKEM768_DK_LEN, MLKEM768_EK_LEN,
 };
 pub use ratchet::{RatchetMessage, Session};
 pub use ratchet::{MAX_SKIP, MAX_STORED_SKIPPED, SKIPPED_KEY_TTL_SECS};

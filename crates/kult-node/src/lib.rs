@@ -46,24 +46,28 @@ use subtle::ConstantTimeEq;
 
 use kult_crypto::{
     initiate, open_account_recovery_authority, open_anonymous, respond, safety_number,
-    seal_account_recovery_authority, seal_anonymous,
+    seal_account_recovery_authority, seal_anonymous, AdmissionPolicy,
     AuthorityDevicePrekeyBundle as DevicePrekeyBundle, Identity, IdentityPublic, InitialMessage,
     KdfProfile, PendingAuthorityDeviceLinkSource, PendingAuthorityDeviceLinkTarget, PrekeyBundle,
     PreparedAuthorityDeviceLink, RatchetMessage, SafetyNumber, Session,
 };
 use kult_protocol::{
-    decode_content, delivery_token, encode_disappearing_text_payload, encode_edit,
-    encode_ephemeral, encode_text, epoch_day, fragment, intro_token, is_capability_control, pad,
-    retention_bucket, unpad, CapabilityControl, DecodedContent, Edit, Envelope, EnvelopeKind,
-    Ephemeral, FormatCapabilities, MailboxKey, Reassembler, ReceiptPayload, CONTENT_FORMAT_V1,
-    CONTENT_KIND_ATTACHMENT, CONTENT_KIND_CALL_CONTROL, CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL,
+    admission_invitation_proof, decode_content, delivery_token, encode_disappearing_text_payload,
+    encode_edit, encode_ephemeral, encode_text, epoch_day, fragment, intro_token,
+    is_capability_control, pad, retention_bucket, solve_admission_puzzle, unpad,
+    verify_admission_puzzle, AdmissionContext, AdmissionEnvelope, AdmissionProofKind,
+    CapabilityControl, DecodedContent, Edit, Envelope, EnvelopeKind, Ephemeral, FormatCapabilities,
+    MailboxKey, Reassembler, ReceiptPayload, CONTENT_FORMAT_V1, CONTENT_KIND_ATTACHMENT,
+    CONTENT_KIND_CALL_CONTROL, CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL,
     CONTENT_KIND_GROUP_AUTHORITY, CONTENT_KIND_MENTION, CONTENT_KIND_POLL, CONTENT_KIND_TEXT,
-    ENVELOPE_HEADER_LEN, MAX_EDIT_TEXT_LEN, MAX_EPHEMERAL_LIFETIME_SECS,
-    MIN_EPHEMERAL_LIFETIME_SECS, REASSEMBLY_WINDOW_SECS,
+    ENVELOPE_HEADER_LEN, MAX_ADMISSION_PUZZLE_ATTEMPTS, MAX_EDIT_TEXT_LEN,
+    MAX_EPHEMERAL_LIFETIME_SECS, MIN_EPHEMERAL_LIFETIME_SECS, REASSEMBLY_WINDOW_SECS,
 };
 use kult_store::{
-    AttachmentStatePlan, AuthorityMigrationPlan, CommitPlan, CommitReceipt, ContactDeviceDelete,
-    ContactDeviceRecord, ContactRecord, ConversationId, ConversationMetadata, DeferredControlKind,
+    AdmissionAcceptPlan, AdmissionDiscardPlan, AdmissionReplayTombstone, AdmissionStagePlan,
+    AdmissionSweepPlan, AdmissionTransportClass, AttachmentStatePlan, AuthorityMigrationPlan,
+    BlockedIdentityRecord, CommitPlan, CommitReceipt, ContactDeviceDelete, ContactDeviceRecord,
+    ContactRecord, ConversationId, ConversationMetadata, DeferredControlKind,
     DeferredControlRecord, DeliveryState, DeliveryTransition, DeviceAuthorityStateRecord,
     Direction, EphemeralConversation, EphemeralMode, EphemeralRecord, EphemeralState,
     EphemeralTransition, GroupMessageDelete, GroupMessageRecord, GroupMessageTransition,
@@ -71,11 +75,16 @@ use kult_store::{
     MaintenancePlan, MediaDelete, MediaObjectRecord, MediaObjectTransition, MediaTransferRecord,
     MediaTransferTransition, MessageDelete, MessageDeviceDeliveryRecord, MessageRecord,
     MessageTransition, NoteMessageRecord, PairwiseReceivePlan, PairwiseSendPlan, PendingDelete,
-    PrekeyPublishPlan, PrekeyTransition, QueueClass, QueueDelete, QueueItem, QueueTransition,
-    ReceiptReceivePlan, ScheduledConversation as StoreScheduledConversation,
-    ScheduledMessageRecord, SessionTransition, Store, MAX_MAINTENANCE_TRANSITIONS,
+    PrekeyPublishPlan, PrekeyTransition, ProvisionalRequestRecord, QueueClass, QueueDelete,
+    QueueItem, QueueTransition, ReceiptReceivePlan,
+    ScheduledConversation as StoreScheduledConversation, ScheduledMessageRecord, SessionTransition,
+    Store, MAX_ADMISSION_REPLAY_LIFETIME_SECS, MAX_ADMISSION_REPLAY_TOMBSTONES,
+    MAX_MAINTENANCE_TRANSITIONS, MAX_PROVISIONAL_CONTENT_BYTES, MAX_PROVISIONAL_LIFETIME_SECS,
+    MAX_PROVISIONAL_PREVIEW_BYTES, PROVISIONAL_REQUEST_VERSION,
 };
-use kult_transport::{CostClass, DeliveryHint, Discovery, Reachability, Transport};
+use kult_transport::{
+    CostClass, DeliveryHint, Discovery, IngressClass, Reachability, ReceivedEnvelope, Transport,
+};
 
 mod api;
 #[cfg(all(test, feature = "test-failpoints"))]
@@ -108,13 +117,14 @@ pub use api::{
     ContactAuthorityConflictInfo, ContentStatus, CustomIconCrop, CustomIconInfo, CustomIconUsage,
     DeviceAuthorityConflictInfo, DeviceAuthorityConflictType, DeviceLinkSelection, EditVersionInfo,
     Event, FolderConversationInfo, FolderConversationList, FolderInfo, FolderSelection,
-    GroupAuthorityInfo, GroupInfo, GroupMemberRoleInfo, GroupMentionCapability, GroupSecurityInfo,
-    GroupSecurityLevel, LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode,
-    LinkedDeviceInfo, MentionCapabilityIssue, MentionCapabilityIssueReason, MentionSpan,
-    MessageDeviceDeliveryInfo, PinConversationInfo, PinConversationList, PinInfo, PollInfo,
-    PollOptionInfo, PollVoteInfo, ResolvedGroupMessage, ResolvedMessage, ScheduledConversation,
-    ScheduledMessageInfo, StaleFolderInfo, StaleFolderReason as NodeStaleFolderReason,
-    StaleLabelInfo, StaleLabelReason as NodeStaleLabelReason,
+    GroupAuthorityInfo, GroupInfo, GroupInvitationInfo, GroupMemberRoleInfo,
+    GroupMentionCapability, GroupSecurityInfo, GroupSecurityLevel, LabelConversationInfo,
+    LabelFilterInfo, LabelInfo, LabelMatchMode, LinkedDeviceInfo, MentionCapabilityIssue,
+    MentionCapabilityIssueReason, MentionSpan, MessageDeviceDeliveryInfo, MessageRequestInfo,
+    PinConversationInfo, PinConversationList, PinInfo, PollInfo, PollOptionInfo, PollVoteInfo,
+    ResolvedGroupMessage, ResolvedMessage, ScheduledConversation, ScheduledMessageInfo,
+    StaleFolderInfo, StaleFolderReason as NodeStaleFolderReason, StaleLabelInfo,
+    StaleLabelReason as NodeStaleLabelReason,
 };
 pub use calls::{CALL_OFFER_LIFETIME_SECS, MAX_CALL_OFFER_LIFETIME_SECS};
 pub use contact_names::{ContactNameAssessment, ContactNameWarning, MAX_CONTACT_NAME_BYTES};
@@ -123,6 +133,9 @@ pub use error::NodeError;
 pub use file_presentation::{
     classify_attachment_file, AttachmentFileKind, AttachmentFilePresentation,
     AttachmentFileWarning, AttachmentOpenPolicy,
+};
+pub use groups::{
+    MAX_GROUP_INVITATION_BYTES, MAX_GROUP_INVITATION_LIFETIME_SECS, MAX_GROUP_INVITATION_REQUESTS,
 };
 pub use incognito_keyboard::{
     incognito_keyboard_policy, IncognitoKeyboardLevel, IncognitoKeyboardPlatform,
@@ -235,6 +248,11 @@ const PENDING_TTL_SECS: u64 = 30 * 86_400;
 /// Retry backoff: base delay, doubling per attempt, capped.
 const RETRY_BASE_SECS: u64 = 30;
 const RETRY_CAP_SECS: u64 = 3_600;
+/// A reached next hop can refuse transient local capacity. Retry that
+/// distinct condition soon enough to benefit from the receiver's next
+/// bounded drain, while exponentially capping a persistently refusing hop.
+const CAPACITY_RETRY_BASE_SECS: u64 = 1;
+const CAPACITY_RETRY_CAP_SECS: u64 = 30;
 /// After several foreground attempts, an unreachable delivery moves to a
 /// low-frequency lane so old work cannot make the unlocked app feel stuck.
 const PASSIVE_AFTER_ATTEMPTS: u32 = 3;
@@ -347,6 +365,21 @@ const MAX_EPHEMERAL_EXPIRIES_PER_TICK: usize = 4;
 const MAX_PENDING_WORK_PER_TICK: usize = 64;
 const MAX_PENDING_DEVICE_DELIVERIES_PER_TICK: usize = 8;
 const MAX_RESET_MARKERS_PER_TICK: usize = 8;
+/// Maximum signed admission descriptors/puzzles verified in one heartbeat.
+const MAX_ADMISSION_PUZZLES_PER_TICK: usize = 8;
+/// Maximum ML-KEM decapsulations spent on first-contact candidates per heartbeat.
+const MAX_ADMISSION_KEMS_PER_TICK: usize = 4;
+/// Maximum request-inbox presentation changes emitted per heartbeat.
+const MAX_ADMISSION_NOTIFICATIONS_PER_TICK: usize = 4;
+/// Maximum expired request/tombstone rows retired per heartbeat.
+const MAX_ADMISSION_EXPIRIES_PER_TICK: usize = 16;
+const ADMISSION_CARRIER_CLASS_COUNT: usize = 6;
+/// Per-carrier candidate ceilings in enum order: unknown, direct, mailbox,
+/// mesh, delayed, and bridge.
+const MAX_ADMISSION_CANDIDATES_PER_CARRIER: [usize; ADMISSION_CARRIER_CLASS_COUNT] =
+    [4, 4, 2, 2, 2, 2];
+/// Wall-clock slice for all first-contact proof and KEM work in one heartbeat.
+const MAX_ADMISSION_TIME_PER_TICK: Duration = Duration::from_millis(100);
 
 /// Receiver-side bookkeeping for one in-flight partial message: enough to
 /// address the NACK requesting its missing fragments (via the delivery
@@ -413,6 +446,9 @@ enum Consumed {
     /// Fully handled by a transaction that also acknowledged its named
     /// deferred-inbox source row, when one existed.
     DoneAtomic,
+    /// Permanently rejected and atomically retired. Interactive carriers
+    /// return the same bounded refusal for every such candidate.
+    RejectedAtomic,
     /// Cannot be processed *yet* (no matching session) — stash and retry.
     Later,
 }
@@ -421,6 +457,7 @@ enum Consumed {
 struct ConsumeOrigin {
     depth: u8,
     pending_sequence: Option<i64>,
+    transport: AdmissionTransportClass,
 }
 
 /// One third-party envelope in transit across the bridge (ADR-0009).
@@ -634,6 +671,11 @@ pub struct Node {
     events: VecDeque<Event>,
     presentation_marker: Option<[u8; 16]>,
     delivered_presentation_marker: Option<[u8; 16]>,
+    admission_puzzles_remaining: usize,
+    admission_kems_remaining: usize,
+    admission_notifications_remaining: usize,
+    admission_carrier_remaining: [usize; ADMISSION_CARRIER_CLASS_COUNT],
+    admission_deadline: Option<Instant>,
     #[cfg(feature = "test-failpoints")]
     transition_failpoint: RefCell<Option<TransitionFailpoint>>,
     #[cfg(feature = "test-failpoints")]
@@ -1233,6 +1275,11 @@ impl Node {
             events,
             presentation_marker,
             delivered_presentation_marker: None,
+            admission_puzzles_remaining: MAX_ADMISSION_PUZZLES_PER_TICK,
+            admission_kems_remaining: MAX_ADMISSION_KEMS_PER_TICK,
+            admission_notifications_remaining: MAX_ADMISSION_NOTIFICATIONS_PER_TICK,
+            admission_carrier_remaining: MAX_ADMISSION_CANDIDATES_PER_CARRIER,
+            admission_deadline: None,
             #[cfg(feature = "test-failpoints")]
             transition_failpoint: RefCell::new(None),
             #[cfg(feature = "test-failpoints")]
@@ -1362,7 +1409,7 @@ impl Node {
         let step = self.begin_crypto_step()?;
         let opk = candidate_vault.fresh_opk(rng);
         self.finish_crypto_step(step)?;
-        let bundle = PrekeyBundle::build(
+        let mut bundle = PrekeyBundle::build(
             &self.device_identity,
             &candidate_vault.spk(),
             &candidate_vault.pqspk()?,
@@ -1370,6 +1417,16 @@ impl Node {
             now + BUNDLE_TTL_SECS,
             encode_hints(hints),
         );
+        let mut invitation = [0u8; 32];
+        rng.fill_bytes(&mut invitation);
+        bundle.attach_admission(
+            &self.device_identity,
+            now,
+            AdmissionPolicy::default(),
+            Some(invitation),
+        )?;
+        let invitation_digest = bundle.verify_admission(now)?.descriptor.bundle_digest;
+        candidate_vault.add_invitation(invitation_digest, invitation, bundle.expires_at, now);
         let encoded = DevicePrekeyBundle::new(
             self.device_state.local_certificate.clone(),
             self.device_state.manifest.clone(),
@@ -1416,7 +1473,7 @@ impl Node {
         if self.discoveries.is_empty() {
             return Err(NodeError::NoDiscovery);
         }
-        let bundle = PrekeyBundle::build(
+        let mut bundle = PrekeyBundle::build(
             &self.device_identity,
             &self.vault.spk(),
             &self.vault.pqspk()?,
@@ -1424,6 +1481,7 @@ impl Node {
             now + BUNDLE_TTL_SECS,
             encode_hints(hints),
         );
+        bundle.attach_admission(&self.device_identity, now, AdmissionPolicy::default(), None)?;
         let key = self.account.address_digest();
         let value = DevicePrekeyBundle::new(
             self.device_state.local_certificate.clone(),
@@ -1466,7 +1524,7 @@ impl Node {
             .lookup_bundle(digest, now)
             .await
             .ok_or(NodeError::BundleNotFound)?;
-        let hints = decode_hints(&bundle.prekey.relay_hints);
+        let hints = decode_hints(&bundle.prekey.transport_hints());
         self.add_contact(name, &bundle.encode()?, &hints, now, rng)
     }
 
@@ -1556,7 +1614,7 @@ impl Node {
             if DevicePrekeyBundle::is_encoded(bundle_bytes) {
                 let device_bundle = DevicePrekeyBundle::decode(bundle_bytes)?;
                 device_bundle.verify(now)?;
-                let advertised_hints = decode_hints(&device_bundle.prekey.relay_hints);
+                let advertised_hints = decode_hints(&device_bundle.prekey.transport_hints());
                 let peer = device_bundle.manifest.account().ed;
                 let identity = postcard::to_allocvec(device_bundle.manifest.account())
                     .map_err(|_| NodeError::CorruptState)?;
@@ -1591,7 +1649,7 @@ impl Node {
                 )
             } else {
                 let verified = PrekeyBundle::decode(bundle_bytes)?.verify(now)?;
-                let advertised_hints = decode_hints(&verified.bundle().relay_hints);
+                let advertised_hints = decode_hints(&verified.bundle().transport_hints());
                 let peer = verified.bundle().identity.ed;
                 let identity = postcard::to_allocvec(&verified.bundle().identity)
                     .map_err(|_| NodeError::CorruptState)?;
@@ -1908,6 +1966,203 @@ impl Node {
         Ok(self.store.contacts()?)
     }
 
+    /// Bounded sealed first-contact requests in deterministic arrival order.
+    pub fn message_requests(&self) -> Result<Vec<MessageRequestInfo>> {
+        Ok(self
+            .store
+            .provisional_requests()?
+            .into_iter()
+            .map(|request| MessageRequestInfo {
+                id: request.request_id,
+                account: request.account,
+                device: request.device,
+                preview: request.preview,
+                safety_number: request
+                    .safety_number
+                    .as_bytes()
+                    .chunks(5)
+                    .map(|chunk| core::str::from_utf8(chunk).expect("validated digits"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                arrived_at: request.arrived_at,
+                expires_at: request.expires_at,
+                transport: request.transport,
+            })
+            .collect())
+    }
+
+    /// Explicitly accept and atomically promote one message request.
+    pub fn accept_message_request(
+        &mut self,
+        request_id: &[u8; 16],
+        name: &str,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 32]> {
+        let request = self
+            .store
+            .provisional_request_by_id(request_id)?
+            .ok_or(NodeError::UnknownMessageRequest)?;
+        if now > request.expires_at {
+            return Err(NodeError::UnknownMessageRequest);
+        }
+        let name = contact_names::normalize_contact_name(name)?;
+        let (session_before, remainder): (Session, &[u8]) =
+            postcard::take_from_bytes(&request.session).map_err(|_| NodeError::CorruptState)?;
+        if !remainder.is_empty() {
+            return Err(NodeError::CorruptState);
+        }
+        let mut session_after = session_before.clone();
+        let acceptance = ReceiptPayload {
+            acks: vec![request.request_id],
+            nacks: Vec::new(),
+        }
+        .encode();
+        let receipt_queue =
+            self.prepare_control_queue(&mut session_after, request.device, &acceptance, now, rng)?;
+        let prepared = if request.first_content.is_empty() {
+            None
+        } else {
+            let prepared = self.prepare_inbound(
+                request.account,
+                request.first_content.clone(),
+                None,
+                now,
+                rng,
+            )?;
+            if prepared.message.is_none()
+                || prepared.ephemeral.is_some()
+                || !prepared.media_transfers.is_empty()
+                || !prepared.media_objects.is_empty()
+            {
+                return Err(NodeError::CorruptState);
+            }
+            Some(prepared)
+        };
+        let mut contact = request.contact.clone();
+        contact.name = name;
+        let receipt = self.store.commit_plan(
+            CommitPlan::AdmissionAccept(AdmissionAcceptPlan {
+                request: &request,
+                session_before: &session_before,
+                session: SessionTransition {
+                    peer_device: request.device,
+                    before: None,
+                    after: &session_after,
+                },
+                contact: &contact,
+                devices: &request.devices,
+                groups: &[],
+                message: prepared
+                    .as_ref()
+                    .and_then(|prepared| prepared.message.as_ref()),
+                queue: core::slice::from_ref(&receipt_queue),
+                accepted_at: now,
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.before_memory_replacement()?;
+        self.sessions.insert(request.device, session_after);
+        self.capabilities_advertised.remove(&request.device);
+        self.after_memory_replacement()?;
+        let mut events = vec![
+            Event::MessageRequestAccepted {
+                request: request.request_id,
+                peer: request.account,
+            },
+            Event::ContactAdded {
+                peer: request.account,
+            },
+            Event::SessionEstablished {
+                peer: request.account,
+            },
+        ];
+        if let Some(prepared) = prepared {
+            events.extend(prepared.events);
+        }
+        self.accept_commit_receipt(receipt, events);
+        Ok(request.account)
+    }
+
+    /// Explicitly delete one request, retaining only its bounded replay tombstone.
+    pub fn delete_message_request(
+        &mut self,
+        request_id: &[u8; 16],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        self.discard_message_request(request_id, now, false, rng)
+    }
+
+    /// Block one verified request sender locally and remove provisional state.
+    pub fn block_message_request(
+        &mut self,
+        request_id: &[u8; 16],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        self.discard_message_request(request_id, now, true, rng)
+    }
+
+    fn discard_message_request(
+        &mut self,
+        request_id: &[u8; 16],
+        now: u64,
+        block: bool,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let request = self
+            .store
+            .provisional_request_by_id(request_id)?
+            .ok_or(NodeError::UnknownMessageRequest)?;
+        let tombstone = AdmissionReplayTombstone {
+            request_id: request.request_id,
+            account: request.account,
+            device: request.device,
+            rejected_at: now,
+            expires_at: now.saturating_add(
+                MAX_PROVISIONAL_LIFETIME_SECS.min(MAX_ADMISSION_REPLAY_LIFETIME_SECS),
+            ),
+        };
+        let tombstones = self.store.admission_tombstones()?;
+        let retire_tombstone = (tombstones.len() >= MAX_ADMISSION_REPLAY_TOMBSTONES).then(|| {
+            tombstones
+                .iter()
+                .min_by_key(|record| (record.expires_at, record.rejected_at, record.request_id))
+                .expect("non-empty at fixed limit")
+        });
+        let block_record = block.then_some(BlockedIdentityRecord {
+            account: request.account,
+            device: request.device,
+            created_at: now,
+        });
+        let receipt = self.store.commit_plan(
+            CommitPlan::AdmissionDiscard(AdmissionDiscardPlan {
+                request: &request,
+                tombstone: &tombstone,
+                retire_tombstone,
+                block: block_record.as_ref(),
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.capabilities_advertised.remove(&request.device);
+        self.accept_commit_receipt(
+            receipt,
+            [if block {
+                Event::MessageRequestBlocked {
+                    request: request.request_id,
+                }
+            } else {
+                Event::MessageRequestDeleted {
+                    request: request.request_id,
+                }
+            }],
+        );
+        Ok(())
+    }
+
     /// Message history with a peer, in insertion order.
     pub fn messages_with(&self, peer: &[u8; 32]) -> Result<Vec<MessageRecord>> {
         Ok(self.store.messages_with(peer)?)
@@ -2006,6 +2261,21 @@ impl Node {
                 hints,
             } => {
                 self.add_contact(&name, &bundle, &hints, now, rng)?;
+            }
+            Command::MessageRequestAccept { request, name } => {
+                self.accept_message_request(&request, &name, now, rng)?;
+            }
+            Command::MessageRequestDelete { request } => {
+                self.delete_message_request(&request, now, rng)?;
+            }
+            Command::MessageRequestBlock { request } => {
+                self.block_message_request(&request, now, rng)?;
+            }
+            Command::GroupInvitationAccept { invitation } => {
+                self.accept_group_invitation(&invitation, now, rng)?;
+            }
+            Command::GroupInvitationDelete { invitation } => {
+                self.delete_group_invitation(&invitation, rng)?;
             }
             Command::RenameContact {
                 peer,
@@ -2673,8 +2943,14 @@ impl Node {
     /// receipts for consumed messages, then flush the outbound queue through
     /// the transport scheduler. Returns all events produced.
     pub async fn tick(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<Vec<Event>> {
+        self.admission_puzzles_remaining = MAX_ADMISSION_PUZZLES_PER_TICK;
+        self.admission_kems_remaining = MAX_ADMISSION_KEMS_PER_TICK;
+        self.admission_notifications_remaining = MAX_ADMISSION_NOTIFICATIONS_PER_TICK;
+        self.admission_carrier_remaining = MAX_ADMISSION_CANDIDATES_PER_CARRIER;
+        self.admission_deadline = None;
         self.acknowledge_presentation(rng)?;
         self.apply_resolved_device_sync(rng)?;
+        self.sweep_admission(now, rng)?;
         if !self.media_reconciled {
             let batch = self
                 .store
@@ -2742,6 +3018,7 @@ impl Node {
         // Loaded and newly-created sessions advertise on the first tick.
         // Controls use the durable queue and are terminal like receipts.
         self.advertise_capabilities(now, rng)?;
+        self.admission_deadline = Some(Instant::now() + MAX_ADMISSION_TIME_PER_TICK);
 
         // 1. Gather: previously-stashed envelopes first, then fresh arrivals.
         //    Every complete fresh envelope is staged under a stable pending
@@ -2757,18 +3034,21 @@ impl Node {
         //    still joins the normal receive path — "foreign" and "ours, but
         //    the unlocking handshake hasn't arrived yet" are indistinguishable
         //    by design, and downstream dedup absorbs the overlap.
-        let mut work: Vec<(Option<i64>, Envelope, u64)> = Vec::new();
+        let mut work: Vec<(Option<i64>, Envelope, u64, AdmissionTransportClass)> = Vec::new();
         let mut gathered = HashSet::new();
+        let mut durable_gathered = HashSet::new();
         let mut redundant_pending = Vec::new();
-        for (sequence, envelope, first_seen) in self
+        for (sequence, envelope, first_seen, transport) in self
             .store
-            .pending_all()?
+            .pending_all_with_transport()?
             .into_iter()
             .take(MAX_PENDING_WORK_PER_TICK)
         {
             if gathered.insert(envelope.content_id()) {
-                work.push((Some(sequence), envelope, first_seen));
+                durable_gathered.insert(envelope.content_id());
+                work.push((Some(sequence), envelope, first_seen, transport));
             } else {
+                durable_gathered.insert(envelope.content_id());
                 redundant_pending.push(PendingDelete {
                     sequence,
                     content_id: envelope.content_id(),
@@ -2809,9 +3089,15 @@ impl Node {
             let airtime = transport.profile().cost == CostClass::Airtime;
             // A dead link must not stall the others; its envelopes will
             // arrive via retry or another path.
-            if let Ok(envelopes) = transport.recv().await {
-                for envelope in envelopes {
+            if let Ok(envelopes) = transport.recv_staged().await {
+                for ReceivedEnvelope {
+                    envelope,
+                    receipt,
+                    ingress,
+                } in envelopes
+                {
                     let content_id = envelope.content_id();
+                    let transport_class = admission_transport(ingress);
                     if airtime
                         && self.bridge.is_some()
                         && !self.token_is_mine(&envelope.token, now)
@@ -2822,21 +3108,106 @@ impl Node {
                         }
                     }
                     if !gathered.insert(content_id) {
+                        if let Some(receipt) = receipt {
+                            // ADR-0030 makes duplicate introductions a
+                            // uniform refusal even when their original copy
+                            // was staged successfully. Do not let generic
+                            // multipath dedup reveal whether a request row
+                            // exists or has spare capacity.
+                            let duplicate_admission = ingress == IngressClass::Direct
+                                && envelope.kind == EnvelopeKind::Handshake
+                                && AdmissionEnvelope::is_encoded(&envelope.body);
+                            let accepted = !duplicate_admission
+                                && (durable_gathered.contains(&content_id)
+                                    || self.store.is_seen(&content_id)?);
+                            let _ = transport.settle_recv(receipt, accepted).await;
+                        }
                         continue;
                     }
                     if envelope.kind == EnvelopeKind::Fragment {
+                        if let Some(receipt) = receipt {
+                            let _ = transport.settle_recv(receipt, false).await;
+                        }
                         if fresh_fragments < MAX_PENDING_WORK_PER_TICK {
                             fresh_fragments += 1;
-                            work.push((None, envelope, now));
+                            work.push((None, envelope, now, transport_class));
                         }
                         continue;
                     }
-                    match self.store.pending_push(&envelope, now, rng) {
-                        Ok(sequence) if work.len() < MAX_PENDING_WORK_PER_TICK => {
-                            work.push((Some(sequence), envelope, now));
+                    if receipt.is_some()
+                        && ingress == IngressClass::Direct
+                        && envelope.kind == EnvelopeKind::Handshake
+                        && AdmissionEnvelope::is_encoded(&envelope.body)
+                    {
+                        // Seen introductions are duplicates or permanent
+                        // failures. Both receive the same bounded refusal and
+                        // neither is allowed back into the KEM path.
+                        if self.store.is_seen(&content_id)? {
+                            if let Some(receipt) = receipt {
+                                let _ = transport.settle_recv(receipt, false).await;
+                            }
+                            continue;
                         }
-                        Ok(_) | Err(kult_store::StoreError::PendingQuota) => {}
-                        Err(error) => return Err(error.into()),
+                        let mut established = false;
+                        let outcome = self.consume(
+                            &envelope,
+                            ConsumeOrigin {
+                                depth: 0,
+                                pending_sequence: None,
+                                transport: transport_class,
+                            },
+                            now,
+                            rng,
+                            &mut established,
+                        );
+                        let accepted = match outcome {
+                            Ok(Consumed::Done | Consumed::DoneAtomic) => true,
+                            Ok(Consumed::RejectedAtomic | Consumed::Later) => false,
+                            Err(error) => {
+                                if let Some(receipt) = receipt {
+                                    let _ = transport.settle_recv(receipt, false).await;
+                                }
+                                return Err(error);
+                            }
+                        };
+                        if self.store.is_seen(&content_id)? {
+                            durable_gathered.insert(content_id);
+                        }
+                        if let Some(receipt) = receipt {
+                            let _ = transport.settle_recv(receipt, accepted).await;
+                        }
+                        continue;
+                    }
+                    match self.store.pending_push_with_transport(
+                        &envelope,
+                        now,
+                        transport_class,
+                        rng,
+                    ) {
+                        Ok(sequence) if work.len() < MAX_PENDING_WORK_PER_TICK => {
+                            durable_gathered.insert(content_id);
+                            if let Some(receipt) = receipt {
+                                let _ = transport.settle_recv(receipt, true).await;
+                            }
+                            work.push((Some(sequence), envelope, now, transport_class));
+                        }
+                        Ok(_) => {
+                            durable_gathered.insert(content_id);
+                            if let Some(receipt) = receipt {
+                                let _ = transport.settle_recv(receipt, true).await;
+                            }
+                        }
+                        Err(kult_store::StoreError::PendingQuota) => {
+                            if let Some(receipt) = receipt {
+                                let _ = transport.settle_recv(receipt, false).await;
+                            }
+                        }
+                        Err(error) => {
+                            if let Some(receipt) = receipt {
+                                let _ = transport.settle_recv(receipt, false).await;
+                            }
+                            return Err(error.into());
+                        }
                     }
                 }
             }
@@ -2857,13 +3228,23 @@ impl Node {
                         if envelope.kind == EnvelopeKind::Fragment {
                             if fresh_fragments < MAX_PENDING_WORK_PER_TICK {
                                 fresh_fragments += 1;
-                                work.push((None, envelope, now));
+                                work.push((None, envelope, now, AdmissionTransportClass::Bridge));
                             }
                             continue;
                         }
-                        match self.store.pending_push(&envelope, now, rng) {
+                        match self.store.pending_push_with_transport(
+                            &envelope,
+                            now,
+                            AdmissionTransportClass::Bridge,
+                            rng,
+                        ) {
                             Ok(sequence) if work.len() < MAX_PENDING_WORK_PER_TICK => {
-                                work.push((Some(sequence), envelope, now));
+                                work.push((
+                                    Some(sequence),
+                                    envelope,
+                                    now,
+                                    AdmissionTransportClass::Bridge,
+                                ));
                             }
                             Ok(_) | Err(kult_store::StoreError::PendingQuota) => {}
                             Err(error) => return Err(error.into()),
@@ -2875,7 +3256,7 @@ impl Node {
 
         let mut expired_seen = Vec::new();
         let mut expired_pending = Vec::new();
-        work.retain(|(pending_sequence, env, first_seen)| {
+        work.retain(|(pending_sequence, env, first_seen, _)| {
             let expired = now.saturating_sub(*first_seen) > PENDING_TTL_SECS
                 || env.retention_until.is_some_and(|deadline| deadline <= now);
             if expired {
@@ -2926,12 +3307,13 @@ impl Node {
         loop {
             let mut stash = Vec::new();
             let mut established = false;
-            for (pending_sequence, env, first_seen) in work {
+            for (pending_sequence, env, first_seen, transport) in work {
                 match self.consume(
                     &env,
                     ConsumeOrigin {
                         depth: 0,
                         pending_sequence,
+                        transport,
                     },
                     now,
                     rng,
@@ -2950,10 +3332,14 @@ impl Node {
                         }
                     }
                     Consumed::DoneAtomic => {}
+                    Consumed::RejectedAtomic => {}
                     Consumed::Later => {
                         let sequence = match pending_sequence {
                             Some(sequence) => sequence,
-                            None => match self.store.pending_push(&env, first_seen, rng) {
+                            None => match self
+                                .store
+                                .pending_push_with_transport(&env, first_seen, transport, rng)
+                            {
                                 Ok(sequence) => sequence,
                                 Err(kult_store::StoreError::PendingQuota) => {
                                     // Interim overload containment. The
@@ -2965,7 +3351,7 @@ impl Node {
                                 Err(error) => return Err(error.into()),
                             },
                         };
-                        stash.push((Some(sequence), env, first_seen));
+                        stash.push((Some(sequence), env, first_seen, transport));
                     }
                 }
             }
@@ -3244,16 +3630,19 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<(Session, Envelope)> {
-        let mut bundle = PrekeyBundle::decode(bundle_bytes)?.verify(now)?;
+        let target_bundle = PrekeyBundle::decode(bundle_bytes)?;
+        let admission = target_bundle.verify_admission(now).ok();
+        let mut bundle = target_bundle.verify(now)?;
         let reset_markers = self.store.reset_markers()?;
-        if reset_markers.contains(account) || reset_markers.contains(device) {
+        let resetting = reset_markers.contains(account) || reset_markers.contains(device);
+        if resetting {
             bundle = bundle.without_opk();
         }
         let step = self.begin_crypto_step()?;
         let initiated = initiate(&self.device_identity, &bundle, padded, now, rng);
         self.finish_crypto_step(step)?;
         let (session, init) = initiated?;
-        let return_prekey = PrekeyBundle::build(
+        let mut return_prekey = PrekeyBundle::build(
             &self.device_identity,
             &self.vault.spk(),
             &self.vault.pqspk()?,
@@ -3261,6 +3650,12 @@ impl Node {
             now + BUNDLE_TTL_SECS,
             encode_hints(&self.own_hints),
         );
+        return_prekey.attach_admission(
+            &self.device_identity,
+            now,
+            AdmissionPolicy::default(),
+            None,
+        )?;
         let return_bundle = DevicePrekeyBundle::new(
             self.device_state.local_certificate.clone(),
             self.device_state.manifest.clone(),
@@ -3274,14 +3669,99 @@ impl Node {
         let step = self.begin_crypto_step()?;
         let sealed = seal_anonymous(&bundle.bundle().identity, HS_AD, &initial_bytes, rng);
         self.finish_crypto_step(step)?;
+        let body = if let Some(admission) = admission {
+            if sealed.len()
+                > usize::try_from(admission.descriptor.max_first_ciphertext)
+                    .map_err(|_| NodeError::CorruptState)?
+            {
+                return Err(NodeError::Protocol(kult_protocol::ProtocolError::TooLarge));
+            }
+            let context = AdmissionContext {
+                target_account: *account,
+                target_device: *device,
+                bundle_digest: admission.descriptor.bundle_digest,
+                validity_epoch: admission.descriptor.validity_epoch,
+            };
+            let use_invitation = admission.invitation.filter(|_| !resetting);
+            let mut wrapped = AdmissionEnvelope::new(
+                context,
+                if use_invitation.is_some() {
+                    AdmissionProofKind::Invitation
+                } else {
+                    AdmissionProofKind::Puzzle
+                },
+                [0u8; 32],
+                target_bundle.without_invitation_capability().encode(),
+                sealed,
+            )?;
+            wrapped.proof = if let Some(invitation) = use_invitation {
+                admission_invitation_proof(&invitation, &wrapped.context, &wrapped.content_id)
+            } else {
+                solve_admission_puzzle(
+                    &wrapped.context,
+                    &wrapped.content_id,
+                    admission.descriptor.difficulty,
+                    MAX_ADMISSION_PUZZLE_ATTEMPTS,
+                    rng,
+                )?
+            };
+            wrapped.encode()?
+        } else {
+            // Existing Alpha contacts may still complete an authenticated
+            // legacy re-handshake. Unknown legacy senders are rejected before
+            // ML-KEM by the receiver and must exchange a current invitation.
+            sealed
+        };
         Ok((
             session,
             Envelope::new(
                 EnvelopeKind::Handshake,
                 intro_token(device, epoch_day(now)),
-                sealed,
+                body,
             ),
         ))
+    }
+
+    fn sweep_admission(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<()> {
+        let requests = self
+            .store
+            .provisional_requests()?
+            .into_iter()
+            .filter(|request| request.expires_at <= now)
+            .take(MAX_ADMISSION_EXPIRIES_PER_TICK)
+            .collect::<Vec<_>>();
+        let remaining = MAX_ADMISSION_EXPIRIES_PER_TICK.saturating_sub(requests.len());
+        let tombstones = self
+            .store
+            .admission_tombstones()?
+            .into_iter()
+            .filter(|record| record.expires_at <= now)
+            .take(remaining)
+            .collect::<Vec<_>>();
+        if requests.is_empty() && tombstones.is_empty() {
+            return Ok(());
+        }
+        let receipt = self.store.commit_plan(
+            CommitPlan::AdmissionSweep(AdmissionSweepPlan {
+                requests: &requests,
+                tombstones: &tombstones,
+                now,
+                presentation_changed: !requests.is_empty(),
+            }),
+            rng,
+        )?;
+        let mut events = Vec::new();
+        for request in &requests {
+            if self.admission_notifications_remaining == 0 {
+                break;
+            }
+            self.admission_notifications_remaining -= 1;
+            events.push(Event::MessageRequestExpired {
+                request: request.request_id,
+            });
+        }
+        self.accept_commit_receipt(receipt, events);
+        Ok(())
     }
 
     fn sweep_ephemeral(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<()> {
@@ -3885,6 +4365,7 @@ impl Node {
     // ---- receive path ------------------------------------------------------
 
     fn apply_deferred_controls(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<bool> {
+        self.sweep_group_invitations(now, rng)?;
         let mut made_progress = false;
         for control in self
             .store
@@ -3904,7 +4385,7 @@ impl Node {
                 }
                 DeferredControlKind::GroupControl => {
                     let mut established = false;
-                    self.apply_group_control(&control, now, rng, &mut established)?
+                    self.apply_group_control(&control, now, rng, &mut established, false)?
                 }
             };
             if !applied {
@@ -4029,7 +4510,7 @@ impl Node {
             }),
             rng,
         )?;
-        Ok(Consumed::DoneAtomic)
+        Ok(Consumed::RejectedAtomic)
     }
 
     fn consume(
@@ -4122,6 +4603,7 @@ impl Node {
                             ConsumeOrigin {
                                 depth: 1,
                                 pending_sequence: None,
+                                transport: origin.transport,
                             },
                             now,
                             rng,
@@ -4129,7 +4611,12 @@ impl Node {
                         )? {
                             // Reassembled before its session exists — stash
                             // the inner envelope for later ticks.
-                            match self.store.pending_push(&inner, now, rng) {
+                            match self.store.pending_push_with_transport(
+                                &inner,
+                                now,
+                                origin.transport,
+                                rng,
+                            ) {
                                 Ok(_) | Err(kult_store::StoreError::PendingQuota) => {}
                                 Err(error) => return Err(error.into()),
                             }
@@ -4138,9 +4625,14 @@ impl Node {
                 }
                 Ok(Consumed::Done)
             }
-            EnvelopeKind::Handshake => {
-                self.consume_handshake(env, origin.pending_sequence, now, rng, established)
-            }
+            EnvelopeKind::Handshake => self.consume_handshake(
+                env,
+                origin.pending_sequence,
+                origin.transport,
+                now,
+                rng,
+                established,
+            ),
             EnvelopeKind::Message | EnvelopeKind::Receipt | EnvelopeKind::GroupControl => {
                 self.consume_ratchet(env, origin.pending_sequence, now, rng, established)
             }
@@ -4150,10 +4642,29 @@ impl Node {
         }
     }
 
+    fn reserve_admission_candidate(&mut self, transport: AdmissionTransportClass) -> bool {
+        if self
+            .admission_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return false;
+        }
+        let index = admission_transport_index(transport);
+        let Some(remaining) = self.admission_carrier_remaining.get_mut(index) else {
+            return false;
+        };
+        if *remaining == 0 {
+            return false;
+        }
+        *remaining -= 1;
+        true
+    }
+
     fn consume_handshake(
         &mut self,
         env: &Envelope,
         pending_sequence: Option<i64>,
+        transport: AdmissionTransportClass,
         now: u64,
         rng: &mut impl CryptoRngCore,
         established: &mut bool,
@@ -4161,36 +4672,106 @@ impl Node {
         // Every failure below is permanent for this envelope (it cannot
         // become decryptable later), so it is marked seen and dropped —
         // parsers never panic, dropped flights never wedge the queue.
+        let content_id = env.content_id();
+        let mut admission_bundle_digest = None;
+        let mut invitation_admission = false;
+        let admission = if AdmissionEnvelope::is_encoded(&env.body) {
+            if !self.reserve_admission_candidate(transport) {
+                return Ok(Consumed::Later);
+            }
+            if self.admission_puzzles_remaining == 0 {
+                return Ok(Consumed::Later);
+            }
+            self.admission_puzzles_remaining -= 1;
+            let Ok(admission) = AdmissionEnvelope::decode(&env.body) else {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            };
+            let Ok(target_bundle) = PrekeyBundle::decode(&admission.target_bundle) else {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            };
+            let Ok(target_policy) = target_bundle.verify_admission(now) else {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            };
+            if admission.context.target_account != self.account.ed
+                || admission.context.target_device != self.device_id()
+                || target_bundle.identity != self.device_identity.public()
+                || admission.context.bundle_digest != target_policy.descriptor.bundle_digest
+                || admission.context.validity_epoch != target_policy.descriptor.validity_epoch
+                || admission.sealed_flight.len()
+                    > usize::try_from(target_policy.descriptor.max_first_ciphertext)
+                        .map_err(|_| NodeError::CorruptState)?
+            {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            }
+            let proof_valid = match admission.proof_kind {
+                AdmissionProofKind::Puzzle => verify_admission_puzzle(
+                    &admission.context,
+                    &admission.content_id,
+                    &admission.proof,
+                    target_policy.descriptor.difficulty,
+                ),
+                AdmissionProofKind::Invitation => self
+                    .vault
+                    .invitation(&admission.context.bundle_digest, now)
+                    .map(|invitation| {
+                        admission_invitation_proof(
+                            &invitation,
+                            &admission.context,
+                            &admission.content_id,
+                        )
+                    })
+                    .is_some_and(|expected| bool::from(expected.ct_eq(&admission.proof))),
+            };
+            if !proof_valid {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            }
+            let current_pq = self.vault.pqspk()?;
+            if target_bundle.spk_id != self.vault.spk_id
+                || target_bundle.spk != self.vault.spk().public()
+                || target_bundle.pqspk_id != self.vault.pqspk_id
+                || target_bundle.pqspk.as_slice() != current_pq.public()
+            {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            }
+            admission_bundle_digest = Some(admission.context.bundle_digest);
+            invitation_admission = admission.proof_kind == AdmissionProofKind::Invitation;
+            Some(admission)
+        } else {
+            None
+        };
+        let sealed_flight = admission.as_ref().map_or(env.body.as_slice(), |admission| {
+            admission.sealed_flight.as_slice()
+        });
         let step = self.begin_crypto_step()?;
-        let device_open = open_anonymous(&self.device_identity, HS_AD, &env.body);
+        let device_open = open_anonymous(&self.device_identity, HS_AD, sealed_flight);
         self.finish_crypto_step(step)?;
         let (recipient, init_bytes) = if let Ok(bytes) = device_open {
             (&self.device_identity, bytes)
         } else {
-            return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+            return self.commit_terminal_input(content_id, pending_sequence, rng);
         };
         let (raw_initial, sender_bundle, sender_account_bundle) =
             if let Some(flight) = decode_device_initial(&init_bytes) {
                 let Ok(bundle) = DevicePrekeyBundle::decode(&flight.return_bundle) else {
-                    return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    return self.commit_terminal_input(content_id, pending_sequence, rng);
                 };
                 if bundle.verify(now).is_err() {
-                    return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    return self.commit_terminal_input(content_id, pending_sequence, rng);
                 }
                 (flight.initial, Some(bundle), None)
             } else if let Some(flight) = decode_account_initial(&init_bytes) {
                 let Ok(bundle) = PrekeyBundle::decode(&flight.return_bundle) else {
-                    return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    return self.commit_terminal_input(content_id, pending_sequence, rng);
                 };
                 if bundle.verify(now).is_err() {
-                    return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    return self.commit_terminal_input(content_id, pending_sequence, rng);
                 }
                 (flight.initial, None, Some(bundle))
             } else {
                 (init_bytes, None, None)
             };
         let Ok(init) = InitialMessage::decode(&raw_initial) else {
-            return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+            return self.commit_terminal_input(content_id, pending_sequence, rng);
         };
         if sender_bundle
             .as_ref()
@@ -4199,35 +4780,8 @@ impl Node {
                 .as_ref()
                 .is_some_and(|bundle| bundle.identity != init.initiator)
         {
-            return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+            return self.commit_terminal_input(content_id, pending_sequence, rng);
         }
-        if init.spk_id != self.vault.spk_id || init.pqspk_id != self.vault.pqspk_id {
-            return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
-        }
-        let opk = match init.opk_id {
-            Some(id) => match self.vault.opk(id) {
-                Some(opk) => Some(opk),
-                None => {
-                    return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
-                }
-            },
-            None => None,
-        };
-        let spk = self.vault.spk();
-        let pqspk = self.vault.pqspk()?;
-        let step = self.begin_crypto_step()?;
-        let responded = respond(recipient, &spk, &pqspk, opk.as_ref(), &init, now, rng);
-        self.finish_crypto_step(step)?;
-        let Ok((mut session, first_payload)) = responded else {
-            return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
-        };
-
-        let before_vault = self.vault.encode();
-        let mut candidate_vault = self.vault.clone();
-        if let Some(id) = init.opk_id {
-            candidate_vault.remove_opk(id);
-        }
-        let after_vault = candidate_vault.encode();
         let peer_device = init.initiator.ed;
         let (peer, account_identity) = sender_bundle.as_ref().map_or_else(
             || (peer_device, init.initiator.clone()),
@@ -4238,6 +4792,55 @@ impl Node {
                 )
             },
         );
+        let existing_contact = self.store.get_contact(&peer)?;
+        let was_new_contact = existing_contact.is_none();
+        if (admission.is_none() && was_new_contact) || self.store.is_blocked_identity(&peer)? {
+            return self.commit_terminal_input(content_id, pending_sequence, rng);
+        }
+        if was_new_contact {
+            let existing_request = self.store.get_provisional_request(&peer)?;
+            if existing_request.is_none()
+                && self.store.provisional_requests()?.len() >= kult_store::MAX_PROVISIONAL_REQUESTS
+            {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            }
+            if self.admission_kems_remaining == 0 {
+                return Ok(Consumed::Later);
+            }
+            self.admission_kems_remaining -= 1;
+        }
+        if init.spk_id != self.vault.spk_id || init.pqspk_id != self.vault.pqspk_id {
+            return self.commit_terminal_input(content_id, pending_sequence, rng);
+        }
+        let opk = match init.opk_id {
+            Some(id) => match self.vault.opk(id) {
+                Some(opk) => Some(opk),
+                None => {
+                    return self.commit_terminal_input(content_id, pending_sequence, rng);
+                }
+            },
+            None => None,
+        };
+        let spk = self.vault.spk();
+        let pqspk = self.vault.pqspk()?;
+        let step = self.begin_crypto_step()?;
+        let responded = respond(recipient, &spk, &pqspk, opk.as_ref(), &init, now, rng);
+        self.finish_crypto_step(step)?;
+        let Ok((mut session, first_payload)) = responded else {
+            return self.commit_terminal_input(content_id, pending_sequence, rng);
+        };
+
+        let before_vault = self.vault.encode();
+        let mut candidate_vault = self.vault.clone();
+        if let Some(id) = init.opk_id {
+            candidate_vault.remove_opk(id);
+        }
+        if invitation_admission {
+            if let Some(digest) = admission_bundle_digest {
+                candidate_vault.remove_invitation(&digest);
+            }
+        }
+        let after_vault = candidate_vault.encode();
         let identity =
             postcard::to_allocvec(&account_identity).map_err(|_| NodeError::CorruptState)?;
         let account_return_bundle = sender_account_bundle
@@ -4245,9 +4848,7 @@ impl Node {
             .map_or_else(Vec::new, PrekeyBundle::encode);
         let account_return_hints = sender_account_bundle
             .as_ref()
-            .map_or_else(Vec::new, |bundle| bundle.relay_hints.clone());
-        let existing_contact = self.store.get_contact(&peer)?;
-        let was_new_contact = existing_contact.is_none();
+            .map_or_else(Vec::new, PrekeyBundle::transport_hints);
         let contact = if let Some(mut contact) = existing_contact {
             if sender_account_bundle.is_some() {
                 contact.identity = identity;
@@ -4308,8 +4909,9 @@ impl Node {
                 let mut hints = prior.map_or_else(Vec::new, |endpoint| endpoint.hints.clone());
                 if advertised {
                     endpoint_bundle = bundle.prekey.encode();
-                    if !bundle.prekey.relay_hints.is_empty() || hints.is_empty() {
-                        hints = bundle.prekey.relay_hints.clone();
+                    let advertised_hints = bundle.prekey.transport_hints();
+                    if !advertised_hints.is_empty() || hints.is_empty() {
+                        hints = advertised_hints;
                     }
                 }
                 let endpoint = ContactDeviceRecord {
@@ -4392,6 +4994,94 @@ impl Node {
             endpoints.push(endpoint);
         }
 
+        if was_new_contact {
+            if !existing_endpoints.is_empty() {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            }
+            let Ok(first_content) = unpad(&first_payload) else {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            };
+            if first_content.len() > MAX_PROVISIONAL_CONTENT_BYTES {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            }
+            let preview = if first_content.is_empty() {
+                String::new()
+            } else {
+                match decode_content(&first_content) {
+                    DecodedContent::LegacyText(text) | DecodedContent::Text { text, .. } => {
+                        bounded_request_preview(text)
+                    }
+                    _ => {
+                        return self.commit_terminal_input(content_id, pending_sequence, rng);
+                    }
+                }
+            };
+            let safety = safety_number(&self.account, &account_identity);
+            let session_bytes =
+                postcard::to_allocvec(&session).map_err(|_| NodeError::CorruptState)?;
+            let request = ProvisionalRequestRecord {
+                version: PROVISIONAL_REQUEST_VERSION,
+                request_id: content_id,
+                account: peer,
+                device: peer_device,
+                contact,
+                devices: endpoints,
+                session: session_bytes,
+                first_content,
+                preview,
+                safety_number: safety.digits,
+                safety_number_qr: safety.qr,
+                arrived_at: now,
+                expires_at: now.saturating_add(MAX_PROVISIONAL_LIFETIME_SECS),
+                transport,
+            };
+            let before = self.store.get_provisional_request(&peer)?;
+            if before.as_ref().is_some_and(|prior| {
+                (request.arrived_at, request.request_id) <= (prior.arrived_at, prior.request_id)
+            }) {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            }
+            let vault_changed = init.opk_id.is_some() || invitation_admission;
+            let prekeys = vault_changed.then_some(PrekeyTransition {
+                before: Some(before_vault.as_ref()),
+                after: after_vault.as_ref(),
+            });
+            let source_pending = Self::pending_delete(pending_sequence, content_id);
+            let staged = self.store.commit_plan(
+                CommitPlan::AdmissionStage(AdmissionStagePlan {
+                    prekeys,
+                    before: before.as_ref(),
+                    after: &request,
+                    content_id,
+                    source_pending,
+                    presentation_changed: true,
+                }),
+                rng,
+            );
+            let receipt = match staged {
+                Ok(receipt) => receipt,
+                Err(kult_store::StoreError::AdmissionQuota) => {
+                    return self.commit_terminal_input(content_id, pending_sequence, rng);
+                }
+                Err(error) => return Err(error.into()),
+            };
+            self.before_memory_replacement()?;
+            if vault_changed {
+                self.vault = candidate_vault;
+            }
+            self.after_memory_replacement()?;
+            let events = if self.admission_notifications_remaining == 0 {
+                Vec::new()
+            } else {
+                self.admission_notifications_remaining -= 1;
+                vec![Event::MessageRequestReceived {
+                    request: content_id,
+                }]
+            };
+            self.accept_commit_receipt(receipt, events);
+            return Ok(Consumed::DoneAtomic);
+        }
+
         cleanup_devices.sort_unstable();
         cleanup_devices.dedup();
         let mut delete_sessions = Vec::new();
@@ -4434,7 +5124,7 @@ impl Node {
         let needs_receipt = prepared_inbound.is_some();
         let receipt_queue = if needs_receipt {
             let payload = ReceiptPayload {
-                acks: vec![env.content_id()],
+                acks: vec![content_id],
                 nacks: Vec::new(),
             }
             .encode();
@@ -4447,16 +5137,14 @@ impl Node {
             .iter()
             .map(|before| ContactDeviceDelete { before })
             .collect::<Vec<_>>();
-        let source_pending = Self::pending_delete(pending_sequence, env.content_id());
+        let source_pending = Self::pending_delete(pending_sequence, content_id);
         let mut events = Vec::new();
-        if was_new_contact {
-            events.push(Event::ContactAdded { peer });
-        }
         events.push(Event::SessionEstablished { peer });
         if let Some(prepared) = prepared_inbound.as_ref() {
             events.extend(prepared.events.clone());
         }
-        let prekeys = init.opk_id.map(|_| PrekeyTransition {
+        let vault_changed = init.opk_id.is_some() || invitation_admission;
+        let prekeys = vault_changed.then_some(PrekeyTransition {
             before: Some(before_vault.as_ref()),
             after: after_vault.as_ref(),
         });
@@ -4488,7 +5176,7 @@ impl Node {
                     .as_ref()
                     .map_or(&[], |prepared| prepared.media_objects.as_slice()),
                 queue: receipt_queue.as_slice(),
-                content_id: env.content_id(),
+                content_id,
                 received_at: now,
                 receipt_replay: needs_receipt,
                 source_pending,
@@ -4497,7 +5185,7 @@ impl Node {
             rng,
         )?;
         self.before_memory_replacement()?;
-        if init.opk_id.is_some() {
+        if vault_changed {
             self.vault = candidate_vault;
         }
         for device in cleanup_devices {
@@ -4834,8 +5522,9 @@ impl Node {
                     body,
                     received_at: now,
                 };
+                let (retain_control, invitation_event) = self.admit_group_control(&control)?;
                 let source_pending = Self::pending_delete(pending_sequence, env.content_id());
-                self.store.commit_plan(
+                let receipt = self.store.commit_plan(
                     CommitPlan::ReceiptReceive(ReceiptReceivePlan {
                         session: SessionTransition {
                             peer_device,
@@ -4851,16 +5540,17 @@ impl Node {
                         media_transfers: &[],
                         media_objects: &[],
                         capabilities: None,
-                        deferred_control: Some(&control),
+                        deferred_control: retain_control.then_some(&control),
                         content_id: env.content_id(),
                         source_pending,
-                        presentation_changed: false,
+                        presentation_changed: invitation_event.is_some(),
                     }),
                     rng,
                 )?;
                 self.before_memory_replacement()?;
                 self.sessions.insert(peer_device, after);
                 self.after_memory_replacement()?;
+                self.accept_commit_receipt(receipt, invitation_event);
                 Ok(Consumed::DoneAtomic)
             }
             _ => unreachable!("consume() routes only Message/Receipt/GroupControl here"),
@@ -5874,6 +6564,7 @@ impl Node {
 
             let mut sent = false;
             let mut sent_fragments = None;
+            let mut capacity_refused = false;
             for (_, transport, hint) in &candidates {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
@@ -5887,10 +6578,16 @@ impl Node {
                 else {
                     break;
                 };
-                if let Ok(fragments) = result {
-                    sent_fragments = fragments;
-                    sent = true;
-                    break;
+                match result {
+                    Ok(fragments) => {
+                        sent_fragments = fragments;
+                        sent = true;
+                        break;
+                    }
+                    Err(NodeError::Transport(kult_transport::TransportError::RefusedByNextHop)) => {
+                        capacity_refused = true;
+                    }
+                    Err(_) => {}
                 }
             }
 
@@ -5943,7 +6640,11 @@ impl Node {
                     }
                 }
             } else {
-                schedule_passive_retry(&mut item, now);
+                if capacity_refused {
+                    schedule_capacity_retry(&mut item, now);
+                } else {
+                    schedule_passive_retry(&mut item, now);
+                }
                 self.commit_queue_maintenance(
                     seq,
                     &before,
@@ -6224,7 +6925,7 @@ impl Node {
         let Some(bundle) = self.lookup_bundle(identity.address_digest(), now).await else {
             return Ok(hints);
         };
-        let found = decode_hints(&bundle.prekey.relay_hints);
+        let found = decode_hints(&bundle.prekey.transport_hints());
         if found.is_empty() {
             return Ok(hints);
         }
@@ -6329,6 +7030,14 @@ fn schedule_passive_retry(item: &mut QueueItem, now: u64) {
     item.next_attempt_at = now.saturating_add(delay);
 }
 
+fn schedule_capacity_retry(item: &mut QueueItem, now: u64) {
+    if item.created_at == 0 {
+        item.created_at = now;
+    }
+    item.attempts = item.attempts.saturating_add(1);
+    item.next_attempt_at = now.saturating_add(capacity_retry_delay(item.attempts));
+}
+
 fn schedule_after_handoff(item: &mut QueueItem, now: u64) {
     if item.created_at == 0 {
         item.created_at = now;
@@ -6350,6 +7059,33 @@ fn retry_delay(attempts: u32) -> u64 {
     delay
 }
 
+fn capacity_retry_delay(attempts: u32) -> u64 {
+    let exponent = attempts.saturating_sub(1).min(5);
+    (CAPACITY_RETRY_BASE_SECS << exponent).min(CAPACITY_RETRY_CAP_SECS)
+}
+
+fn admission_transport(ingress: IngressClass) -> AdmissionTransportClass {
+    match ingress {
+        IngressClass::Unknown => AdmissionTransportClass::Unknown,
+        IngressClass::Direct => AdmissionTransportClass::Direct,
+        IngressClass::Mailbox => AdmissionTransportClass::Mailbox,
+        IngressClass::Mesh => AdmissionTransportClass::Mesh,
+        IngressClass::Delayed => AdmissionTransportClass::Delayed,
+        IngressClass::Bridge => AdmissionTransportClass::Bridge,
+    }
+}
+
+fn admission_transport_index(transport: AdmissionTransportClass) -> usize {
+    match transport {
+        AdmissionTransportClass::Unknown => 0,
+        AdmissionTransportClass::Direct => 1,
+        AdmissionTransportClass::Mailbox => 2,
+        AdmissionTransportClass::Mesh => 3,
+        AdmissionTransportClass::Delayed => 4,
+        AdmissionTransportClass::Bridge => 5,
+    }
+}
+
 fn scheduled_info(record: ScheduledMessageRecord) -> ScheduledMessageInfo {
     let conversation = match record.conversation {
         StoreScheduledConversation::Peer(peer) => ScheduledConversation::Peer(peer),
@@ -6362,6 +7098,17 @@ fn scheduled_info(record: ScheduledMessageRecord) -> ScheduledMessageInfo {
         not_before: record.not_before,
         body: record.body,
     }
+}
+
+fn bounded_request_preview(text: &str) -> String {
+    if text.len() <= MAX_PROVISIONAL_PREVIEW_BYTES {
+        return text.to_owned();
+    }
+    let mut boundary = MAX_PROVISIONAL_PREVIEW_BYTES;
+    while !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    text[..boundary].to_owned()
 }
 
 fn encode_hints(hints: &[DeliveryHint]) -> Vec<Vec<u8>> {
@@ -6380,6 +7127,22 @@ fn decode_hints(blobs: &[Vec<u8>]) -> Vec<DeliveryHint> {
         .iter()
         .filter_map(|bytes| postcard::from_bytes(bytes).ok())
         .collect()
+}
+
+#[cfg(test)]
+mod scheduler_tests {
+    use super::*;
+
+    #[test]
+    fn capacity_refusal_retries_promptly_then_caps() {
+        assert_eq!(capacity_retry_delay(1), 1);
+        assert_eq!(capacity_retry_delay(2), 2);
+        assert_eq!(capacity_retry_delay(3), 4);
+        assert_eq!(capacity_retry_delay(4), 8);
+        assert_eq!(capacity_retry_delay(5), 16);
+        assert_eq!(capacity_retry_delay(6), 30);
+        assert_eq!(capacity_retry_delay(u32::MAX), 30);
+    }
 }
 
 #[cfg(test)]

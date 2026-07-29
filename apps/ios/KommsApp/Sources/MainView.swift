@@ -11,6 +11,7 @@ struct MainView: View {
     @State private var showAdd = false
     @State private var showSettings = false
     @State private var showCreateGroup = false
+    @State private var showRequests = false
     @State private var showNodeDetails = false
     @State private var showFilters = false
     @State private var renameContact: Contact?
@@ -55,6 +56,25 @@ struct MainView: View {
                         }
                         .buttonStyle(.plain)
                     }
+                }
+
+                Section {
+                    Button {
+                        showRequests = true
+                    } label: {
+                        HStack {
+                            Label("Message requests", systemImage: "person.crop.circle.badge.questionmark")
+                            Spacer()
+                            Text(pendingRequestCount == 0 ? "None" : "\(pendingRequestCount)")
+                                .foregroundStyle(.secondary)
+                                .accessibilityLabel(
+                                    pendingRequestCount == 0
+                                        ? "No pending requests"
+                                        : "\(pendingRequestCount) pending requests"
+                                )
+                        }
+                    }
+                    .accessibilityHint("Review unknown senders and group invitations")
                 }
 
                 if model.pinRows.contains(where: \.pinned) {
@@ -200,6 +220,7 @@ struct MainView: View {
             .sheet(isPresented: $showFilters) { ConversationFiltersView() }
             .sheet(isPresented: $showMyQr) { MyBundleView() }
             .sheet(isPresented: $showAdd) { AddContactView() }
+            .sheet(isPresented: $showRequests) { MessageRequestsView() }
             .sheet(isPresented: Binding(
                 get: { renameContact != nil },
                 set: { if !$0 { renameContact = nil } })) {
@@ -215,6 +236,10 @@ struct MainView: View {
                 }
             }
         }
+    }
+
+    private var pendingRequestCount: Int {
+        model.messageRequests.count + model.groupInvitations.count
     }
 
     private var filterIcon: String {

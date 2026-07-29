@@ -221,7 +221,7 @@ fn root_free_backup_restores_exact_ids_names_order_membership_and_stale_behavior
         .unwrap();
     let before = node.folders().unwrap();
     let (backup, mnemonic) = node.export_backup(NOW + 1, &mut rng).unwrap();
-    assert_eq!(&backup[..4], b"KKR8");
+    assert_eq!(&backup[..4], b"KKR9");
     let restored = Node::restore_with_recovery_authority(
         &directory.path().join("restored.db"),
         &backup,

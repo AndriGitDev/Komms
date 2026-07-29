@@ -8,6 +8,56 @@ use kult_store::{
 };
 use kult_transport::DeliveryHint;
 
+/// Render-safe row in the bounded first-contact request inbox.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MessageRequestInfo {
+    /// Stable opaque request id used by Accept, Delete, and Block.
+    pub id: [u8; 16],
+    /// Verified stable sender account.
+    pub account: [u8; 32],
+    /// Verified sender physical device.
+    pub device: [u8; 32],
+    /// Bounded UTF-8 first-message preview.
+    pub preview: String,
+    /// Symmetric 30-digit safety number, grouped for display.
+    pub safety_number: String,
+    /// Local arrival time.
+    pub arrived_at: u64,
+    /// Absolute local expiry.
+    pub expires_at: u64,
+    /// Privacy-preserving coarse ingress class.
+    pub transport: kult_store::AdmissionTransportClass,
+}
+
+/// Render-safe row in the bounded group-invitation request inbox.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupInvitationInfo {
+    /// Exact authenticated control id used by Accept and Delete.
+    pub id: [u8; 16],
+    /// Random group id proposed by the inviter.
+    pub group: [u8; 32],
+    /// Pairwise-authenticated inviting account.
+    pub inviter: [u8; 32],
+    /// Pairwise-authenticated inviting physical device.
+    pub inviter_device: [u8; 32],
+    /// Bounded creator- or authority-authenticated display name.
+    pub name: String,
+    /// Account that currently manages the proposed group.
+    pub creator: [u8; 32],
+    /// Complete bounded roster size.
+    pub member_count: u32,
+    /// Proposed group generation.
+    pub generation: u64,
+    /// Whether the sender-chain capability is scoped to this recipient device.
+    pub recipient_scoped: bool,
+    /// Whether the proposal carries signed group authority.
+    pub signed_authority: bool,
+    /// Local arrival time.
+    pub arrived_at: u64,
+    /// Absolute local expiry.
+    pub expires_at: u64,
+}
+
 /// Optional exact crop in oriented source pixels for a custom icon.
 /// Absence requests the deterministic centered-square crop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -562,6 +612,33 @@ pub enum Command {
         bundle: Vec<u8>,
         /// How to reach them, per transport.
         hints: Vec<DeliveryHint>,
+    },
+    /// Atomically promote one sealed message request into a normal contact.
+    MessageRequestAccept {
+        /// Exact opaque request id.
+        request: [u8; 16],
+        /// Private local petname.
+        name: String,
+    },
+    /// Delete one request, retaining only a short replay tombstone.
+    MessageRequestDelete {
+        /// Exact opaque request id.
+        request: [u8; 16],
+    },
+    /// Block the exact verified sender account/device and delete its request.
+    MessageRequestBlock {
+        /// Exact opaque request id.
+        request: [u8; 16],
+    },
+    /// Explicitly join one authenticated group invitation.
+    GroupInvitationAccept {
+        /// Exact opaque invitation id.
+        invitation: [u8; 16],
+    },
+    /// Delete one group invitation without claiming remote deletion.
+    GroupInvitationDelete {
+        /// Exact opaque invitation id.
+        invitation: [u8; 16],
     },
     /// Rename a stored contact's private local petname by exact peer identity.
     RenameContact {
@@ -1166,6 +1243,59 @@ pub enum Event {
         timestamp: u64,
         /// UTF-8 note text.
         body: String,
+    },
+    /// A valid unknown sender entered the bounded request inbox.
+    MessageRequestReceived {
+        /// Stable opaque request id.
+        request: [u8; 16],
+    },
+    /// A request was explicitly accepted and promoted.
+    MessageRequestAccepted {
+        /// Stable opaque request id.
+        request: [u8; 16],
+        /// Verified stable account now present as a contact.
+        peer: [u8; 32],
+    },
+    /// A request was explicitly deleted, without a remote-deletion claim.
+    MessageRequestDeleted {
+        /// Stable opaque request id.
+        request: [u8; 16],
+    },
+    /// A request sender was blocked locally.
+    MessageRequestBlocked {
+        /// Stable opaque request id.
+        request: [u8; 16],
+    },
+    /// A provisional request and its isolated keys expired locally.
+    MessageRequestExpired {
+        /// Stable opaque request id.
+        request: [u8; 16],
+    },
+    /// An authenticated group proposal entered the bounded invitation inbox.
+    GroupInvitationReceived {
+        /// Exact opaque invitation id.
+        invitation: [u8; 16],
+        /// Proposed group id.
+        group: [u8; 32],
+        /// Pairwise-authenticated inviter.
+        inviter: [u8; 32],
+    },
+    /// A group invitation was explicitly accepted.
+    GroupInvitationAccepted {
+        /// Exact opaque invitation id.
+        invitation: [u8; 16],
+        /// Joined group id.
+        group: [u8; 32],
+    },
+    /// A group invitation was explicitly deleted.
+    GroupInvitationDeleted {
+        /// Exact opaque invitation id.
+        invitation: [u8; 16],
+    },
+    /// A group invitation expired without changing membership.
+    GroupInvitationExpired {
+        /// Exact opaque invitation id.
+        invitation: [u8; 16],
     },
     /// An unknown peer completed a handshake with us; a contact stub was
     /// created (unverified, no hints — the application fills those in).

@@ -77,8 +77,8 @@ use crate::mailbox::{
 };
 use crate::mdns::{self, DiscoveredPeer};
 use crate::{
-    CostClass, DeliveryHint, Discovery, LatencyClass, LinkProfile, MailboxConfig, Reachability,
-    Result, SendReceipt, Transport, TransportError,
+    CostClass, DeliveryHint, Discovery, InboundReceipt, IngressClass, LatencyClass, LinkProfile,
+    MailboxConfig, Reachability, ReceivedEnvelope, Result, SendReceipt, Transport, TransportError,
 };
 
 /// Poison recovery for the transport's shared-state mutexes. A panicking
@@ -286,6 +286,11 @@ enum Cmd {
         addr: Multiaddr,
         done: oneshot::Sender<bool>,
     },
+    /// Settle one direct inbound request after durable endpoint admission.
+    SettleInbound {
+        receipt: InboundReceipt,
+        accepted: bool,
+    },
 }
 
 /// In-flight mailbox requests awaiting their response.
@@ -380,7 +385,7 @@ impl BridgeBuffer {
 /// Mailbox collection is locally initiated and bounded per response as well
 /// as across responses retained before the delivery engine drains this queue.
 struct InternetInbox {
-    queue: Vec<Envelope>,
+    queue: Vec<ReceivedEnvelope>,
     direct_items: usize,
     direct_bytes: usize,
     collected_items: usize,
@@ -399,7 +404,7 @@ impl InternetInbox {
     }
 
     /// Admit an unsolicited direct envelope or refuse it without mutation.
-    fn push_direct(&mut self, envelope: Envelope) -> bool {
+    fn push_direct(&mut self, envelope: Envelope, receipt: InboundReceipt) -> bool {
         let encoded_len = envelope.encoded_len();
         if encoded_len > MAX_ENVELOPE_BYTES {
             return false;
@@ -412,7 +417,11 @@ impl InternetInbox {
         }
         self.direct_items += 1;
         self.direct_bytes = next_bytes;
-        self.queue.push(envelope);
+        self.queue.push(ReceivedEnvelope {
+            envelope,
+            receipt: Some(receipt),
+            ingress: IngressClass::Direct,
+        });
         true
     }
 
@@ -430,11 +439,15 @@ impl InternetInbox {
         }
         self.collected_items += 1;
         self.collected_bytes = next_bytes;
-        self.queue.push(envelope);
+        self.queue.push(ReceivedEnvelope {
+            envelope,
+            receipt: None,
+            ingress: IngressClass::Mailbox,
+        });
         true
     }
 
-    fn drain(&mut self) -> Vec<Envelope> {
+    fn drain(&mut self) -> Vec<ReceivedEnvelope> {
         self.direct_items = 0;
         self.direct_bytes = 0;
         self.collected_items = 0;
@@ -1117,9 +1130,12 @@ fn unix_now() -> u64 {
 impl Transport for Libp2pTransport {
     fn profile(&self) -> LinkProfile {
         LinkProfile {
-            // Practical ceiling per docs/05-transports.md §6; the codec caps
-            // requests well above this.
-            mtu: 64 * 1024,
+            // Direct-envelope v2 admits one complete bounded envelope before
+            // acknowledging it. Advertising the protocol ceiling keeps a
+            // 64 KiB padded attachment record plus ratchet overhead atomic
+            // instead of producing memory-only fragments that must be
+            // refused by durable endpoint admission.
+            mtu: MAX_ENVELOPE_BYTES,
             latency: LatencyClass::Millis,
             cost: CostClass::Metered,
             broadcast: false,
@@ -1186,7 +1202,25 @@ impl Transport for Libp2pTransport {
     }
 
     async fn recv(&self) -> Result<Vec<Envelope>> {
+        let received = self.inbox.lock_unpoisoned().drain();
+        let mut envelopes = Vec::with_capacity(received.len());
+        for item in received {
+            if let Some(receipt) = item.receipt {
+                self.settle_recv(receipt, true).await?;
+            }
+            envelopes.push(item.envelope);
+        }
+        Ok(envelopes)
+    }
+
+    async fn recv_staged(&self) -> Result<Vec<ReceivedEnvelope>> {
         Ok(self.inbox.lock_unpoisoned().drain())
+    }
+
+    async fn settle_recv(&self, receipt: InboundReceipt, accepted: bool) -> Result<()> {
+        self.cmds
+            .send(Cmd::SettleInbound { receipt, accepted })
+            .map_err(|_| io_other("transport task stopped"))
     }
 
     async fn recv_transit(&self) -> Result<Vec<Envelope>> {
@@ -1340,6 +1374,9 @@ async fn run_swarm(
     let mut call_waiters: HashMap<PeerId, Vec<oneshot::Sender<bool>>> = HashMap::new();
     let mut call_targets: HashMap<PeerId, Multiaddr> = HashMap::new();
     let mut call_dials: HashMap<ConnectionId, PeerId> = HashMap::new();
+    let mut inbound_responses: HashMap<u64, request_response::ResponseChannel<bool>> =
+        HashMap::new();
+    let mut next_inbound_receipt = 1u64;
 
     loop {
         tokio::select! {
@@ -1475,6 +1512,14 @@ async fn run_swarm(
                             &mut call_waiters,
                             &mut call_targets,
                         );
+                    }
+                }
+                Some(Cmd::SettleInbound { receipt, accepted }) => {
+                    if let Some(channel) = inbound_responses.remove(&receipt.value()) {
+                        let _ = swarm
+                            .behaviour_mut()
+                            .envelopes
+                            .send_response(channel, accepted);
                     }
                 }
                 Some(Cmd::Op { peer, addr, op }) => {
@@ -1621,17 +1666,36 @@ async fn run_swarm(
                 SwarmEvent::Behaviour(KultBehaviourEvent::Envelopes(ev)) => match ev {
                     request_response::Event::Message { message, .. } => match message {
                         request_response::Message::Request { request, channel, .. } => {
-                            // Decode enforces the project wire cap before it
-                            // allocates the envelope body. A valid request is
-                            // acknowledged only when the bounded inbox kept
-                            // it; malformed or overflow work is an explicit
-                            // refusal that the sender can retry elsewhere.
-                            let accepted = Envelope::decode(&request)
-                                .is_ok_and(|env| inbox.lock_unpoisoned().push_direct(env));
-                            let _ = swarm
-                                .behaviour_mut()
-                                .envelopes
-                                .send_response(channel, accepted);
+                            // Decode and RAM budgets are only a prefilter. A
+                            // valid direct request remains unanswered until
+                            // the endpoint node durably stages or completely
+                            // consumes it.
+                            match Envelope::decode(&request) {
+                                Ok(envelope)
+                                    if inbound_responses.len() < DIRECT_INBOX_MAX_ITEMS =>
+                                {
+                                    let receipt = InboundReceipt::new(next_inbound_receipt);
+                                    next_inbound_receipt =
+                                        next_inbound_receipt.wrapping_add(1).max(1);
+                                    if inbox
+                                        .lock_unpoisoned()
+                                        .push_direct(envelope, receipt)
+                                    {
+                                        inbound_responses.insert(receipt.value(), channel);
+                                    } else {
+                                        let _ = swarm
+                                            .behaviour_mut()
+                                            .envelopes
+                                            .send_response(channel, false);
+                                    }
+                                }
+                                Ok(_) | Err(_) => {
+                                    let _ = swarm
+                                        .behaviour_mut()
+                                        .envelopes
+                                        .send_response(channel, false);
+                                }
+                            }
                         }
                         request_response::Message::Response {
                             request_id,
@@ -1840,23 +1904,23 @@ mod tests {
     fn direct_inbox_item_cap_refuses_without_mutation_and_recovers_after_drain() {
         let mut inbox = InternetInbox::new();
         for i in 0..DIRECT_INBOX_MAX_ITEMS {
-            assert!(inbox.push_direct(small_envelope(i as u8)));
+            assert!(inbox.push_direct(small_envelope(i as u8), InboundReceipt::new(i as u64 + 1)));
         }
         let items = inbox.direct_items;
         let bytes = inbox.direct_bytes;
-        assert!(!inbox.push_direct(small_envelope(255)));
+        assert!(!inbox.push_direct(small_envelope(255), InboundReceipt::new(10_000)));
         assert_eq!(inbox.direct_items, items);
         assert_eq!(inbox.direct_bytes, bytes);
 
         assert_eq!(inbox.drain().len(), DIRECT_INBOX_MAX_ITEMS);
-        assert!(inbox.push_direct(small_envelope(1)));
+        assert!(inbox.push_direct(small_envelope(1), InboundReceipt::new(1)));
     }
 
     #[test]
     fn direct_inbox_byte_cap_bounds_maximal_envelopes() {
         let mut inbox = InternetInbox::new();
         let oversized = Envelope::new(EnvelopeKind::Message, [6; 32], vec![0; MAX_ENVELOPE_BYTES]);
-        assert!(!inbox.push_direct(oversized));
+        assert!(!inbox.push_direct(oversized, InboundReceipt::new(2)));
 
         let maximal = Envelope::new(
             EnvelopeKind::Message,
@@ -1864,11 +1928,11 @@ mod tests {
             vec![0; MAX_ENVELOPE_BYTES - ENVELOPE_V1_HEADER_LEN],
         );
         let count = DIRECT_INBOX_MAX_BYTES / MAX_ENVELOPE_BYTES;
-        for _ in 0..count {
-            assert!(inbox.push_direct(maximal.clone()));
+        for i in 0..count {
+            assert!(inbox.push_direct(maximal.clone(), InboundReceipt::new(i as u64 + 1)));
         }
         assert_eq!(inbox.direct_bytes, DIRECT_INBOX_MAX_BYTES);
-        assert!(!inbox.push_direct(small_envelope(8)));
+        assert!(!inbox.push_direct(small_envelope(8), InboundReceipt::new(10_000)));
     }
 
     #[test]

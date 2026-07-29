@@ -15,6 +15,10 @@ pub enum NodeError {
     Transport(kult_transport::TransportError),
     /// The peer is not a stored contact.
     UnknownPeer,
+    /// The bounded message-request id is absent or has expired.
+    UnknownMessageRequest,
+    /// The bounded group-invitation id is absent, invalid, or has expired.
+    UnknownGroupInvitation,
     /// A local petname is empty, control-bearing, or exceeds its canonical bound.
     InvalidContactName,
     /// The proposed petname has warnings that the caller has not acknowledged.
@@ -162,6 +166,12 @@ impl std::fmt::Display for NodeError {
             Self::Protocol(e) => write!(f, "protocol error: {e}"),
             Self::Transport(e) => write!(f, "transport error: {e}"),
             Self::UnknownPeer => f.write_str("peer is not a stored contact"),
+            Self::UnknownMessageRequest => {
+                f.write_str("message request does not exist or has expired")
+            }
+            Self::UnknownGroupInvitation => {
+                f.write_str("group invitation does not exist or has expired")
+            }
             Self::InvalidContactName => f.write_str("invalid contact name"),
             Self::ContactNameReviewRequired => {
                 f.write_str("contact name warnings require explicit confirmation")

@@ -44,14 +44,16 @@ use kult_ffi::{
     FolderConversationResult as FfiFolderConversationResult, FolderSelection as FfiFolderSelection,
     FolderSelectionKind as FfiFolderSelectionKind, FolderTarget as FfiFolderTarget,
     FolderTargetKind as FfiFolderTargetKind, GroupAuthority as FfiGroupAuthority,
+    GroupInvitation as FfiGroupInvitation,
     GroupMessageAuthentication as FfiGroupMessageAuthentication, GroupPoll as FfiGroupPoll,
     GroupRole as FfiGroupRole, GroupSecurity as FfiGroupSecurity,
     GroupSecurityLevel as FfiGroupSecurityLevel, Hint, ImageCrop, ImageEditRecipe, ImageEditRegion,
     ImageEditRegionKind, ImageInfo, KdfChoice, KultNode, Label as FfiLabel,
     LabelConversation as FfiLabelConversation, LabelFilterResult as FfiLabelFilterResult,
     LabelMatchMode as FfiLabelMatchMode, LabelTarget as FfiLabelTarget,
-    LabelTargetKind as FfiLabelTargetKind, MentionCapabilityIssueReason, MentionSpan, NatVerdict,
-    Pin as FfiPin, PinConversation as FfiPinConversation,
+    LabelTargetKind as FfiLabelTargetKind, MentionCapabilityIssueReason, MentionSpan,
+    MessageRequest as FfiMessageRequest, MessageRequestTransport as FfiMessageRequestTransport,
+    NatVerdict, Pin as FfiPin, PinConversation as FfiPinConversation,
     PinConversationResult as FfiPinConversationResult, PinTarget as FfiPinTarget,
     PinTargetKind as FfiPinTargetKind, ScheduledConversation, StaleFolder as FfiStaleFolder,
     StaleLabel as FfiStaleLabel, TextFormatBlockKind as FfiTextFormatBlockKind,
@@ -427,6 +429,49 @@ pub struct UiContact {
     pub name: String,
     /// Whether safety numbers were verified out-of-band.
     pub verified: bool,
+}
+
+/// A sealed unknown-sender request awaiting a local decision.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiMessageRequest {
+    /// Stable opaque request id.
+    pub id: String,
+    /// Verified stable sender account.
+    pub account: String,
+    /// Verified exact sender device.
+    pub device: String,
+    /// Bounded first-message preview.
+    pub preview: String,
+    /// Symmetric safety number.
+    pub safety_number: String,
+    /// Local arrival time.
+    pub arrived_at: u64,
+    /// Local expiry time.
+    pub expires_at: u64,
+    /// Privacy-preserving ingress class.
+    pub transport: &'static str,
+}
+
+impl UiMessageRequest {
+    fn from_ffi(request: FfiMessageRequest) -> Self {
+        Self {
+            id: request.id,
+            account: request.account,
+            device: request.device,
+            preview: request.preview,
+            safety_number: request.safety_number,
+            arrived_at: request.arrived_at,
+            expires_at: request.expires_at,
+            transport: match request.transport {
+                FfiMessageRequestTransport::Unknown => "unknown",
+                FfiMessageRequestTransport::Direct => "direct",
+                FfiMessageRequestTransport::Mailbox => "mailbox",
+                FfiMessageRequestTransport::Mesh => "mesh",
+                FfiMessageRequestTransport::Delayed => "delayed",
+                FfiMessageRequestTransport::Bridge => "bridge",
+            },
+        }
+    }
 }
 
 /// One exact UTF-8 source range composed into local formatting.
@@ -1154,6 +1199,54 @@ pub struct UiGroup {
     pub security: &'static str,
 }
 
+/// An authenticated group proposal awaiting local membership consent.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiGroupInvitation {
+    /// Stable opaque invitation id.
+    pub id: String,
+    /// Proposed group id.
+    pub group: String,
+    /// Pairwise-authenticated inviter.
+    pub inviter: String,
+    /// Exact inviter device.
+    pub inviter_device: String,
+    /// Authenticated proposed name.
+    pub name: String,
+    /// Proposed managing account.
+    pub creator: String,
+    /// Complete proposed roster size.
+    pub member_count: u32,
+    /// Proposed generation.
+    pub generation: u64,
+    /// Whether the capability is scoped to this exact device.
+    pub recipient_scoped: bool,
+    /// Whether signed authority was supplied.
+    pub signed_authority: bool,
+    /// Local arrival time.
+    pub arrived_at: u64,
+    /// Local expiry time.
+    pub expires_at: u64,
+}
+
+impl UiGroupInvitation {
+    fn from_ffi(invitation: FfiGroupInvitation) -> Self {
+        Self {
+            id: invitation.id,
+            group: invitation.group,
+            inviter: invitation.inviter,
+            inviter_device: invitation.inviter_device,
+            name: invitation.name,
+            creator: invitation.creator,
+            member_count: invitation.member_count,
+            generation: invitation.generation,
+            recipient_scoped: invitation.recipient_scoped,
+            signed_authority: invitation.signed_authority,
+            arrived_at: invitation.arrived_at,
+            expires_at: invitation.expires_at,
+        }
+    }
+}
+
 /// Render-safe group recipient-origin upgrade details.
 #[derive(Clone, Debug, Serialize)]
 pub struct UiGroupSecurity {
@@ -1804,6 +1897,33 @@ pub enum UiEvent {
         /// Original canonical Text content id (hex).
         target_content_id: String,
     },
+    /// A valid unknown sender entered the sealed request inbox.
+    MessageRequestReceived {
+        /// Stable opaque request id.
+        request: String,
+    },
+    /// A request was explicitly accepted.
+    MessageRequestAccepted {
+        /// Stable opaque request id.
+        request: String,
+        /// Verified account now present as a contact.
+        peer: String,
+    },
+    /// A request was explicitly deleted locally.
+    MessageRequestDeleted {
+        /// Stable opaque request id.
+        request: String,
+    },
+    /// A request sender was blocked locally.
+    MessageRequestBlocked {
+        /// Stable opaque request id.
+        request: String,
+    },
+    /// A provisional request expired locally.
+    MessageRequestExpired {
+        /// Stable opaque request id.
+        request: String,
+    },
     /// A sealed local-only note was appended.
     NoteToSelfMessageAdded {
         /// Stable reserved conversation identity.
@@ -1854,6 +1974,32 @@ pub enum UiEvent {
     CallUpdated {
         /// Current render-safe call snapshot.
         call: UiCall,
+    },
+    /// An authenticated group proposal entered the invitation inbox.
+    GroupInvitationReceived {
+        /// Stable opaque invitation id.
+        invitation: String,
+        /// Proposed group id.
+        group: String,
+        /// Pairwise-authenticated inviter.
+        inviter: String,
+    },
+    /// A group proposal was explicitly accepted.
+    GroupInvitationAccepted {
+        /// Stable opaque invitation id.
+        invitation: String,
+        /// Joined group id.
+        group: String,
+    },
+    /// A group proposal was explicitly deleted.
+    GroupInvitationDeleted {
+        /// Stable opaque invitation id.
+        invitation: String,
+    },
+    /// A group proposal expired without changing membership.
+    GroupInvitationExpired {
+        /// Stable opaque invitation id.
+        invitation: String,
     },
     /// A group was created, joined, re-keyed, re-rostered, or left.
     GroupUpdated {
@@ -2021,6 +2167,13 @@ impl UiEvent {
                 peer,
                 target_content_id,
             },
+            Event::MessageRequestReceived { request } => Self::MessageRequestReceived { request },
+            Event::MessageRequestAccepted { request, peer } => {
+                Self::MessageRequestAccepted { request, peer }
+            }
+            Event::MessageRequestDeleted { request } => Self::MessageRequestDeleted { request },
+            Event::MessageRequestBlocked { request } => Self::MessageRequestBlocked { request },
+            Event::MessageRequestExpired { request } => Self::MessageRequestExpired { request },
             Event::NoteToSelfMessageAdded {
                 conversation,
                 id,
@@ -2045,6 +2198,24 @@ impl UiEvent {
             Event::CallUpdated { call } => Self::CallUpdated {
                 call: UiCall::from_ffi(call),
             },
+            Event::GroupInvitationReceived {
+                invitation,
+                group,
+                inviter,
+            } => Self::GroupInvitationReceived {
+                invitation,
+                group,
+                inviter,
+            },
+            Event::GroupInvitationAccepted { invitation, group } => {
+                Self::GroupInvitationAccepted { invitation, group }
+            }
+            Event::GroupInvitationDeleted { invitation } => {
+                Self::GroupInvitationDeleted { invitation }
+            }
+            Event::GroupInvitationExpired { invitation } => {
+                Self::GroupInvitationExpired { invitation }
+            }
             Event::GroupUpdated { group } => Self::GroupUpdated { group },
             Event::GroupMessageReceived {
                 group,
@@ -2968,6 +3139,38 @@ impl Session {
                 verified: c.verified,
             })
             .collect())
+    }
+
+    /// Sealed unknown-sender requests, excluding live session material.
+    pub fn message_requests(&self) -> Result<Vec<UiMessageRequest>, String> {
+        Ok(self
+            .node
+            .message_requests()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(UiMessageRequest::from_ffi)
+            .collect())
+    }
+
+    /// Promote one request atomically to a named contact and history.
+    pub fn accept_message_request(&self, request: String, name: String) -> Result<String, String> {
+        self.node
+            .accept_message_request(request, name)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Delete one request without claiming remote deletion.
+    pub fn delete_message_request(&self, request: String) -> Result<(), String> {
+        self.node
+            .delete_message_request(request)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Block the verified sender and remove local request capabilities.
+    pub fn block_message_request(&self, request: String) -> Result<(), String> {
+        self.node
+            .block_message_request(request)
+            .map_err(|error| error.to_string())
     }
 
     /// Every current and briefly retained terminal direct-QUIC call.
@@ -4310,6 +4513,31 @@ impl Session {
         self.node
             .create_group(name, members)
             .map_err(|e| e.to_string())
+    }
+
+    /// Authenticated group proposals awaiting explicit membership consent.
+    pub fn group_invitations(&self) -> Result<Vec<UiGroupInvitation>, String> {
+        Ok(self
+            .node
+            .group_invitations()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(UiGroupInvitation::from_ffi)
+            .collect())
+    }
+
+    /// Accept one proposal and atomically create its group.
+    pub fn accept_group_invitation(&self, invitation: String) -> Result<String, String> {
+        self.node
+            .accept_group_invitation(invitation)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Delete one proposal without creating group state.
+    pub fn delete_group_invitation(&self, invitation: String) -> Result<(), String> {
+        self.node
+            .delete_group_invitation(invitation)
+            .map_err(|error| error.to_string())
     }
 
     /// Visible recipient-origin upgrade state for one group.

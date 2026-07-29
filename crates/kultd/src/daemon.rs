@@ -1094,6 +1094,54 @@ async fn handle_op(
                 .map_err(fail)?;
             Ok(json!({ "peer": wire::hex_encode(&peer) }))
         }
+        Op::MessageRequests => Ok(json!({
+            "requests": node
+                .message_requests()
+                .map_err(fail)?
+                .iter()
+                .map(wire::message_request_json)
+                .collect::<Vec<_>>()
+        })),
+        Op::MessageRequestAccept { request, name } => {
+            let request = wire::parse_request_id(&request)?;
+            let peer = node
+                .accept_message_request(&request, &name, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "peer": wire::hex_encode(&peer) }))
+        }
+        Op::MessageRequestDelete { request } => {
+            let request = wire::parse_request_id(&request)?;
+            node.delete_message_request(&request, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({}))
+        }
+        Op::MessageRequestBlock { request } => {
+            let request = wire::parse_request_id(&request)?;
+            node.block_message_request(&request, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({}))
+        }
+        Op::GroupInvitations => Ok(json!({
+            "invitations": node
+                .group_invitations()
+                .map_err(fail)?
+                .iter()
+                .map(wire::group_invitation_json)
+                .collect::<Vec<_>>()
+        })),
+        Op::GroupInvitationAccept { invitation } => {
+            let invitation = wire::parse_request_id(&invitation)?;
+            let group = node
+                .accept_group_invitation(&invitation, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "group": wire::hex_encode(&group) }))
+        }
+        Op::GroupInvitationDelete { invitation } => {
+            let invitation = wire::parse_request_id(&invitation)?;
+            node.delete_group_invitation(&invitation, &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({}))
+        }
         Op::ContactNameAssessment { peer, name } => {
             let peer = wire::parse_peer(&peer)?;
             let assessment = node.assess_contact_name(&peer, &name).map_err(fail)?;

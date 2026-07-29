@@ -65,7 +65,7 @@ user rename an exact peer in every implemented interface. Names are NFC-normaliz
 bounded; duplicates are valid because the peer key, never display text, is the
 identity. Duplicate, mixed-script/confusable, bidirectional-control, and invisible-
 character risks are shown for explicit review before a warned rename. The label is
-stored only in the sealed contact record, survives restart and `KKR8`, and creates no
+stored only in the sealed contact record, survives restart and `KKR9`, and creates no
 message, capability, lookup, notification, queue, or transport work.
 
 What the network sees remains keys and tokens, never the local petname. An optional
@@ -108,13 +108,8 @@ and the required offline-root replacement in
 
 ## 7. First-contact abuse controls
 
-> **Proposed, not current Alpha behavior.** The current receive path accepts a
-> valid cryptographic introduction and creates a normal contact without a
-> request inbox, admission puzzle, or local blocking state. Do not treat the
-> controls below as implemented.
-
-[ADR-0030](adr/0030-first-contact-admission.md) defines the pre-stable
-replacement:
+[ADR-0030](adr/0030-first-contact-admission.md) is accepted and implemented for
+Alpha:
 
 - a signed, expiring recipient policy advertises a bounded client puzzle for
   unsolicited public-address contact;
@@ -128,6 +123,18 @@ replacement:
 - ordinary UI presents this as a familiar message request while technical
   admission details remain in diagnostics.
 
-The proposal raises unsolicited-sender cost but does not claim proof-of-work can
-defeat a distributed adversary; fixed resource quotas remain the controlling
-safety boundary.
+The implemented path binds the descriptor, exact target bundle, invitation or
+puzzle proof, expiry, and content id before ML-KEM work where possible. Direct
+next-hop acceptance waits for the atomic provisional stage or another complete
+durable transition. Accept promotes the request atomically; Delete retains
+only a bounded replay tombstone; Block also persists the exact account/device
+rule and removes the provisional row without claiming remote deletion. Group
+invitations use the same explicit consent boundary. The current evidence
+includes Rust, RPC, UniFFI, desktop, Android host, and iOS simulator tests;
+physical-device battery/background/accessibility qualification and independent
+adversarial review remain open.
+
+Puzzle work only raises unsolicited-sender cost and does not defeat a
+distributed adversary; fixed count, byte, work, time, carrier, and concurrency
+quotas remain the controlling safety boundary. Optional signed reputation
+inputs remain unimplemented and are not required for the consent boundary.

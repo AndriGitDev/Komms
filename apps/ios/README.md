@@ -20,8 +20,9 @@ are the node's own, verbatim.
   `SecureField`. Settings state that iOS has no per-field personalized-learning
   guarantee and non-secure third-party keyboards remain best effort.
 - **Create / unlock / restore** an encrypted store at the gate; restoring
-  current root-free `KKR8` takes the backup and its phrase plus the separately
-  held authority and phrase. A visibly separate legacy `KKR1`–`KKR7` path
+  current root-free `KKR9` or compatible root-free `KKR8` takes the backup and
+  its phrase plus the separately held authority and phrase. A visibly separate
+  legacy `KKR1`–`KKR7` path
   prepares a fresh address, requires identity-change confirmation, and imports
   only the former-identity local archive.
 - **Pair out-of-band**: show your prekey bundle as a compact, versioned
@@ -38,7 +39,7 @@ are the node's own, verbatim.
   actions. SwiftUI targets the exact peer key, uses the shared incognito field,
   previews NFC normalization and duplicate/confusable/bidi/invisible warnings,
   and requires explicit acceptance for risk. Duplicate names remain distinct;
-  restart/`KKR8` preserves the local rename with zero delivery work.
+  restart/`KKR9` preserves the local rename with zero delivery work.
 - **Message** with honest delivery states: `queued` → `sent` (handed to a
   link) → `delivered` (end-to-end encrypted receipt came back). Sealed
   ciphertext retries passively after recent failures so fresh taps remain
@@ -139,11 +140,11 @@ are the node's own, verbatim.
   note-to-self. The leading VoiceOver/Dynamic-Type block follows folder and
   label eligibility; conversation actions pin/unpin exact typed targets and the
   manager provides button reorder plus unavailable-record cleanup. The shared
-  8,192-pin limit, restart/`KKR8` behavior, and zero-network contract live in
+  8,192-pin limit, restart/`KKR9` behavior, and zero-network contract live in
   `KommsCore`, with no new permission or synchronized state.
 - **Choose System, Light, or Dark appearance** in Settings, including at the
   gate. SwiftUI applies the cached choice immediately, then treats the sealed F5
-  value as authoritative after unlock or `KKR8` restore. System follows iOS
+  value as authoritative after unlock or `KKR9` restore. System follows iOS
   changes live; adaptive semantic colors preserve Increase Contrast,
   Differentiate Without Color, Dynamic Type, and Reduce Motion behavior, while
   delivery/security meaning always retains text, symbols, or accessible labels.
@@ -154,7 +155,7 @@ are the node's own, verbatim.
   core produces only 256×256 RGBA PNGs re-encoded without source metadata and
   enforces the 512 KiB,
   1,024-record, and 64 MiB caps with safe corrupt fallback. Portability is limited
-  to `KKR8` and authenticated own-device C2 sync; icons never enter iCloud sync,
+  to `KKR9` and authenticated own-device C2 sync; icons never enter iCloud sync,
   URLs, peers, envelopes,
   capabilities, notifications, queues, or transports.
 - **Verify** contacts by safety number: identical digits and QR on both
@@ -217,7 +218,7 @@ Kotlin, covering exact Unicode, stable ids/order, duplicate names, typed targets
 any/all results, restart, and errors. Labels request no Contacts, Photos,
 notification, local-network, or other permission and never enter notification
 categories, Spotlight, widgets, Siri/App Intents, pasteboard, previews, logs,
-crash/analytics payloads, or ordinary scene restoration. `KKR8` preserves exact
+crash/analytics payloads, or ordinary scene restoration. `KKR9` preserves exact
 definitions and memberships; C2 can converge them only between authorized owned
 devices, while message labels remain deferred.
 
@@ -225,26 +226,26 @@ Folder acceptance uses the same B10 fixture as Rust RPC, UniFFI, and Kotlin,
 covering exact Unicode, duplicate names, stable manual order, typed
 peer/group/note targets, single membership, label composition, restart,
 deletion, and structured errors. Folder state requests no additional permission,
-never leaves sealed owned-device storage. Portability is limited to `KKR8` and
+never leaves sealed owned-device storage. Portability is limited to `KKR9` and
 authenticated own-device C2 sync.
 
 Pin acceptance uses the same B11 fixture as Rust RPC, UniFFI, and Kotlin,
 covering exact typed peer/group/note targets, append and exact complete-set
 reorder, folder/label composition, activity order, stale cleanup/reactivation,
-restart, structured errors, and zero delivery work. `KKR8` together with
+restart, structured errors, and zero delivery work. `KKR9` together with
 authenticated own-device C2 sync are the only portability paths; message pins
 remain deferred.
 
 Theme acceptance uses the same B12 fixture as Rust RPC, UniFFI, and Kotlin,
 covering the exact vocabulary/roles, first-run System, idempotency, restart,
-`KKR8`, one local change event, and zero queued or transport work. The ordinary
+`KKR9`, one local change event, and zero queued or transport work. The ordinary
 non-synchronizing `UserDefaults` cache contains only the pre-unlock theme token;
 it is not a portability or backup channel.
 
 Custom-icon acceptance uses the same B13 fixture as Rust RPC, UniFFI, and
 Kotlin, covering all exact target kinds, canonical PNG output that omits source
 metadata,
-quota accounting, restart/`KKR8`, safe initials fallback, local events, and zero
+quota accounting, restart/`KKR9`, safe initials fallback, local events, and zero
 delivery work. Security-scoped Files access lasts only for the explicit blocking
 import call; no selected path or plaintext image becomes synchronized state.
 

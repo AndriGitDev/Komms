@@ -93,9 +93,11 @@ filesystem corruption, snapshot rollback, or flash remapping.
 
 ## 3. Backup and restore boundary
 
-Encrypted `KKR1` through `KKR8` files decode into versioned logical records.
-Only current root-free `KKR8` resumes its stable public identity. Legacy
-`KKR1`–`KKR7` is decode-only in production and is projected into a
+Encrypted `KKR1` through `KKR9` files decode into versioned logical records.
+Root-free `KKR8` and current `KKR9` can resume their stable public identity
+only with the separately held offline recovery authority; `KKR8` predates and
+therefore restores no `KKR9` local block rows. Legacy `KKR1`–`KKR7` is
+decode-only in production and is projected into a
 fresh-identity local archive that omits
 groups and live protocol state. The decrypted payload never
 contains the source database id, keyed locators or indexes, SQLite pages, or

@@ -107,6 +107,17 @@ private fun listenAddr(session: Session): String {
 
 private fun multiaddrHint(addr: String) = listOf(HintSpec("multiaddr", addr))
 
+private fun acceptGroupInvitation(session: Session, events: Events, group: String, what: String) {
+    events.wait(what) {
+        (it as? Event.GroupInvitationReceived)?.takeIf { event -> event.group == group }
+    }
+    val invitation = session.groupInvitations().single { it.group == group }
+    assertEquals(group, session.acceptGroupInvitation(invitation.id))
+    events.wait("group invitation acceptance") {
+        (it as? Event.GroupInvitationAccepted)?.takeIf { event -> event.group == group }
+    }
+}
+
 private fun waitGroupSecurityReady(
     initiator: Session,
     peer: Session,
@@ -994,6 +1005,57 @@ class SessionE2eTest {
     }
 
     @Test
+    fun `message requests require explicit accept delete or block`() {
+        val dir = tempDir()
+        val bobEvents = Events()
+        val bob = open(dir, "request-bob", bobEvents)
+        try {
+            val bobAddr = listenAddr(bob)
+            fun sendRequest(name: String, preview: String) {
+                val sender = open(dir, name, Events())
+                try {
+                    listenAddr(sender)
+                    sender.myBundleHex()
+                    val bobPeer = sender.addContact(
+                        "Bob",
+                        bob.myBundleHex(),
+                        multiaddrHint(bobAddr),
+                    )
+                    sender.send(bobPeer, preview)
+                    val deadline = System.nanoTime() + 30_000_000_000L
+                    while (bob.messageRequests().none { it.preview == preview }) {
+                        check(System.nanoTime() < deadline) {
+                            "request preview did not enter the sealed inbox"
+                        }
+                        Thread.sleep(50)
+                    }
+                } finally {
+                    sender.stop()
+                }
+            }
+            sendRequest("request-accept", "please accept")
+            sendRequest("request-delete", "please delete")
+            sendRequest("request-block", "please block")
+
+            assertTrue(bob.contacts().isEmpty())
+            val requests = bob.messageRequests()
+            assertEquals(3, requests.size)
+            fun id(preview: String) = requests.single { it.preview == preview }.id
+            val peer = bob.acceptMessageRequest(id("please accept"), "Accepted sender")
+            bob.deleteMessageRequest(id("please delete"))
+            bob.blockMessageRequest(id("please block"))
+            assertTrue(bob.messageRequests().isEmpty())
+            assertEquals("Accepted sender", bob.contacts().single().name)
+            assertEquals("please accept", bob.messages(peer).single().body)
+            bobEvents.wait("request accepted") { it as? Event.MessageRequestAccepted }
+            bobEvents.wait("request deleted") { it as? Event.MessageRequestDeleted }
+            bobEvents.wait("request blocked") { it as? Event.MessageRequestBlocked }
+        } finally {
+            bob.stop()
+        }
+    }
+
+    @Test
     fun `group ux upgrades origins and blocks an unready roster`() {
         val dir = tempDir()
         val aEv = Events()
@@ -1023,9 +1085,7 @@ class SessionE2eTest {
         // The create flow selects one stored contact; the creator then adds
         // another from the members screen.
         val group = alice.createGroup("Trail crew", listOf(bobPeer))
-        bEv.wait("Bob's group invite") {
-            (it as? Event.GroupUpdated)?.takeIf { event -> event.group == group }
-        }
+        acceptGroupInvitation(bob, bEv, group, "Bob's group invite")
         var listed = alice.groups()
         assertEquals(1, listed.size)
         assertEquals(group, listed[0].id)
@@ -1361,9 +1421,7 @@ class SessionE2eTest {
                 "Same name", alice.myBundleHex(), multiaddrHint(aliceAddr),
             )
             val group = alice.createGroup("Unicode crew", listOf(bobPeer))
-            bEv.wait("mention group invite") {
-                (it as? Event.GroupUpdated)?.takeIf { event -> event.group == group }
-            }
+            acceptGroupInvitation(bob, bEv, group, "mention group invite")
 
             val handshake = alice.send(bobPeer, "mention capability handshake")
             bEv.wait("mention capability handshake") {

@@ -17,11 +17,12 @@ use crate::session::{
     UiCustomIconTarget, UiCustomIconUsage, UiDeviceAuthorityConflict, UiDeviceLinkAcceptance,
     UiDeviceLinkOffer, UiDeviceLinkSelection, UiFolder, UiFolderConversation,
     UiFolderConversationResult, UiFolderSelection, UiFolderTarget, UiFormattedText, UiGroup,
-    UiGroupAuthority, UiGroupMessage, UiGroupPoll, UiGroupSecurity, UiHint, UiImageEditRecipe,
-    UiImageReview, UiLabel, UiLabelConversation, UiLabelFilterResult, UiLabelTarget,
-    UiLinkedDevice, UiMentionCapability, UiMentionSpan, UiMessage, UiMessageDeviceDelivery,
-    UiNoteMessage, UiPin, UiPinConversationResult, UiPinTarget, UiSafetyNumber, UiScheduledMessage,
-    UiStaleFolder, UiStaleLabel, UiStatus, UiTextFormatHighlight, UiThemeInfo, UiThemePreference,
+    UiGroupAuthority, UiGroupInvitation, UiGroupMessage, UiGroupPoll, UiGroupSecurity, UiHint,
+    UiImageEditRecipe, UiImageReview, UiLabel, UiLabelConversation, UiLabelFilterResult,
+    UiLabelTarget, UiLinkedDevice, UiMentionCapability, UiMentionSpan, UiMessage,
+    UiMessageDeviceDelivery, UiMessageRequest, UiNoteMessage, UiPin, UiPinConversationResult,
+    UiPinTarget, UiSafetyNumber, UiScheduledMessage, UiStaleFolder, UiStaleLabel, UiStatus,
+    UiTextFormatHighlight, UiThemeInfo, UiThemePreference,
 };
 
 /// Render-safe shared B14 policy shown before unlock.
@@ -607,6 +608,23 @@ forward!(
     contacts() -> Vec<UiContact>, |s| s.contacts()
 );
 forward!(
+    /// Sealed unknown-sender requests awaiting an explicit local decision.
+    message_requests() -> Vec<UiMessageRequest>, |s| s.message_requests()
+);
+forward!(
+    /// Atomically promote one request to contact and history.
+    accept_message_request(request: String, name: String) -> String,
+    |s| s.accept_message_request(request, name)
+);
+forward!(
+    /// Delete one request and retain only its bounded replay tombstone.
+    delete_message_request(request: String) -> (), |s| s.delete_message_request(request)
+);
+forward!(
+    /// Block one verified request sender locally.
+    block_message_request(request: String) -> (), |s| s.block_message_request(request)
+);
+forward!(
     /// Every current and briefly retained terminal call.
     calls() -> Vec<UiCall>, |s| s.calls()
 );
@@ -927,6 +945,19 @@ forward!(
     /// Create a sender-key group from stored contacts.
     create_group(name: String, members: Vec<String>) -> String,
     |s| s.create_group(name, members)
+);
+forward!(
+    /// Authenticated group proposals awaiting local membership consent.
+    group_invitations() -> Vec<UiGroupInvitation>, |s| s.group_invitations()
+);
+forward!(
+    /// Accept one proposal and atomically create its group.
+    accept_group_invitation(invitation: String) -> String,
+    |s| s.accept_group_invitation(invitation)
+);
+forward!(
+    /// Delete one proposal without creating group state.
+    delete_group_invitation(invitation: String) -> (), |s| s.delete_group_invitation(invitation)
 );
 forward!(
     /// All locally stored groups.

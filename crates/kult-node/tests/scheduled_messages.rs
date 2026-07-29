@@ -202,6 +202,14 @@ async fn scheduled_cancel_and_group_activation_are_first_class() {
         alice.tick(NOW + 21 + round * 2, &mut rng).await.unwrap();
         bob.tick(NOW + 22 + round * 2, &mut rng).await.unwrap();
     }
+    let invitation = bob
+        .group_invitations()
+        .unwrap()
+        .into_iter()
+        .find(|invitation| invitation.group == group)
+        .expect("group invitation");
+    bob.accept_group_invitation(&invitation.id, NOW + 33, &mut rng)
+        .unwrap();
     if alice.group_security_info(&group).unwrap().level == GroupSecurityLevel::UpgradeRequired {
         alice.group_upgrade_security(&group, &mut rng).unwrap();
     }

@@ -647,7 +647,7 @@ fn quorum_loss_recovery_mints_new_device_and_never_resurrects_old_credentials() 
     assert!(source.device_authority_approval_request().is_ok());
     let account = source.peer_id();
     let (backup, mnemonic) = source.export_backup(200, &mut rng).unwrap();
-    assert_eq!(&backup[..4], b"KKR8");
+    assert_eq!(&backup[..4], b"KKR9");
     let recovered_path = dir.path().join("recovered.db");
     let recovered = Node::restore_with_recovery_authority(
         &recovered_path,
@@ -952,7 +952,20 @@ async fn linked_devices_use_distinct_external_ratchet_sessions_for_one_account()
         .unwrap();
     phone.tick(106, &mut rng).await.unwrap();
     carol.tick(107, &mut rng).await.unwrap();
-    phone.tick(108, &mut rng).await.unwrap();
+    let invitation = carol
+        .group_invitations()
+        .unwrap()
+        .into_iter()
+        .find(|invitation| invitation.group == group)
+        .expect("group invitation");
+    carol
+        .accept_group_invitation(&invitation.id, 108, &mut rng)
+        .unwrap();
+    phone.group_upgrade_security(&group, &mut rng).unwrap();
+    carol.tick(109, &mut rng).await.unwrap();
+    phone.tick(110, &mut rng).await.unwrap();
+    carol.tick(111, &mut rng).await.unwrap();
+    phone.tick(112, &mut rng).await.unwrap();
 
     // The target imports contacts but no ratchets, then advertises a
     // certificate-bound device bundle for a second independent session.
@@ -961,7 +974,7 @@ async fn linked_devices_use_distinct_external_ratchet_sessions_for_one_account()
         &mut laptop,
         "Laptop",
         DeviceLinkSelection::default(),
-        110,
+        113,
         &mut rng,
     );
     let laptop_bundle = laptop.handshake_bundle(120, &mut rng).unwrap();
@@ -1275,10 +1288,22 @@ async fn linked_devices_use_distinct_external_ratchet_sessions_for_one_account()
         kult_store::DeliveryState::Sent
     );
     let tablet_events = tablet.tick(165, &mut rng).await.unwrap();
-    assert!(tablet_events.iter().any(|event| matches!(
-        event,
-        Event::MessageReceived { body, .. } if body == b"queued until tablet bundle"
-    )));
+    assert!(tablet_events
+        .iter()
+        .any(|event| matches!(event, Event::MessageRequestReceived { .. })));
+    let tablet_request = tablet.message_requests().unwrap().remove(0);
+    assert_eq!(tablet_request.preview, "queued until tablet bundle");
+    assert!(tablet
+        .messages_with(&tablet_request.account)
+        .unwrap()
+        .is_empty());
+    tablet
+        .accept_message_request(&tablet_request.id, "Carol", 166, &mut rng)
+        .unwrap();
+    assert_eq!(
+        tablet.messages_with(&tablet_request.account).unwrap()[0].body,
+        b"queued until tablet bundle"
+    );
 
     // Importing the phone's fresh bundle above repairs its unconfirmed
     // ratchet. Capability support is deliberately tied to the authenticated

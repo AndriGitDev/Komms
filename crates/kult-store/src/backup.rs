@@ -1,13 +1,14 @@
 //! Encrypted single-file backup (docs/07-storage.md §4,
 //! docs/06-identity-trust.md §5).
 //!
-//! Current `KKR8` export carries the public account anchor, accepted authority
-//! proof, contacts, eligible history and local organization, sealed under a
+//! Current `KKR9` export carries the public account anchor, accepted authority
+//! proof, contacts, eligible history, local organization, and local block
+//! rules, sealed under a
 //! key derived from a 24-word mnemonic
 //! ([`kult_crypto::mnemonic_from_entropy`]) via Argon2id. Legacy `KKR1`
 //! through copied-root `KKR7` remain decodable only for the explicit
-//! new-identity archive reset. What current export deliberately does **not**
-//! carry:
+//! new-identity archive reset; root-free `KKR8` remains directly restorable.
+//! What current export deliberately does **not** carry:
 //!
 //! - **Ratchet session state** — importing stale ratchet state is a
 //!   correctness and security hazard (old message keys resurrected, replay
@@ -21,6 +22,9 @@
 //!   re-handshaken sessions.
 //! - **Own prekey secrets** — a restored device mints a fresh vault; the
 //!   old device's one-time prekeys must never be honored twice.
+//! - **Provisional first-contact state** — invitation capabilities, detached
+//!   provisional sessions, request previews, and replay tombstones are
+//!   short-lived device-local admission state.
 //! - **Queues and stashes** — in-flight envelopes belong to the old
 //!   device's sessions and are honestly lost; the *senders'* end-to-end
 //!   retries are the source of reliability.
@@ -28,7 +32,7 @@
 //! File layout (strict, all-or-nothing, like the sneakernet bundle format):
 //!
 //! ```text
-//! magic "KKR8" (4) ‖ m_cost_kib u32 LE ‖ t_cost u32 LE ‖ p_cost u32 LE
+//! magic "KKR9" (4) ‖ m_cost_kib u32 LE ‖ t_cost u32 LE ‖ p_cost u32 LE
 //!   ‖ salt (16) ‖ sealed( postcard(AuthorityBackupPayload) )
 //! ```
 //!
@@ -62,18 +66,20 @@ use kult_protocol::DeviceSyncEvent;
 
 use crate::{
     acquire_database_identity_lock, acquire_store_lock, decode_exact as decode_store_exact,
-    migration, store_v2, AuthorityProfileBootstrapPlan, AuthorityResetHistoryRecord, CommitPlan,
-    ContactDeviceRecord, ContactRecord, ConversationId, CustomIconTarget,
-    DeviceAuthorityStateRecord, EphemeralConversation, EphemeralRecord, EphemeralState,
-    GroupAuthorityRecord, GroupMember, GroupMessageRecord, GroupRecord, LocalMetadataRecord,
-    MessageRecord, NoteMessageRecord, PendingAnnounce, Result, Store, StoreError,
-    AUTHORITY_RESET_HISTORY_KEY, MAX_AUTHORITY_RESET_CONTACTS, THEME_PREFERENCE_KEY,
+    migration, store_v2, AuthorityProfileBootstrapPlan, AuthorityResetHistoryRecord,
+    BlockedIdentityRecord, CommitPlan, ContactDeviceRecord, ContactRecord, ConversationId,
+    CustomIconTarget, DeviceAuthorityStateRecord, EphemeralConversation, EphemeralRecord,
+    EphemeralState, GroupAuthorityRecord, GroupMember, GroupMessageRecord, GroupRecord,
+    LocalMetadataRecord, MessageRecord, NoteMessageRecord, PendingAnnounce, Result, Store,
+    StoreError, AUTHORITY_RESET_HISTORY_KEY, MAX_AUTHORITY_RESET_CONTACTS, THEME_PREFERENCE_KEY,
 };
 #[cfg(any(test, feature = "legacy-test-fixtures"))]
 use crate::{DeviceStateRecord, ProfileBootstrapPlan};
 
-/// Current root-free backup magic: Komms recovery file, format 8.
-pub const AUTHORITY_BACKUP_MAGIC: [u8; 4] = *b"KKR8";
+/// Current root-free backup magic: Komms recovery file, format 9.
+pub const AUTHORITY_BACKUP_MAGIC: [u8; 4] = *b"KKR9";
+/// Root-free backup format 8, before durable local block rules were retained.
+pub const AUTHORITY_BACKUP_MAGIC_V8: [u8; 4] = *b"KKR8";
 /// Legacy copied-root backup magic, format 7.
 pub const BACKUP_MAGIC: [u8; 4] = *b"KKR7";
 /// The pre-linked-device format 6 magic — still restorable.
@@ -90,7 +96,8 @@ pub const BACKUP_MAGIC_V2: [u8; 4] = *b"KKR2";
 pub const BACKUP_MAGIC_V1: [u8; 4] = *b"KKR1";
 
 const BACKUP_AD: &[u8] = b"KK-backup-v1";
-const AUTHORITY_BACKUP_AD: &[u8] = b"Komms-root-free-backup-v8";
+const AUTHORITY_BACKUP_AD: &[u8] = b"Komms-root-free-backup-v9";
+const AUTHORITY_BACKUP_AD_V8: &[u8] = b"Komms-root-free-backup-v8";
 const HEADER_LEN: usize = 4 + 12 + 16;
 const MAX_BACKUP_FILE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const MAX_BACKUP_RECORDS: u64 = 50_000_000;
@@ -163,6 +170,46 @@ struct AuthorityBackupPayload {
     note_messages: Vec<NoteMessageRecord>,
     ephemeral: Vec<EphemeralRecord>,
     contact_devices: Vec<ContactDeviceRecord>,
+    blocked_identities: Vec<BlockedIdentityRecord>,
+}
+
+/// Root-free format 8, before durable local block rules were retained.
+#[derive(Serialize, Deserialize)]
+struct AuthorityBackupPayloadV8 {
+    created_at: u64,
+    account: IdentityPublic,
+    authority: DeviceAuthorityManifest,
+    contacts: Vec<ContactRecord>,
+    messages: Vec<MessageRecord>,
+    reset_peers: Vec<[u8; 32]>,
+    groups: Vec<BackupGroup>,
+    group_messages: Vec<GroupMessageRecord>,
+    group_authorities: Vec<GroupAuthorityRecord>,
+    local_metadata: Vec<LocalMetadataRecord>,
+    note_messages: Vec<NoteMessageRecord>,
+    ephemeral: Vec<EphemeralRecord>,
+    contact_devices: Vec<ContactDeviceRecord>,
+}
+
+impl From<AuthorityBackupPayloadV8> for AuthorityBackupPayload {
+    fn from(payload: AuthorityBackupPayloadV8) -> Self {
+        Self {
+            created_at: payload.created_at,
+            account: payload.account,
+            authority: payload.authority,
+            contacts: payload.contacts,
+            messages: payload.messages,
+            reset_peers: payload.reset_peers,
+            groups: payload.groups,
+            group_messages: payload.group_messages,
+            group_authorities: payload.group_authorities,
+            local_metadata: payload.local_metadata,
+            note_messages: payload.note_messages,
+            ephemeral: payload.ephemeral,
+            contact_devices: payload.contact_devices,
+            blocked_identities: Vec::new(),
+        }
+    }
 }
 
 /// The `KKR6` payload shape, before linked-device authority existed.
@@ -691,7 +738,7 @@ impl Store {
     }
 
     /// Encode a historical copied-root KKR7 fixture. This is deliberately
-    /// absent from production builds; current exports use KKR8.
+    /// absent from production builds; current exports use KKR9.
     #[cfg(test)]
     fn export_backup(
         &self,
@@ -889,6 +936,7 @@ impl Store {
             note_messages: self.note_messages()?,
             ephemeral,
             contact_devices: self.contact_devices()?,
+            blocked_identities: self.blocked_identities()?,
         };
         validate_authority_backup_payload(&payload)?;
         let plain =
@@ -1174,10 +1222,15 @@ impl Store {
 fn open_authority_backup(backup: &[u8], mnemonic: &str) -> Result<(AuthorityBackupPayload, usize)> {
     if backup.len() <= HEADER_LEN
         || u64::try_from(backup.len()).map_or(true, |length| length > MAX_BACKUP_FILE_BYTES)
-        || backup[..4] != AUTHORITY_BACKUP_MAGIC
     {
         return Err(StoreError::NotABackup);
     }
+    let (version, associated_data) =
+        match <[u8; 4]>::try_from(&backup[..4]).expect("length checked") {
+            AUTHORITY_BACKUP_MAGIC => (9, AUTHORITY_BACKUP_AD),
+            AUTHORITY_BACKUP_MAGIC_V8 => (8, AUTHORITY_BACKUP_AD_V8),
+            _ => return Err(StoreError::NotABackup),
+        };
     let word = |at: usize| -> u32 {
         u32::from_le_bytes(backup[at..at + 4].try_into().expect("length checked"))
     };
@@ -1190,9 +1243,13 @@ fn open_authority_backup(backup: &[u8], mnemonic: &str) -> Result<(AuthorityBack
     let entropy = mnemonic_to_entropy(mnemonic)?;
     let kek = derive_kek(&entropy[..], &salt, file_profile)?;
     let key = StorageKey::from_bytes(*kek);
-    let plain = Zeroizing::new(key.open(AUTHORITY_BACKUP_AD, &backup[HEADER_LEN..])?);
+    let plain = Zeroizing::new(key.open(associated_data, &backup[HEADER_LEN..])?);
     let plain_len = plain.len();
-    let payload = decode_exact(&plain)?;
+    let payload = if version == 9 {
+        decode_exact(&plain)?
+    } else {
+        AuthorityBackupPayload::from(decode_exact::<AuthorityBackupPayloadV8>(&plain)?)
+    };
     Ok((payload, plain_len))
 }
 
@@ -1560,6 +1617,9 @@ fn populate_authority_restored_store(
     for record in &payload.ephemeral {
         store.put_ephemeral_record(record, rng)?;
     }
+    for record in &payload.blocked_identities {
+        store.put_blocked_identity(record, rng)?;
+    }
     Ok(store)
 }
 
@@ -1676,6 +1736,7 @@ fn validate_authority_backup_payload(payload: &AuthorityBackupPayload) -> Result
         || payload.note_messages.len() > 10_000_000
         || payload.ephemeral.len() > 10_000_000
         || payload.contact_devices.len() > 1_000_000
+        || payload.blocked_identities.len() > crate::MAX_BLOCKED_IDENTITIES
     {
         return Err(StoreError::RecordBounds);
     }
@@ -1690,6 +1751,7 @@ fn validate_authority_backup_payload(payload: &AuthorityBackupPayload) -> Result
         payload.note_messages.len(),
         payload.ephemeral.len(),
         payload.contact_devices.len(),
+        payload.blocked_identities.len(),
     ]
     .into_iter()
     .try_fold(0u64, |total, count| {
@@ -1773,6 +1835,14 @@ fn validate_authority_backup_payload(payload: &AuthorityBackupPayload) -> Result
             return Err(StoreError::MigrationValidation);
         }
         crate::devices::validate_contact_device(record)?;
+        validate_backup_record(record)?;
+    }
+    let mut blocked = BTreeSet::new();
+    for record in &payload.blocked_identities {
+        if !blocked.insert((record.account, record.device)) {
+            return Err(StoreError::MigrationValidation);
+        }
+        record.validate()?;
         validate_backup_record(record)?;
     }
     Ok(total)
@@ -2435,6 +2505,12 @@ mod tests {
                 &mut rng,
             )
             .unwrap();
+        let blocked = BlockedIdentityRecord {
+            account: [0x96; 32],
+            device: [0xa7; 32],
+            created_at: 122,
+        };
+        store.put_blocked_identity(&blocked, &mut rng).unwrap();
 
         let (backup, mnemonic) = store.export_authority_backup(123, &mut rng).unwrap();
         assert_eq!(&backup[..4], &AUTHORITY_BACKUP_MAGIC);
@@ -2453,6 +2529,7 @@ mod tests {
         assert_eq!(decoded.messages[0].state, crate::DeliveryState::Failed);
         assert_eq!(decoded.messages[0].wire_id, None);
         assert_eq!(decoded.group_messages.len(), 1);
+        assert_eq!(decoded.blocked_identities, vec![blocked]);
         assert_eq!(decoded.group_messages[0].wire_body, None);
         assert_eq!(
             decoded.group_messages[0]
@@ -2480,6 +2557,90 @@ mod tests {
                 "root-free backup plaintext retained a live or recovery secret"
             );
         }
+    }
+
+    #[test]
+    fn authority_backup_restores_blocks_and_accepts_format_eight() {
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("authority-block-source.db");
+        let target_path = directory.path().join("authority-block-target.db");
+        let legacy_target_path = directory.path().join("authority-v8-target.db");
+        let mut rng = StdRng::seed_from_u64(0x2603);
+        let (source, root, _device, _state) = authority_store(&source_path, &mut rng);
+        let blocked = BlockedIdentityRecord {
+            account: [0xb8; 32],
+            device: [0xc8; 32],
+            created_at: 120,
+        };
+        source.put_blocked_identity(&blocked, &mut rng).unwrap();
+        let (backup, mnemonic) = source.export_authority_backup(123, &mut rng).unwrap();
+        drop(source);
+
+        let (restored, _, _, ()) = Store::restore_authority_backup_with_initializer(
+            &target_path,
+            &backup,
+            &mnemonic,
+            &root,
+            124,
+            b"target-pass",
+            TEST_KDF,
+            &mut rng,
+            |store, rng| store.put_prekeys(b"fresh-target-prekeys", rng),
+        )
+        .unwrap();
+        assert_eq!(
+            restored.blocked_identities().unwrap(),
+            vec![blocked.clone()]
+        );
+        assert!(restored.provisional_requests().unwrap().is_empty());
+        assert!(restored.admission_tombstones().unwrap().is_empty());
+        drop(restored);
+
+        let entropy = mnemonic_to_entropy(&mnemonic).unwrap();
+        let salt: [u8; 16] = backup[16..32].try_into().unwrap();
+        let kek = derive_kek(&entropy[..], &salt, TEST_KDF).unwrap();
+        let key = StorageKey::from_bytes(*kek);
+        let plain = key
+            .open(AUTHORITY_BACKUP_AD, &backup[HEADER_LEN..])
+            .unwrap();
+        let current: AuthorityBackupPayload = decode_exact(&plain).unwrap();
+        let v8 = AuthorityBackupPayloadV8 {
+            created_at: current.created_at,
+            account: current.account,
+            authority: current.authority,
+            contacts: current.contacts,
+            messages: current.messages,
+            reset_peers: current.reset_peers,
+            groups: current.groups,
+            group_messages: current.group_messages,
+            group_authorities: current.group_authorities,
+            local_metadata: current.local_metadata,
+            note_messages: current.note_messages,
+            ephemeral: current.ephemeral,
+            contact_devices: current.contact_devices,
+        };
+        let v8_plain = postcard::to_allocvec(&v8).unwrap();
+        let mut v8_backup = Vec::with_capacity(HEADER_LEN + v8_plain.len() + 40);
+        v8_backup.extend_from_slice(&AUTHORITY_BACKUP_MAGIC_V8);
+        v8_backup.extend_from_slice(&TEST_KDF.m_cost_kib.to_le_bytes());
+        v8_backup.extend_from_slice(&TEST_KDF.t_cost.to_le_bytes());
+        v8_backup.extend_from_slice(&TEST_KDF.p_cost.to_le_bytes());
+        v8_backup.extend_from_slice(&salt);
+        v8_backup.extend_from_slice(&key.seal(AUTHORITY_BACKUP_AD_V8, &v8_plain, &mut rng));
+
+        let (legacy_restored, _, _, ()) = Store::restore_authority_backup_with_initializer(
+            &legacy_target_path,
+            &v8_backup,
+            &mnemonic,
+            &root,
+            125,
+            b"legacy-target-pass",
+            TEST_KDF,
+            &mut rng,
+            |store, rng| store.put_prekeys(b"fresh-v8-prekeys", rng),
+        )
+        .unwrap();
+        assert!(legacy_restored.blocked_identities().unwrap().is_empty());
     }
 
     #[test]

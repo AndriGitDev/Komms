@@ -59,6 +59,13 @@ COMMANDS:
                                     preview NFC form and local spoofing/duplicate warnings
     contact-rename PEER_HEX [--accept-warnings] NAME...
                                     rename one private local petname; warning review is explicit
+    message-requests                list sealed first-contact requests
+    message-request-accept REQUEST_ID NAME...
+                                    promote one request to contact and history atomically
+    message-request-delete REQUEST_ID
+                                    discard one request and retain only a replay tombstone
+    message-request-block REQUEST_ID
+                                    discard one request and block its verified sender
     send PEER_HEX TEXT...           queue a message
     send-disappearing PEER_HEX LIFETIME_SECS TEXT...
                                     remove locally at deadline; relay hint is hourly
@@ -181,6 +188,11 @@ COMMANDS:
     group-add GROUP_HEX PEER_HEX     owner direct; admin request
     group-remove GROUP_HEX PEER_HEX  owner direct; admin may remove members
     group-leave GROUP_HEX            leave a group
+    group-invitations                list sealed group-invitation requests
+    group-invitation-accept REQUEST_ID
+                                    create the proposed group after explicit consent
+    group-invitation-delete REQUEST_ID
+                                    discard one group invitation
     groups                            list groups
     group-messages GROUP_HEX         group message history
     contacts                        list contacts
@@ -417,6 +429,31 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
         "authority-reset-history" => json!({ "op": "authority_reset_history" }),
         "device-authority-conflicts" => json!({ "op": "device_authority_conflicts" }),
         "contact-authority-conflicts" => json!({ "op": "contact_authority_conflicts" }),
+        "message-requests" => {
+            if !args.is_empty() {
+                return Err("message-requests: expected no arguments".to_owned());
+            }
+            json!({ "op": "message_requests" })
+        }
+        "message-request-accept" => {
+            need(2)?;
+            json!({
+                "op": "message_request_accept",
+                "request": args[0],
+                "name": args[1..].join(" "),
+            })
+        }
+        "message-request-delete" | "message-request-block" => {
+            if args.len() != 1 {
+                return Err(format!("{command}: expected REQUEST_ID"));
+            }
+            let op = if command == "message-request-delete" {
+                "message_request_delete"
+            } else {
+                "message_request_block"
+            };
+            json!({ "op": op, "request": args[0] })
+        }
         "device-authority-request" => json!({ "op": "device_authority_approval_request" }),
         "device-authority-approve" => {
             if args.len() != 1 {
@@ -1301,6 +1338,23 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
             need(1)?;
             json!({ "op": "group_leave", "group": args[0] })
         }
+        "group-invitations" => {
+            if !args.is_empty() {
+                return Err("group-invitations: expected no arguments".to_owned());
+            }
+            json!({ "op": "group_invitations" })
+        }
+        "group-invitation-accept" | "group-invitation-delete" => {
+            if args.len() != 1 {
+                return Err(format!("{command}: expected REQUEST_ID"));
+            }
+            let op = if command == "group-invitation-accept" {
+                "group_invitation_accept"
+            } else {
+                "group_invitation_delete"
+            };
+            json!({ "op": op, "invitation": args[0] })
+        }
         "groups" => json!({ "op": "groups" }),
         "group-messages" => {
             need(1)?;
@@ -1618,6 +1672,31 @@ mod tests {
         )
         .is_err());
         assert!(build_request("device-revoke", &["11".repeat(32)]).is_err());
+        assert_eq!(
+            build_request("message-requests", &[]).unwrap()["op"],
+            json!("message_requests")
+        );
+        let request = build_request(
+            "message-request-accept",
+            &["10".repeat(16), "Local".to_owned(), "petname".to_owned()],
+        )
+        .unwrap();
+        assert_eq!(request["request"], json!("10".repeat(16)));
+        assert_eq!(request["name"], json!("Local petname"));
+        assert_eq!(
+            build_request("message-request-block", &["11".repeat(16)]).unwrap()["op"],
+            json!("message_request_block")
+        );
+        assert!(build_request("message-request-delete", &[]).is_err());
+        assert_eq!(
+            build_request("group-invitations", &[]).unwrap()["op"],
+            json!("group_invitations")
+        );
+        assert_eq!(
+            build_request("group-invitation-accept", &["12".repeat(16)]).unwrap()["op"],
+            json!("group_invitation_accept")
+        );
+        assert!(build_request("group-invitation-delete", &[]).is_err());
 
         let request = build_request(
             "group-create",

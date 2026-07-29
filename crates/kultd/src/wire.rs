@@ -16,13 +16,13 @@ use kult_node::{
     CarrierCapabilitySnapshot, ContactNameAssessment, ContactNameWarning, ContentStatus,
     CustomIconInfo, CustomIconTarget, CustomIconUsage, Event, FolderConversationInfo,
     FolderConversationList, FolderInfo, FolderSelection, GroupAuthorityInfo, GroupInfo,
-    GroupMentionCapability, GroupRole, GroupSecurityInfo, GroupSecurityLevel,
+    GroupInvitationInfo, GroupMentionCapability, GroupRole, GroupSecurityInfo, GroupSecurityLevel,
     IncognitoKeyboardPlatform, IncognitoKeyboardPolicy, LabelConversationInfo, LabelFilterInfo,
-    LabelInfo, MentionCapabilityIssueReason, NodeStaleFolderReason, NodeStaleLabelReason,
-    PinConversationInfo, PinConversationList, PinInfo, PollInfo, ResolvedGroupMessage,
-    ResolvedMessage, ScheduledConversation, ScheduledMessageInfo, ScreenSecurityPlatform,
-    ScreenSecurityPolicy, StaleFolderInfo, StaleLabelInfo, TextFormatBlockKind,
-    TextFormatHighlight, TextFormatStyle, NOTE_TO_SELF_CONVERSATION_ID,
+    LabelInfo, MentionCapabilityIssueReason, MessageRequestInfo, NodeStaleFolderReason,
+    NodeStaleLabelReason, PinConversationInfo, PinConversationList, PinInfo, PollInfo,
+    ResolvedGroupMessage, ResolvedMessage, ScheduledConversation, ScheduledMessageInfo,
+    ScreenSecurityPlatform, ScreenSecurityPolicy, StaleFolderInfo, StaleLabelInfo,
+    TextFormatBlockKind, TextFormatHighlight, TextFormatStyle, NOTE_TO_SELF_CONVERSATION_ID,
 };
 use kult_store::{
     valid_folder_name, valid_label_color, valid_label_name, ConversationId, DeliveryState,
@@ -344,6 +344,37 @@ pub enum Op {
         name: String,
         /// The peer's kult address string.
         address: String,
+    },
+    /// List bounded unknown-sender message requests.
+    MessageRequests,
+    /// Explicitly promote one message request into a named contact.
+    MessageRequestAccept {
+        /// Exact request id (hex).
+        request: String,
+        /// Private local petname.
+        name: String,
+    },
+    /// Delete one message request, leaving only a bounded replay absorber.
+    MessageRequestDelete {
+        /// Exact request id (hex).
+        request: String,
+    },
+    /// Block one verified request sender locally.
+    MessageRequestBlock {
+        /// Exact request id (hex).
+        request: String,
+    },
+    /// List bounded authenticated group invitation requests.
+    GroupInvitations,
+    /// Explicitly join one group invitation.
+    GroupInvitationAccept {
+        /// Exact invitation id (hex).
+        invitation: String,
+    },
+    /// Delete one group invitation without a remote-deletion claim.
+    GroupInvitationDelete {
+        /// Exact invitation id (hex).
+        invitation: String,
     },
     /// Validate and assess a proposed private local petname without mutation.
     ContactNameAssessment {
@@ -1294,6 +1325,50 @@ pub fn event_line(event: &Event) -> String {
             "timestamp": timestamp,
             "body": body,
         }),
+        Event::MessageRequestReceived { request } => json!({
+            "type": "message_request_received",
+            "request": hex_encode(request),
+        }),
+        Event::MessageRequestAccepted { request, peer } => json!({
+            "type": "message_request_accepted",
+            "request": hex_encode(request),
+            "peer": hex_encode(peer),
+        }),
+        Event::MessageRequestDeleted { request } => json!({
+            "type": "message_request_deleted",
+            "request": hex_encode(request),
+        }),
+        Event::MessageRequestBlocked { request } => json!({
+            "type": "message_request_blocked",
+            "request": hex_encode(request),
+        }),
+        Event::MessageRequestExpired { request } => json!({
+            "type": "message_request_expired",
+            "request": hex_encode(request),
+        }),
+        Event::GroupInvitationReceived {
+            invitation,
+            group,
+            inviter,
+        } => json!({
+            "type": "group_invitation_received",
+            "invitation": hex_encode(invitation),
+            "group": hex_encode(group),
+            "inviter": hex_encode(inviter),
+        }),
+        Event::GroupInvitationAccepted { invitation, group } => json!({
+            "type": "group_invitation_accepted",
+            "invitation": hex_encode(invitation),
+            "group": hex_encode(group),
+        }),
+        Event::GroupInvitationDeleted { invitation } => json!({
+            "type": "group_invitation_deleted",
+            "invitation": hex_encode(invitation),
+        }),
+        Event::GroupInvitationExpired { invitation } => json!({
+            "type": "group_invitation_expired",
+            "invitation": hex_encode(invitation),
+        }),
         Event::ContactAdded { peer } => json!({
             "type": "contact_added",
             "peer": hex_encode(peer),
@@ -1921,6 +1996,45 @@ pub fn group_json(group: &GroupInfo) -> Value {
     })
 }
 
+/// Bounded message-request view with no session, capability, or route secret.
+pub fn message_request_json(request: &MessageRequestInfo) -> Value {
+    json!({
+        "id": hex_encode(&request.id),
+        "account": hex_encode(&request.account),
+        "device": hex_encode(&request.device),
+        "preview": request.preview,
+        "safety_number": request.safety_number,
+        "arrived_at": request.arrived_at,
+        "expires_at": request.expires_at,
+        "transport": match request.transport {
+            kult_store::AdmissionTransportClass::Unknown => "unknown",
+            kult_store::AdmissionTransportClass::Direct => "direct",
+            kult_store::AdmissionTransportClass::Mailbox => "mailbox",
+            kult_store::AdmissionTransportClass::Mesh => "mesh",
+            kult_store::AdmissionTransportClass::Delayed => "delayed",
+            kult_store::AdmissionTransportClass::Bridge => "bridge",
+        },
+    })
+}
+
+/// Bounded group-invitation view with no group secret or sender-chain material.
+pub fn group_invitation_json(invitation: &GroupInvitationInfo) -> Value {
+    json!({
+        "id": hex_encode(&invitation.id),
+        "group": hex_encode(&invitation.group),
+        "inviter": hex_encode(&invitation.inviter),
+        "inviter_device": hex_encode(&invitation.inviter_device),
+        "name": invitation.name,
+        "creator": hex_encode(&invitation.creator),
+        "member_count": invitation.member_count,
+        "generation": invitation.generation,
+        "recipient_scoped": invitation.recipient_scoped,
+        "signed_authority": invitation.signed_authority,
+        "arrived_at": invitation.arrived_at,
+        "expires_at": invitation.expires_at,
+    })
+}
+
 /// Visible group recipient-origin state without any capability material.
 pub fn group_security_json(security: &GroupSecurityInfo) -> Value {
     json!({
@@ -2384,6 +2498,14 @@ pub fn parse_message(s: &str) -> Result<[u8; 16], String> {
         .ok_or_else(|| "message id must be hex".to_owned())?
         .try_into()
         .map_err(|_| "message id must be 16 bytes".to_owned())
+}
+
+/// Parse a 16-byte local request id from lowercase/uppercase hex.
+pub fn parse_request_id(s: &str) -> Result<[u8; 16], String> {
+    hex_decode(s)
+        .ok_or_else(|| "request id must be hex".to_owned())?
+        .try_into()
+        .map_err(|_| "request id must be 16 bytes".to_owned())
 }
 
 /// Parse a 16-byte transient call id from lowercase/uppercase hex.

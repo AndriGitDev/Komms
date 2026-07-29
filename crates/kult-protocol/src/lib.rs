@@ -25,6 +25,7 @@
 
 extern crate alloc;
 
+mod admission;
 mod attachment;
 mod attachment_bulk;
 mod bundle;
@@ -45,6 +46,12 @@ mod poll;
 mod receipt;
 mod token;
 
+pub use admission::{
+    admission_invitation_proof, solve_admission_puzzle, verify_admission_puzzle, AdmissionContext,
+    AdmissionEnvelope, AdmissionProofKind, ADMISSION_ENVELOPE_HEADER_LEN,
+    ADMISSION_ENVELOPE_VERSION, MAX_ADMISSION_ENVELOPE_BYTES, MAX_ADMISSION_PUZZLE_ATTEMPTS,
+    MAX_ADMISSION_SEALED_FLIGHT_BYTES, MAX_ADMISSION_TARGET_BUNDLE_BYTES,
+};
 pub use attachment::{
     attachment_chunk_count, decode_attachment_manifest, encode_attachment_manifest,
     AttachmentManifest, AttachmentObject, AttachmentRole, DecodedAttachmentManifest,

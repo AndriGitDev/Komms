@@ -149,6 +149,18 @@ fn deliver_envelopes(net: &Net, recipient: u32, envelopes: Vec<Envelope>) {
         .extend(envelopes);
 }
 
+fn accept_invitation(node: &mut Node, group: [u8; 32], now: u64, rng: &mut StdRng) {
+    if let Some(invitation) = node
+        .group_invitations()
+        .unwrap()
+        .into_iter()
+        .find(|invitation| invitation.group == group)
+    {
+        node.accept_group_invitation(&invitation.id, now, rng)
+            .unwrap();
+    }
+}
+
 /// Three nodes, full kitchen-table contact exchange (everyone has everyone's
 /// bundle and hint — the documented v1 reachability requirement).
 async fn trio(
@@ -257,6 +269,9 @@ async fn settle_group_security(
     start: u64,
 ) {
     settle_trio(alice, bob, carol, rng, start).await;
+    for node in [&mut *bob, &mut *carol] {
+        accept_invitation(node, group, start + 17, rng);
+    }
     if alice.group_security_info(&group).unwrap().level == GroupSecurityLevel::UpgradeRequired {
         alice.group_upgrade_security(&group, rng).unwrap();
     }
@@ -286,6 +301,71 @@ async fn settle_group_security(
             );
         }
     }
+}
+
+#[tokio::test]
+async fn group_invitation_requires_explicit_consent_and_survives_restart() {
+    let mut rng = StdRng::seed_from_u64(0x0030_6001);
+    let directory = tempfile::tempdir().unwrap();
+    let net: Net = Arc::new(Mutex::new(HashMap::new()));
+    let (mut alice, mut bob, mut carol, _alice_id, bob_id, carol_id) =
+        trio(directory.path(), &net, &mut rng).await;
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW).await;
+    let group = alice
+        .create_group("consent boundary", &[bob_id, carol_id], &mut rng)
+        .unwrap();
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 20).await;
+
+    assert!(bob.groups().unwrap().is_empty());
+    assert!(carol.groups().unwrap().is_empty());
+    assert_eq!(bob.group_invitations().unwrap().len(), 1);
+    assert_eq!(carol.group_invitations().unwrap().len(), 1);
+    assert_eq!(bob.group_invitations().unwrap()[0].group, group);
+
+    drop(bob);
+    let mut bob = Node::open(&directory.path().join("b.db"), b"b").unwrap();
+    bob.add_transport(Arc::new(MockLink {
+        net: net.clone(),
+        me: 2,
+    }));
+    let invitation = bob.group_invitations().unwrap().remove(0);
+    bob.accept_group_invitation(&invitation.id, NOW + 40, &mut rng)
+        .unwrap();
+    assert_eq!(bob.groups().unwrap()[0].id, group);
+    assert!(bob.group_invitations().unwrap().is_empty());
+
+    let invitation = carol.group_invitations().unwrap().remove(0);
+    carol
+        .delete_group_invitation(&invitation.id, &mut rng)
+        .unwrap();
+    assert!(carol.groups().unwrap().is_empty());
+    assert!(carol.group_invitations().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn group_invitation_expiry_never_creates_membership() {
+    let mut rng = StdRng::seed_from_u64(0x0030_6002);
+    let directory = tempfile::tempdir().unwrap();
+    let net: Net = Arc::new(Mutex::new(HashMap::new()));
+    let (mut alice, mut bob, mut carol, _alice_id, bob_id, _carol_id) =
+        trio(directory.path(), &net, &mut rng).await;
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW).await;
+    let group = alice
+        .create_group("expires locally", &[bob_id], &mut rng)
+        .unwrap();
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 20).await;
+    let invitation = bob.group_invitations().unwrap().remove(0);
+    let events = bob.tick(invitation.expires_at, &mut rng).await.unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::GroupInvitationExpired { invitation: id } if *id == invitation.id
+    )));
+    assert!(bob.group_invitations().unwrap().is_empty());
+    assert!(bob
+        .groups()
+        .unwrap()
+        .iter()
+        .all(|candidate| candidate.id != group));
 }
 
 #[tokio::test]
@@ -528,6 +608,8 @@ async fn delayed_origin_announce_cannot_replace_a_newer_sender_chain_on_shared_m
     // Alice will not resend it. Delivery succeeding after convergence proves
     // the delayed announce did not replace the accepted chain.
     settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 106).await;
+    accept_invitation(&mut carol, gid, NOW + 123, &mut rng);
+    settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 124).await;
     for (name, node) in [("alice", &alice), ("bob", &bob)] {
         assert_eq!(
             node.group_security_info(&gid).unwrap().level,
@@ -720,6 +802,12 @@ async fn membership_changes_rotate_and_exclude() {
     alice.group_add(&gid, &c_id, 7, &mut rng).unwrap();
     alice.tick(NOW + 10, &mut rng).await.unwrap();
     let events = carol.tick(NOW + 12, &mut rng).await.unwrap();
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, Event::GroupInvitationReceived { group, .. } if *group == gid)));
+    assert!(carol.groups().unwrap().is_empty());
+    accept_invitation(&mut carol, gid, NOW + 12, &mut rng);
+    let events = carol.drain_events();
     assert!(events
         .iter()
         .any(|e| matches!(e, Event::GroupUpdated { group } if *group == gid)));
@@ -1086,6 +1174,8 @@ async fn mention_is_capability_gated_roster_bound_and_notifies_exact_target() {
     assert!(alice.group_messages(&gid).unwrap().is_empty());
 
     settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 1).await;
+    accept_invitation(&mut bob, gid, NOW + 9, &mut rng);
+    accept_invitation(&mut carol, gid, NOW + 9, &mut rng);
     assert_eq!(
         alice.group_security_info(&gid).unwrap().level,
         GroupSecurityLevel::UpgradeRequired
@@ -1409,6 +1499,7 @@ async fn polls_converge_across_changed_votes_roster_changes_and_closure() {
         Err(NodeError::PollUnsupported)
     ));
     settle_trio(&mut alice, &mut bob, &mut carol, &mut rng, NOW + 1).await;
+    accept_invitation(&mut bob, gid, NOW + 11, &mut rng);
     assert_eq!(
         alice.group_security_info(&gid).unwrap().level,
         GroupSecurityLevel::UpgradeRequired

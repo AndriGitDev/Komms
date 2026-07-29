@@ -55,6 +55,8 @@ const state = {
   peer: "",
   contacts: [],
   groups: [],
+  messageRequests: [],
+  groupInvitations: [],
   folders: [],
   folderSelection: { kind: "all", id: null },
   folderMatches: null,
@@ -889,6 +891,7 @@ function enterApp(address) {
   state.statusTimer = setInterval(refreshStatus, 5000);
   refreshContacts();
   refreshGroups();
+  refreshRequestInboxBadge();
   refreshFolders();
   refreshLabels();
   refreshAuthorityResetHistory();
@@ -3242,6 +3245,7 @@ async function resynchronizePresentation() {
   await refreshStatus();
   await refreshContacts();
   await refreshGroups();
+  await refreshRequestInboxBadge();
   await refreshFolders();
   await refreshLabels();
   await refreshVisibleCustomIcons(true);
@@ -3352,6 +3356,19 @@ listen("node-event", async ({ payload: ev }) => {
       if (state.currentKind === "contact" && ev.peer === state.currentId) await renderMessages();
       break;
     }
+    case "message_request_received": {
+      await refreshRequestInboxBadge();
+      toast("New message request");
+      break;
+    }
+    case "message_request_accepted":
+    case "message_request_deleted":
+    case "message_request_blocked":
+    case "message_request_expired": {
+      await refreshRequestInboxBadge();
+      if (ev.type === "message_request_accepted") await refreshContacts();
+      break;
+    }
     case "attachment_updated": {
       const attachment = ev.attachment;
       if (attachmentBelongsHere(attachment)) await renderMessages();
@@ -3380,6 +3397,18 @@ listen("node-event", async ({ payload: ev }) => {
           $("#chat-empty").hidden = false;
         }
       }
+      break;
+    }
+    case "group_invitation_received": {
+      await refreshRequestInboxBadge();
+      toast("New group invitation");
+      break;
+    }
+    case "group_invitation_accepted":
+    case "group_invitation_deleted":
+    case "group_invitation_expired": {
+      await refreshRequestInboxBadge();
+      if (ev.type === "group_invitation_accepted") await refreshGroups();
       break;
     }
     case "mention_received": {
@@ -3543,6 +3572,200 @@ function showError(root, err) {
     el.hidden = false;
   }
 }
+
+async function refreshRequestInboxBadge() {
+  const [messageRequests, groupInvitations] = await Promise.all([
+    call("message_requests"),
+    call("group_invitations"),
+  ]);
+  state.messageRequests = messageRequests;
+  state.groupInvitations = groupInvitations;
+  const count = messageRequests.length + groupInvitations.length;
+  const badge = $("#request-count");
+  badge.hidden = count === 0;
+  badge.textContent = String(count);
+  $("#request-summary").textContent = count === 0
+    ? "No pending requests"
+    : `${count} awaiting your decision`;
+  $("#btn-message-requests").setAttribute(
+    "aria-label",
+    count === 0 ? "Message requests, none pending" : `Message requests, ${count} pending`,
+  );
+  return count;
+}
+
+let requestCardSequence = 0;
+
+function requestCard(title, detail) {
+  const card = document.createElement("article");
+  card.className = "request-card";
+  card.setAttribute("role", "listitem");
+  const heading = document.createElement("h3");
+  heading.id = `request-heading-${++requestCardSequence}`;
+  heading.textContent = title;
+  card.setAttribute("aria-labelledby", heading.id);
+  const description = document.createElement("p");
+  description.className = "modal-note";
+  description.textContent = detail;
+  card.append(heading, description);
+  return card;
+}
+
+function focusFirstRequestControl(root) {
+  requestAnimationFrame(() => {
+    root.querySelector(".request-card input, .request-card button")?.focus();
+  });
+}
+
+async function renderMessageRequests(root, announcement = "") {
+  await refreshRequestInboxBadge();
+  const direct = root.querySelector('[data-f="direct-requests"]');
+  const groups = root.querySelector('[data-f="group-requests"]');
+  const status = root.querySelector('[data-f="request-status"]');
+  direct.replaceChildren();
+  groups.replaceChildren();
+  status.textContent = announcement;
+
+  for (const request of state.messageRequests) {
+    const card = requestCard("Message from someone new", `Expires ${fmtExpiry(request.expires_at)}`);
+    const preview = document.createElement("blockquote");
+    preview.className = "request-preview";
+    preview.dir = "auto";
+    preview.textContent = request.preview || "No text preview";
+    const safety = document.createElement("p");
+    safety.className = "request-safety";
+    safety.textContent = `Safety number: ${request.safety_number}`;
+    const name = document.createElement("input");
+    name.type = "text";
+    name.value = "New contact";
+    name.maxLength = 256;
+    name.dataset.incognitoInput = "name";
+    name.setAttribute("aria-label", "Private contact name");
+    const actions = document.createElement("div");
+    actions.className = "row request-actions";
+    const accept = document.createElement("button");
+    accept.type = "button";
+    accept.className = "primary";
+    accept.textContent = "Accept";
+    accept.setAttribute("aria-label", "Accept message request");
+    const discard = document.createElement("button");
+    discard.type = "button";
+    discard.className = "ghost";
+    discard.textContent = "Delete";
+    discard.setAttribute("aria-label", "Delete message request");
+    const block = document.createElement("button");
+    block.type = "button";
+    block.className = "danger";
+    block.textContent = "Block";
+    block.setAttribute("aria-label", "Block message request");
+    actions.append(accept, discard, block);
+    card.append(preview, safety, name, actions);
+    direct.append(card);
+    const act = async (operation) => {
+      if (
+        operation === "block"
+        && !confirm("Block this verified sender on this device? This removes local capabilities and queues, but cannot delete remote copies.")
+      ) return;
+      actions.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+      try {
+        if (operation === "accept") {
+          const localName = name.value.trim();
+          if (!localName) throw new Error("Choose a private contact name.");
+          const peer = await call("accept_message_request", {
+            request: request.id,
+            name: localName,
+          });
+          await refreshContacts();
+          await renderMessageRequests(root);
+          closeModal();
+          await openChat(peer);
+        } else if (operation === "delete") {
+          await call("delete_message_request", { request: request.id });
+          await renderMessageRequests(root, "Request deleted locally.");
+          focusFirstRequestControl(root);
+        } else {
+          await call("block_message_request", { request: request.id });
+          await renderMessageRequests(root, "Sender blocked locally.");
+          focusFirstRequestControl(root);
+        }
+      } catch (error) {
+        status.textContent = `Request could not be changed: ${String(error)}`;
+        actions.querySelectorAll("button").forEach((button) => { button.disabled = false; });
+      }
+    };
+    accept.addEventListener("click", () => act("accept"));
+    discard.addEventListener("click", () => act("delete"));
+    block.addEventListener("click", () => act("block"));
+  }
+
+  for (const invitation of state.groupInvitations) {
+    const card = requestCard(
+      "Group invitation",
+      `${invitation.member_count} members · expires ${fmtExpiry(invitation.expires_at)}`,
+    );
+    const name = document.createElement("p");
+    name.className = "request-group-name";
+    name.dir = "auto";
+    name.textContent = invitation.name || "Unnamed group";
+    const note = document.createElement("p");
+    note.className = "modal-note";
+    note.textContent = "Joining creates group state only after you accept. Earlier group history is not imported.";
+    const actions = document.createElement("div");
+    actions.className = "row request-actions";
+    const accept = document.createElement("button");
+    accept.type = "button";
+    accept.className = "primary";
+    accept.textContent = "Join group";
+    accept.setAttribute("aria-label", "Accept group invitation");
+    const discard = document.createElement("button");
+    discard.type = "button";
+    discard.className = "ghost";
+    discard.textContent = "Delete";
+    discard.setAttribute("aria-label", "Delete group invitation");
+    actions.append(accept, discard);
+    card.append(name, note, actions);
+    groups.append(card);
+    accept.addEventListener("click", async () => {
+      actions.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+      try {
+        const group = await call("accept_group_invitation", { invitation: invitation.id });
+        await refreshGroups();
+        await renderMessageRequests(root);
+        closeModal();
+        await openGroup(group);
+      } catch (error) {
+        status.textContent = `Group invitation could not be accepted: ${String(error)}`;
+        actions.querySelectorAll("button").forEach((button) => { button.disabled = false; });
+      }
+    });
+    discard.addEventListener("click", async () => {
+      actions.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+      try {
+        await call("delete_group_invitation", { invitation: invitation.id });
+        await renderMessageRequests(root, "Group invitation deleted locally.");
+        focusFirstRequestControl(root);
+      } catch (error) {
+        status.textContent = `Group invitation could not be deleted: ${String(error)}`;
+        actions.querySelectorAll("button").forEach((button) => { button.disabled = false; });
+      }
+    });
+  }
+  applyIncognitoInputPrivacy(root);
+  root.querySelector('[data-f="request-empty"]').hidden =
+    state.messageRequests.length + state.groupInvitations.length !== 0;
+}
+
+async function openMessageRequests() {
+  const body = openModal("Message requests", "tpl-message-requests");
+  try {
+    await renderMessageRequests(body);
+  } catch (error) {
+    body.querySelector('[data-f="request-status"]').textContent =
+      `Requests are unavailable: ${String(error)}`;
+  }
+}
+
+$("#btn-message-requests").addEventListener("click", openMessageRequests);
 
 function customIconChoices() {
   return [

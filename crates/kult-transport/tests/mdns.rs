@@ -71,17 +71,15 @@ async fn lan_only_delivery_with_zero_configuration() {
     let to_b = DeliveryHint::Multiaddr(b_hint);
     assert_eq!(a.reachable(&to_b).await, Reachability::Now);
     let env = Envelope::new(EnvelopeKind::Message, [7; 32], vec![7; 300]);
-    assert_eq!(
-        a.send(&to_b, &env).await.unwrap(),
-        SendReceipt::AckedByNextHop
-    );
-    assert_eq!(recv_within(&b).await, vec![env]);
+    let (receipt, received) = tokio::join!(a.send(&to_b, &env), recv_within(&b));
+    assert_eq!(receipt.unwrap(), SendReceipt::AckedByNextHop);
+    assert_eq!(received, vec![env]);
 
     let reply = Envelope::new(EnvelopeKind::Message, [8; 32], vec![8; 300]);
-    b.send(&DeliveryHint::Multiaddr(a_hint), &reply)
-        .await
-        .unwrap();
-    assert_eq!(recv_within(&a).await, vec![reply]);
+    let to_a = DeliveryHint::Multiaddr(a_hint);
+    let (receipt, received) = tokio::join!(b.send(&to_a, &reply), recv_within(&a));
+    assert_eq!(receipt.unwrap(), SendReceipt::AckedByNextHop);
+    assert_eq!(received, vec![reply]);
 }
 
 /// mDNS seeds the Kademlia routing table, so the *discovery plane* — prekey

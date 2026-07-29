@@ -519,6 +519,13 @@ async fn group_attachment_encrypts_once_and_members_progress_independently() {
     alice.tick(NOW + 1, &mut rng).await.unwrap();
     bob.tick(NOW + 5, &mut rng).await.unwrap();
     carol.tick(NOW + 5, &mut rng).await.unwrap();
+    let bob_invitation = bob.group_invitations().unwrap().remove(0);
+    bob.accept_group_invitation(&bob_invitation.id, NOW + 6, &mut rng)
+        .unwrap();
+    let carol_invitation = carol.group_invitations().unwrap().remove(0);
+    carol
+        .accept_group_invitation(&carol_invitation.id, NOW + 6, &mut rng)
+        .unwrap();
     alice.tick(NOW + 10, &mut rng).await.unwrap();
     bob.tick(NOW + 11, &mut rng).await.unwrap();
     carol.tick(NOW + 11, &mut rng).await.unwrap();
