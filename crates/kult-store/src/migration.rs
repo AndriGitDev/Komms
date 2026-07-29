@@ -1012,11 +1012,14 @@ fn ensure_workspace(path: &Path, snapshot: &SourceSnapshot) -> Result<()> {
 }
 
 pub(crate) fn sync_database_for_replacement(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "PRAGMA synchronous = FULL;
-         PRAGMA wal_checkpoint(TRUNCATE);
-         PRAGMA journal_mode = DELETE;",
-    )?;
+    conn.pragma_update(None, "synchronous", "FULL")?;
+    let (busy, wal_frames, checkpointed): (i64, i64, i64) =
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+    if busy != 0 || wal_frames != checkpointed {
+        return Err(StoreError::MigrationValidation);
+    }
     Ok(())
 }
 

@@ -706,18 +706,58 @@ fn acquire_store_lock(path: &Path) -> Result<File> {
     Ok(lock)
 }
 
-/// Lock the opened database inode as a second writer-identity boundary.
+/// Lock a per-user sidecar derived from the opened database's filesystem
+/// identity as a second writer boundary.
 ///
-/// On Unix, this closes the hardlink-alias gap left by a pathname sidecar.
+/// On Unix, `(st_dev, st_ino)` gives every hardlink alias the same lock name.
+/// Locking the SQLite file itself is deliberately avoided: BSD-derived hosts
+/// make whole-file `flock` locks contend with SQLite's byte-range locks, so
+/// the owning process can otherwise lock itself out before `BEGIN IMMEDIATE`.
 /// The connection opens first but performs no schema or application write
-/// before this lock succeeds. Other platforms retain the canonical sidecar
-/// boundary until an equivalent file-identity strategy is qualified.
+/// before this identity lock succeeds. Other platforms retain the canonical
+/// pathname sidecar until an equivalent file-identity strategy is qualified.
 fn acquire_database_identity_lock(path: &Path) -> Result<Option<File>> {
     #[cfg(unix)]
     {
-        let database = OpenOptions::new().read(true).write(true).open(path)?;
-        match fs2::FileExt::try_lock_exclusive(&database) {
-            Ok(()) => Ok(Some(database)),
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+
+        let database = std::fs::symlink_metadata(path)?;
+        if !database.file_type().is_file() {
+            return Err(StoreError::NotAStore);
+        }
+        let lock_directory =
+            std::env::temp_dir().join(format!("komms-store-locks-{}", database.uid()));
+        match std::fs::create_dir(&lock_directory) {
+            Ok(()) => {
+                std::fs::set_permissions(&lock_directory, std::fs::Permissions::from_mode(0o700))?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(StoreError::Io(error)),
+        }
+        let directory_metadata = std::fs::symlink_metadata(&lock_directory)?;
+        if !directory_metadata.file_type().is_dir() || directory_metadata.uid() != database.uid() {
+            return Err(StoreError::NotAStore);
+        }
+        if directory_metadata.permissions().mode() & 0o077 != 0 {
+            std::fs::set_permissions(&lock_directory, std::fs::Permissions::from_mode(0o700))?;
+        }
+        let lock_directory = std::fs::canonicalize(&lock_directory)?;
+        let identity_path = lock_directory.join(format!(
+            "{:016x}-{:016x}.lock",
+            database.dev(),
+            database.ino()
+        ));
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW);
+        let identity = options.open(identity_path)?;
+        match fs2::FileExt::try_lock_exclusive(&identity) {
+            Ok(()) => Ok(Some(identity)),
             Err(error) if is_lock_contention(&error) => Err(StoreError::AlreadyOpen),
             Err(error) => Err(StoreError::Io(error)),
         }
@@ -745,7 +785,7 @@ pub struct Store {
     #[cfg(feature = "test-failpoints")]
     commit_failpoint: RefCell<Option<commit::ArmedCommitFailpoint>>,
     // Prevents another Unix process from bypassing the pathname sidecar via a
-    // hardlink alias to the same database inode.
+    // hardlink alias to the same database file identity.
     _database_lock: Option<File>,
     // Kept last so normal field drop order closes SQLite and clears every
     // store field before releasing the process-wide writer exclusion.

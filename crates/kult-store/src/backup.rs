@@ -1161,18 +1161,20 @@ mod tests {
             let prekeys = vec![phase; 32];
 
             set_initialization_failpoint(phase);
-            assert!(matches!(
-                Store::create_profile(
-                    &path,
-                    b"profile-pass",
-                    TEST_KDF,
-                    &identity,
-                    &state,
-                    &prekeys,
-                    &mut rng,
-                ),
-                Err(StoreError::MigrationValidation)
-            ));
+            let interrupted = Store::create_profile(
+                &path,
+                b"profile-pass",
+                TEST_KDF,
+                &identity,
+                &state,
+                &prekeys,
+                &mut rng,
+            );
+            match interrupted {
+                Err(StoreError::MigrationValidation) => {}
+                Err(error) => panic!("phase {phase}: {error:?}"),
+                Ok(_) => panic!("phase {phase}: publication unexpectedly completed"),
+            }
             let store = if phase == 1 {
                 Store::create_profile(
                     &path,

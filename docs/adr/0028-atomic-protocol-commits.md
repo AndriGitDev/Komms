@@ -122,10 +122,11 @@ receives a typed already-open failure before it loads mutable protocol state.
 The daemon also refuses to unlink a socket that accepts a live connection.
 
 The advisory lock complements SQLite transactions; it does not replace them.
-On Unix, the implementation combines the canonical no-follow sidecar with a
-lock on the opened database inode, so a hardlink alias cannot create a second
-cooperative writer. Equivalent file-identity qualification remains required on
-other supported platforms.
+On Unix, the implementation combines the canonical no-follow sidecar with an
+owner-only no-follow lock file derived from the opened database's device and
+inode, so hardlink aliases resolve to the same cooperative writer exclusion
+without interfering with SQLite's own byte-range locks. Equivalent
+file-identity qualification remains required on other supported platforms.
 
 ### 6. Crash injection is release evidence
 
