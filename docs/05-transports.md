@@ -64,7 +64,7 @@ receipt, the queue copy is removed and retained history becomes
 | Link protocols | QUIC (primary), TCP+Noise+Yamux (fallback) |
 | Discovery | Kademlia DHT; bootstrap from a *user-editable* list of community nodes + manual peer addresses + rendezvous points shared out-of-band (QR) |
 | NAT traversal | AutoNAT + Circuit Relay v2 + DCUtR hole punching |
-| Prekey bundles | Current Alpha: signed bundles ([06: Identity & Trust](06-identity-trust.md)) published under stable `H(IK_pub)` locators. This authenticates contents but exposes a polling and route-correlation oracle; [ADR-0031](adr/0031-capability-scoped-dht-discovery.md) proposes capability-scoped rotating locators before wire v1. |
+| Prekey bundles | Current Alpha: fixed 1,179,648-byte encrypted [ADR-0031](adr/0031-capability-scoped-dht-discovery.md) records under weekly Connect-capability locators. Each record contains a complete ADR-0026 proof, at most two device bundles, at most three introduction routes, and a complete active-device signature. Standard and Private records are mailbox-only. |
 | Mailbox relays | Ordinary nodes advertising a relay protocol; recipients pick relays and list them (as hints) in their bundle |
 
 Bootstrap deserves emphasis: a fresh internet-only install still needs one
@@ -76,6 +76,33 @@ than becoming a protocol dependency. Any reachable peer can bootstrap the DHT,
 and two users who exchange a QR code need no project bootstrap at all. Before
 stable, release tests must blackhole every configured default and exercise an
 alternate peer and an out-of-band path.
+
+First contact normally uses a `kc2` Connect code: the stable account digest plus
+a random rotatable 32-byte bearer discovery capability and checksum. For local
+weekly epoch `e`, publication writes exactly `e-1..=e+4` and lookup requests
+only `e-1`, `e`, and `e+1`. The locator and XChaCha20-Poly1305 record key use
+separate derivations. One locator retains at most eight distinct exact-size
+candidates before decryption; valid records are selected deterministically
+after full authority, certificate, prekey, admission, time, locator, padding,
+and signature verification. Invalid-candidate crowding or an authority
+fork/recovery conflict makes discovery unavailable instead of selecting
+attacker-controlled state.
+
+The random capability is included only in sealed local state, authenticated
+owned-device sync, and current encrypted recovery. A holder can poll the
+records, so public sharing makes the account publicly reachable and is not an
+anonymity promise. Rotation does not change the account fingerprint or safety
+number. Existing Alpha profiles may temporarily dual-publish a mailbox-only
+`/kk/prekeys/1` record; new profiles use `/kk/prekeys/2` only, and no legacy
+record discloses the new capability. Paired contacts receive updates through
+the authenticated ratchet, and ordinary delivery never falls back to public
+identity-indexed lookup.
+
+Direct QR/link/file pairing uses a signed `KPB2` wrapper around the
+authority-bound device prekey. It carries the current Connect capability and
+generation so a new-profile recipient can pre-register the corresponding
+device/day introduction token at a selected mailbox. Raw legacy pairing
+bundles do not silently recover identity-derived reachability.
 
 Direct sealed-envelope delivery negotiates `/komms/envelope/2`. One encoded
 envelope is capped at **128 KiB** across carriers. The receiver keeps at most
@@ -161,13 +188,15 @@ is milestone M6: tracked, not hand-waved.
 
 ### 2.1 Optional post-pairing reachability and native wake
 
-The Hybrid Infrastructure Layer is a proposed convenience adjunct, not another
-message transport. [ADR-0018](adr/0018-pairwise-rendezvous.md) lets established
-peers store fixed-size encrypted `DeliveryHint` records under rotating pairwise
-slots. The DHT remains first-contact discovery, and recipient-selected mailbox
-relays remain durable store-and-forward. Rendezvous success alone is not a
-`SendReceipt` or F4 capability; `kult-node` must probe the returned hint through
-the ordinary transport contract.
+The Hybrid Infrastructure Layer is a reversible convenience adjunct, not
+another message transport. The ADR-0018 Alpha implementation lets established
+peers store fixed-size encrypted `DeliveryHint` records under rotating
+provider-, direction-, and epoch-separated pairwise slots. Capability-scoped
+DHT records remain first-contact discovery, and recipient-selected mailbox
+relays remain durable store-and-forward. Rendezvous service processing or
+self-lookup confirmation is not a `SendReceipt` or F4 capability; `kult-node`
+probes the returned source-scoped hint through the ordinary transport contract.
+No default provider or deployable network service ships yet.
 
 [ADR-0019](adr/0019-native-wake-gateway.md) emits a static APNs/FCM tick only
 after a direct peer or mailbox acknowledged the sealed envelope. It carries no

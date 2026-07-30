@@ -8,13 +8,18 @@ import komms.core.HintSpec
 
 /**
  * Pairing: add a contact from their compact QR or pasteable/legacy bundle
- * hex, with optional delivery hints, or from their kult address via DHT.
+ * hex, with optional delivery hints, or from their capability-scoped Connect
+ * code via the bounded DHT lookup.
  */
 class AddContactActivity : SecureActivity() {
     private val scan =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             result.data?.getStringExtra(ScanActivity.EXTRA_TEXT)?.let {
-                findViewById<EditText>(R.id.add_bundle).setText(it)
+                if (it.startsWith("kc2")) {
+                    findViewById<EditText>(R.id.add_address).setText(it)
+                } else {
+                    findViewById<EditText>(R.id.add_bundle).setText(it)
+                }
             }
         }
 

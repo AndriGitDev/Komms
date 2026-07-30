@@ -1045,8 +1045,8 @@ async function refreshStatus() {
     return;
   }
   state.peer = s.peer;
-  state.address = s.address;
-  $("#my-address").textContent = s.address;
+  state.address = s.connect_code;
+  $("#my-address").textContent = s.connect_code;
   const nat = $("#stat-nat");
   nat.textContent = `NAT: ${s.nat}`;
   nat.className = "stat " + (s.nat === "public" ? "good" : s.nat === "private" ? "warn" : "");
@@ -2062,7 +2062,21 @@ $("#btn-conversation-pin").addEventListener("click", async () => {
 
 // ── conversation ────────────────────────────────────────────────────────
 
+async function clearActiveContact(nextPeer = null) {
+  if (
+    state.currentKind === "contact"
+    && state.currentId
+    && state.currentId !== nextPeer
+  ) {
+    await invoke("set_rendezvous_conversation_active", {
+      peer: state.currentId,
+      active: false,
+    }).catch(() => {});
+  }
+}
+
 async function openChat(peer) {
+  await clearActiveContact(peer);
   state.currentKind = "contact";
   state.currentId = peer;
   state.unread.delete(peer);
@@ -2071,12 +2085,17 @@ async function openChat(peer) {
   $("#composer-input").value = "";
   resetMentionDraft();
   updateChatHead();
+  await invoke("set_rendezvous_conversation_active", {
+    peer,
+    active: true,
+  }).catch(() => {});
   await renderMessages();
   refreshContacts();
   $("#composer-input").focus();
 }
 
 async function openGroup(group) {
+  await clearActiveContact();
   state.currentKind = "group";
   state.currentId = group;
   state.groupUnread.delete(group);
@@ -2091,6 +2110,7 @@ async function openGroup(group) {
 }
 
 async function openNoteToSelf() {
+  await clearActiveContact();
   state.noteToSelfId ??= await call("note_to_self_id");
   state.currentKind = "note";
   state.currentId = state.noteToSelfId;
@@ -3286,6 +3306,13 @@ listen("node-event", async ({ payload: ev }) => {
       await refreshStatus();
       break;
     }
+    case "rendezvous_conflict": {
+      toast(
+        "Conflicting authenticated route records were detected. No route was selected; retry later or verify this contact through another channel.",
+        true
+      );
+      break;
+    }
     case "theme_changed": {
       const theme = await invoke("theme");
       applyTheme(theme.preference);
@@ -4275,8 +4302,13 @@ $("#btn-share").addEventListener("click", async () => {
   const content = view.querySelector('[data-f="share-content"]');
   let bundle;
   let addrSvg;
+  let nodeStatus;
   try {
-    [bundle, addrSvg] = await Promise.all([invoke("my_bundle"), invoke("address_qr")]);
+    [bundle, addrSvg, nodeStatus] = await Promise.all([
+      invoke("my_bundle"),
+      invoke("address_qr"),
+      invoke("status"),
+    ]);
   } catch (err) {
     if (!view.isConnected) return;
     status.className = "error";
@@ -4307,6 +4339,9 @@ $("#btn-share").addEventListener("click", async () => {
     }, 1100);
   }
   view.querySelector('[data-pane="address"]').innerHTML = addrSvg;
+  view.querySelector(".share-connect-code").value = nodeStatus.connect_code;
+  view.querySelector(".share-account-fingerprint").value = nodeStatus.address;
+  view.querySelector('[data-act="retire-legacy"]').hidden = !nodeStatus.legacy_discovery;
   view.querySelector(".share-hex").value = bundle.hex;
   status.remove();
   content.hidden = false;
@@ -4317,9 +4352,30 @@ $("#btn-share").addEventListener("click", async () => {
       $$("[data-pane]", root).forEach((p) => (p.hidden = p.dataset.pane !== tab.dataset.share));
     }
     if (e.target.matches('[data-act="copy-hex"]')) copyText(bundle.hex);
+    if (e.target.matches('[data-act="copy-connect"]')) {
+      copyText(view.querySelector(".share-connect-code").value);
+    }
+    if (e.target.matches('[data-act="rotate-connect"]')) {
+      if (!window.confirm("Rotate this Connect code? Old codes stop finding you after their bounded records expire. Identity, contacts, history, and safety numbers do not change.")) return;
+      const code = await invoke("rotate_connect_code");
+      const svg = await invoke("address_qr");
+      view.querySelector(".share-connect-code").value = code;
+      view.querySelector('[data-pane="address"]').innerHTML = svg;
+      view.querySelector('[data-act="retire-legacy"]').hidden = true;
+      state.address = code;
+      $("#my-address").textContent = code;
+      toast("Connect code rotated; identity and safety numbers are unchanged");
+    }
+    if (e.target.matches('[data-act="retire-legacy"]')) {
+      if (!window.confirm("Permanently retire mailbox-only lookup under the stable Alpha address? This does not change identity or delete remote copies.")) return;
+      const code = await invoke("retire_legacy_discovery");
+      view.querySelector(".share-connect-code").value = code;
+      e.target.hidden = true;
+      toast("Legacy stable-address lookup retired");
+    }
     if (e.target.matches('[data-act="publish"]')) {
       await call("publish");
-      toast("Prekey bundle published to the DHT");
+      toast("Current Connect reachability republished");
     }
   });
 });

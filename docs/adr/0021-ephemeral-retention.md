@@ -99,7 +99,7 @@ ephemeral text into permanent content.
 
 ### Backup and linked-device behavior
 
-`KKR5` added sealed ephemeral tombstones and current `KKR9` preserves that
+`KKR5` added sealed ephemeral tombstones and current `KKR10` preserves that
 contract. Backups exclude all ephemeral
 plaintext and media, including content still live at export time, and convert
 exported active markers to terminal tombstones with transfer ids removed.

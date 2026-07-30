@@ -4588,6 +4588,8 @@ impl Node {
                 authority: Vec::new(),
                 bundle: contact.bundle,
                 hints: contact.hints,
+                introduction_capability: None,
+                introduction_generation: 0,
                 manifest_generation: 0,
                 manifest_state_id: [0u8; 32],
                 last_seen: 0,
@@ -4700,6 +4702,8 @@ impl Node {
                     authority: Vec::new(),
                     bundle: contact.bundle,
                     hints: contact.hints,
+                    introduction_capability: None,
+                    introduction_generation: 0,
                     manifest_generation: 0,
                     manifest_state_id: [0u8; 32],
                     last_seen: 0,
@@ -4819,6 +4823,7 @@ impl Node {
             self.sessions.insert(route.device, route.after);
             if route.reset {
                 self.capabilities_advertised.remove(&route.device);
+                self.discovery_advertised.remove(&route.device);
             }
         }
         self.after_memory_replacement()?;
@@ -4847,7 +4852,10 @@ impl Node {
         let Ok(identity) = postcard::from_bytes::<IdentityPublic>(&before.identity) else {
             return Ok(());
         };
-        let Some(bundle) = self.lookup_bundle(identity.address_digest(), now).await else {
+        let Some(bundle) = self
+            .lookup_legacy_bundle(identity.address_digest(), now)
+            .await
+        else {
             return Ok(());
         };
         let mut contact = before.clone();

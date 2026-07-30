@@ -6,6 +6,7 @@ members = [
     "crates/kult-transport",
     "crates/kult-store",
     "crates/kult-node",
+    "crates/kult-rendezvous",
     "crates/kult-ffi",
     "crates/kultd",
 ]

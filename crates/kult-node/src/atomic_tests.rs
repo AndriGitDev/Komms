@@ -16,7 +16,8 @@ use kult_store::{
     Direction, GroupDelivery, GroupMember, GroupMessageRecord, GroupRecord, GroupSendPlan,
     GroupStatePlan, GroupStateTransition, GroupTransition, MediaDirection, MediaObjectRecord,
     MediaRecord, MediaScope, MediaTransferRecord, MediaTransferState, MediaTransferTransition,
-    MessageDeviceDeliveryRecord, MessageRecord, ProfileBootstrapPlan, QueueClass, QueueItem, Store,
+    MessageDeviceDeliveryRecord, MessageRecord, PairwiseSendPlan, ProfileBootstrapPlan, QueueClass,
+    QueueItem, SessionTransition, Store,
 };
 use kult_transport::{
     CostClass, DeliveryHint, InboundReceipt, IngressClass, LatencyClass, LinkProfile, Reachability,
@@ -77,6 +78,7 @@ enum Target {
     PrekeyPublish,
     PairwiseSend,
     HandshakeReceive,
+    HandshakeCollisionReceive,
     PendingStage,
     AdmissionStage,
     AdmissionAccept,
@@ -549,6 +551,7 @@ fn run_store_case(
         Target::PrekeyPublish => run_prekey_publish(point, failure, seed),
         Target::PairwiseSend => run_pairwise_send(point, failure, seed),
         Target::HandshakeReceive => run_handshake_receive(point, failure, seed),
+        Target::HandshakeCollisionReceive => run_handshake_collision_receive(point, failure, seed),
         Target::PendingStage => run_pending_stage(point, failure, seed),
         Target::AdmissionStage => run_admission_stage(point, failure, seed),
         Target::AdmissionAccept => run_admission_accept(point, failure, seed),
@@ -954,6 +957,252 @@ fn run_handshake_receive(point: CommitFailpoint, failure: CommitFailure, seed: u
     .unwrap();
     assert_eq!(bob.store.messages_with(&alice_id).unwrap().len(), 1);
     assert!(!pending_contains(&bob, pending_sequence, content_id));
+    result_ok
+}
+
+fn run_handshake_collision_receive(
+    point: CommitFailpoint,
+    failure: CommitFailure,
+    seed: u64,
+) -> bool {
+    let mut fixture = Fixture::new(seed);
+    let group = prepare_origin_group(&mut fixture, "replacement crash matrix", NOW + 20);
+    let alice_first = [0x41; 16];
+    let alice_follow_up = [0x42; 16];
+    let group_message = [0x43; 16];
+    fixture
+        .alice
+        .send_message_with_id(
+            &fixture.bob_id,
+            b"alice collision first",
+            alice_first,
+            NOW + 40,
+            NOW + 40,
+            &mut fixture.rng,
+        )
+        .unwrap();
+    fixture
+        .alice
+        .send_message_with_id(
+            &fixture.bob_id,
+            b"alice collision follow-up",
+            alice_follow_up,
+            NOW + 41,
+            NOW + 41,
+            &mut fixture.rng,
+        )
+        .unwrap();
+    fixture
+        .alice
+        .group_send_with_id(
+            &group,
+            b"group copy bound to replaced session",
+            group_message,
+            NOW + 42,
+            NOW + 42,
+            &mut fixture.rng,
+        )
+        .unwrap();
+
+    let alice_device = sole_contact_device(&fixture.bob, &fixture.alice_id);
+    let bob_device = sole_contact_device(&fixture.alice, &fixture.bob_id);
+    let endpoint = fixture
+        .bob
+        .store
+        .contact_devices_for(&fixture.alice_id)
+        .unwrap()
+        .into_iter()
+        .find(|endpoint| endpoint.device == alice_device)
+        .unwrap();
+    let prior = fixture
+        .bob
+        .store
+        .get_session(&alice_device)
+        .unwrap()
+        .unwrap();
+    let (replacement, inbound) = fixture
+        .bob
+        .prepare_session(
+            &fixture.alice_id,
+            &alice_device,
+            &endpoint.bundle,
+            &pad(&[]).unwrap(),
+            NOW + 43,
+            &mut fixture.rng,
+        )
+        .unwrap();
+    fixture
+        .bob
+        .store
+        .commit_plan(
+            CommitPlan::PairwiseSend(PairwiseSendPlan {
+                sessions: &[SessionTransition {
+                    peer_device: alice_device,
+                    before: Some(&prior),
+                    after: &replacement,
+                }],
+                message: None,
+                message_update: None,
+                deliveries: &[],
+                delivery_updates: &[],
+                queue: &[QueueItem {
+                    peer: alice_device,
+                    msg_id: None,
+                    group_msg_id: None,
+                    class: QueueClass::Normal,
+                    created_at: NOW + 43,
+                    attempts: 0,
+                    next_attempt_at: NOW + 43,
+                    envelope: inbound.clone(),
+                }],
+                groups: &[],
+                authorities: &[],
+                scheduled: None,
+                clear_capabilities: &[alice_device],
+                clear_reset_markers: &[],
+                ephemeral: None,
+                media_transfers: &[],
+                media_objects: &[],
+                delete_controls: &[],
+                presentation_changed: false,
+            }),
+            &mut fixture.rng,
+        )
+        .unwrap();
+    fixture.bob.sessions.insert(alice_device, replacement);
+
+    let content_id = inbound.content_id();
+    let pending_sequence = fixture
+        .alice
+        .store
+        .pending_push(&inbound, NOW + 43, &mut fixture.rng)
+        .unwrap();
+    fixture.alice.arm_commit_failpoint(point, failure);
+    let result = consume(
+        &mut fixture.alice,
+        &inbound,
+        Some(pending_sequence),
+        NOW + 44,
+        &mut fixture.rng,
+    );
+    let result_ok = result.is_ok();
+    let committed = fixture.alice.store.is_seen(&content_id).unwrap();
+    assert_eq!(committed, expected_committed(result_ok, point));
+    assert_eq!(
+        pending_contains(&fixture.alice, pending_sequence, content_id),
+        !committed
+    );
+    for id in [alice_first, alice_follow_up] {
+        let delivery = fixture
+            .alice
+            .store
+            .message_device_deliveries(&id)
+            .unwrap()
+            .into_iter()
+            .find(|delivery| delivery.account == fixture.bob_id)
+            .unwrap();
+        assert_eq!(delivery.wire_id.is_none(), committed);
+        assert_eq!(delivery.state, DeliveryState::Queued);
+        assert_eq!(
+            fixture
+                .alice
+                .store
+                .queue_all()
+                .unwrap()
+                .iter()
+                .filter(|(_, item)| item.msg_id == Some(id))
+                .count(),
+            usize::from(!committed)
+        );
+    }
+    let group_delivery = fixture
+        .alice
+        .store
+        .message_device_deliveries(&group_message)
+        .unwrap()
+        .into_iter()
+        .find(|delivery| delivery.device == bob_device)
+        .unwrap();
+    assert_eq!(
+        group_delivery.state,
+        if committed {
+            DeliveryState::Failed
+        } else {
+            DeliveryState::Queued
+        }
+    );
+    assert_eq!(group_delivery.wire_id.is_none(), committed);
+    assert_eq!(
+        fixture
+            .alice
+            .store
+            .queue_all()
+            .unwrap()
+            .iter()
+            .filter(|(_, item)| item.group_msg_id == Some(group_message))
+            .count(),
+        usize::from(!committed)
+    );
+
+    let Fixture {
+        _directory,
+        alice_path,
+        bob_path: _,
+        alice,
+        bob: _,
+        alice_id: _,
+        bob_id,
+        mut rng,
+    } = fixture;
+    drop(alice);
+    let mut loser = Node::open(&alice_path, b"alice").unwrap();
+    consume(
+        &mut loser,
+        &inbound,
+        (!committed).then_some(pending_sequence),
+        NOW + 45,
+        &mut rng,
+    )
+    .unwrap();
+    loser
+        .queue_pending_pairwise_device_deliveries(NOW + 46, &mut rng)
+        .unwrap();
+    for id in [alice_first, alice_follow_up] {
+        let delivery = loser
+            .store
+            .message_device_deliveries(&id)
+            .unwrap()
+            .into_iter()
+            .find(|delivery| delivery.account == bob_id)
+            .unwrap();
+        assert_eq!(delivery.state, DeliveryState::Queued);
+        assert!(delivery.wire_id.is_some());
+        assert_eq!(
+            loser
+                .store
+                .queue_all()
+                .unwrap()
+                .iter()
+                .filter(|(_, item)| item.msg_id == Some(id))
+                .count(),
+            1
+        );
+    }
+    let group_delivery = loser
+        .store
+        .message_device_deliveries(&group_message)
+        .unwrap()
+        .into_iter()
+        .find(|delivery| delivery.device == bob_device)
+        .unwrap();
+    assert_eq!(group_delivery.state, DeliveryState::Failed);
+    assert!(group_delivery.wire_id.is_none());
+    assert!(!loser
+        .store
+        .queue_all()
+        .unwrap()
+        .iter()
+        .any(|(_, item)| item.group_msg_id == Some(group_message)));
     result_ok
 }
 
@@ -3015,6 +3264,7 @@ fn every_transaction_statement_is_all_or_nothing_after_restart() {
         Target::PrekeyPublish,
         Target::PairwiseSend,
         Target::HandshakeReceive,
+        Target::HandshakeCollisionReceive,
         Target::PendingStage,
         Target::AdmissionStage,
         Target::AdmissionAccept,
@@ -3362,6 +3612,8 @@ fn scheduled_activation_commits_before_transport_or_presentation() {
             .unwrap();
         let bob_device = sole_contact_device(&fixture.alice, &fixture.bob_id);
         fixture.alice.capabilities_advertised.insert(bob_device);
+        fixture.alice.discovery_advertised.insert(bob_device);
+        fixture.alice.rendezvous_advertised.insert(bob_device);
         let id = fixture
             .alice
             .schedule_message(
@@ -3373,6 +3625,14 @@ fn scheduled_activation_commits_before_transport_or_presentation() {
             )
             .unwrap();
         fixture.alice.drain_events();
+        fixture
+            .alice
+            .acknowledge_presentation(&mut fixture.rng)
+            .unwrap();
+        assert!(
+            fixture.alice.rendezvous_rehandshake_requested.is_empty(),
+            "scheduled activation fixture has pending rendezvous re-handshake work"
+        );
         fixture
             .alice
             .arm_commit_failpoint(point, CommitFailure::Interrupted);

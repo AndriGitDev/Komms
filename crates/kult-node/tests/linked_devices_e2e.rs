@@ -263,6 +263,50 @@ fn three_devices_link_transfer_converge_restart_and_revoke() {
 }
 
 #[test]
+fn connect_capability_links_syncs_rotates_and_survives_restart() {
+    let dir = TempDir::new().unwrap();
+    let mut rng = StdRng::seed_from_u64(0x3100_1001);
+    let (_, mut source) = create(&dir, "connect-source", &mut rng);
+    let (target_path, mut target) = create(&dir, "connect-target", &mut rng);
+    let account = source.peer_id();
+    let target_device = target.device_id();
+    let source_code = source.connect_code().unwrap();
+    assert_ne!(source_code, target.connect_code().unwrap());
+
+    link(
+        &mut source,
+        &mut target,
+        "Laptop",
+        DeviceLinkSelection {
+            contacts: false,
+            organization: false,
+            history: false,
+        },
+        100,
+        &mut rng,
+    );
+    assert_eq!(target.peer_id(), account);
+    assert_eq!(target.connect_code().unwrap(), source_code);
+
+    let stale = source.export_device_sync(&target_device, &mut rng).unwrap();
+    target.import_device_sync(&stale, &mut rng).unwrap();
+    let rotated = source.rotate_connect_code(&mut rng).unwrap();
+    assert_ne!(rotated, source_code);
+    let update = source.export_device_sync(&target_device, &mut rng).unwrap();
+    assert!(target.import_device_sync(&update, &mut rng).unwrap() > 0);
+    assert_eq!(target.connect_code().unwrap(), rotated);
+    assert!(matches!(
+        target.import_device_sync(&stale, &mut rng),
+        Err(NodeError::InvalidDeviceSync)
+    ));
+
+    drop(target);
+    let target = Node::open(&target_path, b"pass").unwrap();
+    assert_eq!(target.peer_id(), account);
+    assert_eq!(target.connect_code().unwrap(), rotated);
+}
+
+#[test]
 fn concurrent_quorum_authorized_children_fail_closed_and_remain_visible() {
     let dir = TempDir::new().unwrap();
     let mut rng = StdRng::seed_from_u64(0x2606_0001);
@@ -565,6 +609,14 @@ fn link_secrets_and_return_value_recovery_follow_the_committed_session() {
     let (response, _) = target
         .accept_device_link(&offer, "Outbox target", 201, &mut rng)
         .unwrap();
+    // Discovery capability state is now part of every linked-device
+    // convergence log. Materialize that derived snapshot before arming the
+    // final authority-commit checkpoint so the injected AfterCommit failure
+    // names the link transaction rather than its preparatory sync capture.
+    assert!(matches!(
+        source.export_device_sync(&[0xff; 32], &mut rng),
+        Err(NodeError::UnknownLinkedDevice)
+    ));
     source.arm_commit_failpoint(CommitFailpoint::AfterCommit, CommitFailure::Interrupted);
     assert!(source
         .approve_device_link(
@@ -647,7 +699,7 @@ fn quorum_loss_recovery_mints_new_device_and_never_resurrects_old_credentials() 
     assert!(source.device_authority_approval_request().is_ok());
     let account = source.peer_id();
     let (backup, mnemonic) = source.export_backup(200, &mut rng).unwrap();
-    assert_eq!(&backup[..4], b"KKR9");
+    assert_eq!(&backup[..4], b"KKRA");
     let recovered_path = dir.path().join("recovered.db");
     let recovered = Node::restore_with_recovery_authority(
         &recovered_path,

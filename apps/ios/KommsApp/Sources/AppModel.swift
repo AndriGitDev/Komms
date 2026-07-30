@@ -383,6 +383,10 @@ final class AppModel: ObservableObject {
                 await refreshDevices()
                 await refresh()
             }
+        case .rendezvousConflict:
+            notices.append(
+                "Conflicting authenticated route records were detected. "
+                + "No route was selected; retry later or verify this contact through another channel.")
         case .themeChanged:
             Task { await refreshTheme() }
         case .customIconsChanged:
@@ -802,8 +806,20 @@ final class AppModel: ObservableObject {
     /// Start following a conversation (loads its history).
     func follow(peer: String) async throws {
         guard let session else { return }
-        let history = try await run { try session.messages(peer: peer) }
+        let history = try await run {
+            try session.setRendezvousConversationActive(peer: peer, active: true)
+            return try session.messages(peer: peer)
+        }
         histories[peer] = history
+    }
+
+    /// Stop the runtime-only route-maintenance trigger when the conversation
+    /// leaves the foreground. Retained history remains available to the list.
+    func unfollow(peer: String) async {
+        guard let session else { return }
+        _ = try? await run {
+            try session.setRendezvousConversationActive(peer: peer, active: false)
+        }
     }
 
     /// Start following a group conversation (loads its persisted history).
@@ -1511,6 +1527,25 @@ final class AppModel: ObservableObject {
     func myBundleHex() async throws -> String {
         guard let session else { throw InputError("node is locked") }
         return try await run { try session.myBundleHex() }
+    }
+
+    func connectCode() async throws -> String {
+        guard let session else { throw InputError("node is locked") }
+        return try await run { try session.connectCode }
+    }
+
+    func rotateConnectCode() async throws -> String {
+        guard let session else { throw InputError("node is locked") }
+        let code = try await run { try session.rotateConnectCode() }
+        await refresh()
+        return code
+    }
+
+    func retireLegacyDiscovery() async throws -> String {
+        guard let session else { throw InputError("node is locked") }
+        let code = try await run { try session.retireLegacyDiscovery() }
+        await refresh()
+        return code
     }
 
     func addContact(name: String, bundleHex: String, hints: [HintSpec]) async throws {

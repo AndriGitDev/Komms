@@ -123,8 +123,17 @@ public final class Session: @unchecked Sendable {
 
     private init(node: KultNode) { self.node = node }
 
-    /// This node's human-shareable kult address.
+    /// Stable account fingerprint retained for verification and compatibility.
     public var address: String { node.address() }
+
+    /// Capability-scoped share artifact for ordinary first contact.
+    public var connectCode: String { get throws { try node.connectCode() } }
+
+    /// Rotate discovery reachability without changing identity or safety numbers.
+    public func rotateConnectCode() throws -> String { try node.rotateConnectCode() }
+
+    /// Permanently retire mailbox-only stable-address discovery compatibility.
+    public func retireLegacyDiscovery() throws -> String { try node.retireLegacyDiscovery() }
 
     /// This node's peer id (hex).
     public var peer: String { node.peer() }
@@ -294,7 +303,7 @@ public final class Session: @unchecked Sendable {
         return try node.addContact(name: name, bundle: bundle, hints: hints.toFfi())
     }
 
-    /// Add a contact from their kult address alone (DHT lookup).
+    /// Add a contact from a Connect code or visible legacy address.
     public func addContact(name: String, address: String) throws -> String {
         try node.addContactByAddress(
             name: name,
@@ -996,6 +1005,16 @@ public final class Session: @unchecked Sendable {
     /// Replace a contact's delivery hints.
     public func setHints(peer: String, hints: [HintSpec]) throws {
         try node.setHints(peer: peer, hints: hints.toFfi())
+    }
+
+    /// Coalesce a bounded route refresh for an active conversation.
+    public func requestRendezvousRefresh(peer: String) throws {
+        try node.requestRendezvousRefresh(peer: peer)
+    }
+
+    /// Mark or clear a foreground conversation for bounded route maintenance.
+    public func setRendezvousConversationActive(peer: String, active: Bool) throws {
+        try node.setRendezvousConversationActive(peer: peer, active: active)
     }
 
     /// Publish the prekey bundle on the DHT now.

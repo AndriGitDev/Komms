@@ -90,7 +90,7 @@ fi
 crypto_fuzz=(
     envelope_decode handshake_decode bundle_decode mnemonic_decode
     attachment_chunk_open device_prekey_decode call_media_open
-    group_origin_envelope_decode
+    group_origin_envelope_decode discovery_decode rendezvous_open
 )
 for target in "${crypto_fuzz[@]}"; do
     run_in "$root/crates/kult-crypto" cargo +nightly fuzz run "$target" -- \
@@ -103,7 +103,7 @@ protocol_fuzz=(
     capability_decode attachment_manifest_decode attachment_bulk_decode
     attachment_ranges mention_decode edit_decode ephemeral_decode poll_decode
     group_authority_decode group_control_decode device_sync_bundle_decode
-    call_control_decode
+    call_control_decode discovery_control_decode rendezvous_decode
 )
 for target in "${protocol_fuzz[@]}"; do
     run_in "$root/crates/kult-protocol" cargo +nightly fuzz run "$target" -- \

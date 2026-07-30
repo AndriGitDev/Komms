@@ -1511,8 +1511,12 @@ pub struct UiGroupMessage {
 /// A point-in-time node snapshot for the status bar.
 #[derive(Clone, Debug, Serialize)]
 pub struct UiStatus {
-    /// This node's human-shareable kult address.
+    /// Stable account fingerprint retained for verification and compatibility.
     pub address: String,
+    /// Capability-scoped share artifact for ordinary first contact.
+    pub connect_code: String,
+    /// Whether mailbox-only stable-address compatibility remains enabled.
+    pub legacy_discovery: bool,
     /// This node's peer id (hex).
     pub peer: String,
     /// Live listen addresses (circuit addresses included once reserved).
@@ -1853,6 +1857,15 @@ pub enum UiEvent {
         /// Exact new physical-device id (hex).
         device: String,
     },
+    /// Authenticated rendezvous state forked at one generation.
+    RendezvousConflict {
+        /// Stable contact account id (hex).
+        peer: String,
+        /// Exact contact device id (hex).
+        device: String,
+        /// Provider-separation id, or zeroes for a provider-set conflict (hex).
+        provider: String,
+    },
     /// A scheduled message was created or edited.
     ScheduledMessageUpdated {
         /// Stable message id (hex).
@@ -2138,6 +2151,15 @@ impl UiEvent {
             Event::DeviceLinkCompleted { account, device } => {
                 Self::DeviceLinkCompleted { account, device }
             }
+            Event::RendezvousConflict {
+                peer,
+                device,
+                provider,
+            } => Self::RendezvousConflict {
+                peer,
+                device,
+                provider,
+            },
             Event::ScheduledMessageUpdated { id } => Self::ScheduledMessageUpdated { id },
             Event::ScheduledMessageCancelled { id } => Self::ScheduledMessageCancelled { id },
             Event::ScheduledMessageActivated { id } => Self::ScheduledMessageActivated { id },
@@ -2762,6 +2784,25 @@ impl Session {
         self.node.address()
     }
 
+    /// Current capability-scoped share artifact.
+    pub fn connect_code(&self) -> Result<String, String> {
+        self.node.connect_code().map_err(|error| error.to_string())
+    }
+
+    /// Rotate reachability while preserving account identity and safety numbers.
+    pub fn rotate_connect_code(&self) -> Result<String, String> {
+        self.node
+            .rotate_connect_code()
+            .map_err(|error| error.to_string())
+    }
+
+    /// Permanently retire stable-address discovery compatibility.
+    pub fn retire_legacy_discovery(&self) -> Result<String, String> {
+        self.node
+            .retire_legacy_discovery()
+            .map_err(|error| error.to_string())
+    }
+
     /// Render exact source into the shared bounded and inert text model.
     pub fn format_text(
         &self,
@@ -2781,9 +2822,13 @@ impl Session {
             .map_err(|error| error.to_string())
     }
 
-    /// A QR of the kult address (for adding this node by address).
+    /// A QR of the current capability-scoped Connect code.
     pub fn address_qr(&self) -> Result<String, String> {
-        qr::svg(self.node.address().as_bytes())
+        let code = self
+            .node
+            .connect_code()
+            .map_err(|error| error.to_string())?;
+        qr::svg(code.as_bytes())
     }
 
     /// Status snapshot for the UI's transport indicators.
@@ -2791,6 +2836,8 @@ impl Session {
         let s = self.node.status().map_err(|e| e.to_string())?;
         Ok(UiStatus {
             address: s.address,
+            connect_code: s.connect_code,
+            legacy_discovery: s.legacy_discovery,
             peer: s.peer,
             listen: s.listen,
             lan_peers: s.lan_peers,
@@ -4861,6 +4908,26 @@ impl Session {
         self.node.set_hints(peer, hints).map_err(|e| e.to_string())
     }
 
+    /// Coalesce a bounded relationship-route refresh when a conversation is
+    /// opened. This does not change message delivery state.
+    pub fn request_rendezvous_refresh(&self, peer: String) -> Result<(), String> {
+        self.node
+            .request_rendezvous_refresh(peer)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Mark or clear a foreground conversation for bounded near-expiry route
+    /// refresh. This is runtime-only and does not alter delivery state.
+    pub fn set_rendezvous_conversation_active(
+        &self,
+        peer: String,
+        active: bool,
+    ) -> Result<(), String> {
+        self.node
+            .set_rendezvous_conversation_active(peer, active)
+            .map_err(|e| e.to_string())
+    }
+
     /// Publish the prekey bundle on the DHT now.
     pub fn publish(&self) -> Result<(), String> {
         self.node.publish().map_err(|e| e.to_string())
@@ -5012,6 +5079,17 @@ mod tests {
     fn events_serialize_with_type_tags() {
         let resync = serde_json::to_value(UiEvent::StateResyncRequired).unwrap();
         assert_eq!(resync["type"], "state_resync_required");
+
+        let conflict = serde_json::to_value(UiEvent::RendezvousConflict {
+            peer: "01".repeat(32),
+            device: "02".repeat(32),
+            provider: "03".repeat(32),
+        })
+        .unwrap();
+        assert_eq!(conflict["type"], "rendezvous_conflict");
+        assert_eq!(conflict["peer"], "01".repeat(32));
+        assert_eq!(conflict["device"], "02".repeat(32));
+        assert_eq!(conflict["provider"], "03".repeat(32));
 
         let json = serde_json::to_value(UiEvent::DeliveryUpdated {
             id: "ab".to_owned(),

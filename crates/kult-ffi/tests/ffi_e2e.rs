@@ -199,6 +199,34 @@ fn safe_text_formatting_via_ffi_matches_shared_corpus_without_delivery_work() {
 }
 
 #[test]
+fn connect_code_status_rotation_and_legacy_retirement_are_strict_via_ffi() {
+    let directory = tempfile::tempdir().unwrap();
+    let node = KultNode::start(
+        test_config(directory.path(), "connect-code"),
+        Box::new(Recorder::default()),
+    )
+    .unwrap();
+    let address = node.address();
+    let first = node.connect_code().unwrap();
+    let status = node.status().unwrap();
+    assert!(address.starts_with("kk1"));
+    assert!(first.starts_with("kc2"));
+    assert_eq!(status.address, address);
+    assert_eq!(status.connect_code, first);
+    assert!(!status.legacy_discovery);
+
+    let rotated = node.rotate_connect_code().unwrap();
+    assert!(rotated.starts_with("kc2"));
+    assert_ne!(rotated, first);
+    assert_eq!(node.address(), address);
+    assert_eq!(node.connect_code().unwrap(), rotated);
+    assert_eq!(node.status().unwrap().connect_code, rotated);
+    assert_eq!(node.retire_legacy_discovery().unwrap(), rotated);
+    assert!(!node.status().unwrap().legacy_discovery);
+    node.stop();
+}
+
+#[test]
 fn contact_rename_is_normalized_warned_private_and_duplicate_capable_via_ffi() {
     let fixture = contact_rename_parity_fixture();
     let directory = tempfile::tempdir().unwrap();
@@ -1623,6 +1651,19 @@ fn two_nodes_message_via_ffi_only() {
         .unwrap();
     assert_eq!(bob_peer, bob.peer());
     assert_eq!(alice_peer, alice.peer());
+    alice
+        .request_rendezvous_refresh(bob_peer.clone())
+        .expect("known contact refresh is coalesced");
+    alice
+        .set_rendezvous_conversation_active(bob_peer.clone(), true)
+        .expect("known foreground contact is tracked");
+    alice
+        .set_rendezvous_conversation_active(bob_peer.clone(), false)
+        .expect("foreground contact can be cleared");
+    assert!(alice.request_rendezvous_refresh("ff".repeat(32)).is_err());
+    assert!(alice
+        .set_rendezvous_conversation_active("ff".repeat(32), true)
+        .is_err());
 
     // An untried direct-QUIC hint is honestly only bulk-capable until a live
     // connection exists; the binding exposes that initial bounded verdict.

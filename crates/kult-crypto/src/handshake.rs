@@ -14,13 +14,14 @@ use zeroize::Zeroizing;
 use crate::prekeys::{
     OneTimePrekeySecret, PqPrekeySecret, SignedPrekeySecret, VerifiedBundle, MLKEM768_CT_LEN,
 };
-use crate::ratchet::{RatchetMessage, Session};
+use crate::ratchet::{RatchetMessage, Session, SessionServiceSecrets};
 use crate::{util, CryptoError, Identity, IdentityPublic, Result};
 
 const PQXDH_INFO: &[u8] = b"Komms-PQXDH-v1";
 const INFO_HKA: &[u8] = b"KK-hka";
 const INFO_NHKB: &[u8] = b"KK-nhkb";
 const INFO_MAILBOX: &[u8] = b"KK-mailbox";
+const INFO_HYBRID_SERVICE_EXPORTER: &[u8] = b"Komms-Hybrid-Service-Exporter-v1";
 
 /// The initiator's first flight: everything the responder needs to derive the
 /// session, plus the first Double-Ratchet message.
@@ -177,8 +178,23 @@ pub fn initiate(
     );
 
     let mailbox = util::hkdf32(None, sk_root.as_ref(), INFO_MAILBOX);
-    let mut session =
-        Session::init_initiator(rng, session_id, &sk_root, &b.spk, &hka, &nhkb, *mailbox);
+    let hybrid_service_exporter = util::hkdf32(
+        Some(&session_id),
+        sk_root.as_ref(),
+        INFO_HYBRID_SERVICE_EXPORTER,
+    );
+    let mut session = Session::init_initiator(
+        rng,
+        session_id,
+        &sk_root,
+        &b.spk,
+        &hka,
+        &nhkb,
+        SessionServiceSecrets {
+            mailbox: *mailbox,
+            hybrid_service_exporter: *hybrid_service_exporter,
+        },
+    );
     let first = session.encrypt(rng, now_secs, first_payload, &[]);
 
     let msg = InitialMessage {
@@ -237,8 +253,22 @@ pub fn respond(
 
     let spk_priv = spk.to_bytes();
     let mailbox = util::hkdf32(None, sk_root.as_ref(), INFO_MAILBOX);
-    let mut session =
-        Session::init_responder(session_id, &sk_root, &spk_priv, &hka, &nhkb, *mailbox);
+    let hybrid_service_exporter = util::hkdf32(
+        Some(&session_id),
+        sk_root.as_ref(),
+        INFO_HYBRID_SERVICE_EXPORTER,
+    );
+    let mut session = Session::init_responder(
+        session_id,
+        &sk_root,
+        &spk_priv,
+        &hka,
+        &nhkb,
+        SessionServiceSecrets {
+            mailbox: *mailbox,
+            hybrid_service_exporter: *hybrid_service_exporter,
+        },
+    );
     let first = RatchetMessage::decode(&msg.first)?;
     let payload = session.decrypt(rng, now_secs, &first, &[])?;
     Ok((session, payload))

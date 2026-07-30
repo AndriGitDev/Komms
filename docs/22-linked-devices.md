@@ -55,8 +55,8 @@ device. They should be kept offline and separately from an unlocked device.
 Opening attempts are locally throttled, but the phrase entropy and protected
 offline file—not that restartable throttle—are the security boundary.
 
-Routine `KKR9` backup has its own file and one-time phrase. Restore requires
-both the `KKR9` pair and the `.kra` pair so the account root is opened only for
+Routine `KKR10` backup has its own file and one-time phrase. Restore requires
+both the `KKR10` pair and the `.kra` pair so the account root is opened only for
 one explicit recovery epoch.
 
 ## Link flow
@@ -128,11 +128,13 @@ installation, but it cannot make a stolen root harmless.
 
 ## Backup and Alpha migration
 
-Current `KKR9` and its directly restorable root-free `KKR8` predecessor
+Current `KKR10` and its directly restorable root-free `KKR8`/`KKR9` predecessors
 preserve the public account, accepted authority proof, accurately
 eligible local history and organization, certified contact endpoints, and
-terminal tombstones. KKR9 additionally preserves bounded local block rules;
-KKR8 naturally restores none. Both exclude the account root, physical-device private
+terminal tombstones. KKR9 added bounded local block rules; KKR10 also preserves
+the rotatable Connect-code discovery capability and generation. KKR8 naturally
+restores no block rows, and KKR8/KKR9 restore with a fresh capability. All
+exclude the account root, physical-device private
 keys, prekeys, pairwise ratchets, group sender/receiver chains, link-channel
 roots, live rendezvous or wake capabilities, wire ids, queues, and resumable
 delivery state. Queued or sent local history restores as failed history and

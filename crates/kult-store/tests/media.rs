@@ -241,6 +241,7 @@ fn kkr5_carries_ordinary_manifest_but_excludes_media_state_and_files() {
         sync_counter: 0,
         channels: Vec::new(),
         conflicts: Vec::new(),
+        discovery: kult_store::DiscoveryCapabilityState::default(),
     };
     let mut store = Store::create_authority_profile(
         &db,

@@ -1,7 +1,7 @@
 //! Encrypted single-file backup (docs/07-storage.md §4,
 //! docs/06-identity-trust.md §5).
 //!
-//! Current `KKR9` export carries the public account anchor, accepted authority
+//! Current `KKR10` export carries the public account anchor, accepted authority
 //! proof, contacts, eligible history, local organization, and local block
 //! rules, sealed under a
 //! key derived from a 24-word mnemonic
@@ -32,7 +32,8 @@
 //! File layout (strict, all-or-nothing, like the sneakernet bundle format):
 //!
 //! ```text
-//! magic "KKR9" (4) ‖ m_cost_kib u32 LE ‖ t_cost u32 LE ‖ p_cost u32 LE
+//! magic "KKR10" (represented as `KKRA`, 4 bytes) ‖ m_cost_kib u32 LE
+//!   ‖ t_cost u32 LE ‖ p_cost u32 LE
 //!   ‖ salt (16) ‖ sealed( postcard(AuthorityBackupPayload) )
 //! ```
 //!
@@ -56,7 +57,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
 use kult_crypto::{
-    derive_kek, mnemonic_from_entropy, mnemonic_to_entropy, DeviceAuthorityManifest,
+    derive_kek, mnemonic_from_entropy, mnemonic_to_entropy, ConnectCode, DeviceAuthorityManifest,
     DeviceManifest, GroupSenderChain, Identity, IdentityPublic, KdfProfile, StorageKey,
 };
 #[cfg(test)]
@@ -68,16 +69,19 @@ use crate::{
     acquire_database_identity_lock, acquire_store_lock, decode_exact as decode_store_exact,
     migration, store_v2, AuthorityProfileBootstrapPlan, AuthorityResetHistoryRecord,
     BlockedIdentityRecord, CommitPlan, ContactDeviceRecord, ContactRecord, ConversationId,
-    CustomIconTarget, DeviceAuthorityStateRecord, EphemeralConversation, EphemeralRecord,
-    EphemeralState, GroupAuthorityRecord, GroupMember, GroupMessageRecord, GroupRecord,
-    LocalMetadataRecord, MessageRecord, NoteMessageRecord, PendingAnnounce, Result, Store,
-    StoreError, AUTHORITY_RESET_HISTORY_KEY, MAX_AUTHORITY_RESET_CONTACTS, THEME_PREFERENCE_KEY,
+    CustomIconTarget, DeviceAuthorityStateRecord, DiscoveryCapabilityState, EphemeralConversation,
+    EphemeralRecord, EphemeralState, GroupAuthorityRecord, GroupMember, GroupMessageRecord,
+    GroupRecord, LocalMetadataRecord, MessageRecord, NoteMessageRecord, PendingAnnounce, Result,
+    Store, StoreError, AUTHORITY_RESET_HISTORY_KEY, MAX_AUTHORITY_RESET_CONTACTS,
+    THEME_PREFERENCE_KEY,
 };
 #[cfg(any(test, feature = "legacy-test-fixtures"))]
 use crate::{DeviceStateRecord, ProfileBootstrapPlan};
 
-/// Current root-free backup magic: Komms recovery file, format 9.
-pub const AUTHORITY_BACKUP_MAGIC: [u8; 4] = *b"KKR9";
+/// Current root-free backup magic: Komms recovery file, format 10.
+pub const AUTHORITY_BACKUP_MAGIC: [u8; 4] = *b"KKRA";
+/// Root-free backup format 9, before the Connect capability was retained.
+pub const AUTHORITY_BACKUP_MAGIC_V9: [u8; 4] = *b"KKR9";
 /// Root-free backup format 8, before durable local block rules were retained.
 pub const AUTHORITY_BACKUP_MAGIC_V8: [u8; 4] = *b"KKR8";
 /// Legacy copied-root backup magic, format 7.
@@ -96,7 +100,8 @@ pub const BACKUP_MAGIC_V2: [u8; 4] = *b"KKR2";
 pub const BACKUP_MAGIC_V1: [u8; 4] = *b"KKR1";
 
 const BACKUP_AD: &[u8] = b"KK-backup-v1";
-const AUTHORITY_BACKUP_AD: &[u8] = b"Komms-root-free-backup-v9";
+const AUTHORITY_BACKUP_AD: &[u8] = b"Komms-root-free-backup-v10";
+const AUTHORITY_BACKUP_AD_V9: &[u8] = b"Komms-root-free-backup-v9";
 const AUTHORITY_BACKUP_AD_V8: &[u8] = b"Komms-root-free-backup-v8";
 const HEADER_LEN: usize = 4 + 12 + 16;
 const MAX_BACKUP_FILE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
@@ -160,6 +165,26 @@ struct AuthorityBackupPayload {
     created_at: u64,
     account: IdentityPublic,
     authority: DeviceAuthorityManifest,
+    discovery: DiscoveryCapabilityState,
+    contacts: Vec<ContactRecord>,
+    messages: Vec<MessageRecord>,
+    reset_peers: Vec<[u8; 32]>,
+    groups: Vec<BackupGroup>,
+    group_messages: Vec<GroupMessageRecord>,
+    group_authorities: Vec<GroupAuthorityRecord>,
+    local_metadata: Vec<LocalMetadataRecord>,
+    note_messages: Vec<NoteMessageRecord>,
+    ephemeral: Vec<EphemeralRecord>,
+    contact_devices: Vec<ContactDeviceRecord>,
+    blocked_identities: Vec<BlockedIdentityRecord>,
+}
+
+/// Root-free format 9, before the Connect capability was retained.
+#[derive(Serialize, Deserialize)]
+struct AuthorityBackupPayloadV9 {
+    created_at: u64,
+    account: IdentityPublic,
+    authority: DeviceAuthorityManifest,
     contacts: Vec<ContactRecord>,
     messages: Vec<MessageRecord>,
     reset_peers: Vec<[u8; 32]>,
@@ -197,6 +222,7 @@ impl From<AuthorityBackupPayloadV8> for AuthorityBackupPayload {
             created_at: payload.created_at,
             account: payload.account,
             authority: payload.authority,
+            discovery: DiscoveryCapabilityState::default(),
             contacts: payload.contacts,
             messages: payload.messages,
             reset_peers: payload.reset_peers,
@@ -208,6 +234,28 @@ impl From<AuthorityBackupPayloadV8> for AuthorityBackupPayload {
             ephemeral: payload.ephemeral,
             contact_devices: payload.contact_devices,
             blocked_identities: Vec::new(),
+        }
+    }
+}
+
+impl From<AuthorityBackupPayloadV9> for AuthorityBackupPayload {
+    fn from(payload: AuthorityBackupPayloadV9) -> Self {
+        Self {
+            created_at: payload.created_at,
+            account: payload.account,
+            authority: payload.authority,
+            discovery: DiscoveryCapabilityState::default(),
+            contacts: payload.contacts,
+            messages: payload.messages,
+            reset_peers: payload.reset_peers,
+            groups: payload.groups,
+            group_messages: payload.group_messages,
+            group_authorities: payload.group_authorities,
+            local_metadata: payload.local_metadata,
+            note_messages: payload.note_messages,
+            ephemeral: payload.ephemeral,
+            contact_devices: payload.contact_devices,
+            blocked_identities: payload.blocked_identities,
         }
     }
 }
@@ -738,7 +786,7 @@ impl Store {
     }
 
     /// Encode a historical copied-root KKR7 fixture. This is deliberately
-    /// absent from production builds; current exports use KKR9.
+    /// absent from production builds; current exports use KKR10.
     #[cfg(test)]
     fn export_backup(
         &self,
@@ -915,6 +963,7 @@ impl Store {
             created_at: now,
             account,
             authority: device_state.manifest,
+            discovery: device_state.discovery,
             contacts: self.contacts()?,
             messages,
             reset_peers: self.session_peers()?,
@@ -984,7 +1033,7 @@ impl Store {
         R: CryptoRngCore,
         F: FnOnce(&Store, &mut R) -> Result<T>,
     {
-        let (payload, plain_len) = open_authority_backup(backup, mnemonic)?;
+        let (mut payload, plain_len) = open_authority_backup(backup, mnemonic)?;
         let record_count = validate_authority_backup_payload(&payload)?;
         if root.public() != payload.account || payload.authority.account() != &payload.account {
             return Err(StoreError::NotABackup);
@@ -997,6 +1046,20 @@ impl Store {
             recovered_at,
             rng,
         )?;
+        if payload.discovery.capability == [0u8; 32] {
+            let code = ConnectCode::generate(&payload.account, rng)?;
+            payload.discovery = DiscoveryCapabilityState {
+                capability: code.capability(),
+                generation: 1,
+                legacy_v1_enabled: true,
+            };
+        } else {
+            payload.discovery.generation = payload
+                .discovery
+                .generation
+                .checked_add(1)
+                .ok_or(StoreError::RecordBounds)?;
+        }
         let device_state = DeviceAuthorityStateRecord {
             local_device_secret: device.to_bytes().to_vec(),
             local_certificate: manifest
@@ -1009,6 +1072,7 @@ impl Store {
             sync_counter: 0,
             channels: Vec::new(),
             conflicts: Vec::new(),
+            discovery: payload.discovery.clone(),
         };
 
         let lock = acquire_store_lock(path)?;
@@ -1227,7 +1291,8 @@ fn open_authority_backup(backup: &[u8], mnemonic: &str) -> Result<(AuthorityBack
     }
     let (version, associated_data) =
         match <[u8; 4]>::try_from(&backup[..4]).expect("length checked") {
-            AUTHORITY_BACKUP_MAGIC => (9, AUTHORITY_BACKUP_AD),
+            AUTHORITY_BACKUP_MAGIC => (10, AUTHORITY_BACKUP_AD),
+            AUTHORITY_BACKUP_MAGIC_V9 => (9, AUTHORITY_BACKUP_AD_V9),
             AUTHORITY_BACKUP_MAGIC_V8 => (8, AUTHORITY_BACKUP_AD_V8),
             _ => return Err(StoreError::NotABackup),
         };
@@ -1245,10 +1310,11 @@ fn open_authority_backup(backup: &[u8], mnemonic: &str) -> Result<(AuthorityBack
     let key = StorageKey::from_bytes(*kek);
     let plain = Zeroizing::new(key.open(associated_data, &backup[HEADER_LEN..])?);
     let plain_len = plain.len();
-    let payload = if version == 9 {
-        decode_exact(&plain)?
-    } else {
-        AuthorityBackupPayload::from(decode_exact::<AuthorityBackupPayloadV8>(&plain)?)
+    let payload = match version {
+        10 => decode_exact(&plain)?,
+        9 => AuthorityBackupPayload::from(decode_exact::<AuthorityBackupPayloadV9>(&plain)?),
+        8 => AuthorityBackupPayload::from(decode_exact::<AuthorityBackupPayloadV8>(&plain)?),
+        _ => return Err(StoreError::NotABackup),
     };
     Ok((payload, plain_len))
 }
@@ -1726,6 +1792,7 @@ fn validate_authority_backup_payload(payload: &AuthorityBackupPayload) -> Result
     payload.account.verify()?;
     payload.authority.verify()?;
     if payload.authority.account() != &payload.account
+        || (payload.discovery.capability == [0u8; 32]) != (payload.discovery.generation == 0)
         || payload.contacts.len() > 100_000
         || payload.messages.len() > 10_000_000
         || payload.reset_peers.len() > 100_000
@@ -2279,6 +2346,7 @@ mod tests {
         let device = Identity::generate(rng);
         let manifest =
             DeviceAuthorityManifest::initial(&root, &device, "This device".into(), 0, rng).unwrap();
+        let discovery = ConnectCode::generate(&root.public(), rng).unwrap();
         let state = DeviceAuthorityStateRecord {
             local_device_secret: device.to_bytes().to_vec(),
             local_certificate: manifest.devices()[0].certificate.clone(),
@@ -2288,6 +2356,11 @@ mod tests {
             sync_counter: 0,
             channels: Vec::new(),
             conflicts: Vec::new(),
+            discovery: DiscoveryCapabilityState {
+                capability: discovery.capability(),
+                generation: 1,
+                legacy_v1_enabled: false,
+            },
         };
         let store = Store::create_authority_profile(
             path,
@@ -2369,6 +2442,7 @@ mod tests {
             sync_counter: 0,
             channels: Vec::new(),
             conflicts: Vec::new(),
+            discovery: DiscoveryCapabilityState::default(),
         };
         let root_bytes = root.to_bytes();
         let store = Store::create_authority_profile(
@@ -2525,6 +2599,7 @@ mod tests {
         assert_eq!(decoded.created_at, 123);
         assert_eq!(decoded.account, root.public());
         assert_eq!(decoded.authority, state.manifest);
+        assert_eq!(decoded.discovery, state.discovery);
         assert_eq!(decoded.messages.len(), 1);
         assert_eq!(decoded.messages[0].state, crate::DeliveryState::Failed);
         assert_eq!(decoded.messages[0].wire_id, None);
@@ -2560,10 +2635,11 @@ mod tests {
     }
 
     #[test]
-    fn authority_backup_restores_blocks_and_accepts_format_eight() {
+    fn authority_backup_restores_discovery_blocks_and_predecessor_formats() {
         let directory = tempfile::tempdir().unwrap();
         let source_path = directory.path().join("authority-block-source.db");
         let target_path = directory.path().join("authority-block-target.db");
+        let v9_target_path = directory.path().join("authority-v9-target.db");
         let legacy_target_path = directory.path().join("authority-v8-target.db");
         let mut rng = StdRng::seed_from_u64(0x2603);
         let (source, root, _device, _state) = authority_store(&source_path, &mut rng);
@@ -2594,6 +2670,13 @@ mod tests {
         );
         assert!(restored.provisional_requests().unwrap().is_empty());
         assert!(restored.admission_tombstones().unwrap().is_empty());
+        let restored_discovery = restored
+            .get_device_authority_state()
+            .unwrap()
+            .unwrap()
+            .discovery;
+        assert_ne!(restored_discovery.capability, [0u8; 32]);
+        assert!(!restored_discovery.legacy_v1_enabled);
         drop(restored);
 
         let entropy = mnemonic_to_entropy(&mnemonic).unwrap();
@@ -2603,6 +2686,56 @@ mod tests {
         let plain = key
             .open(AUTHORITY_BACKUP_AD, &backup[HEADER_LEN..])
             .unwrap();
+        let current: AuthorityBackupPayload = decode_exact(&plain).unwrap();
+        let current_discovery = current.discovery.clone();
+        let v9 = AuthorityBackupPayloadV9 {
+            created_at: current.created_at,
+            account: current.account,
+            authority: current.authority,
+            contacts: current.contacts,
+            messages: current.messages,
+            reset_peers: current.reset_peers,
+            groups: current.groups,
+            group_messages: current.group_messages,
+            group_authorities: current.group_authorities,
+            local_metadata: current.local_metadata,
+            note_messages: current.note_messages,
+            ephemeral: current.ephemeral,
+            contact_devices: current.contact_devices,
+            blocked_identities: current.blocked_identities,
+        };
+        let v9_plain = postcard::to_allocvec(&v9).unwrap();
+        let mut v9_backup = Vec::with_capacity(HEADER_LEN + v9_plain.len() + 40);
+        v9_backup.extend_from_slice(&AUTHORITY_BACKUP_MAGIC_V9);
+        v9_backup.extend_from_slice(&TEST_KDF.m_cost_kib.to_le_bytes());
+        v9_backup.extend_from_slice(&TEST_KDF.t_cost.to_le_bytes());
+        v9_backup.extend_from_slice(&TEST_KDF.p_cost.to_le_bytes());
+        v9_backup.extend_from_slice(&salt);
+        v9_backup.extend_from_slice(&key.seal(AUTHORITY_BACKUP_AD_V9, &v9_plain, &mut rng));
+        let (v9_restored, _, _, ()) = Store::restore_authority_backup_with_initializer(
+            &v9_target_path,
+            &v9_backup,
+            &mnemonic,
+            &root,
+            125,
+            b"v9-target-pass",
+            TEST_KDF,
+            &mut rng,
+            |store, rng| store.put_prekeys(b"fresh-v9-prekeys", rng),
+        )
+        .unwrap();
+        assert_eq!(v9_restored.blocked_identities().unwrap(), vec![blocked]);
+        let v9_discovery = v9_restored
+            .get_device_authority_state()
+            .unwrap()
+            .unwrap()
+            .discovery;
+        assert_ne!(v9_discovery.capability, [0u8; 32]);
+        assert_ne!(v9_discovery.capability, current_discovery.capability);
+        assert_eq!(v9_discovery.generation, 1);
+        assert!(v9_discovery.legacy_v1_enabled);
+        drop(v9_restored);
+
         let current: AuthorityBackupPayload = decode_exact(&plain).unwrap();
         let v8 = AuthorityBackupPayloadV8 {
             created_at: current.created_at,
@@ -2633,7 +2766,7 @@ mod tests {
             &v8_backup,
             &mnemonic,
             &root,
-            125,
+            126,
             b"legacy-target-pass",
             TEST_KDF,
             &mut rng,
@@ -2641,6 +2774,15 @@ mod tests {
         )
         .unwrap();
         assert!(legacy_restored.blocked_identities().unwrap().is_empty());
+        let v8_discovery = legacy_restored
+            .get_device_authority_state()
+            .unwrap()
+            .unwrap()
+            .discovery;
+        assert_ne!(v8_discovery.capability, [0u8; 32]);
+        assert_ne!(v8_discovery.capability, current_discovery.capability);
+        assert_eq!(v8_discovery.generation, 1);
+        assert!(v8_discovery.legacy_v1_enabled);
     }
 
     #[test]
@@ -2752,6 +2894,7 @@ mod tests {
                 sync_counter: 0,
                 channels: Vec::new(),
                 conflicts: Vec::new(),
+                discovery: DiscoveryCapabilityState::default(),
             };
             let authority_prekeys = vec![phase + 3; 32];
 
@@ -2843,6 +2986,7 @@ mod tests {
                 sync_counter: 0,
                 channels: Vec::new(),
                 conflicts: Vec::new(),
+                discovery: DiscoveryCapabilityState::default(),
             };
 
             set_authority_reset_failpoint(phase);
@@ -2969,6 +3113,7 @@ mod tests {
             sync_counter: 0,
             channels: Vec::new(),
             conflicts: Vec::new(),
+            discovery: DiscoveryCapabilityState::default(),
         };
         let (restored, history) = Store::restore_legacy_backup_as_authority_reset(
             &target_path,
@@ -3043,6 +3188,7 @@ mod tests {
                 sync_counter: 0,
                 channels: Vec::new(),
                 conflicts: Vec::new(),
+                discovery: DiscoveryCapabilityState::default(),
             };
 
             set_restore_failpoint(phase);

@@ -316,9 +316,13 @@ async fn pairwise_attachment_resumes_after_restart_and_exports_exact_bytes() {
         .unwrap();
     bob.tick(NOW + 21, &mut rng).await.unwrap();
     alice.tick(NOW + 22, &mut rng).await.unwrap();
-    assert!(alice.attachments().unwrap().iter().any(|attachment| {
-        attachment.content_id == content_id && attachment.state == MediaTransferState::Cancelled
-    }));
+    let cancelled = alice
+        .attachments()
+        .unwrap()
+        .into_iter()
+        .find(|attachment| attachment.content_id == content_id)
+        .unwrap();
+    assert_eq!(cancelled.state, MediaTransferState::Cancelled);
     bob.accept_attachment(&transfer_id, NOW + 23, &mut rng)
         .unwrap();
 
@@ -378,6 +382,10 @@ async fn pairwise_attachment_resumes_after_restart_and_exports_exact_bytes() {
     bob.export_attachment_object(&transfer_id, true, &mut exported_preview)
         .unwrap();
     assert_eq!(exported_preview, preview);
+    bob.reject_attachment(&transfer_id, idle + 6, &mut rng)
+        .unwrap();
+    bob.tick(idle + 6, &mut rng).await.unwrap();
+    alice.tick(idle + 7, &mut rng).await.unwrap();
     assert!(alice.attachments().unwrap().iter().any(|attachment| {
         attachment.content_id == content_id && attachment.state == MediaTransferState::Cancelled
     }));

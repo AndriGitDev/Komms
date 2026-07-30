@@ -833,11 +833,14 @@ async fn actor(
         Duration::from_millis(20),
     );
     media_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut discovery_retry_at = started;
     let _ = ready.send(());
     loop {
+        let mut check_discovery = false;
         tokio::select! {
             _ = shutdown.changed() => break,
             _ = tick.tick() => {
+                check_discovery = true;
                 match node.tick(now(), &mut OsRng).await {
                     Ok(batch) => {
                         for event in &batch {
@@ -855,25 +858,41 @@ async fn actor(
                     let _ = events.send(wire::event_line(&event));
                 }
             }
-            msg = rx.recv() => match msg {
-                None => break,
-                Some(NodeMsg::Tokens { resp }) => {
-                    let _ = resp.send(node.mailbox_tokens(now()));
-                }
-                Some(NodeMsg::Publish) => {
-                    let hints = own_hints(&net, &cfg.mailboxes);
-                    if let Err(e) = node.publish_bundle(&hints, now()).await {
-                        tracing::warn!(error = %e, "bundle publish failed");
+            msg = rx.recv() => {
+                check_discovery = true;
+                match msg {
+                    None => break,
+                    Some(NodeMsg::Tokens { resp }) => {
+                        let _ = resp.send(node.mailbox_tokens(now()));
+                    }
+                    Some(NodeMsg::Publish) => {
+                        let hints = own_hints(&net, &cfg.mailboxes);
+                        if let Err(e) = node.publish_bundle(&hints, now()).await {
+                            tracing::warn!(error = %e, "bundle publish failed");
+                        }
+                    }
+                    Some(NodeMsg::BridgeRelays(relays)) => {
+                        node.set_bridge(Some(relays));
+                    }
+                    Some(NodeMsg::Op { op, resp }) => {
+                        let result = handle_op(&mut node, &cfg, &net, op).await;
+                        let _ = resp.send(result);
                     }
                 }
-                Some(NodeMsg::BridgeRelays(relays)) => {
-                    node.set_bridge(Some(relays));
+            }
+        }
+        let discovery_now = tokio::time::Instant::now();
+        if check_discovery && discovery_now >= discovery_retry_at {
+            let hints = own_hints(&net, &cfg.mailboxes);
+            if node.discovery_publication_needed(&hints).unwrap_or(false) {
+                match node.publish_bundle(&hints, now()).await {
+                    Ok(()) => discovery_retry_at = discovery_now,
+                    Err(error) => {
+                        tracing::warn!(%error, "discovery refresh failed");
+                        discovery_retry_at = discovery_now + Duration::from_secs(60);
+                    }
                 }
-                Some(NodeMsg::Op { op, resp }) => {
-                    let result = handle_op(&mut node, &cfg, &net, op).await;
-                    let _ = resp.send(result);
-                }
-            },
+            }
         }
     }
 }
@@ -919,6 +938,8 @@ async fn handle_op(
             });
             Ok(json!({
                 "address": node.address(),
+                "connect_code": node.connect_code().map_err(fail)?,
+                "legacy_discovery": node.legacy_discovery_enabled(),
                 "peer": wire::hex_encode(&node.peer_id()),
                 "listen": net.listen_addrs(),
                 "lan_peers": net.lan_peers(),
@@ -936,6 +957,26 @@ async fn handle_op(
                 .handshake_bundle_with_hints(&hints, now(), &mut OsRng)
                 .map_err(fail)?;
             Ok(json!({ "bundle": wire::hex_encode(&bundle) }))
+        }
+        Op::ConnectCodeRotate => {
+            let connect_code = node.rotate_connect_code(&mut OsRng).map_err(fail)?;
+            let hints = own_hints(net, &cfg.mailboxes);
+            let published = node.publish_bundle(&hints, now()).await.is_ok();
+            Ok(json!({
+                "connect_code": connect_code,
+                "legacy_discovery": false,
+                "published": published,
+            }))
+        }
+        Op::ConnectCodeRetireLegacy => {
+            node.retire_legacy_discovery(&mut OsRng).map_err(fail)?;
+            let hints = own_hints(net, &cfg.mailboxes);
+            let published = node.publish_bundle(&hints, now()).await.is_ok();
+            Ok(json!({
+                "connect_code": node.connect_code().map_err(fail)?,
+                "legacy_discovery": false,
+                "published": published,
+            }))
         }
         Op::DeviceId => Ok(json!({ "device": wire::hex_encode(&node.device_id()) })),
         Op::LinkedDevices => Ok(json!({
@@ -2235,6 +2276,17 @@ async fn handle_op(
             node.set_hints(&peer, &hints, &mut OsRng).map_err(fail)?;
             Ok(json!({}))
         }
+        Op::RendezvousRefresh { peer } => {
+            let peer = wire::parse_peer(&peer)?;
+            node.request_rendezvous_refresh(&peer).map_err(fail)?;
+            Ok(json!({}))
+        }
+        Op::RendezvousConversationActive { peer, active } => {
+            let peer = wire::parse_peer(&peer)?;
+            node.set_rendezvous_conversation_active(&peer, active)
+                .map_err(fail)?;
+            Ok(json!({}))
+        }
         Op::Publish => {
             let hints = own_hints(net, &cfg.mailboxes);
             node.publish_bundle(&hints, now()).await.map_err(fail)?;
@@ -2317,10 +2369,20 @@ async fn lifecycle(
     let mut mailbox_retry: std::collections::HashMap<String, MailboxRetry> =
         std::collections::HashMap::new();
     let mut jitter_rng = OsRng;
+    let discovery_day = Duration::from_secs(24 * 60 * 60);
+    let discovery_offset = Duration::from_secs(jitter_rng.next_u64() % discovery_day.as_secs());
+    let mut discovery_tick = tokio::time::interval_at(
+        tokio::time::Instant::now() + discovery_offset,
+        discovery_day,
+    );
+    discovery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,
+            _ = discovery_tick.tick() => {
+                let _ = node_tx.send(NodeMsg::Publish).await;
+            }
             _ = lan_tick.tick() => {
                 let peers: std::collections::HashSet<String> =
                     net.lan_peers().into_iter().collect();

@@ -10,7 +10,7 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 
 use kult_node::Node;
-use kult_protocol::{epoch_day, intro_token, Envelope, EnvelopeKind};
+use kult_protocol::{Envelope, EnvelopeKind};
 use kult_transport::{
     CostClass, DeliveryHint, LatencyClass, LinkProfile, Reachability, SendReceipt, Transport,
     TransportError,
@@ -319,7 +319,11 @@ async fn own_tokens_are_never_bridged() {
     let net_sent = net.sent.clone();
     let (mut node, _) = bridge_node(dir.path(), mesh, net, &mut rng);
 
-    let token = intro_token(&node.peer_id(), epoch_day(NOW));
+    let token = node
+        .mailbox_tokens(NOW)
+        .into_iter()
+        .next()
+        .expect("fresh profiles advertise a capability-derived introduction token");
     mesh_inbox
         .lock()
         .unwrap()

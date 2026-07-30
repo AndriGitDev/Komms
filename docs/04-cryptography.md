@@ -56,6 +56,15 @@ expiry, the OPK (or its absence), and the relay hints, so whoever serves the bun
 DHT node, a courier) can withhold it but cannot extend its lifetime, strip its OPK, or
 redirect its relay hints ([06: Identity & Trust §2](06-identity-trust.md)).
 
+An out-of-band `KPB2` pairing wrapper additionally carries the current
+32-byte Connect discovery capability and its non-zero generation. The active
+physical device signs the exact encoded authority-bound `KDP2` bundle,
+capability, and generation under
+`"Komms-connect-pairing-bundle-v2"`. Capability or generation substitution
+therefore fails before the first flight is queued. The capability derives only
+the separate introduction-mailbox token; it is not PQXDH or ratchet key
+material.
+
 Alice verifies all three signatures, then computes:
 
 ```

@@ -257,7 +257,7 @@ folder/label view preferences remain device-local. An organization operation
 creates no envelope, mailbox, mesh, sneakernet,
 LAN, internet, DHT, capability, sender-key, ratchet, delivery-token, analytics,
 or remote-notification work. A copied SQLite database reveals only the already
-accepted row count and approximate sealed blob sizes. `KKR9` is the current folder,
+accepted row count and approximate sealed blob sizes. `KKR10` is the current folder,
 pin, or label backup format. None has server, contact, or service
 synchronization; C2 may carry them only in authenticated encrypted bundles
 between account-authorized owned devices. Once rendered on an unlocked endpoint, organization text has

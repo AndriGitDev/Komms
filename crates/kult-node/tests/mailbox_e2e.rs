@@ -73,8 +73,8 @@ async fn offline_recipient_via_relay_mailbox() {
     alice.tick(NOW + 1, &mut rng).await.unwrap();
     assert_eq!(
         alice.queued().unwrap(),
-        1,
-        "handshake deposited; capability waits for the session token"
+        2,
+        "handshake deposited; format-capability and discovery controls wait for the session token"
     );
 
     // ADR-0007, end-to-end: alice and bob share this relay, yet alice's own
@@ -137,7 +137,10 @@ async fn offline_recipient_via_relay_mailbox() {
         .mailbox_checkin(&relay_addr, &alice.mailbox_tokens(NOW + 61))
         .await
         .unwrap();
-    assert_eq!(collected, 2, "receipt plus terminal capability control");
+    assert_eq!(
+        collected, 3,
+        "receipt plus terminal format-capability and discovery controls"
+    );
     let events = alice.tick(NOW + 62, &mut rng).await.unwrap();
     assert!(
         events.iter().any(|e| matches!(

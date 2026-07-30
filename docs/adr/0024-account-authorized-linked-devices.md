@@ -12,7 +12,7 @@
 > below are not a security guarantee. Accepted
 > [ADR-0026](0026-revocable-device-authority.md) replaces that authority with
 > an offline root, strict-majority transitions, recovery epochs, and root-free
-> `KKR9`. The per-device ratchet, delivery, group-chain, and convergent-sync
+> `KKR10`. The per-device ratchet, delivery, group-chain, and convergent-sync
 > boundaries in this ADR remain current.
 
 ## Context
@@ -137,10 +137,11 @@ installation is the sole active row until another device is explicitly linked.
 `KKR1` through `KKR7` remain readable only through the explicit migration or
 new-identity reset boundary. A legacy-only-artifact reset decrypts the old root
 only in memory and publishes a fresh root-free archive profile; it never resumes
-the former identity. Current routine backup is root-free `KKR9` and requires
+the former identity. Current routine backup is root-free `KKR10` and requires
 the separately held offline recovery authority to restore. Root-free `KKR8`
-remains directly restorable with that authority and naturally contributes no
-later KKR9 local block rows.
+and `KKR9` remain directly restorable with that authority; KKR8 naturally
+contributes no later local block rows and both receive a fresh discovery
+capability.
 
 Revocation is exact-id targeted, explicitly confirmed in every shell, and
 cannot revoke the current or last active device. Among honest participants it
@@ -168,7 +169,7 @@ already seen.
 
 The implementation includes strict codec and fuzz targets, no-std crypto and
 protocol checks, legacy KKR1–KKR7 migration/reset, compatible root-free KKR8,
-and current KKR9 restore tests,
+and current KKR10 restore tests,
 three-device partition/rejoin,
 concurrent pairwise/group sends, independent ratchets and sender chains,
 edit/poll/tombstone convergence, rollback and replay rejection, restart and

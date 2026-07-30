@@ -39,51 +39,64 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use futures::future::{select, Either};
-use rand_core::CryptoRngCore;
+use futures::future::{join_all, select, Either};
+use rand_core::{CryptoRngCore, OsRng};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use kult_crypto::{
-    initiate, open_account_recovery_authority, open_anonymous, respond, safety_number,
-    seal_account_recovery_authority, seal_anonymous, AdmissionPolicy,
-    AuthorityDevicePrekeyBundle as DevicePrekeyBundle, Identity, IdentityPublic, InitialMessage,
-    KdfProfile, PendingAuthorityDeviceLinkSource, PendingAuthorityDeviceLinkTarget, PrekeyBundle,
+    derive_rendezvous_epoch_keys, initiate, open_account_recovery_authority, open_anonymous,
+    open_rendezvous_record, rendezvous_epoch, respond, safety_number,
+    seal_account_recovery_authority, seal_anonymous, seal_rendezvous_record, AdmissionPolicy,
+    AuthorityDevicePrekeyBundle as DevicePrekeyBundle, AuthorityPairingBundle, ConnectCode,
+    DeviceAuthorityCertificate, DiscoveryIngressBundle, DiscoveryRecord, DiscoveryRoute,
+    DiscoveryRouteKind, Identity, IdentityPublic, InitialMessage, KdfProfile,
+    PendingAuthorityDeviceLinkSource, PendingAuthorityDeviceLinkTarget, PrekeyBundle,
     PreparedAuthorityDeviceLink, RatchetMessage, SafetyNumber, Session,
+    DISCOVERY_LOOKUP_EPOCH_ADJACENCY, DISCOVERY_PUBLISH_EPOCH_AHEAD,
+    DISCOVERY_PUBLISH_EPOCH_BEHIND, DISCOVERY_RECORD_SIZE, MAX_DISCOVERY_CANDIDATES,
+    MAX_DISCOVERY_ROUTES, RENDEZVOUS_MAX_TTL_SECS,
 };
 use kult_protocol::{
     admission_invitation_proof, decode_content, delivery_token, encode_disappearing_text_payload,
     encode_edit, encode_ephemeral, encode_text, epoch_day, fragment, intro_token,
-    is_capability_control, pad, retention_bucket, solve_admission_puzzle, unpad,
-    verify_admission_puzzle, AdmissionContext, AdmissionEnvelope, AdmissionProofKind,
-    CapabilityControl, DecodedContent, Edit, Envelope, EnvelopeKind, Ephemeral, FormatCapabilities,
-    MailboxKey, Reassembler, ReceiptPayload, CONTENT_FORMAT_V1, CONTENT_KIND_ATTACHMENT,
-    CONTENT_KIND_CALL_CONTROL, CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL,
-    CONTENT_KIND_GROUP_AUTHORITY, CONTENT_KIND_MENTION, CONTENT_KIND_POLL, CONTENT_KIND_TEXT,
-    ENVELOPE_HEADER_LEN, MAX_ADMISSION_PUZZLE_ATTEMPTS, MAX_EDIT_TEXT_LEN,
-    MAX_EPHEMERAL_LIFETIME_SECS, MIN_EPHEMERAL_LIFETIME_SECS, REASSEMBLY_WINDOW_SECS,
+    is_capability_control, is_discovery_upgrade_control, is_rendezvous_provider_control, pad,
+    retention_bucket, solve_admission_puzzle, unpad, verify_admission_puzzle, AdmissionContext,
+    AdmissionEnvelope, AdmissionProofKind, CapabilityControl, DecodedContent,
+    DiscoveryUpgradeControl, Edit, Envelope, EnvelopeKind, Ephemeral, FormatCapabilities,
+    MailboxKey, Reassembler, ReceiptPayload, RendezvousLookupRequest, RendezvousProviderControl,
+    RendezvousProviderDescriptor, RendezvousRegisterRequest, RendezvousRoute,
+    RendezvousRouteRecord, CONTENT_FORMAT_V1, CONTENT_KIND_ATTACHMENT, CONTENT_KIND_CALL_CONTROL,
+    CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL, CONTENT_KIND_GROUP_AUTHORITY, CONTENT_KIND_MENTION,
+    CONTENT_KIND_POLL, CONTENT_KIND_TEXT, ENVELOPE_HEADER_LEN, MAX_ADMISSION_PUZZLE_ATTEMPTS,
+    MAX_EDIT_TEXT_LEN, MAX_EPHEMERAL_LIFETIME_SECS, MIN_EPHEMERAL_LIFETIME_SECS,
+    REASSEMBLY_WINDOW_SECS,
 };
 use kult_store::{
     AdmissionAcceptPlan, AdmissionDiscardPlan, AdmissionReplayTombstone, AdmissionStagePlan,
-    AdmissionSweepPlan, AdmissionTransportClass, AttachmentStatePlan, AuthorityMigrationPlan,
-    BlockedIdentityRecord, CommitPlan, CommitReceipt, ContactDeviceDelete, ContactDeviceRecord,
-    ContactRecord, ConversationId, ConversationMetadata, DeferredControlKind,
-    DeferredControlRecord, DeliveryState, DeliveryTransition, DeviceAuthorityStateRecord,
-    Direction, EphemeralConversation, EphemeralMode, EphemeralRecord, EphemeralState,
-    EphemeralTransition, GroupMessageDelete, GroupMessageRecord, GroupMessageTransition,
-    GroupRecord, GroupTransition, HandshakeReceivePlan, LocalMetadataKey, LocalMetadataRecord,
-    MaintenancePlan, MediaDelete, MediaObjectRecord, MediaObjectTransition, MediaTransferRecord,
-    MediaTransferTransition, MessageDelete, MessageDeviceDeliveryRecord, MessageRecord,
-    MessageTransition, NoteMessageRecord, PairwiseReceivePlan, PairwiseSendPlan, PendingDelete,
-    PendingStagePlan, PrekeyPublishPlan, PrekeyTransition, ProvisionalRequestRecord, QueueClass,
-    QueueDelete, QueueItem, QueueTransition, ReceiptReceivePlan,
+    AdmissionSweepPlan, AdmissionTransportClass, AttachmentStatePlan, AuthorityDeviceControlPlan,
+    AuthorityMigrationPlan, BlockedIdentityRecord, CommitPlan, CommitReceipt, ContactDeviceDelete,
+    ContactDeviceRecord, ContactDeviceTransition, ContactRecord, ConversationId,
+    ConversationMetadata, DeferredControlKind, DeferredControlRecord, DeliveryState,
+    DeliveryTransition, DeviceAuthorityStateRecord, DeviceAuthorityStateTransition, Direction,
+    DiscoveryCapabilityState, EphemeralConversation, EphemeralMode, EphemeralRecord,
+    EphemeralState, EphemeralTransition, GroupMessageDelete, GroupMessageRecord,
+    GroupMessageTransition, GroupRecord, GroupTransition, HandshakeReceivePlan, LocalMetadataKey,
+    LocalMetadataRecord, MaintenancePlan, MediaDelete, MediaObjectRecord, MediaObjectTransition,
+    MediaTransferRecord, MediaTransferTransition, MessageDelete, MessageDeviceDeliveryRecord,
+    MessageRecord, MessageTransition, NoteMessageRecord, PairwiseReceivePlan, PairwiseSendPlan,
+    PendingDelete, PendingStagePlan, PrekeyPublishPlan, PrekeyTransition, ProvisionalRequestRecord,
+    QueueClass, QueueDelete, QueueItem, QueueTransition, ReceiptReceivePlan, RendezvousLocalConfig,
+    RendezvousProviderState, RendezvousServiceTransition, RendezvousStoredRoute,
     ScheduledConversation as StoreScheduledConversation, ScheduledMessageRecord, SessionTransition,
     Store, MAX_ADMISSION_REPLAY_LIFETIME_SECS, MAX_ADMISSION_REPLAY_TOMBSTONES,
     MAX_MAINTENANCE_TRANSITIONS, MAX_PROVISIONAL_CONTENT_BYTES, MAX_PROVISIONAL_LIFETIME_SECS,
     MAX_PROVISIONAL_PREVIEW_BYTES, PROVISIONAL_REQUEST_VERSION,
 };
 use kult_transport::{
-    CostClass, DeliveryHint, Discovery, IngressClass, Reachability, ReceivedEnvelope, Transport,
+    rendezvous_record_route, rendezvous_route_hint, CostClass, DeliveryHint, Discovery,
+    DiscoveryNamespace, IngressClass, Reachability, ReceivedEnvelope, RendezvousClient,
+    RendezvousProvider, Transport, MAX_RENDEZVOUS_PROVIDERS,
 };
 
 mod api;
@@ -189,14 +202,114 @@ pub enum TransitionFailpoint {
 /// Associated data for anonymous-boxed handshake flights (fixed across the
 /// protocol; also used by the M2 acceptance tests).
 const HS_AD: &[u8] = b"KK-handshake-v1";
-const DEVICE_INITIAL_MAGIC: &[u8; 4] = b"KDI1";
+const LEGACY_DEVICE_INITIAL_MAGIC: &[u8; 4] = b"KDI1";
+const DEVICE_INITIAL_MAGIC: &[u8; 4] = b"KDI2";
 const ACCOUNT_INITIAL_MAGIC: &[u8; 4] = b"KAI1";
 
 /// Prekey bundles expire after 30 days (docs/06-identity-trust.md).
 const BUNDLE_TTL_SECS: u64 = 30 * 86_400;
+/// Maximum separately configured DHT paths queried for one bounded lookup.
+const MAX_DISCOVERY_PLANES: usize = 8;
+/// Maximum fixed rendezvous HTTP operations started by one heartbeat.
+const MAX_RENDEZVOUS_OPERATIONS_PER_TICK: usize = 16;
+/// First registration attempts are staggered across five minutes.
+const RENDEZVOUS_INITIAL_JITTER_SECS: u64 = 300;
+/// Confirmed registrations refresh once per hour.
+const RENDEZVOUS_REGISTER_REFRESH_SECS: u64 = 3_600;
+/// Active routes refresh when fewer than fifteen minutes remain.
+const RENDEZVOUS_NEAR_EXPIRY_SECS: u64 = 900;
+/// Minimum transport backoff.
+const RENDEZVOUS_BACKOFF_MIN_SECS: u64 = 5;
+/// Maximum transport backoff before the circuit breaker.
+const RENDEZVOUS_BACKOFF_MAX_SECS: u64 = 900;
+/// Consecutive failures that open the provider circuit.
+const RENDEZVOUS_CIRCUIT_FAILURES: u8 = 5;
+/// Open-circuit interval.
+const RENDEZVOUS_CIRCUIT_OPEN_SECS: u64 = 1_800;
+/// Maximum authenticated legacy re-handshakes started per heartbeat.
+const MAX_RENDEZVOUS_REHANDSHAKES_PER_TICK: usize = 4;
+/// One heartbeat never waits longer than this for the optional provider
+/// plane, regardless of the number of configured providers.
+const RENDEZVOUS_MAINTENANCE_BUDGET: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum RendezvousOperationKind {
+    Register,
+    Lookup,
+}
+
+/// Public-route policy applied while creating ADR-0031 records.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DiscoveryMode {
+    /// Disclosed replaceable defaults; public records contain mailboxes only.
+    #[default]
+    Standard,
+    /// Metadata-hiding ingress; public records contain mailboxes only.
+    Private,
+    /// User-operated mode, with a separately confirmed direct-route switch.
+    Sovereign,
+}
+
+/// Explicit publication policy for one discovery maintenance pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DiscoveryPublicationPolicy {
+    /// Current operating mode.
+    pub mode: DiscoveryMode,
+    /// Advanced Sovereign-only acknowledgement that Connect-code holders can
+    /// poll any included direct route.
+    pub publish_direct_routes: bool,
+}
+
+impl DiscoveryPublicationPolicy {
+    fn permits_direct_routes(self) -> bool {
+        self.mode == DiscoveryMode::Sovereign && self.publish_direct_routes
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum DeviceHandshakeIntent {
+    Establish,
+    Replace { prior_session_id: [u8; 32] },
+    Reset,
+    Legacy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HandshakeSessionDecision {
+    KeepPrior,
+    AcceptInbound,
+    Reject,
+}
+
+fn decide_inbound_session(
+    local_device: [u8; 32],
+    peer_device: [u8; 32],
+    prior_session_id: Option<&[u8; 32]>,
+    intent: DeviceHandshakeIntent,
+) -> HandshakeSessionDecision {
+    match (prior_session_id, intent) {
+        (None, DeviceHandshakeIntent::Replace { .. }) => HandshakeSessionDecision::Reject,
+        (Some(prior), DeviceHandshakeIntent::Replace { prior_session_id })
+            if prior != &prior_session_id =>
+        {
+            HandshakeSessionDecision::Reject
+        }
+        (Some(_), DeviceHandshakeIntent::Establish) if local_device < peer_device => {
+            HandshakeSessionDecision::KeepPrior
+        }
+        _ => HandshakeSessionDecision::AcceptInbound,
+    }
+}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct DeviceInitialFlight {
+    initial: Vec<u8>,
+    return_bundle: Vec<u8>,
+    intent: DeviceHandshakeIntent,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct LegacyDeviceInitialFlight {
     initial: Vec<u8>,
     return_bundle: Vec<u8>,
 }
@@ -210,9 +323,19 @@ fn encode_device_initial(flight: &DeviceInitialFlight) -> Result<Vec<u8>> {
 }
 
 fn decode_device_initial(bytes: &[u8]) -> Option<DeviceInitialFlight> {
-    let body = bytes.strip_prefix(DEVICE_INITIAL_MAGIC)?;
-    let (flight, remainder): (DeviceInitialFlight, &[u8]) = postcard::take_from_bytes(body).ok()?;
-    remainder.is_empty().then_some(flight)
+    if let Some(body) = bytes.strip_prefix(DEVICE_INITIAL_MAGIC) {
+        let (flight, remainder): (DeviceInitialFlight, &[u8]) =
+            postcard::take_from_bytes(body).ok()?;
+        return remainder.is_empty().then_some(flight);
+    }
+    let body = bytes.strip_prefix(LEGACY_DEVICE_INITIAL_MAGIC)?;
+    let (flight, remainder): (LegacyDeviceInitialFlight, &[u8]) =
+        postcard::take_from_bytes(body).ok()?;
+    remainder.is_empty().then_some(DeviceInitialFlight {
+        initial: flight.initial,
+        return_bundle: flight.return_bundle,
+        intent: DeviceHandshakeIntent::Legacy,
+    })
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -265,16 +388,6 @@ const DELIVERY_SWEEP_INTERVAL_SECS: u64 = 3_600;
 /// direct route, attachment, or discovery lookup is stalled. Transport work
 /// is idempotent and remains durably queued, so yielding is always safe.
 const FLUSH_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// After this many failed delivery attempts for an item, its peer's stored
-/// hints are treated as possibly stale and the discovery planes are
-/// consulted again (a peer that rebound to fresh OS-assigned ports has a
-/// newer address in its republished bundle than in the pairing-time hint).
-const HINT_REFRESH_MIN_ATTEMPTS: u32 = 1;
-/// Discovery re-lookups for one account are spaced at least this far
-/// apart, so a long outage costs one bounded lookup per interval instead
-/// of one per queued item per tick.
-const HINT_REFRESH_INTERVAL_SECS: u64 = 60;
 
 /// Ordinary encrypted content above this size never rides an
 /// airtime-budgeted (LoRa) link: it is held for a faster carrier with honest
@@ -650,10 +763,23 @@ pub struct Node {
     vault: PrekeyVault,
     /// Current signed return routes included in anonymous first flights.
     own_hints: Vec<DeliveryHint>,
+    /// Whether `own_hints` is a complete locally supplied route set rather
+    /// than the empty, unknown state immediately after construction/restart.
+    own_hints_authoritative: bool,
     transports: Vec<Arc<dyn Transport>>,
     discoveries: Vec<Arc<dyn Discovery>>,
     sessions: HashMap<[u8; 32], kult_crypto::Session>,
     capabilities_advertised: HashSet<[u8; 32]>,
+    discovery_advertised: HashSet<[u8; 32]>,
+    discovery_published_material: Option<[u8; 32]>,
+    rendezvous_client: Option<Arc<dyn RendezvousClient>>,
+    rendezvous_providers: Vec<RendezvousProvider>,
+    rendezvous_provider_generation: u64,
+    rendezvous_advertised: HashSet<[u8; 32]>,
+    rendezvous_refresh_requested: HashSet<[u8; 32]>,
+    rendezvous_active_conversations: HashSet<[u8; 32]>,
+    rendezvous_rehandshake_requested: HashSet<[u8; 32]>,
+    rendezvous_inflight: HashSet<([u8; 32], [u8; 32], RendezvousOperationKind)>,
     media_reconciled: bool,
     attachment_request_at: HashMap<[u8; 16], u64>,
     attachment_request_target: HashMap<[u8; 16], usize>,
@@ -661,8 +787,6 @@ pub struct Node {
     calls: HashMap<[u8; 16], calls::ActiveCall>,
     call_queue_deadlines: HashMap<i64, u64>,
     reassembler: Reassembler,
-    /// Per-account floor on the next allowed stale-hint discovery re-lookup.
-    hint_refresh: HashMap<[u8; 32], u64>,
     frag_meta: HashMap<[u8; 4], PartialMeta>,
     frag_cache: HashMap<[u8; 4], SentFragments>,
     held_notified: HashSet<i64>,
@@ -844,7 +968,17 @@ impl Node {
         let account = store
             .get_account_identity()?
             .ok_or(NodeError::CorruptState)?;
-        let (device_identity, device_state) = devices::load_authority_device(&store)?;
+        let (device_identity, mut device_state) = devices::load_authority_device(&store)?;
+        if device_state.discovery.capability == [0u8; 32] {
+            let mut rng = OsRng;
+            let code = ConnectCode::generate(&account, &mut rng)?;
+            device_state.discovery = DiscoveryCapabilityState {
+                capability: code.capability(),
+                generation: 1,
+                legacy_v1_enabled: true,
+            };
+            store.put_device_authority_state(&device_state, &mut rng)?;
+        }
         let vault_blob = store.get_prekeys()?.ok_or(NodeError::CorruptState)?;
         let vault = PrekeyVault::decode(&vault_blob)?;
         Self::assemble(store, account, device_identity, device_state, vault, None)
@@ -1236,10 +1370,53 @@ impl Node {
                 }
             }
         }
+        let (rendezvous_providers, rendezvous_provider_generation) =
+            if let Some(config) = store.get_rendezvous_local_config()? {
+                let mut providers = Vec::with_capacity(config.providers.len());
+                for configured in &config.providers {
+                    let provider =
+                        RendezvousProvider::new(configured.origin.clone(), configured.static_key)
+                            .map_err(|_| NodeError::CorruptState)?;
+                    if provider.provider_id() != configured.provider_id {
+                        return Err(NodeError::CorruptState);
+                    }
+                    providers.push(provider);
+                }
+                (providers, config.generation)
+            } else {
+                (Vec::new(), 0)
+            };
         let presentation_marker = store.presentation_resync_marker()?;
         let mut events = VecDeque::new();
         if presentation_marker.is_some() {
             events.push_back(Event::StateResyncRequired);
+        }
+        for peer_device in sessions.keys().copied() {
+            let Some(state) = store.get_rendezvous_service_state(&peer_device)? else {
+                continue;
+            };
+            let peer = contact_devices
+                .iter()
+                .find(|endpoint| endpoint.device == peer_device)
+                .map_or(peer_device, |endpoint| endpoint.account);
+            if state.remote_provider_conflict_generation.is_some() {
+                events.push_back(Event::RendezvousConflict {
+                    peer,
+                    device: peer_device,
+                    provider: [0u8; 32],
+                });
+            }
+            for provider in state
+                .providers
+                .iter()
+                .filter(|provider| provider.conflict_generation.is_some())
+            {
+                events.push_back(Event::RendezvousConflict {
+                    peer,
+                    device: peer_device,
+                    provider: provider.provider_id,
+                });
+            }
         }
         Ok(Self {
             store,
@@ -1255,10 +1432,21 @@ impl Node {
             pending_recovery_material,
             vault,
             own_hints: Vec::new(),
+            own_hints_authoritative: false,
             transports: Vec::new(),
             discoveries: Vec::new(),
             sessions,
             capabilities_advertised: HashSet::new(),
+            discovery_advertised: HashSet::new(),
+            discovery_published_material: None,
+            rendezvous_client: None,
+            rendezvous_providers,
+            rendezvous_provider_generation,
+            rendezvous_advertised: HashSet::new(),
+            rendezvous_refresh_requested: HashSet::new(),
+            rendezvous_active_conversations: HashSet::new(),
+            rendezvous_rehandshake_requested: HashSet::new(),
+            rendezvous_inflight: HashSet::new(),
             media_reconciled: false,
             attachment_request_at: HashMap::new(),
             attachment_request_target: HashMap::new(),
@@ -1266,7 +1454,6 @@ impl Node {
             calls: HashMap::new(),
             call_queue_deadlines: HashMap::new(),
             reassembler: Reassembler::new(),
-            hint_refresh: HashMap::new(),
             frag_meta: HashMap::new(),
             frag_cache: HashMap::new(),
             held_notified: HashSet::new(),
@@ -1299,7 +1486,112 @@ impl Node {
     /// lookup. Registering none is fine — bundles then travel out-of-band
     /// only (QR, file), exactly as in M2.
     pub fn add_discovery(&mut self, discovery: Arc<dyn Discovery>) {
-        self.discoveries.push(discovery);
+        if self.discoveries.len() < MAX_DISCOVERY_PLANES {
+            self.discoveries.push(discovery);
+        }
+    }
+
+    /// Configure recipient-selected post-pairing rendezvous providers.
+    ///
+    /// `generation` is a caller-persisted monotonic provider-set generation.
+    /// An empty set is an authenticated disable. Sovereign mode always
+    /// disables this optional plane; Standard or Private select the concrete
+    /// direct/anonymized [`RendezvousClient`] supplied by the embedding shell.
+    pub fn configure_rendezvous(
+        &mut self,
+        mode: DiscoveryMode,
+        client: Option<Arc<dyn RendezvousClient>>,
+        mut providers: Vec<RendezvousProvider>,
+        generation: u64,
+    ) -> Result<()> {
+        providers.sort_by(|left, right| {
+            (left.origin(), left.static_key()).cmp(&(right.origin(), right.static_key()))
+        });
+        if generation == 0
+            || providers.len() > MAX_RENDEZVOUS_PROVIDERS
+            || providers
+                .windows(2)
+                .any(|pair| pair[0].provider_id() == pair[1].provider_id())
+            || (!providers.is_empty() && client.is_none())
+            || (mode == DiscoveryMode::Sovereign && (!providers.is_empty() || client.is_some()))
+            || generation < self.rendezvous_provider_generation
+        {
+            return Err(NodeError::RendezvousUnavailable);
+        }
+        if generation == self.rendezvous_provider_generation
+            && providers != self.rendezvous_providers
+        {
+            return Err(NodeError::RendezvousConflict);
+        }
+        let persisted = RendezvousLocalConfig::new(
+            generation,
+            providers
+                .iter()
+                .map(|provider| (provider.origin().to_owned(), provider.static_key()))
+                .collect(),
+        )?;
+        match self.store.get_rendezvous_local_config()? {
+            Some(current) if generation < current.generation => {
+                return Err(NodeError::RendezvousUnavailable);
+            }
+            Some(current) if generation == current.generation && current != persisted => {
+                return Err(NodeError::RendezvousConflict);
+            }
+            Some(current) if current == persisted => {}
+            _ => self
+                .store
+                .put_rendezvous_local_config(&persisted, &mut OsRng)?,
+        }
+        self.rendezvous_client = client;
+        self.rendezvous_providers = providers;
+        self.rendezvous_provider_generation = generation;
+        self.rendezvous_advertised.clear();
+        self.rendezvous_refresh_requested
+            .extend(self.sessions.keys().copied());
+        self.mark_rendezvous_publication_dirty(&mut OsRng)?;
+        Ok(())
+    }
+
+    /// Coalesce an active-conversation or call-setup route refresh.
+    pub fn request_rendezvous_refresh(&mut self, peer: &[u8; 32]) -> Result<()> {
+        self.store
+            .get_contact(peer)?
+            .ok_or(NodeError::UnknownPeer)?;
+        let endpoints = self.store.contact_devices_for(peer)?;
+        if endpoints.is_empty() {
+            self.rendezvous_refresh_requested.insert(*peer);
+        } else {
+            self.rendezvous_refresh_requested.extend(
+                endpoints
+                    .into_iter()
+                    .filter(|endpoint| endpoint.revoked_at.is_none())
+                    .map(|endpoint| endpoint.device),
+            );
+        }
+        Ok(())
+    }
+
+    /// Mark or clear one foreground pairwise conversation.
+    ///
+    /// This is runtime-only presentation state. While active, the ordinary
+    /// rendezvous retry/expiry schedule may refresh the contact's physical
+    /// endpoints. Clearing it stops that trigger without deleting routes or
+    /// changing message state.
+    pub fn set_rendezvous_conversation_active(
+        &mut self,
+        peer: &[u8; 32],
+        active: bool,
+    ) -> Result<()> {
+        self.store
+            .get_contact(peer)?
+            .ok_or(NodeError::UnknownPeer)?;
+        if active {
+            self.request_rendezvous_refresh(peer)?;
+            self.rendezvous_active_conversations.insert(*peer);
+        } else {
+            self.rendezvous_active_conversations.remove(peer);
+        }
+        Ok(())
     }
 
     /// Enable, reconfigure, or (`None`) disable internet↔mesh bridging
@@ -1346,6 +1638,100 @@ impl Node {
         self.account.address()
     }
 
+    /// This account's ordinary share artifact: stable fingerprint plus a
+    /// sealed random reachability capability.
+    pub fn connect_code(&self) -> Result<String> {
+        Ok(ConnectCode::new(&self.account, self.device_state.discovery.capability)?.encode())
+    }
+
+    /// Whether the visible mailbox-only Alpha address bridge remains enabled.
+    pub fn legacy_discovery_enabled(&self) -> bool {
+        self.device_state.discovery.legacy_v1_enabled
+    }
+
+    /// Whether the public discovery material changed since the last complete
+    /// Standard-mode publication.
+    ///
+    /// The digest covers only public inputs: authority, ingress prekeys,
+    /// admission policy, capability state, and policy-filtered routes. It
+    /// deliberately excludes OPKs and every live/session secret.
+    pub fn discovery_publication_needed(&self, hints: &[DeliveryHint]) -> Result<bool> {
+        Ok(self.discovery_published_material
+            != Some(self.discovery_material_digest(hints, DiscoveryPublicationPolicy::default())?))
+    }
+
+    /// Rotate reachability independently of account identity and safety
+    /// numbers. Existing sessions and local history remain unchanged.
+    pub fn rotate_connect_code(&mut self, rng: &mut impl CryptoRngCore) -> Result<String> {
+        let before = self.device_state.clone();
+        let code = ConnectCode::generate(&self.account, rng)?;
+        let mut after = before.clone();
+        after.discovery = DiscoveryCapabilityState {
+            capability: code.capability(),
+            generation: before
+                .discovery
+                .generation
+                .checked_add(1)
+                .ok_or(NodeError::CorruptState)?,
+            // A deliberate capability rotation must not leave stable-identity
+            // discovery as a bypass around that revocation.
+            legacy_v1_enabled: false,
+        };
+        self.store.commit_plan(
+            CommitPlan::AuthorityDeviceControl(AuthorityDeviceControlPlan {
+                state: Some(DeviceAuthorityStateTransition {
+                    before: Some(&before),
+                    after: &after,
+                }),
+                link_recovery: None,
+                groups: &[],
+                insert_events: &[],
+                delete_events: &[],
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.before_memory_replacement()?;
+        self.device_state = after;
+        self.discovery_advertised.clear();
+        self.after_memory_replacement()?;
+        Ok(code.encode())
+    }
+
+    /// Permanently retire the time-bounded stable-address publication bridge
+    /// without changing the current Connect code.
+    pub fn retire_legacy_discovery(&mut self, rng: &mut impl CryptoRngCore) -> Result<()> {
+        if !self.device_state.discovery.legacy_v1_enabled {
+            return Ok(());
+        }
+        let before = self.device_state.clone();
+        let mut after = before.clone();
+        after.discovery.legacy_v1_enabled = false;
+        after.discovery.generation = after
+            .discovery
+            .generation
+            .checked_add(1)
+            .ok_or(NodeError::CorruptState)?;
+        self.store.commit_plan(
+            CommitPlan::AuthorityDeviceControl(AuthorityDeviceControlPlan {
+                state: Some(DeviceAuthorityStateTransition {
+                    before: Some(&before),
+                    after: &after,
+                }),
+                link_recovery: None,
+                groups: &[],
+                insert_events: &[],
+                delete_events: &[],
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.before_memory_replacement()?;
+        self.device_state = after;
+        self.discovery_advertised.clear();
+        self.after_memory_replacement()
+    }
+
     /// The safety number for out-of-band verification with a contact
     /// (docs/04-cryptography.md §9).
     pub fn safety_number_with(&self, peer: &[u8; 32]) -> Result<SafetyNumber> {
@@ -1384,11 +1770,11 @@ impl Node {
         Ok(mnemonic)
     }
 
-    /// Export a fresh signed prekey bundle for out-of-band sharing (QR, file,
-    /// dictation). Each call mints a new one-time prekey, so hand each
-    /// prospective contact their own bundle.
+    /// Export a fresh signed prekey and Connect-capability bundle for
+    /// out-of-band sharing (QR, file, dictation). Each call mints a new
+    /// one-time prekey, so hand each prospective contact their own bundle.
     pub fn handshake_bundle(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<Vec<u8>> {
-        self.handshake_bundle_with_hints(&[], now, rng)
+        self.handshake_bundle_inner(&[], false, now, rng)
     }
 
     /// Export a fresh signed prekey bundle carrying this node's current
@@ -1401,6 +1787,16 @@ impl Node {
     pub fn handshake_bundle_with_hints(
         &mut self,
         hints: &[DeliveryHint],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Vec<u8>> {
+        self.handshake_bundle_inner(hints, true, now, rng)
+    }
+
+    fn handshake_bundle_inner(
+        &mut self,
+        hints: &[DeliveryHint],
+        hints_authoritative: bool,
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Vec<u8>> {
@@ -1427,10 +1823,16 @@ impl Node {
         )?;
         let invitation_digest = bundle.verify_admission(now)?.descriptor.bundle_digest;
         candidate_vault.add_invitation(invitation_digest, invitation, bundle.expires_at, now);
-        let encoded = DevicePrekeyBundle::new(
+        let device_bundle = DevicePrekeyBundle::new(
             self.device_state.local_certificate.clone(),
             self.device_state.manifest.clone(),
             bundle,
+        )?;
+        let encoded = AuthorityPairingBundle::new(
+            device_bundle,
+            self.device_state.discovery.capability,
+            self.device_state.discovery.generation,
+            &self.device_identity,
         )?
         .encode()?;
         let after_vault = candidate_vault.encode();
@@ -1445,70 +1847,234 @@ impl Node {
         )?;
         self.before_memory_replacement()?;
         self.vault = candidate_vault;
-        self.own_hints = hints.to_vec();
+        if hints_authoritative {
+            self.own_hints = hints.to_vec();
+            self.own_hints_authoritative = true;
+            self.discovery_advertised.clear();
+        }
         self.after_memory_replacement()?;
+        if hints_authoritative {
+            self.mark_rendezvous_publication_dirty(rng)?;
+        }
         Ok(encoded)
     }
 
-    // ---- discovery (DHT prekey records, docs/05-transports.md §2) -----------
+    // ---- capability-scoped discovery (ADR-0031) ----------------------------
 
-    /// Publish this node's prekey bundle on every registered discovery
-    /// plane, keyed by the digest inside our kult address — after this,
-    /// anyone holding the address can start a session with no further
-    /// out-of-band exchange.
+    /// Publish the Standard-mode six-record capability window.
     ///
-    /// `hints` are our own reachable addresses (e.g.
-    /// [`kult_transport::Libp2pTransport::listen_addrs`] as
-    /// [`DeliveryHint::Multiaddr`]); they ride in the bundle's `relay_hints`
-    /// so a fetcher learns both *who* we are and *where* to deliver.
-    ///
-    /// The published bundle deliberately carries **no one-time prekey**: a
-    /// DHT record is served to arbitrarily many fetchers, and an OPK is
-    /// single-use — the first handshake would consume it and strand everyone
-    /// else. First-flight forward secrecy for DHT-initiated sessions rests
-    /// on the signed prekeys, exactly as specified for OPK-less PQXDH
-    /// (docs/04-cryptography.md §3). Call it again after rotating prekeys or
-    /// when listen addresses change; the record replaces the previous one.
+    /// Only recipient-selected mailbox hints enter public records. Direct,
+    /// LAN, mesh, and spool routes remain pairing- or relationship-scoped.
     pub async fn publish_bundle(&mut self, hints: &[DeliveryHint], now: u64) -> Result<()> {
+        self.publish_bundle_with_policy(hints, DiscoveryPublicationPolicy::default(), now)
+            .await
+    }
+
+    /// Publish the exact ADR-0031 epoch window under an explicit mode policy.
+    ///
+    /// A direct route is accepted only when both Sovereign mode and the
+    /// separate warning acknowledgement are present. Records contain no
+    /// one-time prekeys and are stored with their encoded validity expiry.
+    pub async fn publish_bundle_with_policy(
+        &mut self,
+        hints: &[DeliveryHint],
+        policy: DiscoveryPublicationPolicy,
+        now: u64,
+    ) -> Result<()> {
         if self.discoveries.is_empty() {
             return Err(NodeError::NoDiscovery);
         }
-        let mut bundle = PrekeyBundle::build(
-            &self.device_identity,
-            &self.vault.spk(),
-            &self.vault.pqspk()?,
-            None,
-            now + BUNDLE_TTL_SECS,
-            encode_hints(hints),
+        let routes = discovery_routes(hints, policy)?;
+        let code = ConnectCode::new(&self.account, self.device_state.discovery.capability)?;
+        let before = self.device_state.clone();
+        let mut after = before.clone();
+        after.discovery.generation = after
+            .discovery
+            .generation
+            .checked_add(1)
+            .ok_or(NodeError::CorruptState)?;
+        let mut rng = OsRng;
+        self.store.commit_plan(
+            CommitPlan::AuthorityDeviceControl(AuthorityDeviceControlPlan {
+                state: Some(DeviceAuthorityStateTransition {
+                    before: Some(&before),
+                    after: &after,
+                }),
+                link_recovery: None,
+                groups: &[],
+                insert_events: &[],
+                delete_events: &[],
+                presentation_changed: false,
+            }),
+            &mut rng,
+        )?;
+        self.before_memory_replacement()?;
+        self.device_state = after;
+        self.own_hints = hints.to_vec();
+        self.own_hints_authoritative = true;
+        self.discovery_advertised.clear();
+        self.after_memory_replacement()?;
+        self.mark_rendezvous_publication_dirty(&mut rng)?;
+
+        let current_epoch = kult_crypto::discovery_epoch(now);
+        let first_epoch = current_epoch.saturating_sub(DISCOVERY_PUBLISH_EPOCH_BEHIND);
+        let last_epoch = current_epoch
+            .checked_add(DISCOVERY_PUBLISH_EPOCH_AHEAD)
+            .ok_or(NodeError::CorruptState)?;
+        let mut records = Vec::with_capacity(
+            usize::try_from(last_epoch - first_epoch + 1).map_err(|_| NodeError::CorruptState)?,
         );
-        bundle.attach_admission(&self.device_identity, now, AdmissionPolicy::default(), None)?;
-        let key = self.account.address_digest();
-        let value = DevicePrekeyBundle::new(
-            self.device_state.local_certificate.clone(),
-            self.device_state.manifest.clone(),
-            bundle,
-        )?
-        .encode()?;
+        for epoch in first_epoch..=last_epoch {
+            let valid_from = kult_crypto::discovery_epoch_valid_from(epoch);
+            let expires_at = kult_crypto::discovery_epoch_valid_until(epoch)?;
+            let mut prekey = PrekeyBundle::build(
+                &self.device_identity,
+                &self.vault.spk(),
+                &self.vault.pqspk()?,
+                None,
+                expires_at,
+                Vec::new(),
+            );
+            prekey.attach_admission(
+                &self.device_identity,
+                valid_from,
+                AdmissionPolicy::default(),
+                None,
+            )?;
+            let ingress = DiscoveryIngressBundle {
+                certificate: self.device_state.local_certificate.clone(),
+                prekey,
+            };
+            let value = kult_crypto::seal_discovery_record(
+                &code,
+                epoch,
+                self.device_state.discovery.generation,
+                now.min(expires_at),
+                self.account.clone(),
+                self.device_state.manifest.clone(),
+                vec![ingress],
+                routes.clone(),
+                &self.device_identity,
+                &mut rng,
+            )?;
+            records.push((
+                epoch,
+                kult_crypto::discovery_locator(&code.capability(), epoch),
+                expires_at,
+                value,
+            ));
+        }
+
         let mut published = false;
         for discovery in &self.discoveries {
-            if discovery.publish(key, value.clone()).await.is_ok() {
-                published = true;
+            let complete = join_all(records.iter().map(|(_, locator, expires_at, value)| {
+                discovery.publish(
+                    DiscoveryNamespace::ConnectV2,
+                    *locator,
+                    value.clone(),
+                    *expires_at,
+                )
+            }))
+            .await
+            .into_iter()
+            .all(|result| result.is_ok());
+            published |= complete;
+        }
+
+        if self.device_state.discovery.legacy_v1_enabled {
+            let mailbox_hints = hints
+                .iter()
+                .filter(|hint| matches!(hint, DeliveryHint::Relay(_)))
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut legacy = PrekeyBundle::build(
+                &self.device_identity,
+                &self.vault.spk(),
+                &self.vault.pqspk()?,
+                None,
+                now.saturating_add(BUNDLE_TTL_SECS),
+                encode_hints(&mailbox_hints),
+            );
+            legacy.attach_admission(
+                &self.device_identity,
+                now,
+                AdmissionPolicy::default(),
+                None,
+            )?;
+            let value = DevicePrekeyBundle::new(
+                self.device_state.local_certificate.clone(),
+                self.device_state.manifest.clone(),
+                legacy,
+            )?
+            .encode()?;
+            for discovery in &self.discoveries {
+                let _ = discovery
+                    .publish(
+                        DiscoveryNamespace::LegacyPrekeyV1,
+                        self.account.address_digest(),
+                        value.clone(),
+                        now.saturating_add(BUNDLE_TTL_SECS),
+                    )
+                    .await;
             }
         }
         if published {
+            self.discovery_published_material =
+                Some(self.discovery_material_digest(hints, policy)?);
             Ok(())
         } else {
             Err(NodeError::NoDiscovery)
         }
     }
 
-    /// Add a contact from their kult address alone, fetching the prekey
-    /// bundle from the discovery planes. Every candidate record is untrusted
-    /// input: it must carry valid signatures **and** hash back to the very
-    /// digest the address encodes, so a malicious DHT node can withhold a
-    /// bundle but never substitute one. Among the survivors the freshest
-    /// (latest-expiring) bundle wins, and its embedded delivery hints become
-    /// the contact's hints. Returns the contact's peer id.
+    fn discovery_material_digest(
+        &self,
+        hints: &[DeliveryHint],
+        policy: DiscoveryPublicationPolicy,
+    ) -> Result<[u8; 32]> {
+        let routes = discovery_routes(hints, policy)?;
+        let manifest = self.device_state.manifest.encode()?;
+        let spk = self.vault.spk();
+        let pqspk = self.vault.pqspk()?;
+        let admission = AdmissionPolicy::default();
+        let mut digest = Sha256::new();
+        digest.update(b"Komms-Discovery-Publication-Material-v2");
+        digest.update(self.account.address_digest());
+        digest.update(self.device_id());
+        digest.update(self.device_state.discovery.capability);
+        digest.update([u8::from(self.device_state.discovery.legacy_v1_enabled)]);
+        digest.update((manifest.len() as u64).to_be_bytes());
+        digest.update(&manifest);
+        digest.update(spk.id.to_be_bytes());
+        digest.update(spk.public());
+        digest.update(pqspk.id.to_be_bytes());
+        digest.update((pqspk.public().len() as u64).to_be_bytes());
+        digest.update(pqspk.public());
+        digest.update([admission.difficulty]);
+        digest.update(admission.max_first_ciphertext.to_be_bytes());
+        digest.update(admission.max_clock_skew_secs.to_be_bytes());
+        digest.update((admission.token_issuers.len() as u64).to_be_bytes());
+        digest.update([match policy.mode {
+            DiscoveryMode::Standard => 1,
+            DiscoveryMode::Private => 2,
+            DiscoveryMode::Sovereign => 3,
+        }]);
+        digest.update([u8::from(policy.publish_direct_routes)]);
+        digest.update((routes.len() as u64).to_be_bytes());
+        for route in routes {
+            digest.update([route.kind as u8]);
+            digest.update((route.value.len() as u64).to_be_bytes());
+            digest.update(route.value);
+        }
+        Ok(digest.finalize().into())
+    }
+
+    /// Add a contact from a Connect code or a legacy Alpha account address.
+    ///
+    /// Connect lookups query exactly the local weekly epoch and one adjacent
+    /// epoch on either side. Every retained candidate is exact-size, opened
+    /// under the bearer capability, and fully authority/prekey verified
+    /// before any contact or session state changes.
     pub async fn add_contact_by_address(
         &mut self,
         name: &str,
@@ -1519,22 +2085,163 @@ impl Node {
         if self.discoveries.is_empty() {
             return Err(NodeError::NoDiscovery);
         }
+        if address.starts_with(kult_crypto::CONNECT_CODE_PREFIX) {
+            let code = ConnectCode::parse(address)?;
+            let record = self
+                .lookup_connect_record(&code, now)
+                .await?
+                .ok_or(NodeError::BundleNotFound)?;
+            let ingress = record
+                .ingress
+                .iter()
+                .max_by(|left, right| {
+                    left.prekey
+                        .expires_at
+                        .cmp(&right.prekey.expires_at)
+                        .then_with(|| {
+                            right
+                                .certificate
+                                .device_id()
+                                .cmp(&left.certificate.device_id())
+                        })
+                })
+                .ok_or(NodeError::BundleNotFound)?;
+            let bundle = DevicePrekeyBundle::new(
+                ingress.certificate.clone(),
+                record.authority.clone(),
+                ingress.prekey.clone(),
+            )?
+            .encode()?;
+            let mut hints = Vec::with_capacity(record.routes.len());
+            for route in &record.routes {
+                let hint = decode_discovery_route(route)?;
+                if !hints.contains(&hint) {
+                    hints.push(hint);
+                }
+            }
+            return self.add_contact_with_discovery_capability(
+                name,
+                &bundle,
+                &hints,
+                devices::ContactDiscoveryProjection {
+                    capability: Some(code.capability()),
+                    generation: record.generation,
+                },
+                now,
+                rng,
+            );
+        }
         let digest = kult_crypto::parse_address(address)?;
         let bundle = self
-            .lookup_bundle(digest, now)
+            .lookup_legacy_bundle(digest, now)
             .await
             .ok_or(NodeError::BundleNotFound)?;
         let hints = decode_hints(&bundle.prekey.transport_hints());
         self.add_contact(name, &bundle.encode()?, &hints, now, rng)
     }
 
-    /// Fetch, verify, and select the freshest prekey bundle for `digest`
-    /// across all discovery planes. `None` means no candidate survived
-    /// verification — never that a record was accepted unverified.
-    async fn lookup_bundle(&self, digest: [u8; 32], now: u64) -> Option<DevicePrekeyBundle> {
+    async fn lookup_connect_record(
+        &self,
+        code: &ConnectCode,
+        now: u64,
+    ) -> Result<Option<DiscoveryRecord>> {
+        let current = kult_crypto::discovery_epoch(now);
+        let first = current.saturating_sub(DISCOVERY_LOOKUP_EPOCH_ADJACENCY);
+        let last = current
+            .checked_add(DISCOVERY_LOOKUP_EPOCH_ADJACENCY)
+            .ok_or(NodeError::CorruptState)?;
+        let mut requests = Vec::new();
+        for epoch in first..=last {
+            let locator = kult_crypto::discovery_locator(&code.capability(), epoch);
+            for discovery in &self.discoveries {
+                let discovery = Arc::clone(discovery);
+                requests.push(async move {
+                    (
+                        epoch,
+                        discovery
+                            .lookup(DiscoveryNamespace::ConnectV2, locator)
+                            .await,
+                    )
+                });
+            }
+        }
+        let mut by_epoch: BTreeMap<u64, Vec<Vec<u8>>> = BTreeMap::new();
+        for (epoch, result) in join_all(requests).await {
+            if let Ok(mut values) = result {
+                let bytes = values
+                    .iter()
+                    .try_fold(0usize, |total, value| total.checked_add(value.len()));
+                if values.len() > MAX_DISCOVERY_CANDIDATES
+                    || bytes.is_none_or(|bytes| {
+                        bytes > MAX_DISCOVERY_CANDIDATES.saturating_mul(DISCOVERY_RECORD_SIZE)
+                    })
+                {
+                    continue;
+                }
+                // One provider can contribute at most the protocol's exact
+                // candidate bound. Discard wrong-shape values before they
+                // consume the expensive authenticated-open budget.
+                values.retain(|value| value.len() == DISCOVERY_RECORD_SIZE);
+                values.sort_by_key(|value| <[u8; 32]>::from(Sha256::digest(value)));
+                values.dedup();
+                values.truncate(MAX_DISCOVERY_CANDIDATES);
+                by_epoch.entry(epoch).or_default().extend(values);
+            }
+        }
+        let mut verified: Vec<DiscoveryRecord> = Vec::new();
+        for (epoch, mut candidates) in by_epoch {
+            candidates.sort_by_key(|value| <[u8; 32]>::from(Sha256::digest(value)));
+            candidates.dedup();
+            candidates.truncate(MAX_DISCOVERY_CANDIDATES);
+            let mut retained_bytes = 0usize;
+            let byte_limit = MAX_DISCOVERY_CANDIDATES.saturating_mul(DISCOVERY_RECORD_SIZE);
+            for candidate in candidates {
+                retained_bytes = retained_bytes.saturating_add(candidate.len());
+                if retained_bytes > byte_limit {
+                    break;
+                }
+                let Ok(record) = kult_crypto::open_discovery_record(code, epoch, &candidate, now)
+                else {
+                    continue;
+                };
+                for accepted in &verified {
+                    match accepted.authority.relation(&record.authority)? {
+                        kult_crypto::DeviceAuthorityRelation::Fork => {
+                            return Err(NodeError::DeviceAuthorityFork);
+                        }
+                        kult_crypto::DeviceAuthorityRelation::RecoveryConflict => {
+                            return Err(NodeError::DeviceRecoveryConflict);
+                        }
+                        _ => {}
+                    }
+                }
+                verified.push(record);
+            }
+        }
+        let mut best: Option<DiscoveryRecord> = None;
+        for candidate in verified {
+            let replace = best.as_ref().is_none_or(|current| {
+                candidate.authority.generation() > current.authority.generation()
+                    || (candidate.authority.generation() == current.authority.generation()
+                        && (candidate.issued_at > current.issued_at
+                            || (candidate.issued_at == current.issued_at
+                                && candidate.digest() < current.digest())))
+            });
+            if replace {
+                best = Some(candidate);
+            }
+        }
+        Ok(best)
+    }
+
+    /// Fetch and verify the mailbox-only Alpha compatibility record.
+    async fn lookup_legacy_bundle(&self, digest: [u8; 32], now: u64) -> Option<DevicePrekeyBundle> {
         let mut best: Option<DevicePrekeyBundle> = None;
         for discovery in &self.discoveries {
-            let Ok(candidates) = discovery.lookup(digest).await else {
+            let Ok(candidates) = discovery
+                .lookup(DiscoveryNamespace::LegacyPrekeyV1, digest)
+                .await
+            else {
                 continue;
             };
             for bytes in candidates {
@@ -1574,9 +2281,16 @@ impl Node {
         let hi = today + MAILBOX_AHEAD_EPOCHS;
         let mut tokens = Vec::new();
         for epoch in lo..=hi {
-            tokens.push(intro_token(&me, epoch));
-            if device != me {
-                tokens.push(intro_token(&device, epoch));
+            tokens.push(kult_crypto::discovery_introduction_token(
+                &self.device_state.discovery.capability,
+                &device,
+                epoch,
+            ));
+            if self.device_state.discovery.legacy_v1_enabled {
+                tokens.push(intro_token(&me, epoch));
+                if device != me {
+                    tokens.push(intro_token(&device, epoch));
+                }
             }
             for session in self.sessions.values() {
                 tokens.push(delivery_token(
@@ -1609,6 +2323,46 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 32]> {
+        self.add_contact_with_discovery_capability(
+            name,
+            bundle_bytes,
+            hints,
+            devices::ContactDiscoveryProjection::default(),
+            now,
+            rng,
+        )
+    }
+
+    fn add_contact_with_discovery_capability(
+        &mut self,
+        name: &str,
+        bundle_bytes: &[u8],
+        hints: &[DeliveryHint],
+        supplied_discovery: devices::ContactDiscoveryProjection,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 32]> {
+        let mut owned_device_bundle = None;
+        let discovery = if AuthorityPairingBundle::is_encoded(bundle_bytes) {
+            let pairing = AuthorityPairingBundle::decode(bundle_bytes)?;
+            pairing.verify(now)?;
+            if supplied_discovery.capability.is_some()
+                && (supplied_discovery.capability != Some(pairing.discovery_capability)
+                    || supplied_discovery.generation != pairing.discovery_generation)
+            {
+                return Err(NodeError::Crypto(kult_crypto::CryptoError::InvalidBundle));
+            }
+            owned_device_bundle = Some(pairing.device_bundle.encode()?);
+            devices::ContactDiscoveryProjection {
+                capability: Some(pairing.discovery_capability),
+                generation: pairing.discovery_generation,
+            }
+        } else {
+            supplied_discovery
+        };
+        let bundle_bytes = owned_device_bundle.as_deref().unwrap_or(bundle_bytes);
+        let introduction_capability = discovery.capability;
+        let introduction_generation = discovery.generation;
         let name = contact_names::normalize_contact_name(name)?;
         let (peer, identity, stored_bundle, mut endpoint, manifest, advertised_hints) =
             if DevicePrekeyBundle::is_encoded(bundle_bytes) {
@@ -1633,6 +2387,8 @@ impl Node {
                     authority,
                     bundle: device_bundle.prekey.encode(),
                     hints: Vec::new(),
+                    introduction_capability,
+                    introduction_generation,
                     manifest_generation: device_bundle.manifest.generation(),
                     manifest_state_id: device_bundle.manifest.state_id(),
                     last_seen: now,
@@ -1661,6 +2417,8 @@ impl Node {
                     authority: Vec::new(),
                     bundle: bundle_bytes.to_vec(),
                     hints: Vec::new(),
+                    introduction_capability,
+                    introduction_generation,
                     manifest_generation: 0,
                     manifest_state_id: [0u8; 32],
                     last_seen: now,
@@ -1711,9 +2469,12 @@ impl Node {
         if let Some(manifest) = manifest {
             self.apply_contact_device_manifest(
                 &manifest,
-                endpoint.device,
-                endpoint.bundle,
-                endpoint.hints,
+                devices::ContactDeviceAdvertisement {
+                    device: endpoint.device,
+                    bundle: endpoint.bundle,
+                    hints: endpoint.hints,
+                    discovery,
+                },
                 now,
                 rng,
             )?;
@@ -1859,6 +2620,10 @@ impl Node {
         self.before_memory_replacement()?;
         self.sessions.remove(device);
         self.capabilities_advertised.remove(device);
+        self.discovery_advertised.remove(device);
+        self.rendezvous_advertised.remove(device);
+        self.rendezvous_refresh_requested.remove(device);
+        self.rendezvous_rehandshake_requested.remove(device);
         self.after_memory_replacement()?;
         let deleted = delete_queue
             .iter()
@@ -2065,6 +2830,9 @@ impl Node {
         self.before_memory_replacement()?;
         self.sessions.insert(request.device, session_after);
         self.capabilities_advertised.remove(&request.device);
+        self.discovery_advertised.remove(&request.device);
+        self.rendezvous_advertised.remove(&request.device);
+        self.rendezvous_refresh_requested.insert(request.device);
         self.after_memory_replacement()?;
         let mut events = vec![
             Event::MessageRequestAccepted {
@@ -2148,6 +2916,9 @@ impl Node {
             rng,
         )?;
         self.capabilities_advertised.remove(&request.device);
+        self.discovery_advertised.remove(&request.device);
+        self.rendezvous_advertised.remove(&request.device);
+        self.rendezvous_refresh_requested.insert(request.device);
         self.accept_commit_receipt(
             receipt,
             [if block {
@@ -2512,6 +3283,8 @@ impl Node {
                 authority: Vec::new(),
                 bundle: contact.bundle.clone(),
                 hints: contact.hints.clone(),
+                introduction_capability: None,
+                introduction_generation: 0,
                 manifest_generation: 0,
                 manifest_state_id: [0u8; 32],
                 last_seen: now,
@@ -2699,6 +3472,9 @@ impl Node {
             self.sessions.insert(route.route, route.after);
             if route.resets_capabilities {
                 self.capabilities_advertised.remove(&route.route);
+                self.discovery_advertised.remove(&route.route);
+                self.rendezvous_advertised.remove(&route.route);
+                self.rendezvous_refresh_requested.insert(route.route);
             }
         }
         self.after_memory_replacement()?;
@@ -3004,6 +3780,12 @@ impl Node {
         //    handshakes so re-keyed traffic flows without waiting for the
         //    user to send first.
         self.rekey_reset_peers(now, rng)?;
+        // A legacy pairwise session can authenticate the provider upgrade but
+        // cannot safely synthesize a transcript exporter. Exactly one side,
+        // selected by physical-device id ordering, starts a fresh verified
+        // PQXDH exchange and replaces the session plus optional service state
+        // in one commit.
+        self.process_rendezvous_rehandshakes(now, rng)?;
         // A manifest can advertise an active endpoint before its prekey bundle
         // or session arrives. Ordinary sends retain an honest per-device
         // `Queued` row; once that route becomes usable, materialize the exact
@@ -3018,6 +3800,9 @@ impl Node {
         // Loaded and newly-created sessions advertise on the first tick.
         // Controls use the durable queue and are terminal like receipts.
         self.advertise_capabilities(now, rng)?;
+        self.advertise_discovery_upgrades(now, rng)?;
+        self.advertise_rendezvous_providers(now, rng)?;
+        self.maintain_rendezvous(now, rng).await?;
         self.admission_deadline = Some(Instant::now() + MAX_ADMISSION_TIME_PER_TICK);
 
         // 1. Gather: previously-stashed envelopes first, then fresh arrivals.
@@ -3646,6 +4431,16 @@ impl Node {
         let mut bundle = target_bundle.verify(now)?;
         let reset_markers = self.store.reset_markers()?;
         let resetting = reset_markers.contains(account) || reset_markers.contains(device);
+        let prior_session = self.store.get_session(device)?;
+        let intent = if resetting {
+            DeviceHandshakeIntent::Reset
+        } else if let Some(prior) = prior_session.as_ref() {
+            DeviceHandshakeIntent::Replace {
+                prior_session_id: *prior.session_id(),
+            }
+        } else {
+            DeviceHandshakeIntent::Establish
+        };
         if resetting {
             bundle = bundle.without_opk();
         }
@@ -3676,6 +4471,7 @@ impl Node {
         let initial_bytes = encode_device_initial(&DeviceInitialFlight {
             initial: init.encode(),
             return_bundle,
+            intent,
         })?;
         let step = self.begin_crypto_step()?;
         let sealed = seal_anonymous(&bundle.bundle().identity, HS_AD, &initial_bytes, rng);
@@ -3723,14 +4519,19 @@ impl Node {
             // ML-KEM by the receiver and must exchange a current invitation.
             sealed
         };
-        Ok((
-            session,
-            Envelope::new(
-                EnvelopeKind::Handshake,
-                intro_token(device, epoch_day(now)),
-                body,
-            ),
-        ))
+        let introduction_capability = self
+            .store
+            .contact_devices_for(account)?
+            .into_iter()
+            .find(|endpoint| endpoint.device == *device)
+            .and_then(|endpoint| endpoint.introduction_capability);
+        let token = introduction_capability.map_or_else(
+            || intro_token(device, epoch_day(now)),
+            |capability| {
+                kult_crypto::discovery_introduction_token(&capability, device, epoch_day(now))
+            },
+        );
+        Ok((session, Envelope::new(EnvelopeKind::Handshake, token, body)))
     }
 
     fn sweep_admission(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<()> {
@@ -4034,6 +4835,8 @@ impl Node {
                         authority: Vec::new(),
                         bundle: contact.bundle,
                         hints: contact.hints,
+                        introduction_capability: None,
+                        introduction_generation: 0,
                         manifest_generation: 0,
                         manifest_state_id: [0u8; 32],
                         last_seen: now,
@@ -4139,7 +4942,95 @@ impl Node {
             for route in prepared {
                 self.sessions.insert(route.route, route.after);
                 self.capabilities_advertised.remove(&route.route);
+                self.discovery_advertised.remove(&route.route);
+                self.rendezvous_advertised.remove(&route.route);
+                self.rendezvous_refresh_requested.insert(route.route);
             }
+            self.after_memory_replacement()?;
+        }
+        Ok(())
+    }
+
+    fn process_rendezvous_rehandshakes(
+        &mut self,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let mut due = self
+            .rendezvous_rehandshake_requested
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        due.sort_unstable();
+        due.truncate(MAX_RENDEZVOUS_REHANDSHAKES_PER_TICK);
+        for peer_device in due {
+            let Some(before) = self.store.get_session(&peer_device)? else {
+                self.rendezvous_rehandshake_requested.remove(&peer_device);
+                continue;
+            };
+            if before.hybrid_service_exporter().is_some() {
+                self.rendezvous_rehandshake_requested.remove(&peer_device);
+                continue;
+            }
+            let Some(endpoint) = self.store.contact_devices()?.into_iter().find(|endpoint| {
+                endpoint.device == peer_device
+                    && endpoint.revoked_at.is_none()
+                    && !endpoint.bundle.is_empty()
+            }) else {
+                continue;
+            };
+            let Ok((after, envelope)) = self.prepare_session(
+                &endpoint.account,
+                &peer_device,
+                &endpoint.bundle,
+                &pad(&[])?,
+                now,
+                rng,
+            ) else {
+                continue;
+            };
+            let queue = QueueItem {
+                peer: peer_device,
+                msg_id: None,
+                group_msg_id: None,
+                class: QueueClass::Normal,
+                created_at: now,
+                attempts: 0,
+                next_attempt_at: now,
+                envelope,
+            };
+            self.store.commit_plan(
+                CommitPlan::PairwiseSend(PairwiseSendPlan {
+                    sessions: &[SessionTransition {
+                        peer_device,
+                        before: Some(&before),
+                        after: &after,
+                    }],
+                    message: None,
+                    message_update: None,
+                    deliveries: &[],
+                    delivery_updates: &[],
+                    queue: &[queue],
+                    groups: &[],
+                    authorities: &[],
+                    scheduled: None,
+                    clear_capabilities: &[peer_device],
+                    clear_reset_markers: &[],
+                    ephemeral: None,
+                    media_transfers: &[],
+                    media_objects: &[],
+                    delete_controls: &[],
+                    presentation_changed: false,
+                }),
+                rng,
+            )?;
+            self.before_memory_replacement()?;
+            self.sessions.insert(peer_device, after);
+            self.capabilities_advertised.remove(&peer_device);
+            self.discovery_advertised.remove(&peer_device);
+            self.rendezvous_advertised.remove(&peer_device);
+            self.rendezvous_refresh_requested.insert(peer_device);
+            self.rendezvous_rehandshake_requested.remove(&peer_device);
             self.after_memory_replacement()?;
         }
         Ok(())
@@ -4365,6 +5256,9 @@ impl Node {
                     self.sessions.insert(route.route, route.after);
                     if route.resets_capabilities {
                         self.capabilities_advertised.remove(&route.route);
+                        self.discovery_advertised.remove(&route.route);
+                        self.rendezvous_advertised.remove(&route.route);
+                        self.rendezvous_refresh_requested.insert(route.route);
                     }
                 }
                 self.after_memory_replacement()?;
@@ -4761,7 +5655,7 @@ impl Node {
         } else {
             return self.commit_terminal_input(content_id, pending_sequence, rng);
         };
-        let (raw_initial, sender_bundle, sender_account_bundle) =
+        let (raw_initial, sender_bundle, sender_account_bundle, handshake_intent) =
             if let Some(flight) = decode_device_initial(&init_bytes) {
                 let Ok(bundle) = DevicePrekeyBundle::decode(&flight.return_bundle) else {
                     return self.commit_terminal_input(content_id, pending_sequence, rng);
@@ -4769,7 +5663,7 @@ impl Node {
                 if bundle.verify(now).is_err() {
                     return self.commit_terminal_input(content_id, pending_sequence, rng);
                 }
-                (flight.initial, Some(bundle), None)
+                (flight.initial, Some(bundle), None, flight.intent)
             } else if let Some(flight) = decode_account_initial(&init_bytes) {
                 let Ok(bundle) = PrekeyBundle::decode(&flight.return_bundle) else {
                     return self.commit_terminal_input(content_id, pending_sequence, rng);
@@ -4777,9 +5671,14 @@ impl Node {
                 if bundle.verify(now).is_err() {
                     return self.commit_terminal_input(content_id, pending_sequence, rng);
                 }
-                (flight.initial, None, Some(bundle))
+                (
+                    flight.initial,
+                    None,
+                    Some(bundle),
+                    DeviceHandshakeIntent::Legacy,
+                )
             } else {
-                (init_bytes, None, None)
+                (init_bytes, None, None, DeviceHandshakeIntent::Legacy)
             };
         let Ok(init) = InitialMessage::decode(&raw_initial) else {
             return self.commit_terminal_input(content_id, pending_sequence, rng);
@@ -4934,6 +5833,10 @@ impl Node {
                     authority: encoded_authority.clone(),
                     bundle: endpoint_bundle,
                     hints,
+                    introduction_capability: prior
+                        .and_then(|endpoint| endpoint.introduction_capability),
+                    introduction_generation: prior
+                        .map_or(0, |endpoint| endpoint.introduction_generation),
                     manifest_generation: bundle.manifest.generation(),
                     manifest_state_id: state_id,
                     last_seen: entry
@@ -4978,6 +5881,12 @@ impl Node {
                 authority: Vec::new(),
                 bundle: account_return_bundle,
                 hints: account_return_hints,
+                introduction_capability: prior
+                    .as_ref()
+                    .and_then(|endpoint| endpoint.introduction_capability),
+                introduction_generation: prior
+                    .as_ref()
+                    .map_or(0, |endpoint| endpoint.introduction_generation),
                 manifest_generation: 0,
                 manifest_state_id: [0u8; 32],
                 last_seen: now,
@@ -5093,6 +6002,26 @@ impl Node {
             return Ok(Consumed::DoneAtomic);
         }
 
+        let prior_session = self.store.get_session(&peer_device)?;
+        let keep_prior_session = match decide_inbound_session(
+            self.device_id(),
+            peer_device,
+            prior_session.as_ref().map(Session::session_id),
+            handshake_intent,
+        ) {
+            HandshakeSessionDecision::Reject => {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            }
+            HandshakeSessionDecision::KeepPrior => true,
+            HandshakeSessionDecision::AcceptInbound => false,
+        };
+        if keep_prior_session {
+            session = prior_session
+                .as_ref()
+                .ok_or(NodeError::CorruptState)?
+                .clone();
+        }
+
         cleanup_devices.sort_unstable();
         cleanup_devices.dedup();
         let mut delete_sessions = Vec::new();
@@ -5102,22 +6031,181 @@ impl Node {
             }
         }
         let mut delete_capabilities = cleanup_devices.clone();
-        delete_capabilities.push(peer_device);
+        if !keep_prior_session {
+            delete_capabilities.push(peer_device);
+        }
         delete_capabilities.sort_unstable();
         delete_capabilities.dedup();
+        let replacing_prior_session = prior_session.is_some() && !keep_prior_session;
+        let mut reset_message_candidates = Vec::new();
+        let mut reset_delivery_candidates = Vec::new();
+        let mut retired_group_message_candidates = Vec::new();
+        let mut retired_group_delivery_candidates = Vec::new();
+        let mut reset_events = Vec::new();
+        if replacing_prior_session {
+            for message_before in self.store.messages_with(&peer)? {
+                if message_before.direction != Direction::Outbound {
+                    continue;
+                }
+                let mut deliveries = self.store.message_device_deliveries(&message_before.id)?;
+                let mut changed = false;
+                for delivery in &mut deliveries {
+                    if delivery.device != peer_device
+                        || matches!(
+                            delivery.state,
+                            DeliveryState::Delivered | DeliveryState::Failed
+                        )
+                        || (delivery.state == DeliveryState::Queued && delivery.wire_id.is_none())
+                    {
+                        continue;
+                    }
+                    let before = delivery.clone();
+                    delivery.state = DeliveryState::Queued;
+                    delivery.wire_id = None;
+                    reset_delivery_candidates.push((before, delivery.clone()));
+                    changed = true;
+                }
+                if !changed {
+                    continue;
+                }
+                let mut message_after = message_before.clone();
+                message_after.state = if deliveries
+                    .iter()
+                    .any(|delivery| delivery.state == DeliveryState::Delivered)
+                {
+                    DeliveryState::Delivered
+                } else if deliveries
+                    .iter()
+                    .any(|delivery| delivery.state == DeliveryState::Sent)
+                {
+                    DeliveryState::Sent
+                } else if deliveries
+                    .iter()
+                    .any(|delivery| delivery.state == DeliveryState::Queued)
+                {
+                    DeliveryState::Queued
+                } else {
+                    DeliveryState::Failed
+                };
+                message_after.wire_id = deliveries.iter().find_map(|delivery| delivery.wire_id);
+                if message_after != message_before {
+                    reset_events.push(Event::DeliveryUpdated {
+                        id: message_after.id,
+                        state: message_after.state,
+                    });
+                    reset_message_candidates.push((message_before, message_after));
+                }
+            }
+            for message_before in self.store.all_group_messages()? {
+                if message_before.direction != Direction::Outbound {
+                    continue;
+                }
+                let mut deliveries = self.store.message_device_deliveries(&message_before.id)?;
+                let mut changed = false;
+                for delivery in &mut deliveries {
+                    if delivery.account != peer
+                        || delivery.device != peer_device
+                        || matches!(
+                            delivery.state,
+                            DeliveryState::Delivered | DeliveryState::Failed
+                        )
+                    {
+                        continue;
+                    }
+                    let before = delivery.clone();
+                    delivery.state = DeliveryState::Failed;
+                    delivery.wire_id = None;
+                    retired_group_delivery_candidates.push((before, delivery.clone()));
+                    changed = true;
+                }
+                if !changed {
+                    continue;
+                }
+                let account_deliveries = deliveries
+                    .iter()
+                    .filter(|delivery| delivery.account == peer)
+                    .collect::<Vec<_>>();
+                let mut message_after = message_before.clone();
+                let account = message_after
+                    .deliveries
+                    .iter_mut()
+                    .find(|delivery| delivery.peer == peer)
+                    .ok_or(NodeError::CorruptState)?;
+                account.state = if account_deliveries
+                    .iter()
+                    .any(|delivery| delivery.state == DeliveryState::Delivered)
+                {
+                    DeliveryState::Delivered
+                } else if account_deliveries
+                    .iter()
+                    .any(|delivery| delivery.state == DeliveryState::Sent)
+                {
+                    DeliveryState::Sent
+                } else if account_deliveries
+                    .iter()
+                    .any(|delivery| delivery.state == DeliveryState::Queued)
+                {
+                    DeliveryState::Queued
+                } else {
+                    DeliveryState::Failed
+                };
+                account.wire_id = account_deliveries
+                    .iter()
+                    .find_map(|delivery| delivery.wire_id);
+                let account_state = account.state;
+                if message_after != message_before {
+                    reset_events.push(Event::GroupDeliveryUpdated {
+                        id: message_after.id,
+                        peer,
+                        state: account_state,
+                    });
+                    retired_group_message_candidates.push((message_before, message_after));
+                }
+            }
+        }
+        let reset_messages = reset_message_candidates
+            .iter()
+            .map(|(before, after)| MessageTransition { before, after })
+            .collect::<Vec<_>>();
+        let reset_deliveries = reset_delivery_candidates
+            .iter()
+            .map(|(before, after)| DeliveryTransition { before, after })
+            .collect::<Vec<_>>();
+        let retire_group_messages = retired_group_message_candidates
+            .iter()
+            .map(|(before, after)| GroupMessageTransition { before, after })
+            .collect::<Vec<_>>();
+        let retire_group_deliveries = retired_group_delivery_candidates
+            .iter()
+            .map(|(before, after)| DeliveryTransition { before, after })
+            .collect::<Vec<_>>();
         let cleanup_set = cleanup_devices.iter().copied().collect::<HashSet<_>>();
         let delete_queue = self
             .store
             .queue_all()?
             .into_iter()
             .filter_map(|(sequence, item)| {
-                cleanup_set.contains(&item.peer).then_some(QueueDelete {
-                    sequence,
-                    content_id: item.envelope.content_id(),
-                })
+                (cleanup_set.contains(&item.peer)
+                    || (replacing_prior_session && item.peer == peer_device))
+                    .then_some(QueueDelete {
+                        sequence,
+                        content_id: item.envelope.content_id(),
+                    })
             })
             .collect::<Vec<_>>();
-        let group_candidates = self.prepare_groups_on_session_established(&peer, rng)?;
+        if delete_queue.len() > kult_store::MAX_COMMIT_QUEUE_ROWS
+            || reset_messages.len() > kult_store::MAX_COMMIT_QUEUE_ROWS
+            || reset_deliveries.len() > kult_store::MAX_COMMIT_QUEUE_ROWS
+            || retire_group_messages.len() > kult_store::MAX_COMMIT_QUEUE_ROWS
+            || retire_group_deliveries.len() > kult_store::MAX_COMMIT_QUEUE_ROWS
+        {
+            return Ok(Consumed::Later);
+        }
+        let group_candidates = if keep_prior_session {
+            Vec::new()
+        } else {
+            self.prepare_groups_on_session_established(&peer, rng)?
+        };
         let group_transitions = group_candidates
             .iter()
             .map(|(before, after)| GroupTransition { before, after })
@@ -5132,7 +6220,7 @@ impl Node {
             }
             _ => None,
         };
-        let needs_receipt = prepared_inbound.is_some();
+        let needs_receipt = prepared_inbound.is_some() || keep_prior_session;
         let receipt_queue = if needs_receipt {
             let payload = ReceiptPayload {
                 acks: vec![content_id],
@@ -5143,14 +6231,16 @@ impl Node {
         } else {
             None
         };
-        let prior_session = self.store.get_session(&peer_device)?;
         let delete_devices = delete_endpoint_records
             .iter()
             .map(|before| ContactDeviceDelete { before })
             .collect::<Vec<_>>();
         let source_pending = Self::pending_delete(pending_sequence, content_id);
         let mut events = Vec::new();
-        events.push(Event::SessionEstablished { peer });
+        if !keep_prior_session {
+            events.push(Event::SessionEstablished { peer });
+        }
+        events.extend(reset_events);
         if let Some(prepared) = prepared_inbound.as_ref() {
             events.extend(prepared.events.clone());
         }
@@ -5159,6 +6249,51 @@ impl Node {
             before: Some(before_vault.as_ref()),
             after: after_vault.as_ref(),
         });
+        let inbound_media_transfers = prepared_inbound
+            .as_ref()
+            .map_or(0, |prepared| prepared.media_transfers.len());
+        let inbound_media_objects = prepared_inbound
+            .as_ref()
+            .map_or(0, |prepared| prepared.media_objects.len());
+        let mutation_count = [
+            usize::from(prekeys.is_some()),
+            1,
+            1,
+            endpoints.len(),
+            delete_devices.len(),
+            delete_sessions.len(),
+            delete_capabilities.len(),
+            delete_queue.len(),
+            reset_messages.len(),
+            reset_deliveries.len(),
+            retire_group_messages.len(),
+            retire_group_deliveries.len(),
+            group_transitions.len(),
+            usize::from(
+                prepared_inbound
+                    .as_ref()
+                    .and_then(|prepared| prepared.message.as_ref())
+                    .is_some(),
+            ),
+            usize::from(
+                prepared_inbound
+                    .as_ref()
+                    .and_then(|prepared| prepared.ephemeral.as_ref())
+                    .is_some(),
+            ),
+            inbound_media_transfers,
+            inbound_media_objects,
+            usize::from(receipt_queue.is_some()),
+            1,
+            usize::from(needs_receipt),
+            usize::from(source_pending.is_some()),
+        ]
+        .into_iter()
+        .try_fold(0usize, usize::checked_add)
+        .ok_or(NodeError::CorruptState)?;
+        if mutation_count > kult_store::MAX_COMMIT_MUTATIONS {
+            return Ok(Consumed::Later);
+        }
         let receipt = self.store.commit_plan(
             CommitPlan::HandshakeReceive(HandshakeReceivePlan {
                 prekeys,
@@ -5173,6 +6308,10 @@ impl Node {
                 delete_sessions: &delete_sessions,
                 delete_capabilities: &delete_capabilities,
                 delete_queue: &delete_queue,
+                reset_messages: &reset_messages,
+                reset_deliveries: &reset_deliveries,
+                retire_group_messages: &retire_group_messages,
+                retire_group_deliveries: &retire_group_deliveries,
                 groups: &group_transitions,
                 message: prepared_inbound
                     .as_ref()
@@ -5202,11 +6341,29 @@ impl Node {
         for device in cleanup_devices {
             self.sessions.remove(&device);
             self.capabilities_advertised.remove(&device);
+            self.discovery_advertised.remove(&device);
+            self.rendezvous_advertised.remove(&device);
+            self.rendezvous_refresh_requested.remove(&device);
+            self.rendezvous_rehandshake_requested.remove(&device);
         }
-        self.capabilities_advertised.remove(&peer_device);
+        if !keep_prior_session {
+            self.capabilities_advertised.remove(&peer_device);
+            self.discovery_advertised.remove(&peer_device);
+            self.rendezvous_advertised.remove(&peer_device);
+            self.rendezvous_refresh_requested.insert(peer_device);
+            self.rendezvous_rehandshake_requested.remove(&peer_device);
+        }
         self.sessions.insert(peer_device, session);
-        *established = true;
+        *established |= !keep_prior_session;
         self.after_memory_replacement()?;
+        let deleted = delete_queue
+            .iter()
+            .map(|delete| delete.sequence)
+            .collect::<HashSet<_>>();
+        self.held_notified
+            .retain(|sequence| !deleted.contains(sequence));
+        self.call_queue_deadlines
+            .retain(|sequence, _| !deleted.contains(sequence));
         self.accept_commit_receipt(receipt, events);
         if let Some(prepared) = prepared_inbound {
             for transfer in prepared.attachment_updates {
@@ -5373,9 +6530,11 @@ impl Node {
                             deliveries: &[],
                             group_messages: &[],
                             groups: &[],
+                            contact_devices: &[],
                             media_transfers: &[],
                             media_objects: &[],
                             capabilities: None,
+                            rendezvous: None,
                             deferred_control: Some(&control),
                             content_id: env.content_id(),
                             source_pending,
@@ -5385,6 +6544,341 @@ impl Node {
                     )?;
                     self.before_memory_replacement()?;
                     self.sessions.insert(peer_device, after);
+                    self.after_memory_replacement()?;
+                } else if is_rendezvous_provider_control(&body) {
+                    let Ok(control) = RendezvousProviderControl::decode(&body) else {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    };
+                    if control.account != peer || control.device != peer_device {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    }
+                    let endpoints = self.store.contact_devices_for(&peer)?;
+                    let Some(sender) = endpoints
+                        .iter()
+                        .find(|endpoint| endpoint.device == peer_device)
+                    else {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    };
+                    if sender.revoked_at.is_some()
+                        || sender.manifest_generation != control.authority_generation
+                    {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    }
+                    let incoming = control
+                        .providers
+                        .iter()
+                        .map(|provider| {
+                            RendezvousProvider::new(provider.origin.clone(), provider.static_key)
+                        })
+                        .collect::<kult_transport::Result<Vec<_>>>();
+                    let Ok(incoming) = incoming else {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    };
+
+                    let service_before = self.store.get_rendezvous_service_state(&peer_device)?;
+                    let mut service_after = service_before.clone();
+                    let mut provider_set_conflict = false;
+                    if let Some(candidate) = service_after.as_mut() {
+                        let mut current = candidate
+                            .providers
+                            .iter()
+                            .filter(|provider| provider.lookup_enabled)
+                            .map(|provider| {
+                                (
+                                    provider.provider_id,
+                                    provider.origin.clone(),
+                                    provider.static_key,
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        current.sort();
+                        let mut proposed = incoming
+                            .iter()
+                            .map(|provider| {
+                                (
+                                    provider.provider_id(),
+                                    provider.origin().to_owned(),
+                                    provider.static_key(),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        proposed.sort();
+                        if control.generation < candidate.remote_provider_generation {
+                            return self.commit_terminal_input(
+                                env.content_id(),
+                                pending_sequence,
+                                rng,
+                            );
+                        }
+                        if candidate
+                            .remote_provider_conflict_generation
+                            .is_some_and(|generation| control.generation <= generation)
+                        {
+                            return self.commit_terminal_input(
+                                env.content_id(),
+                                pending_sequence,
+                                rng,
+                            );
+                        }
+                        if control.generation == candidate.remote_provider_generation
+                            && current != proposed
+                        {
+                            candidate.remote_provider_conflict_generation =
+                                Some(control.generation);
+                            for provider in &mut candidate.providers {
+                                if provider.lookup_enabled {
+                                    provider.lookup_enabled = false;
+                                    provider.routes.clear();
+                                    provider.routes_expires_at = 0;
+                                }
+                            }
+                            provider_set_conflict = true;
+                        }
+                        if control.generation > candidate.remote_provider_generation {
+                            candidate.remote_provider_generation = control.generation;
+                            candidate.remote_provider_conflict_generation = None;
+                            for provider in &mut candidate.providers {
+                                provider.lookup_enabled = false;
+                            }
+                            for provider in &incoming {
+                                candidate
+                                    .provider_mut(
+                                        provider.provider_id(),
+                                        provider.origin().to_owned(),
+                                        provider.static_key(),
+                                    )?
+                                    .lookup_enabled = true;
+                            }
+                            candidate.providers.retain(|provider| {
+                                provider.publish_enabled || provider.lookup_enabled
+                            });
+                            candidate
+                                .providers
+                                .sort_by_key(|provider| provider.provider_id);
+                        }
+                    }
+
+                    if provider_set_conflict {
+                        let Some(before_state) = service_before.as_ref() else {
+                            return Err(NodeError::CorruptState);
+                        };
+                        let Some(after_state) = service_after.as_ref() else {
+                            return Err(NodeError::CorruptState);
+                        };
+                        let source_pending =
+                            Self::pending_delete(pending_sequence, env.content_id());
+                        let committed = self.store.commit_plan(
+                            CommitPlan::ReceiptReceive(ReceiptReceivePlan {
+                                session: SessionTransition {
+                                    peer_device,
+                                    before: Some(&before),
+                                    after: &after,
+                                },
+                                delete_queue: &[],
+                                queue: &[],
+                                messages: &[],
+                                deliveries: &[],
+                                group_messages: &[],
+                                groups: &[],
+                                contact_devices: &[],
+                                media_transfers: &[],
+                                media_objects: &[],
+                                capabilities: None,
+                                rendezvous: Some(RendezvousServiceTransition {
+                                    peer_device,
+                                    before: before_state,
+                                    after: after_state,
+                                }),
+                                deferred_control: None,
+                                content_id: env.content_id(),
+                                source_pending,
+                                presentation_changed: true,
+                            }),
+                            rng,
+                        )?;
+                        self.before_memory_replacement()?;
+                        self.sessions.insert(peer_device, after);
+                        self.rendezvous_refresh_requested.remove(&peer_device);
+                        self.after_memory_replacement()?;
+                        self.accept_commit_receipt(
+                            committed,
+                            [Event::RendezvousConflict {
+                                peer,
+                                device: peer_device,
+                                provider: [0u8; 32],
+                            }],
+                        );
+                        return Ok(Consumed::DoneAtomic);
+                    }
+
+                    let local_control = self.local_rendezvous_provider_control()?;
+                    let advertise = local_control.is_some()
+                        && !self.rendezvous_advertised.contains(&peer_device);
+                    let response = local_control
+                        .filter(|_| advertise)
+                        .map(|control| {
+                            self.prepare_control_queue(
+                                &mut after,
+                                peer_device,
+                                &control.encode()?,
+                                now,
+                                rng,
+                            )
+                        })
+                        .transpose()?;
+                    let rendezvous = match (service_before.as_ref(), service_after.as_ref()) {
+                        (Some(before_state), Some(after_state)) if before_state != after_state => {
+                            Some(RendezvousServiceTransition {
+                                peer_device,
+                                before: before_state,
+                                after: after_state,
+                            })
+                        }
+                        _ => None,
+                    };
+                    let source_pending = Self::pending_delete(pending_sequence, env.content_id());
+                    self.store.commit_plan(
+                        CommitPlan::ReceiptReceive(ReceiptReceivePlan {
+                            session: SessionTransition {
+                                peer_device,
+                                before: Some(&before),
+                                after: &after,
+                            },
+                            delete_queue: &[],
+                            queue: response.as_slice(),
+                            messages: &[],
+                            deliveries: &[],
+                            group_messages: &[],
+                            groups: &[],
+                            contact_devices: &[],
+                            media_transfers: &[],
+                            media_objects: &[],
+                            capabilities: None,
+                            rendezvous,
+                            deferred_control: None,
+                            content_id: env.content_id(),
+                            source_pending,
+                            presentation_changed: false,
+                        }),
+                        rng,
+                    )?;
+                    self.before_memory_replacement()?;
+                    self.sessions.insert(peer_device, after);
+                    if advertise {
+                        self.rendezvous_advertised.insert(peer_device);
+                    }
+                    if service_before.is_none() && self.device_id() < peer_device {
+                        self.rendezvous_rehandshake_requested.insert(peer_device);
+                    }
+                    if service_before != service_after {
+                        self.rendezvous_refresh_requested.insert(peer_device);
+                    }
+                    self.after_memory_replacement()?;
+                } else if is_discovery_upgrade_control(&body) {
+                    let Ok(control) = DiscoveryUpgradeControl::decode(&body) else {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    };
+                    if control.account != peer
+                        || validate_discovery_upgrade_routes(&control.routes).is_err()
+                    {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    }
+                    let endpoints = self.store.contact_devices_for(&peer)?;
+                    let Some(sender) = endpoints
+                        .iter()
+                        .find(|endpoint| endpoint.device == peer_device)
+                    else {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    };
+                    if sender.revoked_at.is_some()
+                        || sender.manifest_generation != control.authority_generation
+                    {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    }
+                    let accepted_generation = endpoints
+                        .iter()
+                        .filter(|endpoint| endpoint.revoked_at.is_none())
+                        .map(|endpoint| endpoint.introduction_generation)
+                        .max()
+                        .unwrap_or_default();
+                    let conflicting = endpoints.iter().any(|endpoint| {
+                        endpoint.revoked_at.is_none()
+                            && endpoint.introduction_generation == control.generation
+                            && endpoint
+                                .introduction_capability
+                                .is_some_and(|capability| capability != control.capability)
+                    });
+                    if control.generation < accepted_generation || conflicting {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    }
+
+                    let mut changed = Vec::new();
+                    for before_endpoint in &endpoints {
+                        if before_endpoint.revoked_at.is_some() {
+                            continue;
+                        }
+                        let mut after_endpoint = before_endpoint.clone();
+                        after_endpoint.introduction_capability = Some(control.capability);
+                        after_endpoint.introduction_generation = control.generation;
+                        if after_endpoint.device == peer_device && control.routes_complete {
+                            after_endpoint.hints.clone_from(&control.routes);
+                        }
+                        if after_endpoint != *before_endpoint {
+                            changed.push((before_endpoint.clone(), after_endpoint));
+                        }
+                    }
+                    let transitions = changed
+                        .iter()
+                        .map(
+                            |(before_endpoint, after_endpoint)| ContactDeviceTransition {
+                                before: before_endpoint,
+                                after: after_endpoint,
+                            },
+                        )
+                        .collect::<Vec<_>>();
+                    let advertise = !self.discovery_advertised.contains(&peer_device);
+                    let response = advertise
+                        .then(|| {
+                            self.prepare_control_queue(
+                                &mut after,
+                                peer_device,
+                                &self.local_discovery_upgrade()?.encode()?,
+                                now,
+                                rng,
+                            )
+                        })
+                        .transpose()?;
+                    let source_pending = Self::pending_delete(pending_sequence, env.content_id());
+                    self.store.commit_plan(
+                        CommitPlan::ReceiptReceive(ReceiptReceivePlan {
+                            session: SessionTransition {
+                                peer_device,
+                                before: Some(&before),
+                                after: &after,
+                            },
+                            delete_queue: &[],
+                            queue: response.as_slice(),
+                            messages: &[],
+                            deliveries: &[],
+                            group_messages: &[],
+                            groups: &[],
+                            contact_devices: &transitions,
+                            media_transfers: &[],
+                            media_objects: &[],
+                            capabilities: None,
+                            rendezvous: None,
+                            deferred_control: None,
+                            content_id: env.content_id(),
+                            source_pending,
+                            presentation_changed: !transitions.is_empty(),
+                        }),
+                        rng,
+                    )?;
+                    self.before_memory_replacement()?;
+                    self.sessions.insert(peer_device, after);
+                    if advertise {
+                        self.discovery_advertised.insert(peer_device);
+                    }
                     self.after_memory_replacement()?;
                 } else if is_capability_control(&body) {
                     if let Ok(capabilities) = CapabilityControl::decode(&body) {
@@ -5415,9 +6909,11 @@ impl Node {
                                 deliveries: &[],
                                 group_messages: &[],
                                 groups: &[],
+                                contact_devices: &[],
                                 media_transfers: &[],
                                 media_objects: &[],
                                 capabilities: Some(&capabilities),
+                                rendezvous: None,
                                 deferred_control: None,
                                 content_id: env.content_id(),
                                 source_pending,
@@ -5470,9 +6966,11 @@ impl Node {
                             deliveries: &delivery_transitions,
                             group_messages: &group_message_transitions,
                             groups: &group_transitions,
+                            contact_devices: &[],
                             media_transfers: &[],
                             media_objects: &[],
                             capabilities: None,
+                            rendezvous: None,
                             deferred_control: None,
                             content_id: env.content_id(),
                             source_pending,
@@ -5508,9 +7006,11 @@ impl Node {
                             deliveries: &[],
                             group_messages: &[],
                             groups: &[],
+                            contact_devices: &[],
                             media_transfers: &[],
                             media_objects: &[],
                             capabilities: None,
+                            rendezvous: None,
                             deferred_control: None,
                             content_id: env.content_id(),
                             source_pending,
@@ -5548,9 +7048,11 @@ impl Node {
                         deliveries: &[],
                         group_messages: &[],
                         groups: &[],
+                        contact_devices: &[],
                         media_transfers: &[],
                         media_objects: &[],
                         capabilities: None,
+                        rendezvous: None,
                         deferred_control: retain_control.then_some(&control),
                         content_id: env.content_id(),
                         source_pending,
@@ -5950,6 +7452,751 @@ impl Node {
         Ok(())
     }
 
+    fn local_discovery_upgrade(&self) -> Result<DiscoveryUpgradeControl> {
+        let mut routes = if self.own_hints_authoritative {
+            encode_hints(&self.own_hints)
+        } else {
+            Vec::new()
+        };
+        routes.sort();
+        routes.dedup();
+        let control = DiscoveryUpgradeControl {
+            account: self.account.ed,
+            capability: self.device_state.discovery.capability,
+            generation: self.device_state.discovery.generation,
+            authority_generation: self.device_state.manifest.generation(),
+            routes_complete: self.own_hints_authoritative,
+            routes,
+        };
+        // Encoding is the single canonical bound check used by both
+        // proactive advertisements and transactional responses.
+        control.encode()?;
+        Ok(control)
+    }
+
+    fn local_rendezvous_provider_control(&self) -> Result<Option<RendezvousProviderControl>> {
+        if self.rendezvous_provider_generation == 0 {
+            return Ok(None);
+        }
+        let mut providers = self
+            .rendezvous_providers
+            .iter()
+            .map(|provider| RendezvousProviderDescriptor {
+                origin: provider.origin().to_owned(),
+                static_key: provider.static_key(),
+            })
+            .collect::<Vec<_>>();
+        providers.sort();
+        let control = RendezvousProviderControl {
+            account: self.account.ed,
+            device: self.device_id(),
+            authority_generation: self.device_state.manifest.generation(),
+            generation: self.rendezvous_provider_generation,
+            providers,
+        };
+        control.encode()?;
+        Ok(Some(control))
+    }
+
+    fn advertise_rendezvous_providers(
+        &mut self,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let Some(payload) = self
+            .local_rendezvous_provider_control()?
+            .map(|control| control.encode())
+            .transpose()?
+        else {
+            return Ok(());
+        };
+        let due = self
+            .sessions
+            .keys()
+            .filter(|peer| !self.rendezvous_advertised.contains(*peer))
+            .copied()
+            .collect::<Vec<_>>();
+        for peer in due {
+            if self.commit_pairwise_control_send(&peer, &payload, now, rng)? {
+                self.rendezvous_advertised.insert(peer);
+            }
+        }
+        Ok(())
+    }
+
+    fn synchronize_rendezvous_provider_roles(
+        &mut self,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let configured = self.rendezvous_providers.clone();
+        let mut devices = self.sessions.keys().copied().collect::<Vec<_>>();
+        devices.sort_unstable();
+        for peer_device in devices {
+            let Some(before) = self.store.get_rendezvous_service_state(&peer_device)? else {
+                continue;
+            };
+            let mut after = before.clone();
+            let configured_ids = configured
+                .iter()
+                .map(RendezvousProvider::provider_id)
+                .collect::<HashSet<_>>();
+            for state in &mut after.providers {
+                if state.publish_enabled && !configured_ids.contains(&state.provider_id) {
+                    state.publish_enabled = false;
+                    state.withdrawal_pending = state.publish_generation > 0;
+                    state.next_register_at = now;
+                }
+            }
+            for provider in &configured {
+                let state = after.provider_mut(
+                    provider.provider_id(),
+                    provider.origin().to_owned(),
+                    provider.static_key(),
+                )?;
+                state.publish_enabled = true;
+                state.withdrawal_pending = false;
+                if state.next_register_at == 0 {
+                    state.next_register_at = now.saturating_add(rendezvous_jitter(rng));
+                }
+            }
+            after.providers.retain(|provider| {
+                provider.publish_enabled || provider.lookup_enabled || provider.withdrawal_pending
+            });
+            after.providers.sort_by_key(|provider| provider.provider_id);
+            if after != before {
+                self.store
+                    .put_rendezvous_service_state(&peer_device, &after, rng)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn mark_rendezvous_publication_dirty(&mut self, rng: &mut impl CryptoRngCore) -> Result<()> {
+        let mut devices = self.sessions.keys().copied().collect::<Vec<_>>();
+        devices.sort_unstable();
+        for peer_device in devices {
+            let Some(mut state) = self.store.get_rendezvous_service_state(&peer_device)? else {
+                continue;
+            };
+            let before = state.clone();
+            for provider in &mut state.providers {
+                if provider.publish_enabled || provider.withdrawal_pending {
+                    provider.next_register_at = 0;
+                    provider.circuit_open_until = 0;
+                    provider.consecutive_failures = 0;
+                }
+            }
+            if state != before {
+                self.store
+                    .put_rendezvous_service_state(&peer_device, &state, rng)?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn maintain_rendezvous(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<()> {
+        self.synchronize_rendezvous_provider_roles(now, rng)?;
+        let Some(client) = self.rendezvous_client.clone() else {
+            return Ok(());
+        };
+        let deadline = Instant::now() + RENDEZVOUS_MAINTENANCE_BUDGET;
+        let mut operations_left = MAX_RENDEZVOUS_OPERATIONS_PER_TICK;
+
+        let mut registrations = Vec::new();
+        let mut devices = self.sessions.keys().copied().collect::<Vec<_>>();
+        devices.sort_unstable();
+        for peer_device in &devices {
+            let Some(state) = self.store.get_rendezvous_service_state(peer_device)? else {
+                continue;
+            };
+            for provider in &state.providers {
+                if (provider.publish_enabled || provider.withdrawal_pending)
+                    && provider.next_register_at <= now
+                    && provider.circuit_open_until <= now
+                    && (!provider.publish_enabled || self.own_hints_authoritative)
+                {
+                    let Ok(provider) =
+                        RendezvousProvider::new(provider.origin.clone(), provider.static_key)
+                    else {
+                        continue;
+                    };
+                    registrations.push((*peer_device, provider));
+                }
+            }
+        }
+        registrations.sort_by_key(|(device, provider)| (*device, provider.provider_id()));
+        for (peer_device, provider) in registrations {
+            if operations_left < 3 || Instant::now() >= deadline {
+                break;
+            }
+            self.maintain_rendezvous_registration(
+                &client,
+                peer_device,
+                &provider,
+                now,
+                deadline,
+                &mut operations_left,
+                rng,
+            )
+            .await?;
+        }
+
+        let mut requested = self.rendezvous_refresh_requested.clone();
+        for (_, item) in self.store.queue_all()? {
+            if !self.has_fresh_relationship_route(&item.peer, now)? {
+                requested.insert(item.peer);
+            }
+        }
+        requested.extend(self.active_conversation_rendezvous_devices()?);
+        requested.extend(self.active_rendezvous_devices()?);
+        let mut lookups = requested.into_iter().collect::<Vec<_>>();
+        lookups.sort_unstable();
+        for peer_device in lookups {
+            if operations_left < 3 || Instant::now() >= deadline {
+                break;
+            }
+            let Some(state) = self.store.get_rendezvous_service_state(&peer_device)? else {
+                self.rendezvous_refresh_requested.remove(&peer_device);
+                continue;
+            };
+            let peer_identity = match self.rendezvous_peer_identity(&peer_device) {
+                Ok(identity) => identity,
+                Err(_) => {
+                    self.rendezvous_refresh_requested.remove(&peer_device);
+                    continue;
+                }
+            };
+            let explicitly_requested = self.rendezvous_refresh_requested.contains(&peer_device);
+            let mut providers = state
+                .providers
+                .iter()
+                .filter(|provider| {
+                    provider.lookup_enabled
+                        && (explicitly_requested || provider.next_lookup_at <= now)
+                        && provider.circuit_open_until <= now
+                })
+                .filter_map(|provider| {
+                    RendezvousProvider::new(provider.origin.clone(), provider.static_key).ok()
+                })
+                .collect::<Vec<_>>();
+            providers.sort_by_key(RendezvousProvider::provider_id);
+            for provider in providers {
+                if operations_left < 3 || Instant::now() >= deadline {
+                    break;
+                }
+                self.maintain_rendezvous_lookup(
+                    &client,
+                    peer_device,
+                    &peer_identity,
+                    &provider,
+                    explicitly_requested,
+                    now,
+                    deadline,
+                    &mut operations_left,
+                    rng,
+                )
+                .await?;
+            }
+            self.rendezvous_refresh_requested.remove(&peer_device);
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)] // fixed provider operation context
+    async fn maintain_rendezvous_registration(
+        &mut self,
+        client: &Arc<dyn RendezvousClient>,
+        peer_device: [u8; 32],
+        provider: &RendezvousProvider,
+        now: u64,
+        deadline: Instant,
+        operations_left: &mut usize,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let operation = (
+            peer_device,
+            provider.provider_id(),
+            RendezvousOperationKind::Register,
+        );
+        if !self.rendezvous_inflight.insert(operation) {
+            return Ok(());
+        }
+        let result = self
+            .try_rendezvous_registration(
+                client,
+                peer_device,
+                provider,
+                now,
+                deadline,
+                operations_left,
+                rng,
+            )
+            .await;
+        self.rendezvous_inflight.remove(&operation);
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)] // fixed provider operation context
+    async fn try_rendezvous_registration(
+        &mut self,
+        client: &Arc<dyn RendezvousClient>,
+        peer_device: [u8; 32],
+        provider: &RendezvousProvider,
+        now: u64,
+        deadline: Instant,
+        operations_left: &mut usize,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let Some(mut state) = self.store.get_rendezvous_service_state(&peer_device)? else {
+            return Ok(());
+        };
+        let Some(provider_state) = state
+            .providers
+            .iter_mut()
+            .find(|state| state.provider_id == provider.provider_id())
+        else {
+            return Ok(());
+        };
+        if provider_state.next_register_at > now
+            || provider_state.circuit_open_until > now
+            || (!provider_state.publish_enabled && !provider_state.withdrawal_pending)
+        {
+            return Ok(());
+        }
+        let withdrawal = !provider_state.publish_enabled && provider_state.withdrawal_pending;
+        let generation = provider_state
+            .publish_generation
+            .checked_add(1)
+            .ok_or(NodeError::RendezvousUnavailable)?
+            .max(self.rendezvous_provider_generation.max(1));
+        provider_state.publish_generation = generation;
+        // The reserved generation remains due until success/failure below is
+        // durably recorded. A process interruption therefore skips, rather
+        // than reuses, a generation.
+        self.store
+            .put_rendezvous_service_state(&peer_device, &state, rng)?;
+
+        let mut routes = if withdrawal {
+            Vec::new()
+        } else {
+            self.own_hints
+                .iter()
+                .filter_map(|hint| rendezvous_record_route(hint).ok())
+                .collect::<Vec<_>>()
+        };
+        routes.sort();
+        routes.dedup();
+        routes.truncate(kult_protocol::MAX_RENDEZVOUS_ROUTES);
+        let exporter = state.hybrid_service_exporter;
+        let local_recipient = self.device_identity.public();
+        let current_epoch = rendezvous_epoch(now);
+        let expires_at = now.saturating_add(u64::from(RENDEZVOUS_MAX_TTL_SECS));
+
+        let attempted = async {
+            let mut current_record = None;
+            for epoch in [current_epoch, current_epoch.saturating_add(1)] {
+                if *operations_left == 0 || Instant::now() >= deadline {
+                    return Ok::<bool, NodeError>(false);
+                }
+                let keys = derive_rendezvous_epoch_keys(
+                    &exporter,
+                    &provider.provider_id(),
+                    &local_recipient,
+                    epoch,
+                )?;
+                let record = RendezvousRouteRecord {
+                    epoch,
+                    generation,
+                    issued_at: now,
+                    expires_at,
+                    routes: routes.clone(),
+                };
+                let plaintext = record.encode()?;
+                let request = RendezvousRegisterRequest {
+                    slot: keys.slot(),
+                    epoch,
+                    ttl_seconds: RENDEZVOUS_MAX_TTL_SECS,
+                    sealed_record: seal_rendezvous_record(&keys, &plaintext, rng),
+                };
+                *operations_left -= 1;
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero()
+                    || !matches!(
+                        before_timeout(remaining, client.register(provider, &request)).await,
+                        Some(Ok(_))
+                    )
+                {
+                    return Ok(false);
+                }
+                if epoch == current_epoch {
+                    current_record = Some((keys, record));
+                }
+            }
+
+            // A fixed acknowledgement only confirms that the service handled
+            // a body. Registration is successful solely when the endpoint can
+            // retrieve and authenticate its exact current record.
+            let Some((keys, expected)) = current_record else {
+                return Ok(false);
+            };
+            if *operations_left == 0 || Instant::now() >= deadline {
+                return Ok(false);
+            }
+            let request = RendezvousLookupRequest {
+                slot: keys.slot(),
+                epoch: current_epoch,
+            };
+            *operations_left -= 1;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Some(Ok(sealed)) =
+                before_timeout(remaining, client.lookup(provider, &request)).await
+            else {
+                return Ok(false);
+            };
+            let plaintext = open_rendezvous_record(&keys, &sealed)?;
+            let observed = RendezvousRouteRecord::decode(plaintext.as_ref())?;
+            observed.validate_acceptance(current_epoch, now, 0, generation)?;
+            Ok(observed == expected)
+        }
+        .await
+        .unwrap_or(false);
+
+        let Some(mut state) = self.store.get_rendezvous_service_state(&peer_device)? else {
+            return Ok(());
+        };
+        if let Some(provider_state) = state
+            .providers
+            .iter_mut()
+            .find(|state| state.provider_id == provider.provider_id())
+        {
+            if attempted {
+                provider_state.registration_confirmed_at = now;
+                provider_state.consecutive_failures = 0;
+                provider_state.circuit_open_until = 0;
+                provider_state.withdrawal_pending = false;
+                provider_state.next_register_at = if provider_state.publish_enabled {
+                    now.saturating_add(RENDEZVOUS_REGISTER_REFRESH_SECS)
+                        .saturating_add(rendezvous_jitter(rng))
+                } else {
+                    0
+                };
+            } else {
+                note_rendezvous_failure(provider_state, RendezvousOperationKind::Register, now);
+            }
+        }
+        state.providers.retain(|provider| {
+            provider.publish_enabled || provider.lookup_enabled || provider.withdrawal_pending
+        });
+        self.store
+            .put_rendezvous_service_state(&peer_device, &state, rng)?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)] // fixed provider operation context
+    async fn maintain_rendezvous_lookup(
+        &mut self,
+        client: &Arc<dyn RendezvousClient>,
+        peer_device: [u8; 32],
+        peer_identity: &IdentityPublic,
+        provider: &RendezvousProvider,
+        force: bool,
+        now: u64,
+        deadline: Instant,
+        operations_left: &mut usize,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let operation = (
+            peer_device,
+            provider.provider_id(),
+            RendezvousOperationKind::Lookup,
+        );
+        if !self.rendezvous_inflight.insert(operation) {
+            return Ok(());
+        }
+        let result = self
+            .try_rendezvous_lookup(
+                client,
+                peer_device,
+                peer_identity,
+                provider,
+                force,
+                now,
+                deadline,
+                operations_left,
+                rng,
+            )
+            .await;
+        self.rendezvous_inflight.remove(&operation);
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)] // fixed provider operation context
+    async fn try_rendezvous_lookup(
+        &mut self,
+        client: &Arc<dyn RendezvousClient>,
+        peer_device: [u8; 32],
+        peer_identity: &IdentityPublic,
+        provider: &RendezvousProvider,
+        force: bool,
+        now: u64,
+        deadline: Instant,
+        operations_left: &mut usize,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let Some(state) = self.store.get_rendezvous_service_state(&peer_device)? else {
+            return Ok(());
+        };
+        let Some(provider_state) = state
+            .providers
+            .iter()
+            .find(|state| state.provider_id == provider.provider_id())
+        else {
+            return Ok(());
+        };
+        if !provider_state.lookup_enabled
+            || (!force && provider_state.next_lookup_at > now)
+            || provider_state.circuit_open_until > now
+        {
+            return Ok(());
+        }
+        let exporter = state.hybrid_service_exporter;
+        let clock_floor = provider_state.clock_floor;
+        let accepted_generation = provider_state.accepted_generation;
+        let conflict_floor = provider_state.conflict_generation;
+        let current_epoch = rendezvous_epoch(now);
+        let Some(previous_epoch) = current_epoch.checked_sub(1) else {
+            return Ok(());
+        };
+        let Some(next_epoch) = current_epoch.checked_add(1) else {
+            return Ok(());
+        };
+        let mut candidates = Vec::new();
+        for epoch in [previous_epoch, current_epoch, next_epoch] {
+            if *operations_left == 0 || Instant::now() >= deadline {
+                break;
+            }
+            let Ok(keys) = derive_rendezvous_epoch_keys(
+                &exporter,
+                &provider.provider_id(),
+                peer_identity,
+                epoch,
+            ) else {
+                continue;
+            };
+            let request = RendezvousLookupRequest {
+                slot: keys.slot(),
+                epoch,
+            };
+            *operations_left -= 1;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Some(Ok(sealed)) =
+                before_timeout(remaining, client.lookup(provider, &request)).await
+            else {
+                continue;
+            };
+            let Ok(plaintext) = open_rendezvous_record(&keys, &sealed) else {
+                continue;
+            };
+            let Ok(record) = RendezvousRouteRecord::decode(plaintext.as_ref()) else {
+                continue;
+            };
+            if record
+                .validate_acceptance(epoch, now, clock_floor, accepted_generation)
+                .is_err()
+            {
+                continue;
+            }
+            let mut stored = Vec::with_capacity(record.routes.len());
+            let mut valid_routes = true;
+            for route in &record.routes {
+                if rendezvous_route_hint(route).is_err() {
+                    valid_routes = false;
+                    break;
+                }
+                match RendezvousStoredRoute::new(route.kind, route.value.as_bytes()) {
+                    Ok(route) => stored.push(route),
+                    Err(_) => {
+                        valid_routes = false;
+                        break;
+                    }
+                }
+            }
+            if valid_routes {
+                candidates.push((record, stored));
+            }
+        }
+
+        if let Some(floor) = conflict_floor {
+            candidates.retain(|(record, _)| record.generation > floor);
+        }
+        let mut conflict_generation = None;
+        for left in 0..candidates.len() {
+            for right in left + 1..candidates.len() {
+                let left_record = &candidates[left].0;
+                let right_record = &candidates[right].0;
+                if left_record.generation == right_record.generation
+                    && (left_record.issued_at != right_record.issued_at
+                        || left_record.expires_at != right_record.expires_at
+                        || left_record.routes != right_record.routes)
+                {
+                    conflict_generation =
+                        Some(conflict_generation.unwrap_or(0).max(left_record.generation));
+                }
+            }
+        }
+        let selected = if conflict_generation.is_some() {
+            None
+        } else {
+            candidates
+                .into_iter()
+                .max_by_key(|(record, _)| (record.generation, record.issued_at, record.epoch))
+        };
+
+        let Some(mut state) = self.store.get_rendezvous_service_state(&peer_device)? else {
+            return Ok(());
+        };
+        if let Some(provider_state) = state
+            .providers
+            .iter_mut()
+            .find(|state| state.provider_id == provider.provider_id())
+        {
+            if let Some(generation) = conflict_generation {
+                provider_state.conflict_generation = Some(
+                    provider_state
+                        .conflict_generation
+                        .unwrap_or(0)
+                        .max(generation),
+                );
+                provider_state.routes.clear();
+                provider_state.routes_expires_at = 0;
+                note_rendezvous_failure(provider_state, RendezvousOperationKind::Lookup, now);
+            } else if let Some((record, stored)) = selected {
+                provider_state.accepted_generation = record.generation;
+                provider_state.conflict_generation = None;
+                provider_state.clock_floor = provider_state.clock_floor.max(now);
+                provider_state.routes_expires_at = if stored.is_empty() {
+                    0
+                } else {
+                    record.expires_at
+                };
+                provider_state.routes = stored;
+                provider_state.consecutive_failures = 0;
+                provider_state.circuit_open_until = 0;
+                provider_state.next_lookup_at = if provider_state.routes_expires_at == 0 {
+                    now.saturating_add(RENDEZVOUS_REGISTER_REFRESH_SECS)
+                        .saturating_add(rendezvous_jitter(rng))
+                } else {
+                    provider_state
+                        .routes_expires_at
+                        .saturating_sub(RENDEZVOUS_NEAR_EXPIRY_SECS)
+                        .max(now.saturating_add(RENDEZVOUS_BACKOFF_MIN_SECS))
+                };
+            } else {
+                if provider_state.routes_expires_at <= now {
+                    provider_state.routes.clear();
+                    provider_state.routes_expires_at = 0;
+                }
+                note_rendezvous_failure(provider_state, RendezvousOperationKind::Lookup, now);
+            }
+        }
+        self.store
+            .put_rendezvous_service_state(&peer_device, &state, rng)?;
+        if conflict_generation.is_some() {
+            self.events.push_back(Event::RendezvousConflict {
+                peer: self.account_for_device(&peer_device)?,
+                device: peer_device,
+                provider: provider.provider_id(),
+            });
+        }
+        Ok(())
+    }
+
+    fn rendezvous_peer_identity(&self, peer_device: &[u8; 32]) -> Result<IdentityPublic> {
+        let endpoint = self
+            .store
+            .contact_devices()?
+            .into_iter()
+            .find(|endpoint| {
+                endpoint.device == *peer_device
+                    && endpoint.revoked_at.is_none()
+                    && !endpoint.certificate.is_empty()
+            })
+            .ok_or(NodeError::RendezvousUnavailable)?;
+        let (certificate, remainder): (DeviceAuthorityCertificate, &[u8]) =
+            postcard::take_from_bytes(&endpoint.certificate)
+                .map_err(|_| NodeError::CorruptState)?;
+        if !remainder.is_empty()
+            || certificate.verify().is_err()
+            || certificate.account.ed != endpoint.account
+            || certificate.device_id() != endpoint.device
+        {
+            return Err(NodeError::CorruptState);
+        }
+        Ok(certificate.device)
+    }
+
+    fn has_fresh_relationship_route(&self, peer_device: &[u8; 32], now: u64) -> Result<bool> {
+        if !self.base_hints_for(peer_device)?.is_empty() {
+            return Ok(true);
+        }
+        Ok(self
+            .store
+            .get_rendezvous_service_state(peer_device)?
+            .is_some_and(|state| {
+                state.providers.iter().any(|provider| {
+                    provider.lookup_enabled
+                        && provider.routes_expires_at > now
+                        && !provider.routes.is_empty()
+                })
+            }))
+    }
+
+    fn active_conversation_rendezvous_devices(&self) -> Result<Vec<[u8; 32]>> {
+        let mut devices = Vec::new();
+        for peer in &self.rendezvous_active_conversations {
+            let endpoints = self.store.contact_devices_for(peer)?;
+            if endpoints.is_empty() {
+                if self.store.get_contact(peer)?.is_some() {
+                    devices.push(*peer);
+                }
+            } else {
+                devices.extend(
+                    endpoints
+                        .into_iter()
+                        .filter(|endpoint| endpoint.revoked_at.is_none())
+                        .map(|endpoint| endpoint.device),
+                );
+            }
+        }
+        devices.sort_unstable();
+        devices.dedup();
+        Ok(devices)
+    }
+
+    fn advertise_discovery_upgrades(
+        &mut self,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let due = self
+            .sessions
+            .keys()
+            .filter(|peer| !self.discovery_advertised.contains(*peer))
+            .copied()
+            .collect::<Vec<_>>();
+        if due.is_empty() {
+            return Ok(());
+        }
+        let payload = self.local_discovery_upgrade()?.encode()?;
+        for peer in due {
+            if self.commit_pairwise_control_send(&peer, &payload, now, rng)? {
+                self.discovery_advertised.insert(peer);
+            }
+        }
+        Ok(())
+    }
+
     fn commit_pairwise_control_send(
         &mut self,
         peer: &[u8; 32],
@@ -6339,8 +8586,16 @@ impl Node {
         let lo = today.saturating_sub(TOKEN_LOOKBACK_EPOCHS);
         let hi = today + TOKEN_LOOKAHEAD_EPOCHS;
         (lo..=hi).any(|epoch| {
-            bool::from(intro_token(&me, epoch).ct_eq(token))
-                || (device != me && bool::from(intro_token(&device, epoch).ct_eq(token)))
+            bool::from(
+                kult_crypto::discovery_introduction_token(
+                    &self.device_state.discovery.capability,
+                    &device,
+                    epoch,
+                )
+                .ct_eq(token),
+            ) || (self.device_state.discovery.legacy_v1_enabled
+                && (bool::from(intro_token(&me, epoch).ct_eq(token))
+                    || (device != me && bool::from(intro_token(&device, epoch).ct_eq(token)))))
         })
     }
 
@@ -6504,12 +8759,11 @@ impl Node {
             if now < item.next_attempt_at {
                 continue;
             }
-            // A route that keeps failing is a stale-hint suspect: re-consult
-            // the discovery planes for the peer's current address.
-            let refresh = item.attempts >= HINT_REFRESH_MIN_ATTEMPTS;
+            // Relationship routes are refreshed only by authenticated
+            // controls or pairwise rendezvous, never public discovery.
             let remaining = deadline.saturating_duration_since(Instant::now());
             let hints =
-                match before_timeout(remaining, self.resolve_hints(&item.peer, now, refresh, rng))
+                match before_timeout(remaining, self.resolve_hints(&item.peer, now, false, rng))
                     .await
                 {
                     Some(result) => result?,
@@ -6868,7 +9122,7 @@ impl Node {
         })
     }
 
-    fn hints_for(&self, peer: &[u8; 32]) -> Result<Vec<DeliveryHint>> {
+    fn base_hints_for(&self, peer: &[u8; 32]) -> Result<Vec<DeliveryHint>> {
         if let Some(endpoint) = self
             .store
             .contact_devices()?
@@ -6890,60 +9144,51 @@ impl Node {
         Ok(decode_hints(&contact.hints))
     }
 
-    /// Delivery hints for a peer, consulting the discovery planes when the
-    /// contact record has none — or, with `refresh`, when delivery over the
-    /// stored hints keeps failing. Sealed sender means an inbound handshake
-    /// never reveals a return path — for a contact learned that way, the
-    /// peer's published DHT bundle is where the reply path comes from. A
-    /// pairing-time hint also goes stale whenever the peer rebinds to fresh
-    /// OS-assigned ports (mobile shells restart often), so a failing route
-    /// re-consults the same bundle for the peer's current address instead
-    /// of retrying the dead one forever. Discovered hints are persisted via
-    /// [`Node::set_hints`]; refresh lookups are rate-limited per account
-    /// (and failed sends stay gated by the delivery engine's backoff
-    /// regardless).
+    fn hints_for(&self, peer: &[u8; 32], now: u64) -> Result<Vec<DeliveryHint>> {
+        let mut hints = self.base_hints_for(peer)?;
+        let Some(state) = self.store.get_rendezvous_service_state(peer)? else {
+            return Ok(hints);
+        };
+        for provider in state
+            .providers
+            .iter()
+            .filter(|provider| provider.lookup_enabled && provider.routes_expires_at > now)
+        {
+            for stored in &provider.routes {
+                let Ok(kind) = stored.route_kind() else {
+                    continue;
+                };
+                let Ok(value) = core::str::from_utf8(&stored.value) else {
+                    continue;
+                };
+                let route = RendezvousRoute {
+                    kind,
+                    value: value.to_owned(),
+                };
+                let Ok(hint) = rendezvous_route_hint(&route) else {
+                    continue;
+                };
+                if !hints.contains(&hint) {
+                    hints.push(hint);
+                }
+            }
+        }
+        Ok(hints)
+    }
+
+    /// Delivery hints for a peer.
+    ///
+    /// Post-pairing failures deliberately never return to public DHT lookup.
+    /// Stored mailboxes, authenticated route controls, pairwise rendezvous,
+    /// and the ordinary fallback ladder are the only relationship routes.
     async fn resolve_hints(
         &mut self,
         peer: &[u8; 32],
         now: u64,
-        refresh: bool,
-        rng: &mut impl CryptoRngCore,
+        _refresh: bool,
+        _rng: &mut impl CryptoRngCore,
     ) -> Result<Vec<DeliveryHint>> {
-        let hints = self.hints_for(peer)?;
-        if self.discoveries.is_empty() || (!hints.is_empty() && !refresh) {
-            return Ok(hints);
-        }
-        let account = self.account_for_device(peer)?;
-        if !hints.is_empty() {
-            // Refresh of a non-empty (possibly stale) hint set: bounded by
-            // the per-account interval so retries stay cheap.
-            if self
-                .hint_refresh
-                .get(&account)
-                .is_some_and(|next| now < *next)
-            {
-                return Ok(hints);
-            }
-            self.hint_refresh
-                .insert(account, now + HINT_REFRESH_INTERVAL_SECS);
-        }
-        let Some(contact) = self.store.get_contact(&account)? else {
-            return Ok(hints);
-        };
-        let Ok(identity) = postcard::from_bytes::<IdentityPublic>(&contact.identity) else {
-            return Ok(hints);
-        };
-        let Some(bundle) = self.lookup_bundle(identity.address_digest(), now).await else {
-            return Ok(hints);
-        };
-        let found = decode_hints(&bundle.prekey.transport_hints());
-        if found.is_empty() {
-            return Ok(hints);
-        }
-        if found != hints {
-            self.set_hints(&account, &found, rng)?;
-        }
-        Ok(found)
+        self.hints_for(peer, now)
     }
 }
 
@@ -7075,6 +9320,32 @@ fn capacity_retry_delay(attempts: u32) -> u64 {
     (CAPACITY_RETRY_BASE_SECS << exponent).min(CAPACITY_RETRY_CAP_SECS)
 }
 
+fn rendezvous_jitter(rng: &mut impl CryptoRngCore) -> u64 {
+    rng.next_u64() % RENDEZVOUS_INITIAL_JITTER_SECS.saturating_add(1)
+}
+
+fn note_rendezvous_failure(
+    provider: &mut RendezvousProviderState,
+    operation: RendezvousOperationKind,
+    now: u64,
+) {
+    provider.consecutive_failures = provider.consecutive_failures.saturating_add(1);
+    let exponent = u32::from(provider.consecutive_failures.saturating_sub(1)).min(8);
+    let retry_at = if provider.consecutive_failures >= RENDEZVOUS_CIRCUIT_FAILURES {
+        provider.circuit_open_until = now.saturating_add(RENDEZVOUS_CIRCUIT_OPEN_SECS);
+        provider.circuit_open_until
+    } else {
+        let delay = RENDEZVOUS_BACKOFF_MIN_SECS
+            .saturating_mul(1u64 << exponent)
+            .min(RENDEZVOUS_BACKOFF_MAX_SECS);
+        now.saturating_add(delay)
+    };
+    match operation {
+        RendezvousOperationKind::Register => provider.next_register_at = retry_at,
+        RendezvousOperationKind::Lookup => provider.next_lookup_at = retry_at,
+    }
+}
+
 fn admission_transport(ingress: IngressClass) -> AdmissionTransportClass {
     match ingress {
         IngressClass::Unknown => AdmissionTransportClass::Unknown,
@@ -7129,6 +9400,55 @@ fn encode_hints(hints: &[DeliveryHint]) -> Vec<Vec<u8>> {
         .collect()
 }
 
+fn discovery_routes(
+    hints: &[DeliveryHint],
+    policy: DiscoveryPublicationPolicy,
+) -> Result<Vec<DiscoveryRoute>> {
+    let mut routes = Vec::new();
+    for hint in hints {
+        let kind = match hint {
+            DeliveryHint::Relay(_) => DiscoveryRouteKind::IntroductionMailbox,
+            DeliveryHint::Multiaddr(_) if policy.permits_direct_routes() => {
+                DiscoveryRouteKind::SovereignDirect
+            }
+            DeliveryHint::Multiaddr(_) | DeliveryHint::MeshNode(_) | DeliveryHint::Spool(_) => {
+                continue;
+            }
+            _ => continue,
+        };
+        let value = postcard::to_allocvec(hint).map_err(|_| NodeError::CorruptState)?;
+        routes.push(DiscoveryRoute { kind, value });
+    }
+    routes.sort_by(|left, right| {
+        (left.kind as u8, left.value.as_slice()).cmp(&(right.kind as u8, right.value.as_slice()))
+    });
+    routes.dedup_by(|left, right| left.kind == right.kind && left.value == right.value);
+    if routes.len() > MAX_DISCOVERY_ROUTES {
+        return Err(NodeError::Protocol(kult_protocol::ProtocolError::TooLarge));
+    }
+    Ok(routes)
+}
+
+fn decode_discovery_route(route: &DiscoveryRoute) -> Result<DeliveryHint> {
+    let (hint, remainder): (DeliveryHint, &[u8]) =
+        postcard::take_from_bytes(&route.value).map_err(|_| NodeError::CorruptState)?;
+    if !remainder.is_empty()
+        || !matches!(
+            (route.kind, &hint),
+            (
+                DiscoveryRouteKind::IntroductionMailbox,
+                DeliveryHint::Relay(_)
+            ) | (
+                DiscoveryRouteKind::SovereignDirect,
+                DeliveryHint::Multiaddr(_)
+            )
+        )
+    {
+        return Err(NodeError::CorruptState);
+    }
+    Ok(hint)
+}
+
 /// Decode persisted/published hint blobs, skipping any that fail to parse
 /// (hints are routing data — a bad entry costs a delivery path, never
 /// correctness; the bundle signature already guarantees the blobs are the
@@ -7138,6 +9458,19 @@ fn decode_hints(blobs: &[Vec<u8>]) -> Vec<DeliveryHint> {
         .iter()
         .filter_map(|bytes| postcard::from_bytes(bytes).ok())
         .collect()
+}
+
+fn validate_discovery_upgrade_routes(blobs: &[Vec<u8>]) -> Result<()> {
+    for bytes in blobs {
+        let (hint, remainder): (DeliveryHint, &[u8]) =
+            postcard::take_from_bytes(bytes).map_err(|_| NodeError::CorruptState)?;
+        if !remainder.is_empty()
+            || postcard::to_allocvec(&hint).map_err(|_| NodeError::CorruptState)? != *bytes
+        {
+            return Err(NodeError::CorruptState);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -7153,6 +9486,113 @@ mod scheduler_tests {
         assert_eq!(capacity_retry_delay(5), 16);
         assert_eq!(capacity_retry_delay(6), 30);
         assert_eq!(capacity_retry_delay(u32::MAX), 30);
+    }
+}
+
+#[cfg(test)]
+mod handshake_flight_tests {
+    use super::*;
+
+    #[test]
+    fn device_initial_v2_round_trips_and_legacy_is_explicit() {
+        let flight = DeviceInitialFlight {
+            initial: vec![1, 2, 3],
+            return_bundle: vec![4, 5],
+            intent: DeviceHandshakeIntent::Replace {
+                prior_session_id: [6u8; 32],
+            },
+        };
+        let encoded = encode_device_initial(&flight).unwrap();
+        assert!(encoded.starts_with(DEVICE_INITIAL_MAGIC));
+        let decoded = decode_device_initial(&encoded).unwrap();
+        assert_eq!(decoded.initial, flight.initial);
+        assert_eq!(decoded.return_bundle, flight.return_bundle);
+        assert_eq!(decoded.intent, flight.intent);
+
+        let legacy = LegacyDeviceInitialFlight {
+            initial: vec![7, 8],
+            return_bundle: vec![9],
+        };
+        let mut encoded_legacy = LEGACY_DEVICE_INITIAL_MAGIC.to_vec();
+        encoded_legacy.extend(postcard::to_allocvec(&legacy).unwrap());
+        let decoded_legacy = decode_device_initial(&encoded_legacy).unwrap();
+        assert_eq!(decoded_legacy.initial, legacy.initial);
+        assert_eq!(decoded_legacy.return_bundle, legacy.return_bundle);
+        assert_eq!(decoded_legacy.intent, DeviceHandshakeIntent::Legacy);
+
+        encoded_legacy.push(0);
+        assert!(decode_device_initial(&encoded_legacy).is_none());
+    }
+
+    #[test]
+    fn simultaneous_establishments_choose_one_device_initiator() {
+        let lower = [1u8; 32];
+        let higher = [2u8; 32];
+        let lower_session = [3u8; 32];
+        let higher_session = [4u8; 32];
+
+        assert_eq!(
+            decide_inbound_session(
+                lower,
+                higher,
+                Some(&lower_session),
+                DeviceHandshakeIntent::Establish,
+            ),
+            HandshakeSessionDecision::KeepPrior
+        );
+        assert_eq!(
+            decide_inbound_session(
+                higher,
+                lower,
+                Some(&higher_session),
+                DeviceHandshakeIntent::Establish,
+            ),
+            HandshakeSessionDecision::AcceptInbound
+        );
+    }
+
+    #[test]
+    fn replacement_is_bound_to_the_exact_prior_session() {
+        let local = [1u8; 32];
+        let peer = [2u8; 32];
+        let prior = [3u8; 32];
+        assert_eq!(
+            decide_inbound_session(
+                local,
+                peer,
+                Some(&prior),
+                DeviceHandshakeIntent::Replace {
+                    prior_session_id: prior,
+                },
+            ),
+            HandshakeSessionDecision::AcceptInbound
+        );
+        assert_eq!(
+            decide_inbound_session(
+                local,
+                peer,
+                Some(&prior),
+                DeviceHandshakeIntent::Replace {
+                    prior_session_id: [4u8; 32],
+                },
+            ),
+            HandshakeSessionDecision::Reject
+        );
+        assert_eq!(
+            decide_inbound_session(
+                local,
+                peer,
+                None,
+                DeviceHandshakeIntent::Replace {
+                    prior_session_id: prior,
+                },
+            ),
+            HandshakeSessionDecision::Reject
+        );
+        assert_eq!(
+            decide_inbound_session(local, peer, Some(&prior), DeviceHandshakeIntent::Reset),
+            HandshakeSessionDecision::AcceptInbound
+        );
     }
 }
 

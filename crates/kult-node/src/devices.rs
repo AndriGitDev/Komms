@@ -10,7 +10,7 @@ use zeroize::Zeroizing;
 use kult_crypto::{
     seal_authority_device_link_recovery_package, AuthorityDeviceLinkApproval,
     AuthorityDeviceLinkApprovalRequest, AuthorityDeviceLinkOffer as DeviceLinkOffer,
-    AuthorityDeviceLinkResponse as DeviceLinkResponse, DeviceAuthorityManifest,
+    AuthorityDeviceLinkResponse as DeviceLinkResponse, ConnectCode, DeviceAuthorityManifest,
     DeviceAuthorityRelation, DeviceAuthorityTransitionKind, GroupSenderChain,
     PendingAuthorityDeviceLinkSource as PendingDeviceLinkSource,
     PendingAuthorityDeviceLinkTarget as PendingDeviceLinkTarget,
@@ -26,11 +26,12 @@ use kult_store::{
     DeviceAuthorityStateRecord, DeviceAuthorityStateTransition, DeviceChannelRecord,
     DeviceLinkRecoveryRecord, DeviceLinkRecoveryTransition, DeviceProjection, DeviceProjectionPlan,
     DeviceTransferGroup, DeviceTransferSelection, DeviceTransferSnapshot, Direction,
-    EphemeralRecord, EphemeralTransition, GroupAuthorityRecord, GroupAuthorityStateTransition,
-    GroupMessageDelete, GroupMessageRecord, GroupOriginAuthentication, GroupRecord, GroupStatePlan,
-    GroupStateTransition, GroupTransition, LocalMetadataKey, LocalMetadataRecord, MaintenancePlan,
-    MessageDelete, MessageRecord, NoteMessageRecord, PendingAnnounce, QueueDelete, SessionDelete,
-    Store, MAX_DEVICE_AUTHORITY_CONFLICTS, MAX_DEVICE_CONTROL_MUTATIONS, THEME_PREFERENCE_KEY,
+    DiscoveryCapabilityState, EphemeralRecord, EphemeralTransition, GroupAuthorityRecord,
+    GroupAuthorityStateTransition, GroupMessageDelete, GroupMessageRecord,
+    GroupOriginAuthentication, GroupRecord, GroupStatePlan, GroupStateTransition, GroupTransition,
+    LocalMetadataKey, LocalMetadataRecord, MaintenancePlan, MessageDelete, MessageRecord,
+    NoteMessageRecord, PendingAnnounce, QueueDelete, SessionDelete, Store,
+    MAX_DEVICE_AUTHORITY_CONFLICTS, MAX_DEVICE_CONTROL_MUTATIONS, THEME_PREFERENCE_KEY,
 };
 
 use crate::{
@@ -41,6 +42,20 @@ use crate::{
 
 const LINK_OFFER_LIFETIME_SECS: u64 = 10 * 60;
 const DEFAULT_DEVICE_NAME: &str = "This device";
+const DISCOVERY_SYNC_KEY: &[u8] = b"connect-v2";
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ContactDiscoveryProjection {
+    pub capability: Option<[u8; 32]>,
+    pub generation: u64,
+}
+
+pub(crate) struct ContactDeviceAdvertisement {
+    pub device: [u8; 32],
+    pub bundle: Vec<u8>,
+    pub hints: Vec<Vec<u8>>,
+    pub discovery: ContactDiscoveryProjection,
+}
 
 #[cfg(test)]
 #[allow(dead_code)]
@@ -72,6 +87,7 @@ pub(crate) fn fresh_authority_device_state(
     let device = Identity::generate(rng);
     let manifest =
         DeviceAuthorityManifest::initial(root, &device, DEFAULT_DEVICE_NAME.into(), 0, rng)?;
+    let discovery = ConnectCode::generate(&root.public(), rng)?;
     let state = DeviceAuthorityStateRecord {
         local_device_secret: device.to_bytes().to_vec(),
         local_certificate: manifest.devices()[0].certificate.clone(),
@@ -81,6 +97,11 @@ pub(crate) fn fresh_authority_device_state(
         sync_counter: 0,
         channels: Vec::new(),
         conflicts: Vec::new(),
+        discovery: DiscoveryCapabilityState {
+            capability: discovery.capability(),
+            generation: 1,
+            legacy_v1_enabled: false,
+        },
     };
     Ok((device, state))
 }
@@ -115,6 +136,7 @@ pub(crate) fn migrate_legacy_authority_device_state(
         .ok_or(NodeError::CorruptState)?;
     let manifest =
         DeviceAuthorityManifest::initial(root, &device, old_entry.name.clone(), migrated_at, rng)?;
+    let discovery = ConnectCode::generate(&root.public(), rng)?;
     let state = DeviceAuthorityStateRecord {
         local_device_secret: device.to_bytes().to_vec(),
         local_certificate: manifest.devices()[0].certificate.clone(),
@@ -124,6 +146,11 @@ pub(crate) fn migrate_legacy_authority_device_state(
         sync_counter: legacy.sync_counter,
         channels: Vec::new(),
         conflicts: Vec::new(),
+        discovery: DiscoveryCapabilityState {
+            capability: discovery.capability(),
+            generation: 1,
+            legacy_v1_enabled: true,
+        },
     };
     Ok((device, state))
 }
@@ -369,12 +396,20 @@ impl Node {
     pub(crate) fn apply_contact_device_manifest(
         &mut self,
         manifest: &DeviceAuthorityManifest,
-        advertised_device: [u8; 32],
-        advertised_bundle: Vec<u8>,
-        advertised_hints: Vec<Vec<u8>>,
+        advertised: ContactDeviceAdvertisement,
         observed_at: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
+        let ContactDeviceAdvertisement {
+            device: advertised_device,
+            bundle: advertised_bundle,
+            hints: advertised_hints,
+            discovery,
+        } = advertised;
+        let ContactDiscoveryProjection {
+            capability: introduction_capability,
+            generation: introduction_generation,
+        } = discovery;
         self.validate_contact_device_manifest(manifest)?;
         let account = manifest.account().ed;
         let state_id = manifest.state_id();
@@ -441,6 +476,13 @@ impl Node {
                 authority: encoded_authority.clone(),
                 bundle,
                 hints,
+                introduction_capability: introduction_capability
+                    .or_else(|| prior.and_then(|endpoint| endpoint.introduction_capability)),
+                introduction_generation: if introduction_capability.is_some() {
+                    introduction_generation
+                } else {
+                    prior.map_or(0, |endpoint| endpoint.introduction_generation)
+                },
                 manifest_generation: manifest.generation(),
                 manifest_state_id: state_id,
                 last_seen: entry
@@ -546,6 +588,10 @@ impl Node {
                 for device in &cleanup_devices {
                     self.sessions.remove(device);
                     self.capabilities_advertised.remove(device);
+                    self.discovery_advertised.remove(device);
+                    self.rendezvous_advertised.remove(device);
+                    self.rendezvous_refresh_requested.remove(device);
+                    self.rendezvous_rehandshake_requested.remove(device);
                 }
                 self.after_memory_replacement()?;
                 self.accept_commit_receipt(receipt, []);
@@ -561,6 +607,10 @@ impl Node {
             if endpoint.revoked_at.is_some() {
                 self.sessions.remove(&device);
                 self.capabilities_advertised.remove(&device);
+                self.discovery_advertised.remove(&device);
+                self.rendezvous_advertised.remove(&device);
+                self.rendezvous_refresh_requested.remove(&device);
+                self.rendezvous_rehandshake_requested.remove(&device);
                 self.store.delete_session(&device)?;
                 self.store.delete_capabilities(&device)?;
                 self.store.queue_remove_peer(&device)?;
@@ -569,6 +619,11 @@ impl Node {
         for orphaned in orphaned {
             self.sessions.remove(&orphaned.device);
             self.capabilities_advertised.remove(&orphaned.device);
+            self.discovery_advertised.remove(&orphaned.device);
+            self.rendezvous_advertised.remove(&orphaned.device);
+            self.rendezvous_refresh_requested.remove(&orphaned.device);
+            self.rendezvous_rehandshake_requested
+                .remove(&orphaned.device);
             self.store.delete_session(&orphaned.device)?;
             self.store.delete_capabilities(&orphaned.device)?;
             self.store.queue_remove_peer(&orphaned.device)?;
@@ -591,6 +646,14 @@ impl Node {
             if self.capabilities_advertised.remove(&alias.device) {
                 self.capabilities_advertised.insert(replacement);
             }
+            if self.discovery_advertised.remove(&alias.device) {
+                self.discovery_advertised.insert(replacement);
+            }
+            self.rendezvous_advertised.remove(&alias.device);
+            self.rendezvous_advertised.remove(&replacement);
+            self.rendezvous_refresh_requested.remove(&alias.device);
+            self.rendezvous_refresh_requested.insert(replacement);
+            self.rendezvous_rehandshake_requested.remove(&alias.device);
             self.store
                 .queue_retarget_peer(&alias.device, &replacement, rng)?;
             self.store.retarget_message_device_deliveries(
@@ -1189,6 +1252,7 @@ impl Node {
         let before_account = self.account.clone();
         let before_state = self.device_state.clone();
         let after_account = completed.account;
+        let discovery = snapshot.discovery.clone();
         let after_state = DeviceAuthorityStateRecord {
             local_device_secret: self.device_identity.to_bytes().to_vec(),
             local_certificate: completed.certificate,
@@ -1203,8 +1267,10 @@ impl Node {
                 receive_counter: 0,
             }],
             conflicts: Vec::new(),
+            discovery,
         };
         let DeviceTransferSnapshot {
+            discovery: _,
             contacts,
             contact_devices,
             messages,
@@ -1314,6 +1380,10 @@ impl Node {
         self.pending_device_link_target = None;
         self.sessions.clear();
         self.capabilities_advertised.clear();
+        self.discovery_advertised.clear();
+        self.rendezvous_advertised.clear();
+        self.rendezvous_refresh_requested.clear();
+        self.rendezvous_rehandshake_requested.clear();
         self.after_memory_replacement()?;
         self.accept_commit_receipt(
             receipt,
@@ -1573,6 +1643,13 @@ impl Node {
             .export_device_transfer(DeviceTransferSelection::default())?;
         let sync_contact_devices = snapshot.contact_devices.clone();
         let mut current: BTreeMap<(DeviceSyncNamespace, Vec<u8>), Vec<u8>> = BTreeMap::new();
+        current.insert(
+            (
+                DeviceSyncNamespace::AccountCapabilities,
+                DISCOVERY_SYNC_KEY.to_vec(),
+            ),
+            postcard::to_allocvec(&snapshot.discovery).map_err(|_| NodeError::CorruptState)?,
+        );
 
         for mut contact in snapshot.contacts {
             let peer = contact.peer.to_vec();
@@ -1882,6 +1959,53 @@ impl Node {
                 continue;
             }
             match namespace {
+                DeviceSyncNamespace::AccountCapabilities => {
+                    if key.as_slice() != DISCOVERY_SYNC_KEY {
+                        return Err(NodeError::InvalidDeviceSync);
+                    }
+                    let Some(value) = event.value else {
+                        return Err(NodeError::InvalidDeviceSync);
+                    };
+                    let discovery: DiscoveryCapabilityState = decode_exact(&value)?;
+                    if discovery.capability == [0u8; 32] || discovery.generation == 0 {
+                        return Err(NodeError::InvalidDeviceSync);
+                    }
+                    let current = &self.device_state.discovery;
+                    if discovery.generation < current.generation {
+                        continue;
+                    }
+                    if discovery.generation == current.generation {
+                        if discovery != *current {
+                            return Err(NodeError::InvalidDeviceSync);
+                        }
+                        continue;
+                    }
+                    let before = self.device_state.clone();
+                    let mut after = before.clone();
+                    after.discovery = discovery;
+                    let receipt = self.store.commit_plan(
+                        CommitPlan::AuthorityDeviceControl(AuthorityDeviceControlPlan {
+                            state: Some(DeviceAuthorityStateTransition {
+                                before: Some(&before),
+                                after: &after,
+                            }),
+                            link_recovery: None,
+                            groups: &[],
+                            insert_events: &[],
+                            delete_events: &[],
+                            presentation_changed: true,
+                        }),
+                        rng,
+                    )?;
+                    self.before_memory_replacement()?;
+                    self.device_state = after;
+                    self.discovery_advertised.clear();
+                    self.rendezvous_advertised.clear();
+                    self.rendezvous_refresh_requested
+                        .extend(self.sessions.keys().copied());
+                    self.after_memory_replacement()?;
+                    self.accept_commit_receipt(receipt, [Event::StateResyncRequired]);
+                }
                 DeviceSyncNamespace::Contacts => {
                     if key.len() == 32 {
                         let peer: [u8; 32] = key
@@ -1979,6 +2103,10 @@ impl Node {
                                 self.before_memory_replacement()?;
                                 self.sessions.remove(&peer);
                                 self.capabilities_advertised.remove(&peer);
+                                self.discovery_advertised.remove(&peer);
+                                self.rendezvous_advertised.remove(&peer);
+                                self.rendezvous_refresh_requested.remove(&peer);
+                                self.rendezvous_rehandshake_requested.remove(&peer);
                                 self.after_memory_replacement()?;
                                 self.accept_commit_receipt(receipt, []);
                             }
@@ -2080,6 +2208,10 @@ impl Node {
                                 self.before_memory_replacement()?;
                                 self.sessions.remove(&device);
                                 self.capabilities_advertised.remove(&device);
+                                self.discovery_advertised.remove(&device);
+                                self.rendezvous_advertised.remove(&device);
+                                self.rendezvous_refresh_requested.remove(&device);
+                                self.rendezvous_rehandshake_requested.remove(&device);
                                 self.after_memory_replacement()?;
                             }
                             self.accept_commit_receipt(receipt, []);

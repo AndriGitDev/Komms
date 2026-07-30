@@ -5,6 +5,11 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../../.." && pwd)"
+if [ "$(uname -s)" = "Darwin" ] &&
+   [ -z "${DEVELOPER_DIR:-}" ] &&
+   [ -d /Applications/Xcode.app/Contents/Developer ]; then
+    export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+fi
 "$root/apps/ios/scripts/generate-bindings.sh"
 
 libdir="$root/target/release"

@@ -24,8 +24,9 @@ use crate::{
     GroupOriginAuthentication, GroupPendingFanout, GroupRecord, LocalMetadataRecord,
     MediaObjectRecord, MediaRecord, MediaTransferRecord, MessageDeviceDeliveryRecord,
     MessageRecord, NoteMessageRecord, PendingEnvelopeRecord, ProvisionalRequestRecord, QueueItem,
-    Result, ScheduledMessageRecord, Store, StoreError, MAX_DEVICE_SYNC_EVENT_BYTES,
-    MAX_PENDING_BYTES, MAX_PENDING_ENVELOPES, PENDING_ENVELOPE_RECORD_VERSION,
+    RendezvousServiceState, Result, ScheduledMessageRecord, Store, StoreError,
+    MAX_DEVICE_SYNC_EVENT_BYTES, MAX_PENDING_BYTES, MAX_PENDING_ENVELOPES,
+    PENDING_ENVELOPE_RECORD_VERSION,
 };
 
 /// Maximum logical durable mutations accepted by one typed commit plan.
@@ -211,6 +212,16 @@ pub struct SessionTransition<'a> {
     pub after: &'a Session,
 }
 
+/// Exact relationship-scoped optional-service state replacement.
+pub struct RendezvousServiceTransition<'a> {
+    /// Exact physical-device session route.
+    pub peer_device: [u8; 32],
+    /// Durable service state expected before the transaction.
+    pub before: &'a RendezvousServiceState,
+    /// Candidate complete service state.
+    pub after: &'a RendezvousServiceState,
+}
+
 /// One deferred-inbox row that may be removed only with its named envelope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PendingDelete {
@@ -347,6 +358,15 @@ pub struct ContactTransition<'a> {
     pub before: Option<&'a ContactRecord>,
     /// Resulting contact row.
     pub after: &'a ContactRecord,
+}
+
+/// Exact authenticated relationship-route/capability replacement for one
+/// contact device.
+pub struct ContactDeviceTransition<'a> {
+    /// Durable endpoint expected before the transaction.
+    pub before: &'a ContactDeviceRecord,
+    /// Replacement with the same account/device identity.
+    pub after: &'a ContactDeviceRecord,
 }
 
 /// An exact ephemeral marker update.
@@ -798,6 +818,14 @@ pub struct HandshakeReceivePlan<'a> {
     pub delete_capabilities: &'a [[u8; 32]],
     /// Exact queued envelopes invalidated by revoked/superseded sessions.
     pub delete_queue: &'a [QueueDelete],
+    /// Outbound pairwise history made eligible for encryption on the replacement session.
+    pub reset_messages: &'a [MessageTransition<'a>],
+    /// Exact per-device promises invalidated by the replaced session.
+    pub reset_deliveries: &'a [DeliveryTransition<'a>],
+    /// Outbound group history whose exact replaced-device copy became terminal.
+    pub retire_group_messages: &'a [GroupMessageTransition<'a>],
+    /// Group recipient-device promises invalidated by the replaced session.
+    pub retire_group_deliveries: &'a [DeliveryTransition<'a>],
     /// Group announce state changed by session establishment.
     pub groups: &'a [GroupTransition<'a>],
     /// Optional accepted anonymous first-flight history.
@@ -905,12 +933,16 @@ pub struct ReceiptReceivePlan<'a> {
     pub group_messages: &'a [GroupMessageTransition<'a>],
     /// Group pending-announce changes retired by acknowledgements.
     pub groups: &'a [GroupTransition<'a>],
+    /// Authenticated discovery capability and route updates.
+    pub contact_devices: &'a [ContactDeviceTransition<'a>],
     /// Attachment transfer metadata changes.
     pub media_transfers: &'a [MediaTransferRecord],
     /// Attachment object metadata changes.
     pub media_objects: &'a [MediaObjectRecord],
     /// Authenticated capability snapshot carried by this control.
     pub capabilities: Option<&'a CapabilityControl>,
+    /// Authenticated rendezvous provider-set replacement.
+    pub rendezvous: Option<RendezvousServiceTransition<'a>>,
     /// Immutable control work retained before filesystem or group callbacks.
     pub deferred_control: Option<&'a DeferredControlRecord>,
     /// Receipt envelope content id.
@@ -3125,6 +3157,10 @@ impl Store {
             || plan.devices.len() > MAX_PAIRWISE_COMMIT_DEVICES
             || plan.queue.len() > MAX_COMMIT_QUEUE_ROWS
             || plan.delete_queue.len() > MAX_COMMIT_QUEUE_ROWS
+            || plan.reset_messages.len() > MAX_COMMIT_QUEUE_ROWS
+            || plan.reset_deliveries.len() > MAX_COMMIT_QUEUE_ROWS
+            || plan.retire_group_messages.len() > MAX_COMMIT_QUEUE_ROWS
+            || plan.retire_group_deliveries.len() > MAX_COMMIT_QUEUE_ROWS
             || plan
                 .devices
                 .iter()
@@ -3144,6 +3180,10 @@ impl Store {
                 plan.delete_sessions.len(),
                 plan.delete_capabilities.len(),
                 plan.delete_queue.len(),
+                plan.reset_messages.len(),
+                plan.reset_deliveries.len(),
+                plan.retire_group_messages.len(),
+                plan.retire_group_deliveries.len(),
                 plan.groups.len(),
                 usize::from(plan.message.is_some()),
                 usize::from(plan.ephemeral.is_some()),
@@ -3188,6 +3228,132 @@ impl Store {
         }
         for delete in plan.delete_queue {
             self.validate_queue_delete(*delete)?;
+        }
+        let mut reset_delivery_ids = HashSet::new();
+        for transition in plan.reset_deliveries {
+            self.validate_delivery_transition(transition)?;
+            let mut expected = transition.before.clone();
+            expected.state = DeliveryState::Queued;
+            expected.wire_id = None;
+            if !reset_delivery_ids.insert((transition.before.message, transition.before.device))
+                || transition.before.account != plan.contact.peer
+                || transition.before.device != plan.session.peer_device
+                || *transition.after != expected
+                || matches!(
+                    transition.before.state,
+                    DeliveryState::Delivered | DeliveryState::Failed
+                )
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        let mut reset_message_ids = HashSet::new();
+        for transition in plan.reset_messages {
+            self.validate_message_transition(transition)?;
+            let mut deliveries = self.message_device_deliveries(&transition.before.id)?;
+            for delivery in &mut deliveries {
+                if let Some(reset) = plan.reset_deliveries.iter().find(|reset| {
+                    reset.before.message == delivery.message
+                        && reset.before.device == delivery.device
+                }) {
+                    *delivery = reset.after.clone();
+                }
+            }
+            let mut expected = transition.before.clone();
+            expected.state = if deliveries
+                .iter()
+                .any(|delivery| delivery.state == DeliveryState::Delivered)
+            {
+                DeliveryState::Delivered
+            } else if deliveries
+                .iter()
+                .any(|delivery| delivery.state == DeliveryState::Sent)
+            {
+                DeliveryState::Sent
+            } else if deliveries
+                .iter()
+                .any(|delivery| delivery.state == DeliveryState::Queued)
+            {
+                DeliveryState::Queued
+            } else {
+                DeliveryState::Failed
+            };
+            expected.wire_id = deliveries.iter().find_map(|delivery| delivery.wire_id);
+            if !reset_message_ids.insert(transition.before.id)
+                || transition.before.peer != plan.contact.peer
+                || transition.before.direction != Direction::Outbound
+                || *transition.after != expected
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        let mut retired_delivery_ids = HashSet::new();
+        for transition in plan.retire_group_deliveries {
+            self.validate_delivery_transition(transition)?;
+            let mut expected = transition.before.clone();
+            expected.state = DeliveryState::Failed;
+            expected.wire_id = None;
+            if !retired_delivery_ids.insert((transition.before.message, transition.before.device))
+                || transition.before.account != plan.contact.peer
+                || transition.before.device != plan.session.peer_device
+                || *transition.after != expected
+                || matches!(
+                    transition.before.state,
+                    DeliveryState::Delivered | DeliveryState::Failed
+                )
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        let mut retired_message_ids = HashSet::new();
+        for transition in plan.retire_group_messages {
+            self.validate_group_message_transition(transition)?;
+            let mut deliveries = self.message_device_deliveries(&transition.before.id)?;
+            for delivery in &mut deliveries {
+                if let Some(retired) = plan.retire_group_deliveries.iter().find(|retired| {
+                    retired.before.message == delivery.message
+                        && retired.before.device == delivery.device
+                }) {
+                    *delivery = retired.after.clone();
+                }
+            }
+            let account_deliveries = deliveries
+                .iter()
+                .filter(|delivery| delivery.account == plan.contact.peer)
+                .collect::<Vec<_>>();
+            let mut expected = transition.before.clone();
+            let account = expected
+                .deliveries
+                .iter_mut()
+                .find(|delivery| delivery.peer == plan.contact.peer)
+                .ok_or(StoreError::InvalidTransition)?;
+            account.state = if account_deliveries
+                .iter()
+                .any(|delivery| delivery.state == DeliveryState::Delivered)
+            {
+                DeliveryState::Delivered
+            } else if account_deliveries
+                .iter()
+                .any(|delivery| delivery.state == DeliveryState::Sent)
+            {
+                DeliveryState::Sent
+            } else if account_deliveries
+                .iter()
+                .any(|delivery| delivery.state == DeliveryState::Queued)
+            {
+                DeliveryState::Queued
+            } else {
+                DeliveryState::Failed
+            };
+            account.wire_id = account_deliveries
+                .iter()
+                .find_map(|delivery| delivery.wire_id);
+            if !retired_message_ids.insert(transition.before.id)
+                || transition.before.direction != Direction::Outbound
+                || *transition.after != expected
+            {
+                return Err(StoreError::InvalidTransition);
+            }
         }
         if let Some(prekeys) = &plan.prekeys {
             let current = self.get_prekeys()?;
@@ -3441,9 +3607,11 @@ impl Store {
                 plan.deliveries.len(),
                 plan.group_messages.len(),
                 plan.groups.len(),
+                plan.contact_devices.len(),
                 plan.media_transfers.len(),
                 plan.media_objects.len(),
                 usize::from(plan.capabilities.is_some()),
+                usize::from(plan.rendezvous.is_some()),
                 usize::from(plan.deferred_control.is_some()),
                 1,
                 usize::from(plan.source_pending.is_some()),
@@ -3472,7 +3640,32 @@ impl Store {
         for transition in plan.groups {
             self.validate_group_transition(transition)?;
         }
+        let mut contact_devices = HashSet::new();
+        for transition in plan.contact_devices {
+            if transition.before.account != transition.after.account
+                || transition.before.device != transition.after.device
+                || !contact_devices.insert(transition.before.device)
+                || self
+                    .contact_devices_for(&transition.before.account)?
+                    .into_iter()
+                    .find(|endpoint| endpoint.device == transition.before.device)
+                    .as_ref()
+                    != Some(transition.before)
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+            let mut expected = transition.before.clone();
+            expected.hints.clone_from(&transition.after.hints);
+            expected.introduction_capability = transition.after.introduction_capability;
+            expected.introduction_generation = transition.after.introduction_generation;
+            if expected != *transition.after {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
         self.validate_new_media(plan.media_transfers, plan.media_objects)?;
+        if let Some(transition) = plan.rendezvous.as_ref() {
+            self.validate_rendezvous_transition(transition, plan.session.after)?;
+        }
         if let Some(control) = plan.deferred_control {
             if control.content_id != plan.content_id
                 || control.peer_device != plan.session.peer_device
@@ -3652,6 +3845,31 @@ impl Store {
         if !session_eq(current.as_ref(), transition.before)?
             || session_eq(Some(transition.after), transition.before)?
         {
+            return Err(StoreError::InvalidTransition);
+        }
+        Ok(())
+    }
+
+    fn validate_rendezvous_transition(
+        &self,
+        transition: &RendezvousServiceTransition<'_>,
+        candidate_session: &Session,
+    ) -> Result<()> {
+        if transition.peer_device == [0u8; 32]
+            || transition.after.session_id != *candidate_session.session_id()
+            || transition.before.session_id != *candidate_session.session_id()
+            || self
+                .get_rendezvous_service_state(&transition.peer_device)?
+                .as_ref()
+                != Some(transition.before)
+            || transition.before == transition.after
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        let Some(exporter) = candidate_session.hybrid_service_exporter() else {
+            return Err(StoreError::InvalidTransition);
+        };
+        if transition.after.hybrid_service_exporter != *exporter {
             return Err(StoreError::InvalidTransition);
         }
         Ok(())
@@ -3965,6 +4183,9 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
     }
 
     fn session(&mut self, transition: &SessionTransition<'_>) -> Result<()> {
+        self.write(|store, rng| {
+            store.synchronize_rendezvous_session(&transition.peer_device, transition.after, rng)
+        })?;
         self.write(|store, rng| {
             let payload = Zeroizing::new(
                 postcard::to_allocvec(transition.after).map_err(|_| StoreError::Serialization)?,
@@ -4626,6 +4847,7 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
             }
         }
         for delete in plan.delete_sessions {
+            self.write(|store, _| store.delete_rendezvous_service_state(&delete.peer_device))?;
             self.write(|store, _| {
                 if store.delete_equality::<store_v2::SessionRows>(&store_v2::AccountKey::new(
                     delete.peer_device,
@@ -4687,6 +4909,31 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
                     Err(StoreError::InvalidTransition)
                 }
             })?;
+        }
+        for transition in plan.reset_messages {
+            self.write(|store, rng| {
+                if store.update_message(transition.after, rng)? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+            self.records.messages.push(transition.after.id);
+        }
+        for transition in plan.reset_deliveries {
+            self.write(|store, rng| store.put_message_device_delivery(transition.after, rng))?;
+        }
+        for transition in plan.retire_group_messages {
+            self.write(|store, rng| {
+                if store.update_group_message(transition.after, rng)? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+        }
+        for transition in plan.retire_group_deliveries {
+            self.write(|store, rng| store.put_message_device_delivery(transition.after, rng))?;
         }
         for group in plan.groups {
             self.write(|store, rng| store.put_group(group.after, rng))?;
@@ -4886,6 +5133,9 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
         for transition in plan.groups {
             self.write(|store, rng| store.put_group(transition.after, rng))?;
         }
+        for transition in plan.contact_devices {
+            self.write(|store, rng| store.put_contact_device(transition.after, rng))?;
+        }
         for transfer in plan.media_transfers {
             self.write(|store, rng| store.put_media_transfer(transfer, rng))?;
         }
@@ -4895,6 +5145,11 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
         if let Some(capabilities) = plan.capabilities {
             let peer = plan.session.peer_device;
             self.write(|store, rng| store.put_capabilities(&peer, capabilities, rng))?;
+        }
+        if let Some(transition) = plan.rendezvous.as_ref() {
+            self.write(|store, rng| {
+                store.put_rendezvous_service_state(&transition.peer_device, transition.after, rng)
+            })?;
         }
         if let Some(control) = plan.deferred_control {
             self.write(|store, rng| {
@@ -5041,6 +5296,7 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
             })?;
         }
         for peer in plan.delete_sessions {
+            self.write(|store, _| store.delete_rendezvous_service_state(peer))?;
             self.write(|store, _| {
                 if store
                     .delete_equality::<store_v2::SessionRows>(&store_v2::AccountKey::new(*peer))?

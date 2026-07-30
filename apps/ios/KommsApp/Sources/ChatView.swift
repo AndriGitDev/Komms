@@ -177,6 +177,9 @@ struct ChatView: View {
                 self.error = errorText(error)
             }
         }
+        .onDisappear {
+            Task { await model.unfollow(peer: peer) }
+        }
     }
 
     private func send() {

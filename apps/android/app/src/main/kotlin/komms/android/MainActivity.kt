@@ -8,21 +8,21 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.Menu
-import android.view.MenuItem
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
 import android.text.InputFilter
 import android.text.InputType
-import android.widget.CheckBox
+import android.view.LayoutInflater
+import android.view.Menu
+import android.view.MenuItem
+import android.view.View
+import android.view.ViewGroup
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.TextView
-import android.widget.ScrollView
-import android.widget.RadioGroup
 import android.widget.RadioButton
+import android.widget.RadioGroup
+import android.widget.ScrollView
+import android.widget.TextView
 import java.text.DateFormat
 import java.util.Date
 import androidx.activity.result.contract.ActivityResultContracts
@@ -121,6 +121,7 @@ class MainActivity : SecureActivity() {
                 is Event.PinsChanged -> refreshLabelsAndLists(true)
                 is Event.ThemeChanged -> Unit // ThemeController applies process-wide DayNight.
                 is Event.CustomIconsChanged -> refreshLabelsAndLists(false)
+                is Event.RendezvousConflict -> toast(getString(R.string.rendezvous_conflict))
                 else -> {}
             }
         }
@@ -456,14 +457,19 @@ class MainActivity : SecureActivity() {
                             networkSettings.bootstrap.size,
                         )
                     }
+                    val legacy = if (s.legacyDiscovery) {
+                        getString(R.string.discovery_legacy_enabled)
+                    } else {
+                        getString(R.string.discovery_legacy_retired)
+                    }
                     AlertDialog.Builder(this@MainActivity)
                         .setTitle(R.string.node_details_title)
                         .setMessage(
                             getString(
                                 R.string.status_details,
-                                s.address, nat, s.lanPeers.size, s.scheduled.toLong(),
-                                s.queued.toLong(), s.transit.toLong(),
-                                mdns, dht,
+                                s.connectCode, s.address, nat, s.lanPeers.size,
+                                s.scheduled.toLong(), s.queued.toLong(), s.transit.toLong(),
+                                mdns, dht, legacy,
                             ),
                         )
                         .setPositiveButton(android.R.string.ok, null)
@@ -961,37 +967,92 @@ class MainActivity : SecureActivity() {
     /** A ready signed prekey bundle in the compact, versioned pairing QR format. */
     private fun showMyQr() {
         val session = NodeHolder.session ?: return
-        runNode(work = { session.myBundleHex() to session.address }) { (hex, address) ->
+        runNode(work = {
+            Triple(session.myBundleHex(), session.connectCode, session.status().legacyDiscovery)
+        }) { (hex, connectCode, legacyDiscovery) ->
             val view = LayoutInflater.from(this).inflate(R.layout.dialog_qr, null)
             val image = view.findViewById<ImageView>(R.id.qr_image)
             val caption = view.findViewById<TextView>(R.id.qr_caption)
+            val modeButton = view.findViewById<Button>(R.id.qr_mode_button)
             val frames = bundleQrFrames(hex)
             var frame = 0
-            fun renderFrame() {
-                image.setImageBitmap(pairingQrBitmap(frames[frame]))
-                caption.text = if (frames.size == 1) {
-                    getString(R.string.my_qr_caption, address)
+            var currentConnectCode = connectCode
+            var showingPairing = false
+            fun render() {
+                if (showingPairing) {
+                    image.setImageBitmap(pairingQrBitmap(frames[frame]))
+                    image.contentDescription = getString(R.string.my_pairing_qr_description)
+                    caption.text = if (frames.size == 1) {
+                        getString(R.string.my_pairing_qr_caption)
+                    } else {
+                        getString(R.string.my_qr_frame, frame + 1, frames.size)
+                    }
+                    modeButton.setText(R.string.show_connect_qr)
                 } else {
-                    getString(R.string.my_qr_frame, frame + 1, frames.size, address)
+                    image.setImageBitmap(pairingQrBitmap(currentConnectCode))
+                    image.contentDescription = getString(R.string.my_connect_qr_description)
+                    caption.text = getString(R.string.my_qr_caption, currentConnectCode)
+                    modeButton.setText(R.string.show_pairing_qr)
                 }
             }
-            renderFrame()
-            val dialog = AlertDialog.Builder(this)
+            render()
+            val builder = AlertDialog.Builder(this)
                 .setTitle(R.string.my_qr_title)
                 .setView(view)
+                .setNeutralButton(R.string.rotate_connect_code, null)
                 .setPositiveButton(android.R.string.ok, null)
-                .create()
+            if (legacyDiscovery) {
+                builder.setNegativeButton(R.string.retire_legacy_discovery, null)
+            }
+            val dialog = builder.create()
             val handler = Handler(Looper.getMainLooper())
             val rotate = object : Runnable {
                 override fun run() {
-                    if (!dialog.isShowing) return
+                    if (!dialog.isShowing || !showingPairing || frames.size < 2) return
                     frame = (frame + 1) % frames.size
-                    renderFrame()
+                    render()
                     handler.postDelayed(this, 1_100)
                 }
             }
             dialog.setOnShowListener {
-                if (frames.size > 1) handler.postDelayed(rotate, 1_100)
+                modeButton.setOnClickListener {
+                    handler.removeCallbacks(rotate)
+                    showingPairing = !showingPairing
+                    frame = 0
+                    render()
+                    if (showingPairing && frames.size > 1) {
+                        handler.postDelayed(rotate, 1_100)
+                    }
+                }
+                dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                    AlertDialog.Builder(this)
+                        .setTitle(R.string.rotate_connect_code)
+                        .setMessage(R.string.rotate_connect_code_warning)
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .setPositiveButton(R.string.rotate_connect_code) { _, _ ->
+                            runNode(work = { session.rotateConnectCode() }) { code ->
+                                currentConnectCode = code
+                                dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.visibility =
+                                    View.GONE
+                                render()
+                                toast(getString(R.string.rotate_connect_code_done))
+                            }
+                        }
+                        .show()
+                }
+                dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.setOnClickListener {
+                    AlertDialog.Builder(this)
+                        .setTitle(R.string.retire_legacy_discovery)
+                        .setMessage(R.string.retire_legacy_discovery_warning)
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .setPositiveButton(R.string.retire_legacy_discovery) { _, _ ->
+                            runNode(work = { session.retireLegacyDiscovery() }) {
+                                dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = false
+                                toast(getString(R.string.retire_legacy_discovery_done))
+                            }
+                        }
+                        .show()
+                }
             }
             dialog.setOnDismissListener { handler.removeCallbacks(rotate) }
             dialog.show()

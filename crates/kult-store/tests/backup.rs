@@ -162,6 +162,7 @@ fn restore_legacy_archive(
         sync_counter: 0,
         channels: Vec::new(),
         conflicts: Vec::new(),
+        discovery: kult_store::DiscoveryCapabilityState::default(),
     };
     Store::restore_legacy_backup_as_authority_reset(
         path,

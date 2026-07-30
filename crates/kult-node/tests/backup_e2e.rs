@@ -10,7 +10,7 @@ use std::sync::Arc;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
-use kult_crypto::KdfProfile;
+use kult_crypto::{ConnectCode, KdfProfile};
 use kult_node::{Event, Node};
 use kult_store::DeliveryState;
 use kult_transport::{DeliveryHint, SneakernetTransport};
@@ -107,7 +107,15 @@ async fn backup_restores_identity_and_rekeys_sessions() {
     );
 
     // ---- Backup, then the device is lost. --------------------------------
+    let old_connect_code = alice.connect_code().unwrap();
+    let discovery_capability = ConnectCode::parse(&old_connect_code).unwrap().capability();
     let (backup, mnemonic) = alice.export_backup(NOW + 10, &mut rng).unwrap();
+    assert!(
+        !backup
+            .windows(discovery_capability.len())
+            .any(|window| window == discovery_capability),
+        "the recovery-encrypted capability must not appear in the outer backup file"
+    );
     let old_address = alice.address();
     drop(alice);
 
@@ -143,6 +151,7 @@ async fn backup_restores_identity_and_rekeys_sessions() {
 
     // The identity resumes; contacts and history are intact.
     assert_eq!(alice.address(), old_address);
+    assert_eq!(alice.connect_code().unwrap(), old_connect_code);
     let contacts = alice.contacts().unwrap();
     assert_eq!(contacts.len(), 1);
     assert_eq!(contacts[0].name, "bob");

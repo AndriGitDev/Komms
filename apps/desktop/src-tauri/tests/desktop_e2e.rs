@@ -492,7 +492,12 @@ fn desktop_share_dialog_surfaces_generation_errors_and_scopes_its_listener() {
     let frontend = include_str!("../../ui/main.js");
     assert!(html.contains("data-f=\"share-status\" role=\"status\""));
     assert!(frontend.contains("Could not prepare sharing details"));
-    assert!(frontend.contains("Promise.all([invoke(\"my_bundle\"), invoke(\"address_qr\")]"));
+    assert!(frontend.contains("[bundle, addrSvg, nodeStatus] = await Promise.all(["));
+    assert!(frontend.contains("invoke(\"my_bundle\")"));
+    assert!(frontend.contains("invoke(\"address_qr\")"));
+    assert!(frontend.contains("invoke(\"status\")"));
+    assert!(frontend.contains("nodeStatus.connect_code"));
+    assert!(frontend.contains("nodeStatus.address"));
     assert!(frontend.contains("view.addEventListener(\"click\""));
 }
 
@@ -794,6 +799,7 @@ fn desktop_incognito_keyboard_covers_every_editable_text_field_before_unlock() {
     let editable_text_fields = html.matches("type=\"text\"").count()
         + html.matches("type=\"password\"").count()
         + html.matches("<textarea").count()
+        - html.matches("type=\"text\" readonly").count()
         - html
             .matches("<textarea class=\"share-hex\" rows=\"4\" readonly")
             .count();

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use kult_crypto::{AuthorityDevicePrekeyBundle, KdfProfile};
+use kult_crypto::{AuthorityPairingBundle, KdfProfile};
 use kult_node::{Event, Node};
 use kult_store::{AdmissionTransportClass, DeliveryState};
 use kult_transport::{DeliveryHint, SneakernetTransport};
@@ -41,8 +41,9 @@ async fn unknown_sender_is_provisional_until_explicit_accept() {
     let alice_bundle = alice
         .handshake_bundle_with_hints(&[DeliveryHint::Spool(alice_inbox.clone())], NOW, &mut rng)
         .unwrap();
-    let alice_id = AuthorityDevicePrekeyBundle::decode(&alice_bundle)
+    let alice_id = AuthorityPairingBundle::decode(&alice_bundle)
         .unwrap()
+        .device_bundle
         .manifest
         .account()
         .ed;
@@ -148,8 +149,9 @@ async fn delete_and_block_leave_no_contact_or_history() {
     let alice_bundle = alice
         .handshake_bundle_with_hints(&[DeliveryHint::Spool(alice_inbox.clone())], NOW, &mut rng)
         .unwrap();
-    let alice_id = AuthorityDevicePrekeyBundle::decode(&alice_bundle)
+    let alice_id = AuthorityPairingBundle::decode(&alice_bundle)
         .unwrap()
+        .device_bundle
         .manifest
         .account()
         .ed;

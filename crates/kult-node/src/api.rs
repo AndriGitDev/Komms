@@ -1173,6 +1173,17 @@ pub enum Event {
         /// Exact new physical-device id.
         device: [u8; 32],
     },
+    /// Two authenticated rendezvous records or provider controls claimed the
+    /// same generation with different complete contents. No route winner was
+    /// selected.
+    RendezvousConflict {
+        /// Stable contact account.
+        peer: [u8; 32],
+        /// Exact physical contact device.
+        device: [u8; 32],
+        /// Provider-separation id, or all zeroes for a provider-set conflict.
+        provider: [u8; 32],
+    },
     /// One or more private local custom icons changed; shells re-read visible targets.
     /// This event never enters an envelope, capability, group state, or transport.
     CustomIconsChanged,

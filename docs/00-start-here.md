@@ -87,9 +87,10 @@ warning and user action before operating-system handoff. See
 You can edit canonical text you authored in a pairwise or group conversation.
 Komms sends that change as a new encrypted event, keeps an **edited** marker and
 inspectable version history, and derives the same winner even when offline
-carriers deliver edits out of order. Pairwise authorship is authenticated; in
-the current Alpha, a malicious group member can forge another member's apparent
-edit. Editing does not erase what another device already received or copied. See
+carriers deliver edits out of order. Current pairwise and upgraded group
+authorship is authenticated separately for each recipient device; legacy group
+history retains its visible weaker label. Editing does not erase what another
+device already received or copied. See
 [Authenticated Message Editing](18-message-editing.md).
 
 You can also choose disappearing text or a view-once attachment. Komms removes

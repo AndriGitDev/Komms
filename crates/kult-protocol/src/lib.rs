@@ -33,6 +33,7 @@ mod call;
 mod capability;
 mod content;
 mod device_sync;
+mod discovery;
 mod edit;
 mod envelope;
 mod ephemeral;
@@ -44,6 +45,7 @@ mod mention;
 mod padding;
 mod poll;
 mod receipt;
+mod rendezvous;
 mod token;
 
 pub use admission::{
@@ -93,6 +95,10 @@ pub use device_sync::{
     MAX_DEVICE_SYNC_BUNDLE_BYTES, MAX_DEVICE_SYNC_BUNDLE_EVENTS, MAX_DEVICE_SYNC_KEY_BYTES,
     MAX_DEVICE_SYNC_VALUE_BYTES,
 };
+pub use discovery::{
+    is_discovery_upgrade_control, DiscoveryUpgradeControl, DISCOVERY_UPGRADE_MAGIC,
+    DISCOVERY_UPGRADE_VERSION, MAX_DISCOVERY_UPGRADE_ROUTES, MAX_DISCOVERY_UPGRADE_ROUTE_BYTES,
+};
 pub use edit::{
     decode_edit_payload, encode_edit_payload, DecodedEdit, Edit, EDIT_HEADER_LEN,
     MAX_EDIT_PAYLOAD_LEN, MAX_EDIT_TEXT_LEN,
@@ -139,6 +145,17 @@ pub use poll::{
     MAX_POLL_QUESTION_LEN, MAX_POLL_VOTERS, MIN_POLL_OPTIONS, POLL_CLOSE_MANUAL, POLL_VERSION,
 };
 pub use receipt::ReceiptPayload;
+pub use rendezvous::{
+    is_rendezvous_provider_control, RendezvousLookupRequest, RendezvousProviderControl,
+    RendezvousProviderDescriptor, RendezvousRegisterRequest, RendezvousRoute, RendezvousRouteKind,
+    RendezvousRouteRecord, MAX_RENDEZVOUS_CONTROL_ORIGIN_BYTES, MAX_RENDEZVOUS_CONTROL_PROVIDERS,
+    MAX_RENDEZVOUS_PROVIDER_CONTROL_BYTES, MAX_RENDEZVOUS_ROUTES, MAX_RENDEZVOUS_ROUTE_BYTES,
+    RENDEZVOUS_CLOCK_SKEW_SECS, RENDEZVOUS_LOOKUP_PATH, RENDEZVOUS_LOOKUP_REQUEST_LEN,
+    RENDEZVOUS_LOOKUP_RESPONSE_LEN, RENDEZVOUS_MALFORMED_RESPONSE_LEN, RENDEZVOUS_MEDIA_TYPE,
+    RENDEZVOUS_PROVIDER_CONTROL_MAGIC, RENDEZVOUS_PROVIDER_CONTROL_VERSION,
+    RENDEZVOUS_REGISTER_ACK_LEN, RENDEZVOUS_REGISTER_PATH, RENDEZVOUS_REGISTER_REQUEST_LEN,
+    RENDEZVOUS_ROUTE_RECORD_VERSION,
+};
 pub use token::{delivery_token, epoch_day, intro_token, MailboxKey};
 
 /// Convenience alias for fallible operations in this crate.

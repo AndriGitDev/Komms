@@ -133,9 +133,9 @@
     <aside id="sidebar">
       <header class="me">
         <div class="me-name"><span class="brand-badge compact" aria-hidden="true"><svg viewBox="0 0 192 192"><path d="M24 25h43v55l49-55h53l-61 66H24V25zm0 74h84l61 68h-53l-37-50-12 13v37H24V99z"/></svg></span>Komms</div>
-        <div class="me-address" id="my-address" title="Your kult address"></div>
+        <div class="me-address" id="my-address" title="Your Connect code"></div>
         <div class="me-actions">
-          <button id="btn-copy-address" class="ghost" title="Copy address">Copy</button>
+          <button id="btn-copy-address" class="ghost" title="Copy Connect code">Copy</button>
           <button id="btn-share" class="ghost" title="Show pairing QR / bundle">Share</button>
           <button id="btn-settings" class="ghost" title="Settings">Settings</button>
         </div>
@@ -326,22 +326,31 @@
   <!-- ══ Modal templates ══ -->
   <template id="tpl-share">
     <section data-f="share-dialog">
-      <p class="modal-note">Someone adds you by scanning every bundle frame (or pasting the hex), or by your address if both of you can reach the DHT. Komms keeps a valid signed bundle ready and refreshes it in the background after sharing.</p>
+      <p class="modal-note">Someone adds you by scanning every bundle frame (or pasting the hex), or by your capability-scoped Connect code. Rotating the code changes reachability without changing your identity or safety numbers.</p>
       <p class="modal-note" data-f="share-status" role="status">Preparing fresh bundle and QR codes…</p>
       <div data-f="share-content" hidden>
         <div class="qr-tabs">
           <button class="tab active" data-share="bundle">Bundle QR</button>
-          <button class="tab" data-share="address">Address QR</button>
+          <button class="tab" data-share="address">Connect QR</button>
         </div>
         <div class="qr-card" data-pane="bundle"></div>
         <p class="qr-progress" data-f="qr-progress" aria-live="polite"></p>
         <div class="qr-card" data-pane="address" hidden></div>
+        <label>Connect code
+          <input class="share-connect-code" type="text" readonly spellcheck="false" />
+        </label>
+        <label>Stable account fingerprint (verification)
+          <input class="share-account-fingerprint" type="text" readonly spellcheck="false" />
+        </label>
         <label>Bundle (hex, paste into “Add contact” or <code>kult add</code>)
           <textarea class="share-hex" rows="4" readonly></textarea>
         </label>
         <div class="row">
           <button class="ghost" data-act="copy-hex">Copy bundle</button>
-          <button class="ghost" data-act="publish">Publish to DHT</button>
+          <button class="ghost" data-act="copy-connect">Copy Connect code</button>
+          <button class="ghost" data-act="rotate-connect">Rotate Connect code</button>
+          <button class="ghost" data-act="retire-legacy">Retire legacy lookup</button>
+          <button class="ghost" data-act="publish">Republish reachability</button>
         </div>
       </div>
     </section>
@@ -474,7 +483,7 @@
     </label>
     <div class="tabs">
       <button class="tab active" data-add="bundle">From bundle</button>
-      <button class="tab" data-add="address">From address</button>
+      <button class="tab" data-add="address">From Connect code</button>
     </div>
     <div data-pane="bundle">
       <label>Their pairing QR payload or bundle hex
@@ -482,8 +491,8 @@
       </label>
     </div>
     <div data-pane="address" hidden>
-      <label>Their kult address (looked up on the DHT)
-        <input type="text" data-f="address" data-incognito-input="technical" spellcheck="false" placeholder="kk1…" />
+      <label>Their Connect code (capability-scoped DHT lookup)
+        <input type="text" data-f="address" data-incognito-input="technical" spellcheck="false" placeholder="kc2…" />
       </label>
     </div>
     <fieldset class="hints" data-f="hints">

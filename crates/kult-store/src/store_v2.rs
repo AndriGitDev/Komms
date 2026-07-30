@@ -584,6 +584,8 @@ table!(DeviceLinkRecoveryRows, 28, Equality, AccountKey);
 table!(ProvisionalRequestRows, 29, Equality, AccountKey);
 table!(AdmissionReplayRows, 30, Equality, ContentKey);
 table!(BlockedIdentityRows, 31, Equality, AccountDeviceKey);
+table!(RendezvousServiceRows, 32, Equality, AccountKey);
+table!(RendezvousConfigRows, 33, Equality, SingletonKey);
 pub(crate) struct MigrationCheckpointRows;
 
 impl TableSpec for MigrationCheckpointRows {
@@ -1900,7 +1902,7 @@ fn validate_index_shape(domain: u8, indexes: &IndexKeys) -> Result<()> {
         DeviceSyncRows::DOMAIN => [true, false, false, false, false],
         ContactDeviceRows::DOMAIN => [false, true, false, false, false],
         MessageDeviceDeliveryRows::DOMAIN => [false, true, true, false, false],
-        1..=31 => [false; 5],
+        1..=33 => [false; 5],
         MigrationCheckpointRows::DOMAIN => [false; 5],
         _ => return Err(StoreError::SchemaMismatch),
     };
@@ -1942,6 +1944,8 @@ fn table_locator_kind(domain: u8) -> Result<LocatorKind> {
         | ProvisionalRequestRows::DOMAIN
         | AdmissionReplayRows::DOMAIN
         | BlockedIdentityRows::DOMAIN
+        | RendezvousServiceRows::DOMAIN
+        | RendezvousConfigRows::DOMAIN
         | MigrationCheckpointRows::DOMAIN => Ok(LocatorKind::Equality),
         MessageRows::DOMAIN
         | QueueRows::DOMAIN
@@ -1959,13 +1963,15 @@ fn validate_key_for_domain(domain: u8, key: &[u8]) -> Result<()> {
         | PrekeyRows::DOMAIN
         | DeviceStateRows::DOMAIN
         | PresentationMarkerRows::DOMAIN
+        | RendezvousConfigRows::DOMAIN
         | MigrationCheckpointRows::DOMAIN => SingletonKey::validate_encoded(key),
         SessionRows::DOMAIN
         | CapabilityRows::DOMAIN
         | ContactRows::DOMAIN
         | ResetRows::DOMAIN
         | DeviceLinkRecoveryRows::DOMAIN
-        | ProvisionalRequestRows::DOMAIN => AccountKey::validate_encoded(key),
+        | ProvisionalRequestRows::DOMAIN
+        | RendezvousServiceRows::DOMAIN => AccountKey::validate_encoded(key),
         MessageRows::DOMAIN => MessageKey::validate_encoded(key),
         QueueRows::DOMAIN | PendingRows::DOMAIN => OpaqueRowKey::validate_encoded(key),
         SeenRows::DOMAIN

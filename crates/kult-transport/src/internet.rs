@@ -61,7 +61,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use futures::{AsyncRead, AsyncWrite, StreamExt};
 use libp2p::core::transport::ListenerId;
-use libp2p::kad::store::MemoryStore;
+use libp2p::kad::store::{MemoryStore, MemoryStoreConfig};
 use libp2p::kad::{self, GetRecordOk, Mode, QueryResult, Quorum, Record, RecordKey};
 use libp2p::multiaddr::Protocol;
 use libp2p::request_response::{self, ProtocolSupport};
@@ -82,9 +82,9 @@ use crate::mailbox_v2::{
 };
 use crate::mdns::{self, DiscoveredPeer};
 use crate::{
-    CostClass, DeliveryHint, Discovery, InboundReceipt, IngressClass, LatencyClass, LinkProfile,
-    MailboxMetrics, MailboxServiceConfig, Reachability, ReceivedEnvelope, Result, SendReceipt,
-    Transport, TransportError,
+    CostClass, DeliveryHint, Discovery, DiscoveryNamespace, InboundReceipt, IngressClass,
+    LatencyClass, LinkProfile, MailboxMetrics, MailboxServiceConfig, Reachability,
+    ReceivedEnvelope, Result, SendReceipt, Transport, TransportError,
 };
 
 /// Poison recovery for the transport's shared-state mutexes. A panicking
@@ -181,7 +181,12 @@ const DHT_TIMEOUT: Duration = Duration::from_secs(60);
 /// Namespace prefix for prekey-bundle record keys, so kult records can never
 /// collide with (or be confused for) another protocol's records on a shared
 /// DHT.
-const RECORD_NAMESPACE: &[u8] = b"/kk/prekeys/1/";
+const RECORD_NAMESPACE_V1: &[u8] = b"/kk/prekeys/1/";
+const RECORD_NAMESPACE_V2: &[u8] = b"/kk/prekeys/2/";
+/// Bounded RAM cache. At the frozen v2 record size this is at most 288 MiB
+/// of value bodies plus map overhead; reference-service sizing is explicit.
+const DHT_MAX_RECORDS: usize = 256;
+const DHT_MAX_PACKET_BYTES: usize = kult_crypto::DISCOVERY_RECORD_SIZE + 64 * 1024;
 
 /// Per-envelope size cap for bridge-transit deposits: anything larger could
 /// never ride an airtime-budgeted link anyway (docs/05-transports.md §4.2
@@ -280,10 +285,12 @@ enum Cmd {
     PutRecord {
         key: RecordKey,
         value: Vec<u8>,
+        expires: Instant,
         done: oneshot::Sender<bool>,
     },
     GetRecord {
         key: RecordKey,
+        limits: DiscoveryLimits,
         done: oneshot::Sender<Vec<Vec<u8>>>,
     },
     /// Listen on a `/p2p-circuit` address (a relay reservation); resolves
@@ -348,8 +355,39 @@ enum QueryWaiter {
     Put(oneshot::Sender<bool>),
     Get {
         values: Vec<Vec<u8>>,
+        value_bytes: usize,
+        limits: DiscoveryLimits,
         done: oneshot::Sender<Vec<Vec<u8>>>,
     },
+}
+
+#[derive(Clone, Copy)]
+struct DiscoveryLimits {
+    candidates: usize,
+    bytes: usize,
+    value_bytes: usize,
+}
+
+impl DiscoveryLimits {
+    fn for_namespace(namespace: DiscoveryNamespace) -> Self {
+        match namespace {
+            DiscoveryNamespace::LegacyPrekeyV1 => {
+                let value_bytes = kult_crypto::MAX_DEVICE_AUTHORITY_BYTES
+                    + kult_crypto::MAX_PREKEY_BUNDLE_BYTES
+                    + 16 * 1024;
+                Self {
+                    candidates: kult_crypto::MAX_DISCOVERY_CANDIDATES,
+                    bytes: kult_crypto::MAX_DISCOVERY_CANDIDATES * value_bytes,
+                    value_bytes,
+                }
+            }
+            DiscoveryNamespace::ConnectV2 => Self {
+                candidates: kult_crypto::MAX_DISCOVERY_CANDIDATES,
+                bytes: kult_crypto::MAX_DISCOVERY_CANDIDATES * kult_crypto::DISCOVERY_RECORD_SIZE,
+                value_bytes: kult_crypto::DISCOVERY_RECORD_SIZE,
+            },
+        }
+    }
 }
 
 /// How to build a [`Libp2pTransport`] beyond its listen addresses.
@@ -684,11 +722,20 @@ impl Libp2pTransport {
                         .with_max_concurrent_streams(MAILBOX_MAX_CONCURRENT_STREAMS),
                 );
                 let peer_id = key.public().to_peer_id();
-                let kad = kad::Behaviour::with_config(
+                let store = MemoryStore::with_config(
                     peer_id,
-                    MemoryStore::new(peer_id),
-                    kad::Config::new(StreamProtocol::new("/komms/kad/1")),
+                    MemoryStoreConfig {
+                        max_records: DHT_MAX_RECORDS,
+                        // libp2p-kad interprets this field as an exclusive
+                        // upper bound, so exact frozen-v2 records need one
+                        // additional byte of headroom.
+                        max_value_bytes: kult_crypto::DISCOVERY_RECORD_SIZE + 1,
+                        ..MemoryStoreConfig::default()
+                    },
                 );
+                let mut kad_config = kad::Config::new(StreamProtocol::new("/komms/kad/1"));
+                kad_config.set_max_packet_size(DHT_MAX_PACKET_BYTES);
+                let kad = kad::Behaviour::with_config(peer_id, store, kad_config);
                 // Identify carries only the transport pseudonym and listen
                 // addresses — it is how DHT peers learn where to reach each
                 // other; the kult identity never appears on this layer.
@@ -1070,12 +1117,35 @@ impl Libp2pTransport {
 
 #[async_trait]
 impl Discovery for Libp2pTransport {
-    async fn publish(&self, key: [u8; 32], value: Vec<u8>) -> Result<()> {
+    async fn publish(
+        &self,
+        namespace: DiscoveryNamespace,
+        key: [u8; 32],
+        value: Vec<u8>,
+        expires_at: u64,
+    ) -> Result<()> {
+        let limits = DiscoveryLimits::for_namespace(namespace);
+        if value.is_empty() || value.len() > limits.value_bytes {
+            return Err(io_other("DHT record exceeds its namespace bound"));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(io_other)?
+            .as_secs();
+        // The fixed publication window always includes epoch e-1. Past its
+        // clock-grace tail that record is intentionally unusable, but the
+        // publisher still performs the same six bounded puts so timing and
+        // behavior do not reveal its local clock position within the week.
+        let ttl = expires_at.saturating_sub(now).max(1);
+        let expires = Instant::now()
+            .checked_add(Duration::from_secs(ttl))
+            .ok_or_else(|| io_other("DHT record expiry is out of range"))?;
         let (done, rx) = oneshot::channel();
         self.cmds
             .send(Cmd::PutRecord {
-                key: record_key(&key),
+                key: record_key(namespace, &key),
                 value,
+                expires,
                 done,
             })
             .await
@@ -1087,11 +1157,12 @@ impl Discovery for Libp2pTransport {
         }
     }
 
-    async fn lookup(&self, key: [u8; 32]) -> Result<Vec<Vec<u8>>> {
+    async fn lookup(&self, namespace: DiscoveryNamespace, key: [u8; 32]) -> Result<Vec<Vec<u8>>> {
         let (done, rx) = oneshot::channel();
         self.cmds
             .send(Cmd::GetRecord {
-                key: record_key(&key),
+                key: record_key(namespace, &key),
+                limits: DiscoveryLimits::for_namespace(namespace),
                 done,
             })
             .await
@@ -1105,9 +1176,13 @@ impl Discovery for Libp2pTransport {
 }
 
 /// Namespaced Kademlia key for a 32-byte discovery key.
-fn record_key(key: &[u8; 32]) -> RecordKey {
-    let mut bytes = Vec::with_capacity(RECORD_NAMESPACE.len() + key.len());
-    bytes.extend_from_slice(RECORD_NAMESPACE);
+fn record_key(namespace: DiscoveryNamespace, key: &[u8; 32]) -> RecordKey {
+    let prefix = match namespace {
+        DiscoveryNamespace::LegacyPrekeyV1 => RECORD_NAMESPACE_V1,
+        DiscoveryNamespace::ConnectV2 => RECORD_NAMESPACE_V2,
+    };
+    let mut bytes = Vec::with_capacity(prefix.len() + key.len());
+    bytes.extend_from_slice(prefix);
     bytes.extend_from_slice(key);
     RecordKey::from(bytes)
 }
@@ -1128,7 +1203,7 @@ fn with_peer_id(addr: &Multiaddr, id: PeerId) -> String {
 /// A usable address is a multiaddr carrying an explicit `/p2p/<peer-id>`.
 /// The **last** `/p2p` component is the target: a circuit address
 /// (`…/p2p/<relay>/p2p-circuit/p2p/<peer>`) names the relay first.
-fn parse_addr(s: &str) -> Option<(Multiaddr, PeerId)> {
+pub(crate) fn parse_addr(s: &str) -> Option<(Multiaddr, PeerId)> {
     let addr: Multiaddr = s.parse().ok()?;
     let peer = addr
         .iter()
@@ -1643,8 +1718,9 @@ async fn run_swarm(
                         }
                     }
                 }
-                Some(Cmd::PutRecord { key, value, done }) => {
-                    let record = Record::new(key, value);
+                Some(Cmd::PutRecord { key, value, expires, done }) => {
+                    let mut record = Record::new(key, value);
+                    record.expires = Some(expires);
                     match swarm.behaviour_mut().kad.put_record(record, Quorum::One) {
                         Ok(id) => {
                             queries.insert(id, QueryWaiter::Put(done));
@@ -1654,9 +1730,17 @@ async fn run_swarm(
                         }
                     }
                 }
-                Some(Cmd::GetRecord { key, done }) => {
+                Some(Cmd::GetRecord { key, limits, done }) => {
                     let id = swarm.behaviour_mut().kad.get_record(key);
-                    queries.insert(id, QueryWaiter::Get { values: Vec::new(), done });
+                    queries.insert(
+                        id,
+                        QueryWaiter::Get {
+                            values: Vec::new(),
+                            value_bytes: 0,
+                            limits,
+                            done,
+                        },
+                    );
                 }
                 Some(Cmd::Reserve { addr, done }) => {
                     // The relay client transport dials the relay and asks
@@ -2220,14 +2304,39 @@ async fn run_swarm(
                                 queries.insert(id, QueryWaiter::Put(done));
                             }
                         }
-                        (Some(QueryWaiter::Get { mut values, done }), QueryResult::GetRecord(res)) => {
+                        (
+                            Some(QueryWaiter::Get {
+                                mut values,
+                                mut value_bytes,
+                                limits,
+                                done,
+                            }),
+                            QueryResult::GetRecord(res),
+                        ) => {
                             if let Ok(GetRecordOk::FoundRecord(found)) = res {
-                                values.push(found.record.value);
+                                let value = found.record.value;
+                                let next_bytes = value_bytes.saturating_add(value.len());
+                                if value.len() <= limits.value_bytes
+                                    && values.len() < limits.candidates
+                                    && next_bytes <= limits.bytes
+                                    && !values.iter().any(|known| known == &value)
+                                {
+                                    value_bytes = next_bytes;
+                                    values.push(value);
+                                }
                             }
                             if step.last {
                                 let _ = done.send(values);
                             } else {
-                                queries.insert(id, QueryWaiter::Get { values, done });
+                                queries.insert(
+                                    id,
+                                    QueryWaiter::Get {
+                                        values,
+                                        value_bytes,
+                                        limits,
+                                        done,
+                                    },
+                                );
                             }
                         }
                         // Query kinds we never issued, or a waiter/result

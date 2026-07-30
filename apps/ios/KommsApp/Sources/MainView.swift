@@ -355,11 +355,19 @@ private struct NodeDetailsView: View {
         NavigationStack {
             List {
                 Section("Identity") {
-                    LabeledContent("Address") {
+                    LabeledContent("Connect code") {
+                        Text(status.connectCode)
+                            .font(.footnote.monospaced())
+                            .textSelection(.enabled)
+                    }
+                    LabeledContent("Account fingerprint") {
                         Text(status.address)
                             .font(.footnote.monospaced())
                             .textSelection(.enabled)
                     }
+                    LabeledContent(
+                        "Legacy lookup",
+                        value: status.legacyDiscovery ? "Mailbox-only compatibility" : "Retired")
                 }
                 Section("Reachability") {
                     LabeledContent("NAT", value: natText)
@@ -464,6 +472,11 @@ private struct ConversationFiltersView: View {
 private struct MyBundleView: View {
     @EnvironmentObject private var model: AppModel
     @State private var bundleHex: String?
+    @State private var connectCode: String?
+    @State private var legacyDiscovery = false
+    @State private var working = false
+    @State private var confirmRotation = false
+    @State private var confirmLegacyRetirement = false
     @State private var error: String?
 
     var body: some View {
@@ -496,6 +509,29 @@ private struct MyBundleView: View {
                             .font(.caption2.monospaced())
                             .textSelection(.enabled)
                             .padding(.horizontal)
+                        if let connectCode {
+                            Divider()
+                            Text("Connect code")
+                                .font(.headline)
+                            QrCodeView(text: connectCode, correctionLevel: "M")
+                                .frame(width: 260, height: 260)
+                            Text(connectCode)
+                                .font(.caption2.monospaced())
+                                .textSelection(.enabled)
+                                .padding(.horizontal)
+                            Text("Rotating this capability changes reachability without changing your identity, contacts, history, or safety numbers.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                            Button("Rotate Connect code") { confirmRotation = true }
+                                .disabled(working)
+                            if legacyDiscovery {
+                                Button("Retire legacy lookup", role: .destructive) {
+                                    confirmLegacyRetirement = true
+                                }
+                                .disabled(working)
+                            }
+                        }
                     } else if let error {
                         Text(error).foregroundStyle(.red)
                     } else {
@@ -504,13 +540,57 @@ private struct MyBundleView: View {
                 }
                 .padding()
             }
-            .navigationTitle("My pairing QR")
+            .navigationTitle("My codes")
             .task {
                 do {
-                    bundleHex = try await model.myBundleHex()
+                    async let bundle = model.myBundleHex()
+                    async let code = model.connectCode()
+                    bundleHex = try await bundle
+                    connectCode = try await code
+                    legacyDiscovery = model.status?.legacyDiscovery ?? false
                 } catch {
                     self.error = errorText(error)
                 }
+            }
+            .confirmationDialog(
+                "Rotate Connect code?",
+                isPresented: $confirmRotation,
+                titleVisibility: .visible
+            ) {
+                Button("Rotate", role: .destructive) {
+                    Task {
+                        working = true
+                        defer { working = false }
+                        do {
+                            connectCode = try await model.rotateConnectCode()
+                            legacyDiscovery = false
+                        } catch {
+                            self.error = errorText(error)
+                        }
+                    }
+                }
+            } message: {
+                Text("Old codes stop finding you after their bounded records expire. Identity and safety numbers remain unchanged.")
+            }
+            .confirmationDialog(
+                "Retire legacy lookup?",
+                isPresented: $confirmLegacyRetirement,
+                titleVisibility: .visible
+            ) {
+                Button("Retire permanently", role: .destructive) {
+                    Task {
+                        working = true
+                        defer { working = false }
+                        do {
+                            connectCode = try await model.retireLegacyDiscovery()
+                            legacyDiscovery = false
+                        } catch {
+                            self.error = errorText(error)
+                        }
+                    }
+                }
+            } message: {
+                Text("This stops mailbox-only lookup under the stable Alpha address. It does not change identity or delete remote copies.")
             }
         }
     }

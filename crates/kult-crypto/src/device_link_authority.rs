@@ -22,8 +22,10 @@ const RESPONSE_MAGIC: &[u8; 4] = b"KLR2";
 const APPROVAL_REQUEST_MAGIC: &[u8; 4] = b"KLA2";
 const APPROVAL_MAGIC: &[u8; 4] = b"KLS2";
 const PREKEY_MAGIC: &[u8; 4] = b"KDP2";
+const PAIRING_MAGIC: &[u8; 4] = b"KPB2";
 const OFFER_DOMAIN: &[u8] = b"Komms-device-link-offer-v2";
 const RESPONSE_DOMAIN: &[u8] = b"Komms-device-link-response-v2";
+const PAIRING_DOMAIN: &[u8] = b"Komms-connect-pairing-bundle-v2";
 const LINK_INFO: &[u8] = b"Komms-device-link-key-v2";
 const LINK_PACKAGE_AD: &[u8] = b"Komms-device-link-package-v2";
 
@@ -85,6 +87,98 @@ impl AuthorityDevicePrekeyBundle {
             return Err(CryptoError::InvalidBundle);
         }
         Ok(())
+    }
+}
+
+/// Device-signed out-of-band pairing artifact carrying offline introduction
+/// authority alongside one current prekey bundle.
+///
+/// Public DHT records keep the discovery capability outside their ingress
+/// prekey bundle. QR, link, paste, and file exchange instead use this wrapper
+/// so a recipient-selected mailbox can accept the very first flight while the
+/// recipient is offline.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct AuthorityPairingBundle {
+    /// Exact authority-bound device prekey bundle.
+    pub device_bundle: AuthorityDevicePrekeyBundle,
+    /// Rotatable Connect discovery capability.
+    pub discovery_capability: [u8; 32],
+    /// Monotonic capability generation.
+    pub discovery_generation: u64,
+    /// Active device signature over the complete canonical wrapper.
+    #[serde(with = "util::bytes64")]
+    pub signature: [u8; 64],
+}
+
+impl AuthorityPairingBundle {
+    /// Bind one current Connect capability to an active device prekey.
+    pub fn new(
+        device_bundle: AuthorityDevicePrekeyBundle,
+        discovery_capability: [u8; 32],
+        discovery_generation: u64,
+        signer: &Identity,
+    ) -> Result<Self> {
+        let mut bundle = Self {
+            device_bundle,
+            discovery_capability,
+            discovery_generation,
+            signature: [0u8; 64],
+        };
+        if bundle.device_bundle.certificate.device != signer.public() {
+            return Err(CryptoError::InvalidBundle);
+        }
+        bundle.validate_unsigned(0)?;
+        bundle.signature = signer.sign_domain(PAIRING_DOMAIN, &bundle.canonical()?);
+        Ok(bundle)
+    }
+
+    /// Strict versioned encoding for QR, link, paste, and file exchange.
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        self.verify(0)?;
+        encode_prefixed(PAIRING_MAGIC, self)
+    }
+
+    /// Whether bytes identify the capability-bearing pairing wrapper.
+    pub fn is_encoded(bytes: &[u8]) -> bool {
+        bytes.starts_with(PAIRING_MAGIC)
+    }
+
+    /// Strictly decode without accepting trailing bytes.
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        decode_prefixed(PAIRING_MAGIC, bytes)
+    }
+
+    /// Verify authority, prekey lifetime, capability shape, generation, and
+    /// the active physical-device signature over their exact combination.
+    pub fn verify(&self, now: u64) -> Result<()> {
+        self.validate_unsigned(now)?;
+        self.device_bundle.certificate.device.verify_domain(
+            PAIRING_DOMAIN,
+            &self.canonical()?,
+            &self.signature,
+        )
+    }
+
+    fn validate_unsigned(&self, now: u64) -> Result<()> {
+        self.device_bundle.verify(now)?;
+        if self.discovery_capability == [0u8; 32] || self.discovery_generation == 0 {
+            return Err(CryptoError::InvalidBundle);
+        }
+        Ok(())
+    }
+
+    fn canonical(&self) -> Result<Vec<u8>> {
+        let encoded = self.device_bundle.encode()?;
+        let mut out = Vec::with_capacity(4 + encoded.len() + 32 + 8);
+        out.extend_from_slice(
+            &u32::try_from(encoded.len())
+                .map_err(|_| CryptoError::Serialization)?
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(&encoded);
+        out.extend_from_slice(&self.discovery_capability);
+        out.extend_from_slice(&self.discovery_generation.to_le_bytes());
+        Ok(out)
     }
 }
 

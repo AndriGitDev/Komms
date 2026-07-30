@@ -29,6 +29,27 @@ pub const MAX_DEVICE_SYNC_EVENTS: usize = 100_000;
 /// Maximum unresolved authority fork/recovery-conflict notices retained.
 pub const MAX_DEVICE_AUTHORITY_CONFLICTS: usize = 16;
 
+/// Sealed account-scoped ADR-0031 reachability state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveryCapabilityState {
+    /// Random bearer capability; all-zero only during one-time Alpha migration.
+    pub capability: [u8; 32],
+    /// Monotonic local publication/rotation generation.
+    pub generation: u64,
+    /// Whether the visible time-bounded Alpha v1 mailbox-only bridge remains enabled.
+    pub legacy_v1_enabled: bool,
+}
+
+impl Default for DiscoveryCapabilityState {
+    fn default() -> Self {
+        Self {
+            capability: [0u8; 32],
+            generation: 0,
+            legacy_v1_enabled: true,
+        }
+    }
+}
+
 /// User-controlled initial history transfer selection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeviceTransferSelection {
@@ -70,6 +91,9 @@ pub struct DeviceTransferGroup {
 /// Opaque-to-crypto selected state encrypted inside a confirmed link package.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceTransferSnapshot {
+    /// Account-scoped Connect capability copied only inside the confirmed,
+    /// encrypted proximate link package.
+    pub discovery: DiscoveryCapabilityState,
     /// Selected contact records.
     pub contacts: Vec<ContactRecord>,
     /// Per-device contact endpoints for fresh independent sessions.
@@ -142,6 +166,13 @@ pub struct ContactDeviceRecord {
     pub bundle: Vec<u8>,
     /// Opaque endpoint-specific delivery hints.
     pub hints: Vec<Vec<u8>>,
+    /// Authenticated account-scoped ADR-0031 capability used only to address
+    /// a fresh introduction to this exact device.
+    #[serde(default)]
+    pub introduction_capability: Option<[u8; 32]>,
+    /// Greatest authenticated discovery-control generation applied.
+    #[serde(default)]
+    pub introduction_generation: u64,
     /// Latest account manifest generation authenticating this endpoint.
     pub manifest_generation: u64,
     /// Deterministic id of that exact authority state; never a fork tiebreaker.
@@ -267,6 +298,9 @@ pub struct DeviceAuthorityStateRecord {
     pub accepted_recovery_anchor: [u8; 32],
     /// Bounded visible fork and recovery-conflict evidence.
     pub conflicts: Vec<DeviceAuthorityConflictRecord>,
+    /// Sealed capability-scoped first-contact discovery state.
+    #[serde(default)]
+    pub discovery: DiscoveryCapabilityState,
 }
 
 impl DeviceAuthorityStateRecord {
@@ -291,6 +325,7 @@ impl DeviceAuthorityStateRecord {
             || self.accepted_recovery_epoch != self.manifest.recovery_epoch()
             || self.accepted_recovery_anchor != self.manifest.recovery_anchor_id()
             || self.conflicts.len() > MAX_DEVICE_AUTHORITY_CONFLICTS
+            || (self.discovery.capability == [0u8; 32]) != (self.discovery.generation == 0)
         {
             return Err(StoreError::Serialization);
         }
@@ -409,6 +444,7 @@ impl Store {
                     | DeviceSyncNamespace::GroupPolls => selection.history,
                     DeviceSyncNamespace::Groups => selection.history || selection.organization,
                     DeviceSyncNamespace::ExpiryTombstones => true,
+                    DeviceSyncNamespace::AccountCapabilities => true,
                 };
                 Ok(selected.then_some(encoded))
             })
@@ -417,6 +453,10 @@ impl Store {
             .flatten()
             .collect();
         Ok(DeviceTransferSnapshot {
+            discovery: self
+                .get_device_authority_state()?
+                .ok_or(StoreError::NotAStore)?
+                .discovery,
             contacts: if selection.contacts {
                 self.contacts()?
             } else {
@@ -533,6 +573,8 @@ impl Store {
             || (endpoint.certificate.is_empty() && endpoint.account != endpoint.device)
             || (endpoint.manifest_generation == 0) != (endpoint.manifest_state_id == [0u8; 32])
             || endpoint.revoked_at.is_some() != endpoint.revoked_after_counter.is_some()
+            || endpoint.introduction_capability == Some([0u8; 32])
+            || endpoint.introduction_capability.is_some() != (endpoint.introduction_generation > 0)
         {
             return Err(StoreError::Serialization);
         }

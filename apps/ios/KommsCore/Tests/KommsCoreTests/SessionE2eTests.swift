@@ -816,6 +816,28 @@ final class SessionE2eTests: XCTestCase {
         session.stop()
     }
 
+    func testConnectCodeRotatesWithoutChangingIdentityAndLegacyDiscoveryRetires() throws {
+        let dir = try tempDir()
+        let session = try open(dir, "connect-code", Events())
+        let address = session.address
+        let first = try session.connectCode
+        let status = try session.status()
+        XCTAssertTrue(address.hasPrefix("kk1"))
+        XCTAssertTrue(first.hasPrefix("kc2"))
+        XCTAssertEqual(first, status.connectCode)
+        XCTAssertFalse(status.legacyDiscovery)
+
+        let rotated = try session.rotateConnectCode()
+        XCTAssertTrue(rotated.hasPrefix("kc2"))
+        XCTAssertNotEqual(first, rotated)
+        XCTAssertEqual(address, session.address)
+        XCTAssertEqual(rotated, try session.connectCode)
+        XCTAssertEqual(rotated, try session.status().connectCode)
+        XCTAssertEqual(rotated, try session.retireLegacyDiscovery())
+        XCTAssertFalse(try session.status().legacyDiscovery)
+        session.stop()
+    }
+
     func testTwoPhonesPairByScannedBundleHexAndMessage() throws {
         let dir = try tempDir()
         let aEv = Events()
@@ -842,6 +864,14 @@ final class SessionE2eTests: XCTestCase {
         let bAddr = try listenAddr(bob)
         let bobPeer = try alice.addContact(name: "bob", bundleHex: scanned, hints: multiaddrHint(bAddr))
         let alicePeer = try bob.addContact(name: "alice", bundleHex: aBundle, hints: multiaddrHint(aAddr))
+        try alice.requestRendezvousRefresh(peer: bobPeer)
+        try alice.setRendezvousConversationActive(peer: bobPeer, active: true)
+        try alice.setRendezvousConversationActive(peer: bobPeer, active: false)
+        XCTAssertThrowsError(
+            try alice.requestRendezvousRefresh(peer: String(repeating: "ff", count: 32)))
+        XCTAssertThrowsError(
+            try alice.setRendezvousConversationActive(
+                peer: String(repeating: "ff", count: 32), active: true))
 
         // Send → the event stream walks the honest ladder.
         let formattedSource = "**hello** from iOS ![pixel](https://invalid.test/p.png)"

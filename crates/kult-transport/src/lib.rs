@@ -30,6 +30,7 @@ mod mailbox_v2;
 mod mdns;
 #[cfg(feature = "meshtastic")]
 mod mesh;
+mod rendezvous;
 mod sneakernet;
 
 pub use internet::{CallStream, Libp2pTransport, NatStatus, TransportOptions};
@@ -42,6 +43,10 @@ pub use mailbox_v2::{
 pub use mesh::testutil as mesh_testutil;
 #[cfg(feature = "meshtastic")]
 pub use mesh::{MeshtasticOptions, MeshtasticTransport, MESH_BROADCAST};
+pub use rendezvous::{
+    rendezvous_record_route, rendezvous_route_hint, RendezvousClient, RendezvousProvider,
+    MAX_RENDEZVOUS_PROVIDERS,
+};
 pub use sneakernet::SneakernetTransport;
 
 /// Failures surfaced by transports.
@@ -173,6 +178,15 @@ pub enum SendReceipt {
     AckedByNextHop,
 }
 
+/// Versioned record-key namespace on the shared Kademlia plane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiscoveryNamespace {
+    /// Time-bounded Alpha compatibility under `/kk/prekeys/1/`.
+    LegacyPrekeyV1,
+    /// Capability-derived ADR-0031 records under `/kk/prekeys/2/`.
+    ConnectV2,
+}
+
 /// A discovery plane: a distributed key→value lookup for prekey bundles
 /// (docs/05-transports.md §2). Implemented by [`Libp2pTransport`] over
 /// Kademlia; sneakernet and mesh carriers have no discovery plane.
@@ -184,13 +198,21 @@ pub enum SendReceipt {
 #[async_trait]
 pub trait Discovery: Send + Sync {
     /// Publish `value` under `key`, replacing this node's previous record
-    /// for the same key. Resolves once at least one other node stored it.
-    async fn publish(&self, key: [u8; 32], value: Vec<u8>) -> Result<()>;
+    /// for the same namespace/key. `expires_at` is an absolute Unix second
+    /// after which peers must not retain the value. Resolves once at least
+    /// one other node stored it.
+    async fn publish(
+        &self,
+        namespace: DiscoveryNamespace,
+        key: [u8; 32],
+        value: Vec<u8>,
+        expires_at: u64,
+    ) -> Result<()>;
 
     /// Fetch all record values currently retrievable under `key` (distinct
     /// nodes may serve different versions; the caller picks after verifying).
     /// An unknown key yields an empty vector, not an error.
-    async fn lookup(&self, key: [u8; 32]) -> Result<Vec<Vec<u8>>>;
+    async fn lookup(&self, namespace: DiscoveryNamespace, key: [u8; 32]) -> Result<Vec<Vec<u8>>>;
 }
 
 /// Opaque handle for one interactive inbound request awaiting durable

@@ -24,7 +24,7 @@ product promise merely because the file exists.
 | [0015](0015-encrypted-attachment-pipeline.md) | Proposed; implementation exists | Encrypted attachment pipeline and no-airtime policy |
 | [0016](0016-group-mention-content.md) | Accepted | Canonical group-mention content |
 | [0017](0017-optional-hybrid-modes.md) | Proposed | Optional service modes and trust boundary |
-| [0018](0018-pairwise-rendezvous.md) | Proposed | Rotating pairwise rendezvous |
+| [0018](0018-pairwise-rendezvous.md) | Accepted; implemented for Alpha | Rotating pairwise rendezvous |
 | [0019](0019-native-wake-gateway.md) | Proposed | Capability-gated native wake |
 | [0020](0020-authenticated-message-edits.md) | Accepted | Immutable edit events, pairwise/group authorization, and deterministic convergence |
 | [0021](0021-ephemeral-retention.md) | Accepted | Authenticated local expiry, view-once consumption, and coarse relay retention |
@@ -32,12 +32,12 @@ product promise merely because the file exists.
 | [0023](0023-group-roles-and-owner-authority.md) | Accepted | Owner-serialized roles, signed generation-bound admin requests, and authority transfer |
 | [0024](0024-account-authorized-linked-devices.md) | Accepted Alpha; security-limited | Confirmed linking, per-device cryptography, sync, exact-id exclusion, and recovery; permanent-revocation claim withdrawn |
 | [0025](0025-optional-freenet-carrier.md) | Proposed | Optional epoch-scoped Freenet store-and-forward carrier and metadata boundary |
-| [0026](0026-revocable-device-authority.md) | Accepted; implemented for Alpha | Offline account-root recovery, strict-majority device manifests, visible conflicts, honest copied-root reset, and root-free KKR8/KKR9 |
+| [0026](0026-revocable-device-authority.md) | Accepted; implemented for Alpha | Offline account-root recovery, strict-majority device manifests, visible conflicts, honest copied-root reset, and root-free KKR8–KKR10 |
 | [0027](0027-opaque-indexed-store.md) | Accepted; implemented | Versioned keyed indexes, row-bound sealing, transactional migration, and honest local deletion limits |
 | [0028](0028-atomic-protocol-commits.md) | Proposed; stable-profile inventory implemented with open boundaries | Transactional ratchet, handshake, group-chain, queue, replay, attachment, maintenance, and deferred-inbox state transitions |
 | [0029](0029-recipient-authenticated-groups.md) | Accepted; implemented for Alpha | Per-recipient origin authentication for sender-key group messages and author-sensitive state |
 | [0030](0030-first-contact-admission.md) | Accepted; implemented for Alpha | Bounded public introductions, provisional message requests, blocking, and group-invite consent |
-| [0031](0031-capability-scoped-dht-discovery.md) | Proposed | Capability-scoped, encrypted DHT first contact with mailbox-only public routes |
+| [0031](0031-capability-scoped-dht-discovery.md) | Accepted; implemented for Alpha | Capability-scoped, encrypted DHT first contact with mailbox-only public routes |
 | [0032](0032-leased-mailbox-delivery.md) | Accepted; implemented for Alpha | Durable deposits, leased collection pages, and acknowledgement-after-endpoint-commit |
 | [0033](0033-nonprofit-founder-stewardship.md) | Accepted | Nonprofit public-benefit mission, founder-directed incubation, AGPL reciprocity limits, and adoption-triggered governance evolution |
 | [0034](0034-operator-minimized-reference-discovery.md) | Proposed | RAM-backed, content-blind, replaceable reference bootstrap/DHT/rendezvous deployment with explicit operator limits |

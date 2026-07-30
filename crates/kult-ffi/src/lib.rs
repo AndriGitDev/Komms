@@ -2234,8 +2234,12 @@ pub enum NatVerdict {
 /// A point-in-time snapshot of the node.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct Status {
-    /// This node's human-shareable kult address.
+    /// Stable account fingerprint retained for verification and compatibility.
     pub address: String,
+    /// Ordinary capability-scoped share artifact.
+    pub connect_code: String,
+    /// Whether mailbox-only stable-address compatibility remains enabled.
+    pub legacy_discovery: bool,
     /// This node's peer id (hex).
     pub peer: String,
     /// Live listen addresses (circuit addresses included once reserved).
@@ -2431,6 +2435,15 @@ pub enum Event {
         account: String,
         /// Exact new physical-device id (hex).
         device: String,
+    },
+    /// Authenticated rendezvous state forked at one generation.
+    RendezvousConflict {
+        /// Stable contact account id (hex).
+        peer: String,
+        /// Exact contact device id (hex).
+        device: String,
+        /// Provider-separation id, or zeroes for a provider-set conflict (hex).
+        provider: String,
     },
     /// Private local custom icons changed; shells re-read visible targets.
     CustomIconsChanged,
@@ -2722,6 +2735,15 @@ impl Event {
                     device: hex_encode(&device),
                 }
             }
+            kult_node::Event::RendezvousConflict {
+                peer,
+                device,
+                provider,
+            } => Self::RendezvousConflict {
+                peer: hex_encode(&peer),
+                device: hex_encode(&device),
+                provider: hex_encode(&provider),
+            },
             kult_node::Event::CustomIconsChanged => Self::CustomIconsChanged,
             kult_node::Event::ThemeChanged => Self::ThemeChanged,
             kult_node::Event::FoldersChanged => Self::FoldersChanged,
@@ -2972,7 +2994,7 @@ impl KultNode {
     }
 
     /// First run only: restore an encrypted backup with an explicitly opened
-    /// offline authority. A root-free `KKR9` resumes the stable identity in a
+    /// offline authority. A root-free `KKR10` resumes the stable identity in a
     /// fresh recovery epoch. A copied-root `KKR1` through `KKR7` is accepted
     /// only with a newly prepared, different authority and publishes a fresh
     /// identity containing the bounded former-identity local archive.
@@ -3100,6 +3122,7 @@ impl KultNode {
         // tick. Reading them here keeps status responsive even while that
         // actor is legitimately awaiting slow carrier work.
         let counts = rt.counts();
+        let (connect_code, legacy_discovery) = rt.discovery();
         // Status is a UI/health request and must not hang behind a slow or
         // wedged transport command loop. This mirrors kultd's status RPC:
         // a bounded diagnostic miss is honestly "unknown", not an excuse
@@ -3114,6 +3137,8 @@ impl KultNode {
         let (address, peer) = self.identity.lock_unpoisoned().clone();
         Ok(Status {
             address,
+            connect_code,
+            legacy_discovery,
             peer,
             listen: rt.net.listen_addrs(),
             lan_peers: rt.net.lan_peers(),
@@ -3123,6 +3148,31 @@ impl KultNode {
             transit: counts.transit,
             contacts: counts.contacts,
         })
+    }
+
+    /// Current capability-scoped Connect code for ordinary sharing.
+    pub fn connect_code(&self) -> Result<String, FfiError> {
+        let guard = self.inner.lock_unpoisoned();
+        let rt = guard.as_ref().ok_or(FfiError::Stopped)?;
+        Ok(rt.discovery().0)
+    }
+
+    /// Rotate discovery reachability without changing identity or safety numbers.
+    pub fn rotate_connect_code(&self) -> Result<String, FfiError> {
+        let connect_code = self.call(|resp| Msg::ConnectCodeRotate { resp })?;
+        let guard = self.inner.lock_unpoisoned();
+        let rt = guard.as_ref().ok_or(FfiError::Stopped)?;
+        rt.set_discovery(connect_code.clone(), false);
+        Ok(connect_code)
+    }
+
+    /// Permanently retire the mailbox-only stable-address migration bridge.
+    pub fn retire_legacy_discovery(&self) -> Result<String, FfiError> {
+        let connect_code = self.call(|resp| Msg::ConnectCodeRetireLegacy { resp })?;
+        let guard = self.inner.lock_unpoisoned();
+        let rt = guard.as_ref().ok_or(FfiError::Stopped)?;
+        rt.set_discovery(connect_code.clone(), false);
+        Ok(connect_code)
     }
 
     /// Export a ready signed prekey bundle for out-of-band sharing.
@@ -4874,6 +4924,26 @@ impl KultNode {
         self.call(|resp| Msg::SetHints { peer, hints, resp })
     }
 
+    /// Coalesce an on-demand post-pairing route refresh for an active
+    /// conversation. The call schedules bounded maintenance and never implies
+    /// registration, reachability, sent, or delivered.
+    pub fn request_rendezvous_refresh(&self, peer: String) -> Result<(), FfiError> {
+        let peer = parse_peer(&peer)?;
+        self.call(|resp| Msg::RendezvousRefresh { peer, resp })
+    }
+
+    /// Mark or clear one foreground conversation. Active state is runtime-only
+    /// and permits the bounded near-expiry rendezvous schedule; it does not
+    /// imply registration, reachability, sent, or delivered.
+    pub fn set_rendezvous_conversation_active(
+        &self,
+        peer: String,
+        active: bool,
+    ) -> Result<(), FfiError> {
+        let peer = parse_peer(&peer)?;
+        self.call(|resp| Msg::RendezvousConversationActive { peer, active, resp })
+    }
+
     /// Publish this node's prekey bundle on the DHT now (also done
     /// automatically at startup and after relay reservation).
     pub fn publish(&self) -> Result<(), FfiError> {
@@ -5778,6 +5848,23 @@ mod tests {
             }
             other => panic!("wrong variant: {other:?}"),
         }
+
+        let event = Event::from_node(kult_node::Event::RendezvousConflict {
+            peer: [3; 32],
+            device: [4; 32],
+            provider: [5; 32],
+        })
+        .unwrap();
+        assert!(matches!(
+            event,
+            Event::RendezvousConflict {
+                peer,
+                device,
+                provider,
+            } if peer == "03".repeat(32)
+                && device == "04".repeat(32)
+                && provider == "05".repeat(32)
+        ));
     }
 
     #[test]

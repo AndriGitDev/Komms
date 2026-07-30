@@ -189,7 +189,7 @@ The Alpha implementation includes:
   expired, oversized, or over-budget introductions;
 - explicit message-request and group-invitation consent through RPC, CLI,
   UniFFI, desktop, Android, and iOS surfaces; and
-- root-free `KKR9` preservation of bounded local block rules while provisional
+- root-free `KKR10` preservation of bounded local block rules while provisional
   requests, replay tombstones, invitation capabilities, one-time prekeys, and
   live session/delivery secrets remain excluded.
 

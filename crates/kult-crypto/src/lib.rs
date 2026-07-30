@@ -27,6 +27,7 @@ mod call;
 mod device;
 mod device_authority;
 mod device_link_authority;
+mod discovery;
 mod error;
 mod fingerprint;
 mod group;
@@ -37,6 +38,7 @@ mod mnemonic;
 mod prekeys;
 mod ratchet;
 mod recovery_authority;
+mod rendezvous;
 mod sealed;
 mod util;
 mod wordlist;
@@ -76,9 +78,19 @@ pub use device_link_authority::{
     seal_authority_device_link_recovery_package, ApprovedAuthorityDeviceLink,
     AuthorityDeviceLinkApproval, AuthorityDeviceLinkApprovalRequest, AuthorityDeviceLinkCode,
     AuthorityDeviceLinkOffer, AuthorityDeviceLinkResponse, AuthorityDevicePrekeyBundle,
-    CompletedAuthorityDeviceLink, PendingAuthorityDeviceLinkSource,
+    AuthorityPairingBundle, CompletedAuthorityDeviceLink, PendingAuthorityDeviceLinkSource,
     PendingAuthorityDeviceLinkTarget, PreparedAuthorityDeviceLink,
     MAX_AUTHORITY_LINK_TRANSFER_BYTES,
+};
+pub use discovery::{
+    discovery_epoch, discovery_epoch_valid_from, discovery_epoch_valid_until,
+    discovery_introduction_token, discovery_locator, open_discovery_record, seal_discovery_record,
+    ConnectCode, DiscoveryIngressBundle, DiscoveryRecord, DiscoveryRoute, DiscoveryRouteKind,
+    CONNECT_CODE_PAYLOAD_BYTES, CONNECT_CODE_PREFIX, DISCOVERY_CLOCK_GRACE_SECS,
+    DISCOVERY_EPOCH_SECS, DISCOVERY_LOOKUP_EPOCH_ADJACENCY, DISCOVERY_PUBLISH_EPOCH_AHEAD,
+    DISCOVERY_PUBLISH_EPOCH_BEHIND, DISCOVERY_RECORD_SIZE, DISCOVERY_RECORD_VERSION,
+    MAX_DISCOVERY_CANDIDATES, MAX_DISCOVERY_INGRESS_DEVICES, MAX_DISCOVERY_ROUTES,
+    MAX_DISCOVERY_ROUTE_BYTES,
 };
 pub use error::CryptoError;
 pub use fingerprint::{safety_number, SafetyNumber};
@@ -107,6 +119,12 @@ pub use recovery_authority::{
     account_recovery_authority_public, open_account_recovery_authority,
     seal_account_recovery_authority, ACCOUNT_RECOVERY_AUTHORITY_VERSION,
     MAX_ACCOUNT_RECOVERY_AUTHORITY_BYTES,
+};
+pub use rendezvous::{
+    derive_rendezvous_epoch_keys, open_rendezvous_record, rendezvous_epoch,
+    rendezvous_epoch_starts_at, rendezvous_provider_id, seal_rendezvous_record,
+    RendezvousEpochKeys, MAX_RENDEZVOUS_PROVIDER_ORIGIN_BYTES, RENDEZVOUS_EPOCH_SECS,
+    RENDEZVOUS_MAX_TTL_SECS, RENDEZVOUS_RECORD_PLAINTEXT_LEN, RENDEZVOUS_SEALED_RECORD_LEN,
 };
 pub use sealed::StorageKey;
 

@@ -133,7 +133,20 @@ pub struct Session {
     nr: u32,
     pn: u32,
     mailbox: [u8; 32],
+    /// Transcript-bound optional-service secret. This field is deliberately
+    /// omitted from the ratchet serialization; the store seals it in a
+    /// separate non-backup service row bound to `session_id`.
+    #[serde(skip)]
+    hybrid_service_exporter: Option<[u8; 32]>,
     skipped: Vec<SkippedKey>,
+}
+
+/// Handshake-derived delivery and optional-service secrets installed together.
+pub(crate) struct SessionServiceSecrets {
+    /// Relationship mailbox-token root.
+    pub(crate) mailbox: [u8; 32],
+    /// Transcript-bound optional-service exporter.
+    pub(crate) hybrid_service_exporter: [u8; 32],
 }
 
 /// `KDF_RK_HE`: (root key, DH output) → (root key, chain key, next header key).
@@ -178,7 +191,7 @@ impl Session {
         their_ratchet_pub: &[u8; 32],
         shared_hka: &[u8; 32],
         shared_nhkb: &[u8; 32],
-        mailbox: [u8; 32],
+        service: SessionServiceSecrets,
     ) -> Self {
         let mut priv_bytes = [0u8; 32];
         rng.fill_bytes(&mut priv_bytes);
@@ -201,7 +214,8 @@ impl Session {
             ns: 0,
             nr: 0,
             pn: 0,
-            mailbox,
+            mailbox: service.mailbox,
+            hybrid_service_exporter: Some(service.hybrid_service_exporter),
             skipped: Vec::new(),
         }
     }
@@ -214,7 +228,7 @@ impl Session {
         ratchet_priv: &[u8; 32],
         shared_hka: &[u8; 32],
         shared_nhkb: &[u8; 32],
-        mailbox: [u8; 32],
+        service: SessionServiceSecrets,
     ) -> Self {
         let dhs = StaticSecret::from(*ratchet_priv);
         let dhs_pub = *PublicKey::from(&dhs).as_bytes();
@@ -233,7 +247,8 @@ impl Session {
             ns: 0,
             nr: 0,
             pn: 0,
-            mailbox,
+            mailbox: service.mailbox,
+            hybrid_service_exporter: Some(service.hybrid_service_exporter),
             skipped: Vec::new(),
         }
     }
@@ -248,6 +263,25 @@ impl Session {
     /// turns it into rotating tokens.
     pub fn mailbox_key(&self) -> Zeroizing<[u8; 32]> {
         Zeroizing::new(self.mailbox)
+    }
+
+    /// Transcript-bound exporter for relationship-scoped optional services.
+    ///
+    /// New verified PQXDH sessions always return `Some`. A session loaded
+    /// from pre-ADR-0018 storage returns `None` and must complete an
+    /// authenticated re-handshake; callers must never synthesize a value from
+    /// ratchet, mailbox, or one-sided state.
+    pub fn hybrid_service_exporter(&self) -> Option<Zeroizing<[u8; 32]>> {
+        self.hybrid_service_exporter.map(Zeroizing::new)
+    }
+
+    /// Restore the separately sealed exporter after the store has verified
+    /// that its persisted session id matches this ratchet session.
+    ///
+    /// This is a storage-boundary operation, not an exporter derivation API.
+    #[doc(hidden)]
+    pub fn restore_hybrid_service_exporter(&mut self, exporter: Option<[u8; 32]>) {
+        self.hybrid_service_exporter = exporter;
     }
 
     fn base_ad(&self) -> [u8; 33] {

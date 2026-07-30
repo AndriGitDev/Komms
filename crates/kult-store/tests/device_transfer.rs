@@ -1,11 +1,12 @@
 //! Initial linked-device transfer keeps only durable, accurately described
 //! history and terminal expiry tombstones.
 
-use kult_crypto::KdfProfile;
+use kult_crypto::{DeviceAuthorityManifest, Identity, KdfProfile};
 use kult_store::{
-    DeliveryState, DeviceTransferSelection, Direction, EphemeralConversation, EphemeralMode,
-    EphemeralRecord, EphemeralState, GroupDelivery, GroupMessageRecord, GroupOriginAuthentication,
-    MessageRecord, Store,
+    DeliveryState, DeviceAuthorityStateRecord, DeviceTransferSelection, Direction,
+    DiscoveryCapabilityState, EphemeralConversation, EphemeralMode, EphemeralRecord,
+    EphemeralState, GroupDelivery, GroupMessageRecord, GroupOriginAuthentication, MessageRecord,
+    Store,
 };
 use rand::{rngs::StdRng, SeedableRng};
 
@@ -19,10 +20,33 @@ const TEST_KDF: KdfProfile = KdfProfile {
 fn transfer_excludes_legacy_and_active_ephemeral_history_and_clears_wire_state() {
     let mut rng = StdRng::seed_from_u64(0xd3_71ce);
     let directory = tempfile::tempdir().unwrap();
-    let store = Store::create(
+    let root = Identity::generate(&mut rng);
+    let device = Identity::generate(&mut rng);
+    let manifest =
+        DeviceAuthorityManifest::initial(&root, &device, "This device".into(), 0, &mut rng)
+            .unwrap();
+    let authority = DeviceAuthorityStateRecord {
+        local_device_secret: device.to_bytes().to_vec(),
+        local_certificate: manifest.devices()[0].certificate.clone(),
+        accepted_recovery_epoch: manifest.recovery_epoch(),
+        accepted_recovery_anchor: manifest.recovery_anchor_id(),
+        manifest,
+        sync_counter: 0,
+        channels: Vec::new(),
+        conflicts: Vec::new(),
+        discovery: DiscoveryCapabilityState {
+            capability: [0xa1; 32],
+            generation: 1,
+            legacy_v1_enabled: false,
+        },
+    };
+    let store = Store::create_authority_profile(
         &directory.path().join("device-transfer.db"),
         b"passphrase",
         TEST_KDF,
+        &root.public(),
+        &authority,
+        b"test-prekeys",
         &mut rng,
     )
     .unwrap();
@@ -143,6 +167,7 @@ fn transfer_excludes_legacy_and_active_ephemeral_history_and_clears_wire_state()
     let transfer = store
         .export_device_transfer(DeviceTransferSelection::default())
         .unwrap();
+    assert_eq!(transfer.discovery, authority.discovery);
 
     assert_eq!(transfer.messages.len(), 1);
     assert_eq!(transfer.messages[0].id, ordinary_pairwise_id);

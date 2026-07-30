@@ -11,6 +11,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 kult-crypto = { path = ".." }
+rand_core = "0.6"
 
 [[bin]]
 name = "envelope_decode"
@@ -64,6 +65,20 @@ bench = false
 [[bin]]
 name = "group_origin_envelope_decode"
 path = "fuzz_targets/group_origin_envelope_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "discovery_decode"
+path = "fuzz_targets/discovery_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rendezvous_open"
+path = "fuzz_targets/rendezvous_open.rs"
 test = false
 doc = false
 bench = false

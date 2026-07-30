@@ -1733,6 +1733,7 @@ dependencies = [
  "image",
  "kult-crypto",
  "kult-protocol",
+ "kult-rendezvous",
  "kult-store",
  "kult-transport",
  "postcard",
@@ -1761,6 +1762,17 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "sha2",
+ "zeroize",
+]
+
+[[package]]
+name = "kult-rendezvous"
+version = "0.3.0"
+dependencies = [
+ "kult-crypto",
+ "kult-protocol",
+ "rand 0.8.7",
+ "rand_core 0.6.4",
  "zeroize",
 ]
 

@@ -621,6 +621,29 @@ class SessionE2eTest {
     private fun tempDir(): File = Files.createTempDirectory("komms-e2e").toFile()
 
     @Test
+    fun `Connect code rotates without changing identity and legacy discovery retires`() {
+        val dir = tempDir()
+        val session = open(dir, "connect-code", Events())
+        val address = session.address
+        val first = session.connectCode
+        val status = session.status()
+        assertTrue(address.startsWith("kk1"))
+        assertTrue(first.startsWith("kc2"))
+        assertEquals(first, status.connectCode)
+        assertFalse(status.legacyDiscovery)
+
+        val rotated = session.rotateConnectCode()
+        assertTrue(rotated.startsWith("kc2"))
+        assertNotEquals(first, rotated)
+        assertEquals(address, session.address)
+        assertEquals(rotated, session.connectCode)
+        assertEquals(rotated, session.status().connectCode)
+        assertEquals(rotated, session.retireLegacyDiscovery())
+        assertFalse(session.status().legacyDiscovery)
+        session.stop()
+    }
+
+    @Test
     fun `two phones pair by scanned bundle hex and message`() {
         val dir = tempDir()
         val aEv = Events()
@@ -647,6 +670,15 @@ class SessionE2eTest {
         val bAddr = listenAddr(bob)
         val bobPeer = alice.addContact("bob", scanned, multiaddrHint(bAddr))
         val alicePeer = bob.addContact("alice", aBundle, multiaddrHint(aAddr))
+        alice.requestRendezvousRefresh(bobPeer)
+        alice.setRendezvousConversationActive(bobPeer, true)
+        alice.setRendezvousConversationActive(bobPeer, false)
+        assertFailsWith<FfiException> {
+            alice.requestRendezvousRefresh("ff".repeat(32))
+        }
+        assertFailsWith<FfiException> {
+            alice.setRendezvousConversationActive("ff".repeat(32), true)
+        }
 
         // Send → the event stream walks the honest ladder.
         val formattedSource = "**hello** from Android ![pixel](https://invalid.test/p.png)"

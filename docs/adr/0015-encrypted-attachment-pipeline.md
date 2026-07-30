@@ -367,7 +367,7 @@ references transactionally, then garbage-collect unreferenced files. Completed
 media remains until explicit local deletion or quota policy evicts it. Remote
 deletion and expiry remain later ADRs.
 
-The mnemonic backup (`KKR2` when this ADR was accepted; current `KKR9`)
+The mnemonic backup (`KKR2` when this ADR was accepted; current `KKR10`)
 continues carrying ordinary message and group-message bodies, therefore it carries
 ordinary Attachment manifests and their keys, but it excludes media files and
 C4 ephemeral manifests,
@@ -426,7 +426,7 @@ Implementation is not accepted until it includes:
   never handed to whole-envelope reassembly;
 - copied-database/media-directory inspection proving plaintext names, types,
   hashes, keys, bytes, transfer ranges, and conversation links are absent;
-- current `KKR9` backup/restore plus legacy archive-reset tests proving eligible
+- current `KKR10` backup/restore plus legacy archive-reset tests proving eligible
   ordinary history survives while media and transfer state are intentionally
   absent; and
 - cross-surface tests proving identical states and safe errors in RPC/CLI,

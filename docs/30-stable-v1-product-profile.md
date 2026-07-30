@@ -83,10 +83,11 @@ The stable implementation must accept the authority, admission, and discovery
 decisions in [ADR-0026](adr/0026-revocable-device-authority.md),
 [ADR-0030](adr/0030-first-contact-admission.md), and
 [ADR-0031](adr/0031-capability-scoped-dht-discovery.md), or superseding ADRs
-that close the same threats. ADR-0026 authority and ADR-0030 provisional
-message requests are implemented for Alpha. Capability-scoped discovery,
-independent adversarial evidence, and field qualification remain open, so the
-combined reachability/consent claim is not yet stable-v1.
+that close the same threats. All three are implemented for Alpha.
+Revision-bound CI retention, hostile-network multi-bootstrap evidence,
+independent adversarial/protocol review, and named physical-platform
+qualification remain open, so the combined reachability/consent claim is not
+yet stable-v1.
 
 ## 3. Pairwise text
 
@@ -196,7 +197,7 @@ are not stable-v1 claims.
   old-backup, stolen-device, manifest-fork, recovery-conflict, and failed-restore
   evidence on supported platforms.
 
-Current root-free `KKR9` round trips, secret-exclusion checks, recovery epochs,
+Current root-free `KKR10` round trips, secret-exclusion checks, recovery epochs,
 fork/conflict cases, crash failpoints, cross-shell host tests, and Android/iOS
 simulator builds are Alpha implementation evidence for accepted
 [ADR-0026](adr/0026-revocable-device-authority.md). They do not freeze stable

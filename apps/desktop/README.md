@@ -21,16 +21,22 @@ security indicators are the node's own, verbatim.
   states honestly that the webview, OS, input method, or writing tools may ignore
   hints.
 - **Create / unlock / restore** an encrypted store at the gate; restoring
-  current root-free `KKR9` or compatible root-free `KKR8` takes the backup and
+  current root-free `KKR10` or compatible root-free `KKR8`/`KKR9` takes the backup and
   its phrase plus the separately held authority and phrase. A visibly separate
   legacy `KKR1`–`KKR7` path
   prepares a fresh address, requires identity-change confirmation, and imports
   only the former-identity local archive.
+- **Make first contact** with the ordinary `kc2` Connect QR/code. It uses a
+  rotatable capability while the `kk1` account fingerprint and safety number
+  stay stable. The share panel exposes explicit rotation and legacy
+  mailbox-only retirement with warnings; existing relationships receive
+  updates over authenticated sessions.
 - **Pair out-of-band**: share your post-quantum prekey bundle as a short
   animated sequence of versioned Base45 QR frames or as pasteable hex
   (interoperable with `kult bundle` / `kult add`). Komms scanners assemble
   the bounded frames in any order; legacy one-code Base45 and hex QRs remain
-  accepted. A kult address can also add a contact through DHT lookup.
+  accepted. New DHT lookup uses the Connect code; a legacy kult address is
+  accepted only through the visible Alpha compatibility path.
 - **Link and manage owned devices** without a cloud account. The keyboard and
   screen-reader-accessible manager lists exact physical devices, supports signed
   rename and permanently confirmed revoke, and drives both sides of the
@@ -41,7 +47,7 @@ security indicators are the node's own, verbatim.
   targets the exact peer key, previews shared NFC normalization and duplicate/
   confusable/bidi/invisible warnings, and requires explicit confirmation before
   accepting a warned name. Duplicate names remain separate; rename survives
-  restart/`KKR9` and creates no network, notification, queue, or transport work.
+  restart/`KKR10` and creates no network, notification, queue, or transport work.
 - **Message** with honest delivery states: `queued` → `sent` (handed to a
   link) → `delivered` (end-to-end encrypted receipt came back). Sealed
   ciphertext retries passively after recent failures so fresh taps remain
@@ -134,11 +140,11 @@ security indicators are the node's own, verbatim.
   note-to-self in one leading accessible block. Keyboard buttons provide exact
   complete-set reorder and unpin; unavailable records remain visible for exact
   cleanup. Folder selection and label filtering run before pin/activity order.
-  The 8,192-pin bound, stable typed identity, restart/`KKR9` restoration, and
+  The 8,192-pin bound, stable typed identity, restart/`KKR10` restoration, and
   zero-network behavior come from the shared core rather than display names.
 - **Choose System, Light, or Dark appearance** at the gate or in the unlocked
   app. A non-sensitive local cache applies before first paint; after unlock the
-  sealed F5 `appearance.theme` value is authoritative and travels in `KKR9`.
+  sealed F5 `appearance.theme` value is authoritative and travels in `KKR10`.
   System follows live OS changes, semantic CSS roles meet the shared contrast
   targets, `prefers-contrast` and `prefers-reduced-motion` remain native, and
   delivery/security meaning always retains text, glyph, or accessible labels.
@@ -148,7 +154,7 @@ security indicators are the node's own, verbatim.
   clear-to-fallback, and quota usage. The shared core emits only 256×256 RGBA
   PNGs re-encoded without source metadata, enforces
   512 KiB/1,024-record/64 MiB limits, and safely falls
-  back after corrupt bytes. Icons travel only in `KKR9` or authenticated
+  back after corrupt bytes. Icons travel only in `KKR10` or authenticated
   own-device C2 sync, never URLs, peer sync,
   envelopes, capabilities, queues, notifications, or transports.
 - **Verify** contacts by safety number: identical digits and QR on both
@@ -183,7 +189,7 @@ Custom-icon acceptance consumes the shared B13 fixture through the same session
 surface the Tauri commands wrap: canonical local data URLs whose PNG omits
 source metadata, exact
 folder/note targets, bundled and selected-image paths, quota accounting,
-restart/`KKR9`, safe fallback, local events, and zero delivery work. Rust node
+restart/`KKR10`, safe fallback, local events, and zero delivery work. Rust node
 acceptance independently covers contact and group identities plus corrupt sealed
 legacy bytes.
 
@@ -291,6 +297,6 @@ must never depend on. Store/package-manager channels will carry updates.
   state. They never enter envelopes, DHT records, capabilities, analytics,
   notifications, or logs; navigation/filtering changes presentation only.
   Custom icons are likewise exact typed sealed local records, rendered only from
-  verified bounded data URLs. `KKR9` preserves them exactly and C2 can converge
+  verified bounded data URLs. `KKR10` preserves them exactly and C2 can converge
   them only between authorized owned devices; message pins and message labels
   are not implemented.

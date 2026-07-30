@@ -338,9 +338,10 @@ impl IdentityPublic {
         self.verify_domain(DEVICE_SYNC_EVENT_DOMAIN, canonical_event, signature)
     }
 
-    /// The 32-byte SHA-256 digest over `ed || x` that the kult address
-    /// encodes — also the DHT record key this identity's prekey bundles are
-    /// published under (docs/05-transports.md §2, docs/06-identity-trust.md §2).
+    /// The 32-byte SHA-256 digest over `ed || x` that the stable kult account
+    /// address encodes. ADR-0031 Connect discovery binds this digest inside
+    /// the share code but derives public DHT locators from a separate random
+    /// capability.
     pub fn address_digest(&self) -> [u8; 32] {
         let mut h = Sha256::new();
         h.update(self.ed);

@@ -586,8 +586,16 @@ forward!(
     cancel_scheduled(message: String) -> (), |s| s.cancel_scheduled(message)
 );
 forward!(
-    /// A QR of this node's kult address.
+    /// A QR of this node's capability-scoped Connect code.
     address_qr() -> String, |s| s.address_qr()
+);
+forward!(
+    /// Rotate reachability without changing identity or safety numbers.
+    rotate_connect_code() -> String, |s| s.rotate_connect_code()
+);
+forward!(
+    /// Permanently retire the mailbox-only stable-address bridge.
+    retire_legacy_discovery() -> String, |s| s.retire_legacy_discovery()
 );
 forward!(
     /// Fresh prekey bundle: pasteable hex + QR.
@@ -599,7 +607,7 @@ forward!(
     |s| s.add_contact(name, &bundle_hex, &hints)
 );
 forward!(
-    /// Add a contact from their kult address (DHT lookup).
+    /// Add a contact from a Connect code or visible legacy address.
     add_contact_by_address(name: String, address: String) -> String,
     |s| s.add_contact_by_address(name, address)
 );
@@ -1074,6 +1082,15 @@ forward!(
 forward!(
     /// Replace a contact's delivery hints.
     set_hints(peer: String, hints: Vec<UiHint>) -> (), |s| s.set_hints(peer, &hints)
+);
+forward!(
+    /// Coalesce an on-demand route refresh for an opened conversation.
+    request_rendezvous_refresh(peer: String) -> (), |s| s.request_rendezvous_refresh(peer)
+);
+forward!(
+    /// Mark or clear a foreground conversation for bounded route maintenance.
+    set_rendezvous_conversation_active(peer: String, active: bool) -> (),
+    |s| s.set_rendezvous_conversation_active(peer, active)
 );
 forward!(
     /// Publish the prekey bundle on the DHT now.

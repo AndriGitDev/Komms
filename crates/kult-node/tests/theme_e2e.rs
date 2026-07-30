@@ -90,7 +90,7 @@ fn default_idempotency_restart_restore_and_zero_network_work() {
         .set_theme_preference(ThemePreference::Light, &mut rng)
         .unwrap());
     let (backup, mnemonic) = reopened.export_backup(1_800_000_000, &mut rng).unwrap();
-    assert_eq!(&backup[..4], b"KKR9");
+    assert_eq!(&backup[..4], b"KKRA");
 
     let restored = Node::restore_with_recovery_authority(
         &directory.path().join("restored.db"),

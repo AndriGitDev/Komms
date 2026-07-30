@@ -12,7 +12,7 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 
 use kult_crypto::{
-    AuthorityDevicePrekeyBundle, Identity, KdfProfile, OneTimePrekeySecret, PqPrekeySecret,
+    AuthorityPairingBundle, ConnectCode, Identity, KdfProfile, OneTimePrekeySecret, PqPrekeySecret,
     PrekeyBundle, SignedPrekeySecret,
 };
 use kult_node::{ContentStatus, Event, Node};
@@ -66,7 +66,18 @@ fn pairing_bundle_carries_signed_first_message_routes() {
     let encoded = node
         .handshake_bundle_with_hints(&hints, NOW, &mut rng)
         .unwrap();
-    let bundle = AuthorityDevicePrekeyBundle::decode(&encoded).unwrap();
+    let pairing = AuthorityPairingBundle::decode(&encoded).unwrap();
+    pairing.verify(NOW).unwrap();
+    let code = ConnectCode::parse(&node.connect_code().unwrap()).unwrap();
+    assert_eq!(pairing.discovery_capability, code.capability());
+    assert!(pairing.discovery_generation > 0);
+    let mut wrong_capability = pairing.clone();
+    wrong_capability.discovery_capability[0] ^= 0x80;
+    assert!(wrong_capability.verify(NOW).is_err());
+    let mut trailing = encoded.clone();
+    trailing.push(0);
+    assert!(AuthorityPairingBundle::decode(&trailing).is_err());
+    let bundle = &pairing.device_bundle;
     assert!(
         bundle.prekey.relay_hints.len() > hints.len(),
         "the signed bundle also carries its bounded admission extension"
@@ -752,23 +763,24 @@ async fn retry_with_backoff_until_link_recovers() {
         .send_message(&peer, b"stubborn", NOW, &mut rng)
         .unwrap();
 
-    // Link down: message and terminal capability control both stay queued.
+    // Link down: the message plus terminal content- and discovery-capability
+    // controls all stay queued.
     alice.tick(NOW, &mut rng).await.unwrap();
-    assert_eq!(attempts.load(Ordering::SeqCst), 2);
-    assert_eq!(alice.queued().unwrap(), 2);
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    assert_eq!(alice.queued().unwrap(), 3);
 
     // Inside the backoff window nothing is attempted.
     alice.tick(NOW + 5, &mut rng).await.unwrap();
     assert_eq!(
         attempts.load(Ordering::SeqCst),
-        2,
+        3,
         "backoff suppresses retry"
     );
 
     // Link recovers; after the backoff expires the send succeeds.
     healthy.store(true, Ordering::SeqCst);
     alice.tick(NOW + 31, &mut rng).await.unwrap();
-    assert_eq!(attempts.load(Ordering::SeqCst), 4);
+    assert_eq!(attempts.load(Ordering::SeqCst), 6);
     assert_eq!(alice.queued().unwrap(), 0);
     let record = alice
         .messages_with(&peer)
@@ -777,7 +789,7 @@ async fn retry_with_backoff_until_link_recovers() {
         .find(|r| r.id == msg)
         .unwrap();
     assert_eq!(record.state, DeliveryState::Sent);
-    assert_eq!(net.lock().unwrap().get(&9).unwrap().len(), 2);
+    assert_eq!(net.lock().unwrap().get(&9).unwrap().len(), 3);
 }
 
 #[tokio::test]
@@ -966,13 +978,13 @@ async fn out_of_order_arrival_survives_restart() {
     alice.tick(NOW + 1, &mut rng).await.unwrap();
 
     // Intercept the two message envelopes and deliver the session message
-    // first. The terminal capability control is irrelevant to this test.
+    // first. The terminal capability controls are irrelevant to this test.
     // (Picked by kind: priority flushing sends the text-class envelope
     // before the handshake, so wire order is not handshake-first.)
     let (handshake, session_msg) = {
         let mut locked = net.lock().unwrap();
         let queue = locked.get_mut(&2).unwrap();
-        assert_eq!(queue.len(), 3);
+        assert_eq!(queue.len(), 4);
         let hs_at = queue
             .iter()
             .position(|e| e.kind == EnvelopeKind::Handshake)
@@ -983,8 +995,10 @@ async fn out_of_order_arrival_survives_restart() {
             .position(|e| e.kind == EnvelopeKind::Message)
             .unwrap();
         let sm = queue.remove(msg_at);
-        assert_eq!(queue.len(), 1);
-        assert_eq!(queue.pop().unwrap().kind, EnvelopeKind::Receipt);
+        assert_eq!(queue.len(), 2);
+        assert!(queue
+            .drain(..)
+            .all(|envelope| envelope.kind == EnvelopeKind::Receipt));
         (hs, sm)
     };
 

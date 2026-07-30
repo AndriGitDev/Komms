@@ -76,7 +76,7 @@ revision zero. This gives the same result for:
 - duplicate delivery;
 - stale revisions arriving late;
 - two same-revision edits minted concurrently by linked devices;
-- restart and `KKR9` backup/restore; and
+- restart and `KKR10` backup/restore; and
 - different carrier paths delivering records in different orders.
 
 The random id is only a deterministic tie-breaker; it does not claim causal or
@@ -89,7 +89,7 @@ so would make endpoints disagree.
 
 The existing sealed pairwise/group history rows retain exact originals and edit
 events. No plaintext `current_body` column, mutable source row, or new
-edit-specific equality index exists. `KKR9` carries those sealed history records
+edit-specific equality index exists. `KKR10` carries those sealed history records
 unchanged and the derived winner is rebuilt after open or restore. The broader
 locked-database metadata and row-binding limitations are documented in
 [07: Local Storage](07-storage.md) and

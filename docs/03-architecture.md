@@ -99,7 +99,7 @@ choices and honest local-only language. See
 C5 polls follow the immutable replicated-state shape: `kult-protocol` owns
 content-v1 kind 6 create/vote/close frames; `kult-node` validates the claimed
 group member and derives fixed-electorate vote heads and final tallies; existing
-sealed group rows and `KKR9` carry the source events; RPC/UniFFI expose typed
+sealed group rows and `KKR10` carry the source events; RPC/UniFFI expose typed
 snapshots; shells render and refresh cards without resolving votes. The
 sender-key path hides poll content from transports, while authenticated
 capability intersection keeps old clients off the typed send path. ADR-0029
@@ -118,7 +118,7 @@ the one current owner; `kult-store` seals the winning state and consumed request
 ids separately from legacy group records. RPC/UniFFI expose render-safe roles
 and typed commands/events. Apps display roles and invoke those commands but
 never see group secrets, signatures, identity blobs, or chain state. `KKR6`
-introduced authority records and `KKR9` carries them forward, while
+introduced authority records and `KKR10` carries them forward, while
 the fresh-identity `KKR1`–`KKR7` archive boundary omits groups. See
 [21: Group Roles, Ownership, and Moderation](21-group-roles.md).
 
@@ -130,7 +130,7 @@ sync events; `kult-store` seals public account authority, per-endpoint delivery
 state, sync counters, conflicts, and deterministic ordinary-data winners;
 `kult-node` enforces quorum, fail-closed fork/recovery conflict handling,
 fan-out, capability intersection, convergence, rotation, and recovery. Routine
-`KKR9` and link packages contain no account root. RPC/UniFFI expose opaque
+`KKR10` and link packages contain no account root. RPC/UniFFI expose opaque
 ceremony/approval/recovery bytes and strict render-safe device/conflict models;
 shells compare codes and collect explicit approvals without implementing
 authority rules. See
@@ -290,8 +290,10 @@ At rest, the v2 database contains only opaque indexes and row-bound seals when
 its separate service key is unavailable; possession of both files exposes the
 relay-visible tokens and envelopes, which remain end-to-end ciphertext.
 
-This paragraph does not describe an enabled optional rendezvous or native-wake
-service. Their bounded but non-zero metadata surfaces are listed in
+ADR-0018's client, sealed state, fixed codecs, and persistence-free service
+component are implemented for Alpha but are not configured as a default or
+deployed reference service. Native wake remains unimplemented. Their bounded
+but non-zero metadata surfaces are listed in
 [02: Threat Model](02-threat-model.md),
 [ADR-0017](adr/0017-optional-hybrid-modes.md), and
 [ADR-0034](adr/0034-operator-minimized-reference-discovery.md).

@@ -206,8 +206,17 @@ private class Forwarder(private val sink: EventSink) : EventListener {
  */
 class Session private constructor(private val node: KultNode) {
 
-    /** This node's human-shareable kult address. */
+    /** Stable account fingerprint retained for verification and compatibility. */
     val address: String get() = node.address()
+
+    /** Capability-scoped share artifact for ordinary first contact. */
+    val connectCode: String get() = node.connectCode()
+
+    /** Rotate discovery reachability without changing identity or safety numbers. */
+    fun rotateConnectCode(): String = node.rotateConnectCode()
+
+    /** Permanently retire mailbox-only stable-address discovery compatibility. */
+    fun retireLegacyDiscovery(): String = node.retireLegacyDiscovery()
 
     /** This node's peer id (hex). */
     val peer: String get() = node.peer()
@@ -354,7 +363,7 @@ class Session private constructor(private val node: KultNode) {
         return node.addContact(name, bundle, hints.toFfi())
     }
 
-    /** Add a contact from their kult address alone (DHT lookup). */
+    /** Add a contact from a Connect code or visible legacy address. */
     fun addContactByAddress(name: String, address: String): String =
         node.addContactByAddress(name, address.trim())
 
@@ -892,6 +901,13 @@ class Session private constructor(private val node: KultNode) {
     /** Replace a contact's delivery hints. */
     fun setHints(peer: String, hints: List<HintSpec>) =
         node.setHints(peer, hints.toFfi())
+
+    /** Coalesce a bounded route refresh for an active conversation. */
+    fun requestRendezvousRefresh(peer: String) = node.requestRendezvousRefresh(peer)
+
+    /** Mark or clear a foreground conversation for bounded route maintenance. */
+    fun setRendezvousConversationActive(peer: String, active: Boolean) =
+        node.setRendezvousConversationActive(peer, active)
 
     /** Publish the prekey bundle on the DHT now. */
     fun publish() = node.publish()

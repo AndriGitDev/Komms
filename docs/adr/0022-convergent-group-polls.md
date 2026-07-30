@@ -101,7 +101,7 @@ being guessed as text.
 
 Poll events remain individually sealed ordinary group-history rows. The node
 derives cards, visible vote heads, and tallies on read; it persists no mutable
-tally. Current `KKR9` carries those rows unchanged, so restart and restore recompute the
+tally. Current `KKR10` carries those rows unchanged, so restart and restore recompute the
 same result without a backup version or database migration.
 
 ## Alternatives considered
@@ -127,7 +127,7 @@ observed snapshot; Komms guarantees deterministic convergence, not
 malicious-member origin, election fairness, or secret ballots. The fixed
 electorate and visible identities must be shown before creation and voting.
 Parser fuzzing, changed/duplicate/reordered vote tests, membership and old-client
-gates, closure conflicts, current `KKR9` restore, legacy archive omission of
+gates, closure conflicts, current `KKR10` restore, legacy archive omission of
 groups, C2 owned-device convergence, strict
 RPC/CLI, UniFFI, and all shell contracts are release requirements. ADR-0029
 wrong-recipient/device/context, malicious-member, replay/reorder, rotation,

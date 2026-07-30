@@ -82,9 +82,12 @@ fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
     match op {
         "contact_name_assessment" => Some(&["id", "op", "peer", "name"]),
         "rename_contact" => Some(&["id", "op", "peer", "name", "accept_warnings"]),
+        "rendezvous_refresh" => Some(&["id", "op", "peer"]),
         "screen_security_policy" | "incognito_keyboard_policy" => Some(&["id", "op", "platform"]),
         "theme" => Some(&["id", "op"]),
         "device_id"
+        | "connect_code_rotate"
+        | "connect_code_retire_legacy"
         | "linked_devices"
         | "device_authority_conflicts"
         | "contact_authority_conflicts"
@@ -220,6 +223,10 @@ pub enum Op {
     Status,
     /// Export a fresh signed prekey bundle (hex) for out-of-band sharing.
     Bundle,
+    /// Rotate the account-scoped Connect capability without changing identity.
+    ConnectCodeRotate,
+    /// Permanently retire stable-identity discovery compatibility.
+    ConnectCodeRetireLegacy,
     /// Exact separately authenticated physical-device id.
     DeviceId,
     /// Complete account-authorized local device list.
@@ -1046,6 +1053,19 @@ pub enum Op {
         /// The new hints.
         hints: Vec<Hint>,
     },
+    /// Coalesce a bounded post-pairing route refresh for an active
+    /// conversation.
+    RendezvousRefresh {
+        /// Stable contact account id (hex).
+        peer: String,
+    },
+    /// Mark or clear one foreground pairwise conversation.
+    RendezvousConversationActive {
+        /// Stable contact account id (hex).
+        peer: String,
+        /// Whether this conversation is currently foreground.
+        active: bool,
+    },
     /// Publish this node's prekey bundle on the DHT now (also done
     /// automatically at startup and after relay reservation).
     Publish,
@@ -1257,6 +1277,16 @@ pub fn event_line(event: &Event) -> String {
             "type": "device_link_completed",
             "account": hex_encode(account),
             "device": hex_encode(device),
+        }),
+        Event::RendezvousConflict {
+            peer,
+            device,
+            provider,
+        } => json!({
+            "type": "rendezvous_conflict",
+            "peer": hex_encode(peer),
+            "device": hex_encode(device),
+            "provider": hex_encode(provider),
         }),
         Event::CustomIconsChanged => json!({
             "type": "custom_icons_changed",
@@ -2986,6 +3016,20 @@ mod tests {
         assert_eq!(value["event"]["type"], json!("carrier_capability"));
         assert_eq!(value["event"]["snapshot"]["capability"], json!("mesh_only"));
         assert_eq!(value["event"]["snapshot"]["expires_at"], json!(70));
+    }
+
+    #[test]
+    fn rendezvous_conflict_event_preserves_exact_scope() {
+        let line = event_line(&Event::RendezvousConflict {
+            peer: [0x31; 32],
+            device: [0x32; 32],
+            provider: [0x33; 32],
+        });
+        let value: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(value["event"]["type"], json!("rendezvous_conflict"));
+        assert_eq!(value["event"]["peer"], json!("31".repeat(32)));
+        assert_eq!(value["event"]["device"], json!("32".repeat(32)));
+        assert_eq!(value["event"]["provider"], json!("33".repeat(32)));
     }
 
     #[test]

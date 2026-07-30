@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use kult_protocol::{Envelope, EnvelopeKind};
 use kult_transport::{
-    DeliveryHint, Discovery, Libp2pTransport, Reachability, SendReceipt, Transport,
-    TransportOptions,
+    DeliveryHint, Discovery, DiscoveryNamespace, Libp2pTransport, Reachability, SendReceipt,
+    Transport, TransportOptions,
 };
 
 const LISTEN: &str = "/ip4/0.0.0.0/udp/0/quic-v1";
@@ -102,9 +102,20 @@ async fn lan_only_dht_records_with_zero_bootstrap() {
 
     let key = [42u8; 32];
     let value = b"signed prekey bundle bytes".to_vec();
-    publisher.publish(key, value.clone()).await.unwrap();
+    publisher
+        .publish(
+            DiscoveryNamespace::LegacyPrekeyV1,
+            key,
+            value.clone(),
+            4_000_000_000,
+        )
+        .await
+        .unwrap();
 
-    let found = reader.lookup(key).await.unwrap();
+    let found = reader
+        .lookup(DiscoveryNamespace::LegacyPrekeyV1, key)
+        .await
+        .unwrap();
     assert!(
         found.contains(&value),
         "reader must retrieve the record with no bootstrap configured"

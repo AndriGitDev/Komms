@@ -176,9 +176,10 @@ The root is not written to the live profile. The export is available once,
 creates a new owner-only file without overwrite, and is explicitly described
 as an account-takeover secret.
 
-Routine backups use root-free `KKR9`; root-free `KKR8` remains a directly
-restorable predecessor and naturally has no later KKR9 local block rows. A
-stable-identity restore requires the KKR8/KKR9 file and phrase plus the
+Routine backups use root-free `KKR10`; root-free `KKR8` and `KKR9` remain
+directly restorable predecessors. KKR8 naturally has no later local block rows,
+and both predecessors receive a fresh ADR-0031 discovery capability. A
+stable-identity restore requires the KKR8/KKR9/KKR10 file and phrase plus the
 separately held recovery-authority file and phrase. Restore opens the root only
 for one higher recovery-epoch transition, revokes the former active set,
 creates one fresh device, generates new prekeys, and retires live session,

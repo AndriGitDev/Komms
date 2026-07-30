@@ -21,6 +21,9 @@ The socket defaults to the KULTD_SOCKET environment variable.
 COMMANDS:
     status                          daemon and node status
     bundle                          export a fresh prekey bundle (hex)
+    connect-code-rotate --yes       rotate reachability; identity stays unchanged
+    connect-code-retire-legacy --yes
+                                    permanently retire stable-address lookup
     device-id                       show this exact certified physical-device id
     devices                         list active and revoked account devices
     authority-reset-history         show former-identity archive and re-verification work
@@ -54,7 +57,7 @@ COMMANDS:
     add-contact NAME BUNDLE_HEX [--hint MULTIADDR]... [--relay MULTIADDR]...
                                 [--mesh NODE|broadcast]...
                                     add a contact from an out-of-band bundle
-    add NAME ADDRESS                add a contact from a kult address (DHT)
+    add NAME CONNECT_CODE           add a contact through capability-scoped DHT
     contact-name-check PEER_HEX NAME...
                                     preview NFC form and local spoofing/duplicate warnings
     contact-rename PEER_HEX [--accept-warnings] NAME...
@@ -213,6 +216,9 @@ COMMANDS:
     set-hints PEER_HEX [--hint MULTIADDR]... [--relay MULTIADDR]...
                        [--mesh NODE|broadcast]...
                                     replace a contact's delivery hints
+    rendezvous-refresh PEER_HEX     request a bounded post-pairing route refresh
+    rendezvous-active PEER_HEX on|off
+                                    mark or clear a foreground conversation
     publish                         publish the prekey bundle on the DHT now
     backup PATH                     write an encrypted backup file and print the
                                     one-time 24-word mnemonic that seals it
@@ -424,6 +430,23 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
     let request = match command {
         "status" => json!({ "op": "status" }),
         "bundle" => json!({ "op": "bundle" }),
+        "connect-code-rotate" => {
+            if args != ["--yes"] {
+                return Err(
+                    "connect-code-rotate: pass --yes after reviewing that old codes will expire"
+                        .to_owned(),
+                );
+            }
+            json!({ "op": "connect_code_rotate" })
+        }
+        "connect-code-retire-legacy" => {
+            if args != ["--yes"] {
+                return Err(
+                    "connect-code-retire-legacy: permanent retirement requires --yes".to_owned(),
+                );
+            }
+            json!({ "op": "connect_code_retire_legacy" })
+        }
         "device-id" => json!({ "op": "device_id" }),
         "devices" => json!({ "op": "linked_devices" }),
         "authority-reset-history" => json!({ "op": "authority_reset_history" }),
@@ -1428,6 +1451,27 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
                 "hints": parse_hints(&args[1..])?,
             })
         }
+        "rendezvous-refresh" => {
+            if args.len() != 1 {
+                return Err("rendezvous-refresh: expected PEER_HEX".to_owned());
+            }
+            json!({ "op": "rendezvous_refresh", "peer": args[0] })
+        }
+        "rendezvous-active" => {
+            if args.len() != 2 {
+                return Err("rendezvous-active: expected PEER_HEX on|off".to_owned());
+            }
+            let active = match args[1].as_str() {
+                "on" => true,
+                "off" => false,
+                _ => return Err("rendezvous-active: expected PEER_HEX on|off".to_owned()),
+            };
+            json!({
+                "op": "rendezvous_conversation_active",
+                "peer": args[0],
+                "active": active,
+            })
+        }
         "publish" => json!({ "op": "publish" }),
         "backup" => {
             need(1)?;
@@ -1654,6 +1698,25 @@ mod tests {
             build_request("contact-authority-conflicts", &[]).unwrap()["op"],
             "contact_authority_conflicts"
         );
+        let rendezvous_peer = "42".repeat(32);
+        assert_eq!(
+            build_request("rendezvous-refresh", std::slice::from_ref(&rendezvous_peer)).unwrap(),
+            json!({ "op": "rendezvous_refresh", "peer": rendezvous_peer })
+        );
+        assert!(build_request(
+            "rendezvous-refresh",
+            &["42".repeat(32), "trailing".to_owned()]
+        )
+        .is_err());
+        assert_eq!(
+            build_request("rendezvous-active", &["42".repeat(32), "on".to_owned()]).unwrap(),
+            json!({
+                "op": "rendezvous_conversation_active",
+                "peer": "42".repeat(32),
+                "active": true,
+            })
+        );
+        assert!(build_request("rendezvous-active", &["42".repeat(32), "yes".to_owned()]).is_err());
         let approve = build_request(
             "device-link-approve",
             &[

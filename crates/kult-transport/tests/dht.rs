@@ -1,7 +1,7 @@
 //! Discovery-plane tests: prekey-style records published to and fetched
 //! from the Kademlia DHT across separate nodes (docs/05-transports.md §2).
 
-use kult_transport::{Discovery, Libp2pTransport};
+use kult_transport::{Discovery, DiscoveryNamespace, Libp2pTransport};
 
 const LOCALHOST_QUIC: &str = "/ip4/127.0.0.1/udp/0/quic-v1";
 
@@ -21,16 +21,63 @@ async fn record_published_on_one_node_is_found_on_another() {
 
     let key = [7u8; 32];
     let value = b"signed prekey bundle bytes".to_vec();
-    publisher.publish(key, value.clone()).await.unwrap();
+    publisher
+        .publish(
+            DiscoveryNamespace::LegacyPrekeyV1,
+            key,
+            value.clone(),
+            4_000_000_000,
+        )
+        .await
+        .unwrap();
 
-    let found = reader.lookup(key).await.unwrap();
+    let found = reader
+        .lookup(DiscoveryNamespace::LegacyPrekeyV1, key)
+        .await
+        .unwrap();
     assert!(
         found.contains(&value),
         "reader must retrieve the published record"
     );
 
     // Unknown keys resolve to nothing — an empty answer, not an error.
-    assert!(reader.lookup([9u8; 32]).await.unwrap().is_empty());
+    assert!(reader
+        .lookup(DiscoveryNamespace::LegacyPrekeyV1, [9u8; 32])
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+/// The frozen Connect-v2 body is intentionally large and fixed-width. The
+/// shared DHT must accept exactly that bound end to end rather than only
+/// passing tiny legacy fixtures.
+#[tokio::test]
+async fn fixed_width_connect_record_is_stored_and_retrieved() {
+    let seed = Libp2pTransport::new(&[LOCALHOST_QUIC]).await.unwrap();
+    let seed_addr = seed.wait_listen_addr().await.unwrap();
+
+    let publisher = Libp2pTransport::new(&[LOCALHOST_QUIC]).await.unwrap();
+    let reader = Libp2pTransport::new(&[LOCALHOST_QUIC]).await.unwrap();
+    publisher.bootstrap(&[seed_addr.as_str()]).await.unwrap();
+    reader.bootstrap(&[seed_addr.as_str()]).await.unwrap();
+
+    let key = [0x31u8; 32];
+    let value = vec![0x5a; kult_crypto::DISCOVERY_RECORD_SIZE];
+    publisher
+        .publish(
+            DiscoveryNamespace::ConnectV2,
+            key,
+            value.clone(),
+            4_000_000_000,
+        )
+        .await
+        .unwrap();
+
+    let found = reader
+        .lookup(DiscoveryNamespace::ConnectV2, key)
+        .await
+        .unwrap();
+    assert_eq!(found, vec![value]);
 }
 
 /// Re-publishing under the same key replaces the record: readers see the
@@ -47,15 +94,28 @@ async fn republish_replaces_record() {
 
     let key = [3u8; 32];
     publisher
-        .publish(key, b"old bundle".to_vec())
+        .publish(
+            DiscoveryNamespace::LegacyPrekeyV1,
+            key,
+            b"old bundle".to_vec(),
+            4_000_000_000,
+        )
         .await
         .unwrap();
     publisher
-        .publish(key, b"new bundle".to_vec())
+        .publish(
+            DiscoveryNamespace::LegacyPrekeyV1,
+            key,
+            b"new bundle".to_vec(),
+            4_000_000_000,
+        )
         .await
         .unwrap();
 
-    let found = reader.lookup(key).await.unwrap();
+    let found = reader
+        .lookup(DiscoveryNamespace::LegacyPrekeyV1, key)
+        .await
+        .unwrap();
     assert!(found.contains(&b"new bundle".to_vec()));
 }
 

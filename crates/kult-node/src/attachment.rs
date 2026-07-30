@@ -147,6 +147,13 @@ fn media_object_with_state(
     after
 }
 
+fn attachment_state_is_negative_terminal(state: MediaTransferState) -> bool {
+    matches!(
+        state,
+        MediaTransferState::Rejected | MediaTransferState::Cancelled | MediaTransferState::Corrupt
+    )
+}
+
 fn commit_media_object_pairs(
     store: &Store,
     pairs: &[(MediaObjectRecord, MediaObjectRecord)],
@@ -1848,12 +1855,7 @@ impl Node {
                 // terminal decision in flight. A delayed acknowledgement
                 // confirms remote receipt, but must not resurrect work the
                 // user cancelled/rejected or that failed integrity locally.
-                if matches!(
-                    transfer.state,
-                    MediaTransferState::Rejected
-                        | MediaTransferState::Cancelled
-                        | MediaTransferState::Corrupt
-                ) {
+                if attachment_state_is_negative_terminal(transfer.state) {
                     return Ok(false);
                 }
                 let mut transfer_after = transfer.clone();
@@ -1875,6 +1877,9 @@ impl Node {
                 else {
                     return Ok(false);
                 };
+                if attachment_state_is_negative_terminal(transfer.state) {
+                    return Ok(false);
+                }
                 if !self
                     .store
                     .media_objects_for_transfer(&transfer.local_id)?
@@ -1904,6 +1909,9 @@ impl Node {
                 else {
                     return Ok(false);
                 };
+                if attachment_state_is_negative_terminal(transfer.state) {
+                    return Ok(false);
+                }
                 if !self
                     .store
                     .media_objects_for_transfer(&transfer.local_id)?
@@ -1958,6 +1966,8 @@ impl Node {
                 authority: Vec::new(),
                 bundle: Vec::new(),
                 hints: Vec::new(),
+                introduction_capability: None,
+                introduction_generation: 0,
                 manifest_generation: 0,
                 manifest_state_id: [0u8; 32],
                 last_seen: now,

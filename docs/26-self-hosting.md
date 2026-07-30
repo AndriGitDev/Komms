@@ -67,14 +67,16 @@ host LAN. Komms operates no mandatory bootstrap service: add trusted bootstrap
 or relay addresses, or distribute explicit reachable peer hints, when the node
 must discover peers beyond its container network.
 
-This `kultd` profile is **not** the proposed RAM-only reference
-discovery/rendezvous service. It is a full identity-bearing Komms endpoint with a
+This `kultd` profile is **not** the RAM-only reference discovery/rendezvous
+service. It is a full identity-bearing Komms endpoint with a
 persistent encrypted database and passphrase. Mounting its entire data directory
 on tmpfs would rotate or destroy endpoint state on restart and would not
 establish the least-authority claim in
 [ADR-0034](adr/0034-operator-minimized-reference-discovery.md). The reference
 service requires a dedicated daemon, container, and runbook that cannot enable
-endpoint, mailbox, or native-wake roles.
+endpoint, mailbox, or native-wake roles. The current `kult-rendezvous` crate is
+the bounded, persistence-free fixed-shape protocol component only; it is not a
+network listener, image, deployment artifact, or operated service.
 
 To add daemon flags, replace the Compose service's command while retaining both
 listen addresses. For example, a volunteer mailbox with an explicit bootstrap
@@ -99,7 +101,7 @@ services:
 `mailbox-v2.transport.key`. They form a separate service role. The row/index
 key protects the relay database, while the transport key keeps the published
 libp2p mailbox address stable across restart. Neither is a user account,
-directory, recovery, or release key, and neither enters a Komms `KKR9` user
+directory, recovery, or release key, and neither enters a Komms `KKR10` user
 backup. Startup rejects final-component symlinks for these service files and
 keeps the database, WAL/shared-memory sidecars, and keys owner-only.
 
@@ -204,7 +206,7 @@ and multi-operator behavior.
 
 ## Backup, restore, upgrade, and rollback
 
-Mailbox custody and endpoint recovery are different promises. A `KKR9` export
+Mailbox custody and endpoint recovery are different promises. A `KKR10` export
 backs up eligible user history and authority state only. It intentionally
 excludes the mailbox database, both mailbox service keys, live delivery
 tokens, deposits, leases, queues, and resumable custody.

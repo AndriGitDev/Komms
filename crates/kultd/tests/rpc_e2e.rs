@@ -186,6 +186,39 @@ async fn alpha_authority_migration_and_copied_root_reset_are_visible_over_rpc() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn connect_code_status_rotation_and_legacy_retirement_are_strict_over_rpc() {
+    let _serial = serial_rpc_test().await;
+    let directory = tempfile::tempdir().unwrap();
+    let daemon = Daemon::start(test_config(directory.path(), "connect-code-rpc"))
+        .await
+        .unwrap();
+    let mut client = Client::connect(&daemon.socket_path).await;
+    let before = client.ok(json!({ "op": "status" })).await;
+    let address = before["address"].as_str().unwrap().to_owned();
+    let code = before["connect_code"].as_str().unwrap().to_owned();
+    assert!(address.starts_with("kk1"));
+    assert!(code.starts_with("kc2"));
+    assert_eq!(before["legacy_discovery"], false);
+
+    let rotated = client.ok(json!({ "op": "connect_code_rotate" })).await;
+    let rotated_code = rotated["connect_code"].as_str().unwrap().to_owned();
+    assert!(rotated_code.starts_with("kc2"));
+    assert_ne!(rotated_code, code);
+    assert_eq!(rotated["legacy_discovery"], false);
+    let after = client.ok(json!({ "op": "status" })).await;
+    assert_eq!(after["address"], address);
+    assert_eq!(after["connect_code"], rotated_code);
+    assert_eq!(after["legacy_discovery"], false);
+
+    let retired = client
+        .ok(json!({ "op": "connect_code_retire_legacy" }))
+        .await;
+    assert_eq!(retired["connect_code"], rotated_code);
+    assert_eq!(retired["legacy_discovery"], false);
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn linked_device_ceremony_and_sync_via_strict_rpc_only() {
     let _serial = serial_rpc_test().await;
     let directory = tempfile::tempdir().unwrap();

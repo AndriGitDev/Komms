@@ -10,7 +10,7 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 
 use kult_crypto::KdfProfile;
-use kult_node::{Event, Node};
+use kult_node::{DiscoveryMode, DiscoveryPublicationPolicy, Event, Node};
 use kult_store::DeliveryState;
 use kult_transport::{DeliveryHint, Libp2pTransport, SneakernetTransport};
 
@@ -165,14 +165,99 @@ async fn nodes_exchange_over_localhost_quic() {
     assert!(received_bodies(&alice_events).contains(&b"loud and clear".to_vec()));
 }
 
-/// M3 acceptance slice: no manual configuration beyond sharing kult
-/// addresses. Bob publishes his prekey bundle (with his multiaddr riding in
-/// it) on the DHT; Alice — knowing only Bob's address string and a common
-/// bootstrap peer — fetches it, verifies it, and messages him. The message
-/// arriving over Alice's only transport proves the delivery hints came from
-/// the DHT record, not out-of-band.
 #[tokio::test]
-async fn contact_by_kult_address_alone_via_dht() {
+async fn simultaneous_first_flights_converge_with_follow_up_messages() {
+    let mut setup_rng = StdRng::seed_from_u64(0x3000_4000);
+    let dir = tempfile::tempdir().unwrap();
+    let mut alice = Node::create(&dir.path().join("a.db"), b"a", TEST_KDF, &mut setup_rng).unwrap();
+    let mut bob = Node::create(&dir.path().join("b.db"), b"b", TEST_KDF, &mut setup_rng).unwrap();
+
+    let a_net = Arc::new(
+        Libp2pTransport::new(&["/ip4/127.0.0.1/udp/0/quic-v1"])
+            .await
+            .unwrap(),
+    );
+    let b_net = Arc::new(
+        Libp2pTransport::new(&["/ip4/127.0.0.1/udp/0/quic-v1"])
+            .await
+            .unwrap(),
+    );
+    let a_addr = a_net.wait_listen_addr().await.unwrap();
+    let b_addr = b_net.wait_listen_addr().await.unwrap();
+    alice.add_transport(a_net);
+    bob.add_transport(b_net);
+
+    let alice_bundle = alice.handshake_bundle(NOW, &mut setup_rng).unwrap();
+    let bob_bundle = bob.handshake_bundle(NOW, &mut setup_rng).unwrap();
+    let bob_id = alice
+        .add_contact(
+            "bob",
+            &bob_bundle,
+            &[DeliveryHint::Multiaddr(b_addr)],
+            NOW,
+            &mut setup_rng,
+        )
+        .unwrap();
+    let alice_id = bob
+        .add_contact(
+            "alice",
+            &alice_bundle,
+            &[DeliveryHint::Multiaddr(a_addr)],
+            NOW,
+            &mut setup_rng,
+        )
+        .unwrap();
+
+    alice
+        .send_message(&bob_id, b"alice first", NOW, &mut setup_rng)
+        .unwrap();
+    alice
+        .send_message(&bob_id, b"alice follow-up", NOW + 1, &mut setup_rng)
+        .unwrap();
+    bob.send_message(&alice_id, b"bob first", NOW, &mut setup_rng)
+        .unwrap();
+    bob.send_message(&alice_id, b"bob follow-up", NOW + 1, &mut setup_rng)
+        .unwrap();
+
+    let mut alice_ticks = StdRng::seed_from_u64(0x3000_4001);
+    let mut bob_ticks = StdRng::seed_from_u64(0x3000_4002);
+    let (mut alice_events, mut bob_events) = drive_direct_pair(
+        &mut alice,
+        &mut bob,
+        &mut alice_ticks,
+        &mut bob_ticks,
+        NOW + 2,
+        10,
+    )
+    .await;
+    let (more_alice, more_bob) = drive_direct_pair(
+        &mut alice,
+        &mut bob,
+        &mut alice_ticks,
+        &mut bob_ticks,
+        NOW + 500,
+        10,
+    )
+    .await;
+    alice_events.extend(more_alice);
+    bob_events.extend(more_bob);
+
+    let alice_bodies = received_bodies(&alice_events);
+    let bob_bodies = received_bodies(&bob_events);
+    assert!(alice_bodies.contains(&b"bob first".to_vec()));
+    assert!(alice_bodies.contains(&b"bob follow-up".to_vec()));
+    assert!(bob_bodies.contains(&b"alice first".to_vec()));
+    assert!(bob_bodies.contains(&b"alice follow-up".to_vec()));
+}
+
+/// M3 acceptance slice: no manual configuration beyond sharing a Connect
+/// code. Bob publishes his fixed capability-scoped record (with his multiaddr
+/// inside it) on the DHT; Alice — knowing only the code and a common bootstrap
+/// peer — fetches it, verifies it, and messages him. The message arriving over
+/// Alice's only transport proves the delivery hints came from the DHT record,
+/// not out-of-band.
+#[tokio::test]
+async fn contact_by_connect_code_via_dht() {
     let mut rng = StdRng::seed_from_u64(9);
     let dir = tempfile::tempdir().unwrap();
 
@@ -199,7 +284,8 @@ async fn contact_by_kult_address_alone_via_dht() {
     a_net.bootstrap(&[seed_addr.as_str()]).await.unwrap();
     b_net.bootstrap(&[seed_addr.as_str()]).await.unwrap();
 
-    // Bob publishes: bundle + where to reach him, keyed by his address.
+    // Bob publishes: authority, ingress bundle, and reachability under
+    // capability-derived weekly locators.
     let b_hints: Vec<DeliveryHint> = b_net
         .listen_addrs()
         .into_iter()
@@ -214,21 +300,40 @@ async fn contact_by_kult_address_alone_via_dht() {
     alice.add_discovery(a_net);
     bob.add_transport(Arc::clone(&b_net) as Arc<dyn kult_transport::Transport>);
     bob.add_discovery(Arc::clone(&b_net) as Arc<dyn kult_transport::Discovery>);
-    bob.publish_bundle(&b_hints, NOW).await.unwrap();
+    bob.publish_bundle_with_policy(
+        &b_hints,
+        DiscoveryPublicationPolicy {
+            mode: DiscoveryMode::Sovereign,
+            publish_direct_routes: true,
+        },
+        NOW,
+    )
+    .await
+    .unwrap();
     // Alice publishes too: Bob learns her only through her (sealed-sender)
     // handshake, which carries no return path — his receipt finds its way
     // back via her DHT record.
-    alice.publish_bundle(&a_hints, NOW).await.unwrap();
+    alice
+        .publish_bundle_with_policy(
+            &a_hints,
+            DiscoveryPublicationPolicy {
+                mode: DiscoveryMode::Sovereign,
+                publish_direct_routes: true,
+            },
+            NOW,
+        )
+        .await
+        .unwrap();
 
-    // Alice knows nothing but the address string.
+    // Alice knows nothing but Bob's capability-scoped Connect code.
     let bob_id = alice
-        .add_contact_by_address("bob", &bob.address(), NOW, &mut rng)
+        .add_contact_by_address("bob", &bob.connect_code().unwrap(), NOW, &mut rng)
         .await
         .unwrap();
     assert_eq!(bob_id, bob.peer_id());
 
     let m1 = alice
-        .send_message(&bob_id, b"found you by address", NOW, &mut rng)
+        .send_message(&bob_id, b"found you by Connect code", NOW, &mut rng)
         .unwrap();
     let mut alice_ticks = StdRng::seed_from_u64(0x3000_1001);
     let mut bob_ticks = StdRng::seed_from_u64(0x3000_1002);
@@ -247,12 +352,12 @@ async fn contact_by_kult_address_alone_via_dht() {
         .any(|event| matches!(event, Event::MessageRequestReceived { .. })));
     assert!(bob.contacts().unwrap().is_empty());
     let request = bob.message_requests().unwrap().remove(0);
-    assert_eq!(request.preview, "found you by address");
+    assert_eq!(request.preview, "found you by Connect code");
     bob.accept_message_request(&request.id, "alice", NOW + 320, &mut bob_ticks)
         .unwrap();
     assert_eq!(
         bob.messages_with(&request.account).unwrap()[0].body,
-        b"found you by address"
+        b"found you by Connect code"
     );
 
     // Bob's encrypted receipt drives Alice's record to Delivered.
@@ -273,11 +378,12 @@ async fn contact_by_kult_address_alone_via_dht() {
             Event::DeliveryUpdated { id, state: DeliveryState::Delivered } if *id == m1
         )));
 
-    // An address nobody published resolves to an honest BundleNotFound.
+    // A Connect capability nobody published resolves to an honest
+    // BundleNotFound.
     let ghost = Node::create(&dir.path().join("g.db"), b"g", TEST_KDF, &mut rng).unwrap();
     assert!(matches!(
         alice
-            .add_contact_by_address("ghost", &ghost.address(), NOW + 600, &mut rng)
+            .add_contact_by_address("ghost", &ghost.connect_code().unwrap(), NOW + 600, &mut rng,)
             .await,
         Err(kult_node::NodeError::BundleNotFound)
     ));
@@ -358,13 +464,12 @@ async fn scheduler_prefers_fast_link_over_sneakernet() {
     );
 }
 
-/// A pairing-time hint goes stale whenever the peer rebinds to fresh
-/// OS-assigned ports (mobile shells restart constantly). The delivery
-/// engine must not retry the dead route forever: after a failed attempt it
-/// re-consults the discovery plane, finds the freshly published bundle,
-/// replaces the stored route, and delivers.
+/// A pairing-time hint can go stale whenever a peer rebinds to fresh
+/// OS-assigned ports. Public discovery must not become a post-pairing
+/// tracking oracle: only a bundle/control received over the authenticated
+/// relationship may replace that route.
 #[tokio::test]
-async fn stale_pairing_hint_heals_via_discovery_refresh() {
+async fn stale_pairing_hint_heals_only_via_authenticated_peer_update() {
     let mut rng = StdRng::seed_from_u64(41);
     let dir = tempfile::tempdir().unwrap();
 
@@ -405,8 +510,8 @@ async fn stale_pairing_hint_heals_via_discovery_refresh() {
     bob.add_transport(Arc::clone(&b_net) as Arc<dyn kult_transport::Transport>);
     bob.add_discovery(Arc::clone(&b_net) as Arc<dyn kult_transport::Discovery>);
 
-    // Both publish their *current* addresses; the receipt path back to
-    // Alice also rides her record.
+    // Public Standard records deliberately omit these direct routes. Their
+    // presence in the DHT therefore cannot heal a paired contact.
     bob.publish_bundle(&b_hints, NOW).await.unwrap();
     alice.publish_bundle(&a_hints, NOW).await.unwrap();
 
@@ -439,7 +544,8 @@ async fn stale_pairing_hint_heals_via_discovery_refresh() {
             &mut rng,
         )
         .unwrap();
-    bob.add_contact("alice", &alice_bundle, &a_hints, NOW, &mut rng)
+    let alice_id = bob
+        .add_contact("alice", &alice_bundle, &a_hints, NOW, &mut rng)
         .unwrap();
 
     let m1 = alice
@@ -453,34 +559,54 @@ async fn stale_pairing_hint_heals_via_discovery_refresh() {
     assert_eq!(received_bodies(&events), Vec::<Vec<u8>>::new());
     assert!(alice.queued().unwrap() > 0, "stuck on the stale route");
 
-    // Past the backoff, the failing route triggers a discovery refresh:
-    // Bob's published bundle carries his live address and delivery heals.
+    // A normal authenticated first flight in the other direction carries
+    // Bob's current relationship-scoped return bundle. Only that update may
+    // replace Alice's stale route.
+    bob.send_message(&alice_id, b"authenticated route update", NOW + 3, &mut rng)
+        .unwrap();
     let mut alice_ticks = StdRng::seed_from_u64(0x3000_3001);
     let mut bob_ticks = StdRng::seed_from_u64(0x3000_3002);
+    let (bob_update_events, alice_update_events) = drive_direct_pair(
+        &mut bob,
+        &mut alice,
+        &mut bob_ticks,
+        &mut alice_ticks,
+        NOW + 40,
+        8,
+    )
+    .await;
+    assert!(received_bodies(&alice_update_events).contains(&b"authenticated route update".to_vec()));
+
+    // The authenticated first flight replaced Alice's stale source. A second
+    // bounded pass retries her already-queued first flight over that route.
     let (alice_events, bob_events) = drive_direct_pair(
         &mut alice,
         &mut bob,
         &mut alice_ticks,
         &mut bob_ticks,
-        NOW + 40,
+        NOW + 400,
         8,
     )
     .await;
-    assert!(received_bodies(&bob_events).contains(&b"through the refresh".to_vec()));
+    assert!(received_bodies(&bob_update_events)
+        .into_iter()
+        .chain(received_bodies(&bob_events))
+        .any(|body| body == b"through the refresh"));
     let (_, receipt_events) = drive_direct_pair(
         &mut bob,
         &mut alice,
         &mut bob_ticks,
         &mut alice_ticks,
-        NOW + 400,
+        NOW + 800,
         6,
     )
     .await;
 
     // Bob's encrypted receipt drives Alice's record to Delivered over the
-    // refreshed route.
-    assert!(alice_events
+    // pairwise-authenticated route.
+    assert!(alice_update_events
         .iter()
+        .chain(alice_events.iter())
         .chain(receipt_events.iter())
         .any(|e| matches!(
             e,

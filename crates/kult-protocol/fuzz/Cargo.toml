@@ -131,5 +131,19 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "discovery_control_decode"
+path = "fuzz_targets/discovery_control_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rendezvous_decode"
+path = "fuzz_targets/rendezvous_decode.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

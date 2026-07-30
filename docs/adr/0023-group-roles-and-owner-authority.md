@@ -152,7 +152,7 @@ versions remain unsupported and malformed/trailing/noncanonical encodings fail
 closed. Generic raw group or pairwise send APIs reject canonical kind `0x0007`.
 
 `KKR6` introduced the sealed authority record, owner-transfer chain, consumed request
-ids, and authority events. Current `KKR9` restores that state; ADR-0026's
+ids, and authority events. Current `KKR10` restores that state; ADR-0026's
 fresh-identity legacy archive reset omits groups. Sender chains are still never backed up. The authority
 table is sealed under the existing group-storage key and adds no public index,
 transport header, DHT record, delivery token, or relay-visible field.
@@ -186,5 +186,5 @@ Release acceptance covers signature and bound failures, stale/deduplicated
 requests, concurrent admin requests, owner transfer and conflicting transfer
 certificates, last-owner safeguards, offline delivery, removal/exclusion,
 mandatory rotation, poll moderation, deterministic reorder convergence,
-current `KKR9` restore, legacy archive omission of groups, RPC/CLI, UniFFI, and
+current `KKR10` restore, legacy archive omission of groups, RPC/CLI, UniFFI, and
 accessible desktop/Android/iOS role controls.

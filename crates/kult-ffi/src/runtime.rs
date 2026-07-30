@@ -112,6 +112,12 @@ type Resp<T> = oneshot::Sender<Result<T, String>>;
 /// What the actor task is asked to do. One variant per node operation the
 /// FFI exposes — the typed equivalent of `kultd`'s wire ops.
 pub(crate) enum Msg {
+    ConnectCodeRotate {
+        resp: Resp<String>,
+    },
+    ConnectCodeRetireLegacy {
+        resp: Resp<String>,
+    },
     DeviceId {
         resp: Resp<[u8; 32]>,
     },
@@ -709,6 +715,15 @@ pub(crate) enum Msg {
         hints: Vec<DeliveryHint>,
         resp: Resp<()>,
     },
+    RendezvousRefresh {
+        peer: [u8; 32],
+        resp: Resp<()>,
+    },
+    RendezvousConversationActive {
+        peer: [u8; 32],
+        active: bool,
+        resp: Resp<()>,
+    },
     Publish {
         resp: Resp<()>,
     },
@@ -743,6 +758,11 @@ pub(crate) struct PairingBundleCache {
     refresh_pending: bool,
 }
 
+struct ActorCaches {
+    counts: Arc<Mutex<Counts>>,
+    discovery: Arc<Mutex<(String, bool)>>,
+}
+
 /// A running embedded node. Owns its tokio runtime; every task stops on
 /// [`Runtime::stop`] (or best-effort on drop).
 pub(crate) struct Runtime {
@@ -751,6 +771,7 @@ pub(crate) struct Runtime {
     pub tx: mpsc::Sender<Msg>,
     pub net: Arc<Libp2pTransport>,
     counts: Arc<Mutex<Counts>>,
+    discovery: Arc<Mutex<(String, bool)>>,
     pairing_bundle: Arc<Mutex<PairingBundleCache>>,
     rt: tokio::runtime::Runtime,
     shutdown: watch::Sender<bool>,
@@ -940,6 +961,11 @@ impl Runtime {
         let address = node.address();
         let peer = node.peer_id();
         let counts = Arc::new(Mutex::new(snapshot_counts(&node).unwrap_or_default()));
+        let discovery = Arc::new(Mutex::new((
+            node.connect_code()
+                .map_err(|error| format!("connect code: {error}"))?,
+            node.legacy_discovery_enabled(),
+        )));
         // A scanned bundle must contain a usable first-message route. Wait
         // for libp2p's asynchronous listener event before signing the ready
         // bundle; failure leaves mailbox-only/off-grid configurations usable.
@@ -967,17 +993,20 @@ impl Runtime {
         let actor_inputs = (
             cfg.clone(),
             Arc::clone(&net),
-            Arc::clone(&counts),
+            ActorCaches {
+                counts: Arc::clone(&counts),
+                discovery: Arc::clone(&discovery),
+            },
             events_tx,
             shutdown.subscribe(),
         );
         tasks.push(rt.spawn_blocking(move || {
-            let (cfg, net, counts, events, shutdown) = actor_inputs;
+            let (cfg, net, caches, events, shutdown) = actor_inputs;
             let local = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("actor runtime");
-            local.block_on(actor(node, cfg, net, counts, rx, events, shutdown));
+            local.block_on(actor(node, cfg, net, caches, rx, events, shutdown));
         }));
         tasks.push(rt.spawn(lifecycle(
             cfg,
@@ -1000,6 +1029,7 @@ impl Runtime {
             tx,
             net,
             counts,
+            discovery,
             pairing_bundle,
             rt,
             shutdown,
@@ -1019,6 +1049,21 @@ impl Runtime {
             .counts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Current capability-scoped share code and legacy bridge state.
+    pub(crate) fn discovery(&self) -> (String, bool) {
+        self.discovery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn set_discovery(&self, connect_code: String, legacy: bool) {
+        *self
+            .discovery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = (connect_code, legacy);
     }
 
     /// Return the ready pairing bundle and refresh it asynchronously.
@@ -1173,7 +1218,7 @@ async fn actor(
     mut node: Node,
     cfg: RuntimeConfig,
     net: Arc<Libp2pTransport>,
-    counts: Arc<Mutex<Counts>>,
+    caches: ActorCaches,
     mut rx: mpsc::Receiver<Msg>,
     events: mpsc::UnboundedSender<Event>,
     mut shutdown: watch::Receiver<bool>,
@@ -1182,15 +1227,21 @@ async fn actor(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut media_tick = tokio::time::interval(Duration::from_millis(20));
     media_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut discovery_retry_at = tokio::time::Instant::now();
     loop {
+        let mut check_discovery = false;
         tokio::select! {
             biased;
             _ = shutdown.changed() => break,
-            msg = rx.recv() => match msg {
-                None => break,
-                Some(msg) => handle(&mut node, &cfg, &net, msg).await,
-            },
+            msg = rx.recv() => {
+                check_discovery = true;
+                match msg {
+                    None => break,
+                    Some(msg) => handle(&mut node, &cfg, &net, msg).await,
+                }
+            }
             _ = tick.tick() => {
+                check_discovery = true;
                 match node.tick(now(), &mut OsRng).await {
                     Ok(batch) => {
                         for event in batch {
@@ -1209,10 +1260,31 @@ async fn actor(
                 }
             }
         }
+        let discovery_now = tokio::time::Instant::now();
+        if check_discovery && discovery_now >= discovery_retry_at {
+            let hints = own_hints(&net, &cfg.mailboxes);
+            if node.discovery_publication_needed(&hints).unwrap_or(false) {
+                match node.publish_bundle(&hints, now()).await {
+                    Ok(()) => discovery_retry_at = discovery_now,
+                    Err(error) => {
+                        eprintln!("kult-ffi: discovery refresh failed: {error}");
+                        discovery_retry_at = discovery_now + std::time::Duration::from_secs(60);
+                    }
+                }
+            }
+        }
         if let Some(snapshot) = snapshot_counts(&node) {
-            *counts
+            *caches
+                .counts
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot;
+        }
+        if let Ok(connect_code) = node.connect_code() {
+            *caches
+                .discovery
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                (connect_code, node.legacy_discovery_enabled());
         }
     }
 }
@@ -1231,6 +1303,29 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
     let now = now();
     let fail = |e: kult_node::NodeError| e.to_string();
     match msg {
+        Msg::ConnectCodeRotate { resp } => {
+            let result = match node.rotate_connect_code(&mut OsRng).map_err(fail) {
+                Ok(connect_code) => {
+                    let hints = own_hints(net, &cfg.mailboxes);
+                    let _ = node.publish_bundle(&hints, now).await;
+                    Ok(connect_code)
+                }
+                Err(error) => Err(error),
+            };
+            let _ = resp.send(result);
+        }
+        Msg::ConnectCodeRetireLegacy { resp } => {
+            let result = node.retire_legacy_discovery(&mut OsRng).map_err(fail);
+            let result = match result {
+                Ok(()) => {
+                    let hints = own_hints(net, &cfg.mailboxes);
+                    let _ = node.publish_bundle(&hints, now).await;
+                    node.connect_code().map_err(fail)
+                }
+                Err(error) => Err(error),
+            };
+            let _ = resp.send(result);
+        }
         Msg::DeviceId { resp } => {
             let _ = resp.send(Ok(node.device_id()));
         }
@@ -2115,6 +2210,15 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         Msg::SetHints { peer, hints, resp } => {
             let _ = resp.send(node.set_hints(&peer, &hints, &mut OsRng).map_err(fail));
         }
+        Msg::RendezvousRefresh { peer, resp } => {
+            let _ = resp.send(node.request_rendezvous_refresh(&peer).map_err(fail));
+        }
+        Msg::RendezvousConversationActive { peer, active, resp } => {
+            let _ = resp.send(
+                node.set_rendezvous_conversation_active(&peer, active)
+                    .map_err(fail),
+            );
+        }
         Msg::Publish { resp } => {
             let hints = own_hints(net, &cfg.mailboxes);
             let _ = resp.send(node.publish_bundle(&hints, now).await.map_err(fail));
@@ -2212,10 +2316,20 @@ async fn lifecycle(
     let mut mailbox_retry: std::collections::HashMap<String, MailboxRetry> =
         std::collections::HashMap::new();
     let mut jitter_rng = OsRng;
+    let discovery_day = Duration::from_secs(24 * 60 * 60);
+    let discovery_offset = Duration::from_secs(jitter_rng.next_u64() % discovery_day.as_secs());
+    let mut discovery_tick = tokio::time::interval_at(
+        tokio::time::Instant::now() + discovery_offset,
+        discovery_day,
+    );
+    discovery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,
+            _ = discovery_tick.tick() => {
+                publish_quiet(&tx).await;
+            }
             _ = lan_tick.tick() => {
                 let peers: std::collections::HashSet<String> =
                     net.lan_peers().into_iter().collect();

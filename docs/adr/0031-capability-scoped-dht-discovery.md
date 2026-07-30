@@ -1,6 +1,6 @@
 # ADR-0031: Capability-scoped DHT first-contact discovery
 
-- **Status**: Proposed
+- **Status**: Accepted; implemented for Alpha
 - **Date**: 2026-07-26
 
 ## Context
@@ -75,9 +75,12 @@ Every v2 value has one exact outer size and binds:
 - zero padding plus an account/device-authority signature over the complete
   canonical record digest.
 
-The exact size and authority encoding are frozen only after ADR-0026 is
-accepted. Records carry no one-time prekey, detailed feature fingerprint, local
-path, mesh node, spool path, or unrestricted address list.
+The exact encrypted outer size is **1,179,648 bytes** (1.125 MiB). That bound
+accommodates the complete one-MiB ADR-0026 authority proof, two maximal ingress
+bundles, three routes, fixed codec overhead, zero padding, and the complete
+signature. The codec rejects non-zero padding and any non-canonical ordering.
+Records carry no one-time prekey, detailed feature fingerprint, local path,
+mesh node, spool path, or unrestricted address list.
 
 Kademlia peers cannot validate the sealed inner record. For each locator, a
 lookup retains at most eight distinct candidate values and at most eight times
@@ -176,3 +179,75 @@ turning the public discovery record into a current-IP oracle.
   direct route.
 - The project-operated reference deployment is separately bounded by
   [ADR-0034](0034-operator-minimized-reference-discovery.md).
+
+## Implemented Alpha profile
+
+`kult-crypto` owns the strict `kc2` Connect-code parser, checksum, epoch and
+locator derivation, independently derived XChaCha20-Poly1305 record key,
+device/day introduction token, and fixed record codec. A Connect code binds the
+stable account-address digest to one non-zero random 32-byte capability.
+Malformed or non-canonical text, a wrong capability, a wrong locator, a bad
+authority chain, a revoked signer, an invalid device certificate, an expired
+bundle, an admission-policy failure, an OPK, a transport hint inside an ingress
+bundle, non-zero padding, or an invalid complete-record signature fails closed.
+
+The internet transport separates `/kk/prekeys/1` and `/kk/prekeys/2` namespaces.
+For one v2 locator it retains no more than eight distinct exact-size candidates
+and eight record sizes of bytes. The node performs exactly the local weekly
+epoch and its two adjacent lookups, applies the same aggregate cap across
+configured discovery planes, verifies candidates without changing identity or
+session state, and selects by authority generation, issue time, then smallest
+complete plaintext digest. Authority forks and same-epoch recovery conflicts
+remain visible failures rather than ordering tie-breaks.
+
+Fresh profiles publish only v2. Root-free Alpha profiles opened without a
+stored discovery capability generate one migration capability and temporarily
+retain a mailbox-only v1 publication flag. Retiring that flag or rotating the
+Connect code is explicit and irreversible for the old discovery path; neither
+operation changes the stable account identity or safety numbers. A legacy
+record never contains the new capability. Standard and Private publication
+strip every non-mailbox route. Sovereign direct publication requires both the
+Sovereign mode and an explicit warning acknowledgement.
+
+Accepted pairwise sessions carry generation-bound capability and route updates
+inside their authenticated ratchet. The receiving transaction advances the
+ratchet and updates every certified endpoint projection atomically. Stale
+updates are ignored, while same-generation conflicts fail closed. A
+capability-only control from a process that has not yet assembled its local
+routes preserves prior fallbacks; route removal requires an explicit complete
+replacement, including an explicitly complete empty set. Group
+co-members receive this same control only through their authenticated pairwise
+relationship; identity-only group membership is not a discovery capability.
+Authorized linked devices converge the capability and generation through the
+account-capabilities sync namespace without copying transport or session state.
+
+Out-of-band QR/link/paste/file pairing uses the strict `KPB2` wrapper. An
+active physical device signs the exact `KDP2` authority/prekey bundle together
+with the non-zero discovery capability and generation. Import verifies that
+signature before projecting the capability onto the certified endpoint, so an
+offline first flight uses the recipient's rotating introduction token rather
+than a retired identity-derived token. Released raw `KDP2` bundles remain
+decode-compatible but convey no v2 introduction capability.
+
+The current `KKR10` root-free backup includes the discovery capability and
+generation inside the encrypted payload. `KKR9` and `KKR8` remain directly
+restorable predecessors and receive a fresh capability during restore. Backup
+plaintext exclusion tests ensure the capability is absent from the outer file,
+while live device, prekey, ratchet, sender-chain, link-channel, rendezvous,
+wake, and delivery secrets remain excluded.
+
+The daemon and embedded runtime publish on startup, on a jittered daily
+maintenance phase, and immediately after explicit capability rotation or
+legacy retirement. Ordinary publication regenerates the complete six-epoch
+window after current prekey, authority, admission, mailbox, or route state is
+assembled.
+
+Local acceptance covers canonical code and record vectors, exact size and
+padding, epoch/clock boundaries, wrong capability, signature and corruption,
+candidate crowding, mode route policy, rotation with stable identity,
+authenticated relationship upgrade, encrypted backup/restore, DHT namespace
+separation, and cross-shell Connect-code presentation. Library, daemon, desktop,
+Android-host, and iOS-simulator validation is development evidence only.
+Retained revision-bound CI, independent interoperability and security review,
+named physical-device journeys, multi-bootstrap hostile-network suppression,
+and operator qualification remain open release gates.

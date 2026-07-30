@@ -45,6 +45,8 @@ pub enum DeviceSyncNamespace {
     GroupPolls,
     /// Terminal consumed/expired tombstones only, never ephemeral plaintext.
     ExpiryTombstones,
+    /// Account-scoped Connect capability and legacy-bridge policy.
+    AccountCapabilities,
 }
 
 /// One signed state mutation from one exact certified physical device.

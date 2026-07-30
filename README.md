@@ -95,7 +95,7 @@ independent interoperability.
 | **Off-grid delivery** | Sneakernet and the Meshtastic carrier, duty-cycle controls, retransmission, and internet↔mesh bridge paths are implemented with automated evidence. The physical two-radio bench is not yet field-qualified. |
 | **Applications and messaging** | Desktop, Android, and iOS shells expose pairwise/group text and a broad Alpha feature set, including attachments, local organization, linked devices, ephemeral content, polls, roles, and direct audio-call paths. CI and simulator evidence exist; hands-on device, background lifecycle, NAT, accessibility, and localization qualification remain. |
 | **Distribution** | Unsigned desktop packages and a debug-signed Android APK are published for Alpha testing; iOS is source/Simulator-only. Production signing, authenticated updates, reproducibility measurements, store distribution, upgrade/rollback qualification, and stable support are not configured. |
-| **Optional mobile convenience** | ADR-0017 through ADR-0019 propose reversible post-pairing rendezvous and content-free native wake. The layer is design-only: no optional service is implemented or required by the sovereign core. |
+| **Optional mobile convenience** | ADR-0018 rotating post-pairing rendezvous is implemented for Alpha in crypto, protocol, sealed service state, bounded node orchestration, client front doors, and a persistence-free least-authority service component. It is not configured by default and no reference service is deployed. The complete operating-mode contract, network service wrapper, Private ingress, and ADR-0019 content-free native wake remain open; none is required by the sovereign core. |
 | **Trust and governance** | The project is founder-directed by design during construction and stabilization under a nonprofit public-benefit mission. The founder retains product and release authority. Independent security and interoperability evidence is still missing. The [stabilization program](docs/29-stabilization-program.md) defines the evidence required before stable claims. |
 
 Older `KKR1` through legacy copied-root `KKR7` backups remain explicit
@@ -103,18 +103,20 @@ migration/reset inputs: they never resume the former account, and the guided
 flow publishes a fresh identity containing only cleared petnames, accurately
 labelled non-ephemeral pairwise history, notes, and eligible local
 organization. They are decode-only compatibility formats: production APIs
-cannot mint or publish a new copied-root backup. Root-free `KKR8` backups remain
-directly restorable compatibility inputs; current routine backups are
-root-free `KKR9`. KKR6
+cannot mint or publish a new copied-root backup. Root-free `KKR8` and `KKR9`
+backups remain directly restorable compatibility inputs; current routine
+backups are root-free `KKR10`. KKR6
 added signed group authority state, KKR7 added the former linked-device
 authority/convergence layout, KKR8 introduced the accepted offline-root
-authority proof, and KKR9 adds durable local block rules. Neither root-free
+authority proof, KKR9 added durable local block rules, and KKR10 adds the
+rotatable Connect-code discovery capability and generation. No root-free
 format contains an account root or reusable device, ratchet, prekey,
 sender-chain, link, invitation, rendezvous, wake, or delivery-resumption
-secret. Stable-identity KKR8/KKR9 restore requires the separately held offline
+secret. Stable-identity KKR8/KKR9/KKR10 restore requires the separately held offline
 recovery-authority file and phrase, creates one fresh recovery device, and
 rejects descendants of the old epoch. Restoring KKR8 naturally restores no
-KKR9 block rows. Current backups also exclude provisional requests, replay
+later block rows; restoring KKR8 or KKR9 generates a fresh discovery
+capability. Current backups also exclude provisional requests, replay
 tombstones, and live ephemeral plaintext/media, while terminal ephemeral
 tombstones remain so restore does not recreate those records in Komms. This is
 local implementation evidence, not a promise to erase copies retained by
@@ -180,7 +182,7 @@ status of any particular proposal.
 | [16: Safe Text Formatting](docs/16-safe-text-formatting.md) | B9 source subset, active-content boundary, limits, compatibility, and qualification matrix |
 | [17: Safe File Presentation](docs/17-safe-file-presentation.md) | C1 filename/type policy, open/export boundary, lifecycle, and qualification matrix |
 | [18: Authenticated Message Editing](docs/18-message-editing.md) | C3 immutable edit events, pairwise and recipient-authenticated group authorship, convergence, retained versions, compatibility, and qualification |
-| [19: Disappearing Messages and View-Once Attachments](docs/19-ephemeral-messages.md) | C4 exact local expiry, coarse relay retention, tombstones, KKR9 exclusion, honest limits, and qualification |
+| [19: Disappearing Messages and View-Once Attachments](docs/19-ephemeral-messages.md) | C4 exact local expiry, coarse relay retention, tombstones, KKR10 exclusion, honest limits, and qualification |
 | [20: Group Polls](docs/20-group-polls.md) | C5 visible recipient-authenticated votes, fixed electorate, deterministic convergence, creator closure, and qualification |
 | [21: Group Roles, Ownership, and Moderation](docs/21-group-roles.md) | C6 signed owner/admin/member authority, transfer, rotation, moderation, backup, and qualification |
 | [22: Linked Devices](docs/22-linked-devices.md) | C2 strict-majority device authority, confirmed linking, per-device delivery, sync, offline recovery, revocation, and honest Alpha migration |

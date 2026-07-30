@@ -1,6 +1,6 @@
 # ADR-0018: Rotating pairwise rendezvous for post-pairing reachability
 
-- **Status**: Proposed
+- **Status**: Accepted; implemented for Alpha
 - **Date**: 2026-07-15
 
 ## Context
@@ -56,6 +56,28 @@ requires a fresh authenticated handshake and exporter. A legacy session has no
 implicit exporter; enabling rendezvous for it uses the existing authenticated
 session to negotiate a re-handshake rather than deriving from an unauthenticated
 or one-sided value.
+
+The device first-flight wrapper is versioned as `KDI2` and carries one of three
+session intents:
+
+- `Establish` has no predecessor. If both devices establish concurrently, the
+  lower immutable physical-device id's locally initiated flight wins. The
+  retaining side still authenticates and persists the other first payload and
+  returns its end-to-end acknowledgement over the winning ratchet; the other
+  side installs that same winning ratchet. Queued ciphertext bound to the
+  losing ratchet is deleted in that installation transaction, and each exact
+  nonterminal device-delivery promise returns to `Queued` with no wire id so a
+  later bounded pass encrypts it on the winner. This is session convergence,
+  never an account-authority or manifest fork tiebreaker.
+- `Replace(prior_session_id)` is accepted only when the exact transcript-bound
+  predecessor is still current. A stale, reordered, or replayed replacement
+  fails closed.
+- `Reset` identifies a sender-side durable session-reset/recovery path and
+  installs only after the ordinary device certificate and accepted authority
+  chain verify.
+
+Released `KDI1` flights remain decodable as an explicit legacy intent. They do
+not gain a synthetic exporter or predecessor binding.
 
 For each recipient direction and rendezvous provider:
 
@@ -258,6 +280,82 @@ ADR-0017.
   launch.
 - Fixed 4 KiB records trade bandwidth for bounded parsing and response-shape
   privacy. This path is internet-only and never rides an airtime transport.
+
+## Implemented Alpha profile
+
+The verified PQXDH transcript now derives the exporter exactly once beside the
+mailbox key. Ratchet serialization deliberately omits it. `kult-store` keeps
+the exporter, session id, provider roles, generations, clock floor, route
+source, retry state, and conflict floors in a separate store-v2 row; routine
+backup never encodes that row. Removing a session or device removes the
+corresponding service authority. A restored or legacy ratchet without this row
+cannot synthesize an exporter: an authenticated provider control may request a
+fresh PQXDH exchange, and rendezvous remains disabled until both endpoints
+complete that exchange.
+
+`kult-crypto` implements the provider/recipient/epoch-separated schedule and
+fixed XChaCha20-Poly1305 protection. `kult-protocol` owns the strict 4,096-byte
+route record, 4,136-byte seal, 4,180-byte register request, 64-byte lookup
+request, 64-byte register response, and fixed malformed response codecs.
+Decoders reject invalid versions, lengths, bounds, route ordering, duplicate
+routes, non-canonical routes, non-zero padding, and invalid time/generation
+state without variable-size allocation.
+
+The dedicated `kult-rendezvous` component is an in-memory, persistence-free
+service boundary, not an identity-bearing endpoint or mailbox. It enforces
+explicit record, accounted-memory, concurrency, global operation/byte,
+per-slot, client-bucket, bucket-count, epoch, TTL, and bounded-expiry-sweep
+limits. Valid hits, misses, capacity refusal, overload, and rate refusal retain
+the same success status and body shape. A register acknowledgement is random
+and becomes locally confirmed only after a self-lookup returns the exact
+authenticated record. Mutable ciphertext and opaque admission keys are
+zeroized on orderly teardown. The HTTPS/TLS process wrapper, image, and
+deployment hardening remain the separate ADR-0034 reference-service work.
+
+Recipient-selected provider sets are complete authenticated pairwise controls
+bound to the sender account, certified device, device-authority generation, and
+their own monotonic generation. The complete local set is sealed separately
+and survives restart; rollback and same-generation replacement fail closed.
+Two different authenticated complete remote sets at one generation disable all
+lookup roles, clear their routes, emit a visible conflict, and remain disabled
+across restart until a strictly newer set arrives. Likewise, two different
+valid route records at one generation clear that provider source and establish
+a durable conflict floor; ordering never chooses authority.
+
+`kult-node` retains manual, authenticated discovery, LAN, and rendezvous routes
+as independent sources. It registers current and next epochs and queries only
+previous/current/next. Work begins only for queued content lacking a fresh
+route, an explicit active-conversation request, direct-call setup, or
+near-expiry active state. Per-device/provider single-flight keys, coalescing,
+initial jitter, exponential backoff, an operation/time budget, and a
+five-failure circuit breaker bound hostile or unavailable providers. RPC,
+UniFFI, desktop, Android, and iOS expose only bounded refresh and foreground
+conversation-state controls plus a visible conflict; no surface treats service
+processing as registration, reachability, sent, or delivered.
+
+### Compact normative vector
+
+The in-tree known-answer test fixes these inputs:
+
+| Field | Value |
+|---|---|
+| Recipient identity seed | 64 bytes of `01` |
+| Canonical provider origin | `https://vector.example` |
+| Provider static key | 32 bytes of `02` |
+| Hybrid service exporter | 32 bytes of `03` |
+| Epoch | `42` |
+| Plaintext | `Komms vector v1!` followed by zeroes to 4,096 bytes |
+| Provider id | `9935516320b17996593eb230fc34e0937209e308feaaa7ebb91fe370c15118fd` |
+| Recipient Ed25519 key | `8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c` |
+| Recipient X25519 key | `a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209` |
+| Slot | `b80ca6f4d326fefb8477f342f06c7bb16adbf8056d25ef88c2552bd39ffc87d6` |
+| Nonce | `0b4b6e38ee282f373c44950b4f4942f2c41253afab011f1b` |
+| SHA-256 of the 4,136-byte seal | `43424dfcf7f0cf4c190cc88f52e1feff4139c1f252838198415f137082b2723e` |
+
+Alpha implementation and local tests are not deployed-service, independent
+interoperability, independent security-review, hostile real-network, or
+physical-device evidence. Private-mode Tor/non-colluding-OHTTP ingress and the
+complete Standard/Private/Sovereign mode contract also remain later sessions.
 - A service still observes slot activity and connection metadata; Private mode
   reduces but does not eliminate correlation.
 - Existing contacts require an authenticated exporter upgrade/re-handshake, and

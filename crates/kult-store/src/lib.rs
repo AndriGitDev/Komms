@@ -42,6 +42,7 @@ mod migration;
 mod note;
 #[cfg(test)]
 mod opaque_tests;
+mod rendezvous;
 #[cfg(test)]
 mod scale_bench;
 mod scheduled;
@@ -71,20 +72,21 @@ pub use commit::{
     AdmissionSweepPlan, AttachmentStagePlan, AttachmentStatePlan, AuthorityDeviceControlPlan,
     AuthorityDeviceLinkPlan, AuthorityMigrationPlan, AuthorityProfileBootstrapPlan,
     CapabilityDelete, CommitPlan, CommitReceipt, CommittedRecordIds, ContactDeviceDelete,
-    ContactTransition, DeferredControlKind, DeferredControlRecord, DeliveryTransition,
-    DeviceAuthorityStateTransition, DeviceControlPlan, DeviceLinkRecoveryTransition,
-    DeviceProjection, DeviceProjectionPlan, DeviceStateTransition, EphemeralTransition,
-    GroupAuthorityStateTransition, GroupAuthorityTransition, GroupChainStateTransition,
-    GroupChainTransition, GroupMessageDelete, GroupMessageTransition, GroupReceivePlan,
-    GroupSendPlan, GroupStatePlan, GroupStateTransition, GroupTransition, HandshakeReceivePlan,
-    MaintenancePlan, MediaDelete, MediaObjectTransition, MediaTransferTransition, MessageDelete,
-    MessageTransition, PairwiseReceivePlan, PairwiseSendPlan, PendingDelete, PendingStagePlan,
-    PrekeyPublishPlan, PrekeyTransition, QueueDelete, QueueTransition, ReceiptReceivePlan,
-    SessionDelete, SessionTransition, MAX_ATTACHMENT_STAGE_MUTATIONS, MAX_COMMIT_MUTATIONS,
-    MAX_COMMIT_QUEUE_ROWS, MAX_DEFERRED_CONTROLS, MAX_DEVICE_CONTROL_MUTATIONS,
-    MAX_DEVICE_LINK_MUTATIONS, MAX_DEVICE_PROJECTION_MUTATIONS, MAX_GROUP_COMMIT_MUTATIONS,
-    MAX_GROUP_COMMIT_QUEUE_ROWS, MAX_GROUP_STATE_MUTATIONS, MAX_MAINTENANCE_TRANSITIONS,
-    MAX_PAIRWISE_COMMIT_DEVICES, MAX_PROFILE_GROUPS,
+    ContactDeviceTransition, ContactTransition, DeferredControlKind, DeferredControlRecord,
+    DeliveryTransition, DeviceAuthorityStateTransition, DeviceControlPlan,
+    DeviceLinkRecoveryTransition, DeviceProjection, DeviceProjectionPlan, DeviceStateTransition,
+    EphemeralTransition, GroupAuthorityStateTransition, GroupAuthorityTransition,
+    GroupChainStateTransition, GroupChainTransition, GroupMessageDelete, GroupMessageTransition,
+    GroupReceivePlan, GroupSendPlan, GroupStatePlan, GroupStateTransition, GroupTransition,
+    HandshakeReceivePlan, MaintenancePlan, MediaDelete, MediaObjectTransition,
+    MediaTransferTransition, MessageDelete, MessageTransition, PairwiseReceivePlan,
+    PairwiseSendPlan, PendingDelete, PendingStagePlan, PrekeyPublishPlan, PrekeyTransition,
+    QueueDelete, QueueTransition, ReceiptReceivePlan, RendezvousServiceTransition, SessionDelete,
+    SessionTransition, MAX_ATTACHMENT_STAGE_MUTATIONS, MAX_COMMIT_MUTATIONS, MAX_COMMIT_QUEUE_ROWS,
+    MAX_DEFERRED_CONTROLS, MAX_DEVICE_CONTROL_MUTATIONS, MAX_DEVICE_LINK_MUTATIONS,
+    MAX_DEVICE_PROJECTION_MUTATIONS, MAX_GROUP_COMMIT_MUTATIONS, MAX_GROUP_COMMIT_QUEUE_ROWS,
+    MAX_GROUP_STATE_MUTATIONS, MAX_MAINTENANCE_TRANSITIONS, MAX_PAIRWISE_COMMIT_DEVICES,
+    MAX_PROFILE_GROUPS,
 };
 #[cfg(feature = "test-failpoints")]
 pub use commit::{CommitFailpoint, CommitFailure};
@@ -93,7 +95,7 @@ pub use commit::{DeviceLinkPlan, IdentityTransition, ProfileBootstrapPlan};
 pub use devices::{
     ContactDeviceRecord, DeviceAuthorityConflictKind, DeviceAuthorityConflictRecord,
     DeviceAuthorityStateRecord, DeviceChannelRecord, DeviceLinkRecoveryRecord, DeviceStateRecord,
-    DeviceTransferGroup, DeviceTransferSelection, DeviceTransferSnapshot,
+    DeviceTransferGroup, DeviceTransferSelection, DeviceTransferSnapshot, DiscoveryCapabilityState,
     MessageDeviceDeliveryRecord, MAX_DEVICE_AUTHORITY_CONFLICTS, MAX_DEVICE_SYNC_EVENTS,
     MAX_DEVICE_SYNC_EVENT_BYTES,
 };
@@ -123,6 +125,13 @@ pub use media::{
     DEFAULT_MEDIA_STORE_QUOTA, MAX_MEDIA_STORE_QUOTA,
 };
 pub use note::{NoteMessageRecord, MAX_NOTE_TEXT_BYTES, NOTE_TO_SELF_CONVERSATION_ID};
+pub use rendezvous::{
+    RendezvousLocalConfig, RendezvousLocalProvider, RendezvousProviderState,
+    RendezvousServiceState, RendezvousStoredRoute, MAX_RENDEZVOUS_LOCAL_CONFIG_BYTES,
+    MAX_RENDEZVOUS_LOCAL_PROVIDERS, MAX_RENDEZVOUS_PROVIDERS_PER_SESSION,
+    MAX_RENDEZVOUS_SERVICE_STATE_BYTES, RENDEZVOUS_LOCAL_CONFIG_VERSION,
+    RENDEZVOUS_SERVICE_STATE_VERSION,
+};
 pub use scheduled::{ScheduledConversation, ScheduledMessageRecord};
 
 /// Failures surfaced by the store.
@@ -1168,7 +1177,8 @@ impl Store {
         self.validate_device_logical_rows()?;
         self.validate_admission_logical_rows()?;
         self.validate_presentation_marker()?;
-        self.validate_deferred_controls()
+        self.validate_deferred_controls()?;
+        self.validate_rendezvous_logical_rows()
     }
 
     fn validate_core_logical_rows(&self) -> Result<()> {
@@ -1375,6 +1385,11 @@ impl Store {
     ) -> Result<()> {
         let payload =
             Zeroizing::new(postcard::to_allocvec(session).map_err(|_| StoreError::Serialization)?);
+        // Write the service row first. Commit-plan callers hold one SQLite
+        // transaction, so both rows become visible together. A direct
+        // autocommit interruption can at worst leave an unreachable orphan;
+        // it can never attach an exporter to the wrong ratchet session.
+        self.synchronize_rendezvous_session(peer, session, rng)?;
         self.put_equality::<store_v2::SessionRows>(
             &store_v2::AccountKey::new(*peer),
             &payload,
@@ -1385,6 +1400,18 @@ impl Store {
 
     /// Load the session for a peer.
     pub fn get_session(&self, peer: &[u8; 32]) -> Result<Option<Session>> {
+        let Some(mut session) = self.get_session_ratchet(peer)? else {
+            return Ok(None);
+        };
+        let exporter = self
+            .get_rendezvous_service_state(peer)?
+            .filter(|state| state.session_id == *session.session_id())
+            .map(|state| state.hybrid_service_exporter);
+        session.restore_hybrid_service_exporter(exporter);
+        Ok(Some(session))
+    }
+
+    fn get_session_ratchet(&self, peer: &[u8; 32]) -> Result<Option<Session>> {
         self.get_equality::<store_v2::SessionRows>(&store_v2::AccountKey::new(*peer))?
             .map(|row| decode_exact(&row.payload))
             .transpose()
@@ -1392,6 +1419,7 @@ impl Store {
 
     /// Delete one exact physical-endpoint ratchet session.
     pub fn delete_session(&self, peer: &[u8; 32]) -> Result<()> {
+        self.delete_rendezvous_service_state(peer)?;
         self.delete_equality::<store_v2::SessionRows>(&store_v2::AccountKey::new(*peer))?;
         Ok(())
     }
