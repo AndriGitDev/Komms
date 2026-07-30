@@ -173,9 +173,10 @@ Platform build instructions:
 | what disappearing/view-once means—and what it cannot erase | [Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md) |
 | how encrypted group polls converge and why votes are visible | [Group Polls](20-group-polls.md) |
 | how signed group roles, ownership transfer, and moderation work | [Group Roles, Ownership, and Moderation](21-group-roles.md) |
-| how one account currently authorizes and syncs devices—and why revocation still needs redesign | [Linked Devices](22-linked-devices.md) |
+| how one account authorizes, syncs, revokes, and recovers devices | [Linked Devices](22-linked-devices.md) |
 | when live audio calls work—and when they deliberately do not | [Live Audio Calls](23-live-audio-calls.md) |
 | how a release is validated locally before any hosted run | [Local Release Gate](24-local-release-gate.md) |
+| how the optional content-free phone-wake gateway is bounded and operated | [Native-Wake Operations](37-native-wake-operations.md) |
 | what evidence is required before stable or wire v1 | [Stabilization Program](29-stabilization-program.md) |
 | which persisted protocol transitions are atomic and which remain open | [Atomic Transition Inventory](34-atomic-transition-inventory.md) |
 | why a technical decision was made | [ADR Index](adr/README.md) |

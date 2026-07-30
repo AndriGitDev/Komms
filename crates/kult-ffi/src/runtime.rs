@@ -748,6 +748,10 @@ pub(crate) enum Msg {
     Tokens {
         resp: oneshot::Sender<Vec<[u8; 32]>>,
     },
+    WakeCollect {
+        budget_ms: u32,
+        resp: Resp<u32>,
+    },
     BridgeRelays(Vec<DeliveryHint>),
 }
 
@@ -993,6 +997,24 @@ impl Runtime {
             cfg.rendezvous.clone(),
         )
         .map_err(|error| format!("rendezvous configuration: {error}"))?;
+        let wake_client: Option<Arc<dyn kult_transport::WakeClient>> = match cfg.mode {
+            kult_transport::OperatingMode::Standard => {
+                Some(Arc::new(kult_transport::HttpsWakeClient::direct()))
+            }
+            kult_transport::OperatingMode::Private => match cfg.tor_proxy {
+                Some(proxy) => Some(Arc::new(
+                    kult_transport::HttpsWakeClient::tor(proxy)
+                        .map_err(|error| format!("Tor native wake: {error}"))?,
+                )),
+                // Native wake is optional. Without an anonymizing ingress,
+                // Private mode leaves it disabled instead of falling back to
+                // a direct request or blocking ordinary delivery.
+                None => None,
+            },
+            kult_transport::OperatingMode::Sovereign => None,
+        };
+        node.configure_wake(cfg.discovery_policy.mode, wake_client)
+            .map_err(|error| format!("native-wake configuration: {error}"))?;
 
         let address = node.address();
         let peer = node.peer_id();
@@ -1276,7 +1298,7 @@ async fn actor(
                 check_discovery = true;
                 match msg {
                     None => break,
-                    Some(msg) => handle(&mut node, &cfg, &net, msg).await,
+                    Some(msg) => handle(&mut node, &cfg, &net, &events, msg).await,
                 }
             }
             _ = tick.tick() => {
@@ -1344,7 +1366,13 @@ fn snapshot_counts(node: &Node) -> Option<Counts> {
 }
 
 /// Execute one operation against the node.
-async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg: Msg) {
+async fn handle(
+    node: &mut Node,
+    cfg: &RuntimeConfig,
+    net: &Libp2pTransport,
+    events: &mpsc::UnboundedSender<Event>,
+    msg: Msg,
+) {
     let now = now();
     let fail = |e: kult_node::NodeError| e.to_string();
     match msg {
@@ -2307,6 +2335,43 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         }
         Msg::Tokens { resp } => {
             let _ = resp.send(node.mailbox_tokens(now));
+        }
+        Msg::WakeCollect { budget_ms, resp } => {
+            let started = Instant::now();
+            let budget = Duration::from_millis(u64::from(budget_ms))
+                .min(kult_node::MAX_WAKE_COLLECTION_DURATION);
+            let tokens = node.mailbox_tokens(now);
+            for mailbox in cfg.mailboxes.iter().take(MAX_MAILBOXES_PER_CHECKIN_TICK) {
+                let remaining = budget.saturating_sub(started.elapsed());
+                if remaining.is_zero() {
+                    break;
+                }
+                let _ = tokio::time::timeout(
+                    remaining,
+                    net.mailbox_checkin(
+                        mailbox,
+                        &tokens[..tokens.len().min(MAX_MAILBOX_CHECKIN_TOKENS)],
+                    ),
+                )
+                .await;
+            }
+            let remaining = budget.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                let _ = resp.send(Ok(0));
+            } else {
+                let result = node
+                    .wake_tick(now, remaining, &mut OsRng)
+                    .await
+                    .map_err(fail)
+                    .map(|batch| {
+                        let count = u32::try_from(batch.len()).unwrap_or(u32::MAX);
+                        for event in batch {
+                            let _ = events.send(event);
+                        }
+                        count
+                    });
+                let _ = resp.send(result);
+            }
         }
         Msg::BridgeRelays(relays) => node.set_bridge(Some(relays)),
     }

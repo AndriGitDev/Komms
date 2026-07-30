@@ -1064,6 +1064,7 @@ fn run_handshake_collision_receive(
                 media_transfers: &[],
                 media_objects: &[],
                 delete_controls: &[],
+                wake: &[],
                 presentation_changed: false,
             }),
             &mut fixture.rng,

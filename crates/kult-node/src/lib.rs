@@ -60,17 +60,19 @@ use kult_crypto::{
 use kult_protocol::{
     admission_invitation_proof, decode_content, delivery_token, encode_disappearing_text_payload,
     encode_edit, encode_ephemeral, encode_text, epoch_day, fragment, intro_token,
-    is_capability_control, is_discovery_upgrade_control, is_rendezvous_provider_control, pad,
-    retention_bucket, solve_admission_puzzle, unpad, verify_admission_puzzle, AdmissionContext,
-    AdmissionEnvelope, AdmissionProofKind, CapabilityControl, DecodedContent,
-    DiscoveryUpgradeControl, Edit, Envelope, EnvelopeKind, Ephemeral, FormatCapabilities,
-    MailboxKey, Reassembler, ReceiptPayload, RendezvousLookupRequest, RendezvousProviderControl,
-    RendezvousProviderDescriptor, RendezvousRegisterRequest, RendezvousRoute,
-    RendezvousRouteRecord, CONTENT_FORMAT_V1, CONTENT_KIND_ATTACHMENT, CONTENT_KIND_CALL_CONTROL,
-    CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL, CONTENT_KIND_GROUP_AUTHORITY, CONTENT_KIND_MENTION,
-    CONTENT_KIND_POLL, CONTENT_KIND_TEXT, ENVELOPE_HEADER_LEN, MAX_ADMISSION_PUZZLE_ATTEMPTS,
-    MAX_EDIT_TEXT_LEN, MAX_EPHEMERAL_LIFETIME_SECS, MIN_EPHEMERAL_LIFETIME_SECS,
-    REASSEMBLY_WINDOW_SECS,
+    is_capability_control, is_discovery_upgrade_control, is_rendezvous_provider_control,
+    is_wake_capability_control, pad, retention_bucket, solve_admission_puzzle, unpad,
+    verify_admission_puzzle, AdmissionContext, AdmissionEnvelope, AdmissionProofKind,
+    CapabilityControl, DecodedContent, DiscoveryUpgradeControl, Edit, Envelope, EnvelopeKind,
+    Ephemeral, FormatCapabilities, MailboxKey, Reassembler, ReceiptPayload,
+    RendezvousLookupRequest, RendezvousProviderControl, RendezvousProviderDescriptor,
+    RendezvousRegisterRequest, RendezvousRoute, RendezvousRouteRecord, WakeCapabilityControl,
+    WakeCapabilityDescriptor, WakeTriggerRequest, CONTENT_FORMAT_V1, CONTENT_KIND_ATTACHMENT,
+    CONTENT_KIND_CALL_CONTROL, CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL,
+    CONTENT_KIND_GROUP_AUTHORITY, CONTENT_KIND_MENTION, CONTENT_KIND_POLL, CONTENT_KIND_TEXT,
+    ENVELOPE_HEADER_LEN, MAX_ADMISSION_PUZZLE_ATTEMPTS, MAX_EDIT_TEXT_LEN,
+    MAX_EPHEMERAL_LIFETIME_SECS, MIN_EPHEMERAL_LIFETIME_SECS, REASSEMBLY_WINDOW_SECS,
+    WAKE_CAPABILITY_MAX_LIFETIME_SECS,
 };
 use kult_store::{
     AdmissionAcceptPlan, AdmissionDiscardPlan, AdmissionReplayTombstone, AdmissionStagePlan,
@@ -89,14 +91,16 @@ use kult_store::{
     QueueClass, QueueDelete, QueueItem, QueueTransition, ReceiptReceivePlan, RendezvousLocalConfig,
     RendezvousProviderState, RendezvousServiceTransition, RendezvousStoredRoute,
     ScheduledConversation as StoreScheduledConversation, ScheduledMessageRecord, SessionTransition,
-    Store, MAX_ADMISSION_REPLAY_LIFETIME_SECS, MAX_ADMISSION_REPLAY_TOMBSTONES,
+    Store, WakeCapabilityDirection, WakeRevocationPlan, WakeRevocationRecord,
+    WakeRevocationTransition, WakeServiceState, WakeServiceTransition, WakeStoredCapability,
+    MAX_ADMISSION_REPLAY_LIFETIME_SECS, MAX_ADMISSION_REPLAY_TOMBSTONES,
     MAX_MAINTENANCE_TRANSITIONS, MAX_PROVISIONAL_CONTENT_BYTES, MAX_PROVISIONAL_LIFETIME_SECS,
-    MAX_PROVISIONAL_PREVIEW_BYTES, PROVISIONAL_REQUEST_VERSION,
+    MAX_PROVISIONAL_PREVIEW_BYTES, MAX_WAKE_REVOCATION_ROWS, PROVISIONAL_REQUEST_VERSION,
 };
 use kult_transport::{
     rendezvous_record_route, rendezvous_route_hint, CostClass, DeliveryHint, Discovery,
     DiscoveryNamespace, IngressClass, Reachability, ReceivedEnvelope, RendezvousClient,
-    RendezvousProvider, Transport, MAX_RENDEZVOUS_PROVIDERS,
+    RendezvousProvider, SendReceipt, Transport, WakeClient, WakeProvider, MAX_RENDEZVOUS_PROVIDERS,
 };
 
 mod api;
@@ -231,6 +235,20 @@ const MAX_RENDEZVOUS_REHANDSHAKES_PER_TICK: usize = 4;
 /// One heartbeat never waits longer than this for the optional provider
 /// plane, regardless of the number of configured providers.
 const RENDEZVOUS_MAINTENANCE_BUDGET: Duration = Duration::from_secs(5);
+/// Maximum gateway trigger or revoke operations started by one heartbeat.
+const MAX_WAKE_GATEWAY_OPERATIONS_PER_TICK: usize = 8;
+/// Revoke work cannot consume every gateway slot and starve ordinary wakes.
+const MAX_WAKE_REVOCATIONS_PER_TICK: usize = 4;
+/// Maximum durable revocation retry rows changed by one heartbeat.
+const MAX_WAKE_REVOCATION_CHANGES_PER_TICK: usize = 32;
+/// All gateway trigger and revoke work shares one bounded heartbeat deadline.
+const WAKE_MAINTENANCE_BUDGET: Duration = Duration::from_secs(5);
+/// Maximum platform-owned background collection duration accepted by core.
+pub const MAX_WAKE_COLLECTION_DURATION: Duration = Duration::from_secs(25);
+/// Smaller receive domain used for a native-wake collection pass.
+const MAX_WAKE_PENDING_WORK_PER_TICK: usize = 32;
+/// Maximum encoded envelope bytes admitted to one native-wake collection pass.
+const MAX_WAKE_COLLECTION_BYTES: usize = 512 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum RendezvousOperationKind {
@@ -553,6 +571,12 @@ pub(crate) struct PreparedDeliveryUpdate {
     pub(crate) events: Vec<Event>,
 }
 
+struct PreparedWakeUpdate {
+    peer_device: [u8; 32],
+    before: WakeServiceState,
+    after: WakeServiceState,
+}
+
 enum Consumed {
     /// Fully handled (or permanently unprocessable) — never seen again.
     Done,
@@ -780,6 +804,8 @@ pub struct Node {
     rendezvous_active_conversations: HashSet<[u8; 32]>,
     rendezvous_rehandshake_requested: HashSet<[u8; 32]>,
     rendezvous_inflight: HashSet<([u8; 32], [u8; 32], RendezvousOperationKind)>,
+    wake_client: Option<Arc<dyn WakeClient>>,
+    wake_collection_deadline: Option<Instant>,
     media_reconciled: bool,
     attachment_request_at: HashMap<[u8; 16], u64>,
     attachment_request_target: HashMap<[u8; 16], usize>,
@@ -1370,6 +1396,9 @@ impl Node {
                 }
             }
         }
+        for (peer_device, session) in &sessions {
+            store.ensure_wake_service_state(peer_device, session, &mut OsRng)?;
+        }
         let (rendezvous_providers, rendezvous_provider_generation) =
             if let Some(config) = store.get_rendezvous_local_config()? {
                 let mut providers = Vec::with_capacity(config.providers.len());
@@ -1418,6 +1447,23 @@ impl Node {
                 });
             }
         }
+        for peer_device in sessions.keys().copied() {
+            let Some(state) = store.get_wake_service_state(&peer_device)? else {
+                continue;
+            };
+            let Some(generation) = state.remote_conflict_generation else {
+                continue;
+            };
+            let peer = contact_devices
+                .iter()
+                .find(|endpoint| endpoint.device == peer_device)
+                .map_or(peer_device, |endpoint| endpoint.account);
+            events.push_back(Event::WakeConflict {
+                peer,
+                device: peer_device,
+                generation,
+            });
+        }
         Ok(Self {
             store,
             account,
@@ -1447,6 +1493,8 @@ impl Node {
             rendezvous_active_conversations: HashSet::new(),
             rendezvous_rehandshake_requested: HashSet::new(),
             rendezvous_inflight: HashSet::new(),
+            wake_client: None,
+            wake_collection_deadline: None,
             media_reconciled: false,
             attachment_request_at: HashMap::new(),
             attachment_request_target: HashMap::new(),
@@ -1577,6 +1625,149 @@ impl Node {
                 .max(1)
         };
         self.configure_rendezvous(mode, client, providers, generation)
+    }
+
+    /// Configure the optional native-wake client for the current operating
+    /// mode. Sovereign mode has no wake provider and rejects a supplied
+    /// client; disabling the client leaves ordinary delivery untouched.
+    pub fn configure_wake(
+        &mut self,
+        mode: DiscoveryMode,
+        client: Option<Arc<dyn WakeClient>>,
+    ) -> Result<()> {
+        if mode == DiscoveryMode::Sovereign && client.is_some() {
+            return Err(NodeError::WakeUnavailable);
+        }
+        self.wake_client = client;
+        Ok(())
+    }
+
+    /// Replace the complete capability generation this installation issued
+    /// to one authenticated remote physical device.
+    ///
+    /// Capabilities must already have been minted for this exact relationship
+    /// by the configured gateway. The resulting complete set (including an
+    /// empty revocation set) is encrypted through the pairwise ratchet and
+    /// committed atomically with the local issued-state generation.
+    pub fn publish_wake_capabilities(
+        &mut self,
+        peer_device: [u8; 32],
+        generation: u64,
+        mut capabilities: Vec<WakeCapabilityDescriptor>,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        if now == 0 || (!capabilities.is_empty() && self.wake_client.is_none()) {
+            return Err(NodeError::WakeUnavailable);
+        }
+        let recipient_account = self.account_for_device(&peer_device)?;
+        let endpoint = self
+            .store
+            .contact_devices_for(&recipient_account)?
+            .into_iter()
+            .find(|endpoint| endpoint.device == peer_device)
+            .ok_or(NodeError::UnknownPeer)?;
+        if endpoint.revoked_at.is_some() {
+            return Err(NodeError::UnknownPeer);
+        }
+        capabilities.sort_by(|left, right| {
+            (left.origin.as_bytes(), left.static_key)
+                .cmp(&(right.origin.as_bytes(), right.static_key))
+        });
+        let mut stored = Vec::with_capacity(capabilities.len());
+        for capability in &capabilities {
+            let provider = WakeProvider::new(capability.origin.clone(), capability.static_key)?;
+            if provider.provider_id()
+                != kult_protocol::wake_provider_id(
+                    capability.origin.as_bytes(),
+                    &capability.static_key,
+                )?
+                || capability.expires_at <= now
+                || capability.expires_at > now.saturating_add(WAKE_CAPABILITY_MAX_LIFETIME_SECS)
+            {
+                return Err(NodeError::WakeUnavailable);
+            }
+            stored.push(WakeStoredCapability::new(
+                WakeCapabilityDirection::Issued,
+                capability.origin.clone(),
+                capability.static_key,
+                capability.capability.as_bytes().to_vec(),
+                capability.expires_at,
+            )?);
+        }
+        let control = WakeCapabilityControl {
+            sender_account: self.account.ed,
+            sender_device: self.device_id(),
+            recipient_account,
+            recipient_device: peer_device,
+            authority_generation: self.device_state.manifest.generation(),
+            generation,
+            capabilities,
+        };
+        let payload = control.encode()?;
+        let before_state = self
+            .store
+            .get_wake_service_state(&peer_device)?
+            .ok_or(NodeError::CorruptState)?;
+        let mut after_state = before_state.clone();
+        after_state
+            .replace_direction(WakeCapabilityDirection::Issued, generation, stored)
+            .map_err(|error| {
+                if matches!(error, kult_store::StoreError::InvalidTransition) {
+                    NodeError::WakeConflict
+                } else {
+                    NodeError::Store(error)
+                }
+            })?;
+        if before_state == after_state {
+            return Ok(());
+        }
+        let before_session = self
+            .sessions
+            .get(&peer_device)
+            .cloned()
+            .ok_or(NodeError::NoSession)?;
+        if before_state.session_id != *before_session.session_id() {
+            return Err(NodeError::CorruptState);
+        }
+        let mut after_session = before_session.clone();
+        let queue =
+            self.prepare_control_queue(&mut after_session, peer_device, &payload, now, rng)?;
+        let receipt = self.store.commit_plan(
+            CommitPlan::PairwiseSend(PairwiseSendPlan {
+                sessions: &[SessionTransition {
+                    peer_device,
+                    before: Some(&before_session),
+                    after: &after_session,
+                }],
+                message: None,
+                message_update: None,
+                deliveries: &[],
+                delivery_updates: &[],
+                queue: &[queue],
+                groups: &[],
+                authorities: &[],
+                scheduled: None,
+                clear_capabilities: &[],
+                clear_reset_markers: &[],
+                ephemeral: None,
+                media_transfers: &[],
+                media_objects: &[],
+                delete_controls: &[],
+                wake: &[WakeServiceTransition {
+                    peer_device,
+                    before: &before_state,
+                    after: &after_state,
+                }],
+                presentation_changed: false,
+            }),
+            rng,
+        )?;
+        self.before_memory_replacement()?;
+        self.sessions.insert(peer_device, after_session);
+        self.after_memory_replacement()?;
+        self.accept_commit_receipt(receipt, []);
+        Ok(())
     }
 
     /// Coalesce an active-conversation or call-setup route refresh.
@@ -2649,6 +2840,7 @@ impl Node {
                 delete_capabilities: &delete_capabilities,
                 clear_reset_markers: &[],
                 delete_controls: &[],
+                wake: &[],
                 acknowledge_presentation: None,
                 presentation_changed: true,
             }),
@@ -3500,6 +3692,7 @@ impl Node {
                 media_transfers: &[],
                 media_objects: &[],
                 delete_controls: &[],
+                wake: &[],
                 presentation_changed: true,
             }),
             rng,
@@ -3730,6 +3923,7 @@ impl Node {
                         delete_capabilities: &[],
                         clear_reset_markers: &[],
                         delete_controls: &[],
+                        wake: &[],
                         acknowledge_presentation: Some(delivered),
                         presentation_changed: false,
                     }),
@@ -3751,96 +3945,124 @@ impl Node {
 
     // ---- the heartbeat -----------------------------------------------------
 
-    /// One receive/flush cycle: drain every transport, consume what can be
-    /// consumed (dedup → reassemble → decrypt → persist), queue encrypted
-    /// receipts for consumed messages, then flush the outbound queue through
-    /// the transport scheduler. Returns all events produced.
+    /// Run one platform-deadline-bounded native-wake collection pass.
+    ///
+    /// Only immediate non-airtime carriers are drained. Accepted envelopes
+    /// use the ordinary deduplication, ratchet, persistence, and receipt
+    /// paths, but this pass never flushes messages, floods a mesh, exports
+    /// sneakernet work, activates attachments, or starts calls.
+    pub async fn wake_tick(
+        &mut self,
+        now: u64,
+        platform_budget: Duration,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Vec<Event>> {
+        if platform_budget.is_zero() || self.wake_collection_deadline.is_some() {
+            return Err(NodeError::WakeUnavailable);
+        }
+        self.wake_collection_deadline =
+            Some(Instant::now() + platform_budget.min(MAX_WAKE_COLLECTION_DURATION));
+        let result = self.tick(now, rng).await;
+        self.wake_collection_deadline = None;
+        result
+    }
+
+    /// Run one ordinary receive, maintenance, and outbound flush cycle.
     pub async fn tick(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<Vec<Event>> {
-        self.admission_puzzles_remaining = MAX_ADMISSION_PUZZLES_PER_TICK;
-        self.admission_kems_remaining = MAX_ADMISSION_KEMS_PER_TICK;
-        self.admission_notifications_remaining = MAX_ADMISSION_NOTIFICATIONS_PER_TICK;
-        self.admission_carrier_remaining = MAX_ADMISSION_CANDIDATES_PER_CARRIER;
+        let wake_collection = self.wake_collection_deadline.is_some();
+        self.admission_puzzles_remaining =
+            usize::from(!wake_collection) * MAX_ADMISSION_PUZZLES_PER_TICK;
+        self.admission_kems_remaining = usize::from(!wake_collection) * MAX_ADMISSION_KEMS_PER_TICK;
+        self.admission_notifications_remaining =
+            usize::from(!wake_collection) * MAX_ADMISSION_NOTIFICATIONS_PER_TICK;
+        self.admission_carrier_remaining = if wake_collection {
+            [0; ADMISSION_CARRIER_CLASS_COUNT]
+        } else {
+            MAX_ADMISSION_CANDIDATES_PER_CARRIER
+        };
         self.admission_deadline = None;
-        self.acknowledge_presentation(rng)?;
-        self.apply_resolved_device_sync(rng)?;
-        self.sweep_admission(now, rng)?;
-        if !self.media_reconciled {
-            let batch = self
-                .store
-                .prepare_media_reconciliation(MAX_MAINTENANCE_TRANSITIONS)?;
-            if batch.transitions.is_empty() {
-                self.store
-                    .finish_media_reconciliation(batch.unknown_records)?;
-                self.media_reconciled = batch.complete;
-            } else {
-                let object_transitions = batch
-                    .transitions
-                    .iter()
-                    .map(|(before, after)| MediaObjectTransition { before, after })
-                    .collect::<Vec<_>>();
-                let receipt = self.store.commit_plan(
-                    CommitPlan::AttachmentState(AttachmentStatePlan {
-                        media_transfers: &[],
-                        media_objects: &object_transitions,
-                        delete_controls: &[],
-                        presentation_changed: true,
-                    }),
-                    rng,
-                )?;
-                let transfers = batch
-                    .transitions
-                    .iter()
-                    .map(|(_, after)| after.transfer_id)
-                    .collect::<HashSet<_>>();
-                self.accept_commit_receipt(receipt, []);
-                for transfer in transfers {
-                    self.emit_attachment_update(&transfer)?;
-                }
-                if batch.complete {
+        if !wake_collection {
+            self.acknowledge_presentation(rng)?;
+            self.apply_resolved_device_sync(rng)?;
+            self.sweep_admission(now, rng)?;
+            if !self.media_reconciled {
+                let batch = self
+                    .store
+                    .prepare_media_reconciliation(MAX_MAINTENANCE_TRANSITIONS)?;
+                if batch.transitions.is_empty() {
                     self.store
                         .finish_media_reconciliation(batch.unknown_records)?;
-                    self.media_reconciled = true;
+                    self.media_reconciled = batch.complete;
+                } else {
+                    let object_transitions = batch
+                        .transitions
+                        .iter()
+                        .map(|(before, after)| MediaObjectTransition { before, after })
+                        .collect::<Vec<_>>();
+                    let receipt = self.store.commit_plan(
+                        CommitPlan::AttachmentState(AttachmentStatePlan {
+                            media_transfers: &[],
+                            media_objects: &object_transitions,
+                            delete_controls: &[],
+                            presentation_changed: true,
+                        }),
+                        rng,
+                    )?;
+                    let transfers = batch
+                        .transitions
+                        .iter()
+                        .map(|(_, after)| after.transfer_id)
+                        .collect::<HashSet<_>>();
+                    self.accept_commit_receipt(receipt, []);
+                    for transfer in transfers {
+                        self.emit_attachment_update(&transfer)?;
+                    }
+                    if batch.complete {
+                        self.store
+                            .finish_media_reconciliation(batch.unknown_records)?;
+                        self.media_reconciled = true;
+                    }
                 }
             }
-        }
-        self.apply_deferred_controls(now, rng)?;
-        // Expiry is core-owned and runs before any queue activation, receive,
-        // attachment request, or transport flush. A restart and a clock jump
-        // therefore cannot revive or transmit already-expired plaintext.
-        self.sweep_ephemeral(now, rng)?;
-        if now >= self.next_delivery_sweep {
-            self.sweep_failed_deliveries(now, rng)?;
-            self.next_delivery_sweep = now.saturating_add(DELIVERY_SWEEP_INTERVAL_SECS);
-        }
-        self.sweep_calls(now, rng)?;
-        // 0. Session-reset markers (a restore happened): queue fresh
-        //    handshakes so re-keyed traffic flows without waiting for the
-        //    user to send first.
-        self.rekey_reset_peers(now, rng)?;
-        // A legacy pairwise session can authenticate the provider upgrade but
-        // cannot safely synthesize a transcript exporter. Exactly one side,
-        // selected by physical-device id ordering, starts a fresh verified
-        // PQXDH exchange and replaces the session plus optional service state
-        // in one commit.
-        self.process_rendezvous_rehandshakes(now, rng)?;
-        // A manifest can advertise an active endpoint before its prekey bundle
-        // or session arrives. Ordinary sends retain an honest per-device
-        // `Queued` row; once that route becomes usable, materialize the exact
-        // pending copy instead of leaving the placeholder stuck forever.
-        self.queue_pending_pairwise_device_deliveries(now, rng)?;
+            self.apply_deferred_controls(now, rng)?;
+            // Expiry is core-owned and runs before any queue activation, receive,
+            // attachment request, or transport flush. A restart and a clock jump
+            // therefore cannot revive or transmit already-expired plaintext.
+            self.sweep_ephemeral(now, rng)?;
+            if now >= self.next_delivery_sweep {
+                self.sweep_failed_deliveries(now, rng)?;
+                self.next_delivery_sweep = now.saturating_add(DELIVERY_SWEEP_INTERVAL_SECS);
+            }
+            self.sweep_calls(now, rng)?;
+            // 0. Session-reset markers (a restore happened): queue fresh
+            //    handshakes so re-keyed traffic flows without waiting for the
+            //    user to send first.
+            self.rekey_reset_peers(now, rng)?;
+            // A legacy pairwise session can authenticate the provider upgrade but
+            // cannot safely synthesize a transcript exporter. Exactly one side,
+            // selected by physical-device id ordering, starts a fresh verified
+            // PQXDH exchange and replaces the session plus optional service state
+            // in one commit.
+            self.process_rendezvous_rehandshakes(now, rng)?;
+            // A manifest can advertise an active endpoint before its prekey bundle
+            // or session arrives. Ordinary sends retain an honest per-device
+            // `Queued` row; once that route becomes usable, materialize the exact
+            // pending copy instead of leaving the placeholder stuck forever.
+            self.queue_pending_pairwise_device_deliveries(now, rng)?;
 
-        // Absolute UTC scheduling is enforced in core before encryption:
-        // clock rollback keeps entries held, clock advance activates them on
-        // this tick, and a restart simply reloads the same sealed records.
-        self.activate_scheduled_messages(now, rng)?;
+            // Absolute UTC scheduling is enforced in core before encryption:
+            // clock rollback keeps entries held, clock advance activates them on
+            // this tick, and a restart simply reloads the same sealed records.
+            self.activate_scheduled_messages(now, rng)?;
 
-        // Loaded and newly-created sessions advertise on the first tick.
-        // Controls use the durable queue and are terminal like receipts.
-        self.advertise_capabilities(now, rng)?;
-        self.advertise_discovery_upgrades(now, rng)?;
-        self.advertise_rendezvous_providers(now, rng)?;
-        self.maintain_rendezvous(now, rng).await?;
-        self.admission_deadline = Some(Instant::now() + MAX_ADMISSION_TIME_PER_TICK);
+            // Loaded and newly-created sessions advertise on the first tick.
+            // Controls use the durable queue and are terminal like receipts.
+            self.advertise_capabilities(now, rng)?;
+            self.advertise_discovery_upgrades(now, rng)?;
+            self.advertise_rendezvous_providers(now, rng)?;
+            self.maintain_rendezvous(now, rng).await?;
+            self.admission_deadline = Some(Instant::now() + MAX_ADMISSION_TIME_PER_TICK);
+        }
 
         // 1. Gather: previously-stashed envelopes first, then fresh arrivals.
         //    Every complete fresh envelope is staged under a stable pending
@@ -3860,14 +4082,29 @@ impl Node {
         let mut gathered = HashSet::new();
         let mut durable_gathered = HashSet::new();
         let mut redundant_pending = Vec::new();
+        let work_limit = if wake_collection {
+            MAX_WAKE_PENDING_WORK_PER_TICK
+        } else {
+            MAX_PENDING_WORK_PER_TICK
+        };
+        let mut work_bytes = 0usize;
         for (sequence, envelope, first_seen, transport) in self
             .store
             .pending_all_with_transport()?
             .into_iter()
-            .take(MAX_PENDING_WORK_PER_TICK)
+            .take(work_limit)
         {
+            let encoded_len = envelope.try_encode()?.len();
+            if wake_collection
+                && work_bytes
+                    .checked_add(encoded_len)
+                    .is_none_or(|bytes| bytes > MAX_WAKE_COLLECTION_BYTES)
+            {
+                break;
+            }
             if gathered.insert(envelope.content_id()) {
                 durable_gathered.insert(envelope.content_id());
+                work_bytes += encoded_len;
                 work.push((Some(sequence), envelope, first_seen, transport));
             } else {
                 durable_gathered.insert(envelope.content_id());
@@ -3898,6 +4135,7 @@ impl Node {
                     delete_capabilities: &[],
                     clear_reset_markers: &[],
                     delete_controls: &[],
+                    wake: &[],
                     acknowledge_presentation: None,
                     presentation_changed: false,
                 }),
@@ -3908,19 +4146,39 @@ impl Node {
         let mut fresh_fragments = 0usize;
         let transports = self.transports.clone();
         for transport in &transports {
-            let airtime = transport.profile().cost == CostClass::Airtime;
+            let profile = transport.profile();
+            let airtime = profile.cost == CostClass::Airtime;
+            if wake_collection
+                && (airtime || profile.latency == kult_transport::LatencyClass::HumanScale)
+            {
+                continue;
+            }
+            let envelopes_result = if let Some(deadline) = self.wake_collection_deadline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                let Some(result) = before_timeout(remaining, transport.recv_staged()).await else {
+                    break;
+                };
+                result
+            } else {
+                transport.recv_staged().await
+            };
             // A dead link must not stall the others; its envelopes will
             // arrive via retry or another path.
-            if let Ok(envelopes) = transport.recv_staged().await {
+            if let Ok(envelopes) = envelopes_result {
                 for ReceivedEnvelope {
                     envelope,
                     receipt,
                     ingress,
                 } in envelopes
                 {
+                    let encoded_len = envelope.try_encode()?.len();
                     let content_id = envelope.content_id();
                     let transport_class = admission_transport(ingress);
                     if airtime
+                        && !wake_collection
                         && self.bridge.is_some()
                         && !self.token_is_mine(&envelope.token, now)
                         && bridge_seen.insert((true, content_id))
@@ -3950,8 +4208,14 @@ impl Node {
                         if let Some(receipt) = receipt {
                             let _ = transport.settle_recv(receipt, false).await;
                         }
-                        if fresh_fragments < MAX_PENDING_WORK_PER_TICK {
+                        if fresh_fragments < work_limit
+                            && (!wake_collection
+                                || work_bytes
+                                    .checked_add(encoded_len)
+                                    .is_some_and(|bytes| bytes <= MAX_WAKE_COLLECTION_BYTES))
+                        {
                             fresh_fragments += 1;
+                            work_bytes += encoded_len;
                             work.push((None, envelope, now, transport_class));
                         }
                         continue;
@@ -3961,6 +4225,12 @@ impl Node {
                         && envelope.kind == EnvelopeKind::Handshake
                         && AdmissionEnvelope::is_encoded(&envelope.body)
                     {
+                        if wake_collection {
+                            if let Some(receipt) = receipt {
+                                let _ = transport.settle_recv(receipt, false).await;
+                            }
+                            continue;
+                        }
                         // Seen introductions are duplicates or permanent
                         // failures. Both receive the same bounded refusal and
                         // neither is allowed back into the KEM path.
@@ -4000,6 +4270,16 @@ impl Node {
                         }
                         continue;
                     }
+                    if wake_collection
+                        && work_bytes
+                            .checked_add(encoded_len)
+                            .is_none_or(|bytes| bytes > MAX_WAKE_COLLECTION_BYTES)
+                    {
+                        if let Some(receipt) = receipt {
+                            let _ = transport.settle_recv(receipt, false).await;
+                        }
+                        continue;
+                    }
                     match self.store.commit_plan(
                         CommitPlan::PendingStage(PendingStagePlan {
                             envelope: &envelope,
@@ -4008,7 +4288,7 @@ impl Node {
                         }),
                         rng,
                     ) {
-                        Ok(committed) if work.len() < MAX_PENDING_WORK_PER_TICK => {
+                        Ok(committed) if work.len() < work_limit => {
                             let sequence = committed
                                 .records
                                 .pending_sequences
@@ -4019,6 +4299,7 @@ impl Node {
                             if let Some(receipt) = receipt {
                                 let _ = transport.settle_recv(receipt, true).await;
                             }
+                            work_bytes += encoded_len;
                             work.push((Some(sequence), envelope, now, transport_class));
                         }
                         Ok(committed) => {
@@ -4044,7 +4325,7 @@ impl Node {
                     }
                 }
             }
-            if self.bridge.is_some() {
+            if !wake_collection && self.bridge.is_some() {
                 if let Ok(envelopes) = transport.recv_transit().await {
                     for envelope in envelopes {
                         let content_id = envelope.content_id();
@@ -4059,7 +4340,7 @@ impl Node {
                             continue;
                         }
                         if envelope.kind == EnvelopeKind::Fragment {
-                            if fresh_fragments < MAX_PENDING_WORK_PER_TICK {
+                            if fresh_fragments < work_limit {
                                 fresh_fragments += 1;
                                 work.push((None, envelope, now, AdmissionTransportClass::Bridge));
                             }
@@ -4071,7 +4352,7 @@ impl Node {
                             AdmissionTransportClass::Bridge,
                             rng,
                         ) {
-                            Ok(sequence) if work.len() < MAX_PENDING_WORK_PER_TICK => {
+                            Ok(sequence) if work.len() < work_limit => {
                                 work.push((
                                     Some(sequence),
                                     envelope,
@@ -4125,6 +4406,7 @@ impl Node {
                     delete_capabilities: &[],
                     clear_reset_markers: &[],
                     delete_controls: &[],
+                    wake: &[],
                     acknowledge_presentation: None,
                     presentation_changed: false,
                 }),
@@ -4141,6 +4423,12 @@ impl Node {
             let mut stash = Vec::new();
             let mut established = false;
             for (pending_sequence, env, first_seen, transport) in work {
+                if self
+                    .wake_collection_deadline
+                    .is_some_and(|deadline| Instant::now() >= deadline)
+                {
+                    break;
+                }
                 match self.consume(
                     &env,
                     ConsumeOrigin {
@@ -4188,7 +4476,9 @@ impl Node {
                     }
                 }
             }
-            if !stash.is_empty() && (established || self.apply_deferred_controls(now, rng)?) {
+            if !stash.is_empty()
+                && (established || (!wake_collection && self.apply_deferred_controls(now, rng)?))
+            {
                 work = stash;
                 continue;
             }
@@ -4198,48 +4488,50 @@ impl Node {
             break;
         }
 
-        // Accepted authenticated controls are durable before their follow-up
-        // work runs. A second bounded pass lets same-tick attachment windows
-        // advance without coupling filesystem or group work to ratchet commit.
-        self.apply_deferred_controls(now, rng)?;
+        if !wake_collection {
+            // Accepted authenticated controls are durable before their follow-up
+            // work runs. A second bounded pass lets same-tick attachment windows
+            // advance without coupling filesystem or group work to ratchet commit.
+            self.apply_deferred_controls(now, rng)?;
 
-        // 2b. Group upkeep (ADR-0012): flush due announces (initiating
-        //     pairwise sessions where possible) and serve late fan-out to
-        //     members whose session appeared after a group send.
-        self.tick_groups(now, rng).await?;
+            // 2b. Group upkeep (ADR-0012): flush due announces (initiating
+            //     pairwise sessions where possible) and serve late fan-out to
+            //     members whose session appeared after a group send.
+            self.tick_groups(now, rng).await?;
 
-        // 2c. Publish one authoritative, expiring carrier verdict per peer.
-        //     Attachment activation consumes this exact snapshot rather than
-        //     independently inferring capacity from a route.
-        self.refresh_carrier_capabilities(now, rng).await?;
+            // 2c. Publish one authoritative, expiring carrier verdict per peer.
+            //     Attachment activation consumes this exact snapshot rather than
+            //     independently inferring capacity from a route.
+            self.refresh_carrier_capabilities(now, rng).await?;
 
-        // 2d. Attachment offers and resumable missing-range requests activate
-        //     only under a fresh F4 bulk-capable verdict.
-        self.activate_attachment_transfers(now, rng).await?;
+            // 2d. Attachment offers and resumable missing-range requests activate
+            //     only under a fresh F4 bulk-capable verdict.
+            self.activate_attachment_transfers(now, rng).await?;
 
-        // 3. NACK the missing fragment indices of stale
-        //    partials (selective retransmission, docs/05-transports.md §4.2
-        //    rule 2). Accepted messages already own their encrypted receipt
-        //    and duplicate-replay route inside the receive commit plan.
-        let mut nacks_by_peer: BTreeMap<[u8; 32], FragNacks> = BTreeMap::new();
-        for (id, missing) in self.stale_partials(now) {
-            // The fragment's delivery token names the session to ask.
-            // Handshake fragments never match one — correctly so: with no
-            // session there is nothing to encrypt a receipt under.
-            let Some(token) = self.frag_meta.get(&id).map(|m| m.token) else {
-                continue;
-            };
-            let Some(peer) = self.match_session(&token, now) else {
-                continue;
-            };
-            if let Some(meta) = self.frag_meta.get_mut(&id) {
-                meta.last_nack = Some(now);
+            // 3. NACK the missing fragment indices of stale
+            //    partials (selective retransmission, docs/05-transports.md §4.2
+            //    rule 2). Accepted messages already own their encrypted receipt
+            //    and duplicate-replay route inside the receive commit plan.
+            let mut nacks_by_peer: BTreeMap<[u8; 32], FragNacks> = BTreeMap::new();
+            for (id, missing) in self.stale_partials(now) {
+                // The fragment's delivery token names the session to ask.
+                // Handshake fragments never match one — correctly so: with no
+                // session there is nothing to encrypt a receipt under.
+                let Some(token) = self.frag_meta.get(&id).map(|m| m.token) else {
+                    continue;
+                };
+                let Some(peer) = self.match_session(&token, now) else {
+                    continue;
+                };
+                if let Some(meta) = self.frag_meta.get_mut(&id) {
+                    meta.last_nack = Some(now);
+                }
+                nacks_by_peer.entry(peer).or_default().push((id, missing));
             }
-            nacks_by_peer.entry(peer).or_default().push((id, missing));
-        }
-        for peer in nacks_by_peer.keys().copied().collect::<Vec<_>>() {
-            let nacks = nacks_by_peer.remove(&peer).unwrap_or_default();
-            self.queue_receipt(&peer, Vec::new(), nacks, now, rng)?;
+            for peer in nacks_by_peer.keys().copied().collect::<Vec<_>>() {
+                let nacks = nacks_by_peer.remove(&peer).unwrap_or_default();
+                self.queue_receipt(&peer, Vec::new(), nacks, now, rng)?;
+            }
         }
         if !pending_acks.is_empty() {
             self.store.commit_plan(
@@ -4262,6 +4554,7 @@ impl Node {
                     delete_capabilities: &[],
                     clear_reset_markers: &[],
                     delete_controls: &[],
+                    wake: &[],
                     acknowledge_presentation: None,
                     presentation_changed: false,
                 }),
@@ -4271,7 +4564,29 @@ impl Node {
 
         // 4. Flush the outbound queue, then — only with whatever airtime and
         //    attention is left — third-party transit (ADR-0009).
+        if wake_collection {
+            for (_, item) in self
+                .store
+                .queue_all()?
+                .into_iter()
+                .take(MAX_RENDEZVOUS_OPERATIONS_PER_TICK)
+            {
+                self.rendezvous_refresh_requested.insert(item.peer);
+            }
+            if let Some(deadline) = self.wake_collection_deadline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if !remaining.is_zero() {
+                    if let Some(result) =
+                        before_timeout(remaining, self.maintain_rendezvous(now, rng)).await
+                    {
+                        result?;
+                    }
+                }
+            }
+            return Ok(self.drain_events());
+        }
         self.flush(now, rng).await?;
+        self.maintain_wake(now, rng).await?;
         self.flush_transit(now).await;
 
         Ok(self.drain_events())
@@ -4437,6 +4752,7 @@ impl Node {
                 delete_capabilities: &[],
                 clear_reset_markers: &[],
                 delete_controls: &[],
+                wake: &[],
                 acknowledge_presentation: None,
                 presentation_changed: !events.is_empty(),
             }),
@@ -4751,6 +5067,7 @@ impl Node {
                 delete_capabilities: &[],
                 clear_reset_markers: &[],
                 delete_controls: &[],
+                wake: &[],
                 acknowledge_presentation: None,
                 presentation_changed: true,
             }),
@@ -4938,6 +5255,7 @@ impl Node {
                         delete_capabilities: &[],
                         clear_reset_markers: &[marker],
                         delete_controls: &[],
+                        wake: &[],
                         acknowledge_presentation: None,
                         presentation_changed: false,
                     }),
@@ -4971,6 +5289,7 @@ impl Node {
                     media_transfers: &[],
                     media_objects: &[],
                     delete_controls: &[],
+                    wake: &[],
                     presentation_changed: false,
                 }),
                 rng,
@@ -5057,6 +5376,7 @@ impl Node {
                     media_transfers: &[],
                     media_objects: &[],
                     delete_controls: &[],
+                    wake: &[],
                     presentation_changed: false,
                 }),
                 rng,
@@ -5244,6 +5564,7 @@ impl Node {
                             delete_capabilities: &[],
                             clear_reset_markers: &[],
                             delete_controls: &[],
+                            wake: &[],
                             acknowledge_presentation: None,
                             presentation_changed: false,
                         }),
@@ -5284,6 +5605,7 @@ impl Node {
                         media_transfers: &[],
                         media_objects: &[],
                         delete_controls: &[],
+                        wake: &[],
                         presentation_changed: false,
                     }),
                     rng,
@@ -5374,6 +5696,7 @@ impl Node {
                     delete_capabilities: &[],
                     clear_reset_markers: &[],
                     delete_controls: &[control],
+                    wake: &[],
                     acknowledge_presentation: None,
                     presentation_changed: true,
                 }),
@@ -5447,6 +5770,7 @@ impl Node {
                 delete_capabilities: &[],
                 clear_reset_markers: &[],
                 delete_controls: &[],
+                wake: &[],
                 acknowledge_presentation: None,
                 presentation_changed: false,
             }),
@@ -6464,6 +6788,9 @@ impl Node {
         match env.kind {
             EnvelopeKind::Message => {
                 if let DecodedContent::CallControl { control, .. } = decode_content(&body) {
+                    if self.wake_collection_deadline.is_some() {
+                        return Ok(Consumed::Later);
+                    }
                     let source_pending = Self::pending_delete(pending_sequence, env.content_id());
                     self.store.commit_plan(
                         CommitPlan::PairwiseReceive(PairwiseReceivePlan {
@@ -6572,6 +6899,7 @@ impl Node {
                             media_objects: &[],
                             capabilities: None,
                             rendezvous: None,
+                            wake: None,
                             deferred_control: Some(&control),
                             content_id: env.content_id(),
                             source_pending,
@@ -6582,6 +6910,124 @@ impl Node {
                     self.before_memory_replacement()?;
                     self.sessions.insert(peer_device, after);
                     self.after_memory_replacement()?;
+                } else if is_wake_capability_control(&body) {
+                    let Ok(control) = WakeCapabilityControl::decode(&body) else {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    };
+                    if control.sender_account != peer
+                        || control.sender_device != peer_device
+                        || control.recipient_account != self.account.ed
+                        || control.recipient_device != self.device_id()
+                    {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    }
+                    let endpoints = self.store.contact_devices_for(&peer)?;
+                    let Some(sender) = endpoints
+                        .iter()
+                        .find(|endpoint| endpoint.device == peer_device)
+                    else {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    };
+                    if sender.revoked_at.is_some()
+                        || sender.manifest_generation != control.authority_generation
+                    {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    }
+                    let incoming = control
+                        .capabilities
+                        .iter()
+                        .map(|capability| {
+                            let provider = WakeProvider::new(
+                                capability.origin.clone(),
+                                capability.static_key,
+                            )?;
+                            if provider.provider_id()
+                                != kult_protocol::wake_provider_id(
+                                    capability.origin.as_bytes(),
+                                    &capability.static_key,
+                                )
+                                .map_err(kult_transport::TransportError::Protocol)?
+                                || capability.expires_at <= now
+                                || capability.expires_at
+                                    > now.saturating_add(WAKE_CAPABILITY_MAX_LIFETIME_SECS)
+                            {
+                                return Err(kult_transport::TransportError::UnsupportedHint);
+                            }
+                            WakeStoredCapability::new(
+                                WakeCapabilityDirection::Remote,
+                                capability.origin.clone(),
+                                capability.static_key,
+                                capability.capability.as_bytes().to_vec(),
+                                capability.expires_at,
+                            )
+                            .map_err(|_| kult_transport::TransportError::UnsupportedHint)
+                        })
+                        .collect::<kult_transport::Result<Vec<_>>>();
+                    let Ok(incoming) = incoming else {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    };
+                    let before_state = self
+                        .store
+                        .get_wake_service_state(&peer_device)?
+                        .ok_or(NodeError::CorruptState)?;
+                    if before_state.session_id != *before.session_id() {
+                        return Err(NodeError::CorruptState);
+                    }
+                    let mut after_state = before_state.clone();
+                    if after_state
+                        .replace_direction(
+                            WakeCapabilityDirection::Remote,
+                            control.generation,
+                            incoming,
+                        )
+                        .is_err()
+                    {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    }
+                    let conflict = after_state.remote_conflict_generation
+                        == Some(control.generation)
+                        && before_state != after_state;
+                    let wake = (before_state != after_state).then_some(WakeServiceTransition {
+                        peer_device,
+                        before: &before_state,
+                        after: &after_state,
+                    });
+                    let source_pending = Self::pending_delete(pending_sequence, env.content_id());
+                    let committed = self.store.commit_plan(
+                        CommitPlan::ReceiptReceive(ReceiptReceivePlan {
+                            session: SessionTransition {
+                                peer_device,
+                                before: Some(&before),
+                                after: &after,
+                            },
+                            delete_queue: &[],
+                            queue: &[],
+                            messages: &[],
+                            deliveries: &[],
+                            group_messages: &[],
+                            groups: &[],
+                            contact_devices: &[],
+                            media_transfers: &[],
+                            media_objects: &[],
+                            capabilities: None,
+                            rendezvous: None,
+                            wake,
+                            deferred_control: None,
+                            content_id: env.content_id(),
+                            source_pending,
+                            presentation_changed: conflict,
+                        }),
+                        rng,
+                    )?;
+                    self.before_memory_replacement()?;
+                    self.sessions.insert(peer_device, after);
+                    self.after_memory_replacement()?;
+                    let events = conflict.then_some(Event::WakeConflict {
+                        peer,
+                        device: peer_device,
+                        generation: control.generation,
+                    });
+                    self.accept_commit_receipt(committed, events);
                 } else if is_rendezvous_provider_control(&body) {
                     let Ok(control) = RendezvousProviderControl::decode(&body) else {
                         return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
@@ -6726,6 +7172,7 @@ impl Node {
                                     before: before_state,
                                     after: after_state,
                                 }),
+                                wake: None,
                                 deferred_control: None,
                                 content_id: env.content_id(),
                                 source_pending,
@@ -6792,6 +7239,7 @@ impl Node {
                             media_objects: &[],
                             capabilities: None,
                             rendezvous,
+                            wake: None,
                             deferred_control: None,
                             content_id: env.content_id(),
                             source_pending,
@@ -6904,6 +7352,7 @@ impl Node {
                             media_objects: &[],
                             capabilities: None,
                             rendezvous: None,
+                            wake: None,
                             deferred_control: None,
                             content_id: env.content_id(),
                             source_pending,
@@ -6951,6 +7400,7 @@ impl Node {
                                 media_objects: &[],
                                 capabilities: Some(&capabilities),
                                 rendezvous: None,
+                                wake: None,
                                 deferred_control: None,
                                 content_id: env.content_id(),
                                 source_pending,
@@ -7008,6 +7458,7 @@ impl Node {
                             media_objects: &[],
                             capabilities: None,
                             rendezvous: None,
+                            wake: None,
                             deferred_control: None,
                             content_id: env.content_id(),
                             source_pending,
@@ -7048,6 +7499,7 @@ impl Node {
                             media_objects: &[],
                             capabilities: None,
                             rendezvous: None,
+                            wake: None,
                             deferred_control: None,
                             content_id: env.content_id(),
                             source_pending,
@@ -7090,6 +7542,7 @@ impl Node {
                         media_objects: &[],
                         capabilities: None,
                         rendezvous: None,
+                        wake: None,
                         deferred_control: retain_control.then_some(&control),
                         content_id: env.content_id(),
                         source_pending,
@@ -8400,6 +8853,7 @@ impl Node {
                 media_transfers,
                 media_objects,
                 delete_controls,
+                wake: &[],
                 presentation_changed: !media_transfers.is_empty() || !media_objects.is_empty(),
             }),
             rng,
@@ -8686,12 +9140,225 @@ impl Node {
 
     // ---- send path (delivery engine + scheduler) ----------------------------
 
+    fn prepare_wake_pending(
+        &self,
+        peer_device: &[u8; 32],
+        now: u64,
+    ) -> Result<Option<PreparedWakeUpdate>> {
+        if self.wake_client.is_none() {
+            return Ok(None);
+        }
+        let Some(before) = self.store.get_wake_service_state(peer_device)? else {
+            return Ok(None);
+        };
+        if before.remote_conflict_generation.is_some() {
+            return Ok(None);
+        }
+        let mut after = before.clone();
+        for capability in after.remote_mut() {
+            if capability.expires_at > now {
+                capability.mark_pending(now)?;
+            }
+        }
+        if before == after {
+            return Ok(None);
+        }
+        Ok(Some(PreparedWakeUpdate {
+            peer_device: *peer_device,
+            before,
+            after,
+        }))
+    }
+
+    fn commit_wake_update(
+        &mut self,
+        update: &PreparedWakeUpdate,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        self.store.commit_plan(
+            CommitPlan::Maintenance(MaintenancePlan {
+                seen: &[],
+                delete_pending: &[],
+                delete_queue: &[],
+                update_queue: &[],
+                delete_replay: &[],
+                messages: &[],
+                deliveries: &[],
+                group_messages: &[],
+                groups: &[],
+                ephemeral: &[],
+                delete_messages: &[],
+                delete_group_messages: &[],
+                delete_media: &[],
+                delete_scheduled: &[],
+                delete_sessions: &[],
+                delete_capabilities: &[],
+                clear_reset_markers: &[],
+                delete_controls: &[],
+                wake: &[WakeServiceTransition {
+                    peer_device: update.peer_device,
+                    before: &update.before,
+                    after: &update.after,
+                }],
+                acknowledge_presentation: None,
+                presentation_changed: false,
+            }),
+            rng,
+        )?;
+        Ok(())
+    }
+
+    fn commit_wake_revocation(
+        &mut self,
+        before: &WakeRevocationRecord,
+        after: Option<&WakeRevocationRecord>,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        self.store.commit_plan(
+            CommitPlan::WakeRevocation(WakeRevocationPlan {
+                transitions: &[WakeRevocationTransition { before, after }],
+            }),
+            rng,
+        )?;
+        Ok(())
+    }
+
+    async fn maintain_wake(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<()> {
+        let deadline = Instant::now() + WAKE_MAINTENANCE_BUDGET;
+        let mut attempts = 0usize;
+        let mut revocation_attempts = 0usize;
+        let mut revocation_changes = 0usize;
+        let client = self.wake_client.clone();
+        let mut revocations = self.store.wake_revocations(MAX_WAKE_REVOCATION_ROWS)?;
+        revocations.sort_by_key(|record| {
+            (
+                if record.expires_at <= now {
+                    0
+                } else {
+                    record.next_attempt_at
+                },
+                record.id,
+            )
+        });
+        for before in revocations {
+            if revocation_changes >= MAX_WAKE_REVOCATION_CHANGES_PER_TICK
+                || Instant::now() >= deadline
+            {
+                break;
+            }
+            if before.expires_at <= now {
+                self.commit_wake_revocation(&before, None, rng)?;
+                revocation_changes += 1;
+                continue;
+            }
+            if before.next_attempt_at > now
+                || attempts >= MAX_WAKE_GATEWAY_OPERATIONS_PER_TICK
+                || revocation_attempts >= MAX_WAKE_REVOCATIONS_PER_TICK
+            {
+                continue;
+            }
+            let Some(client) = client.as_ref() else {
+                continue;
+            };
+            let provider = WakeProvider::new(before.origin.clone(), before.static_key)?;
+            if provider.provider_id() != before.provider_id {
+                return Err(NodeError::CorruptState);
+            }
+            let mut request_nonce = [0u8; 16];
+            rng.fill_bytes(&mut request_nonce);
+            if request_nonce == [0u8; 16] {
+                request_nonce[15] = 1;
+            }
+            let request = WakeTriggerRequest {
+                capability: before.decoded_capability()?,
+                request_nonce,
+            };
+            attempts += 1;
+            revocation_attempts += 1;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let outcome = before_timeout(remaining, client.revoke(&provider, &request)).await;
+            match outcome {
+                Some(Ok(())) => self.commit_wake_revocation(&before, None, rng)?,
+                Some(Err(_)) | None => {
+                    let mut after = before.clone();
+                    after.mark_failed(now)?;
+                    self.commit_wake_revocation(&before, Some(&after), rng)?;
+                }
+            }
+            revocation_changes += 1;
+        }
+        let Some(client) = client else {
+            return Ok(());
+        };
+        let mut devices = self.sessions.keys().copied().collect::<Vec<_>>();
+        devices.sort_unstable();
+        for peer_device in devices {
+            if attempts >= MAX_WAKE_GATEWAY_OPERATIONS_PER_TICK || Instant::now() >= deadline {
+                break;
+            }
+            let Some(before) = self.store.get_wake_service_state(&peer_device)? else {
+                continue;
+            };
+            if before.remote_conflict_generation.is_some() {
+                continue;
+            }
+            let mut after = before.clone();
+            for capability in after.remote_mut() {
+                if attempts >= MAX_WAKE_GATEWAY_OPERATIONS_PER_TICK || Instant::now() >= deadline {
+                    break;
+                }
+                if !capability.pending
+                    || capability.expires_at <= now
+                    || capability.next_attempt_at > now
+                {
+                    continue;
+                }
+                let provider =
+                    match WakeProvider::new(capability.origin.clone(), capability.static_key) {
+                        Ok(provider) => provider,
+                        Err(_) => {
+                            capability.mark_failed(now)?;
+                            continue;
+                        }
+                    };
+                let mut request_nonce = [0u8; 16];
+                rng.fill_bytes(&mut request_nonce);
+                if request_nonce == [0u8; 16] {
+                    request_nonce[15] = 1;
+                }
+                let request = WakeTriggerRequest {
+                    capability: capability.decoded_capability()?,
+                    request_nonce,
+                };
+                attempts += 1;
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let outcome = before_timeout(remaining, client.trigger(&provider, &request)).await;
+                match outcome {
+                    Some(Ok(())) => capability.mark_attempted(),
+                    Some(Err(_)) | None => capability.mark_failed(now)?,
+                }
+            }
+            if before != after {
+                self.commit_wake_update(
+                    &PreparedWakeUpdate {
+                        peer_device,
+                        before,
+                        after,
+                    },
+                    rng,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     fn commit_queue_maintenance(
         &mut self,
         sequence: i64,
         before: &QueueItem,
         after: Option<&QueueItem>,
         prepared: PreparedDeliveryUpdate,
+        wake: Option<PreparedWakeUpdate>,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
         let delete = after.is_none().then_some(QueueDelete {
@@ -8718,6 +9385,15 @@ impl Node {
             .iter()
             .map(|(before, after)| GroupMessageTransition { before, after })
             .collect::<Vec<_>>();
+        let wake = wake
+            .as_ref()
+            .map(|transition| WakeServiceTransition {
+                peer_device: transition.peer_device,
+                before: &transition.before,
+                after: &transition.after,
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
         let receipt = self.store.commit_plan(
             CommitPlan::Maintenance(MaintenancePlan {
                 seen: &[],
@@ -8738,6 +9414,7 @@ impl Node {
                 delete_capabilities: &[],
                 clear_reset_markers: &[],
                 delete_controls: &[],
+                wake: &wake,
                 acknowledge_presentation: None,
                 presentation_changed: !prepared.events.is_empty(),
             }),
@@ -8775,6 +9452,7 @@ impl Node {
                     &before,
                     None,
                     PreparedDeliveryUpdate::default(),
+                    None,
                     rng,
                 )?;
                 continue;
@@ -8789,6 +9467,7 @@ impl Node {
                     &before,
                     None,
                     PreparedDeliveryUpdate::default(),
+                    None,
                     rng,
                 )?;
                 continue;
@@ -8811,6 +9490,7 @@ impl Node {
                             &before,
                             Some(&item),
                             PreparedDeliveryUpdate::default(),
+                            None,
                             rng,
                         )?;
                         break;
@@ -8865,6 +9545,7 @@ impl Node {
             candidates.sort_by_key(|(rank, _, _)| *rank);
 
             let mut sent = false;
+            let mut sent_receipt = None;
             let mut sent_fragments = None;
             let mut capacity_refused = false;
             for (_, transport, hint) in &candidates {
@@ -8881,7 +9562,8 @@ impl Node {
                     break;
                 };
                 match result {
-                    Ok(fragments) => {
+                    Ok((receipt, fragments)) => {
+                        sent_receipt = Some(receipt);
                         sent_fragments = fragments;
                         sent = true;
                         break;
@@ -8915,11 +9597,16 @@ impl Node {
                     // delivery. Retain the exact sealed envelope and retry it
                     // passively until its encrypted receipt arrives.
                     schedule_after_handoff(&mut item, now);
-                    self.commit_queue_maintenance(seq, &before, Some(&item), prepared, rng)?;
+                    let wake = if sent_receipt == Some(SendReceipt::AckedByNextHop) {
+                        self.prepare_wake_pending(&item.peer, now)?
+                    } else {
+                        None
+                    };
+                    self.commit_queue_maintenance(seq, &before, Some(&item), prepared, wake, rng)?;
                 } else {
                     // Receipts, capability controls, fragments, and realtime
                     // controls are terminal at transport handoff.
-                    self.commit_queue_maintenance(seq, &before, None, prepared, rng)?;
+                    self.commit_queue_maintenance(seq, &before, None, prepared, None, rng)?;
                 }
                 if let Some(bodies) = sent_fragments {
                     self.remember_fragments(
@@ -8952,6 +9639,7 @@ impl Node {
                     &before,
                     Some(&item),
                     PreparedDeliveryUpdate::default(),
+                    None,
                     rng,
                 )?;
             }
@@ -9252,12 +9940,12 @@ async fn send_via(
     transport: &dyn Transport,
     hint: &DeliveryHint,
     envelope: &Envelope,
-) -> Result<Option<Vec<Vec<u8>>>> {
+) -> Result<(SendReceipt, Option<Vec<Vec<u8>>>)> {
     let mtu = transport.profile().mtu;
     let encoded = envelope.try_encode()?;
     if encoded.len() <= mtu {
-        transport.send(hint, envelope).await?;
-        return Ok(None);
+        let receipt = transport.send(hint, envelope).await?;
+        return Ok((receipt, None));
     }
     // Fragments never nest (the receiver treats nested ones as malformed):
     // a retransmitted fragment that does not fit this link makes the
@@ -9273,6 +9961,7 @@ async fn send_via(
             kult_protocol::ProtocolError::MtuTooSmall,
         ))?;
     let bodies = fragment(&encoded, budget)?;
+    let mut receipt = SendReceipt::AckedByNextHop;
     for body in &bodies {
         let fragment_envelope = match envelope.retention_until {
             Some(deadline) => Envelope::new_retained(
@@ -9283,9 +9972,11 @@ async fn send_via(
             )?,
             None => Envelope::new(EnvelopeKind::Fragment, envelope.token, body.clone()),
         };
-        transport.send(hint, &fragment_envelope).await?;
+        if transport.send(hint, &fragment_envelope).await? == SendReceipt::HandedToLink {
+            receipt = SendReceipt::HandedToLink;
+        }
     }
-    Ok(Some(bodies))
+    Ok((receipt, Some(bodies)))
 }
 
 /// Flush priority (docs/05-transports.md §4.2 rule 3): text > receipts >
@@ -9773,6 +10464,601 @@ mod edit_tests {
             ),
             Err(NodeError::EditUnsupported)
         ));
+    }
+}
+
+#[cfg(test)]
+mod wake_tests {
+    use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
+    use rand::{rngs::StdRng, SeedableRng};
+
+    use kult_protocol::{
+        WakeCapability, WakeRegisterRequest, WakeRegisterResponse, WakeTriggerRequest,
+        WAKE_CAPABILITY_PLAINTEXT_LEN,
+    };
+    use kult_transport::{LatencyClass, LinkProfile, Result as TransportResult, TransportError};
+
+    use super::*;
+
+    const NOW: u64 = 1_800_000_000;
+    const TEST_KDF: KdfProfile = KdfProfile {
+        m_cost_kib: 8,
+        t_cost: 1,
+        p_cost: 1,
+    };
+
+    #[derive(Default)]
+    struct RecordingWakeClient {
+        triggers: AtomicUsize,
+        revokes: AtomicUsize,
+        fail_revokes: AtomicBool,
+    }
+
+    #[async_trait]
+    impl WakeClient for RecordingWakeClient {
+        async fn register(
+            &self,
+            _provider: &WakeProvider,
+            _request: &WakeRegisterRequest,
+        ) -> TransportResult<WakeRegisterResponse> {
+            Ok(WakeRegisterResponse::refused())
+        }
+
+        async fn trigger(
+            &self,
+            _provider: &WakeProvider,
+            _request: &WakeTriggerRequest,
+        ) -> TransportResult<()> {
+            self.triggers.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn revoke(
+            &self,
+            _provider: &WakeProvider,
+            _request: &WakeTriggerRequest,
+        ) -> TransportResult<()> {
+            self.revokes.fetch_add(1, Ordering::SeqCst);
+            if self.fail_revokes.load(Ordering::SeqCst) {
+                Err(TransportError::RefusedByNextHop)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    struct RecordingTransport {
+        receipt: AtomicU8,
+        sends: AtomicUsize,
+        receives: AtomicUsize,
+        inbound: Mutex<Vec<Envelope>>,
+        profile: LinkProfile,
+    }
+
+    impl RecordingTransport {
+        fn new(receipt: SendReceipt, latency: LatencyClass, cost: CostClass) -> Self {
+            Self {
+                receipt: AtomicU8::new(match receipt {
+                    SendReceipt::HandedToLink => 1,
+                    SendReceipt::AckedByNextHop => 2,
+                }),
+                sends: AtomicUsize::new(0),
+                receives: AtomicUsize::new(0),
+                inbound: Mutex::new(Vec::new()),
+                profile: LinkProfile {
+                    mtu: 64 * 1024,
+                    latency,
+                    cost,
+                    broadcast: cost == CostClass::Airtime,
+                },
+            }
+        }
+
+        fn set_receipt(&self, receipt: SendReceipt) {
+            self.receipt.store(
+                match receipt {
+                    SendReceipt::HandedToLink => 1,
+                    SendReceipt::AckedByNextHop => 2,
+                },
+                Ordering::SeqCst,
+            );
+        }
+    }
+
+    #[async_trait]
+    impl Transport for RecordingTransport {
+        fn profile(&self) -> LinkProfile {
+            self.profile
+        }
+
+        async fn reachable(&self, _peer: &DeliveryHint) -> Reachability {
+            Reachability::Now
+        }
+
+        async fn send(
+            &self,
+            _peer: &DeliveryHint,
+            _envelope: &Envelope,
+        ) -> TransportResult<SendReceipt> {
+            self.sends.fetch_add(1, Ordering::SeqCst);
+            match self.receipt.load(Ordering::SeqCst) {
+                1 => Ok(SendReceipt::HandedToLink),
+                2 => Ok(SendReceipt::AckedByNextHop),
+                _ => Err(TransportError::RefusedByNextHop),
+            }
+        }
+
+        async fn recv(&self) -> TransportResult<Vec<Envelope>> {
+            self.receives.fetch_add(1, Ordering::SeqCst);
+            Ok(std::mem::take(
+                &mut *self.inbound.lock().expect("test inbound lock"),
+            ))
+        }
+    }
+
+    fn add_sender_contact(
+        directory: &tempfile::TempDir,
+        rng: &mut StdRng,
+    ) -> (Node, [u8; 32], [u8; 32]) {
+        let mut sender = Node::create(
+            &directory.path().join("sender.db"),
+            b"sender",
+            TEST_KDF,
+            rng,
+        )
+        .unwrap();
+        let mut receiver = Node::create(
+            &directory.path().join("receiver.db"),
+            b"receiver",
+            TEST_KDF,
+            rng,
+        )
+        .unwrap();
+        let bundle = receiver.handshake_bundle(NOW, rng).unwrap();
+        let account = sender
+            .add_contact(
+                "receiver",
+                &bundle,
+                &[DeliveryHint::Multiaddr(
+                    "/ip4/127.0.0.1/udp/4001/quic-v1".into(),
+                )],
+                NOW,
+                rng,
+            )
+            .unwrap();
+        let device = sender
+            .store
+            .contact_devices_for(&account)
+            .unwrap()
+            .into_iter()
+            .find(|endpoint| endpoint.revoked_at.is_none())
+            .unwrap()
+            .device;
+        (sender, account, device)
+    }
+
+    fn install_remote_wake(node: &mut Node, peer_device: [u8; 32], rng: &mut StdRng) {
+        let capability =
+            WakeCapability::from_parts(1, [3u8; 24], &[4u8; WAKE_CAPABILITY_PLAINTEXT_LEN + 16])
+                .unwrap();
+        let mut state = node
+            .store
+            .get_wake_service_state(&peer_device)
+            .unwrap()
+            .unwrap();
+        state
+            .replace_direction(
+                WakeCapabilityDirection::Remote,
+                1,
+                vec![WakeStoredCapability::new(
+                    WakeCapabilityDirection::Remote,
+                    "https://wake.example".into(),
+                    [5u8; 32],
+                    capability.as_bytes().to_vec(),
+                    NOW + 3_600,
+                )
+                .unwrap()],
+            )
+            .unwrap();
+        node.store
+            .put_wake_service_state(&peer_device, &state, rng)
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn only_next_hop_acceptance_triggers_and_gateway_ack_never_delivers() {
+        let mut rng = StdRng::seed_from_u64(0x1901_0001);
+        let directory = tempfile::tempdir().unwrap();
+        let (mut sender, account, peer_device) = add_sender_contact(&directory, &mut rng);
+        let wake = Arc::new(RecordingWakeClient::default());
+        sender
+            .configure_wake(
+                DiscoveryMode::Standard,
+                Some(Arc::clone(&wake) as Arc<dyn WakeClient>),
+            )
+            .unwrap();
+        let transport = Arc::new(RecordingTransport::new(
+            SendReceipt::AckedByNextHop,
+            LatencyClass::Millis,
+            CostClass::Metered,
+        ));
+        sender.add_transport(Arc::clone(&transport) as Arc<dyn Transport>);
+
+        let first = sender
+            .send_message(&account, b"accepted by next hop", NOW + 1, &mut rng)
+            .unwrap();
+        install_remote_wake(&mut sender, peer_device, &mut rng);
+        sender.tick(NOW + 2, &mut rng).await.unwrap();
+        assert_eq!(wake.triggers.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            sender
+                .messages_with(&account)
+                .unwrap()
+                .into_iter()
+                .find(|message| message.id == first)
+                .unwrap()
+                .state,
+            DeliveryState::Sent
+        );
+
+        transport.set_receipt(SendReceipt::HandedToLink);
+        let second = sender
+            .send_message(&account, b"link handoff only", NOW + 3, &mut rng)
+            .unwrap();
+        sender.tick(NOW + 4, &mut rng).await.unwrap();
+        assert_eq!(wake.triggers.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            sender
+                .messages_with(&account)
+                .unwrap()
+                .into_iter()
+                .find(|message| message.id == second)
+                .unwrap()
+                .state,
+            DeliveryState::Sent
+        );
+    }
+
+    #[tokio::test]
+    async fn wake_collection_does_not_flush_or_touch_mesh_and_sneakernet() {
+        let mut rng = StdRng::seed_from_u64(0x1901_0002);
+        let directory = tempfile::tempdir().unwrap();
+        let (mut sender, account, _) = add_sender_contact(&directory, &mut rng);
+        let immediate = Arc::new(RecordingTransport::new(
+            SendReceipt::AckedByNextHop,
+            LatencyClass::Millis,
+            CostClass::Metered,
+        ));
+        let mesh = Arc::new(RecordingTransport::new(
+            SendReceipt::HandedToLink,
+            LatencyClass::Seconds,
+            CostClass::Airtime,
+        ));
+        let sneakernet = Arc::new(RecordingTransport::new(
+            SendReceipt::HandedToLink,
+            LatencyClass::HumanScale,
+            CostClass::Free,
+        ));
+        sender.add_transport(Arc::clone(&immediate) as Arc<dyn Transport>);
+        sender.add_transport(Arc::clone(&mesh) as Arc<dyn Transport>);
+        sender.add_transport(Arc::clone(&sneakernet) as Arc<dyn Transport>);
+        let message = sender
+            .send_message(&account, b"must remain queued", NOW + 1, &mut rng)
+            .unwrap();
+
+        sender
+            .wake_tick(NOW + 2, Duration::from_secs(2), &mut rng)
+            .await
+            .unwrap();
+        assert_eq!(immediate.sends.load(Ordering::SeqCst), 0);
+        assert_eq!(mesh.sends.load(Ordering::SeqCst), 0);
+        assert_eq!(sneakernet.sends.load(Ordering::SeqCst), 0);
+        assert_eq!(immediate.receives.load(Ordering::SeqCst), 1);
+        assert_eq!(mesh.receives.load(Ordering::SeqCst), 0);
+        assert_eq!(sneakernet.receives.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            sender
+                .messages_with(&account)
+                .unwrap()
+                .into_iter()
+                .find(|candidate| candidate.id == message)
+                .unwrap()
+                .state,
+            DeliveryState::Queued
+        );
+    }
+
+    #[tokio::test]
+    async fn issued_capability_generations_are_atomic_idempotent_and_revocable() {
+        let mut rng = StdRng::seed_from_u64(0x1901_0003);
+        let directory = tempfile::tempdir().unwrap();
+        let (mut sender, account, peer_device) = add_sender_contact(&directory, &mut rng);
+        let message = sender
+            .send_message(&account, b"create session", NOW + 1, &mut rng)
+            .unwrap();
+        let wake = Arc::new(RecordingWakeClient::default());
+        sender
+            .configure_wake(
+                DiscoveryMode::Standard,
+                Some(Arc::clone(&wake) as Arc<dyn WakeClient>),
+            )
+            .unwrap();
+        let descriptor = |byte| WakeCapabilityDescriptor {
+            origin: "https://wake.example".into(),
+            static_key: [5u8; 32],
+            expires_at: NOW + 3_600,
+            capability: WakeCapability::from_parts(
+                1,
+                [byte; 24],
+                &[byte; WAKE_CAPABILITY_PLAINTEXT_LEN + 16],
+            )
+            .unwrap(),
+        };
+        sender
+            .publish_wake_capabilities(peer_device, 1, vec![descriptor(6)], NOW + 2, &mut rng)
+            .unwrap();
+        let after_first = sender
+            .store
+            .get_wake_service_state(&peer_device)
+            .unwrap()
+            .unwrap();
+        assert_eq!(after_first.issued_generation, 1);
+        assert_eq!(after_first.issued().count(), 1);
+        let queue_len = sender.store.queue_all().unwrap().len();
+
+        sender
+            .publish_wake_capabilities(peer_device, 1, vec![descriptor(6)], NOW + 2, &mut rng)
+            .unwrap();
+        assert_eq!(sender.store.queue_all().unwrap().len(), queue_len);
+        assert!(matches!(
+            sender.publish_wake_capabilities(
+                peer_device,
+                1,
+                vec![descriptor(7)],
+                NOW + 2,
+                &mut rng,
+            ),
+            Err(NodeError::WakeConflict)
+        ));
+
+        sender
+            .publish_wake_capabilities(peer_device, 2, Vec::new(), NOW + 3, &mut rng)
+            .unwrap();
+        let revoked = sender
+            .store
+            .get_wake_service_state(&peer_device)
+            .unwrap()
+            .unwrap();
+        assert_eq!(revoked.issued_generation, 2);
+        assert_eq!(revoked.issued().count(), 0);
+        assert_eq!(
+            sender
+                .store
+                .wake_revocations(MAX_WAKE_REVOCATION_ROWS)
+                .unwrap()
+                .len(),
+            1
+        );
+        let delivery_before = sender
+            .messages_with(&account)
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == message)
+            .unwrap()
+            .state;
+        sender.maintain_wake(NOW + 4, &mut rng).await.unwrap();
+        assert_eq!(wake.revokes.load(Ordering::SeqCst), 1);
+        assert!(sender
+            .store
+            .wake_revocations(MAX_WAKE_REVOCATION_ROWS)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            sender
+                .messages_with(&account)
+                .unwrap()
+                .into_iter()
+                .find(|candidate| candidate.id == message)
+                .unwrap()
+                .state,
+            delivery_before
+        );
+        sender
+            .configure_wake(DiscoveryMode::Sovereign, None)
+            .unwrap();
+        assert!(matches!(
+            sender.publish_wake_capabilities(
+                peer_device,
+                3,
+                vec![descriptor(8)],
+                NOW + 5,
+                &mut rng,
+            ),
+            Err(NodeError::WakeUnavailable)
+        ));
+        sender
+            .publish_wake_capabilities(peer_device, 3, Vec::new(), NOW + 5, &mut rng)
+            .unwrap();
+        assert_eq!(
+            sender
+                .store
+                .get_wake_service_state(&peer_device)
+                .unwrap()
+                .unwrap()
+                .issued_generation,
+            3
+        );
+        assert!(sender
+            .configure_wake(
+                DiscoveryMode::Sovereign,
+                Some(Arc::new(RecordingWakeClient::default()) as Arc<dyn WakeClient>),
+            )
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn failed_gateway_revocation_survives_restart_and_retries() {
+        let mut rng = StdRng::seed_from_u64(0x1901_0004);
+        let directory = tempfile::tempdir().unwrap();
+        let sender_path = directory.path().join("sender.db");
+        let (mut sender, account, peer_device) = add_sender_contact(&directory, &mut rng);
+        let message = sender
+            .send_message(&account, b"retain delivery state", NOW + 1, &mut rng)
+            .unwrap();
+        let failing = Arc::new(RecordingWakeClient::default());
+        failing.fail_revokes.store(true, Ordering::SeqCst);
+        sender
+            .configure_wake(
+                DiscoveryMode::Standard,
+                Some(Arc::clone(&failing) as Arc<dyn WakeClient>),
+            )
+            .unwrap();
+        let descriptor = WakeCapabilityDescriptor {
+            origin: "https://wake.example".into(),
+            static_key: [5u8; 32],
+            expires_at: NOW + 3_600,
+            capability: WakeCapability::from_parts(
+                1,
+                [12u8; 24],
+                &[13u8; WAKE_CAPABILITY_PLAINTEXT_LEN + 16],
+            )
+            .unwrap(),
+        };
+        sender
+            .publish_wake_capabilities(peer_device, 1, vec![descriptor], NOW + 2, &mut rng)
+            .unwrap();
+        sender
+            .publish_wake_capabilities(peer_device, 2, Vec::new(), NOW + 3, &mut rng)
+            .unwrap();
+        let delivery_before = sender
+            .messages_with(&account)
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == message)
+            .unwrap()
+            .state;
+        sender.maintain_wake(NOW + 4, &mut rng).await.unwrap();
+        assert_eq!(failing.revokes.load(Ordering::SeqCst), 1);
+        let retry = sender
+            .store
+            .wake_revocations(MAX_WAKE_REVOCATION_ROWS)
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(retry.consecutive_failures, 1);
+        drop(sender);
+
+        let mut reopened = Node::open(&sender_path, b"sender").unwrap();
+        let succeeding = Arc::new(RecordingWakeClient::default());
+        reopened
+            .configure_wake(
+                DiscoveryMode::Standard,
+                Some(Arc::clone(&succeeding) as Arc<dyn WakeClient>),
+            )
+            .unwrap();
+        reopened
+            .maintain_wake(retry.next_attempt_at, &mut rng)
+            .await
+            .unwrap();
+        assert_eq!(succeeding.revokes.load(Ordering::SeqCst), 1);
+        assert!(reopened
+            .store
+            .wake_revocations(MAX_WAKE_REVOCATION_ROWS)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            reopened
+                .messages_with(&account)
+                .unwrap()
+                .into_iter()
+                .find(|candidate| candidate.id == message)
+                .unwrap()
+                .state,
+            delivery_before
+        );
+    }
+
+    #[tokio::test]
+    async fn revocation_backlog_cannot_starve_an_eligible_wake_trigger() {
+        let mut rng = StdRng::seed_from_u64(0x1901_0005);
+        let directory = tempfile::tempdir().unwrap();
+        let (mut sender, account, peer_device) = add_sender_contact(&directory, &mut rng);
+        sender
+            .send_message(&account, b"create session", NOW + 1, &mut rng)
+            .unwrap();
+        let wake = Arc::new(RecordingWakeClient::default());
+        sender
+            .configure_wake(
+                DiscoveryMode::Standard,
+                Some(Arc::clone(&wake) as Arc<dyn WakeClient>),
+            )
+            .unwrap();
+        let descriptors = |generation: u8| {
+            (0..4u8)
+                .map(|provider| WakeCapabilityDescriptor {
+                    origin: format!("https://wake-{provider}.example"),
+                    static_key: [provider + 20; 32],
+                    expires_at: NOW + 3_600,
+                    capability: WakeCapability::from_parts(
+                        1,
+                        [generation.saturating_mul(8).saturating_add(provider); 24],
+                        &[generation.saturating_add(provider); WAKE_CAPABILITY_PLAINTEXT_LEN + 16],
+                    )
+                    .unwrap(),
+                })
+                .collect::<Vec<_>>()
+        };
+        sender
+            .publish_wake_capabilities(peer_device, 1, descriptors(1), NOW + 2, &mut rng)
+            .unwrap();
+        sender
+            .publish_wake_capabilities(peer_device, 2, descriptors(2), NOW + 3, &mut rng)
+            .unwrap();
+        sender
+            .publish_wake_capabilities(peer_device, 3, descriptors(3), NOW + 4, &mut rng)
+            .unwrap();
+        assert_eq!(
+            sender
+                .store
+                .wake_revocations(MAX_WAKE_REVOCATION_ROWS)
+                .unwrap()
+                .len(),
+            8
+        );
+        install_remote_wake(&mut sender, peer_device, &mut rng);
+        let mut state = sender
+            .store
+            .get_wake_service_state(&peer_device)
+            .unwrap()
+            .unwrap();
+        state
+            .remote_mut()
+            .next()
+            .unwrap()
+            .mark_pending(NOW + 5)
+            .unwrap();
+        sender
+            .store
+            .put_wake_service_state(&peer_device, &state, &mut rng)
+            .unwrap();
+
+        sender.maintain_wake(NOW + 5, &mut rng).await.unwrap();
+        assert_eq!(
+            wake.revokes.load(Ordering::SeqCst),
+            MAX_WAKE_REVOCATIONS_PER_TICK
+        );
+        assert_eq!(wake.triggers.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            sender
+                .store
+                .wake_revocations(MAX_WAKE_REVOCATION_ROWS)
+                .unwrap()
+                .len(),
+            4
+        );
     }
 }
 

@@ -1853,6 +1853,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "kult-wake"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "base64",
+ "bytes",
+ "chacha20poly1305",
+ "clap",
+ "hex",
+ "hmac",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "kult-protocol",
+ "libc",
+ "rand 0.8.7",
+ "rand_core 0.6.4",
+ "rcgen",
+ "ring",
+ "rusqlite",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "toml",
+ "zeroize",
+]
+
+[[package]]
 name = "kultd"
 version = "0.3.0"
 dependencies = [

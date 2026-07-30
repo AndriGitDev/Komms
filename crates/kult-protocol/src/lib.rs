@@ -47,6 +47,7 @@ mod poll;
 mod receipt;
 mod rendezvous;
 mod token;
+mod wake;
 
 pub use admission::{
     admission_invitation_proof, solve_admission_puzzle, verify_admission_puzzle, AdmissionContext,
@@ -157,6 +158,18 @@ pub use rendezvous::{
     RENDEZVOUS_ROUTE_RECORD_VERSION,
 };
 pub use token::{delivery_token, epoch_day, intro_token, MailboxKey};
+pub use wake::{
+    canonical_wake_https_origin, is_wake_capability_control, verify_wake_generic_response,
+    wake_generic_response, wake_provider_id, WakeCapability, WakeCapabilityControl,
+    WakeCapabilityDescriptor, WakeCapabilityPayload, WakeEnvironment, WakePlatform, WakeProfile,
+    WakeRegisterRequest, WakeRegisterResponse, WakeTriggerRequest, MAX_WAKE_APP_TOPIC_BYTES,
+    MAX_WAKE_CAPABILITY_CONTROL_BYTES, MAX_WAKE_CONTROL_CAPABILITIES,
+    MAX_WAKE_CONTROL_ORIGIN_BYTES, MAX_WAKE_PROVIDER_TOKEN_BYTES, WAKE_CAPABILITY_ASSOCIATED_DATA,
+    WAKE_CAPABILITY_CONTROL_MAGIC, WAKE_CAPABILITY_CONTROL_VERSION, WAKE_CAPABILITY_LEN,
+    WAKE_CAPABILITY_MAX_LIFETIME_SECS, WAKE_CAPABILITY_PLAINTEXT_LEN, WAKE_GENERIC_RESPONSE_LEN,
+    WAKE_MEDIA_TYPE, WAKE_REGISTER_PATH, WAKE_REGISTER_REQUEST_LEN, WAKE_REGISTER_RESPONSE_LEN,
+    WAKE_REVOKE_PATH, WAKE_TRIGGER_PATH, WAKE_TRIGGER_REQUEST_LEN, WAKE_VERSION,
+};
 
 /// Convenience alias for fallible operations in this crate.
 pub type Result<T> = core::result::Result<T, ProtocolError>;

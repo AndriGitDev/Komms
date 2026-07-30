@@ -311,6 +311,52 @@ fn operating_mode_changes_preserve_identity_trust_history_and_queued_work() {
 }
 
 #[test]
+fn native_wake_collection_is_bounded_and_never_changes_delivery_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let peer = KultNode::start(
+        test_config(directory.path(), "native-wake-peer"),
+        Box::new(Recorder::default()),
+    )
+    .unwrap();
+    let bundle = peer.handshake_bundle().unwrap();
+    peer.stop();
+    let node = KultNode::start(
+        test_config(directory.path(), "native-wake-collection"),
+        Box::new(Recorder::default()),
+    )
+    .unwrap();
+    let peer = node
+        .add_contact("Peer".to_owned(), bundle, Vec::new())
+        .unwrap();
+    let message = node
+        .send(peer.clone(), "remains queued".to_owned())
+        .unwrap();
+    assert!(matches!(
+        node.collect_after_native_wake(0),
+        Err(FfiError::Node { reason })
+            if reason == "native-wake collection budget must be positive"
+    ));
+    let before_state = node
+        .messages_with(peer.clone())
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.id == message)
+        .unwrap()
+        .state;
+    let _emitted = node.collect_after_native_wake(50).unwrap();
+    let after_state = node
+        .messages_with(peer)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.id == message)
+        .unwrap()
+        .state;
+    assert_eq!(after_state, before_state);
+    assert_eq!(after_state, DeliveryState::Queued);
+    node.stop();
+}
+
+#[test]
 fn contact_rename_is_normalized_warned_private_and_duplicate_capable_via_ffi() {
     let fixture = contact_rename_parity_fixture();
     let directory = tempfile::tempdir().unwrap();

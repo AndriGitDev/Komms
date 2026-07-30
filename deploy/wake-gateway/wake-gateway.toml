@@ -1,0 +1,51 @@
+version = 1
+tls_certificate_file = "/run/komms-wake-service-keys/tls.crt"
+tls_private_key_file = "/run/komms-wake-service-keys/tls.key"
+active_capability_key_id = 2
+capability_key_files = [
+  "/run/komms-wake-service-keys/capability-1.key",
+  "/run/komms-wake-service-keys/capability-2.key",
+]
+state_file = "/var/lib/komms-wake/state.db"
+
+[network]
+listen = "0.0.0.0:8444"
+health_listen = "127.0.0.1:8082"
+max_connections = 256
+max_connections_per_minute = 30000
+max_connections_per_source_per_minute = 120
+max_source_buckets = 65536
+tls_handshake_timeout_seconds = 5
+request_timeout_seconds = 15
+
+[gateway]
+capability_lifetime_seconds = 2592000
+per_capability_per_minute = 6
+per_destination_per_minute = 12
+global_per_minute = 10000
+max_capability_buckets = 65536
+max_destination_buckets = 65536
+coalesce_seconds = 30
+provider_timeout_seconds = 11
+
+[state]
+max_revocations = 200000
+max_replays = 500000
+
+[provider]
+ca_certificate_file = "/run/komms-wake-ca/roots.pem"
+request_timeout_seconds = 10
+max_response_bytes = 16384
+
+[provider.apns]
+signing_key_file = "/run/komms-wake-native-credentials/apns-signing.p8"
+key_id = "REPLACE_WITH_APNS_KEY_ID"
+team_id = "REPLACE_WITH_APPLE_TEAM_ID"
+allowed_topics = ["is.andri.komms"]
+
+[provider.fcm]
+service_account_file = "/run/komms-wake-native-credentials/fcm-service-account.json"
+allowed_topics = ["is.andri.komms"]
+
+[runtime]
+shutdown_grace_seconds = 10

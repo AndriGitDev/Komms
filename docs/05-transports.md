@@ -196,20 +196,27 @@ DHT records remain first-contact discovery, and recipient-selected mailbox
 relays remain durable store-and-forward. Rendezvous service processing or
 self-lookup confirmation is not a `SendReceipt` or F4 capability; `kult-node`
 probes the returned source-scoped hint through the ordinary transport contract.
-No default provider or deployable network service ships yet.
+The dedicated two-role reference-service artifact is deployable, but no default
+provider or running network service ships.
 
 [ADR-0019](adr/0019-native-wake-gateway.md) emits a static APNs/FCM tick only
 after a direct peer or mailbox acknowledged the sealed envelope. It carries no
 envelope or conversation data, and provider acknowledgement never changes
 delivery state. Sovereign mode registers with neither service. Private mode
 uses Tor or a non-colluding Oblivious HTTP ingress; Standard mode uses direct
-HTTPS. Complete failure falls back to the unchanged transports in this document.
+HTTPS. The Alpha gateway/core implementation has fixed codecs, pinned clients,
+sealed per-session capabilities, durable identity-free revoke retries, bounded
+generic collection, a dedicated service binary, and hardened deployment
+artifacts. Native mobile token/background integration and physical
+qualification remain open. Complete failure falls back to the unchanged
+transports in this document. See the
+[native-wake runbook](37-native-wake-operations.md).
 
-[ADR-0034](adr/0034-operator-minimized-reference-discovery.md) proposes the
-initial founder-operated Hetzner profile: Standard-mode bootstrap/DHT caching
-and post-pairing rendezvous with RAM-backed mutable state. It is not a mailbox
-or wake gateway and cannot claim zero metadata, Private-mode non-collusion, or
-plural operation.
+[ADR-0034](adr/0034-operator-minimized-reference-discovery.md) defines the
+validated but undeployed Standard-mode bootstrap/DHT cache and post-pairing
+rendezvous profile with RAM-backed mutable state. It is not a mailbox or wake
+gateway and cannot claim zero metadata, Private-mode non-collusion, or plural
+operation.
 
 ### 2.2 Ephemeral retention at intermediaries
 

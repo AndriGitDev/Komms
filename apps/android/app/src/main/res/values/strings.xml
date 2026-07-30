@@ -151,6 +151,7 @@
     <string name="key_changed_title">Security notice</string>
     <string name="key_changed_body">A new encryption session was established with %1$s. If they did not just reinstall or restore, verify safety numbers before trusting new messages.</string>
     <string name="rendezvous_conflict">Conflicting authenticated route records were detected. No route was selected; retry later or verify this contact through another channel.</string>
+    <string name="wake_conflict">Conflicting authenticated wake state was detected. Native wake was disabled for this device; ordinary delivery remains available.</string>
     <string name="backup_done_title">Backup written — recovery mnemonic</string>
     <string name="backup_done_body">Write these 24 backup words down. They are shown once and stored nowhere. This root-free backup excludes live sessions, device keys, rendezvous secrets, and the offline account authority; recovery also requires the separately held .kra file and its different phrase.\n\n%1$s</string>
     <string name="backup_done_ack">I wrote them down</string>

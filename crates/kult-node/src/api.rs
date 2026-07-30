@@ -1184,6 +1184,17 @@ pub enum Event {
         /// Provider-separation id, or all zeroes for a provider-set conflict.
         provider: [u8; 32],
     },
+    /// Two authenticated controls claimed the same wake-capability generation
+    /// with different complete contents. Every capability at that generation
+    /// was disabled.
+    WakeConflict {
+        /// Stable contact account.
+        peer: [u8; 32],
+        /// Exact physical contact device.
+        device: [u8; 32],
+        /// Conflicting complete-set generation.
+        generation: u64,
+    },
     /// One or more private local custom icons changed; shells re-read visible targets.
     /// This event never enters an envelope, capability, group state, or transport.
     CustomIconsChanged,

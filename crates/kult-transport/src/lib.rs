@@ -33,6 +33,7 @@ mod mesh;
 mod provider_directory;
 mod rendezvous;
 mod sneakernet;
+mod wake;
 
 pub use internet::{CallStream, Libp2pTransport, NatStatus, TransportOptions};
 pub use mailbox::{MailboxConfig, MAX_MAILBOX_CHECKIN_ENVELOPES, MAX_MAILBOX_CHECKIN_TOKENS};
@@ -54,6 +55,7 @@ pub use rendezvous::{
     RendezvousIngress, RendezvousProvider, MAX_RENDEZVOUS_PROVIDERS,
 };
 pub use sneakernet::SneakernetTransport;
+pub use wake::{HttpsWakeClient, WakeClient, WakeIngress, WakeProvider, MAX_WAKE_PROVIDERS};
 
 /// Failures surfaced by transports.
 #[derive(Debug)]

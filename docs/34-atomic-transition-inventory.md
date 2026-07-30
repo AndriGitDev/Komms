@@ -1,6 +1,6 @@
 # Atomic protocol-transition inventory
 
-**Inventory date:** 2026-07-29
+**Inventory date:** 2026-07-30
 
 **Scope:** the implemented Alpha paths that overlap the frozen stable-v1
 profile, plus every adjacent persisted path found in the `kult-node` →
@@ -17,7 +17,7 @@ atomicity.
 
 ## 1. Transaction contract
 
-The store exposes twenty-four bounded protocol plan kinds. Some retain
+The store exposes twenty-five bounded protocol plan kinds. Some retain
 explicit legacy profile/migration support; current stable-profile authority
 paths use the `Authority*` variants:
 
@@ -47,6 +47,7 @@ paths use the `Authority*` variants:
 | `AttachmentStage` | Create the bounded metadata graph for one outbound attachment manifest | 256 mutations |
 | `AttachmentState` | Apply one bounded transfer/object/missing-range/deferred-control transition | 256 mutations |
 | `Maintenance` | Apply one bounded retry, expiry, tombstone, terminal-input, repair, queue, or presentation acknowledgement transition | 256 exact mutations |
+| `WakeRevocation` | Retry, acknowledge, or expire exact identity-free gateway revocations after an issued capability is retired | 256 exact rows; 4,096-row installation ceiling |
 
 Every plan validates its complete before-state before `BEGIN IMMEDIATE`.
 `CommitPlan` is the only protocol-state write surface used by stable-profile
@@ -77,12 +78,18 @@ The ownership rules are structural:
 - a confirmed link secret remains live until the new channel and manifest
   commit; a sealed recovery handle owns a package return value lost after
   commit and is cleared only by authenticated target activity;
+- replacing or deleting issued wake state first owns every retired capability
+  in the durable identity-free revocation domain; a full domain rejects the
+  authority change before the old issued set is removed, and exact gateway
+  acknowledgement or capability expiry owns its deletion;
 - detached candidates replace live memory only after the commit receipt;
 - a presentation marker commits with every visible change, so a restart after
   commit but before event delivery requires a complete snapshot resync.
 
-Transport sends, discovery publication, native wake, call presentation, and UI
-events occur after the database commit. File transfer uses a separate
+Transport sends, discovery publication, gateway trigger/revocation I/O, call
+presentation, and UI events occur after the database commit. Sealed wake
+capability replacement, trigger retry state, and durable revocation ownership
+are part of the owning typed database transition. File transfer uses a separate
 file-first rule: a temporary authenticated chunk may reach the filesystem
 before its metadata transition, but it is unreachable as accepted media until
 that transition commits and restart reconciliation removes abandoned files.
@@ -118,6 +125,7 @@ that transition commits and restart reconciliation removes abandoned files.
 | Best-effort bridge transit | Complete encoded envelope and bounded volatile transit slot | No custody transition | An unregistered internet deposit may be copied for mesh forwarding but receives a fixed refusal; only registered durable mailbox or endpoint acceptance advances next-hop custody |
 | Deferred inbox acceptance | Complete sealed carrier envelope plus ingress class | `PendingStage` | Staging advances no cryptographic state; the consuming plan deletes the exact named row and applies the preserved carrier budget after restart |
 | Retry, expiry, terminal rejection and stale-session reset | Queue schedule/removal, delivery state, replay, session/capability reset | `Maintenance` | Work is paged at 256 mutations; retryable input remains durable |
+| Wake capability publication, rotation and session retirement | Complete authenticated remote/issued sets, generation/conflict state, pending trigger work, and every retired issued capability | Pairwise control plan, `Maintenance`, `DeviceProjection`, plus `WakeRevocation` for gateway outcomes | Replacement and session deletion enqueue exact identity-free revocations in the same transaction; queue exhaustion leaves the old issued set authoritative; restart retries a bounded page without changing message delivery state |
 | Event-delivery recovery | Sealed presentation marker | Visible plan plus `Maintenance` acknowledgement | Reopen emits `StateResyncRequired`; acknowledgement follows delivery |
 | Media restart reconciliation | Missing-file object state and abandoned filesystem rows | Paged `AttachmentState` | Metadata repair commits before orphan cleanup; each page is bounded |
 | Fresh profile creation | Public account trust anchor, independent physical-device authority and fresh prekey vault | `AuthorityProfileBootstrap` inside sibling publication | Destination is absent or a complete openable root-free profile; the generated root exists only in the separately exported recovery authority |
@@ -222,6 +230,9 @@ copied-root reset and backup tests inject every atomic-replacement phase and
 initializer failure; the legacy-only-artifact path additionally proves direct
 root-free projection through public UniFFI.
 Disk-full, constraint and duplicate-index classes run against every fixture.
+The wake-store suite separately injects every begin, statement, and commit
+boundary into an exact durable revocation retry, and proves restart observes
+either the unchanged due row or its complete backoff replacement.
 
 For each injected point, reopen observes either the complete transition or its
 complete absence. The input remains retryable in the absent case; the durable

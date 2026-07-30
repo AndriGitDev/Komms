@@ -153,4 +153,8 @@ revision-bound results:
 - complete optional-service failure while qualified direct, mailbox, LAN,
   mesh, and sneakernet routes remain usable.
 
-Native wake is a separate ADR-0019 implementation and qualification boundary.
+ADR-0019's dedicated gateway and bounded core collection are implemented as a
+separate boundary. Native Android/iOS token lifecycle and background execution,
+an authorized deployment, and physical qualification remain open; the host
+journeys in this document do not close them. See
+[Native-Wake Operations](37-native-wake-operations.md).

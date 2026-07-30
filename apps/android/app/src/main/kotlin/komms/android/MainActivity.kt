@@ -125,6 +125,7 @@ class MainActivity : SecureActivity() {
                 is Event.ThemeChanged -> Unit // ThemeController applies process-wide DayNight.
                 is Event.CustomIconsChanged -> refreshLabelsAndLists(false)
                 is Event.RendezvousConflict -> toast(getString(R.string.rendezvous_conflict))
+                is Event.WakeConflict -> toast(getString(R.string.wake_conflict))
                 else -> {}
             }
         }

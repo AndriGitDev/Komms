@@ -1,0 +1,70 @@
+name: komms-wake
+
+services:
+  wake-gateway:
+    image: ${WAKE_GATEWAY_IMAGE:?set WAKE_GATEWAY_IMAGE to an immutable digest}
+    build:
+      context: ../..
+      dockerfile: deploy/wake-gateway/Dockerfile
+      args:
+        KOMMS_SOURCE_REVISION: ${KOMMS_SOURCE_REVISION:-unbound-local-build}
+        SOURCE_DATE_EPOCH: ${SOURCE_DATE_EPOCH:-0}
+    restart: unless-stopped
+    read_only: true
+    user: "${WAKE_GATEWAY_UID:-10003}:${WAKE_GATEWAY_GID:-10003}"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    pids_limit: 128
+    mem_limit: 384m
+    memswap_limit: 384m
+    mem_swappiness: 0
+    cpus: 2.0
+    ulimits:
+      core:
+        soft: 0
+        hard: 0
+      nofile:
+        soft: 4096
+        hard: 4096
+    ports:
+      - "${WAKE_GATEWAY_PORT:-8444}:8444/tcp"
+    tmpfs:
+      - /run/komms-wake:rw,noexec,nosuid,nodev,size=16m,uid=${WAKE_GATEWAY_UID:-10003},gid=${WAKE_GATEWAY_GID:-10003},mode=0700
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=${WAKE_GATEWAY_UID:-10003},gid=${WAKE_GATEWAY_GID:-10003},mode=0700
+    volumes:
+      - type: bind
+        source: ${WAKE_GATEWAY_CONFIG:-./wake-gateway.toml}
+        target: /etc/komms-wake/config.toml
+        read_only: true
+      - type: bind
+        source: ${WAKE_SERVICE_KEYS_DIR:?set WAKE_SERVICE_KEYS_DIR}
+        target: /run/komms-wake-service-keys
+        read_only: true
+      - type: bind
+        source: ${WAKE_NATIVE_CREDENTIALS_DIR:?set WAKE_NATIVE_CREDENTIALS_DIR}
+        target: /run/komms-wake-native-credentials
+        read_only: true
+      - type: bind
+        source: ${WAKE_PROVIDER_CA_FILE:?set WAKE_PROVIDER_CA_FILE}
+        target: /run/komms-wake-ca/roots.pem
+        read_only: true
+      - type: bind
+        source: ${WAKE_STATE_DIR:?set WAKE_STATE_DIR and exclude it from snapshots/backups}
+        target: /var/lib/komms-wake
+    logging:
+      driver: none
+    stop_grace_period: 15s
+    healthcheck:
+      test:
+        - CMD
+        - kult-wake
+        - probe
+        - --address
+        - 127.0.0.1:8082
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3

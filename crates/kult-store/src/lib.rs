@@ -47,6 +47,7 @@ mod rendezvous;
 mod scale_bench;
 mod scheduled;
 mod store_v2;
+mod wake;
 
 const ACCOUNT_PUBLIC_MAGIC: &[u8; 4] = b"KAP2";
 const PENDING_ENVELOPE_RECORD_VERSION: u8 = 1;
@@ -82,7 +83,8 @@ pub use commit::{
     MediaTransferTransition, MessageDelete, MessageTransition, PairwiseReceivePlan,
     PairwiseSendPlan, PendingDelete, PendingStagePlan, PrekeyPublishPlan, PrekeyTransition,
     QueueDelete, QueueTransition, ReceiptReceivePlan, RendezvousServiceTransition, SessionDelete,
-    SessionTransition, MAX_ATTACHMENT_STAGE_MUTATIONS, MAX_COMMIT_MUTATIONS, MAX_COMMIT_QUEUE_ROWS,
+    SessionTransition, WakeRevocationPlan, WakeRevocationTransition, WakeServiceTransition,
+    MAX_ATTACHMENT_STAGE_MUTATIONS, MAX_COMMIT_MUTATIONS, MAX_COMMIT_QUEUE_ROWS,
     MAX_DEFERRED_CONTROLS, MAX_DEVICE_CONTROL_MUTATIONS, MAX_DEVICE_LINK_MUTATIONS,
     MAX_DEVICE_PROJECTION_MUTATIONS, MAX_GROUP_COMMIT_MUTATIONS, MAX_GROUP_COMMIT_QUEUE_ROWS,
     MAX_GROUP_STATE_MUTATIONS, MAX_MAINTENANCE_TRANSITIONS, MAX_PAIRWISE_COMMIT_DEVICES,
@@ -133,6 +135,11 @@ pub use rendezvous::{
     RENDEZVOUS_SERVICE_STATE_VERSION,
 };
 pub use scheduled::{ScheduledConversation, ScheduledMessageRecord};
+pub use wake::{
+    WakeCapabilityDirection, WakeRevocationRecord, WakeServiceState, WakeStoredCapability,
+    MAX_WAKE_CAPABILITIES_PER_SESSION, MAX_WAKE_REVOCATION_RECORD_BYTES, MAX_WAKE_REVOCATION_ROWS,
+    MAX_WAKE_SERVICE_STATE_BYTES, WAKE_REVOCATION_RECORD_VERSION, WAKE_SERVICE_STATE_VERSION,
+};
 
 /// Failures surfaced by the store.
 #[derive(Debug)]
@@ -1178,7 +1185,8 @@ impl Store {
         self.validate_admission_logical_rows()?;
         self.validate_presentation_marker()?;
         self.validate_deferred_controls()?;
-        self.validate_rendezvous_logical_rows()
+        self.validate_rendezvous_logical_rows()?;
+        self.validate_wake_logical_rows()
     }
 
     fn validate_core_logical_rows(&self) -> Result<()> {
@@ -1390,6 +1398,7 @@ impl Store {
         // autocommit interruption can at worst leave an unreachable orphan;
         // it can never attach an exporter to the wrong ratchet session.
         self.synchronize_rendezvous_session(peer, session, rng)?;
+        self.synchronize_wake_session(peer, session, rng)?;
         self.put_equality::<store_v2::SessionRows>(
             &store_v2::AccountKey::new(*peer),
             &payload,
@@ -1419,7 +1428,12 @@ impl Store {
 
     /// Delete one exact physical-endpoint ratchet session.
     pub fn delete_session(&self, peer: &[u8; 32]) -> Result<()> {
+        if let Some(wake) = self.get_wake_service_state(peer)? {
+            let mut rng = rand_core::OsRng;
+            self.enqueue_issued_wake_revocations(&wake, &mut rng)?;
+        }
         self.delete_rendezvous_service_state(peer)?;
+        self.delete_wake_service_state(peer)?;
         self.delete_equality::<store_v2::SessionRows>(&store_v2::AccountKey::new(*peer))?;
         Ok(())
     }

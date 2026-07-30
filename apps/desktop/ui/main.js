@@ -3370,6 +3370,13 @@ listen("node-event", async ({ payload: ev }) => {
       );
       break;
     }
+    case "wake_conflict": {
+      toast(
+        "Conflicting authenticated wake state was detected. Native wake was disabled for this device; ordinary delivery remains available.",
+        true
+      );
+      break;
+    }
     case "theme_changed": {
       const theme = await invoke("theme");
       applyTheme(theme.preference);

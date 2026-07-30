@@ -25,8 +25,8 @@ use crate::{
     MediaObjectRecord, MediaRecord, MediaTransferRecord, MessageDeviceDeliveryRecord,
     MessageRecord, NoteMessageRecord, PendingEnvelopeRecord, ProvisionalRequestRecord, QueueItem,
     RendezvousServiceState, Result, ScheduledMessageRecord, Store, StoreError,
-    MAX_DEVICE_SYNC_EVENT_BYTES, MAX_PENDING_BYTES, MAX_PENDING_ENVELOPES,
-    PENDING_ENVELOPE_RECORD_VERSION,
+    WakeRevocationRecord, WakeServiceState, MAX_DEVICE_SYNC_EVENT_BYTES, MAX_PENDING_BYTES,
+    MAX_PENDING_ENVELOPES, PENDING_ENVELOPE_RECORD_VERSION,
 };
 
 /// Maximum logical durable mutations accepted by one typed commit plan.
@@ -220,6 +220,30 @@ pub struct RendezvousServiceTransition<'a> {
     pub before: &'a RendezvousServiceState,
     /// Candidate complete service state.
     pub after: &'a RendezvousServiceState,
+}
+
+/// Exact relationship-scoped wake state replacement.
+pub struct WakeServiceTransition<'a> {
+    /// Exact physical-device session route.
+    pub peer_device: [u8; 32],
+    /// Durable wake state expected before the transaction.
+    pub before: &'a WakeServiceState,
+    /// Candidate complete wake state.
+    pub after: &'a WakeServiceState,
+}
+
+/// Exact durable gateway-revocation retry replacement or acknowledgement.
+pub struct WakeRevocationTransition<'a> {
+    /// Durable retry expected before the transaction.
+    pub before: &'a WakeRevocationRecord,
+    /// Updated bounded retry, or `None` after acknowledgement or expiry.
+    pub after: Option<&'a WakeRevocationRecord>,
+}
+
+/// One bounded identity-free gateway-revocation maintenance transaction.
+pub struct WakeRevocationPlan<'a> {
+    /// Exact durable retries updated or removed together.
+    pub transitions: &'a [WakeRevocationTransition<'a>],
 }
 
 /// One deferred-inbox row that may be removed only with its named envelope.
@@ -650,6 +674,8 @@ pub struct PairwiseSendPlan<'a> {
     pub media_objects: &'a [MediaObjectTransition<'a>],
     /// Accepted controls consumed by the resulting encrypted response.
     pub delete_controls: &'a [DeferredControlRecord],
+    /// Exact wake capability issuance owned by this authenticated control.
+    pub wake: &'a [WakeServiceTransition<'a>],
     /// Whether presentation must be recoverable after commit.
     pub presentation_changed: bool,
 }
@@ -943,6 +969,8 @@ pub struct ReceiptReceivePlan<'a> {
     pub capabilities: Option<&'a CapabilityControl>,
     /// Authenticated rendezvous provider-set replacement.
     pub rendezvous: Option<RendezvousServiceTransition<'a>>,
+    /// Authenticated wake capability-set replacement.
+    pub wake: Option<WakeServiceTransition<'a>>,
     /// Immutable control work retained before filesystem or group callbacks.
     pub deferred_control: Option<&'a DeferredControlRecord>,
     /// Receipt envelope content id.
@@ -991,6 +1019,8 @@ pub struct MaintenancePlan<'a> {
     pub clear_reset_markers: &'a [[u8; 32]],
     /// Exact accepted controls acknowledged after idempotent follow-up.
     pub delete_controls: &'a [DeferredControlRecord],
+    /// Exact session-bound wake state replacements.
+    pub wake: &'a [WakeServiceTransition<'a>],
     /// Exact presentation marker acknowledged after event delivery.
     pub acknowledge_presentation: Option<[u8; 16]>,
     /// Whether this maintenance transition itself changes presentation.
@@ -1049,6 +1079,8 @@ pub enum CommitPlan<'a> {
     ReceiptReceive(ReceiptReceivePlan<'a>),
     /// Bounded maintenance.
     Maintenance(MaintenancePlan<'a>),
+    /// Bounded gateway-revocation retry or acknowledgement.
+    WakeRevocation(WakeRevocationPlan<'a>),
 }
 
 /// Stable identities returned only after a successful commit.
@@ -1154,6 +1186,7 @@ impl Store {
             CommitPlan::AdmissionSweep(plan) => plan.presentation_changed,
             CommitPlan::ReceiptReceive(plan) => plan.presentation_changed,
             CommitPlan::Maintenance(plan) => plan.presentation_changed,
+            CommitPlan::WakeRevocation(_) => false,
         };
         let mut transaction_id = [0u8; 16];
         rng.fill_bytes(&mut transaction_id);
@@ -1204,6 +1237,7 @@ impl Store {
                 CommitPlan::AdmissionSweep(plan) => writer.admission_sweep(&plan)?,
                 CommitPlan::ReceiptReceive(plan) => writer.receipt_receive(&plan)?,
                 CommitPlan::Maintenance(plan) => writer.maintenance(&plan)?,
+                CommitPlan::WakeRevocation(plan) => writer.wake_revocation(&plan)?,
             }
             if presentation_changed {
                 writer.write(|store, rng| {
@@ -1311,6 +1345,7 @@ impl Store {
             CommitPlan::AdmissionSweep(plan) => self.validate_admission_sweep(plan),
             CommitPlan::ReceiptReceive(plan) => self.validate_receipt_receive(plan),
             CommitPlan::Maintenance(plan) => self.validate_maintenance(plan),
+            CommitPlan::WakeRevocation(plan) => self.validate_wake_revocation(plan),
         }
     }
 
@@ -1382,6 +1417,30 @@ impl Store {
     }
 
     fn validate_pairwise_send(&self, plan: &PairwiseSendPlan<'_>) -> Result<()> {
+        let wake_revocation_mutations =
+            plan.wake.iter().try_fold(0usize, |count, transition| {
+                count
+                    .checked_add(
+                        self.retired_wake_revocations(transition.before, Some(transition.after))?
+                            .len(),
+                    )
+                    .ok_or(StoreError::InvalidTransition)
+            })?;
+        let session_revocation_mutations =
+            plan.sessions.iter().try_fold(0usize, |count, transition| {
+                if transition
+                    .before
+                    .is_some_and(|before| before.session_id() == transition.after.session_id())
+                {
+                    return Ok(count);
+                }
+                let retired = self
+                    .get_wake_service_state(&transition.peer_device)?
+                    .map_or(0, |state| state.issued().count());
+                count
+                    .checked_add(retired)
+                    .ok_or(StoreError::InvalidTransition)
+            })?;
         if plan.sessions.is_empty()
             || plan.sessions.len() > MAX_PAIRWISE_COMMIT_DEVICES
             || plan.queue.is_empty()
@@ -1402,6 +1461,9 @@ impl Store {
                 plan.media_transfers.len(),
                 plan.media_objects.len(),
                 plan.delete_controls.len(),
+                plan.wake.len(),
+                wake_revocation_mutations,
+                session_revocation_mutations,
             ])? > MAX_COMMIT_MUTATIONS
             || plan.groups.len() > MAX_GROUP_AUTHORITY_MEMBERS
             || plan.authorities.len() > MAX_GROUP_AUTHORITY_MEMBERS
@@ -1430,6 +1492,21 @@ impl Store {
         }
         for transition in plan.sessions {
             self.validate_session_transition(transition)?;
+        }
+        let sessions = plan
+            .sessions
+            .iter()
+            .map(|transition| (transition.peer_device, transition.after))
+            .collect::<HashMap<_, _>>();
+        let mut wake_peers = HashSet::new();
+        for transition in plan.wake {
+            let candidate_session = sessions
+                .get(&transition.peer_device)
+                .ok_or(StoreError::InvalidTransition)?;
+            if !wake_peers.insert(transition.peer_device) {
+                return Err(StoreError::InvalidTransition);
+            }
+            self.validate_wake_transition(transition, candidate_session)?;
         }
         for transition in plan.groups {
             self.validate_group_transition(transition)?;
@@ -2983,11 +3060,23 @@ impl Store {
     }
 
     fn validate_device_projection(&self, plan: &DeviceProjectionPlan<'_>) -> Result<()> {
+        let wake_revocation_mutations =
+            plan.delete_sessions
+                .iter()
+                .try_fold(0usize, |count, delete| {
+                    let retired = self
+                        .get_wake_service_state(&delete.peer_device)?
+                        .map_or(0, |state| state.issued().count());
+                    count
+                        .checked_add(retired)
+                        .ok_or(StoreError::MaintenanceBounds)
+                })?;
         let count = mutation_count([
             plan.projections.len(),
             plan.delete_sessions.len(),
             plan.delete_capabilities.len(),
             plan.delete_queue.len(),
+            wake_revocation_mutations,
         ])?;
         if count == 0 || count > MAX_DEVICE_PROJECTION_MUTATIONS {
             return Err(StoreError::MaintenanceBounds);
@@ -3612,6 +3701,7 @@ impl Store {
                 plan.media_objects.len(),
                 usize::from(plan.capabilities.is_some()),
                 usize::from(plan.rendezvous.is_some()),
+                usize::from(plan.wake.is_some()),
                 usize::from(plan.deferred_control.is_some()),
                 1,
                 usize::from(plan.source_pending.is_some()),
@@ -3666,6 +3756,9 @@ impl Store {
         if let Some(transition) = plan.rendezvous.as_ref() {
             self.validate_rendezvous_transition(transition, plan.session.after)?;
         }
+        if let Some(transition) = plan.wake.as_ref() {
+            self.validate_wake_transition(transition, plan.session.after)?;
+        }
         if let Some(control) = plan.deferred_control {
             if control.content_id != plan.content_id
                 || control.peer_device != plan.session.peer_device
@@ -3679,6 +3772,17 @@ impl Store {
     }
 
     fn validate_maintenance(&self, plan: &MaintenancePlan<'_>) -> Result<()> {
+        let wake_revocation_mutations =
+            plan.delete_sessions
+                .iter()
+                .try_fold(0usize, |count, peer| {
+                    let retired = self
+                        .get_wake_service_state(peer)?
+                        .map_or(0, |state| state.issued().count());
+                    count
+                        .checked_add(retired)
+                        .ok_or(StoreError::MaintenanceBounds)
+                })?;
         let count = mutation_count([
             plan.seen.len(),
             plan.delete_pending.len(),
@@ -3701,6 +3805,8 @@ impl Store {
             plan.delete_capabilities.len(),
             plan.clear_reset_markers.len(),
             plan.delete_controls.len(),
+            plan.wake.len(),
+            wake_revocation_mutations,
             usize::from(plan.acknowledge_presentation.is_some()),
         ])?;
         if count == 0 || count > MAX_MAINTENANCE_TRANSITIONS {
@@ -3832,9 +3938,44 @@ impl Store {
                 return Err(StoreError::InvalidTransition);
             }
         }
+        let mut wake_peers = HashSet::new();
+        for transition in plan.wake {
+            if !wake_peers.insert(transition.peer_device) {
+                return Err(StoreError::InvalidTransition);
+            }
+            let session = self
+                .get_session(&transition.peer_device)?
+                .ok_or(StoreError::InvalidTransition)?;
+            self.validate_wake_transition(transition, &session)?;
+        }
         if let Some(marker) = plan.acknowledge_presentation {
             if self.presentation_resync_marker()? != Some(marker) {
                 return Err(StoreError::InvalidTransition);
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_wake_revocation(&self, plan: &WakeRevocationPlan<'_>) -> Result<()> {
+        if plan.transitions.is_empty() || plan.transitions.len() > MAX_MAINTENANCE_TRANSITIONS {
+            return Err(StoreError::MaintenanceBounds);
+        }
+        let mut ids = HashSet::new();
+        for transition in plan.transitions {
+            if !ids.insert(transition.before.id)
+                || self.get_wake_revocation(&transition.before.id)?.as_ref()
+                    != Some(transition.before)
+                || transition.after.is_some_and(|after| {
+                    after.id != transition.before.id
+                        || after == transition.before
+                        || !transition.before.same_authority(after)
+                })
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+            transition.before.validate()?;
+            if let Some(after) = transition.after {
+                after.validate()?;
             }
         }
         Ok(())
@@ -3870,6 +4011,25 @@ impl Store {
             return Err(StoreError::InvalidTransition);
         };
         if transition.after.hybrid_service_exporter != *exporter {
+            return Err(StoreError::InvalidTransition);
+        }
+        Ok(())
+    }
+
+    fn validate_wake_transition(
+        &self,
+        transition: &WakeServiceTransition<'_>,
+        candidate_session: &Session,
+    ) -> Result<()> {
+        if transition.peer_device == [0u8; 32]
+            || transition.after.session_id != *candidate_session.session_id()
+            || transition.before.session_id != *candidate_session.session_id()
+            || self
+                .get_wake_service_state(&transition.peer_device)?
+                .as_ref()
+                != Some(transition.before)
+            || transition.before == transition.after
+        {
             return Err(StoreError::InvalidTransition);
         }
         Ok(())
@@ -4187,6 +4347,9 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
             store.synchronize_rendezvous_session(&transition.peer_device, transition.after, rng)
         })?;
         self.write(|store, rng| {
+            store.synchronize_wake_session(&transition.peer_device, transition.after, rng)
+        })?;
+        self.write(|store, rng| {
             let payload = Zeroizing::new(
                 postcard::to_allocvec(transition.after).map_err(|_| StoreError::Serialization)?,
             );
@@ -4310,6 +4473,14 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
         }
         for transition in plan.media_objects {
             self.write(|store, rng| store.put_media_object(transition.after, rng))?;
+        }
+        for transition in plan.wake {
+            self.write(|store, rng| {
+                store.enqueue_retired_wake_revocations(transition.before, transition.after, rng)
+            })?;
+            self.write(|store, rng| {
+                store.write_wake_service_state(&transition.peer_device, transition.after, rng)
+            })?;
         }
         for control in plan.delete_controls {
             self.write(|store, _| {
@@ -4847,7 +5018,14 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
             }
         }
         for delete in plan.delete_sessions {
+            self.write(|store, rng| {
+                if let Some(wake) = store.get_wake_service_state(&delete.peer_device)? {
+                    store.enqueue_issued_wake_revocations(&wake, rng)?;
+                }
+                Ok(())
+            })?;
             self.write(|store, _| store.delete_rendezvous_service_state(&delete.peer_device))?;
+            self.write(|store, _| store.delete_wake_service_state(&delete.peer_device))?;
             self.write(|store, _| {
                 if store.delete_equality::<store_v2::SessionRows>(&store_v2::AccountKey::new(
                     delete.peer_device,
@@ -5151,6 +5329,14 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
                 store.put_rendezvous_service_state(&transition.peer_device, transition.after, rng)
             })?;
         }
+        if let Some(transition) = plan.wake.as_ref() {
+            self.write(|store, rng| {
+                store.enqueue_retired_wake_revocations(transition.before, transition.after, rng)
+            })?;
+            self.write(|store, rng| {
+                store.write_wake_service_state(&transition.peer_device, transition.after, rng)
+            })?;
+        }
         if let Some(control) = plan.deferred_control {
             self.write(|store, rng| {
                 let encoded =
@@ -5296,7 +5482,14 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
             })?;
         }
         for peer in plan.delete_sessions {
+            self.write(|store, rng| {
+                if let Some(wake) = store.get_wake_service_state(peer)? {
+                    store.enqueue_issued_wake_revocations(&wake, rng)?;
+                }
+                Ok(())
+            })?;
             self.write(|store, _| store.delete_rendezvous_service_state(peer))?;
+            self.write(|store, _| store.delete_wake_service_state(peer))?;
             self.write(|store, _| {
                 if store
                     .delete_equality::<store_v2::SessionRows>(&store_v2::AccountKey::new(*peer))?
@@ -5332,6 +5525,14 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
                 }
             })?;
         }
+        for transition in plan.wake {
+            self.write(|store, rng| {
+                store.enqueue_retired_wake_revocations(transition.before, transition.after, rng)
+            })?;
+            self.write(|store, rng| {
+                store.write_wake_service_state(&transition.peer_device, transition.after, rng)
+            })?;
+        }
         if let Some(marker) = plan.acknowledge_presentation {
             self.write(|store, _| {
                 if store.presentation_resync_marker()? != Some(marker) {
@@ -5345,6 +5546,23 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
                     Err(StoreError::InvalidTransition)
                 }
             })?;
+        }
+        Ok(())
+    }
+
+    fn wake_revocation(&mut self, plan: &WakeRevocationPlan<'_>) -> Result<()> {
+        for transition in plan.transitions {
+            if let Some(after) = transition.after {
+                self.write(|store, rng| store.put_wake_revocation(after, rng))?;
+            } else {
+                self.write(|store, _| {
+                    if store.delete_wake_revocation(&transition.before.id)? {
+                        Ok(())
+                    } else {
+                        Err(StoreError::InvalidTransition)
+                    }
+                })?;
+            }
         }
         Ok(())
     }

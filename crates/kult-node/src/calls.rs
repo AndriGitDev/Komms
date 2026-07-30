@@ -949,6 +949,7 @@ impl Node {
                     item,
                     None,
                     crate::PreparedDeliveryUpdate::default(),
+                    None,
                     rng,
                 )?;
             } else {

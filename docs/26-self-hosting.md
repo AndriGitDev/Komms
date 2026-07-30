@@ -108,6 +108,15 @@ the [reference-service runbook](35-reference-service-operations.md) and
 [current operator record](reference-service-operator.md). No project reference
 service is deployed at the time of that record.
 
+The separate `kult-wake` image is also not an endpoint or part of
+`kult-reference-service`. It has one capability-gated APNs/FCM wake role,
+dedicated TLS/capability/native-provider credentials, and bounded durable
+replay/revocation state. Official-app APNs/FCM credentials are not shared with
+self-hosters; a custom app uses its own topics and credentials. See the
+[native-wake runbook](37-native-wake-operations.md) and
+[current wake operator record](wake-gateway-operator.md). No project wake
+gateway is deployed at the time of that record.
+
 To add daemon flags, replace the Compose service's command while retaining both
 listen addresses. For example, a volunteer mailbox with an explicit bootstrap
 peer can use:

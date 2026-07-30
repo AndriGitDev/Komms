@@ -83,6 +83,7 @@ fn local_metadata_request_fields(op: &str) -> Option<&'static [&'static str]> {
         "contact_name_assessment" => Some(&["id", "op", "peer", "name"]),
         "rename_contact" => Some(&["id", "op", "peer", "name", "accept_warnings"]),
         "rendezvous_refresh" => Some(&["id", "op", "peer"]),
+        "wake_collect" => Some(&["id", "op", "budget_ms"]),
         "screen_security_policy" | "incognito_keyboard_policy" => Some(&["id", "op", "platform"]),
         "theme" => Some(&["id", "op"]),
         "device_id"
@@ -1066,6 +1067,11 @@ pub enum Op {
         /// Whether this conversation is currently foreground.
         active: bool,
     },
+    /// Run a platform-deadline-bounded generic native-wake collection pass.
+    WakeCollect {
+        /// Caller-owned background execution budget, clamped to 25 seconds.
+        budget_ms: u32,
+    },
     /// Publish this node's prekey bundle on the DHT now (also done
     /// automatically at startup and after relay reservation).
     Publish,
@@ -1287,6 +1293,16 @@ pub fn event_line(event: &Event) -> String {
             "peer": hex_encode(peer),
             "device": hex_encode(device),
             "provider": hex_encode(provider),
+        }),
+        Event::WakeConflict {
+            peer,
+            device,
+            generation,
+        } => json!({
+            "type": "wake_conflict",
+            "peer": hex_encode(peer),
+            "device": hex_encode(device),
+            "generation": generation,
         }),
         Event::CustomIconsChanged => json!({
             "type": "custom_icons_changed",
@@ -2908,6 +2924,12 @@ mod tests {
         )
         .is_err());
         assert!(parse_request(r#"{"id":44,"op":"custom_icon_usage","extra":true}"#).is_err());
+        let wake = parse_request(r#"{"id":45,"op":"wake_collect","budget_ms":25000}"#).unwrap();
+        assert!(matches!(wake.op, Op::WakeCollect { budget_ms: 25_000 }));
+        assert!(parse_request(
+            r#"{"id":46,"op":"wake_collect","budget_ms":1000,"peer":"ambiguous"}"#
+        )
+        .is_err());
         assert_eq!(
             parse_custom_icon_target(&CustomIconTargetInput::Contact {
                 id: "01".repeat(32),
@@ -3030,6 +3052,22 @@ mod tests {
         assert_eq!(value["event"]["peer"], json!("31".repeat(32)));
         assert_eq!(value["event"]["device"], json!("32".repeat(32)));
         assert_eq!(value["event"]["provider"], json!("33".repeat(32)));
+    }
+
+    #[test]
+    fn wake_conflict_event_preserves_exact_device_generation_scope() {
+        let line = event_line(&Event::WakeConflict {
+            peer: [0x41; 32],
+            device: [0x42; 32],
+            generation: 17,
+        });
+        let value: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(value["event"]["type"], json!("wake_conflict"));
+        assert_eq!(value["event"]["peer"], json!("41".repeat(32)));
+        assert_eq!(value["event"]["device"], json!("42".repeat(32)));
+        assert_eq!(value["event"]["generation"], json!(17));
+        assert!(!value.to_string().contains("capability"));
+        assert!(!value.to_string().contains("token"));
     }
 
     #[test]

@@ -387,6 +387,10 @@ final class AppModel: ObservableObject {
             notices.append(
                 "Conflicting authenticated route records were detected. "
                 + "No route was selected; retry later or verify this contact through another channel.")
+        case .wakeConflict:
+            notices.append(
+                "Conflicting authenticated wake state was detected. "
+                + "Native wake was disabled for this device; ordinary delivery remains available.")
         case .themeChanged:
             Task { await refreshTheme() }
         case .customIconsChanged:

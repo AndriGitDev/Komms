@@ -2532,6 +2532,15 @@ pub enum Event {
         /// Provider-separation id, or zeroes for a provider-set conflict (hex).
         provider: String,
     },
+    /// Authenticated native-wake capability state forked at one generation.
+    WakeConflict {
+        /// Stable contact account id (hex).
+        peer: String,
+        /// Exact contact device id (hex).
+        device: String,
+        /// Conflicting complete-set generation.
+        generation: u64,
+    },
     /// Private local custom icons changed; shells re-read visible targets.
     CustomIconsChanged,
     /// Private local appearance preference changed; shells re-read it.
@@ -2830,6 +2839,15 @@ impl Event {
                 peer: hex_encode(&peer),
                 device: hex_encode(&device),
                 provider: hex_encode(&provider),
+            },
+            kult_node::Event::WakeConflict {
+                peer,
+                device,
+                generation,
+            } => Self::WakeConflict {
+                peer: hex_encode(&peer),
+                device: hex_encode(&device),
+                generation,
             },
             kult_node::Event::CustomIconsChanged => Self::CustomIconsChanged,
             kult_node::Event::ThemeChanged => Self::ThemeChanged,
@@ -5042,6 +5060,22 @@ impl KultNode {
         self.call(|resp| Msg::RendezvousConversationActive { peer, active, resp })
     }
 
+    /// Run one bounded generic collection pass after a native platform wake.
+    ///
+    /// The supplied platform budget is clamped to 25 seconds. Core checks
+    /// configured mailboxes, drains only immediate non-airtime carriers, and
+    /// persists ordinary receive/receipt work without sending messages,
+    /// starting calls, flooding mesh, or exporting sneakernet data. Returns
+    /// the number of application events emitted by the pass.
+    pub fn collect_after_native_wake(&self, budget_ms: u32) -> Result<u32, FfiError> {
+        if budget_ms == 0 {
+            return Err(FfiError::Node {
+                reason: "native-wake collection budget must be positive".to_owned(),
+            });
+        }
+        self.call(|resp| Msg::WakeCollect { budget_ms, resp })
+    }
+
     /// Publish this node's prekey bundle on the DHT now (also done
     /// automatically at startup and after relay reservation).
     pub fn publish(&self) -> Result<(), FfiError> {
@@ -6103,6 +6137,21 @@ mod tests {
             } if peer == "03".repeat(32)
                 && device == "04".repeat(32)
                 && provider == "05".repeat(32)
+        ));
+
+        let event = Event::from_node(kult_node::Event::WakeConflict {
+            peer: [6; 32],
+            device: [7; 32],
+            generation: 8,
+        })
+        .unwrap();
+        assert!(matches!(
+            event,
+            Event::WakeConflict {
+                peer,
+                device,
+                generation: 8,
+            } if peer == "06".repeat(32) && device == "07".repeat(32)
         ));
     }
 

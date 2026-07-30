@@ -48,6 +48,11 @@ pub enum NodeError {
     /// The same authenticated rendezvous generation described two different
     /// complete provider sets or route records.
     RendezvousConflict,
+    /// Optional native wake is disabled or lacks a configured client.
+    WakeUnavailable,
+    /// The same authenticated wake generation described different complete
+    /// capability sets.
+    WakeConflict,
     /// The group id names no stored group.
     UnknownGroup,
     /// Only the group's creator may add, remove, or re-key (ADR-0012).
@@ -195,6 +200,10 @@ impl std::fmt::Display for NodeError {
             }
             Self::RendezvousConflict => {
                 f.write_str("conflicting pairwise rendezvous state was detected")
+            }
+            Self::WakeUnavailable => f.write_str("native wake is unavailable"),
+            Self::WakeConflict => {
+                f.write_str("conflicting native-wake capability state was detected")
             }
             Self::UnknownGroup => f.write_str("group id names no stored group"),
             Self::NotGroupCreator => f.write_str("only the group creator may change it"),

@@ -55,6 +55,8 @@ HKDF per-domain keys.
 | `pending` | Inbound envelopes not yet readable (arrived before their session) | Individually sealed; stable row ids; exact-duplicate suppression in the node; 2,048-row / 64 MiB sealed-byte ceiling; TTL-bounded |
 | `rendezvous_service` | Transcript-bound exporter, session binding, provider roles/generations, conflict floors, route-source lease, and bounded retry state | Separately sealed per physical contact device; deleted with the session; explicitly excluded from routine backup |
 | `rendezvous_config` | Complete canonical local provider set and monotonic generation | Separately sealed singleton; runtime network client objects and pending operations are never persisted |
+| `wake_service` | Complete authenticated remote/issued capability sets, generations/conflicts, and bounded trigger retry state | Separately sealed per physical contact device; retired issued capabilities move atomically to the revocation domain; explicitly excluded from routine backup |
+| `wake_revocations` | Identity-free exact gateway revocation retries keyed by a store-scoped digest of provider and opaque capability | 4,096-row installation ceiling; survives restart until generic acknowledgement or expiry; contains no account, device, conversation, message, or social-label identifier; explicitly excluded from routine backup |
 | `media` | Attachment blobs, chunked | Each chunk sealed; keys stored in `messages` |
 | `ephemeral` | Exact local deadlines, mode, transfer references, active/terminal lifecycle | Sealed separately; terminal tombstones block resurrection after plaintext/media deletion |
 | `local_metadata` | Conversation types, folders, pins, labels, drafts, UI preferences, custom icons | Endpoint-private; only the C2 allowlist can sync to another owned device |
@@ -67,7 +69,7 @@ secondary keys; opening recomputes and verifies the keyed locator and every
 opaque SQLite index before returning the payload.
 
 The physical schema is generic: metadata plus one record table and fixed opaque
-index slots serve all 33 sensitive logical domains. Pairwise and group history
+index slots serve all 35 sensitive logical domains. Pairwise and group history
 use keyed message-id and conversation indexes, bounded authenticated cursor
 pages, and indexed exact edit/delete. A copied locked database can still reveal
 row counts, approximate sizes, insertion order, equality and access patterns
@@ -360,7 +362,8 @@ before search is described as available.
   endpoints, convergence winners, eligible ordinary state, and terminal
   tombstones. It exports no account root, local or contact device private key,
   prekey, ratchet, group sender/receiver chain, sync/link channel root,
-  rendezvous/wake capability, queue, wire id, or resumable delivery state.
+  rendezvous/wake capability, wake revocation retry, queue, wire id, or
+  resumable delivery state.
   Restore requires the separately held recovery authority, creates a higher
   epoch with one fresh device, rotates live relationship state, and rejects old
   descendants. Legacy copied-root `KKR7` cannot be relabelled safe: it requires
@@ -377,6 +380,12 @@ before search is described as available.
   any KKR version. Restored contacts retain accurately described eligible
   history but require a fresh authenticated PQXDH exchange before either
   rendezvous direction exists.
+- **ADR-0019 wake backup behavior**: no remote or issued wake capability,
+  gateway certificate pin, provider identifier, generation/conflict state,
+  pending trigger, retry state, or durable gateway revocation enters any KKR
+  version. Recovery, device replacement, and restored pairwise sessions must
+  establish fresh authenticated capabilities; a backup cannot resume or cancel
+  an old gateway capability.
 - **Mailbox-service backup behavior**: no mailbox database, WAL, registration,
   deposit, lease, rate bucket, opaque index, relay row key, or mailbox
   transport identity enters any KKR version. Those files belong to an optional

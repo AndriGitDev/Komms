@@ -145,5 +145,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "wake_decode"
+path = "fuzz_targets/wake_decode.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

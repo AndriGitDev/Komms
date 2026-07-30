@@ -1932,6 +1932,15 @@ pub enum UiEvent {
         /// Provider-separation id, or zeroes for a provider-set conflict (hex).
         provider: String,
     },
+    /// Authenticated native-wake capabilities forked at one generation.
+    WakeConflict {
+        /// Stable contact account id (hex).
+        peer: String,
+        /// Exact contact device id (hex).
+        device: String,
+        /// Conflicting complete-set generation.
+        generation: u64,
+    },
     /// A scheduled message was created or edited.
     ScheduledMessageUpdated {
         /// Stable message id (hex).
@@ -2225,6 +2234,15 @@ impl UiEvent {
                 peer,
                 device,
                 provider,
+            },
+            Event::WakeConflict {
+                peer,
+                device,
+                generation,
+            } => Self::WakeConflict {
+                peer,
+                device,
+                generation,
             },
             Event::ScheduledMessageUpdated { id } => Self::ScheduledMessageUpdated { id },
             Event::ScheduledMessageCancelled { id } => Self::ScheduledMessageCancelled { id },
@@ -5194,7 +5212,10 @@ mod tests {
         let settings = NetworkSettings::load(dir.path()).unwrap();
         assert_eq!(settings.mode, "private");
         assert!(settings.standard_disclosure_confirmed);
-        assert_eq!(settings.provider_directory.as_deref(), Some("providers.json"));
+        assert_eq!(
+            settings.provider_directory.as_deref(),
+            Some("providers.json")
+        );
         assert_eq!(settings.provider_directory_roots.len(), 1);
         assert_eq!(
             settings.rendezvous[0].origin,
@@ -5230,6 +5251,19 @@ mod tests {
         assert_eq!(conflict["peer"], "01".repeat(32));
         assert_eq!(conflict["device"], "02".repeat(32));
         assert_eq!(conflict["provider"], "03".repeat(32));
+
+        let wake_conflict = serde_json::to_value(UiEvent::WakeConflict {
+            peer: "04".repeat(32),
+            device: "05".repeat(32),
+            generation: 6,
+        })
+        .unwrap();
+        assert_eq!(wake_conflict["type"], "wake_conflict");
+        assert_eq!(wake_conflict["peer"], "04".repeat(32));
+        assert_eq!(wake_conflict["device"], "05".repeat(32));
+        assert_eq!(wake_conflict["generation"], 6);
+        assert!(!wake_conflict.to_string().contains("capability"));
+        assert!(!wake_conflict.to_string().contains("token"));
 
         let json = serde_json::to_value(UiEvent::DeliveryUpdated {
             id: "ab".to_owned(),

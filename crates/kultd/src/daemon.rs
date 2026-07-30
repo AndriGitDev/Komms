@@ -31,10 +31,10 @@ use tokio::task::JoinHandle;
 use kult_crypto::KdfProfile;
 use kult_node::{DeviceLinkSelection, FolderSelection, LabelMatchMode, Node, NodeError};
 use kult_transport::{
-    DeliveryHint, Discovery, HttpsRendezvousClient, Libp2pTransport, MailboxConfig,
-    MailboxServiceConfig, ManualProviderSet, MeshtasticOptions, MeshtasticTransport, NatStatus,
-    OperatingMode, ProviderDirectoryStatus, ProviderRendezvous, RendezvousClient,
-    RendezvousProvider, Transport, TransportOptions, MAX_MAILBOX_CHECKIN_TOKENS,
+    DeliveryHint, Discovery, HttpsRendezvousClient, HttpsWakeClient, Libp2pTransport,
+    MailboxConfig, MailboxServiceConfig, ManualProviderSet, MeshtasticOptions, MeshtasticTransport,
+    NatStatus, OperatingMode, ProviderDirectoryStatus, ProviderRendezvous, RendezvousClient,
+    RendezvousProvider, Transport, TransportOptions, WakeClient, MAX_MAILBOX_CHECKIN_TOKENS,
 };
 
 use crate::wire::{self, Hint, Op, Request};
@@ -612,6 +612,22 @@ impl Daemon {
             rendezvous_client,
             rendezvous_providers,
         )?;
+        let wake_client: Option<Arc<dyn WakeClient>> = match cfg.mode {
+            OperatingMode::Standard => Some(Arc::new(HttpsWakeClient::direct())),
+            OperatingMode::Private => match cfg.tor_proxy {
+                Some(proxy) => {
+                    Some(Arc::new(HttpsWakeClient::tor(proxy).map_err(|error| {
+                        DaemonError::Io(io::Error::other(error.to_string()))
+                    })?))
+                }
+                // Native wake is optional. Never fall back to direct ingress
+                // in Private mode, and do not make ordinary delivery depend
+                // on an unavailable anonymizing proxy.
+                None => None,
+            },
+            OperatingMode::Sovereign => None,
+        };
+        node.configure_wake(publication_policy(&cfg).mode, wake_client)?;
 
         let address = node.address();
         let peer = node.peer_id();
@@ -1031,7 +1047,6 @@ async fn actor(
                 }
             }
             msg = rx.recv() => {
-                check_discovery = true;
                 match msg {
                     None => break,
                     Some(NodeMsg::Tokens { resp }) => {
@@ -1050,7 +1065,7 @@ async fn actor(
                         node.set_bridge(Some(relays));
                     }
                     Some(NodeMsg::Op { op, resp }) => {
-                        let result = handle_op(&mut node, &cfg, &net, op).await;
+                        let result = handle_op(&mut node, &cfg, &net, &events, op).await;
                         let _ = resp.send(result);
                     }
                 }
@@ -1083,6 +1098,7 @@ async fn handle_op(
     node: &mut Node,
     cfg: &DaemonConfig,
     net: &Libp2pTransport,
+    events: &broadcast::Sender<String>,
     op: Op,
 ) -> Result<Value, String> {
     let fail = |e: NodeError| e.to_string();
@@ -2500,6 +2516,41 @@ async fn handle_op(
             node.set_rendezvous_conversation_active(&peer, active)
                 .map_err(fail)?;
             Ok(json!({}))
+        }
+        Op::WakeCollect { budget_ms } => {
+            if budget_ms == 0 {
+                return Err("native-wake collection budget must be positive".to_owned());
+            }
+            let started = Instant::now();
+            let budget = Duration::from_millis(u64::from(budget_ms))
+                .min(kult_node::MAX_WAKE_COLLECTION_DURATION);
+            let tokens = node.mailbox_tokens(now());
+            for mailbox in cfg.mailboxes.iter().take(MAX_MAILBOXES_PER_CHECKIN_TICK) {
+                let remaining = budget.saturating_sub(started.elapsed());
+                if remaining.is_zero() {
+                    break;
+                }
+                let _ = tokio::time::timeout(
+                    remaining,
+                    net.mailbox_checkin(
+                        mailbox,
+                        &tokens[..tokens.len().min(MAX_MAILBOX_CHECKIN_TOKENS)],
+                    ),
+                )
+                .await;
+            }
+            let remaining = budget.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Ok(json!({ "events": 0 }));
+            }
+            let batch = node
+                .wake_tick(now(), remaining, &mut OsRng)
+                .await
+                .map_err(fail)?;
+            for event in &batch {
+                let _ = events.send(wire::event_line(event));
+            }
+            Ok(json!({ "events": batch.len() }))
         }
         Op::Publish => {
             let hints = own_hints(net, &cfg.mailboxes);

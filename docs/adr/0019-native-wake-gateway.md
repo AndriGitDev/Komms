@@ -1,6 +1,6 @@
 # ADR-0019: Native push is a capability-gated best-effort wake
 
-- **Status**: Proposed
+- **Status**: Accepted; gateway and core implemented for Alpha
 - **Date**: 2026-07-15
 
 ## Context
@@ -199,6 +199,40 @@ retired without retaining the token in an error queue.
 Operator health metrics cover queue depth, latency, coalescing, provider status,
 and aggregate success/error classes. They never include a capability id, token,
 full client address, app-generated contact id, or per-user time series.
+
+### 7. Alpha implementation and evidence boundary
+
+The accepted Alpha implementation includes:
+
+- fixed-width canonical capability plaintext, opaque capability, register,
+  trigger, revoke, generic response, and authenticated pairwise control codecs;
+- a dedicated `kult-wake` binary with strict versioned configuration, TLS 1.3
+  fixed-shape ingress, file keyring plus an HSM/KMS-compatible key-provider
+  boundary, durable bounded replay/revocation state, quotas, coalescing, reduced
+  provider errors, and real APNs/FCM HTTP/2 adapters restricted to official
+  provider hosts and configured topics;
+- sealed non-backup per-session client capabilities and an identity-free
+  durable gateway-revocation retry domain that survives ratchet replacement,
+  session deletion, provider failure, and restart;
+- atomic capability-control, ratchet, queue, issued-set, retry, and
+  acknowledgement transitions, with visible same-generation conflicts that
+  fail closed;
+- next-hop-only trigger scheduling, unchanged message delivery state, and one
+  deadline-bounded core collection cycle that excludes mesh flood, sneakernet
+  export, attachment autoplay, call setup, and outbound flushing;
+- direct pinned-TLS Standard and loopback-Tor Private client adapters, strict
+  RPC/UniFFI collection front doors, and no Sovereign wake client;
+- a hardened container/configuration/smoke profile, non-secret operator record,
+  and the [native-wake runbook](../37-native-wake-operations.md); and
+- codec vectors, a dedicated fuzz target, malformed/replay/flood/coalescing,
+  rotation/revocation/restart, provider outage/error/blackhole, backup boundary,
+  delivery-state, and transaction failpoint tests.
+
+This evidence is local software evidence. APNs token lifecycle, FCM SDK flavor
+integration, background handlers, permission/force-quit/Doze behavior, and
+named physical-device qualification remain the separate mobile integration and
+field gates. No production gateway, provider credential, Private OHTTP path, or
+independent operator/reviewer is claimed.
 
 ## Alternatives considered
 

@@ -586,6 +586,8 @@ table!(AdmissionReplayRows, 30, Equality, ContentKey);
 table!(BlockedIdentityRows, 31, Equality, AccountDeviceKey);
 table!(RendezvousServiceRows, 32, Equality, AccountKey);
 table!(RendezvousConfigRows, 33, Equality, SingletonKey);
+table!(WakeServiceRows, 34, Equality, AccountKey);
+table!(WakeRevocationRows, 35, Equality, DigestKey);
 pub(crate) struct MigrationCheckpointRows;
 
 impl TableSpec for MigrationCheckpointRows {
@@ -1902,7 +1904,7 @@ fn validate_index_shape(domain: u8, indexes: &IndexKeys) -> Result<()> {
         DeviceSyncRows::DOMAIN => [true, false, false, false, false],
         ContactDeviceRows::DOMAIN => [false, true, false, false, false],
         MessageDeviceDeliveryRows::DOMAIN => [false, true, true, false, false],
-        1..=33 => [false; 5],
+        1..=35 => [false; 5],
         MigrationCheckpointRows::DOMAIN => [false; 5],
         _ => return Err(StoreError::SchemaMismatch),
     };
@@ -1946,6 +1948,8 @@ fn table_locator_kind(domain: u8) -> Result<LocatorKind> {
         | BlockedIdentityRows::DOMAIN
         | RendezvousServiceRows::DOMAIN
         | RendezvousConfigRows::DOMAIN
+        | WakeServiceRows::DOMAIN
+        | WakeRevocationRows::DOMAIN
         | MigrationCheckpointRows::DOMAIN => Ok(LocatorKind::Equality),
         MessageRows::DOMAIN
         | QueueRows::DOMAIN
@@ -1971,7 +1975,8 @@ fn validate_key_for_domain(domain: u8, key: &[u8]) -> Result<()> {
         | ResetRows::DOMAIN
         | DeviceLinkRecoveryRows::DOMAIN
         | ProvisionalRequestRows::DOMAIN
-        | RendezvousServiceRows::DOMAIN => AccountKey::validate_encoded(key),
+        | RendezvousServiceRows::DOMAIN
+        | WakeServiceRows::DOMAIN => AccountKey::validate_encoded(key),
         MessageRows::DOMAIN => MessageKey::validate_encoded(key),
         QueueRows::DOMAIN | PendingRows::DOMAIN => OpaqueRowKey::validate_encoded(key),
         SeenRows::DOMAIN
@@ -1986,7 +1991,7 @@ fn validate_key_for_domain(domain: u8, key: &[u8]) -> Result<()> {
         MediaTransferRows::DOMAIN | MediaObjectRows::DOMAIN => LocalIdKey::validate_encoded(key),
         LocalMetadataRows::DOMAIN => MetadataKey::validate_encoded(key),
         EphemeralRows::DOMAIN => EphemeralKey::validate_encoded(key),
-        DeviceSyncRows::DOMAIN => DigestKey::validate_encoded(key),
+        DeviceSyncRows::DOMAIN | WakeRevocationRows::DOMAIN => DigestKey::validate_encoded(key),
         ContactDeviceRows::DOMAIN | BlockedIdentityRows::DOMAIN => {
             AccountDeviceKey::validate_encoded(key)
         }

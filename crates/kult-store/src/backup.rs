@@ -2585,6 +2585,74 @@ mod tests {
             created_at: 122,
         };
         store.put_blocked_identity(&blocked, &mut rng).unwrap();
+        let wake_static_key = [0xb7; 32];
+        let wake_capability = kult_protocol::WakeCapability::from_parts(
+            7,
+            [0xc7; 24],
+            &[0xd7; kult_protocol::WAKE_CAPABILITY_PLAINTEXT_LEN + 16],
+        )
+        .unwrap()
+        .as_bytes()
+        .to_vec();
+        let wake_capability_secret = wake_capability.clone();
+        let wake_state = crate::WakeServiceState {
+            version: crate::WAKE_SERVICE_STATE_VERSION,
+            session_id: [0xe7; 32],
+            remote_generation: 1,
+            remote_conflict_generation: None,
+            issued_generation: 0,
+            capabilities: vec![crate::WakeStoredCapability::new(
+                crate::WakeCapabilityDirection::Remote,
+                "https://wake.backup-boundary.invalid".to_owned(),
+                wake_static_key,
+                wake_capability,
+                123 + kult_protocol::WAKE_CAPABILITY_MAX_LIFETIME_SECS,
+            )
+            .unwrap()],
+        };
+        let encoded_wake = postcard::to_allocvec(&wake_state).unwrap();
+        store
+            .put_equality::<store_v2::WakeServiceRows>(
+                &store_v2::AccountKey::new(peer),
+                &encoded_wake,
+                store_v2::IndexKeys::none(),
+                &mut rng,
+            )
+            .unwrap();
+        let revoked_capability = kult_protocol::WakeCapability::from_parts(
+            8,
+            [0xe8; 24],
+            &[0xf8; kult_protocol::WAKE_CAPABILITY_PLAINTEXT_LEN + 16],
+        )
+        .unwrap()
+        .as_bytes()
+        .to_vec();
+        let revoked_capability_secret = revoked_capability.clone();
+        let revocation_state = crate::WakeServiceState {
+            version: crate::WAKE_SERVICE_STATE_VERSION,
+            session_id: [0xf7; 32],
+            remote_generation: 0,
+            remote_conflict_generation: None,
+            issued_generation: 1,
+            capabilities: vec![crate::WakeStoredCapability::new(
+                crate::WakeCapabilityDirection::Issued,
+                "https://wake.backup-boundary.invalid".to_owned(),
+                wake_static_key,
+                revoked_capability,
+                123 + kult_protocol::WAKE_CAPABILITY_MAX_LIFETIME_SECS,
+            )
+            .unwrap()],
+        };
+        store
+            .enqueue_issued_wake_revocations(&revocation_state, &mut rng)
+            .unwrap();
+        assert_eq!(
+            store
+                .wake_revocations(crate::MAX_WAKE_REVOCATION_ROWS)
+                .unwrap()
+                .len(),
+            1
+        );
 
         let (backup, mnemonic) = store.export_authority_backup(123, &mut rng).unwrap();
         assert_eq!(&backup[..4], &AUTHORITY_BACKUP_MAGIC);
@@ -2624,6 +2692,9 @@ mod tests {
             sync_channel_secret.as_slice(),
             pending_link_secret.as_slice(),
             live_group_chain.as_slice(),
+            wake_static_key.as_slice(),
+            wake_capability_secret.as_slice(),
+            revoked_capability_secret.as_slice(),
         ] {
             assert!(
                 plain
