@@ -1,6 +1,6 @@
 # ADR-0034: Operator-minimized reference discovery
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-07-26
 - **Depends on**:
   [ADR-0017](0017-optional-hybrid-modes.md),
@@ -170,3 +170,17 @@ availability authority and contradict the server-independent core.
   cryptographic guarantees.
 - Durable mailboxes, native wake, Private-mode non-collusion, and plural
   operation remain separate qualification tracks.
+
+## Implementation status
+
+The dedicated `kult-reference-service` crate, pinned image, strict versioned
+configuration, hardened Compose profile, smoke path, and operator runbook
+implement the two-role boundary locally. The DHT store admits only bounded
+Komms discovery namespaces and the rendezvous listener terminates TLS 1.3 in
+process with canonical fixed-shape HTTP. Both roles retain mutable state only
+in memory and expose aggregate loopback health.
+
+No reference service is deployed and no default provider record has changed.
+Deployment, real-host hardening evidence, public uptime/incident history,
+default blackhole/replacement journeys, independent operation, and external
+review remain open evidence gates.

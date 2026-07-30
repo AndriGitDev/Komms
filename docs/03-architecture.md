@@ -290,10 +290,10 @@ At rest, the v2 database contains only opaque indexes and row-bound seals when
 its separate service key is unavailable; possession of both files exposes the
 relay-visible tokens and envelopes, which remain end-to-end ciphertext.
 
-ADR-0018's client, sealed state, fixed codecs, and persistence-free service
-component are implemented for Alpha but are not configured as a default or
-deployed reference service. Native wake remains unimplemented. Their bounded
-but non-zero metadata surfaces are listed in
+ADR-0018's client, sealed state, fixed codecs, persistence-free component, and
+dedicated network/TLS reference-service wrapper are implemented for Alpha but
+are not configured as a default or deployed service. Native wake remains
+unimplemented. Their bounded but non-zero metadata surfaces are listed in
 [02: Threat Model](02-threat-model.md),
 [ADR-0017](adr/0017-optional-hybrid-modes.md), and
 [ADR-0034](adr/0034-operator-minimized-reference-discovery.md).

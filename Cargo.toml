@@ -7,6 +7,7 @@ members = [
     "crates/kult-store",
     "crates/kult-node",
     "crates/kult-rendezvous",
+    "crates/kult-reference-service",
     "crates/kult-ffi",
     "crates/kultd",
 ]

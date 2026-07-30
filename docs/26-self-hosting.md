@@ -68,15 +68,17 @@ or relay addresses, or distribute explicit reachable peer hints, when the node
 must discover peers beyond its container network.
 
 This `kultd` profile is **not** the RAM-only reference discovery/rendezvous
-service. It is a full identity-bearing Komms endpoint with a
-persistent encrypted database and passphrase. Mounting its entire data directory
-on tmpfs would rotate or destroy endpoint state on restart and would not
-establish the least-authority claim in
-[ADR-0034](adr/0034-operator-minimized-reference-discovery.md). The reference
-service requires a dedicated daemon, container, and runbook that cannot enable
-endpoint, mailbox, or native-wake roles. The current `kult-rendezvous` crate is
-the bounded, persistence-free fixed-shape protocol component only; it is not a
-network listener, image, deployment artifact, or operated service.
+service. It is a full identity-bearing Komms endpoint with a persistent
+encrypted database and passphrase. Mounting its data directory on tmpfs would
+rotate or destroy endpoint state and would not establish the least-authority
+claim in [ADR-0034](adr/0034-operator-minimized-reference-discovery.md).
+
+The separate `kult-reference-service` daemon and image cannot enable endpoint,
+mailbox, native-wake, directory, update, analytics, or plaintext-bridge roles.
+Its DHT cache and pairwise rendezvous state are bounded and memory-only. See
+the [reference-service runbook](35-reference-service-operations.md) and
+[current operator record](reference-service-operator.md). No project reference
+service is deployed at the time of that record.
 
 To add daemon flags, replace the Compose service's command while retaining both
 listen addresses. For example, a volunteer mailbox with an explicit bootstrap

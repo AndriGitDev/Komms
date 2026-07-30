@@ -40,7 +40,7 @@ product promise merely because the file exists.
 | [0031](0031-capability-scoped-dht-discovery.md) | Accepted; implemented for Alpha | Capability-scoped, encrypted DHT first contact with mailbox-only public routes |
 | [0032](0032-leased-mailbox-delivery.md) | Accepted; implemented for Alpha | Durable deposits, leased collection pages, and acknowledgement-after-endpoint-commit |
 | [0033](0033-nonprofit-founder-stewardship.md) | Accepted | Nonprofit public-benefit mission, founder-directed incubation, AGPL reciprocity limits, and adoption-triggered governance evolution |
-| [0034](0034-operator-minimized-reference-discovery.md) | Proposed | RAM-backed, content-blind, replaceable reference bootstrap/DHT/rendezvous deployment with explicit operator limits |
+| [0034](0034-operator-minimized-reference-discovery.md) | Accepted | RAM-backed, content-blind, replaceable reference bootstrap/DHT/rendezvous deployment with explicit operator limits |
 
 The attachment implementation follows ADR-0015 and its hard no-airtime rule,
 but the ADR file still carries Proposed status. This index reports that

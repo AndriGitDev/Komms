@@ -1766,6 +1766,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "kult-reference-service"
+version = "0.3.0"
+dependencies = [
+ "clap",
+ "futures",
+ "hex",
+ "hmac",
+ "kult-crypto",
+ "kult-protocol",
+ "kult-rendezvous",
+ "kult-transport",
+ "libc",
+ "libp2p",
+ "rand_core 0.6.4",
+ "rcgen",
+ "rustls",
+ "serde",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "toml",
+ "zeroize",
+]
+
+[[package]]
 name = "kult-rendezvous"
 version = "0.3.0"
 dependencies = [
@@ -3884,6 +3910,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "tokio-rustls"
+version = "0.26.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
+dependencies = [
+ "rustls",
+ "tokio",
 ]
 
 [[package]]
