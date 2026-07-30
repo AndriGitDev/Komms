@@ -40,6 +40,20 @@ fn verify_peer_domain(
         .map_err(|_| CryptoError::InvalidSignature)
 }
 
+/// Verify a domain-separated Ed25519 signature from an exact public key.
+///
+/// This is the narrow public-key-only primitive used for non-user authorities
+/// such as the offline provider-directory key. Protocol domains must be
+/// fixed, versioned byte strings; callers must provide a canonical message.
+pub fn verify_ed25519_domain_signature(
+    public_key: &[u8; 32],
+    domain: &[u8],
+    message: &[u8],
+    signature: &[u8; 64],
+) -> Result<()> {
+    verify_peer_domain(public_key, domain, message, signature)
+}
+
 /// Verify a C6 authority-state signature from an exact peer id.
 pub fn verify_group_authority_state_signature(
     peer: &[u8; 32],

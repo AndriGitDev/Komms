@@ -253,9 +253,13 @@ and degrade honestly, exactly as the delivery ladder already does.
   failure falls back to Sovereign mode. Standard mode discloses service-use
   metadata; Private mode reduces source/target linkage through Tor or a
   non-colluding OHTTP relay without promising global anonymity. The feature is
-  governed by ADR-0017 through ADR-0019. ADR-0018 is accepted and implemented
-  for Alpha, but no convenience default ships until the remaining mode,
-  network-service, Private-ingress, wake, and qualification gates close.
+  governed by ADR-0017 through ADR-0019. ADR-0017 and ADR-0018 are accepted and
+  implemented for Alpha across the common mode contract, pinned HTTPS/Tor
+  rendezvous clients, signed replaceable provider configuration, every shell,
+  and the locally validated reference-service artifact. No convenience default
+  ships until deployment, Private-ingress, wake, external, and field
+  qualification gates close. See
+  [Operating modes and provider configuration](36-operating-modes-and-provider-directory.md).
 
 ## Deferred or declined (fights the model)
 

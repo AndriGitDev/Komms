@@ -615,7 +615,27 @@ $("#gate-theme").addEventListener("change", (event) => applyTheme(event.target.v
 function readSettings() {
   const lines = (el) => el.value.split("\n").map((s) => s.trim()).filter(Boolean);
   const opt = (el) => (el.value.trim() ? el.value.trim() : null);
+  const rendezvous = lines($("#set-rendezvous")).map((line) => {
+    const [origin, static_key, access, extra] = line.split(",").map((part) => part.trim());
+    if (!origin?.startsWith("https://") || !/^[0-9a-f]{64}$/.test(static_key || "") ||
+        !["standard", "private", "both"].includes(access) || extra !== undefined) {
+      throw new Error("Each rendezvous line must be origin, 64-character lowercase certificate digest, and standard, private, or both.");
+    }
+    return {
+      origin,
+      static_key,
+      standard: access === "standard" || access === "both",
+      private_via_tor: access === "private" || access === "both",
+    };
+  });
   return {
+    mode: document.querySelector('input[name="set-mode"]:checked')?.value ?? "standard",
+    standard_disclosure_confirmed: $("#set-standard-disclosure").checked,
+    sovereign_publish_direct_routes: $("#set-sovereign-direct").checked,
+    provider_directory: opt($("#set-provider-directory")),
+    provider_directory_roots: lines($("#set-provider-roots")),
+    rendezvous,
+    tor_proxy: opt($("#set-tor-proxy")),
     listen: lines($("#set-listen")),
     bootstrap: lines($("#set-bootstrap")),
     relay: opt($("#set-relay")),
@@ -630,6 +650,19 @@ function readSettings() {
 }
 
 function fillSettings(s) {
+  const mode = s.mode ?? "standard";
+  const modeInput = document.querySelector(`input[name="set-mode"][value="${mode}"]`);
+  if (modeInput) modeInput.checked = true;
+  $("#set-standard-disclosure").checked = s.standard_disclosure_confirmed ?? false;
+  $("#set-sovereign-direct").checked = s.sovereign_publish_direct_routes ?? false;
+  $("#set-provider-directory").value = s.provider_directory ?? "";
+  $("#set-provider-roots").value = (s.provider_directory_roots ?? []).join("\n");
+  $("#set-rendezvous").value = (s.rendezvous ?? []).map((provider) => {
+    const access = provider.standard && provider.private_via_tor
+      ? "both" : provider.private_via_tor ? "private" : "standard";
+    return `${provider.origin},${provider.static_key},${access}`;
+  }).join("\n");
+  $("#set-tor-proxy").value = s.tor_proxy ?? "";
   $("#set-listen").value = s.listen.join("\n");
   $("#set-bootstrap").value = s.bootstrap.join("\n");
   $("#set-relay").value = s.relay ?? "";
@@ -640,7 +673,24 @@ function fillSettings(s) {
   $("#set-mesh-serial").value = s.meshtastic_serial ?? "";
   $("#set-mesh-tcp").value = s.meshtastic_tcp ?? "";
   $("#set-bridge").checked = s.bridge;
+  updateModeDisclosure();
 }
+
+function updateModeDisclosure() {
+  const mode = document.querySelector('input[name="set-mode"]:checked')?.value ?? "standard";
+  const text = {
+    standard: "Standard uses disclosed, replaceable providers when configured. Providers can observe network addresses, timing, and availability—not message content.",
+    private: "Private sends optional rendezvous through your local Tor proxy. It does not claim provider non-collusion or hide every DHT and mailbox metadata surface.",
+    sovereign: "Sovereign disables directory defaults and optional rendezvous. Direct, DHT, user-selected mailboxes, LAN, mesh, and file transfer remain available.",
+  };
+  $("#mode-disclosure").textContent = text[mode];
+  $("#standard-disclosure-row").hidden = mode !== "standard";
+  $("#sovereign-direct-row").hidden = mode !== "sovereign";
+}
+
+document.querySelectorAll('input[name="set-mode"]').forEach((input) => {
+  input.addEventListener("change", updateModeDisclosure);
+});
 
 async function probeGate(dir) {
   const probe = await call("probe", { dataDir: dir ?? null });
@@ -1059,15 +1109,22 @@ async function refreshStatus() {
     : s.mdns_enabled
       ? "LAN discovery is on; no peers are visible yet"
       : "LAN discovery is off in Network settings";
+  const mode = $("#stat-mode");
+  mode.textContent = s.mode === "private" ? "Private" :
+    s.mode === "sovereign" ? "Sovereign" : "Standard";
+  mode.className = "stat good";
+  mode.title = s.mode === "private"
+    ? "Optional rendezvous uses the configured Tor ingress; this is not a non-collusion claim."
+    : s.mode === "sovereign"
+      ? "Directory defaults and optional rendezvous are disabled."
+      : "Configured convenience providers are disclosed and replaceable.";
   const discovery = $("#stat-discovery");
-  const hasDhtBootstrap = s.bootstrap_peers > 0;
-  discovery.textContent = hasDhtBootstrap
-    ? `Discovery: ${s.mdns_enabled ? "LAN + DHT" : "DHT"}`
-    : `Discovery: ${s.mdns_enabled ? "LAN only" : "local only"}`;
-  discovery.className = "stat " + (hasDhtBootstrap || s.lan_peers.length ? "good" : "warn");
-  discovery.title = hasDhtBootstrap
-    ? `${s.bootstrap_peers} trusted bootstrap peer${s.bootstrap_peers === 1 ? "" : "s"} configured for internet DHT discovery`
-    : "No bootstrap peer is configured. Internet DHT discovery starts only after adding a trusted peer in Network settings before unlock.";
+  discovery.textContent = s.connection === "connected" ? "Connected" :
+    s.connection === "fallback_ready" ? "Fallback ready" : "Waiting for a route";
+  discovery.className = "stat " + (s.connection === "connected" ? "good" :
+    s.connection === "fallback_ready" ? "" : "warn");
+  discovery.title = `Directory: ${s.provider_directory.replaceAll("_", " ")}. ` +
+    `${s.connected_peers} live transport peer${s.connected_peers === 1 ? "" : "s"}.`;
   $("#stat-queued").textContent = `Queued: ${s.queued}`;
   $("#stat-scheduled").textContent = `Scheduled: ${s.scheduled}`;
   const transit = $("#stat-transit");

@@ -33,6 +33,7 @@ import komms.core.bundleQrFrames
 import uniffi.kult_ffi.Contact
 import uniffi.kult_ffi.ContactNameAssessment
 import uniffi.kult_ffi.ContactNameWarning
+import uniffi.kult_ffi.ConnectionVerdict
 import uniffi.kult_ffi.CustomIcon
 import uniffi.kult_ffi.CustomIconTarget
 import uniffi.kult_ffi.CustomIconTargetKind
@@ -48,8 +49,10 @@ import uniffi.kult_ffi.LabelMatchMode
 import uniffi.kult_ffi.LabelTarget
 import uniffi.kult_ffi.LabelTargetKind
 import uniffi.kult_ffi.NatVerdict
+import uniffi.kult_ffi.NetworkMode
 import uniffi.kult_ffi.PinConversation
 import uniffi.kult_ffi.PinTargetKind
+import uniffi.kult_ffi.ProviderDirectoryVerdict
 
 /**
  * Contacts + the transport-indicator header. All state shown is the
@@ -431,6 +434,28 @@ class MainActivity : SecureActivity() {
                 NatVerdict.PRIVATE -> getString(R.string.nat_private)
                 NatVerdict.UNKNOWN -> getString(R.string.nat_unknown)
             }
+            val mode = when (s.mode) {
+                NetworkMode.STANDARD -> getString(R.string.mode_standard)
+                NetworkMode.PRIVATE -> getString(R.string.mode_private)
+                NetworkMode.SOVEREIGN -> getString(R.string.mode_sovereign)
+            }
+            val connection = when (s.connection) {
+                ConnectionVerdict.CONNECTED -> getString(R.string.connection_connected)
+                ConnectionVerdict.FALLBACK_READY ->
+                    getString(R.string.connection_fallback_ready)
+                ConnectionVerdict.WAITING_FOR_ROUTE -> getString(R.string.connection_waiting)
+            }
+            val directory = when (s.providerDirectory) {
+                ProviderDirectoryVerdict.NOT_CONFIGURED ->
+                    getString(R.string.directory_not_configured)
+                ProviderDirectoryVerdict.CURRENT -> getString(R.string.directory_current)
+                ProviderDirectoryVerdict.RETAINED_LAST_VALID ->
+                    getString(R.string.directory_retained)
+                ProviderDirectoryVerdict.STALE -> getString(R.string.directory_stale)
+                ProviderDirectoryVerdict.CONFLICT -> getString(R.string.directory_conflict)
+                ProviderDirectoryVerdict.UNAVAILABLE ->
+                    getString(R.string.directory_unavailable)
+            }
             findViewById<TextView>(R.id.main_status).apply {
                 val queued = if (s.queued == 0uL) {
                     ""
@@ -438,7 +463,7 @@ class MainActivity : SecureActivity() {
                     getString(R.string.status_queued_suffix, s.queued.toLong())
                 }
                 text = getString(
-                    R.string.status_summary, nat, s.lanPeers.size, queued,
+                    R.string.status_summary, mode, connection, queued,
                 )
                 contentDescription = text
                 setOnClickListener {
@@ -470,6 +495,7 @@ class MainActivity : SecureActivity() {
                                 s.connectCode, s.address, nat, s.lanPeers.size,
                                 s.scheduled.toLong(), s.queued.toLong(), s.transit.toLong(),
                                 mdns, dht, legacy,
+                                mode, connection, directory, s.connectedPeers.toLong(),
                             ),
                         )
                         .setPositiveButton(android.R.string.ok, null)

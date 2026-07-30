@@ -293,18 +293,26 @@ private struct NodeSummaryRow: View {
     let status: Status
 
     private var symbol: String {
-        switch status.nat {
-        case .public: return "checkmark.shield.fill"
-        case .private: return "shield.lefthalf.filled"
-        case .unknown: return "hourglass"
+        switch status.connection {
+        case .connected: return "checkmark.shield.fill"
+        case .fallbackReady: return "arrow.triangle.branch"
+        case .waitingForRoute: return "hourglass"
+        }
+    }
+
+    private var mode: String {
+        switch status.mode {
+        case .standard: return "Standard"
+        case .private: return "Private"
+        case .sovereign: return "Sovereign"
         }
     }
 
     private var summary: String {
-        switch status.nat {
-        case .public: return "Directly reachable"
-        case .private: return "Connected behind NAT"
-        case .unknown: return "Checking reachability"
+        switch status.connection {
+        case .connected: return "Connected"
+        case .fallbackReady: return "Fallback ready"
+        case .waitingForRoute: return "Waiting for a route"
         }
     }
 
@@ -312,14 +320,18 @@ private struct NodeSummaryRow: View {
         HStack(spacing: 12) {
             Image(systemName: symbol)
                 .font(.title3)
-                .foregroundStyle(status.nat == .unknown ? ThemePalette.warning : ThemePalette.success)
+                .foregroundStyle(
+                    status.connection == .waitingForRoute
+                        ? ThemePalette.warning
+                        : ThemePalette.success
+                )
                 .frame(width: 34, height: 34)
                 .background(ThemePalette.surfaceRaised, in: Circle())
             VStack(alignment: .leading, spacing: 3) {
-                Text("Node running")
+                Text(mode)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(ThemePalette.textPrimary)
-                Text("\(summary) · \(status.lanPeers.count) LAN \(status.lanPeers.count == 1 ? "peer" : "peers")")
+                Text(summary)
                     .font(.caption)
                     .foregroundStyle(ThemePalette.textSecondary)
             }
@@ -351,9 +363,42 @@ private struct NodeDetailsView: View {
         }
     }
 
+    private var modeText: String {
+        switch status.mode {
+        case .standard: return "Standard"
+        case .private: return "Private"
+        case .sovereign: return "Sovereign"
+        }
+    }
+
+    private var connectionText: String {
+        switch status.connection {
+        case .connected: return "Connected"
+        case .fallbackReady: return "Fallback ready"
+        case .waitingForRoute: return "Waiting for a route"
+        }
+    }
+
+    private var providerDirectoryText: String {
+        switch status.providerDirectory {
+        case .notConfigured: return "Not configured"
+        case .current: return "Current"
+        case .retainedLastValid: return "Using retained last-valid copy"
+        case .stale: return "Stale grace active"
+        case .conflict: return "Conflict — defaults disabled"
+        case .unavailable: return "Unavailable"
+        }
+    }
+
     var body: some View {
         NavigationStack {
             List {
+                Section("Operating mode") {
+                    LabeledContent("Mode", value: modeText)
+                    LabeledContent("Connection", value: connectionText)
+                    LabeledContent("Provider directory", value: providerDirectoryText)
+                    LabeledContent("Connected peers", value: String(status.connectedPeers))
+                }
                 Section("Identity") {
                     LabeledContent("Connect code") {
                         Text(status.connectCode)

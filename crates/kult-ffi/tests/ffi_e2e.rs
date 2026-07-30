@@ -19,15 +19,15 @@ use kult_ffi::{
     prepare_authority_migration, prepare_authority_reset, prepare_legacy_backup_authority_reset,
     probe_edited_image, probe_recorded_audio, screen_security_policy, AttachmentDirection,
     AttachmentFileKind, AttachmentFileWarning, AttachmentOpenPolicy, AttachmentState,
-    CallEndReason, CallPhase, CarrierCapability, Config, ContactNameWarning, ContentKind,
-    CustomIconCrop, CustomIconTarget, CustomIconTargetKind, DeliveryState, DeviceLinkSelection,
-    Event, EventListener, FfiError, FolderErrorCode, FolderSelection, FolderSelectionKind,
-    FolderTarget, FolderTargetKind, GroupRole, GroupSecurityLevel, Hint, ImageCrop,
-    ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, IncognitoKeyboardLevel,
+    CallEndReason, CallPhase, CarrierCapability, Config, ConnectionVerdict, ContactNameWarning,
+    ContentKind, CustomIconCrop, CustomIconTarget, CustomIconTargetKind, DeliveryState,
+    DeviceLinkSelection, Event, EventListener, FfiError, FolderErrorCode, FolderSelection,
+    FolderSelectionKind, FolderTarget, FolderTargetKind, GroupRole, GroupSecurityLevel, Hint,
+    ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, IncognitoKeyboardLevel,
     IncognitoKeyboardPlatform, KdfChoice, KultNode, LabelErrorCode, LabelMatchMode, LabelTarget,
-    LabelTargetKind, MentionSpan, MessageRequestTransport, PinErrorCode, PinTarget, PinTargetKind,
-    ScheduledConversation, ScreenSecurityLevel, ScreenSecurityPlatform, TextFormatBlockKind,
-    TextFormatHighlight, ThemePreference,
+    LabelTargetKind, MentionSpan, MessageRequestTransport, NetworkMode, PinErrorCode, PinTarget,
+    PinTargetKind, ProviderDirectoryVerdict, ScheduledConversation, ScreenSecurityLevel,
+    ScreenSecurityPlatform, TextFormatBlockKind, TextFormatHighlight, ThemePreference,
 };
 use kult_store::{DeviceStateRecord, Store};
 use rand::{rngs::StdRng, RngCore, SeedableRng};
@@ -224,6 +224,90 @@ fn connect_code_status_rotation_and_legacy_retirement_are_strict_via_ffi() {
     assert_eq!(node.retire_legacy_discovery().unwrap(), rotated);
     assert!(!node.status().unwrap().legacy_discovery);
     node.stop();
+}
+
+#[test]
+fn operating_mode_changes_preserve_identity_trust_history_and_queued_work() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut standard = test_config(directory.path(), "mode-stability");
+    standard.mode = NetworkMode::Standard;
+    let bob = KultNode::start(
+        test_config(directory.path(), "mode-stability-bob"),
+        Box::new(Recorder::default()),
+    )
+    .unwrap();
+    let bob_bundle = bob.handshake_bundle().unwrap();
+    bob.stop();
+    let alice = KultNode::start(standard, Box::new(Recorder::default())).unwrap();
+    let bob_peer = alice
+        .add_contact("Bob".to_owned(), bob_bundle, vec![])
+        .unwrap();
+    alice.mark_verified(bob_peer.clone()).unwrap();
+    let address = alice.address();
+    let safety = alice.safety_number(bob_peer.clone()).unwrap();
+    let message = alice
+        .send(bob_peer.clone(), "retained across modes".to_owned())
+        .unwrap();
+    let future = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3_600;
+    let scheduled = alice
+        .schedule(
+            bob_peer.clone(),
+            "still pending after a mode change".to_owned(),
+            future,
+        )
+        .unwrap();
+    let standard_status = alice.status().unwrap();
+    assert_eq!(standard_status.mode, NetworkMode::Standard);
+    assert_eq!(
+        standard_status.provider_directory,
+        ProviderDirectoryVerdict::NotConfigured
+    );
+    assert_eq!(
+        standard_status.connection,
+        ConnectionVerdict::WaitingForRoute
+    );
+    assert_eq!(alice.scheduled_messages().unwrap()[0].id, scheduled);
+    assert_ne!(
+        alice.messages_with(bob_peer.clone()).unwrap()[0].state,
+        DeliveryState::Delivered
+    );
+    alice.stop();
+
+    let mut private = test_config(directory.path(), "mode-stability");
+    private.mode = NetworkMode::Private;
+    let alice = KultNode::start(private, Box::new(Recorder::default())).unwrap();
+    assert_eq!(alice.address(), address);
+    assert_eq!(
+        alice.safety_number(bob_peer.clone()).unwrap().digits,
+        safety.digits
+    );
+    assert!(alice.contacts().unwrap()[0].verified);
+    let history = alice.messages_with(bob_peer.clone()).unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].id, message);
+    assert_ne!(history[0].state, DeliveryState::Delivered);
+    assert_eq!(alice.scheduled_messages().unwrap()[0].id, scheduled);
+    assert_eq!(alice.status().unwrap().mode, NetworkMode::Private);
+    alice.stop();
+
+    let mut sovereign = test_config(directory.path(), "mode-stability");
+    sovereign.mode = NetworkMode::Sovereign;
+    let alice = KultNode::start(sovereign, Box::new(Recorder::default())).unwrap();
+    assert_eq!(alice.address(), address);
+    assert_eq!(
+        alice.safety_number(bob_peer.clone()).unwrap().digits,
+        safety.digits
+    );
+    let history = alice.messages_with(bob_peer).unwrap();
+    assert_eq!(history.len(), 1);
+    assert_ne!(history[0].state, DeliveryState::Delivered);
+    assert_eq!(alice.scheduled_messages().unwrap()[0].id, scheduled);
+    assert_eq!(alice.status().unwrap().mode, NetworkMode::Sovereign);
+    alice.stop();
 }
 
 #[test]

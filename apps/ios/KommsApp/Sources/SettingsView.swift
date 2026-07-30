@@ -77,7 +77,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Advanced")
                 } footer: {
-                    Text("Most people never need to change these. Komms chooses safe defaults automatically.")
+                    Text("Optional provider defaults are signed, replaceable, and never required for core messaging routes.")
                 }
             }
             .navigationTitle("Settings")
@@ -174,6 +174,13 @@ struct AdvancedNetworkSettingsView: View {
     @State private var bootstrap = ""
     @State private var relay = ""
     @State private var mailboxes = ""
+    @State private var mode = "standard"
+    @State private var standardDisclosureConfirmed = false
+    @State private var sovereignPublishDirectRoutes = false
+    @State private var providerDirectory = ""
+    @State private var providerRoots = ""
+    @State private var rendezvous = ""
+    @State private var torProxy = ""
     @State private var serveMailbox = false
     @State private var mdns = true
     @State private var loaded = false
@@ -182,8 +189,63 @@ struct AdvancedNetworkSettingsView: View {
     var body: some View {
         Form {
             Section {
+                Picker("Mode", selection: $mode) {
+                    Text("Standard").tag("standard")
+                    Text("Private").tag("private")
+                    Text("Sovereign").tag("sovereign")
+                }
+                .pickerStyle(.segmented)
+
+                Text(modeDisclosure)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("\(mode.capitalized) mode. \(modeDisclosure)")
+
+                if mode == "standard" {
+                    Toggle(
+                        "I reviewed the Standard provider disclosure",
+                        isOn: $standardDisclosureConfirmed
+                    )
+                }
+                if mode == "sovereign" {
+                    Toggle(
+                        "Publish direct routes after accepting the reachability warning",
+                        isOn: $sovereignPublishDirectRoutes
+                    )
+                }
+            } header: {
+                Text("Operating mode")
+            }
+
+            Section {
                 Toggle("LAN discovery (mDNS)", isOn: $mdns)
                 Toggle("Serve a mailbox for others", isOn: $serveMailbox)
+            }
+
+            Section("Signed provider directory") {
+                TextField("Candidate JSON path (optional)", text: $providerDirectory)
+                    .font(.caption.monospaced())
+                    .incognitoKeyboard()
+                TextEditor(text: $providerRoots)
+                    .font(.caption.monospaced())
+                    .frame(minHeight: 60)
+                    .incognitoKeyboard()
+                    .accessibilityLabel("Trusted offline directory keys, one per line")
+            }
+
+            Section {
+                TextEditor(text: $rendezvous)
+                    .font(.caption.monospaced())
+                    .frame(minHeight: 60)
+                    .incognitoKeyboard()
+                    .accessibilityLabel("Manual rendezvous providers, one per line")
+                TextField("Private Tor SOCKS5 endpoint", text: $torProxy)
+                    .font(.caption.monospaced())
+                    .incognitoKeyboard()
+            } header: {
+                Text("Optional rendezvous")
+            } footer: {
+                Text("One per line: https://host,leaf_sha256,standard|private|both. Private access requires an explicit loopback Tor endpoint.")
             }
 
             Section("Listen multiaddrs (one per line)") {
@@ -238,6 +300,18 @@ struct AdvancedNetworkSettingsView: View {
         loaded = true
         do {
             let s = try NetworkSettings.load(from: model.dataDir)
+            mode = s.mode
+            standardDisclosureConfirmed = s.standardDisclosureConfirmed
+            sovereignPublishDirectRoutes = s.sovereignPublishDirectRoutes
+            providerDirectory = s.providerDirectory ?? ""
+            providerRoots = s.providerDirectoryRoots.joined(separator: "\n")
+            rendezvous = s.rendezvous.map { entry in
+                let access = entry.standard && entry.privateViaTor
+                    ? "both"
+                    : (entry.standard ? "standard" : "private")
+                return "\(entry.origin),\(entry.staticKey),\(access)"
+            }.joined(separator: "\n")
+            torProxy = s.torProxy ?? ""
             listen = s.listen.joined(separator: "\n")
             bootstrap = s.bootstrap.joined(separator: "\n")
             relay = s.relay ?? ""
@@ -254,6 +328,27 @@ struct AdvancedNetworkSettingsView: View {
         do {
             // Keep knobs this screen doesn't edit (radios, spool, bridge).
             var s = (try? NetworkSettings.load(from: model.dataDir)) ?? NetworkSettings()
+            s.mode = mode
+            s.standardDisclosureConfirmed = standardDisclosureConfirmed
+            s.sovereignPublishDirectRoutes = sovereignPublishDirectRoutes
+            let directory = providerDirectory.trimmingCharacters(in: .whitespaces)
+            s.providerDirectory = directory.isEmpty ? nil : directory
+            s.providerDirectoryRoots = Self.lines(providerRoots)
+            s.rendezvous = try parseRendezvous()
+            let proxy = torProxy.trimmingCharacters(in: .whitespaces)
+            s.torProxy = proxy.isEmpty ? nil : proxy
+            if s.mode == "standard",
+               s.providerDirectory != nil,
+               !s.standardDisclosureConfirmed {
+                throw SettingsError(
+                    "Review and confirm the Standard provider disclosure before using a signed provider directory.")
+            }
+            if s.mode == "private",
+               s.torProxy == nil,
+               s.providerDirectory != nil || s.rendezvous.contains(where: \.privateViaTor) {
+                throw SettingsError(
+                    "Private optional providers require an explicit loopback Tor SOCKS5 endpoint.")
+            }
             s.listen = Self.lines(listen)
             s.bootstrap = Self.lines(bootstrap)
             let r = relay.trimmingCharacters(in: .whitespaces)
@@ -265,6 +360,47 @@ struct AdvancedNetworkSettingsView: View {
             dismiss()
         } catch {
             self.error = errorText(error)
+        }
+    }
+
+    private var modeDisclosure: String {
+        switch mode {
+        case "private":
+            return "Optional rendezvous uses your local Tor proxy. Bootstrap and mailbox operators can still observe their own connections; this mode does not claim provider non-collusion."
+        case "sovereign":
+            return "Directory defaults and optional rendezvous or wake are disabled. DHT, user-selected mailboxes, direct, LAN, mesh, QR/file, and sneakernet routes remain."
+        default:
+            return "Disclosed, replaceable providers can observe your network address, timing, and service requests, but not message contents or your contact list."
+        }
+    }
+
+    private func parseRendezvous() throws -> [RendezvousSetting] {
+        try Self.lines(rendezvous).enumerated().map { index, line in
+            let parts = line.split(separator: ",", omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 3,
+                  parts[0].hasPrefix("https://"),
+                  parts[1].count == 64,
+                  parts[1].allSatisfy({ $0.isNumber || ("a"..."f").contains(String($0)) })
+            else {
+                throw SettingsError(
+                    "Rendezvous line \(index + 1) must contain an HTTPS origin, 64 lowercase hex characters, and standard, private, or both.")
+            }
+            let access: (Bool, Bool)
+            switch parts[2] {
+            case "standard": access = (true, false)
+            case "private": access = (false, true)
+            case "both": access = (true, true)
+            default:
+                throw SettingsError(
+                    "Rendezvous line \(index + 1) must end in standard, private, or both.")
+            }
+            return RendezvousSetting(
+                origin: parts[0],
+                staticKey: parts[1],
+                standard: access.0,
+                privateViaTor: access.1
+            )
         }
     }
 }

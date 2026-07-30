@@ -185,15 +185,130 @@
                 android:layout_height="wrap_content" />
 
             <TextView
+                android:text="@string/set_mode"
+                android:textStyle="bold"
+                android:layout_marginTop="12dp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+
+            <RadioGroup
+                android:id="@+id/set_mode"
+                android:contentDescription="@string/set_mode"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <RadioButton
+                    android:id="@+id/set_mode_standard"
+                    android:text="@string/set_mode_standard"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content" />
+
+                <RadioButton
+                    android:id="@+id/set_mode_private"
+                    android:text="@string/set_mode_private"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content" />
+
+                <RadioButton
+                    android:id="@+id/set_mode_sovereign"
+                    android:text="@string/set_mode_sovereign"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content" />
+            </RadioGroup>
+
+            <TextView
+                android:id="@+id/set_mode_disclosure"
+                android:textSize="12sp"
+                android:importantForAccessibility="yes"
+                android:accessibilityLiveRegion="polite"
+                android:layout_marginTop="4dp"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <Switch
+                android:id="@+id/set_standard_disclosure"
+                android:text="@string/set_standard_disclosure"
+                android:layout_marginTop="8dp"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <Switch
+                android:id="@+id/set_sovereign_direct_routes"
+                android:text="@string/set_sovereign_direct_routes"
+                android:layout_marginTop="8dp"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <TextView
                 android:text="@string/settings_advanced_note"
                 android:textSize="12sp"
-                android:layout_marginTop="4dp"
+                android:layout_marginTop="12dp"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content" />
 
             <TextView
                 android:text="@string/settings_note"
                 android:textSize="12sp"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <TextView
+                android:text="@string/set_provider_directory"
+                android:textStyle="bold"
+                android:layout_marginTop="16dp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+
+            <komms.android.IncognitoEditText
+                android:id="@+id/set_provider_directory"
+                android:inputType="textUri|textNoSuggestions"
+                android:fontFamily="monospace"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <TextView
+                android:text="@string/set_provider_roots"
+                android:textStyle="bold"
+                android:layout_marginTop="16dp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+
+            <komms.android.IncognitoEditText
+                android:id="@+id/set_provider_roots"
+                android:inputType="textMultiLine|textNoSuggestions"
+                android:fontFamily="monospace"
+                android:minLines="2"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <TextView
+                android:text="@string/set_rendezvous"
+                android:textStyle="bold"
+                android:layout_marginTop="16dp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+
+            <komms.android.IncognitoEditText
+                android:id="@+id/set_rendezvous"
+                android:inputType="textMultiLine|textNoSuggestions"
+                android:fontFamily="monospace"
+                android:minLines="2"
+                android:hint="@string/set_rendezvous_hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <TextView
+                android:text="@string/set_tor_proxy"
+                android:textStyle="bold"
+                android:layout_marginTop="16dp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+
+            <komms.android.IncognitoEditText
+                android:id="@+id/set_tor_proxy"
+                android:inputType="textUri|textNoSuggestions"
+                android:fontFamily="monospace"
+                android:hint="127.0.0.1:9050"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content" />
 

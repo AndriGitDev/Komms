@@ -31,9 +31,10 @@ use tokio::task::JoinHandle;
 use kult_crypto::KdfProfile;
 use kult_node::{DeviceLinkSelection, FolderSelection, LabelMatchMode, Node, NodeError};
 use kult_transport::{
-    DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, MailboxServiceConfig,
-    MeshtasticOptions, MeshtasticTransport, NatStatus, Transport, TransportOptions,
-    MAX_MAILBOX_CHECKIN_TOKENS,
+    DeliveryHint, Discovery, HttpsRendezvousClient, Libp2pTransport, MailboxConfig,
+    MailboxServiceConfig, ManualProviderSet, MeshtasticOptions, MeshtasticTransport, NatStatus,
+    OperatingMode, ProviderDirectoryStatus, ProviderRendezvous, RendezvousClient,
+    RendezvousProvider, Transport, TransportOptions, MAX_MAILBOX_CHECKIN_TOKENS,
 };
 
 use crate::wire::{self, Hint, Op, Request};
@@ -148,6 +149,21 @@ pub struct DaemonConfig {
     /// Explicit legacy-root migration or copied-root reset to complete before
     /// any network service starts.
     pub authority_startup: Option<AuthorityStartup>,
+    /// Standard, Private, or Sovereign behavior.
+    pub mode: OperatingMode,
+    /// User confirmed the Standard provider disclosure before first use.
+    pub standard_disclosure_confirmed: bool,
+    /// Advanced Sovereign-only acknowledgement for public direct routes.
+    pub sovereign_publish_direct_routes: bool,
+    /// Candidate signed, user-editable provider-directory JSON.
+    pub provider_directory: Option<PathBuf>,
+    /// Trusted offline provider-directory Ed25519 keys.
+    pub provider_directory_roots: Vec<[u8; 32]>,
+    /// User-selected rendezvous providers, independent of directory defaults.
+    pub rendezvous: Vec<ProviderRendezvous>,
+    /// Explicit loopback Tor SOCKS5 ingress for Private rendezvous.
+    pub tor_proxy: Option<std::net::SocketAddr>,
+    provider_directory_status: Option<ProviderDirectoryStatus>,
     /// Multiaddrs to listen on.
     pub listen: Vec<String>,
     /// DHT bootstrap peers (multiaddrs with `/p2p/…`). Empty is fine —
@@ -211,6 +227,23 @@ impl std::fmt::Debug for DaemonConfig {
                     .map(|_| "<redacted>"),
             )
             .field("authority_startup", &self.authority_startup)
+            .field("mode", &self.mode)
+            .field(
+                "standard_disclosure_confirmed",
+                &self.standard_disclosure_confirmed,
+            )
+            .field(
+                "sovereign_publish_direct_routes",
+                &self.sovereign_publish_direct_routes,
+            )
+            .field("provider_directory", &self.provider_directory)
+            .field(
+                "provider_directory_roots",
+                &self.provider_directory_roots.len(),
+            )
+            .field("rendezvous", &self.rendezvous)
+            .field("tor_proxy", &self.tor_proxy)
+            .field("provider_directory_status", &self.provider_directory_status)
             .field("listen", &self.listen)
             .field("bootstrap", &self.bootstrap)
             .field("relay", &self.relay)
@@ -247,6 +280,14 @@ impl DaemonConfig {
             recovery_authority_from: None,
             recovery_authority_mnemonic: None,
             authority_startup: None,
+            mode: OperatingMode::Standard,
+            standard_disclosure_confirmed: false,
+            sovereign_publish_direct_routes: false,
+            provider_directory: None,
+            provider_directory_roots: Vec::new(),
+            rendezvous: Vec::new(),
+            tor_proxy: None,
+            provider_directory_status: None,
             listen: vec![
                 "/ip4/0.0.0.0/udp/0/quic-v1".to_owned(),
                 "/ip4/0.0.0.0/tcp/0".to_owned(),
@@ -335,7 +376,63 @@ pub struct Daemon {
 
 impl Daemon {
     /// Open (or create) the node and start all daemon tasks.
-    pub async fn start(cfg: DaemonConfig) -> Result<Self, DaemonError> {
+    pub async fn start(mut cfg: DaemonConfig) -> Result<Self, DaemonError> {
+        let directory_configured = cfg.provider_directory.is_some();
+        let directory_cache = cfg
+            .db_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("provider-directory-cache.json");
+        let resolution = kult_transport::resolve_provider_directory(
+            cfg.mode,
+            cfg.provider_directory.as_deref(),
+            &directory_cache,
+            &cfg.provider_directory_roots,
+            &ManualProviderSet {
+                bootstrap: cfg.bootstrap.clone(),
+                relay: cfg.relay.clone(),
+                mailboxes: cfg.mailboxes.clone(),
+                rendezvous: cfg.rendezvous.clone(),
+            },
+            now(),
+        )
+        .map_err(|error| DaemonError::Io(io::Error::other(error.to_string())))?;
+        if cfg.mode == OperatingMode::Standard
+            && resolution.directory.is_some()
+            && !cfg.standard_disclosure_confirmed
+        {
+            return Err(DaemonError::Io(io::Error::other(
+                "confirm the Standard provider disclosure before using directory defaults",
+            )));
+        }
+        if cfg.mode == OperatingMode::Private
+            && !resolution.providers.rendezvous.is_empty()
+            && cfg.tor_proxy.is_none()
+        {
+            return Err(DaemonError::Io(io::Error::other(
+                "Private rendezvous requires an explicit loopback Tor proxy",
+            )));
+        }
+        if let Some(proxy) = cfg.tor_proxy {
+            HttpsRendezvousClient::tor(proxy)
+                .map_err(|_| DaemonError::Io(io::Error::other("invalid loopback Tor proxy")))?;
+        }
+        cfg.provider_directory_status = directory_configured.then_some(resolution.status);
+        cfg.bootstrap = resolution.providers.bootstrap;
+        cfg.relay = resolution.providers.relay;
+        cfg.mailboxes = resolution.providers.mailboxes;
+        cfg.rendezvous = resolution
+            .providers
+            .rendezvous
+            .into_iter()
+            .map(|provider| ProviderRendezvous {
+                origin: provider.origin().to_owned(),
+                static_key: lower_hex(&provider.static_key()),
+                standard: true,
+                private_via_tor: true,
+            })
+            .collect();
+
         // Argon2id is deliberately slow — keep it off the async threads.
         let mut node = {
             let cfg = cfg.clone();
@@ -481,6 +578,40 @@ impl Daemon {
             node.set_bridge(Some(bridge_relays(&cfg, None)));
             tracing::info!("bridging mesh↔internet (--no-bridge to opt out)");
         }
+        let rendezvous_providers = cfg
+            .rendezvous
+            .iter()
+            .map(|provider| {
+                let key = parse_lower_hex_32(&provider.static_key)
+                    .map_err(|error| DaemonError::Io(io::Error::other(error)))?;
+                RendezvousProvider::new(provider.origin.clone(), key)
+                    .map_err(|error| DaemonError::Io(io::Error::other(error.to_string())))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let rendezvous_client: Option<Arc<dyn RendezvousClient>> =
+            if rendezvous_providers.is_empty() {
+                None
+            } else {
+                Some(match cfg.mode {
+                    OperatingMode::Standard => Arc::new(HttpsRendezvousClient::direct()),
+                    OperatingMode::Private => Arc::new(
+                        HttpsRendezvousClient::tor(cfg.tor_proxy.ok_or_else(|| {
+                            DaemonError::Io(io::Error::other("Private rendezvous has no Tor proxy"))
+                        })?)
+                        .map_err(|error| DaemonError::Io(io::Error::other(error.to_string())))?,
+                    ),
+                    OperatingMode::Sovereign => {
+                        return Err(DaemonError::Io(io::Error::other(
+                            "Sovereign mode cannot configure rendezvous",
+                        )))
+                    }
+                })
+            };
+        node.reconcile_rendezvous(
+            publication_policy(&cfg).mode,
+            rendezvous_client,
+            rendezvous_providers,
+        )?;
 
         let address = node.address();
         let peer = node.peer_id();
@@ -742,6 +873,47 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
+fn publication_policy(cfg: &DaemonConfig) -> kult_node::DiscoveryPublicationPolicy {
+    kult_node::DiscoveryPublicationPolicy {
+        mode: match cfg.mode {
+            OperatingMode::Standard => kult_node::DiscoveryMode::Standard,
+            OperatingMode::Private => kult_node::DiscoveryMode::Private,
+            OperatingMode::Sovereign => kult_node::DiscoveryMode::Sovereign,
+        },
+        publish_direct_routes: cfg.sovereign_publish_direct_routes,
+    }
+}
+
+fn parse_lower_hex_32(value: &str) -> Result<[u8; 32], String> {
+    if value.len() != 64
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(&byte))
+    {
+        return Err("provider key must be exactly 64 lowercase hex characters".to_owned());
+    }
+    let mut out = [0u8; 32];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let nibble = |byte| match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            _ => 0,
+        };
+        out[index] = (nibble(pair[0]) << 4) | nibble(pair[1]);
+    }
+    Ok(out)
+}
+
+fn lower_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
 /// Write a secret-bearing file: created 0600 from the first byte, and an
 /// existing file is never overwritten (pick a new name or remove it first).
 fn write_private(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
@@ -867,7 +1039,10 @@ async fn actor(
                     }
                     Some(NodeMsg::Publish) => {
                         let hints = own_hints(&net, &cfg.mailboxes);
-                        if let Err(e) = node.publish_bundle(&hints, now()).await {
+                        if let Err(e) = node
+                            .publish_bundle_with_policy(&hints, publication_policy(&cfg), now())
+                            .await
+                        {
                             tracing::warn!(error = %e, "bundle publish failed");
                         }
                     }
@@ -884,8 +1059,14 @@ async fn actor(
         let discovery_now = tokio::time::Instant::now();
         if check_discovery && discovery_now >= discovery_retry_at {
             let hints = own_hints(&net, &cfg.mailboxes);
-            if node.discovery_publication_needed(&hints).unwrap_or(false) {
-                match node.publish_bundle(&hints, now()).await {
+            if node
+                .discovery_publication_needed_with_policy(&hints, publication_policy(&cfg))
+                .unwrap_or(false)
+            {
+                match node
+                    .publish_bundle_with_policy(&hints, publication_policy(&cfg), now())
+                    .await
+                {
                     Ok(()) => discovery_retry_at = discovery_now,
                     Err(error) => {
                         tracing::warn!(%error, "discovery refresh failed");
@@ -944,6 +1125,33 @@ async fn handle_op(
                 "listen": net.listen_addrs(),
                 "lan_peers": net.lan_peers(),
                 "nat": nat,
+                "mode": match cfg.mode {
+                    OperatingMode::Standard => "standard",
+                    OperatingMode::Private => "private",
+                    OperatingMode::Sovereign => "sovereign",
+                },
+                "provider_directory": match cfg.provider_directory_status {
+                    None => "not_configured",
+                    Some(ProviderDirectoryStatus::Current) => "current",
+                    Some(ProviderDirectoryStatus::RetainedLastValid) => "retained_last_valid",
+                    Some(ProviderDirectoryStatus::Stale) => "stale",
+                    Some(ProviderDirectoryStatus::Conflict) => "conflict",
+                    Some(ProviderDirectoryStatus::Unavailable) => "unavailable",
+                },
+                "connection": if net.connected_peer_count() > 0 {
+                    "connected"
+                } else if !cfg.mailboxes.is_empty()
+                    || cfg.relay.is_some()
+                    || cfg.mdns
+                    || cfg.spool.is_some()
+                    || cfg.meshtastic_serial.is_some()
+                    || cfg.meshtastic_tcp.is_some()
+                {
+                    "fallback_ready"
+                } else {
+                    "waiting_for_route"
+                },
+                "connected_peers": net.connected_peer_count(),
                 "queued": node.queued().map_err(fail)?,
                 "scheduled": node.scheduled_messages().map_err(fail)?.len(),
                 "transit": node.transit_queued(),
@@ -961,7 +1169,10 @@ async fn handle_op(
         Op::ConnectCodeRotate => {
             let connect_code = node.rotate_connect_code(&mut OsRng).map_err(fail)?;
             let hints = own_hints(net, &cfg.mailboxes);
-            let published = node.publish_bundle(&hints, now()).await.is_ok();
+            let published = node
+                .publish_bundle_with_policy(&hints, publication_policy(cfg), now())
+                .await
+                .is_ok();
             Ok(json!({
                 "connect_code": connect_code,
                 "legacy_discovery": false,
@@ -971,7 +1182,10 @@ async fn handle_op(
         Op::ConnectCodeRetireLegacy => {
             node.retire_legacy_discovery(&mut OsRng).map_err(fail)?;
             let hints = own_hints(net, &cfg.mailboxes);
-            let published = node.publish_bundle(&hints, now()).await.is_ok();
+            let published = node
+                .publish_bundle_with_policy(&hints, publication_policy(cfg), now())
+                .await
+                .is_ok();
             Ok(json!({
                 "connect_code": node.connect_code().map_err(fail)?,
                 "legacy_discovery": false,
@@ -2289,7 +2503,9 @@ async fn handle_op(
         }
         Op::Publish => {
             let hints = own_hints(net, &cfg.mailboxes);
-            node.publish_bundle(&hints, now()).await.map_err(fail)?;
+            node.publish_bundle_with_policy(&hints, publication_policy(cfg), now())
+                .await
+                .map_err(fail)?;
             Ok(json!({}))
         }
         Op::Backup { path } => {

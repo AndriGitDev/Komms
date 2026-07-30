@@ -68,7 +68,9 @@ import uniffi.kult_ffi.ImageInfo
 import uniffi.kult_ffi.Message
 import uniffi.kult_ffi.MessageRequest
 import uniffi.kult_ffi.MentionSpan
+import uniffi.kult_ffi.NetworkMode
 import uniffi.kult_ffi.NoteMessage
+import uniffi.kult_ffi.RendezvousProviderConfig
 import uniffi.kult_ffi.SafetyNumber
 import uniffi.kult_ffi.ScheduledMessage
 import uniffi.kult_ffi.Status
@@ -1065,6 +1067,25 @@ class Session private constructor(private val node: KultNode) {
             val base = defaultConfig(dataDir.absolutePath, passphrase)
             return base.copy(
                 kdf = kdf,
+                mode = when (settings.mode) {
+                    "standard" -> NetworkMode.STANDARD
+                    "private" -> NetworkMode.PRIVATE
+                    "sovereign" -> NetworkMode.SOVEREIGN
+                    else -> throw SettingsException("unsupported operating mode")
+                },
+                standardDisclosureConfirmed = settings.standardDisclosureConfirmed,
+                sovereignPublishDirectRoutes = settings.sovereignPublishDirectRoutes,
+                providerDirectory = settings.providerDirectory,
+                providerDirectoryRoots = settings.providerDirectoryRoots,
+                rendezvous = settings.rendezvous.map {
+                    RendezvousProviderConfig(
+                        origin = it.origin,
+                        staticKey = it.staticKey,
+                        standard = it.standard,
+                        privateViaTor = it.privateViaTor,
+                    )
+                },
+                torProxy = settings.torProxy,
                 // An emptied-out listen list falls back to the baseline
                 // rather than silently starting a node nothing can dial.
                 listen = settings.listen.ifEmpty { base.listen },

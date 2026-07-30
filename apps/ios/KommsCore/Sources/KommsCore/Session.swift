@@ -1083,8 +1083,8 @@ public final class Session: @unchecked Sendable {
     ) throws -> Session {
         Session(
             node: try KultNode.start(
-                config: buildConfig(dataDir: dataDir, passphrase: passphrase,
-                                    settings: settings, kdf: kdf),
+                config: try buildConfig(dataDir: dataDir, passphrase: passphrase,
+                                        settings: settings, kdf: kdf),
                 listener: Forwarder(sink)))
     }
 
@@ -1103,8 +1103,8 @@ public final class Session: @unchecked Sendable {
     ) throws -> Session {
         Session(
             node: try KultNode.restore(
-                config: buildConfig(dataDir: dataDir, passphrase: passphrase,
-                                    settings: settings, kdf: kdf),
+                config: try buildConfig(dataDir: dataDir, passphrase: passphrase,
+                                        settings: settings, kdf: kdf),
                 backupPath: backupPath.path,
                 mnemonic: mnemonic,
                 recoveryPackagePath: recoveryPackagePath.path,
@@ -1125,8 +1125,8 @@ public final class Session: @unchecked Sendable {
     ) throws -> Session {
         Session(
             node: try KultNode.migrateAuthority(
-                config: buildConfig(dataDir: dataDir, passphrase: passphrase,
-                                    settings: settings, kdf: kdf),
+                config: try buildConfig(dataDir: dataDir, passphrase: passphrase,
+                                        settings: settings, kdf: kdf),
                 recoveryPackagePath: recoveryPackagePath.path,
                 recoveryMnemonic: recoveryMnemonic,
                 listener: Forwarder(sink)))
@@ -1146,8 +1146,8 @@ public final class Session: @unchecked Sendable {
     ) throws -> Session {
         Session(
             node: try KultNode.resetAuthority(
-                config: buildConfig(dataDir: dataDir, passphrase: passphrase,
-                                    settings: settings, kdf: kdf),
+                config: try buildConfig(dataDir: dataDir, passphrase: passphrase,
+                                        settings: settings, kdf: kdf),
                 recoveryPackagePath: recoveryPackagePath.path,
                 recoveryMnemonic: recoveryMnemonic,
                 listener: Forwarder(sink)))
@@ -1160,9 +1160,27 @@ public final class Session: @unchecked Sendable {
         passphrase: String,
         settings: NetworkSettings,
         kdf: KdfChoice
-    ) -> Config {
+    ) throws -> Config {
         var config = defaultConfig(dataDir: dataDir.path, passphrase: passphrase)
         config.kdf = kdf
+        switch settings.mode {
+        case "standard": config.mode = .standard
+        case "private": config.mode = .private
+        case "sovereign": config.mode = .sovereign
+        default: throw SettingsError("unsupported operating mode")
+        }
+        config.standardDisclosureConfirmed = settings.standardDisclosureConfirmed
+        config.sovereignPublishDirectRoutes = settings.sovereignPublishDirectRoutes
+        config.providerDirectory = settings.providerDirectory
+        config.providerDirectoryRoots = settings.providerDirectoryRoots
+        config.rendezvous = settings.rendezvous.map {
+            RendezvousProviderConfig(
+                origin: $0.origin,
+                staticKey: $0.staticKey,
+                standard: $0.standard,
+                privateViaTor: $0.privateViaTor)
+        }
+        config.torProxy = settings.torProxy
         // An emptied-out listen list falls back to the baseline rather
         // than silently starting a node nothing can dial.
         if !settings.listen.isEmpty { config.listen = settings.listen }

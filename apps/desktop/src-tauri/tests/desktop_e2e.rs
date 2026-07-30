@@ -487,6 +487,66 @@ fn desktop_status_poll_is_bounded_and_never_leaves_loading_placeholders() {
 }
 
 #[test]
+fn operating_mode_contract_and_familiar_status_are_present_in_every_shell() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/operating-mode-settings-v1.json"
+    ))
+    .unwrap();
+    assert_eq!(fixture["mode"], "private");
+    assert_eq!(fixture["rendezvous"][0]["private_via_tor"], true);
+
+    let html = include_str!("../../ui/index.html");
+    let frontend = include_str!("../../ui/main.js");
+    for value in ["standard", "private", "sovereign"] {
+        assert!(html.contains(&format!("name=\"set-mode\" value=\"{value}\"")));
+    }
+    for field in [
+        "set-provider-directory",
+        "set-provider-roots",
+        "set-rendezvous",
+        "set-tor-proxy",
+        "set-standard-disclosure",
+        "set-sovereign-direct",
+    ] {
+        assert!(html.contains(&format!("id=\"{field}\"")));
+    }
+    for status in ["Connected", "Fallback ready", "Waiting for a route"] {
+        assert!(frontend.contains(status));
+    }
+    assert!(frontend.contains("It does not claim provider non-collusion"));
+    assert!(frontend.contains("sovereign-direct-row"));
+
+    let android_layout =
+        include_str!("../../../android/app/src/main/res/layout/activity_settings.xml");
+    let android_strings = include_str!("../../../android/app/src/main/res/values/strings.xml");
+    for field in [
+        "set_mode_standard",
+        "set_mode_private",
+        "set_mode_sovereign",
+        "set_provider_directory",
+        "set_provider_roots",
+        "set_rendezvous",
+        "set_tor_proxy",
+    ] {
+        assert!(android_layout.contains(&format!("@+id/{field}")));
+    }
+    for status in ["Connected", "Fallback ready", "Waiting for a route"] {
+        assert!(android_strings.contains(status));
+    }
+    assert!(android_strings.contains("does not claim non-collusion"));
+
+    let ios_settings = include_str!("../../../ios/KommsApp/Sources/SettingsView.swift");
+    let ios_status = include_str!("../../../ios/KommsApp/Sources/MainView.swift");
+    for mode in ["Standard", "Private", "Sovereign"] {
+        assert!(ios_settings.contains(&format!("Text(\"{mode}\").tag")));
+    }
+    for status in ["Connected", "Fallback ready", "Waiting for a route"] {
+        assert!(ios_status.contains(status));
+    }
+    assert!(ios_settings.contains("does not claim provider non-collusion"));
+}
+
+#[test]
 fn desktop_share_dialog_surfaces_generation_errors_and_scopes_its_listener() {
     let html = include_str!("../../ui/index.html");
     let frontend = include_str!("../../ui/main.js");
@@ -803,7 +863,7 @@ fn desktop_incognito_keyboard_covers_every_editable_text_field_before_unlock() {
         - html
             .matches("<textarea class=\"share-hex\" rows=\"4\" readonly")
             .count();
-    assert_eq!(46, editable_text_fields);
+    assert_eq!(50, editable_text_fields);
     assert_eq!(
         editable_text_fields,
         html.matches("data-incognito-input=").count()

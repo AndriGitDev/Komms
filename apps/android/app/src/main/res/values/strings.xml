@@ -50,8 +50,8 @@
 
     <!-- Main -->
     <string name="status_line">%1$s · NAT %2$s · %3$d LAN · %4$d scheduled · %5$d queued · %6$d transit</string>
-    <string name="status_summary">Node running\n%1$s · %2$d LAN peers%3$s</string>
-    <string name="status_details">Connect code\n%1$s\n\nAccount fingerprint\n%2$s\n\nDirect reachability: %3$s\nLAN peers: %4$d\nLAN discovery: %8$s\nInternet DHT: %9$s\nLegacy lookup: %10$s\nScheduled: %5$d\nQueued: %6$d\nBridging: %7$d</string>
+    <string name="status_summary">%1$s\n%2$s%3$s</string>
+    <string name="status_details">Mode: %11$s\nConnection: %12$s\nProvider directory: %13$s\nConnected peers: %14$d\n\nConnect code\n%1$s\n\nAccount fingerprint\n%2$s\n\nDirect reachability: %3$s\nLAN peers: %4$d\nLAN discovery: %8$s\nInternet DHT: %9$s\nLegacy lookup: %10$s\nScheduled: %5$d\nQueued: %6$d\nBridging: %7$d</string>
     <string name="status_queued_suffix"> · %1$d queued</string>
     <string name="discovery_mdns_enabled">enabled</string>
     <string name="discovery_mdns_disabled">disabled in Settings</string>
@@ -67,6 +67,18 @@
     <string name="nat_public">directly reachable</string>
     <string name="nat_private">connected behind NAT</string>
     <string name="nat_unknown">checking direct reachability</string>
+    <string name="mode_standard">Standard</string>
+    <string name="mode_private">Private</string>
+    <string name="mode_sovereign">Sovereign</string>
+    <string name="connection_connected">Connected</string>
+    <string name="connection_fallback_ready">Fallback ready</string>
+    <string name="connection_waiting">Waiting for a route</string>
+    <string name="directory_not_configured">not configured</string>
+    <string name="directory_current">current</string>
+    <string name="directory_retained">using retained last-valid copy</string>
+    <string name="directory_stale">stale grace active</string>
+    <string name="directory_conflict">conflict — defaults disabled</string>
+    <string name="directory_unavailable">unavailable</string>
     <string name="main_empty">Your private inbox starts here</string>
     <string name="main_empty_detail">Pair with someone you trust, or keep a private note on this device.</string>
     <string name="main_empty_pair">Pair a contact</string>
@@ -481,7 +493,7 @@
     <string name="settings_icons_accessibility">Manage private icons. Choose icons stored only on this device</string>
     <string name="settings_privacy_appearance">Privacy &amp; appearance</string>
     <string name="settings_advanced">Advanced network &amp; transports</string>
-    <string name="settings_advanced_note">Most people never need to change these. Komms chooses safe defaults automatically.</string>
+    <string name="settings_advanced_note">Most people never need to change the provider or transport details. Optional defaults are signed, replaceable, and never required for core messaging routes.</string>
     <string name="appearance_title">Appearance</string>
     <string name="icons_manage">Manage private icons</string>
     <string name="icons_title">Private custom icons</string>
@@ -500,6 +512,23 @@
     <string name="screen_security_title">Screen security · always on</string>
     <string name="incognito_keyboard_title">Input privacy · always on</string>
     <string name="settings_note">Same knobs as kultd\'s flags; stored without secrets in settings.json. Applied when the node next starts (lock, then unlock).</string>
+    <string name="set_mode">Operating mode</string>
+    <string name="set_mode_standard">Standard — disclosed, replaceable convenience providers</string>
+    <string name="set_mode_private">Private — optional rendezvous through Tor</string>
+    <string name="set_mode_sovereign">Sovereign — user-selected and local routes</string>
+    <string name="set_mode_standard_disclosure">Standard can contact disclosed, replaceable providers. Those operators can observe your network address, timing, and service requests, but not message contents or your contact list.</string>
+    <string name="set_mode_private_disclosure">Private sends optional rendezvous requests through your local Tor proxy. Bootstrap and mailbox operators can still observe their own connections, and this mode does not claim non-collusion between providers.</string>
+    <string name="set_mode_sovereign_disclosure">Sovereign disables directory defaults and optional rendezvous or wake. DHT, user-selected mailboxes, direct, LAN, mesh, QR/file, and sneakernet routes remain available.</string>
+    <string name="set_standard_disclosure">I reviewed the Standard provider disclosure</string>
+    <string name="set_sovereign_direct_routes">Publish direct routes in Sovereign mode after accepting the reachability warning</string>
+    <string name="set_standard_confirmation_required">Review and confirm the Standard provider disclosure before using a signed provider directory.</string>
+    <string name="set_private_tor_required">Private optional providers require an explicit loopback Tor SOCKS5 endpoint.</string>
+    <string name="set_provider_directory">Signed provider-directory JSON path (optional)</string>
+    <string name="set_provider_roots">Trusted offline directory keys, lowercase hex (one per line)</string>
+    <string name="set_rendezvous">Manual rendezvous providers (one per line)</string>
+    <string name="set_rendezvous_hint">https://host,leaf_sha256,standard|private|both</string>
+    <string name="set_rendezvous_invalid">Rendezvous line %1$d must be https://host, 64 lowercase hex characters, and standard, private, or both.</string>
+    <string name="set_tor_proxy">Private Tor SOCKS5 endpoint (loopback host:port)</string>
     <string name="set_listen">Listen multiaddrs (one per line)</string>
     <string name="set_bootstrap">DHT bootstrap peers (one per line)</string>
     <string name="set_relay">Relay for NAT circuit (optional)</string>

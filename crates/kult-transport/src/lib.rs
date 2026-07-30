@@ -30,6 +30,7 @@ mod mailbox_v2;
 mod mdns;
 #[cfg(feature = "meshtastic")]
 mod mesh;
+mod provider_directory;
 mod rendezvous;
 mod sneakernet;
 
@@ -43,9 +44,14 @@ pub use mailbox_v2::{
 pub use mesh::testutil as mesh_testutil;
 #[cfg(feature = "meshtastic")]
 pub use mesh::{MeshtasticOptions, MeshtasticTransport, MESH_BROADCAST};
+pub use provider_directory::{
+    resolve_provider_directory, EffectiveProviderSet, ManualProviderSet, OperatingMode,
+    ProviderDirectory, ProviderDirectoryError, ProviderDirectoryResolution,
+    ProviderDirectoryStatus, ProviderOperator, ProviderRendezvous, PROVIDER_DIRECTORY_VERSION,
+};
 pub use rendezvous::{
-    rendezvous_record_route, rendezvous_route_hint, RendezvousClient, RendezvousProvider,
-    MAX_RENDEZVOUS_PROVIDERS,
+    rendezvous_record_route, rendezvous_route_hint, HttpsRendezvousClient, RendezvousClient,
+    RendezvousIngress, RendezvousProvider, MAX_RENDEZVOUS_PROVIDERS,
 };
 pub use sneakernet::SneakernetTransport;
 

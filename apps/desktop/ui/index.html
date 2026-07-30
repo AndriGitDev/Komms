@@ -76,6 +76,18 @@
                 <option value="dark">Dark</option>
               </select>
             </label>
+
+            <fieldset class="theme-options" aria-describedby="mode-disclosure">
+              <legend>How Komms connects</legend>
+              <label><input type="radio" name="set-mode" value="standard" checked /> Standard</label>
+              <label><input type="radio" name="set-mode" value="private" /> Private</label>
+              <label><input type="radio" name="set-mode" value="sovereign" /> Sovereign</label>
+            </fieldset>
+            <p class="hint" id="mode-disclosure"></p>
+            <label class="check" id="standard-disclosure-row">
+              <input type="checkbox" id="set-standard-disclosure" />
+              I understand configured convenience providers can observe network addresses, timing, and availability, but not message content.
+            </label>
           </div>
 
           <div class="gate-assurances">
@@ -94,6 +106,19 @@
 
           <details id="gate-advanced">
             <summary>Network settings</summary>
+            <label>Signed provider directory
+              <input type="text" id="set-provider-directory" data-incognito-input="technical" spellcheck="false" placeholder="/path/to/providers.json" />
+            </label>
+            <label>Trusted directory keys (one 64-character lowercase hex key per line)
+              <textarea id="set-provider-roots" rows="2" data-incognito-input="technical" spellcheck="false"></textarea>
+            </label>
+            <label>Rendezvous providers (origin,leaf-certificate-sha256,standard|private|both)
+              <textarea id="set-rendezvous" rows="2" data-incognito-input="technical" spellcheck="false"></textarea>
+            </label>
+            <label>Private-mode Tor SOCKS5 proxy
+              <input type="text" id="set-tor-proxy" data-incognito-input="technical" spellcheck="false" placeholder="127.0.0.1:9050" />
+            </label>
+            <label class="check" id="sovereign-direct-row"><input type="checkbox" id="set-sovereign-direct" /> In Sovereign mode, publish direct routes to Connect-code holders (advanced metadata warning)</label>
             <label class="check"><input type="checkbox" id="set-mdns" checked /> Discover peers on the local network (mDNS)</label>
             <label>Listen addresses (one multiaddr per line; port 0 = OS-assigned)
               <textarea id="set-listen" rows="2" data-incognito-input="technical" spellcheck="false"></textarea>
@@ -214,9 +239,10 @@
       </div>
 
       <footer id="status-bar" title="Transport status">
-        <span class="stat" id="stat-discovery">Discovery: …</span>
-        <span class="stat" id="stat-nat">NAT: …</span>
-        <span class="stat" id="stat-lan">LAN: 0</span>
+        <span class="stat" id="stat-mode">Standard</span>
+        <span class="stat" id="stat-discovery">Waiting for a route</span>
+        <span class="stat" id="stat-nat" hidden>NAT: …</span>
+        <span class="stat" id="stat-lan" hidden>LAN: 0</span>
         <span class="stat" id="stat-scheduled">Scheduled: 0</span>
         <span class="stat" id="stat-queued">Queued: 0</span>
         <span class="stat" id="stat-transit" hidden>Bridging: 0</span>

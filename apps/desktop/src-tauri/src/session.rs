@@ -34,11 +34,11 @@ use kult_ffi::{
     CallAudioFrame as FfiCallAudioFrame, CallAvailability as FfiCallAvailability,
     CallDirection as FfiCallDirection, CallEndReason as FfiCallEndReason,
     CallPhase as FfiCallPhase, CallUnavailableReason as FfiCallUnavailableReason,
-    CarrierCapability, Config, ContactNameAssessment as FfiContactNameAssessment,
-    ContactNameWarning as FfiContactNameWarning, ContentKind, CustomIcon as FfiCustomIcon,
-    CustomIconCrop as FfiCustomIconCrop, CustomIconTarget as FfiCustomIconTarget,
-    CustomIconTargetKind as FfiCustomIconTargetKind, DeliveryState,
-    DeviceAuthorityConflictKind as FfiDeviceAuthorityConflictKind,
+    CarrierCapability, Config, ConnectionVerdict as FfiConnectionVerdict,
+    ContactNameAssessment as FfiContactNameAssessment, ContactNameWarning as FfiContactNameWarning,
+    ContentKind, CustomIcon as FfiCustomIcon, CustomIconCrop as FfiCustomIconCrop,
+    CustomIconTarget as FfiCustomIconTarget, CustomIconTargetKind as FfiCustomIconTargetKind,
+    DeliveryState, DeviceAuthorityConflictKind as FfiDeviceAuthorityConflictKind,
     DeviceLinkSelection as FfiDeviceLinkSelection, Direction, Event, EventListener,
     Folder as FfiFolder, FolderConversation as FfiFolderConversation,
     FolderConversationResult as FfiFolderConversationResult, FolderSelection as FfiFolderSelection,
@@ -53,13 +53,15 @@ use kult_ffi::{
     LabelMatchMode as FfiLabelMatchMode, LabelTarget as FfiLabelTarget,
     LabelTargetKind as FfiLabelTargetKind, MentionCapabilityIssueReason, MentionSpan,
     MessageRequest as FfiMessageRequest, MessageRequestTransport as FfiMessageRequestTransport,
-    NatVerdict, Pin as FfiPin, PinConversation as FfiPinConversation,
-    PinConversationResult as FfiPinConversationResult, PinTarget as FfiPinTarget,
-    PinTargetKind as FfiPinTargetKind, ScheduledConversation, StaleFolder as FfiStaleFolder,
-    StaleLabel as FfiStaleLabel, TextFormatBlockKind as FfiTextFormatBlockKind,
-    TextFormatHighlight as FfiTextFormatHighlight, TextFormatStyle as FfiTextFormatStyle,
-    ThemePreference as FfiThemePreference, AUDIO_MAX_BYTES, AUDIO_MEDIA_TYPE,
-    IMAGE_MAX_INPUT_BYTES, IMAGE_MEDIA_TYPE,
+    NatVerdict, NetworkMode as FfiNetworkMode, Pin as FfiPin,
+    PinConversation as FfiPinConversation, PinConversationResult as FfiPinConversationResult,
+    PinTarget as FfiPinTarget, PinTargetKind as FfiPinTargetKind,
+    ProviderDirectoryVerdict as FfiProviderDirectoryVerdict,
+    RendezvousProviderConfig as FfiRendezvousProviderConfig, ScheduledConversation,
+    StaleFolder as FfiStaleFolder, StaleLabel as FfiStaleLabel,
+    TextFormatBlockKind as FfiTextFormatBlockKind, TextFormatHighlight as FfiTextFormatHighlight,
+    TextFormatStyle as FfiTextFormatStyle, ThemePreference as FfiThemePreference, AUDIO_MAX_BYTES,
+    AUDIO_MEDIA_TYPE, IMAGE_MAX_INPUT_BYTES, IMAGE_MEDIA_TYPE,
 };
 
 use crate::qr;
@@ -339,6 +341,19 @@ fn generate_preview(path: &Path, media_type: &str) -> Result<Option<PrivateTemp>
     Err("image preview could not fit the 256 KiB limit".to_owned())
 }
 
+/// One user-selected post-pairing rendezvous provider.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RendezvousSetting {
+    /// Canonical HTTPS provider origin.
+    pub origin: String,
+    /// SHA-256 of the provider leaf TLS certificate, lowercase hex.
+    pub static_key: String,
+    /// Whether direct Standard access is allowed.
+    pub standard: bool,
+    /// Whether Private mode may reach it through Tor.
+    pub private_via_tor: bool,
+}
+
 /// Network configuration the user can edit on the unlock screen. Persisted
 /// as plain JSON next to the store — it holds the same information as
 /// `kultd`'s command-line flags and **no secrets** (the store passphrase
@@ -346,6 +361,20 @@ fn generate_preview(path: &Path, media_type: &str) -> Result<Option<PrivateTemp>
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NetworkSettings {
+    /// `standard`, `private`, or `sovereign`.
+    pub mode: String,
+    /// Standard provider disclosure was reviewed before first optional use.
+    pub standard_disclosure_confirmed: bool,
+    /// Advanced Sovereign direct-route publication acknowledgement.
+    pub sovereign_publish_direct_routes: bool,
+    /// Candidate signed provider-directory JSON.
+    pub provider_directory: Option<String>,
+    /// Trusted offline directory keys, lowercase hex.
+    pub provider_directory_roots: Vec<String>,
+    /// User-selected rendezvous providers.
+    pub rendezvous: Vec<RendezvousSetting>,
+    /// Explicit loopback Tor SOCKS5 endpoint for Private rendezvous.
+    pub tor_proxy: Option<String>,
     /// Multiaddrs to listen on. The default binds QUIC + TCP on
     /// OS-assigned ports; pin a port here for port-forwarding setups.
     pub listen: Vec<String>,
@@ -376,6 +405,13 @@ pub struct NetworkSettings {
 impl Default for NetworkSettings {
     fn default() -> Self {
         Self {
+            mode: "standard".to_owned(),
+            standard_disclosure_confirmed: false,
+            sovereign_publish_direct_routes: false,
+            provider_directory: None,
+            provider_directory_roots: Vec::new(),
+            rendezvous: Vec::new(),
+            tor_proxy: None,
             listen: vec![
                 "/ip4/0.0.0.0/udp/0/quic-v1".to_owned(),
                 "/ip4/0.0.0.0/tcp/0".to_owned(),
@@ -405,7 +441,10 @@ impl NetworkSettings {
     pub fn load(data_dir: &Path) -> Result<Self, String> {
         match std::fs::read(Self::path(data_dir)) {
             Ok(bytes) => {
-                serde_json::from_slice(&bytes).map_err(|e| format!("settings.json is corrupt: {e}"))
+                let settings: Self = serde_json::from_slice(&bytes)
+                    .map_err(|e| format!("settings.json is corrupt: {e}"))?;
+                settings.validate()?;
+                Ok(settings)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(format!("settings.json: {e}")),
@@ -414,9 +453,27 @@ impl NetworkSettings {
 
     /// Persist to `data_dir` (creating it if needed).
     pub fn save(&self, data_dir: &Path) -> Result<(), String> {
+        self.validate()?;
         std::fs::create_dir_all(data_dir).map_err(|e| format!("data dir: {e}"))?;
         let json = serde_json::to_vec_pretty(self).expect("settings serialize");
-        std::fs::write(Self::path(data_dir), json).map_err(|e| format!("settings.json: {e}"))
+        atomicwrites::AtomicFile::new(Self::path(data_dir), atomicwrites::AllowOverwrite)
+            .write(|file| {
+                file.write_all(&json)?;
+                file.sync_all()
+            })
+            .map_err(|error| format!("settings.json: {}", std::io::Error::from(error)))?;
+        #[cfg(unix)]
+        std::fs::File::open(data_dir)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("settings directory: {error}"))?;
+        Ok(())
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if !matches!(self.mode.as_str(), "standard" | "private" | "sovereign") {
+            return Err("settings.json has an unsupported operating mode".to_owned());
+        }
+        Ok(())
     }
 }
 
@@ -1529,6 +1586,15 @@ pub struct UiStatus {
     pub bootstrap_peers: u64,
     /// `public`, `private`, or `unknown`.
     pub nat: &'static str,
+    /// `standard`, `private`, or `sovereign`.
+    pub mode: &'static str,
+    /// `not_configured`, `current`, `retained_last_valid`, `stale`,
+    /// `conflict`, or `unavailable`.
+    pub provider_directory: &'static str,
+    /// `connected`, `fallback_ready`, or `waiting_for_route`.
+    pub connection: &'static str,
+    /// Live transport pseudonyms; not presence or a delivery receipt.
+    pub connected_peers: u64,
     /// Outbound messages not yet delivered.
     pub queued: u64,
     /// Text waiting for a future UTC activation instant.
@@ -2662,7 +2728,7 @@ impl Session {
         sink: EventSink,
     ) -> Result<Self, String> {
         cleanup_media_temps_once();
-        let config = build_config(data_dir, passphrase, settings, kdf);
+        let config = build_config(data_dir, passphrase, settings, kdf)?;
         let node = KultNode::start(config, Box::new(Forwarder(sink))).map_err(|e| e.to_string())?;
         Ok(Self {
             node,
@@ -2687,7 +2753,7 @@ impl Session {
         sink: EventSink,
     ) -> Result<Self, String> {
         cleanup_media_temps_once();
-        let config = build_config(data_dir, passphrase, settings, kdf);
+        let config = build_config(data_dir, passphrase, settings, kdf)?;
         let node = KultNode::restore(
             config,
             backup_path,
@@ -2716,7 +2782,7 @@ impl Session {
         sink: EventSink,
     ) -> Result<Self, String> {
         cleanup_media_temps_once();
-        let config = build_config(data_dir, passphrase, settings, kdf);
+        let config = build_config(data_dir, passphrase, settings, kdf)?;
         let node = KultNode::migrate_authority(
             config,
             recovery_package_path,
@@ -2743,7 +2809,7 @@ impl Session {
         sink: EventSink,
     ) -> Result<Self, String> {
         cleanup_media_temps_once();
-        let config = build_config(data_dir, passphrase, settings, kdf);
+        let config = build_config(data_dir, passphrase, settings, kdf)?;
         let node = KultNode::reset_authority(
             config,
             recovery_package_path,
@@ -2848,6 +2914,25 @@ impl Session {
                 NatVerdict::Private => "private",
                 NatVerdict::Unknown => "unknown",
             },
+            mode: match s.mode {
+                FfiNetworkMode::Standard => "standard",
+                FfiNetworkMode::Private => "private",
+                FfiNetworkMode::Sovereign => "sovereign",
+            },
+            provider_directory: match s.provider_directory {
+                FfiProviderDirectoryVerdict::NotConfigured => "not_configured",
+                FfiProviderDirectoryVerdict::Current => "current",
+                FfiProviderDirectoryVerdict::RetainedLastValid => "retained_last_valid",
+                FfiProviderDirectoryVerdict::Stale => "stale",
+                FfiProviderDirectoryVerdict::Conflict => "conflict",
+                FfiProviderDirectoryVerdict::Unavailable => "unavailable",
+            },
+            connection: match s.connection {
+                FfiConnectionVerdict::Connected => "connected",
+                FfiConnectionVerdict::FallbackReady => "fallback_ready",
+                FfiConnectionVerdict::WaitingForRoute => "waiting_for_route",
+            },
+            connected_peers: s.connected_peers,
             queued: s.queued,
             scheduled: s.scheduled,
             transit: s.transit,
@@ -4967,9 +5052,31 @@ fn build_config(
     passphrase: String,
     settings: &NetworkSettings,
     kdf: KdfChoice,
-) -> Config {
+) -> Result<Config, String> {
+    settings.validate()?;
     let mut config = default_config(data_dir.display().to_string(), passphrase);
     config.kdf = kdf;
+    config.mode = match settings.mode.as_str() {
+        "standard" => FfiNetworkMode::Standard,
+        "private" => FfiNetworkMode::Private,
+        "sovereign" => FfiNetworkMode::Sovereign,
+        _ => return Err("unsupported operating mode".to_owned()),
+    };
+    config.standard_disclosure_confirmed = settings.standard_disclosure_confirmed;
+    config.sovereign_publish_direct_routes = settings.sovereign_publish_direct_routes;
+    config.provider_directory = settings.provider_directory.clone();
+    config.provider_directory_roots = settings.provider_directory_roots.clone();
+    config.rendezvous = settings
+        .rendezvous
+        .iter()
+        .map(|provider| FfiRendezvousProviderConfig {
+            origin: provider.origin.clone(),
+            static_key: provider.static_key.clone(),
+            standard: provider.standard,
+            private_via_tor: provider.private_via_tor,
+        })
+        .collect();
+    config.tor_proxy = settings.tor_proxy.clone();
     // An emptied-out listen list falls back to the baseline rather than
     // silently starting a node nothing can dial.
     if !settings.listen.is_empty() {
@@ -4984,7 +5091,7 @@ fn build_config(
     config.meshtastic_serial = settings.meshtastic_serial.clone();
     config.meshtastic_tcp = settings.meshtastic_tcp.clone();
     config.bridge = settings.bridge;
-    config
+    Ok(config)
 }
 
 /// Lowercase hex encoding.
@@ -5073,6 +5180,39 @@ mod tests {
         assert!(NetworkSettings::load(dir.path())
             .unwrap_err()
             .contains("corrupt"));
+    }
+
+    #[test]
+    fn operating_mode_settings_fixture_is_shared_across_shells() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("settings.json"),
+            include_bytes!("../../../../fixtures/operating-mode-settings-v1.json"),
+        )
+        .unwrap();
+
+        let settings = NetworkSettings::load(dir.path()).unwrap();
+        assert_eq!(settings.mode, "private");
+        assert!(settings.standard_disclosure_confirmed);
+        assert_eq!(settings.provider_directory.as_deref(), Some("providers.json"));
+        assert_eq!(settings.provider_directory_roots.len(), 1);
+        assert_eq!(
+            settings.rendezvous[0].origin,
+            "https://rendezvous.example.org"
+        );
+        assert!(settings.rendezvous[0].standard);
+        assert!(settings.rendezvous[0].private_via_tor);
+        assert_eq!(settings.tor_proxy.as_deref(), Some("127.0.0.1:9050"));
+        assert_eq!(settings.mailboxes.len(), 1);
+    }
+
+    #[test]
+    fn unknown_operating_mode_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("settings.json"), br#"{"mode":"public"}"#).unwrap();
+        assert!(NetworkSettings::load(dir.path())
+            .unwrap_err()
+            .contains("unsupported operating mode"));
     }
 
     #[test]

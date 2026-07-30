@@ -38,27 +38,29 @@ class NetworkSettingsTest {
 
     @Test
     fun `desktop settings file parses unchanged`() {
-        // Verbatim shape the desktop app writes (serde, snake_case).
+        // One committed snake_case contract is consumed unchanged by every shell.
         val dir = tempDir()
-        File(dir, "settings.json").writeText(
-            """
-            {
-              "listen": ["/ip4/0.0.0.0/udp/7001/quic-v1"],
-              "bootstrap": [],
-              "relay": null,
-              "mailboxes": ["/ip4/9.9.9.9/tcp/1/p2p/x"],
-              "serve_mailbox": false,
-              "mdns": true,
-              "spool": null,
-              "meshtastic_serial": null,
-              "meshtastic_tcp": "radio.local:4403",
-              "bridge": true
-            }
-            """.trimIndent(),
-        )
+        val root = File(checkNotNull(System.getProperty("komms.repo.root")))
+        File(root, "fixtures/operating-mode-settings-v1.json")
+            .copyTo(File(dir, "settings.json"))
         val s = NetworkSettings.load(dir)
+        assertEquals("private", s.mode)
+        assertTrue(s.standardDisclosureConfirmed)
+        assertEquals("providers.json", s.providerDirectory)
+        assertEquals(1, s.providerDirectoryRoots.size)
+        assertEquals("https://rendezvous.example.org", s.rendezvous.single().origin)
+        assertTrue(s.rendezvous.single().standard && s.rendezvous.single().privateViaTor)
+        assertEquals("127.0.0.1:9050", s.torProxy)
         assertEquals(listOf("/ip4/0.0.0.0/udp/7001/quic-v1"), s.listen)
         assertEquals("radio.local:4403", s.meshtasticTcp)
-        assertEquals(listOf("/ip4/9.9.9.9/tcp/1/p2p/x"), s.mailboxes)
+        assertEquals(1, s.mailboxes.size)
+    }
+
+    @Test
+    fun `unknown operating mode fails closed`() {
+        val dir = tempDir()
+        File(dir, "settings.json").writeText("""{"mode":"public"}""")
+        val err = assertFailsWith<SettingsException> { NetworkSettings.load(dir) }
+        assertTrue("unsupported operating mode" in err.message!!)
     }
 }

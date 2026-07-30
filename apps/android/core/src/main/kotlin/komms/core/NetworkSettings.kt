@@ -9,6 +9,9 @@
 package komms.core
 
 import java.io.File
+import java.io.FileOutputStream
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -18,7 +21,37 @@ class SettingsException(message: String) : Exception(message)
 
 /** The network knobs, mirroring `kultd`'s flags and the desktop app. */
 @Serializable
+data class RendezvousSetting(
+    /** Canonical HTTPS provider origin. */
+    val origin: String,
+    /** SHA-256 of the provider leaf TLS certificate, lowercase hex. */
+    @SerialName("static_key") val staticKey: String,
+    /** Whether direct Standard access is allowed. */
+    val standard: Boolean,
+    /** Whether Private mode may reach it through Tor. */
+    @SerialName("private_via_tor") val privateViaTor: Boolean,
+)
+
+/** The network knobs, mirroring `kultd`'s flags and the desktop app. */
+@Serializable
 data class NetworkSettings(
+    /** `standard`, `private`, or `sovereign`. */
+    val mode: String = "standard",
+    /** Standard provider disclosure was reviewed before first optional use. */
+    @SerialName("standard_disclosure_confirmed")
+    val standardDisclosureConfirmed: Boolean = false,
+    /** Advanced Sovereign direct-route publication acknowledgement. */
+    @SerialName("sovereign_publish_direct_routes")
+    val sovereignPublishDirectRoutes: Boolean = false,
+    /** Candidate signed provider-directory JSON. */
+    @SerialName("provider_directory") val providerDirectory: String? = null,
+    /** Trusted offline directory keys, lowercase hex. */
+    @SerialName("provider_directory_roots")
+    val providerDirectoryRoots: List<String> = emptyList(),
+    /** User-selected rendezvous providers. */
+    val rendezvous: List<RendezvousSetting> = emptyList(),
+    /** Explicit loopback Tor SOCKS5 endpoint for Private rendezvous. */
+    @SerialName("tor_proxy") val torProxy: String? = null,
     /**
      * Multiaddrs to listen on. The default binds QUIC + TCP on OS-assigned
      * ports; pin a port here for port-forwarding setups.
@@ -61,7 +94,33 @@ data class NetworkSettings(
     /** Persist to `dataDir` (creating it if needed). */
     fun save(dataDir: File) {
         dataDir.mkdirs()
-        fileIn(dataDir).writeText(json.encodeToString(serializer(), this))
+        require(mode in setOf("standard", "private", "sovereign")) {
+            "unsupported operating mode"
+        }
+        val destination = fileIn(dataDir)
+        val temporary = File.createTempFile(".settings-", ".json", dataDir)
+        try {
+            FileOutputStream(temporary).use { output ->
+                output.write(json.encodeToString(serializer(), this).toByteArray(Charsets.UTF_8))
+                output.fd.sync()
+            }
+            try {
+                Files.move(
+                    temporary.toPath(),
+                    destination.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING,
+                )
+            } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                Files.move(
+                    temporary.toPath(),
+                    destination.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING,
+                )
+            }
+        } finally {
+            temporary.delete()
+        }
     }
 
     companion object {
@@ -87,7 +146,11 @@ data class NetworkSettings(
                 throw SettingsException("settings.json: ${e.message}")
             }
             try {
-                return json.decodeFromString(serializer(), text)
+                val settings = json.decodeFromString(serializer(), text)
+                if (settings.mode !in setOf("standard", "private", "sovereign")) {
+                    throw SettingsException("settings.json has an unsupported operating mode")
+                }
+                return settings
             } catch (e: kotlinx.serialization.SerializationException) {
                 throw SettingsException("settings.json is corrupt: ${e.message}")
             }

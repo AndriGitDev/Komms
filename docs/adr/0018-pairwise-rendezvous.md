@@ -354,8 +354,11 @@ The in-tree known-answer test fixes these inputs:
 
 Alpha implementation and local tests are not deployed-service, independent
 interoperability, independent security-review, hostile real-network, or
-physical-device evidence. Private-mode Tor/non-colluding-OHTTP ingress and the
-complete Standard/Private/Sovereign mode contract also remain later sessions.
+physical-device evidence. Pinned direct TLS and loopback-Tor clients now follow
+the complete Standard/Private/Sovereign mode contract, but no qualified Tor or
+non-colluding OHTTP deployment has earned the Private claim. See
+[Operating modes and provider configuration](../36-operating-modes-and-provider-directory.md).
+
 - A service still observes slot activity and connection metadata; Private mode
   reduces but does not eliminate correlation.
 - Existing contacts require an authenticated exporter upgrade/re-handshake, and

@@ -1552,6 +1552,33 @@ impl Node {
         Ok(())
     }
 
+    /// Reconcile the complete local rendezvous set using an internal
+    /// monotonic generation.
+    ///
+    /// Shell settings do not own protocol generations. A provider-set change
+    /// advances the sealed generation exactly once; a restart or a
+    /// Standard↔Private ingress change over the same set reuses it. Sovereign
+    /// mode persists an authenticated empty set.
+    pub fn reconcile_rendezvous(
+        &mut self,
+        mode: DiscoveryMode,
+        client: Option<Arc<dyn RendezvousClient>>,
+        mut providers: Vec<RendezvousProvider>,
+    ) -> Result<()> {
+        providers.sort_by(|left, right| {
+            (left.origin(), left.static_key()).cmp(&(right.origin(), right.static_key()))
+        });
+        let generation = if providers == self.rendezvous_providers {
+            self.rendezvous_provider_generation.max(1)
+        } else {
+            self.rendezvous_provider_generation
+                .checked_add(1)
+                .ok_or(NodeError::CorruptState)?
+                .max(1)
+        };
+        self.configure_rendezvous(mode, client, providers, generation)
+    }
+
     /// Coalesce an active-conversation or call-setup route refresh.
     pub fn request_rendezvous_refresh(&mut self, peer: &[u8; 32]) -> Result<()> {
         self.store
@@ -1656,8 +1683,18 @@ impl Node {
     /// admission policy, capability state, and policy-filtered routes. It
     /// deliberately excludes OPKs and every live/session secret.
     pub fn discovery_publication_needed(&self, hints: &[DeliveryHint]) -> Result<bool> {
+        self.discovery_publication_needed_with_policy(hints, DiscoveryPublicationPolicy::default())
+    }
+
+    /// Whether public discovery material changed under an explicit operating
+    /// mode and Sovereign direct-route policy.
+    pub fn discovery_publication_needed_with_policy(
+        &self,
+        hints: &[DeliveryHint],
+        policy: DiscoveryPublicationPolicy,
+    ) -> Result<bool> {
         Ok(self.discovery_published_material
-            != Some(self.discovery_material_digest(hints, DiscoveryPublicationPolicy::default())?))
+            != Some(self.discovery_material_digest(hints, policy)?))
     }
 
     /// Rotate reachability independently of account identity and safety
@@ -9486,6 +9523,105 @@ mod scheduler_tests {
         assert_eq!(capacity_retry_delay(5), 16);
         assert_eq!(capacity_retry_delay(6), 30);
         assert_eq!(capacity_retry_delay(u32::MAX), 30);
+    }
+}
+
+#[cfg(test)]
+mod operating_mode_tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use rand::{rngs::StdRng, SeedableRng};
+
+    use kult_crypto::{KdfProfile, RENDEZVOUS_SEALED_RECORD_LEN};
+    use kult_protocol::{
+        RendezvousLookupRequest, RendezvousRegisterRequest, RENDEZVOUS_REGISTER_ACK_LEN,
+    };
+    use kult_transport::{
+        RendezvousClient, RendezvousProvider, Result as TransportResult, TransportError,
+    };
+
+    use super::*;
+
+    struct NoopRendezvousClient;
+
+    #[async_trait]
+    impl RendezvousClient for NoopRendezvousClient {
+        async fn register(
+            &self,
+            _provider: &RendezvousProvider,
+            _request: &RendezvousRegisterRequest,
+        ) -> TransportResult<[u8; RENDEZVOUS_REGISTER_ACK_LEN]> {
+            Ok([0u8; RENDEZVOUS_REGISTER_ACK_LEN])
+        }
+
+        async fn lookup(
+            &self,
+            _provider: &RendezvousProvider,
+            _request: &RendezvousLookupRequest,
+        ) -> TransportResult<[u8; RENDEZVOUS_SEALED_RECORD_LEN]> {
+            Err(TransportError::RefusedByNextHop)
+        }
+    }
+
+    #[test]
+    fn mode_reconciliation_is_monotonic_restart_safe_and_sovereign_empty() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("node.db");
+        let mut rng = StdRng::seed_from_u64(0x1717);
+        let mut node = Node::create(
+            &path,
+            b"passphrase",
+            KdfProfile {
+                m_cost_kib: 8,
+                t_cost: 1,
+                p_cost: 1,
+            },
+            &mut rng,
+        )
+        .unwrap();
+        let identity = node.account.ed;
+        let client = Arc::new(NoopRendezvousClient);
+        let first = RendezvousProvider::new("https://first.example".to_owned(), [1u8; 32]).unwrap();
+        node.reconcile_rendezvous(
+            DiscoveryMode::Standard,
+            Some(Arc::clone(&client) as Arc<dyn RendezvousClient>),
+            vec![first.clone()],
+        )
+        .unwrap();
+        assert_eq!(node.rendezvous_provider_generation, 1);
+
+        node.reconcile_rendezvous(
+            DiscoveryMode::Private,
+            Some(Arc::clone(&client) as Arc<dyn RendezvousClient>),
+            vec![first],
+        )
+        .unwrap();
+        assert_eq!(node.rendezvous_provider_generation, 1);
+
+        node.reconcile_rendezvous(DiscoveryMode::Sovereign, None, Vec::new())
+            .unwrap();
+        assert_eq!(node.rendezvous_provider_generation, 2);
+        assert!(node.rendezvous_providers.is_empty());
+        drop(node);
+
+        let mut node = Node::open(&path, b"passphrase").unwrap();
+        assert_eq!(node.account.ed, identity);
+        assert_eq!(node.rendezvous_provider_generation, 2);
+        assert!(node.rendezvous_providers.is_empty());
+        node.reconcile_rendezvous(DiscoveryMode::Sovereign, None, Vec::new())
+            .unwrap();
+        assert_eq!(node.rendezvous_provider_generation, 2);
+
+        let replacement =
+            RendezvousProvider::new("https://replacement.example".to_owned(), [2u8; 32]).unwrap();
+        node.reconcile_rendezvous(
+            DiscoveryMode::Standard,
+            Some(client as Arc<dyn RendezvousClient>),
+            vec![replacement],
+        )
+        .unwrap();
+        assert_eq!(node.rendezvous_provider_generation, 3);
     }
 }
 

@@ -67,6 +67,34 @@ host LAN. Komms operates no mandatory bootstrap service: add trusted bootstrap
 or relay addresses, or distribute explicit reachable peer hints, when the node
 must discover peers beyond its container network.
 
+The current daemon shares the same operating-mode contract as every client:
+
+```text
+--mode standard|private|sovereign
+--confirm-standard-provider-disclosure
+--sovereign-publish-direct-routes
+--provider-directory FILE
+--provider-directory-root 64_LOWERCASE_HEX
+--rendezvous ORIGIN,LEAF_SHA256,standard|private|both
+--tor-proxy 127.0.0.1:9050
+```
+
+A signed provider directory is optional. It augments manual configuration and
+never replaces it. A configured but unavailable candidate retains the bounded
+last-valid generation visibly; rollback or fork candidates cannot replace that
+authenticated chain. Corrupt retained state, or expiry beyond the bounded
+grace, disables directory defaults. Removing `--provider-directory` is an
+explicit opt-out even if a verified cache remains on disk. A configured
+directory requires at least one trusted offline root. Standard directory
+defaults require the disclosure acknowledgement; Private rendezvous requires
+a numeric loopback Tor SOCKS5 endpoint and never falls back to direct access.
+
+No production directory, root key, or qualified default provider ships in the
+repository. For a pure-core service, omit the directory and rendezvous options
+and use explicit bootstrap/mailbox/relay routes as needed. See
+[Operating modes and provider configuration](36-operating-modes-and-provider-directory.md)
+for the complete bounds, status vocabulary, and local journey gate.
+
 This `kultd` profile is **not** the RAM-only reference discovery/rendezvous
 service. It is a full identity-bearing Komms endpoint with a persistent
 encrypted database and passphrase. Mounting its data directory on tmpfs would

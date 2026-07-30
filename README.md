@@ -14,9 +14,10 @@
 *Komms aims to make ordinary conversations feel familiar while user-owned
 identity, strong end-to-end encryption, and resilient internet, local, radio,
 and sneakernet paths stay underneath. Its pure core has no mandatory exclusive
-provider. A future Standard mode may offer replaceable optional defaults for
-easy first use; those services must never receive message plaintext or identity
-private keys belonging to Komms users.*
+provider. Standard mode can consume disclosed, signed, replaceable optional
+defaults for easy first use, although no qualified default operator currently
+ships; those services must never receive message plaintext or identity private
+keys belonging to Komms users.*
 
 Komms has a nonprofit public-benefit mission: private, resilient communication
 should be useful to ordinary people without surveillance or exclusive-provider

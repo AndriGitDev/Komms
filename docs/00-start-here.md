@@ -15,8 +15,9 @@ Three things make it different from the messengers you know:
 
 1. **There is no mandatory exclusive provider.** Komms messages may travel
    directly, through chosen volunteer mailbox operators holding sealed
-   ciphertext, or over local and radio links. A future Standard mode may offer
-   disclosed, replaceable defaults for easy setup. Optional post-pairing
+   ciphertext, or over local and radio links. Standard mode can consume
+   disclosed, signed, replaceable defaults, although no qualified default
+   operator currently ships. Optional post-pairing
    rendezvous and phone wake services cannot read message content or hold
    identity private keys; removing them leaves the pure-core routes available.
 2. **It is designed for more than one kind of network.** Messages can use
@@ -68,9 +69,9 @@ production-signed or notarized, the Android APK is debug-signed, and iOS remains
 source/Simulator-only. Hands-on device qualification, signed and store
 distribution, the physical radio bench, and an external audit remain before a
 stable release. Fresh internet installs also need deliberate bootstrap/mailbox
-configuration today; the replaceable-default Standard journey and the
-separately demonstrated pure-core journey are P0 work, not a current
-plug-and-play claim.
+configuration today. Deterministic local Standard-blackhole, replacement, and
+pure-core journeys now exist, but clean supported devices behind distinct real
+NATs and qualified operators remain P0 work, not a current plug-and-play claim.
 
 Messages may use a small safe formatting subset for emphasis, strong text,
 quotes, lists, and code. The exact readable source stays encrypted in history

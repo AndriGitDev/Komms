@@ -1826,6 +1826,8 @@ name = "kult-transport"
 version = "0.3.0"
 dependencies = [
  "async-trait",
+ "atomicwrites",
+ "ed25519-dalek",
  "fs2",
  "futures",
  "kult-crypto",
@@ -1837,11 +1839,16 @@ dependencies = [
  "postcard",
  "rand 0.8.7",
  "rand_core 0.6.4",
+ "rcgen",
  "rusqlite",
+ "rustls",
  "serde",
+ "serde_json",
+ "sha2",
  "socket2 0.6.4",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "tracing",
 ]
 

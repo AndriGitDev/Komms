@@ -87,6 +87,13 @@ pub(crate) struct RuntimeConfig {
     pub db_path: PathBuf,
     pub passphrase: Vec<u8>,
     pub kdf: KdfProfile,
+    pub mode: kult_transport::OperatingMode,
+    pub public_mode: crate::NetworkMode,
+    pub provider_directory: crate::ProviderDirectoryVerdict,
+    pub discovery_policy: kult_node::DiscoveryPublicationPolicy,
+    pub rendezvous: Vec<kult_transport::RendezvousProvider>,
+    pub tor_proxy: Option<std::net::SocketAddr>,
+    pub fallback_ready: bool,
     /// Restore the store from a backup instead of creating a fresh
     /// identity. Refused when the store already exists.
     pub restore: Option<RestoreSource>,
@@ -770,6 +777,9 @@ pub(crate) struct Runtime {
     pub peer: [u8; 32],
     pub tx: mpsc::Sender<Msg>,
     pub net: Arc<Libp2pTransport>,
+    pub mode: crate::NetworkMode,
+    pub provider_directory: crate::ProviderDirectoryVerdict,
+    pub fallback_ready: bool,
     counts: Arc<Mutex<Counts>>,
     discovery: Arc<Mutex<(String, bool)>>,
     pairing_bundle: Arc<Mutex<PairingBundleCache>>,
@@ -957,6 +967,32 @@ impl Runtime {
         if bridging {
             node.set_bridge(Some(bridge_relays(&cfg, None)));
         }
+        let rendezvous_client: Option<Arc<dyn kult_transport::RendezvousClient>> =
+            if cfg.rendezvous.is_empty() {
+                None
+            } else {
+                Some(match cfg.mode {
+                    kult_transport::OperatingMode::Standard => {
+                        Arc::new(kult_transport::HttpsRendezvousClient::direct())
+                    }
+                    kult_transport::OperatingMode::Private => Arc::new(
+                        kult_transport::HttpsRendezvousClient::tor(
+                            cfg.tor_proxy
+                                .ok_or_else(|| "Private rendezvous has no Tor proxy".to_owned())?,
+                        )
+                        .map_err(|error| format!("Tor rendezvous: {error}"))?,
+                    ),
+                    kult_transport::OperatingMode::Sovereign => {
+                        return Err("Sovereign mode cannot configure rendezvous".to_owned())
+                    }
+                })
+            };
+        node.reconcile_rendezvous(
+            cfg.discovery_policy.mode,
+            rendezvous_client,
+            cfg.rendezvous.clone(),
+        )
+        .map_err(|error| format!("rendezvous configuration: {error}"))?;
 
         let address = node.address();
         let peer = node.peer_id();
@@ -1009,7 +1045,7 @@ impl Runtime {
             local.block_on(actor(node, cfg, net, caches, rx, events, shutdown));
         }));
         tasks.push(rt.spawn(lifecycle(
-            cfg,
+            cfg.clone(),
             Arc::clone(&net),
             tx.clone(),
             shutdown.subscribe(),
@@ -1028,6 +1064,9 @@ impl Runtime {
             peer,
             tx,
             net,
+            mode: cfg.public_mode,
+            provider_directory: cfg.provider_directory,
+            fallback_ready: cfg.fallback_ready,
             counts,
             discovery,
             pairing_bundle,
@@ -1263,8 +1302,14 @@ async fn actor(
         let discovery_now = tokio::time::Instant::now();
         if check_discovery && discovery_now >= discovery_retry_at {
             let hints = own_hints(&net, &cfg.mailboxes);
-            if node.discovery_publication_needed(&hints).unwrap_or(false) {
-                match node.publish_bundle(&hints, now()).await {
+            if node
+                .discovery_publication_needed_with_policy(&hints, cfg.discovery_policy)
+                .unwrap_or(false)
+            {
+                match node
+                    .publish_bundle_with_policy(&hints, cfg.discovery_policy, now())
+                    .await
+                {
                     Ok(()) => discovery_retry_at = discovery_now,
                     Err(error) => {
                         eprintln!("kult-ffi: discovery refresh failed: {error}");
@@ -1307,7 +1352,9 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
             let result = match node.rotate_connect_code(&mut OsRng).map_err(fail) {
                 Ok(connect_code) => {
                     let hints = own_hints(net, &cfg.mailboxes);
-                    let _ = node.publish_bundle(&hints, now).await;
+                    let _ = node
+                        .publish_bundle_with_policy(&hints, cfg.discovery_policy, now)
+                        .await;
                     Ok(connect_code)
                 }
                 Err(error) => Err(error),
@@ -1319,7 +1366,9 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
             let result = match result {
                 Ok(()) => {
                     let hints = own_hints(net, &cfg.mailboxes);
-                    let _ = node.publish_bundle(&hints, now).await;
+                    let _ = node
+                        .publish_bundle_with_policy(&hints, cfg.discovery_policy, now)
+                        .await;
                     node.connect_code().map_err(fail)
                 }
                 Err(error) => Err(error),
@@ -2221,7 +2270,11 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         }
         Msg::Publish { resp } => {
             let hints = own_hints(net, &cfg.mailboxes);
-            let _ = resp.send(node.publish_bundle(&hints, now).await.map_err(fail));
+            let _ = resp.send(
+                node.publish_bundle_with_policy(&hints, cfg.discovery_policy, now)
+                    .await
+                    .map_err(fail),
+            );
         }
         Msg::Backup { path, resp } => {
             let result = node

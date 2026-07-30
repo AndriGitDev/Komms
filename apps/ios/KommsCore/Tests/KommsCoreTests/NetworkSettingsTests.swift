@@ -34,27 +34,38 @@ final class NetworkSettingsTests: XCTestCase {
     }
 
     func testDesktopSettingsFileParsesUnchanged() throws {
-        // Verbatim shape the desktop app writes (serde, snake_case).
+        // One committed snake_case contract is consumed unchanged by every shell.
         let dir = try tempDir()
-        try """
-        {
-          "listen": ["/ip4/0.0.0.0/udp/7001/quic-v1"],
-          "bootstrap": [],
-          "relay": null,
-          "mailboxes": ["/ip4/9.9.9.9/tcp/1/p2p/x"],
-          "serve_mailbox": false,
-          "mdns": true,
-          "spool": null,
-          "meshtastic_serial": null,
-          "meshtastic_tcp": "radio.local:4403",
-          "bridge": true
-        }
-        """.write(
-            to: dir.appendingPathComponent("settings.json"),
-            atomically: true, encoding: .utf8)
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let fixture = root.appendingPathComponent("fixtures/operating-mode-settings-v1.json")
+        try FileManager.default.copyItem(
+            at: fixture,
+            to: dir.appendingPathComponent("settings.json")
+        )
         let s = try NetworkSettings.load(from: dir)
+        XCTAssertEqual("private", s.mode)
+        XCTAssertTrue(s.standardDisclosureConfirmed)
+        XCTAssertEqual("providers.json", s.providerDirectory)
+        XCTAssertEqual(1, s.providerDirectoryRoots.count)
+        XCTAssertEqual("https://rendezvous.example.org", s.rendezvous.first?.origin)
+        XCTAssertTrue(s.rendezvous.first?.standard == true)
+        XCTAssertTrue(s.rendezvous.first?.privateViaTor == true)
+        XCTAssertEqual("127.0.0.1:9050", s.torProxy)
         XCTAssertEqual(["/ip4/0.0.0.0/udp/7001/quic-v1"], s.listen)
         XCTAssertEqual("radio.local:4403", s.meshtasticTcp)
-        XCTAssertEqual(["/ip4/9.9.9.9/tcp/1/p2p/x"], s.mailboxes)
+        XCTAssertEqual(1, s.mailboxes.count)
+    }
+
+    func testUnknownOperatingModeFailsClosed() throws {
+        let dir = try tempDir()
+        try #"{"mode":"public"}"#.write(
+            to: dir.appendingPathComponent("settings.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        XCTAssertThrowsError(try NetworkSettings.load(from: dir)) { error in
+            XCTAssertTrue(String(describing: error).contains("unsupported operating mode"))
+        }
     }
 }

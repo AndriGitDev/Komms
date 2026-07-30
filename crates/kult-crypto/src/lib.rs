@@ -102,9 +102,9 @@ pub use group::{
 };
 pub use handshake::{initiate, respond, InitialMessage};
 pub use identity::{
-    parse_address, verify_group_admin_request_signature, verify_group_authority_state_signature,
-    verify_group_owner_transfer_signature, verify_group_poll_moderation_signature, Identity,
-    IdentityPublic,
+    parse_address, verify_ed25519_domain_signature, verify_group_admin_request_signature,
+    verify_group_authority_state_signature, verify_group_owner_transfer_signature,
+    verify_group_poll_moderation_signature, Identity, IdentityPublic,
 };
 pub use kdf::{derive_kek, KdfProfile, KDF_PROFILE_DESKTOP, KDF_PROFILE_MOBILE};
 pub use mnemonic::{mnemonic_from_entropy, mnemonic_to_entropy, MNEMONIC_WORDS};

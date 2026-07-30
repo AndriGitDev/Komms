@@ -214,6 +214,31 @@ pub enum KdfChoice {
     Mobile,
 }
 
+/// User-selected ADR-0017 operating mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, uniffi::Enum)]
+pub enum NetworkMode {
+    /// Disclosed, replaceable convenience providers.
+    #[default]
+    Standard,
+    /// Optional rendezvous is reachable only through configured Tor ingress.
+    Private,
+    /// Directory defaults and optional rendezvous are disabled.
+    Sovereign,
+}
+
+/// One user-selected rendezvous provider.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct RendezvousProviderConfig {
+    /// Canonical HTTPS origin with no path.
+    pub origin: String,
+    /// SHA-256 of the leaf TLS certificate, lowercase hexadecimal.
+    pub static_key: String,
+    /// Whether direct Standard-mode access is allowed.
+    pub standard: bool,
+    /// Whether Private mode may reach it through Tor.
+    pub private_via_tor: bool,
+}
+
 /// One inert inline presentation token produced by the shared formatter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum TextFormatStyle {
@@ -347,6 +372,24 @@ pub struct Config {
     pub passphrase: String,
     /// Argon2id cost profile for store creation.
     pub kdf: KdfChoice,
+    /// Standard, Private, or Sovereign behavior.
+    pub mode: NetworkMode,
+    /// User confirmed the Standard provider disclosure before first use.
+    pub standard_disclosure_confirmed: bool,
+    /// Advanced acknowledgement for publishing direct routes in Sovereign
+    /// capability records. Ignored in every other mode.
+    pub sovereign_publish_direct_routes: bool,
+    /// Candidate signed provider-directory JSON. The last valid generation
+    /// is retained separately inside `data_dir`.
+    pub provider_directory: Option<String>,
+    /// Trusted offline provider-directory Ed25519 keys, lowercase hex.
+    pub provider_directory_roots: Vec<String>,
+    /// User-selected rendezvous providers retained independently of the
+    /// signed directory.
+    pub rendezvous: Vec<RendezvousProviderConfig>,
+    /// Loopback Tor SOCKS5 address for Private rendezvous, such as
+    /// `127.0.0.1:9050`.
+    pub tor_proxy: Option<String>,
     /// Multiaddrs to listen on.
     pub listen: Vec<String>,
     /// DHT bootstrap peers (multiaddrs with `/p2p/…`). Empty is fine —
@@ -390,6 +433,13 @@ pub fn default_config(data_dir: String, passphrase: String) -> Config {
         data_dir,
         passphrase,
         kdf: KdfChoice::Desktop,
+        mode: NetworkMode::Standard,
+        standard_disclosure_confirmed: false,
+        sovereign_publish_direct_routes: false,
+        provider_directory: None,
+        provider_directory_roots: Vec::new(),
+        rendezvous: Vec::new(),
+        tor_proxy: None,
         listen: vec![
             "/ip4/0.0.0.0/udp/0/quic-v1".to_owned(),
             "/ip4/0.0.0.0/tcp/0".to_owned(),
@@ -2231,6 +2281,35 @@ pub enum NatVerdict {
     Unknown,
 }
 
+/// Visible signed-directory freshness state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ProviderDirectoryVerdict {
+    /// No signed default was configured; manual/core routes remain available.
+    NotConfigured,
+    /// A current signed generation is active.
+    Current,
+    /// A bad or unavailable candidate was ignored in favor of last-valid.
+    RetainedLastValid,
+    /// The last-valid generation is expired but within bounded outage grace.
+    Stale,
+    /// Retained and candidate state conflict; defaults are disabled.
+    Conflict,
+    /// No safely usable signed generation remains.
+    Unavailable,
+}
+
+/// Familiar, honest aggregate connectivity language for shells.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ConnectionVerdict {
+    /// At least one transport pseudonym currently has a live connection.
+    Connected,
+    /// No live connection exists, but a mailbox, relay, LAN, mesh, or file
+    /// fallback is configured.
+    FallbackReady,
+    /// No fresh route is currently visible.
+    WaitingForRoute,
+}
+
 /// A point-in-time snapshot of the node.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct Status {
@@ -2248,6 +2327,14 @@ pub struct Status {
     pub lan_peers: Vec<String>,
     /// NAT reachability as last probed.
     pub nat: NatVerdict,
+    /// Current ADR-0017 operating mode.
+    pub mode: NetworkMode,
+    /// Signed provider-directory freshness/fallback state.
+    pub provider_directory: ProviderDirectoryVerdict,
+    /// Familiar aggregate route status; never a delivery receipt.
+    pub connection: ConnectionVerdict,
+    /// Transport pseudonyms with at least one live connection.
+    pub connected_peers: u64,
     /// Outbound messages not yet delivered.
     pub queued: u64,
     /// Plaintext messages sealed locally until a future UTC instant.
@@ -3135,6 +3222,7 @@ impl KultNode {
             _ => NatVerdict::Unknown,
         };
         let (address, peer) = self.identity.lock_unpoisoned().clone();
+        let connected_peers = rt.net.connected_peer_count() as u64;
         Ok(Status {
             address,
             connect_code,
@@ -3143,6 +3231,16 @@ impl KultNode {
             listen: rt.net.listen_addrs(),
             lan_peers: rt.net.lan_peers(),
             nat,
+            mode: rt.mode,
+            provider_directory: rt.provider_directory,
+            connection: if connected_peers > 0 {
+                ConnectionVerdict::Connected
+            } else if rt.fallback_ready {
+                ConnectionVerdict::FallbackReady
+            } else {
+                ConnectionVerdict::WaitingForRoute
+            },
+            connected_peers,
             queued: counts.queued,
             scheduled: counts.scheduled,
             transit: counts.transit,
@@ -5513,6 +5611,103 @@ fn runtime_config(
     std::fs::create_dir_all(&data_dir).map_err(|e| FfiError::Startup {
         reason: format!("data dir: {e}"),
     })?;
+    let mode = match config.mode {
+        NetworkMode::Standard => kult_transport::OperatingMode::Standard,
+        NetworkMode::Private => kult_transport::OperatingMode::Private,
+        NetworkMode::Sovereign => kult_transport::OperatingMode::Sovereign,
+    };
+    let roots = config
+        .provider_directory_roots
+        .iter()
+        .map(|value| parse_fixed_lower_hex::<32>(value))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|reason| FfiError::Startup { reason })?;
+    let manual = kult_transport::ManualProviderSet {
+        bootstrap: config.bootstrap,
+        relay: config.relay,
+        mailboxes: config.mailboxes,
+        rendezvous: config
+            .rendezvous
+            .into_iter()
+            .map(|provider| kult_transport::ProviderRendezvous {
+                origin: provider.origin,
+                static_key: provider.static_key,
+                standard: provider.standard,
+                private_via_tor: provider.private_via_tor,
+            })
+            .collect(),
+    };
+    let directory_configured = config.provider_directory.is_some();
+    let resolution = kult_transport::resolve_provider_directory(
+        mode,
+        config
+            .provider_directory
+            .as_deref()
+            .map(std::path::Path::new),
+        &data_dir.join("provider-directory-cache.json"),
+        &roots,
+        &manual,
+        unix_now(),
+    )
+    .map_err(|error| FfiError::Startup {
+        reason: error.to_string(),
+    })?;
+    if mode == kult_transport::OperatingMode::Standard
+        && resolution.directory.is_some()
+        && !config.standard_disclosure_confirmed
+    {
+        return Err(FfiError::Startup {
+            reason: "confirm the Standard provider disclosure before using directory defaults"
+                .to_owned(),
+        });
+    }
+    let tor_proxy = config
+        .tor_proxy
+        .map(|value| {
+            value
+                .parse()
+                .map_err(|_| FfiError::Startup {
+                    reason: "Tor proxy must be a numeric loopback host:port".to_owned(),
+                })
+                .and_then(|proxy| {
+                    kult_transport::HttpsRendezvousClient::tor(proxy)
+                        .map(|_| proxy)
+                        .map_err(|_| FfiError::Startup {
+                            reason: "Tor proxy must be a non-zero loopback host:port".to_owned(),
+                        })
+                })
+        })
+        .transpose()?;
+    if mode == kult_transport::OperatingMode::Private
+        && !resolution.providers.rendezvous.is_empty()
+        && tor_proxy.is_none()
+    {
+        return Err(FfiError::Startup {
+            reason: "Private rendezvous requires an explicit loopback Tor proxy".to_owned(),
+        });
+    }
+    let provider_directory = if !directory_configured {
+        ProviderDirectoryVerdict::NotConfigured
+    } else {
+        match resolution.status {
+            kult_transport::ProviderDirectoryStatus::Current => ProviderDirectoryVerdict::Current,
+            kult_transport::ProviderDirectoryStatus::RetainedLastValid => {
+                ProviderDirectoryVerdict::RetainedLastValid
+            }
+            kult_transport::ProviderDirectoryStatus::Stale => ProviderDirectoryVerdict::Stale,
+            kult_transport::ProviderDirectoryStatus::Conflict => ProviderDirectoryVerdict::Conflict,
+            kult_transport::ProviderDirectoryStatus::Unavailable => {
+                ProviderDirectoryVerdict::Unavailable
+            }
+        }
+    };
+    let effective = resolution.providers;
+    let fallback_ready = !effective.mailboxes.is_empty()
+        || effective.relay.is_some()
+        || config.mdns
+        || config.spool.is_some()
+        || config.meshtastic_serial.is_some()
+        || config.meshtastic_tcp.is_some();
     Ok(RuntimeConfig {
         db_path: data_dir.join("node.db"),
         passphrase: config.passphrase.into_bytes(),
@@ -5521,10 +5716,24 @@ fn runtime_config(
             KdfChoice::Mobile => kult_crypto::KDF_PROFILE_MOBILE,
         },
         restore,
+        mode,
+        public_mode: config.mode,
+        provider_directory,
+        discovery_policy: kult_node::DiscoveryPublicationPolicy {
+            mode: match mode {
+                kult_transport::OperatingMode::Standard => kult_node::DiscoveryMode::Standard,
+                kult_transport::OperatingMode::Private => kult_node::DiscoveryMode::Private,
+                kult_transport::OperatingMode::Sovereign => kult_node::DiscoveryMode::Sovereign,
+            },
+            publish_direct_routes: config.sovereign_publish_direct_routes,
+        },
+        rendezvous: effective.rendezvous,
+        tor_proxy,
+        fallback_ready,
         listen: config.listen,
-        bootstrap: config.bootstrap,
-        relay: config.relay,
-        mailboxes: config.mailboxes,
+        bootstrap: effective.bootstrap,
+        relay: effective.relay,
+        mailboxes: effective.mailboxes,
         serve_mailbox: config.serve_mailbox,
         mdns: config.mdns,
         spool: config.spool.map(PathBuf::from),
@@ -5535,6 +5744,36 @@ fn runtime_config(
         checkin_interval: Duration::from_secs(config.checkin_secs.max(1)),
         nat_interval: Duration::from_secs(config.nat_secs.max(1)),
     })
+}
+
+fn parse_fixed_lower_hex<const N: usize>(value: &str) -> Result<[u8; N], String> {
+    if value.len() != N * 2
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(&byte))
+    {
+        return Err(format!(
+            "provider-directory keys must be exactly {} lowercase hex characters",
+            N * 2
+        ));
+    }
+    let mut out = [0u8; N];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let nibble = |byte| match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            _ => 0,
+        };
+        out[index] = (nibble(pair[0]) << 4) | nibble(pair[1]);
+    }
+    Ok(out)
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 const UNSUPPORTED_MESSAGE: &str = "Unsupported message — update Komms";
@@ -5955,5 +6194,67 @@ mod tests {
             .runs
             .iter()
             .all(|run| { !run.text.contains("href=") && !run.text.contains("src=https://") })));
+    }
+
+    #[test]
+    fn private_rendezvous_requires_an_explicit_loopback_tor_proxy() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = default_config(
+            directory.path().display().to_string(),
+            "test-passphrase".to_owned(),
+        );
+        config.mode = NetworkMode::Private;
+        config.rendezvous = vec![RendezvousProviderConfig {
+            origin: "https://rendezvous.example.org".to_owned(),
+            static_key: "22".repeat(32),
+            standard: false,
+            private_via_tor: true,
+        }];
+
+        assert!(matches!(
+            runtime_config(config.clone(), None),
+            Err(FfiError::Startup { reason }) if reason.contains("loopback Tor proxy")
+        ));
+        config.tor_proxy = Some("192.0.2.1:9050".to_owned());
+        assert!(matches!(
+            runtime_config(config.clone(), None),
+            Err(FfiError::Startup { reason }) if reason.contains("loopback host")
+        ));
+        config.tor_proxy = Some("127.0.0.1:9050".to_owned());
+        let runtime = runtime_config(config, None).unwrap();
+        assert_eq!(runtime.mode, kult_transport::OperatingMode::Private);
+        assert_eq!(runtime.rendezvous.len(), 1);
+        assert_eq!(runtime.tor_proxy, Some("127.0.0.1:9050".parse().unwrap()));
+    }
+
+    #[test]
+    fn sovereign_keeps_manual_core_routes_and_disables_rendezvous() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = default_config(
+            directory.path().display().to_string(),
+            "test-passphrase".to_owned(),
+        );
+        config.mode = NetworkMode::Sovereign;
+        config.mdns = false;
+        let bootstrap =
+            "/ip4/192.0.2.1/tcp/443/p2p/12D3KooWLFnPTnPQ7QgWT8CtctinEPduQPqV9F11ycRhPvhsqwH4";
+        let mailbox =
+            "/ip4/192.0.2.2/tcp/443/p2p/12D3KooWLFnPTnPQ7QgWT8CtctinEPduQPqV9F11ycRhPvhsqwH4";
+        config.bootstrap = vec![bootstrap.to_owned()];
+        config.mailboxes = vec![mailbox.to_owned()];
+        config.rendezvous = vec![RendezvousProviderConfig {
+            origin: "https://rendezvous.example.org".to_owned(),
+            static_key: "22".repeat(32),
+            standard: true,
+            private_via_tor: true,
+        }];
+
+        let runtime = runtime_config(config, None).unwrap();
+        assert_eq!(runtime.mode, kult_transport::OperatingMode::Sovereign);
+        assert_eq!(runtime.bootstrap, vec![bootstrap]);
+        assert_eq!(runtime.mailboxes, vec![mailbox]);
+        assert!(runtime.rendezvous.is_empty());
+        assert!(!runtime.discovery_policy.publish_direct_routes);
+        assert!(runtime.fallback_ready);
     }
 }

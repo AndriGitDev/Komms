@@ -29,8 +29,9 @@ The short labels below describe implementation inventory only:
 Komms has a strong transport and security foundation plus shared versioned
 content, attachment, carrier-capability, replicated-conversation, and linked-
 device front doors. C7 direct-QUIC audio calls are implemented across the full
-stack under accepted ADR-0013; optional hybrid services remain design-only
-behind their three proposed ADRs.
+stack under accepted ADR-0013. ADR-0017 modes and ADR-0018 rendezvous are
+implemented for Alpha; ADR-0019 wake and the external/deployment/field gates
+remain open.
 
 | Feature from scope | Current status | Main gap |
 |---|---|---|
@@ -61,7 +62,7 @@ behind their three proposed ADRs.
 | Group polls | Implemented Alpha | ADR-0022 fixed-electorate visible votes, deterministic heads/tallies, recipient-authenticated voter/creator origins, creator snapshot closure, and every front door/shell. Independent and physical qualification remain open. |
 | Admin/role controls | Implemented | ADR-0023 owner-serialized signed roles, transfer, re-keying, and poll moderation through every shell. |
 | Live voice/video calls | Implemented (audio alpha) | Preserve direct-QUIC-only gating, transient ratcheted control, authenticated Opus media, and zero history/backup/mesh work; real-network/device qualification precedes stable enablement and video. |
-| Optional hybrid reachability/wake | Partial Alpha | ADR-0018 crypto, fixed codecs, sealed non-backup state, bounded orchestration, front doors, and least-authority in-memory component are implemented. ADR-0017 mode completion, a deployable network wrapper, Private ingress, ADR-0019 wake, and qualification remain open. |
+| Optional hybrid reachability/wake | Partial Alpha | ADR-0017 modes and signed replaceable provider configuration plus ADR-0018 crypto, fixed codecs, sealed non-backup state, pinned HTTPS/Tor clients, bounded orchestration, front doors, and the least-authority reference-service artifact are implemented. Qualified deployment/Private ingress, ADR-0019 wake, external review, and field evidence remain open. |
 
 ## 3. Shared foundations
 
@@ -925,12 +926,14 @@ Deliver this as a feature-gated module over the unchanged core:
 8. publish service hardening, deployment, key-rotation, no-log, incident, and
    independent-operation runbooks before a production default is offered.
 
-Items 1 and 2 are implemented. Item 3 has the strict fixed binary client
-boundary and persistence-free bounded service component, but not yet the
-network/TLS binary, Tor/OHTTP ingress, image, or deployment. Every front door
-can request a coalesced active-conversation refresh and display a durable
-provider/provider-set conflict; the complete mode UI and native wake remain
-open.
+Items 1–4 are implemented for Alpha. The client supports pinned TLS 1.3
+directly or through an explicit loopback Tor SOCKS5 endpoint. The dedicated
+reference-service binary, image, hardened deployment profile, signed/versioned
+provider directory, last-valid/fork handling, canonical mode policy, familiar
+status language, and all three shell settings paths are present. No production
+directory, default operator, deployed reference service, qualified Tor/OHTTP
+ingress, or non-collusion evidence is included. Native wake remains open.
+See [Operating modes and provider configuration](36-operating-modes-and-provider-directory.md).
 
 Rendezvous is post-pairing only and never replaces kult-address/QR first contact.
 Native push carries no sender, recipient Komms identity, conversation, message,
@@ -972,7 +975,7 @@ the gates that must close before broader feature expansion.
 | Wave | Progress | Outcome and features |
 |---|---|---|
 | **0: Shared foundations** | Implemented + automated evidence | F1–F5 have implementation paths; ADR-0015 remains formally Proposed despite the implemented attachment pipeline. |
-| **Parallel: mobile reachability** | Design-only | Accept ADR-0017–0019, then implement C8 behind reversible feature gates. |
+| **Parallel: mobile reachability** | Partial Alpha | ADR-0017 modes and ADR-0018 rendezvous are implemented behind reversible policy; ADR-0019 wake, deployment, and qualification remain. |
 | **1: Local-first product polish** | Implemented + automated evidence | B5, B7–B15, and B18 have Alpha paths; optional signed self-display suggestions remain a separate format-gated extension to B5. Localization and external accessibility evidence remain open. |
 | **2: Typed content and asynchronous media** | Implemented + automated evidence | F2/F3, B2, B16, B17, and C1 have core and shell paths; hands-on device evidence remains an M5 release gate. |
 | **3: Replicated conversation features** | Implemented + automated evidence | C3, C4, C5, and C6 have paths through the documented surfaces; field and independent evidence remain separate. |
@@ -992,8 +995,8 @@ Do not combine these into one oversized design decision.
 | 1 (accepted) | ADR-0014: versioned typed message content and compatibility | Audio, files, edits, polls, structured mentions. |
 | 2 (proposed; implemented) | ADR-0015: encrypted attachment/chunk transfer and carrier policy | Audio, files, media editing; formal ADR acceptance remains. |
 | 3 (accepted) | ADR-0016: canonical group-mention content | B17 stable encrypted targets, range semantics, compatibility, and local notification. |
-| 4 (proposed) | ADR-0017: optional hybrid modes and threat boundary | C8 mode guarantees and honest product claims. |
-| 5 (accepted; implemented Alpha) | ADR-0018: rotating pairwise rendezvous | C8 private post-pairing route refresh; network deployment and full mode qualification remain. |
+| 4 (accepted; implemented Alpha) | ADR-0017: optional hybrid modes and threat boundary | C8 mode guarantees, signed replaceable provider configuration, and honest product claims; deployment and field qualification remain. |
+| 5 (accepted; implemented Alpha) | ADR-0018: rotating pairwise rendezvous | C8 private post-pairing route refresh; qualified network deployment and Private-ingress evidence remain. |
 | 6 (proposed) | ADR-0019: capability-gated native wake | C8 APNs/FCM acceleration and bounded collection. |
 | 7 (accepted) | ADR-0021: expiry/retention metadata and deletion semantics | C4 disappearing and view-once content. |
 | 8 (accepted) | ADR-0020: immutable edit events, authorization, ordering, and retained versions | Message editing and multi-device convergence. |

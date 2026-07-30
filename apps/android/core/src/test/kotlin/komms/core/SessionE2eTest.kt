@@ -481,7 +481,7 @@ class SessionE2eTest {
             .filter { it.isFile && it.extension == "xml" }
             .joinToString("\n") { it.readText() }
         assertFalse(Regex("<\\s*EditText\\b").containsMatchIn(layouts))
-        assertEquals(18, Regex("<komms\\.android\\.IncognitoEditText\\b").findAll(layouts).count())
+        assertEquals(22, Regex("<komms\\.android\\.IncognitoEditText\\b").findAll(layouts).count())
 
         val kotlin = File(app, "kotlin/komms/android").walkTopDown()
             .filter { it.isFile && it.extension == "kt" && it.name != "IncognitoEditText.kt" }

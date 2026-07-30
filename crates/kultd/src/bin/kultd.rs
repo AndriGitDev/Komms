@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use kult_transport::{OperatingMode, ProviderRendezvous};
 use kultd::{read_secret_file, AuthorityStartup, Daemon, DaemonConfig};
 use rand::rngs::OsRng;
 use zeroize::Zeroizing;
@@ -62,6 +63,17 @@ OPTIONS:
     --relay MULTIADDR       relay for circuit reservation when NAT-ed
                             [default: first bootstrap peer]
     --mailbox MULTIADDR     mailbox relay to check in with, repeatable
+    --mode MODE             standard, private, or sovereign [default: standard]
+    --confirm-standard-provider-disclosure
+                            confirm disclosed default-provider metadata access
+    --sovereign-publish-direct-routes
+                            acknowledge Connect-code holders can poll direct routes
+    --provider-directory FILE
+                            candidate signed, user-editable provider directory
+    --provider-directory-root HEX
+                            trusted offline directory Ed25519 key, repeatable
+    --rendezvous SPEC       ORIGIN,LEAF_SHA256,standard|private|both; repeatable
+    --tor-proxy IP:PORT     loopback Tor SOCKS5 endpoint for Private rendezvous
     --serve-mailbox         volunteer bounded mailbox service for others
     --no-mdns               do not announce/discover peers on the local network
     --spool DIR             also receive sneakernet bundles from this directory
@@ -131,6 +143,13 @@ fn parse_args() -> Result<StartupAction, String> {
     let mut bootstrap: Vec<String> = Vec::new();
     let mut relay: Option<String> = None;
     let mut mailboxes: Vec<String> = Vec::new();
+    let mut mode = OperatingMode::Standard;
+    let mut standard_disclosure_confirmed = false;
+    let mut sovereign_publish_direct_routes = false;
+    let mut provider_directory: Option<PathBuf> = None;
+    let mut provider_directory_roots = Vec::new();
+    let mut rendezvous = Vec::new();
+    let mut tor_proxy = None;
     let mut serve_mailbox = false;
     let mut mdns = true;
     let mut spool: Option<PathBuf> = None;
@@ -163,6 +182,29 @@ fn parse_args() -> Result<StartupAction, String> {
             "--bootstrap" => bootstrap.push(value("--bootstrap")?),
             "--relay" => relay = Some(value("--relay")?),
             "--mailbox" => mailboxes.push(value("--mailbox")?),
+            "--mode" => {
+                mode = match value("--mode")?.as_str() {
+                    "standard" => OperatingMode::Standard,
+                    "private" => OperatingMode::Private,
+                    "sovereign" => OperatingMode::Sovereign,
+                    other => return Err(format!("unknown operating mode: {other}")),
+                }
+            }
+            "--confirm-standard-provider-disclosure" => standard_disclosure_confirmed = true,
+            "--sovereign-publish-direct-routes" => sovereign_publish_direct_routes = true,
+            "--provider-directory" => {
+                provider_directory = Some(value("--provider-directory")?.into())
+            }
+            "--provider-directory-root" => provider_directory_roots
+                .push(parse_directory_key(&value("--provider-directory-root")?)?),
+            "--rendezvous" => rendezvous.push(parse_rendezvous(&value("--rendezvous")?)?),
+            "--tor-proxy" => {
+                let raw = value("--tor-proxy")?;
+                tor_proxy = Some(
+                    raw.parse()
+                        .map_err(|_| "--tor-proxy must be a numeric IP:PORT")?,
+                )
+            }
             "--serve-mailbox" => serve_mailbox = true,
             "--no-mdns" => mdns = false,
             "--spool" => spool = Some(value("--spool")?.into()),
@@ -386,6 +428,13 @@ fn parse_args() -> Result<StartupAction, String> {
     if let Some(socket) = socket {
         cfg.socket_path = socket;
     }
+    cfg.mode = mode;
+    cfg.standard_disclosure_confirmed = standard_disclosure_confirmed;
+    cfg.sovereign_publish_direct_routes = sovereign_publish_direct_routes;
+    cfg.provider_directory = provider_directory;
+    cfg.provider_directory_roots = provider_directory_roots;
+    cfg.rendezvous = rendezvous;
+    cfg.tor_proxy = tor_proxy;
     if !listen.is_empty() {
         cfg.listen = listen;
     }
@@ -405,6 +454,51 @@ fn parse_args() -> Result<StartupAction, String> {
         cfg.checkin_interval = Duration::from_secs(secs.max(1));
     }
     Ok(StartupAction::Run(Box::new(cfg)))
+}
+
+fn parse_directory_key(value: &str) -> Result<[u8; 32], String> {
+    if value.len() != 64
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(&byte))
+    {
+        return Err(
+            "--provider-directory-root must be exactly 64 lowercase hex characters".to_owned(),
+        );
+    }
+    let mut out = [0u8; 32];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let nibble = |byte| match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            _ => 0,
+        };
+        out[index] = (nibble(pair[0]) << 4) | nibble(pair[1]);
+    }
+    Ok(out)
+}
+
+fn parse_rendezvous(value: &str) -> Result<ProviderRendezvous, String> {
+    let mut fields = value.split(',');
+    let origin = fields.next().unwrap_or_default();
+    let static_key = fields.next().unwrap_or_default();
+    let access = fields.next().unwrap_or_default();
+    if fields.next().is_some() {
+        return Err("--rendezvous has too many comma-separated fields".to_owned());
+    }
+    parse_directory_key(static_key)?;
+    let (standard, private_via_tor) = match access {
+        "standard" => (true, false),
+        "private" => (false, true),
+        "both" => (true, true),
+        _ => return Err("--rendezvous access must be standard, private, or both".to_owned()),
+    };
+    Ok(ProviderRendezvous {
+        origin: origin.to_owned(),
+        static_key: static_key.to_owned(),
+        standard,
+        private_via_tor,
+    })
 }
 
 #[tokio::main]

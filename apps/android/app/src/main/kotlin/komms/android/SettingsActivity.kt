@@ -13,6 +13,7 @@ import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import java.io.File
 import komms.core.NetworkSettings
+import komms.core.RendezvousSetting
 import komms.core.SettingsException
 import komms.core.androidIncognitoKeyboardPolicy
 import komms.core.androidScreenSecurityPolicy
@@ -101,10 +102,40 @@ class SettingsActivity : SecureActivity() {
         val mailboxes = findViewById<EditText>(R.id.set_mailboxes)
         val spool = findViewById<EditText>(R.id.set_spool)
         val meshTcp = findViewById<EditText>(R.id.set_mesh_tcp)
+        val mode = findViewById<RadioGroup>(R.id.set_mode)
+        val modeDisclosure = findViewById<TextView>(R.id.set_mode_disclosure)
+        val standardDisclosure = findViewById<Switch>(R.id.set_standard_disclosure)
+        val sovereignDirectRoutes = findViewById<Switch>(R.id.set_sovereign_direct_routes)
+        val providerDirectory = findViewById<EditText>(R.id.set_provider_directory)
+        val providerRoots = findViewById<EditText>(R.id.set_provider_roots)
+        val rendezvous = findViewById<EditText>(R.id.set_rendezvous)
+        val torProxy = findViewById<EditText>(R.id.set_tor_proxy)
         val serveMailbox = findViewById<Switch>(R.id.set_serve_mailbox)
         val mdns = findViewById<Switch>(R.id.set_mdns)
         val bridge = findViewById<Switch>(R.id.set_bridge)
 
+        mode.check(
+            when (loaded.mode) {
+                "private" -> R.id.set_mode_private
+                "sovereign" -> R.id.set_mode_sovereign
+                else -> R.id.set_mode_standard
+            },
+        )
+        standardDisclosure.isChecked = loaded.standardDisclosureConfirmed
+        sovereignDirectRoutes.isChecked = loaded.sovereignPublishDirectRoutes
+        providerDirectory.setText(loaded.providerDirectory ?: "")
+        providerRoots.setText(loaded.providerDirectoryRoots.joinToString("\n"))
+        rendezvous.setText(
+            loaded.rendezvous.joinToString("\n") { entry ->
+                val access = when {
+                    entry.standard && entry.privateViaTor -> "both"
+                    entry.standard -> "standard"
+                    else -> "private"
+                }
+                "${entry.origin},${entry.staticKey},$access"
+            },
+        )
+        torProxy.setText(loaded.torProxy ?: "")
         listen.setText(loaded.listen.joinToString("\n"))
         bootstrap.setText(loaded.bootstrap.joinToString("\n"))
         relay.setText(loaded.relay ?: "")
@@ -114,22 +145,64 @@ class SettingsActivity : SecureActivity() {
         serveMailbox.isChecked = loaded.serveMailbox
         mdns.isChecked = loaded.mdns
         bridge.isChecked = loaded.bridge
+        updateModeDisclosure(
+            mode.checkedRadioButtonId,
+            modeDisclosure,
+            standardDisclosure,
+            sovereignDirectRoutes,
+        )
+        mode.setOnCheckedChangeListener { _, checked ->
+            updateModeDisclosure(
+                checked,
+                modeDisclosure,
+                standardDisclosure,
+                sovereignDirectRoutes,
+            )
+        }
 
         findViewById<android.widget.Button>(R.id.settings_save).setOnClickListener {
-            val edited = loaded.copy(
-                listen = lines(listen),
-                bootstrap = lines(bootstrap),
-                relay = blankToNull(relay),
-                mailboxes = lines(mailboxes),
-                spool = blankToNull(spool),
-                meshtasticTcp = blankToNull(meshTcp),
-                serveMailbox = serveMailbox.isChecked,
-                mdns = mdns.isChecked,
-                bridge = bridge.isChecked,
-            )
-            edited.save(dataDir)
-            toast(getString(R.string.settings_saved))
-            finish()
+            try {
+                val edited = loaded.copy(
+                    mode = selectedMode(mode.checkedRadioButtonId),
+                    standardDisclosureConfirmed = standardDisclosure.isChecked,
+                    sovereignPublishDirectRoutes = sovereignDirectRoutes.isChecked,
+                    providerDirectory = blankToNull(providerDirectory),
+                    providerDirectoryRoots = lines(providerRoots),
+                    rendezvous = rendezvousLines(rendezvous),
+                    torProxy = blankToNull(torProxy),
+                    listen = lines(listen),
+                    bootstrap = lines(bootstrap),
+                    relay = blankToNull(relay),
+                    mailboxes = lines(mailboxes),
+                    spool = blankToNull(spool),
+                    meshtasticTcp = blankToNull(meshTcp),
+                    serveMailbox = serveMailbox.isChecked,
+                    mdns = mdns.isChecked,
+                    bridge = bridge.isChecked,
+                )
+                if (
+                    edited.mode == "standard" &&
+                    edited.providerDirectory != null &&
+                    !edited.standardDisclosureConfirmed
+                ) {
+                    throw SettingsException(getString(R.string.set_standard_confirmation_required))
+                }
+                if (
+                    edited.mode == "private" &&
+                    edited.torProxy == null &&
+                    (
+                        edited.providerDirectory != null ||
+                            edited.rendezvous.any { it.privateViaTor }
+                    )
+                ) {
+                    throw SettingsException(getString(R.string.set_private_tor_required))
+                }
+                edited.save(dataDir)
+                toast(getString(R.string.settings_saved))
+                finish()
+            } catch (e: Exception) {
+                toast(e.message ?: getString(R.string.settings_corrupt))
+            }
         }
     }
 
@@ -143,6 +216,60 @@ class SettingsActivity : SecureActivity() {
 
     private fun blankToNull(field: EditText): String? =
         field.text.toString().trim().ifEmpty { null }
+
+    private fun selectedMode(checked: Int): String =
+        when (checked) {
+            R.id.set_mode_private -> "private"
+            R.id.set_mode_sovereign -> "sovereign"
+            else -> "standard"
+        }
+
+    private fun updateModeDisclosure(
+        checked: Int,
+        disclosure: TextView,
+        standardConfirmation: Switch,
+        sovereignDirectRoutes: Switch,
+    ) {
+        disclosure.setText(
+            when (checked) {
+                R.id.set_mode_private -> R.string.set_mode_private_disclosure
+                R.id.set_mode_sovereign -> R.string.set_mode_sovereign_disclosure
+                else -> R.string.set_mode_standard_disclosure
+            },
+        )
+        standardConfirmation.visibility =
+            if (checked == R.id.set_mode_standard) View.VISIBLE else View.GONE
+        sovereignDirectRoutes.visibility =
+            if (checked == R.id.set_mode_sovereign) View.VISIBLE else View.GONE
+    }
+
+    private fun rendezvousLines(field: EditText): List<RendezvousSetting> =
+        lines(field).mapIndexed { index, line ->
+            val parts = line.split(',').map(String::trim)
+            if (
+                parts.size != 3 ||
+                !parts[0].startsWith("https://") ||
+                !parts[1].matches(Regex("[0-9a-f]{64}"))
+            ) {
+                throw SettingsException(
+                    getString(R.string.set_rendezvous_invalid, index + 1),
+                )
+            }
+            val access = when (parts[2]) {
+                "standard" -> true to false
+                "private" -> false to true
+                "both" -> true to true
+                else -> throw SettingsException(
+                    getString(R.string.set_rendezvous_invalid, index + 1),
+                )
+            }
+            RendezvousSetting(
+                origin = parts[0],
+                staticKey = parts[1],
+                standard = access.first,
+                privateViaTor = access.second,
+            )
+        }
 
     private fun exportBackup(uri: Uri) {
         val session = NodeHolder.session ?: return

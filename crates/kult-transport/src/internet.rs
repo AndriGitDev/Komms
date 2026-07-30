@@ -910,6 +910,20 @@ impl Libp2pTransport {
             .collect()
     }
 
+    /// Number of transport pseudonyms with at least one live connection.
+    ///
+    /// This is a coarse local connectivity signal for familiar shell status
+    /// language. It is not presence, account identity, reachability, sent, or
+    /// delivered state.
+    pub fn connected_peer_count(&self) -> usize {
+        self.shared
+            .connections
+            .lock_unpoisoned()
+            .values()
+            .filter(|connections| !connections.is_empty())
+            .count()
+    }
+
     /// Wait (up to 5 s) for the first listen address to be bound. Convenience
     /// for tests and daemon startup.
     pub async fn wait_listen_addr(&self) -> Result<String> {
