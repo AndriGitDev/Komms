@@ -81,6 +81,34 @@ supports restart. Counts, references, SQLite integrity, every opaque row, and a
 complete reopen are checked before the synced sibling atomically replaces the
 active path. A synced rollback copy remains until that reopen succeeds.
 
+### Mailbox relay storage is a separate service boundary
+
+A volunteer mailbox does not write into the endpoint profile database.
+`mailbox-v2.db` has its own random database id, WAL, physical schema, opaque
+HMAC indexes, and row-bound XChaCha20-Poly1305 records. Its 32-byte
+`mailbox-v2.key` derives the index and row-sealing keys; a separate
+`mailbox-v2.transport.key` gives the service a stable libp2p address without
+using an account identity. Deposits, registrations, leases, exact lease-row
+membership, rate buckets, quotas, and expiry survive restart. The schema
+validates every sealed logical key and aggregate bound before serving. The
+database open forbids a final-component symlink, and the database, WAL, shared
+memory sidecar, row key, and transport key are kept owner-only.
+
+This protection is content-blind, not operator-blind. The process necessarily
+handles tokens, end-to-end ciphertext, expiry, pseudonymous transport peers,
+random row/lease ids, timing, and volume in live memory. Anyone holding the
+relay database and service key can recover that relay-visible state, though
+not message plaintext. Without the key, SQLite still reveals its static
+schema, approximate row counts/sizes, insertion order, access patterns, and
+change timing.
+
+The three relay files are not a KKR endpoint backup domain and cannot be
+reached by the endpoint backup encoder. An operator who promises continued
+mailbox custody must instead snapshot the stopped relay database and both
+service keys together under separate encrypted operational backup policy.
+Restoring only the database or only one key fails closed; starting empty
+creates a replacement service and does not claim retention of old deposits.
+
 Deletion removes the live logical row. An explicit bounded maintenance call can
 enable SQLite full secure-delete, incrementally vacuum at most 4,096 pages, and
 truncate an observed WAL no larger than the caller's bound. The operation
@@ -326,6 +354,11 @@ before search is described as available.
 - **C7 call backup behavior**: no offer/answer/terminal row, call id, device
   arbitration, secret, media key, Opus packet, or decoded audio enters any KKR
   version. Restore never resumes or reveals a prior call.
+- **Mailbox-service backup behavior**: no mailbox database, WAL, registration,
+  deposit, lease, rate bucket, opaque index, relay row key, or mailbox
+  transport identity enters any KKR version. Those files belong to an optional
+  operator role, not the user's portable account. A volunteer operator backs
+  them up only as the separate stopped-service set described above.
 - **Plaintext export**: JSON-lines + media directory, clearly warned as plaintext.
   The user's data is the user's.
 - **Panic wipe** (roadmap M6): duress passphrase unlocking a decoy profile while
@@ -343,6 +376,7 @@ before search is described as available.
   policy.
 - Message keys after use; chain keys after advancing (zeroize-on-drop).
 - Plaintext contact graphs intentionally uploaded to a remote system. Optional
-  relay queues hold only sealed envelopes under rotating tokens with TTLs, but
-  their operators may still observe network and token-access metadata described
-  in the transport threat model.
+  relay queues hold only end-to-end sealed envelopes under rotating tokens with
+  TTLs. Their own durable rows are additionally sealed under a service key, but
+  their operators may still observe live network, token-access, timing, volume,
+  quota, and availability metadata described in the transport threat model.

@@ -13,12 +13,18 @@ fn test_envelope(fill: u8) -> Envelope {
     Envelope::new(EnvelopeKind::Message, [fill; 32], vec![fill; 300])
 }
 
-/// Poll `recv` until envelopes arrive (or 10 s passes).
+/// Poll staged receive until envelopes arrive, then explicitly accept each
+/// exact direct response handle (or time out after 10 seconds).
 async fn recv_within(t: &Libp2pTransport) -> Vec<Envelope> {
     for _ in 0..1000 {
-        let got = t.recv().await.unwrap();
+        let got = t.recv_staged().await.unwrap();
         if !got.is_empty() {
-            return got;
+            let mut envelopes = Vec::with_capacity(got.len());
+            for item in got {
+                t.settle_recv(item.receipt.unwrap(), true).await.unwrap();
+                envelopes.push(item.envelope);
+            }
+            return envelopes;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -177,4 +183,29 @@ async fn direct_acceptance_waits_for_endpoint_settlement_and_refusal_is_uniform(
         .await
         .unwrap();
     assert_eq!(second.await.unwrap(), SendReceipt::AckedByNextHop);
+}
+
+#[tokio::test]
+async fn ordinary_receive_returns_the_copy_but_never_claims_direct_custody() {
+    let sender = Libp2pTransport::new(&["/ip4/127.0.0.1/tcp/0"])
+        .await
+        .unwrap();
+    let receiver = Libp2pTransport::new(&["/ip4/127.0.0.1/tcp/0"])
+        .await
+        .unwrap();
+    let hint = DeliveryHint::Multiaddr(receiver.wait_listen_addr().await.unwrap());
+    let envelope = test_envelope(11);
+
+    let (result, received) = tokio::join!(sender.send(&hint, &envelope), async {
+        for _ in 0..1000 {
+            let received = receiver.recv().await.unwrap();
+            if !received.is_empty() {
+                return received;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("nothing received within 10s");
+    });
+    assert!(matches!(result, Err(TransportError::RefusedByNextHop)));
+    assert_eq!(received, vec![envelope]);
 }

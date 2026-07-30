@@ -12,11 +12,14 @@ repository.workspace = true
 # meshtastic client crate (generated protobufs + stream plumbing, and via it
 # tokio-serial), which consumers that never bridge a radio should not build.
 meshtastic = ["dep:meshtastic"]
+test-failpoints = []
 
 [dependencies]
+kult-crypto = { version = "0.3.0", path = "../kult-crypto" }
 kult-protocol = { version = "0.3.0", path = "../kult-protocol" }
 async-trait = "0.1"
 futures = "0.3"
+fs2 = "0.4"
 # The official Meshtastic Rust client: the published protobuf definitions via
 # a generated client, per docs/09-implementation-guide.md §3.3 ("do not
 # hand-roll the serial framing").
@@ -47,6 +50,10 @@ libp2p = { version = "0.56", features = [
 # wrapper below adds path gating because this crate otherwise chooses an
 # arbitrary live connection to the peer.
 libp2p-stream = "0.4.0-alpha"
+libc = "0.2"
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 # socket2 for the mDNS socket only: port 5353 must be shared (SO_REUSEADDR
 # and SO_REUSEPORT) and multicast-joined — tokio's plain bind can do neither.
@@ -63,5 +70,4 @@ tokio = { version = "1", features = ["fs", "sync", "rt", "rt-multi-thread", "mac
 tempfile = "3"
 # For the M4 acceptance pin: a real ratcheted 192-bucket message must fit in
 # ≤ 2 LoRa frames (docs/08-roadmap.md M4).
-kult-crypto = { version = "0.3.0", path = "../kult-crypto" }
 rand = "0.8"

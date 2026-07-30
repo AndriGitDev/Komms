@@ -94,6 +94,9 @@ answer and never becomes an acknowledgement. The sender keeps the durable
 envelope retryable and may try another supported path. Version 2 deliberately
 does not negotiate the older `/komms/envelope/1` unit response, which could not
 distinguish retention from refusal; Alpha peers must be upgraded together.
+Embeddings without a durable receive boundary may still read the copy through
+the ordinary transport API, but that path returns `refused`; only the staged
+receive/settlement API can claim custody.
 The response is still only a next-hop custody result: it is not a delivery,
 read, or end-to-end receipt. Unknown introductions are checked against the
 signed admission descriptor, invitation or puzzle proof, carrier/work budgets,
@@ -103,8 +106,16 @@ over-budget introductions receive the same bounded refusal shape and never
 enter the generic pending domain. A valid stranger is atomically sealed into
 the fixed provisional request domain rather than contacts or normal history.
 These controls implement the local and direct-carrier boundary in
-[ADR-0030](adr/0030-first-contact-admission.md); mailbox-v1 custody and
-operator-level abuse qualification remain separate open gates.
+[ADR-0030](adr/0030-first-contact-admission.md). Durable mailbox-v2 custody is
+implemented under [ADR-0032](adr/0032-leased-mailbox-delivery.md);
+operator-level abuse, capacity, upgrade, and real-network qualification remain
+separate open gates.
+
+An internet-to-mesh bridge may copy an unregistered deposit into its bounded
+transit queue, but that volatile handoff returns `refused`. Best-effort
+forwarding therefore never earns next-hop custody: the sender retains its
+durable ciphertext and retry responsibility unless a registered durable
+mailbox or endpoint has accepted it.
 
 The libp2p swarm also caps pending inbound/outbound connections at 32 each,
 established inbound connections at 64, established connections at 96 total,
@@ -120,15 +131,29 @@ Reaching that ceiling prevents persistence and the held direct response is
 `refused`. Delayed carriers preserve their ingress class in the sealed row so a
 later admission pass applies the correct per-carrier budget after restart.
 
-Mailbox-v1 collection is likewise bounded while its crash-safe replacement is
-designed: one check-in carries at most 4,096 token filters and returns at most
-512 envelopes / 2 MiB; the daemon rotates larger token sets, rotates beyond
-eight configured mailboxes across later lifecycle ticks, and admits at most
-eight pages (4,096 rows / 16 MiB) before the node drains the carrier. These
-bounds prevent honest large contact or relay sets from failing or starving.
-They do **not** make v1 durable: the relay still removes a page before the
-endpoint transactionally stages and acknowledges it. [ADR-0032](adr/0032-leased-mailbox-delivery.md)
-replaces that delete-before-response behavior with leased pages.
+`/komms/mailbox/2` accepts a deposit only after a `synchronous=FULL` SQLite
+transaction commits its row-bound sealed record. Collection creates or
+retransmits one 120-second idempotent lease of at most 128 rows / 1 MiB. Each
+row has a random relay id. The endpoint first commits the complete encoded
+envelope through the typed `PendingStage` plan, then acknowledges the exact
+lease and accepted row ids. The relay deletes only those rows in one
+transaction. Lost responses, process stops, duplicate pages, duplicate
+acknowledgements, partial local capacity, or expired leases therefore leave
+unacknowledged rows retryable.
+
+One check-in carries at most 4,096 token filters. Each lifecycle interval
+selects at most eight configured mailboxes, requests one page from each, and
+admits at most 1,024 rows / 8 MiB into an independently bounded collection
+inbox. Mailbox and token cursors rotate; success and failure use jittered
+backoff capped at one hour. The command queue, pending outbound work, request
+and response bytes, streams, relay quotas, registration/lease lifetimes, and
+endpoint pending store are all separately bounded. No collection path loops
+until a relay returns empty.
+
+Current clients and `kultd` use v2 only. Destructive `/komms/mailbox/1` serving
+is disabled by default and available only through an explicit library
+compatibility switch; there is no automatic client fallback. Its
+delete-before-response risk prevents any stable custody claim.
 
 **Censorship posture (A3)**: QUIC-on-443 blends adequately against casual blocking. Full
 DPI resistance (pluggable obfuscated transports, arti/Tor onion services as a transport)

@@ -26,14 +26,16 @@ use kult_protocol::Envelope;
 pub mod airtime;
 mod internet;
 mod mailbox;
+mod mailbox_v2;
 mod mdns;
 #[cfg(feature = "meshtastic")]
 mod mesh;
 mod sneakernet;
 
 pub use internet::{CallStream, Libp2pTransport, NatStatus, TransportOptions};
-pub use mailbox::{
-    MailboxConfig, MailboxContents, MAX_MAILBOX_CHECKIN_ENVELOPES, MAX_MAILBOX_CHECKIN_TOKENS,
+pub use mailbox::{MailboxConfig, MAX_MAILBOX_CHECKIN_ENVELOPES, MAX_MAILBOX_CHECKIN_TOKENS};
+pub use mailbox_v2::{
+    MailboxMetrics, MailboxServiceConfig, MAILBOX_V2_PAGE_MAX_BYTES, MAILBOX_V2_PAGE_MAX_ROWS,
 };
 #[cfg(feature = "meshtastic")]
 #[doc(hidden)]

@@ -331,20 +331,31 @@ level.** Concretely:
 - **Never logged, at any level:** message plaintext or per-contact content
   sizes; keys, prekeys, passphrases, mnemonics; attachment names or
   manifests; identity-layer contact addresses; group names; anything read
-  from the store.
+  from the store. Mailbox operation additionally forbids tokens, configured
+  mailbox locators, ciphertext, row/lease ids, transport-client identities,
+  and social labels.
 - **INFO** — the operator's own configuration and state: own address, socket
   path, bound listen multiaddrs, attached transports, bridge mode, relay
-  circuit, check-in results for operator-configured mailboxes,
-  startup/shutdown.
+  circuit, startup/shutdown.
 - **WARN/ERROR** — recoverable or fatal failures, carrying only the typed
   error's `Display` (`error = %e`), never payload context.
 - **DEBUG/TRACE** — transport-layer churn only: libp2p `PeerId`s and
   multiaddrs (already visible on the wire), connection open/close, DHT and
-  mDNS events, mailbox accept/reject decisions.
+  mDNS events. Mailbox operation emits only a collected-page aggregate count
+  and a context-free failure event; it does not inherit the generic
+  peer-id/multiaddr exception.
 
 Every new log line is reviewed against this table; a line that needs data
 from the "never" list to be useful is evidence of a design problem, not an
-exception.
+exception. Mailbox capacity is inspected through the aggregate status fields
+`stored_items`, `stored_bytes`, `registrations`, `live_leases`,
+configured item/byte/lease/retention/request capacities, filesystem reserve,
+`oldest_lease_age_secs`, rejection/expiry counters, and `schema_version`.
+
+An embedding that uses internet delivery directly must drain `recv_staged`,
+durably stage or completely consume each exact envelope, and settle its
+response handle. The convenience `recv` path deliberately refuses interactive
+custody even though it returns the received copy.
 
 ## 4c. Daemon secret input
 

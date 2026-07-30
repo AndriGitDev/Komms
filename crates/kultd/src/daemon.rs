@@ -18,9 +18,10 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use rand::rngs::OsRng;
+use rand::RngCore;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -30,8 +31,9 @@ use tokio::task::JoinHandle;
 use kult_crypto::KdfProfile;
 use kult_node::{DeviceLinkSelection, FolderSelection, LabelMatchMode, Node, NodeError};
 use kult_transport::{
-    DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, MeshtasticOptions,
-    MeshtasticTransport, NatStatus, Transport, TransportOptions, MAX_MAILBOX_CHECKIN_TOKENS,
+    DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, MailboxServiceConfig,
+    MeshtasticOptions, MeshtasticTransport, NatStatus, Transport, TransportOptions,
+    MAX_MAILBOX_CHECKIN_TOKENS,
 };
 
 use crate::wire::{self, Hint, Op, Request};
@@ -39,6 +41,33 @@ use crate::wire::{self, Hint, Op, Request};
 /// Bound one lifecycle pass even when an operator configures many or hostile
 /// mailbox endpoints. Remaining work waits for the next check-in interval.
 const MAX_MAILBOXES_PER_CHECKIN_TICK: usize = 8;
+const MAX_MAILBOX_BACKOFF: Duration = Duration::from_secs(60 * 60);
+
+#[derive(Clone, Copy)]
+struct MailboxRetry {
+    failures: u8,
+    next_at: Instant,
+}
+
+fn jittered_mailbox_delay(base: Duration, failures: u8, draw: u64) -> Duration {
+    let multiplier = 1u32 << failures.min(6);
+    let backed_off = base.saturating_mul(multiplier).min(MAX_MAILBOX_BACKOFF);
+    let percent = 75u128 + u128::from(draw % 51);
+    let millis = backed_off
+        .as_millis()
+        .saturating_mul(percent)
+        .saturating_div(100)
+        .max(250);
+    Duration::from_millis(u64::try_from(millis).unwrap_or(u64::MAX))
+}
+
+fn log_mailbox_page_collected(count: usize) {
+    tracing::debug!(count, "mailbox page collected");
+}
+
+fn log_mailbox_checkin_failed() {
+    tracing::warn!("mailbox check-in failed");
+}
 
 /// Return one contiguous bounded page and advance a persistent cursor.
 ///
@@ -409,8 +438,11 @@ impl Daemon {
         let bridging =
             cfg.bridge && (cfg.meshtastic_serial.is_some() || cfg.meshtastic_tcp.is_some());
         let listen: Vec<&str> = cfg.listen.iter().map(String::as_str).collect();
+        let mailbox_dir = cfg.db_path.parent().unwrap_or_else(|| Path::new("."));
         let options = TransportOptions {
-            mailbox: cfg.serve_mailbox.then(MailboxConfig::default),
+            mailbox: cfg
+                .serve_mailbox
+                .then(|| MailboxServiceConfig::in_directory(mailbox_dir, MailboxConfig::default())),
             lan_discovery: cfg.mdns,
             bridge_deposits: bridging,
         };
@@ -865,6 +897,26 @@ async fn handle_op(
                 Ok(Ok(NatStatus::Private)) => "private",
                 _ => "unknown",
             };
+            let mailbox = net.mailbox_metrics().map(|metrics| {
+                json!({
+                    "stored_items": metrics.stored_items,
+                    "stored_bytes": metrics.stored_bytes,
+                    "capacity_items": metrics.capacity_items,
+                    "capacity_bytes": metrics.capacity_bytes,
+                    "retention_secs": metrics.retention_secs,
+                    "request_capacity_per_minute": metrics.request_capacity_per_minute,
+                    "request_capacity_per_client_per_minute": metrics.request_capacity_per_client_per_minute,
+                    "disk_available_bytes": metrics.disk_available_bytes,
+                    "registrations": metrics.registrations,
+                    "live_leases": metrics.live_leases,
+                    "lease_capacity": metrics.lease_capacity,
+                    "oldest_lease_age_secs": metrics.oldest_lease_age_secs,
+                    "rejected_deposits": metrics.rejected_deposits,
+                    "rejected_requests": metrics.rejected_requests,
+                    "expired_rows": metrics.expired_rows,
+                    "schema_version": metrics.schema_version,
+                })
+            });
             Ok(json!({
                 "address": node.address(),
                 "peer": wire::hex_encode(&node.peer_id()),
@@ -875,6 +927,7 @@ async fn handle_op(
                 "scheduled": node.scheduled_messages().map_err(fail)?.len(),
                 "transit": node.transit_queued(),
                 "contacts": node.contacts().map_err(fail)?.len(),
+                "mailbox": mailbox,
             }))
         }
         Op::Bundle => {
@@ -2261,6 +2314,9 @@ async fn lifecycle(
     let mut mailbox_cursor = 0usize;
     let mut mailbox_token_cursors: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
+    let mut mailbox_retry: std::collections::HashMap<String, MailboxRetry> =
+        std::collections::HashMap::new();
+    let mut jitter_rng = OsRng;
 
     loop {
         tokio::select! {
@@ -2305,6 +2361,12 @@ async fn lifecycle(
                     MAX_MAILBOXES_PER_CHECKIN_TICK,
                 );
                 for mailbox in mailboxes {
+                    if mailbox_retry
+                        .get(&mailbox)
+                        .is_some_and(|retry| retry.next_at > Instant::now())
+                    {
+                        continue;
+                    }
                     let token_cursor = mailbox_token_cursors
                         .entry(mailbox.clone())
                         .or_default();
@@ -2313,13 +2375,40 @@ async fn lifecycle(
                     // One bounded page per mailbox and lifecycle interval.
                     // A relay that never returns empty cannot monopolize this
                     // task or grow the local receive queue without a limit.
-                    match net.mailbox_checkin(&mailbox, &token_batch).await {
+                    let result = net.mailbox_checkin(&mailbox, &token_batch).await;
+                    let retry = mailbox_retry.entry(mailbox.clone()).or_insert(MailboxRetry {
+                        failures: 0,
+                        next_at: Instant::now(),
+                    });
+                    match result {
                         Ok(count) if count > 0 => {
-                            tracing::debug!(count, %mailbox, "mailbox page collected");
+                            retry.failures = 0;
+                            retry.next_at = Instant::now()
+                                + jittered_mailbox_delay(
+                                    cfg.checkin_interval,
+                                    0,
+                                    jitter_rng.next_u64(),
+                                );
+                            log_mailbox_page_collected(count);
                         }
-                        Ok(_) => {}
-                        Err(e) => {
-                            tracing::warn!(error = %e, %mailbox, "mailbox check-in failed");
+                        Ok(_) => {
+                            retry.failures = 0;
+                            retry.next_at = Instant::now()
+                                + jittered_mailbox_delay(
+                                    cfg.checkin_interval,
+                                    0,
+                                    jitter_rng.next_u64(),
+                                );
+                        }
+                        Err(_) => {
+                            retry.failures = retry.failures.saturating_add(1);
+                            retry.next_at = Instant::now()
+                                + jittered_mailbox_delay(
+                                    cfg.checkin_interval,
+                                    retry.failures,
+                                    jitter_rng.next_u64(),
+                                );
+                            log_mailbox_checkin_failed();
                         }
                     }
                 }
@@ -2511,6 +2600,29 @@ mod socket_tests {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+    use std::io::Write;
+
+    #[derive(Clone, Default)]
+    struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl Write for LogCapture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
 
     #[test]
     fn rotating_batches_cover_large_mailbox_and_token_sets_without_starvation() {
@@ -2540,5 +2652,55 @@ mod lifecycle_tests {
         assert_eq!(first.len(), MAX_MAILBOX_CHECKIN_TOKENS);
         assert_eq!(second, tokens[MAX_MAILBOX_CHECKIN_TOKENS..]);
         assert_eq!(token_cursor, 0);
+    }
+
+    #[test]
+    fn mailbox_backoff_is_jittered_bounded_and_exponential() {
+        let base = Duration::from_secs(10);
+        let first = jittered_mailbox_delay(base, 0, 0);
+        let second = jittered_mailbox_delay(base, 1, 0);
+        assert_eq!(first, Duration::from_millis(7_500));
+        assert_eq!(second, Duration::from_secs(15));
+        assert!(
+            jittered_mailbox_delay(base, 8, 50) <= MAX_MAILBOX_BACKOFF.saturating_mul(125) / 100
+        );
+        assert_ne!(
+            jittered_mailbox_delay(base, 2, 0),
+            jittered_mailbox_delay(base, 2, 50)
+        );
+    }
+
+    #[test]
+    fn mailbox_operational_logs_are_aggregate_only() {
+        let capture = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(capture.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            log_mailbox_page_collected(7);
+            log_mailbox_checkin_failed();
+        });
+
+        let output = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(output.lines().count(), 2);
+        assert!(output.contains("mailbox page collected"));
+        assert!(output.contains("count=7"));
+        assert!(output.contains("mailbox check-in failed"));
+        assert_eq!(output.matches('=').count(), 1);
+        for forbidden in [
+            "/p2p/",
+            "token",
+            "locator",
+            "ciphertext",
+            "row_id",
+            "identity",
+            "contact",
+        ] {
+            assert!(!output.contains(forbidden));
+        }
     }
 }

@@ -66,12 +66,15 @@ plane is in: a Kademlia DHT (bootstrap from any user-supplied peer, nothing
 hardcoded) carrying whole-bundle-signed prekey records under the kult-address
 digest, so a node adds a contact from the address string alone and the delivery
 engine resolves missing return paths (sealed sender reveals none) from the
-peer's record. Mailbox relays are in: any node can volunteer bounded
-store-and-forward on `/komms/mailbox/1`; recipients register rotating
-delivery tokens as accept-filters and collect on reconnect, senders deposit
-sealed envelopes the scheduler ranks below direct paths, and the "relay stores
-only sealed envelopes" acceptance criterion is pinned by an inspection test
-(collection-deletes required making tokens recipient-scoped, ADR-0007).
+peer's record. Mailbox relays are in: any node can volunteer durable bounded
+store-and-forward on `/komms/mailbox/2`; recipients register rotating
+delivery tokens as accept-filters and collect leased pages on reconnect.
+Senders deposit sealed envelopes the scheduler ranks below direct paths.
+Accepted means the relay transaction committed. Exact rows remain until the
+endpoint durably stages them and acknowledges their random ids. Opaque
+indexes, row binding, restart persistence, exact partial acknowledgement,
+expiry, overload, failpoint, multi-operator deduplication, and aggregate-only
+status tests pin this content-blind custody contract (ADR-0007, ADR-0032).
 NAT traversal is in as the pinned trio: AutoNAT dial-back probes report each
 node's reachability (`nat_status`), a private node reserves a Circuit Relay v2
 slot at any public peer (`reserve_relay`, every node volunteers bounded relay
@@ -98,8 +101,10 @@ DHT, mailbox relays, transport scheduler, headless daemon with local RPC.
 
 The existing localhost, LAN, configured-peer, and automated NAT/relay evidence
 does not close the everyday clean-install claim. Fresh application defaults
-currently require deliberate bootstrap/mailbox configuration, mailbox
-persistence is not operator-qualified, and ADR-0030 first-contact admission has
+currently require deliberate bootstrap/mailbox configuration. Mailbox v2 has
+local crash-safe persistence evidence but no qualified public operator,
+upgrade/backup incident exercise, cost observation, or real-network matrix.
+ADR-0030 first-contact admission has
 local automated evidence but still lacks independent adversarial,
 physical-device battery/background, accessibility, and operator-path
 qualification. Those assurance rows remain P0 gates.

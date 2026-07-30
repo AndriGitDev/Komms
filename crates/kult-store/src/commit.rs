@@ -11,19 +11,21 @@ use kult_crypto::{
     GROUP_MESSAGE_VERSION_LEGACY,
 };
 use kult_protocol::{
-    CapabilityControl, DeviceSyncEvent, EnvelopeKind, MAX_DEVICE_SYNC_BUNDLE_EVENTS,
+    CapabilityControl, DeviceSyncEvent, Envelope, EnvelopeKind, MAX_DEVICE_SYNC_BUNDLE_EVENTS,
     MAX_GROUP_ADMIN_REQUESTS, MAX_GROUP_AUTHORITY_MEMBERS, MAX_GROUP_MEMBER_IDENTITY_LEN,
     MAX_GROUP_NAME_LEN,
 };
 
 use crate::{
-    decode_exact, direction_code, store_v2, AdmissionReplayTombstone, BlockedIdentityRecord,
-    ContactDeviceRecord, ContactRecord, DeliveryState, DeviceAuthorityStateRecord,
-    DeviceLinkRecoveryRecord, DeviceStateRecord, Direction, EphemeralRecord, EphemeralState,
-    GroupAuthorityRecord, GroupMessageRecord, GroupOriginAuthentication, GroupPendingFanout,
-    GroupRecord, LocalMetadataRecord, MediaObjectRecord, MediaRecord, MediaTransferRecord,
-    MessageDeviceDeliveryRecord, MessageRecord, NoteMessageRecord, ProvisionalRequestRecord,
-    QueueItem, Result, ScheduledMessageRecord, Store, StoreError, MAX_DEVICE_SYNC_EVENT_BYTES,
+    decode_exact, direction_code, store_v2, AdmissionReplayTombstone, AdmissionTransportClass,
+    BlockedIdentityRecord, ContactDeviceRecord, ContactRecord, DeliveryState,
+    DeviceAuthorityStateRecord, DeviceLinkRecoveryRecord, DeviceStateRecord, Direction,
+    EphemeralRecord, EphemeralState, GroupAuthorityRecord, GroupMessageRecord,
+    GroupOriginAuthentication, GroupPendingFanout, GroupRecord, LocalMetadataRecord,
+    MediaObjectRecord, MediaRecord, MediaTransferRecord, MessageDeviceDeliveryRecord,
+    MessageRecord, NoteMessageRecord, PendingEnvelopeRecord, ProvisionalRequestRecord, QueueItem,
+    Result, ScheduledMessageRecord, Store, StoreError, MAX_DEVICE_SYNC_EVENT_BYTES,
+    MAX_PENDING_BYTES, MAX_PENDING_ENVELOPES, PENDING_ENVELOPE_RECORD_VERSION,
 };
 
 /// Maximum logical durable mutations accepted by one typed commit plan.
@@ -125,6 +127,17 @@ fn queued_group_shared(origin: GroupOriginAuthentication, encoded: &[u8]) -> Res
     }
 }
 
+fn pending_stage_payload(plan: &PendingStagePlan<'_>) -> Result<Vec<u8>> {
+    let encoded = plan.envelope.try_encode()?;
+    postcard::to_allocvec(&PendingEnvelopeRecord {
+        version: PENDING_ENVELOPE_RECORD_VERSION,
+        encoded,
+        first_seen: plan.first_seen,
+        transport: plan.transport,
+    })
+    .map_err(|_| StoreError::Serialization)
+}
+
 /// Complete cryptographic bootstrap of one previously unpublished profile.
 #[cfg(any(test, feature = "legacy-test-fixtures"))]
 pub struct ProfileBootstrapPlan<'a> {
@@ -205,6 +218,16 @@ pub struct PendingDelete {
     pub sequence: i64,
     /// Exact envelope content id expected in that row.
     pub content_id: [u8; 16],
+}
+
+/// One complete inbound envelope staged durably before carrier custody ends.
+pub struct PendingStagePlan<'a> {
+    /// Exact untrusted envelope accepted from a bounded carrier page.
+    pub envelope: &'a Envelope,
+    /// Local time at which the complete envelope first arrived.
+    pub first_seen: u64,
+    /// Coarse carrier class retained for admission budgeting after restart.
+    pub transport: AdmissionTransportClass,
 }
 
 /// One outbound row that may be removed only with its named envelope.
@@ -980,6 +1003,8 @@ pub enum CommitPlan<'a> {
     DeviceProjection(DeviceProjectionPlan<'a>),
     /// Handshake receive.
     HandshakeReceive(HandshakeReceivePlan<'a>),
+    /// Complete inbound carrier envelope staged before carrier acknowledgement.
+    PendingStage(PendingStagePlan<'a>),
     /// Valid first contact staged behind the consent boundary.
     AdmissionStage(AdmissionStagePlan<'a>),
     /// Explicit user acceptance of one provisional request.
@@ -1001,6 +1026,8 @@ pub struct CommittedRecordIds {
     pub messages: Vec<[u8; 16]>,
     /// Newly appended outbound row sequences.
     pub queue_sequences: Vec<i64>,
+    /// Newly appended durable inbound row sequences.
+    pub pending_sequences: Vec<i64>,
 }
 
 /// Proof returned after SQLite accepted the complete typed transition.
@@ -1088,6 +1115,7 @@ impl Store {
             CommitPlan::AuthorityDeviceLink(plan) => plan.presentation_changed,
             CommitPlan::DeviceProjection(plan) => plan.presentation_changed,
             CommitPlan::HandshakeReceive(plan) => plan.presentation_changed,
+            CommitPlan::PendingStage(_) => false,
             CommitPlan::AdmissionStage(plan) => plan.presentation_changed,
             CommitPlan::AdmissionAccept(plan) => plan.presentation_changed,
             CommitPlan::AdmissionDiscard(plan) => plan.presentation_changed,
@@ -1137,6 +1165,7 @@ impl Store {
                 CommitPlan::AuthorityDeviceLink(plan) => writer.authority_device_link(&plan)?,
                 CommitPlan::DeviceProjection(plan) => writer.device_projection(&plan)?,
                 CommitPlan::HandshakeReceive(plan) => writer.handshake_receive(&plan)?,
+                CommitPlan::PendingStage(plan) => writer.pending_stage(&plan)?,
                 CommitPlan::AdmissionStage(plan) => writer.admission_stage(&plan)?,
                 CommitPlan::AdmissionAccept(plan) => writer.admission_accept(&plan)?,
                 CommitPlan::AdmissionDiscard(plan) => writer.admission_discard(&plan)?,
@@ -1243,6 +1272,7 @@ impl Store {
             CommitPlan::AuthorityDeviceLink(plan) => self.validate_authority_device_link(plan),
             CommitPlan::DeviceProjection(plan) => self.validate_device_projection(plan),
             CommitPlan::HandshakeReceive(plan) => self.validate_handshake_receive(plan),
+            CommitPlan::PendingStage(plan) => self.validate_pending_stage(plan),
             CommitPlan::AdmissionStage(plan) => self.validate_admission_stage(plan),
             CommitPlan::AdmissionAccept(plan) => self.validate_admission_accept(plan),
             CommitPlan::AdmissionDiscard(plan) => self.validate_admission_discard(plan),
@@ -3192,6 +3222,24 @@ impl Store {
         Ok(())
     }
 
+    fn validate_pending_stage(&self, plan: &PendingStagePlan<'_>) -> Result<()> {
+        let content = store_v2::ContentKey::new(plan.envelope.content_id());
+        if let Some(existing) = self.row_by_unique::<store_v2::PendingContentIndex>(&content)? {
+            let (stored, _, _) = crate::decode_pending_envelope(&existing.payload)?;
+            return if stored == *plan.envelope {
+                Ok(())
+            } else {
+                Err(StoreError::LogicalKeyMismatch)
+            };
+        }
+        if pending_stage_payload(plan)?.len() > MAX_PENDING_BYTES
+            || self.count_rows::<store_v2::PendingRows>()? >= MAX_PENDING_ENVELOPES as u64
+        {
+            return Err(StoreError::PendingQuota);
+        }
+        Ok(())
+    }
+
     fn validate_admission_stage(&self, plan: &AdmissionStagePlan<'_>) -> Result<()> {
         plan.after.validate()?;
         let current = self.get_provisional_request(&plan.after.account)?;
@@ -4672,6 +4720,40 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
             })?;
         }
         self.pending(plan.source_pending)
+    }
+
+    fn pending_stage(&mut self, plan: &PendingStagePlan<'_>) -> Result<()> {
+        let payload = pending_stage_payload(plan)?;
+        let content = store_v2::ContentKey::new(plan.envelope.content_id());
+        if let Some(existing) = self
+            .store
+            .row_by_unique::<store_v2::PendingContentIndex>(&content)?
+        {
+            let (stored, _, _) = crate::decode_pending_envelope(&existing.payload)?;
+            if stored != *plan.envelope {
+                return Err(StoreError::LogicalKeyMismatch);
+            }
+            self.records.pending_sequences.push(existing.rowid);
+            return Ok(());
+        }
+        let sequence = self.write(|store, rng| {
+            if store.count_rows::<store_v2::PendingRows>()? >= MAX_PENDING_ENVELOPES as u64 {
+                return Err(StoreError::PendingQuota);
+            }
+            let row = store.append_opaque::<store_v2::PendingRows>(
+                &payload,
+                store_v2::IndexKeys::pending(&content),
+                rng,
+            )?;
+            if store.sealed_bytes_on::<store_v2::PendingRows>(&store.conn)?
+                > MAX_PENDING_BYTES as u64
+            {
+                return Err(StoreError::PendingQuota);
+            }
+            Ok(row.rowid)
+        })?;
+        self.records.pending_sequences.push(sequence);
+        Ok(())
     }
 
     fn admission_stage(&mut self, plan: &AdmissionStagePlan<'_>) -> Result<()> {

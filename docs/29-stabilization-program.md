@@ -39,8 +39,9 @@ The stabilization work must preserve these boundaries:
    format, user identity, or cryptographic trust root.
 4. **DHT first contact and durable store-and-forward mailboxes remain core
    protocol roles.** Bootstrap peers and mailbox operators may be chosen or
-   self-hosted. Current Alpha provider configuration and mailbox persistence
-   still require qualification.
+   self-hosted. Mailbox-v2 persistence has local crash/restart evidence;
+   provider defaults, independent operator behavior, upgrades, backups, costs,
+   abuse response, and real-network operation still require qualification.
 5. **Post-pairing rendezvous and content-free native wake remain optional.**
    They may improve mobile reachability after a relationship exists, as proposed
    in ADR-0017 through ADR-0019, but are not prerequisites for pure-core
@@ -134,12 +135,13 @@ envelope limit, an explicit accept/refuse contract on `/komms/envelope/2`, and a
 direct inbox bounded to 256 items and 8 MiB. The encrypted deferred inbox is
 also capped at 2,048 rows / 64 MiB and suppresses exact multipath duplicates.
 Global libp2p connection counts, fragment/NACK work, courier bundles, directory
-ingress, and mailbox-v1 page/token/lifecycle work now have explicit interim
-bounds; large mailbox and token lists rotate without front-of-list starvation.
-These paths have local automated tests, but the evidence is not yet tied to a
-published revision or independently reviewed, so P0-05 remains open. They bound
-carrier and disk surfaces but do not by themselves provide pre-acknowledgement
-first-contact admission, identity blocking, or mailbox abuse controls.
+ingress, and mailbox-v2 request/page/lease/lifecycle work have explicit bounds;
+large mailbox and token lists rotate without front-of-list starvation. The
+mailbox relay persists opaque-indexed, row-bound deposits and deletes exact
+leased rows only after typed endpoint staging. ADR-0030 separately implements
+pre-work admission, identity blocking, and bounded provisional consent. These
+paths have local automated tests, but the evidence is not yet tied to a
+published revision or independently reviewed, so P0-05 and P0-08 remain open.
 
 ## 5. P1 — adoption and ecosystem readiness
 
@@ -224,7 +226,7 @@ This table prevents a prior concern from disappearing into roadmap prose.
 | ADR-0030 now confines a valid first payload to bounded provisional state with explicit consent; independent adversarial, physical-device, accessibility, discovery, and mailbox-operator qualification remain open | P0-05 |
 | Unsigned/debug packages, no updater, incomplete reproducibility and store distribution | P0-07 |
 | Absolute blocking, erasure, cryptographic-audit, and current-law wording exceeds demonstrated guarantees | P0-01, P0-06, P1-07 |
-| Mailbox state and the operator path are not yet qualified as durable production infrastructure | P0-08, P1-04 |
+| Mailbox v2 has local durable-custody evidence, but no public operator, upgrade/backup/cost record, abuse exercise, or real-network path is yet qualified as production infrastructure | P0-08, P1-04 |
 | Simulator/CI evidence is described beside unresolved device, NAT, radio, background, and accessibility work | P0-01, P0-09 |
 | Localization is claimed without a shared localization system or cross-shell locale evidence | P1-02 |
 | Contribution rules require release-scale validation and maintainer authorization for ordinary work | P1-01 |
@@ -234,8 +236,8 @@ This table prevents a prior concern from disappearing into roadmap prose.
 | Video, large groups, new carriers, federation, and governance expansion could distract from everyday reliability | P0-03, P2 |
 | Direct transport now holds its fixed response until exact durable admission/consumption and refuses invalid, duplicate, or over-budget introductions; independent network/adversarial qualification remains open | P0-05 |
 | Stable identity-derived DHT locators and public route hints permit polling and network-location correlation | P0-04, P0-05, P0-06 |
-| Typed atomic plans and restart injection now cover root-free profile bootstrap/migration, pairwise, group, attachment, scheduled activation, bounded maintenance, ADR-0026 device authority/link/sync/contact projection, and ADR-0030 stage/accept/discard/sweep; the quarantined pre-C2 alias bridge, leased relay custody, and independent/power-loss evidence remain open in the recorded inventory | P0-03, P0-06 |
-| Mailbox collection deletes relay custody before the endpoint durably stages and acknowledges a leased page | P0-04, P0-08 |
+| Typed atomic plans and restart injection now cover root-free profile bootstrap/migration, pairwise, group, attachment, scheduled activation, bounded maintenance, ADR-0026 device authority/link/sync/contact projection, ADR-0030 stage/accept/discard/sweep, and complete-envelope `PendingStage`; the quarantined pre-C2 alias bridge and independent/power-loss evidence remain open in the recorded inventory | P0-03, P0-06 |
+| ADR-0032 durable deposits, bounded idempotent leases, exact acknowledgement-after-endpoint-commit, restart persistence, row-bound storage, overload/failpoint behavior, aggregate observability, and multi-operator deduplication have local evidence; public operator, upgrade/backup/cost, real-network, independent, and physical-filesystem qualification remain open | P0-04, P0-08 |
 | Unix store writer exclusion now combines a no-follow sidecar with an owner-only no-follow lock file derived from the database device and inode; equivalent alias resistance and hostile-filesystem qualification remain open on other supported platforms | P0-06, P0-09 |
 | The Unix RPC sidecar is no-follow and owner-only, but portable stale-socket replacement still requires a daemon-owned parent directory to exclude hostile rename/unlink races | P0-07, P0-09 |
 | ADR-0026 offline-root migration/reset, strict-majority manifests, recovery epochs and root-free `KKR9` are implemented with local crash/cross-shell/simulator evidence; revision-bound CI, physical-device, independent interoperability and independent security evidence remain open | P0-03, P0-06, P0-09 |

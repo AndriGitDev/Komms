@@ -1,14 +1,14 @@
 # ADR-0032: Leased, crash-safe mailbox delivery
 
-- **Status**: Proposed
+- **Status**: Accepted; implemented for Alpha
 - **Date**: 2026-07-26
 
 ## Context
 
-The current mailbox check-in removes queued ciphertext while constructing its
-response. If the response cannot be written, the recipient process stops, or
-local admission fails, neither relay nor endpoint necessarily retains the only
-copy. Repeated locally initiated responses can also accumulate outside the
+The original mailbox check-in removed queued ciphertext while constructing its
+response. If the response could not be written, the recipient process stopped,
+or local admission failed, neither relay nor endpoint necessarily retained that
+copy. Repeated locally initiated responses could also accumulate outside the
 direct-inbox budget.
 
 Mailboxes are a core durable store-and-forward role. They remain content-blind
@@ -77,17 +77,45 @@ end-to-end receipt.
 
 ### 5. Migration does not overclaim v1
 
-Mailbox v1 remains Alpha-only during a coordinated transition. V2 clients
-prefer v2 and may fall back to v1 only behind an explicit compatibility policy
-that describes delete-before-response risk. Standard defaults qualify as
-durable only after v2 restart, disk-full, crash, overload, lease-expiry, and
-multi-operator tests pass.
+Current clients negotiate v2 only and do not silently fall back. The packaged
+daemon serves v2 only. Destructive `/komms/mailbox/1` service compatibility
+exists solely behind the library-level `allow_v1_compat` switch, which defaults
+off and is not exposed by `kultd`. Enabling it requires a separate operator
+decision and disclosure that a response can be lost after relay deletion but
+before endpoint custody. A v1 response never counts as stable durable custody.
 
-The interim v1 implementation limits a page to 512 rows / 2 MiB, limits a
-filter request to 4,096 tokens, rotates larger token and mailbox lists, and
-bounds one daemon pass to eight pages / 4,096 rows / 16 MiB. Those controls
-close ordinary resource/starvation failures only; they cannot repair custody
-loss between destructive relay collection and endpoint admission.
+Historical 0.3.0 artifacts predate this implementation. Operators must verify
+the exact source revision and schema rather than infer v2 behavior from an
+Alpha image tag.
+
+### 6. The implemented Alpha profile is explicit
+
+The default profile retains an envelope for at most 30 days, a registration
+for 60 days without refresh, and a live lease for 120 seconds. It caps one
+lease page at 128 rows and 1 MiB, one request at 4,096 filters, one client at
+4,096 registered tokens and 4,096 deposits / 32 MiB, one token at 256 deposits
+/ 16 MiB, and the complete relay at 65,536 deposits / 64 MiB. A client may
+hold four live leases, a token may occur in two, and one transport client has
+a persisted 2,048-request fixed-window minute budget inside a persisted
+8,192-request relay-wide minute budget. The relay holds at most 4,096 live
+leases. Protocol codecs,
+connection streams, pending operations, response allocation, and the endpoint
+collection inbox have separate fixed bounds.
+
+`mailbox-v2.db`, `mailbox-v2.key`, and
+`mailbox-v2.transport.key` are owner-only service state. The first key derives
+opaque indexes and row seals; the second is a dedicated stable libp2p service
+identity. Neither is an account, directory, release, recovery, or endpoint
+backup key. The endpoint's routine encrypted backup reads only its core store
+and cannot include these sibling service files. Database and service-key opens
+reject final-component symlinks; the database, WAL/shared-memory sidecars, and
+both keys remain owner-only.
+
+The endpoint processes one page per selected mailbox in a lifecycle interval,
+at most eight mailboxes, and rotates both mailbox and token cursors. Success
+and failure use jittered backoff; no relay can force a loop-until-empty.
+Operational output is limited to aggregate counts, bytes, lease age,
+rejection/expiry counters, and schema version.
 
 ## Alternatives considered
 
@@ -117,3 +145,5 @@ or bounded.
 - Release evidence must inject failure before/after lease creation, response
   write, endpoint commit, acknowledgement, relay delete, restart, disk-full,
   and lease expiry.
+- Local implementation and simulator evidence do not by themselves qualify a
+  public operator, physical platform, real network, or stable release.

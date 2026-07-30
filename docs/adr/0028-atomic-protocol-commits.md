@@ -35,6 +35,7 @@ work only on those candidate values and creates one bounded typed commit plan:
 - `AuthorityMigration`;
 - `PrekeyPublish`;
 - `HandshakeReceive`;
+- `PendingStage`;
 - `AdmissionStage`;
 - `AdmissionAccept`;
 - `AdmissionDiscard`;
@@ -91,6 +92,12 @@ and preview, and one sealed provisional request. `AdmissionAccept` promotes
 that exact state; `AdmissionDiscard` applies Delete or Block; and
 `AdmissionSweep` expires a bounded page. A cryptographically valid stranger
 does not become a trusted contact merely because the handshake succeeded.
+
+`PendingStage` commits one complete encoded carrier envelope and its ingress
+class to the bounded sealed pending domain before a direct response or
+mailbox-v2 row acknowledgement. It advances no session or chain. A later
+consuming plan atomically deletes that exact pending row with the accepted
+protocol consequence.
 
 Group plans commit the group sender/receiver chain, group generation or pending
 announcement state, immutable history/control state, all fan-out envelopes and
@@ -162,7 +169,7 @@ or plaintext consequence.
 
 ### 7. Implementation and evidence status
 
-The implementation now provides all twenty-three plan kinds above. Legacy
+The implementation now provides all twenty-four plan kinds above. Legacy
 `ProfileBootstrap`, `DeviceControl`, and `DeviceLink` remain explicit
 migration/restore compatibility surfaces; current profiles use the matching
 `Authority*` variants. Together they cover
@@ -234,11 +241,12 @@ The complete path-by-path disposition is the
 
 This is not full ADR acceptance. ADR-0026 authority and ADR-0030 first-contact
 consent are covered, but the pre-C2 contact-manifest alias bridge remains
-quarantined compatibility code. Mailbox-v1 cannot yet acknowledge leased relay
-custody after endpoint commit, and live call state remains intentionally
-process-local. Independent review and supported-platform sudden-power-loss
-qualification are also absent. These gaps keep this ADR Proposed and prevent
-the implemented matrix from being presented as universal protocol atomicity.
+quarantined compatibility code. ADR-0032 now commits a complete inbound
+envelope through `PendingStage` before exact mailbox lease acknowledgement,
+while live call state remains intentionally process-local. Independent review
+and supported-platform sudden-power-loss qualification are also absent. These
+gaps keep this ADR Proposed and prevent the implemented matrix from being
+presented as universal protocol atomicity.
 
 ## Alternatives considered
 

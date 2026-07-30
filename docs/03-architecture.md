@@ -157,8 +157,8 @@ clock advance activates it on the next tick; time-zone changes are display-only.
    attachment and deferred group/media follow-up use the corresponding typed
    transitions. The [complete inventory](34-atomic-transition-inventory.md)
    records the implemented and excluded boundaries; the quarantined pre-C2
-   alias bridge, clean-install bootstrap, relay custody, independent review and
-   physical sudden-power-loss evidence keep ADR-0028 Proposed.
+   alias bridge, independent review, and physical sudden-power-loss evidence
+   keep ADR-0028 Proposed.
 3. **kult-protocol** serializes content, pads it to the next size bucket, and hands it to
    the conversation's ratchet.
 4. **kult-crypto** advances the sending chain, encrypts with XChaCha20-Poly1305, and
@@ -179,9 +179,25 @@ clock advance activates it on the next tick; time-zone changes are display-only.
    `delivery failed after 30 days`.
 
 ### Receive path
-Mirror image: transport yields envelope → reassembly → dedup by message ID → ratchet
-decrypt (tolerating skipped/out-of-order counters within the configured window) → persist →
-event to app → (optionally) send encrypted receipt.
+
+Direct transport holds its response while the node consumes a verified
+introduction or commits the complete encoded envelope to the bounded sealed
+pending domain. Mailbox collection gives each row an internal settlement
+handle: the node commits that same `PendingStage` transition before the
+transport acknowledges the exact relay lease and row id. Failure before commit
+leaves the direct request refused or the relay row leased for retry; failure
+after commit leaves a duplicate that the endpoint absorbs.
+
+A bridge may enqueue an unregistered internet deposit for bounded
+best-effort mesh transit, but returns a custody refusal because that queue is
+not a durable mailbox. Only durable endpoint staging or a registered mailbox
+deposit can advance the sender's next-hop state.
+
+From durable staging, the ordinary path is reassembly → exact duplicate
+suppression → ratchet decrypt (including the configured skipped/out-of-order
+window) → one typed receive transition containing plaintext history, replay,
+receipt ciphertext, and source-row removal → event to the app. The encrypted
+end-to-end receipt is the only event that advances the sender to `delivered`.
 
 ### Live-call path
 
@@ -204,12 +220,15 @@ Peers are rarely online at the same moment, especially off-grid. Delivery uses t
 mechanisms, in preference order:
 
 1. **Direct**: recipient reachable on some transport now → deliver immediately.
-2. **Mailbox relays**: any Komms node may volunteer relay capacity. The sender deposits
-   the sealed envelope with one or more relays chosen by the *recipient* (advertised in
-   their signed prekey bundle, [06: Identity & Trust](06-identity-trust.md)). Relays store
-   ciphertext-only, TTL-bounded, size-capped queues keyed by delivery token. Users
-   naturally relay for their own contacts (friend-relay model); public volunteer relays are
-   additive, never required.
+2. **Mailbox relays**: any Komms node may volunteer relay capacity. The sender
+   deposits the sealed envelope with one or more relays chosen by the
+   *recipient* (advertised in their signed prekey bundle,
+   [06: Identity & Trust](06-identity-trust.md)). A v2 relay returns accepted
+   only after durable commit. It stores TTL-bounded, size-capped, row-bound
+   sealed records under opaque keyed token/client/content indexes. Collection
+   creates bounded idempotent leases and deletes only exact rows acknowledged
+   after endpoint commit. Users naturally relay for their own contacts
+   (friend-relay model); public volunteer relays are additive, never required.
 3. **Mesh flooding / sneakernet**: on Meshtastic, envelopes propagate hop-by-hop with the
    mesh's own store-and-forward; any node that later gains internet can bridge queued
    envelopes onward. Fully offline, envelopes export as `.kkb` files; animated
@@ -241,12 +260,15 @@ server must reproduce Sovereign-mode behavior without migration or data loss.
 
 ## 5. What intermediaries see
 
-A relay, DHT node, or mesh repeater carrying ordinary Komms envelopes observes only:
+A relay, DHT node, or mesh repeater carrying ordinary Komms envelopes observes:
 
 - an opaque, rotating **delivery token** (unlinkable to the recipient's identity key by
   anyone but the recipient and, per-message, the sender),
 - a padded ciphertext in one of a small set of standard size buckets,
-- transport-level source of the immediately preceding hop (unavoidable at layer 4).
+- transport-level source of the immediately preceding hop (unavoidable at layer 4), and
+- for a mailbox operator, deposit/collection timing, volume, expiry, quota
+  outcomes, pseudonymous transport clients, random relay row/lease ids, and
+  access correlation within that operator.
 
 For C4 ephemeral traffic, the carrier additionally observes one coarse,
 hour-aligned `retention_until` bucket so it can delete sealed work without
@@ -260,6 +282,13 @@ deadline beyond the coarse bucket, or conversation identifier. This is the
 delivery tokens, timing, sizes, volume, or cross-request correlation from every
 carrier or observer. The construction is specified in
 [04: Cryptography §7](04-cryptography.md).
+
+Mailbox persistence does not turn these limits into anonymity or operator
+inability. A running operator controls the process and can inspect live memory,
+retain traffic metadata, deny, delay, replay, suppress, or discard ciphertext.
+At rest, the v2 database contains only opaque indexes and row-bound seals when
+its separate service key is unavailable; possession of both files exposes the
+relay-visible tokens and envelopes, which remain end-to-end ciphertext.
 
 This paragraph does not describe an enabled optional rendezvous or native-wake
 service. Their bounded but non-zero metadata surfaces are listed in

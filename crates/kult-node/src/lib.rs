@@ -75,8 +75,8 @@ use kult_store::{
     MaintenancePlan, MediaDelete, MediaObjectRecord, MediaObjectTransition, MediaTransferRecord,
     MediaTransferTransition, MessageDelete, MessageDeviceDeliveryRecord, MessageRecord,
     MessageTransition, NoteMessageRecord, PairwiseReceivePlan, PairwiseSendPlan, PendingDelete,
-    PrekeyPublishPlan, PrekeyTransition, ProvisionalRequestRecord, QueueClass, QueueDelete,
-    QueueItem, QueueTransition, ReceiptReceivePlan,
+    PendingStagePlan, PrekeyPublishPlan, PrekeyTransition, ProvisionalRequestRecord, QueueClass,
+    QueueDelete, QueueItem, QueueTransition, ReceiptReceivePlan,
     ScheduledConversation as StoreScheduledConversation, ScheduledMessageRecord, SessionTransition,
     Store, MAX_ADMISSION_REPLAY_LIFETIME_SECS, MAX_ADMISSION_REPLAY_TOMBSTONES,
     MAX_MAINTENANCE_TRANSITIONS, MAX_PROVISIONAL_CONTENT_BYTES, MAX_PROVISIONAL_LIFETIME_SECS,
@@ -3178,20 +3178,31 @@ impl Node {
                         }
                         continue;
                     }
-                    match self.store.pending_push_with_transport(
-                        &envelope,
-                        now,
-                        transport_class,
+                    match self.store.commit_plan(
+                        CommitPlan::PendingStage(PendingStagePlan {
+                            envelope: &envelope,
+                            first_seen: now,
+                            transport: transport_class,
+                        }),
                         rng,
                     ) {
-                        Ok(sequence) if work.len() < MAX_PENDING_WORK_PER_TICK => {
+                        Ok(committed) if work.len() < MAX_PENDING_WORK_PER_TICK => {
+                            let sequence = committed
+                                .records
+                                .pending_sequences
+                                .first()
+                                .copied()
+                                .ok_or(NodeError::CorruptState)?;
                             durable_gathered.insert(content_id);
                             if let Some(receipt) = receipt {
                                 let _ = transport.settle_recv(receipt, true).await;
                             }
                             work.push((Some(sequence), envelope, now, transport_class));
                         }
-                        Ok(_) => {
+                        Ok(committed) => {
+                            if committed.records.pending_sequences.len() != 1 {
+                                return Err(NodeError::CorruptState);
+                            }
                             durable_gathered.insert(content_id);
                             if let Some(receipt) = receipt {
                                 let _ = transport.settle_recv(receipt, true).await;

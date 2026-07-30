@@ -10,11 +10,12 @@
 //! `kultd`'s daemon structure — the two are the same runtime with different
 //! front doors, and a change to one almost always belongs in the other.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use rand::rngs::OsRng;
+use rand::RngCore;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use kult_crypto::{KdfProfile, SafetyNumber};
@@ -29,8 +30,42 @@ use kult_node::{
 };
 use kult_store::{ContactRecord, ConversationId, NoteMessageRecord, AUTHORITY_BACKUP_MAGIC};
 use kult_transport::{
-    DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, Transport, TransportOptions,
+    DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, MailboxServiceConfig, Transport,
+    TransportOptions, MAX_MAILBOX_CHECKIN_TOKENS,
 };
+
+const MAX_MAILBOXES_PER_CHECKIN_TICK: usize = 8;
+const MAX_MAILBOX_BACKOFF: Duration = Duration::from_secs(60 * 60);
+
+#[derive(Clone, Copy)]
+struct MailboxRetry {
+    failures: u8,
+    next_at: Instant,
+}
+
+fn rotating_batch<T: Clone>(items: &[T], cursor: &mut usize, limit: usize) -> Vec<T> {
+    if items.is_empty() || limit == 0 {
+        *cursor = 0;
+        return Vec::new();
+    }
+    *cursor %= items.len();
+    let end = cursor.saturating_add(limit).min(items.len());
+    let batch = items[*cursor..end].to_vec();
+    *cursor = if end == items.len() { 0 } else { end };
+    batch
+}
+
+fn jittered_mailbox_delay(base: Duration, failures: u8, draw: u64) -> Duration {
+    let multiplier = 1u32 << failures.min(6);
+    let backed_off = base.saturating_mul(multiplier).min(MAX_MAILBOX_BACKOFF);
+    let percent = 75u128 + u128::from(draw % 51);
+    let millis = backed_off
+        .as_millis()
+        .saturating_mul(percent)
+        .saturating_div(100)
+        .max(250);
+    Duration::from_millis(u64::try_from(millis).unwrap_or(u64::MAX))
+}
 
 /// A backup to restore from on first start (docs/07-storage.md §4).
 #[derive(Clone)]
@@ -846,8 +881,11 @@ impl Runtime {
             cfg.bridge && (cfg.meshtastic_serial.is_some() || cfg.meshtastic_tcp.is_some());
         let net = {
             let listen: Vec<&str> = cfg.listen.iter().map(String::as_str).collect();
+            let mailbox_dir = cfg.db_path.parent().unwrap_or_else(|| Path::new("."));
             let options = TransportOptions {
-                mailbox: cfg.serve_mailbox.then(MailboxConfig::default),
+                mailbox: cfg.serve_mailbox.then(|| {
+                    MailboxServiceConfig::in_directory(mailbox_dir, MailboxConfig::default())
+                }),
                 lan_discovery: cfg.mdns,
                 bridge_deposits: bridging,
             };
@@ -1022,6 +1060,43 @@ impl Runtime {
         if let Some(dispatcher) = self.dispatcher.take() {
             let _ = dispatcher.join();
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn rotating_batches_bound_work_and_cover_every_entry() {
+        let items = (0..17).collect::<Vec<_>>();
+        let mut cursor = 0;
+        let first = rotating_batch(&items, &mut cursor, 8);
+        let second = rotating_batch(&items, &mut cursor, 8);
+        let third = rotating_batch(&items, &mut cursor, 8);
+        assert_eq!(first, (0..8).collect::<Vec<_>>());
+        assert_eq!(second, (8..16).collect::<Vec<_>>());
+        assert_eq!(third, vec![16]);
+        assert_eq!(cursor, 0);
+    }
+
+    #[test]
+    fn mailbox_backoff_is_jittered_exponential_and_bounded() {
+        let base = Duration::from_secs(10);
+        assert_eq!(
+            jittered_mailbox_delay(base, 0, 0),
+            Duration::from_millis(7_500)
+        );
+        assert_eq!(
+            jittered_mailbox_delay(base, 0, 50),
+            Duration::from_millis(12_500)
+        );
+        assert!(jittered_mailbox_delay(base, 4, 25) > jittered_mailbox_delay(base, 3, 25));
+        assert!(
+            jittered_mailbox_delay(Duration::from_secs(3_600), u8::MAX, 50)
+                <= MAX_MAILBOX_BACKOFF.saturating_mul(5) / 4
+        );
     }
 }
 
@@ -2131,6 +2206,12 @@ async fn lifecycle(
     // peer may hold a queued message stuck on this node's previous address.
     let mut lan_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut lan_tick = tokio::time::interval(std::time::Duration::from_secs(15));
+    let mut mailbox_cursor = 0usize;
+    let mut mailbox_token_cursors: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let mut mailbox_retry: std::collections::HashMap<String, MailboxRetry> =
+        std::collections::HashMap::new();
+    let mut jitter_rng = OsRng;
 
     loop {
         tokio::select! {
@@ -2168,17 +2249,46 @@ async fn lifecycle(
                     break;
                 }
                 let Ok(tokens) = rx.await else { break };
-                for mailbox in &cfg.mailboxes {
-                    // Drain the backlog: a check-in returns at most one
-                    // batch; repeat until empty.
-                    loop {
-                        match net.mailbox_checkin(mailbox, &tokens).await {
-                            Ok(0) => break,
-                            Ok(_) => continue,
-                            Err(e) => {
-                                eprintln!("kult-ffi: mailbox check-in at {mailbox} failed: {e}");
-                                break;
-                            }
+                let mailboxes = rotating_batch(
+                    &cfg.mailboxes,
+                    &mut mailbox_cursor,
+                    MAX_MAILBOXES_PER_CHECKIN_TICK,
+                );
+                for mailbox in mailboxes {
+                    if mailbox_retry
+                        .get(&mailbox)
+                        .is_some_and(|retry| retry.next_at > Instant::now())
+                    {
+                        continue;
+                    }
+                    let token_cursor = mailbox_token_cursors
+                        .entry(mailbox.clone())
+                        .or_default();
+                    let token_batch =
+                        rotating_batch(&tokens, token_cursor, MAX_MAILBOX_CHECKIN_TOKENS);
+                    let result = net.mailbox_checkin(&mailbox, &token_batch).await;
+                    let retry = mailbox_retry.entry(mailbox.clone()).or_insert(MailboxRetry {
+                        failures: 0,
+                        next_at: Instant::now(),
+                    });
+                    match result {
+                        Ok(_) => {
+                            retry.failures = 0;
+                            retry.next_at = Instant::now()
+                                + jittered_mailbox_delay(
+                                    cfg.checkin_interval,
+                                    0,
+                                    jitter_rng.next_u64(),
+                                );
+                        }
+                        Err(_) => {
+                            retry.failures = retry.failures.saturating_add(1);
+                            retry.next_at = Instant::now()
+                                + jittered_mailbox_delay(
+                                    cfg.checkin_interval,
+                                    retry.failures,
+                                    jitter_rng.next_u64(),
+                                );
                         }
                     }
                 }

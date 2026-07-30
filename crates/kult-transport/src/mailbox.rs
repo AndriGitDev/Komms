@@ -1,366 +1,87 @@
-//! Relay-v2 mailboxes (docs/05-transports.md §2): store-and-forward for
-//! offline recipients, served by ordinary nodes — no dedicated
-//! infrastructure, anyone can volunteer.
-//!
-//! A recipient **checks in** with the relays it chose (the ones it lists as
-//! [`crate::DeliveryHint::Relay`] hints in its published bundle), handing
-//! over its current delivery-token set as "accept mail for these" filters
-//! (docs/04-cryptography.md §7) and draining anything queued under them.
-//! Senders **deposit** sealed envelopes; a deposit is accepted only for a
-//! registered token. The relay sees rotating 32-byte tokens and sealed
-//! envelopes — no identities, no plaintext, no conversation graph. Tokens are
-//! recipient-scoped (ADR-0007), so a check-in cannot drain another recipient's
-//! mail. Mailbox-v1 still deletes before endpoint acknowledgement and is not
-//! crash-safe; ADR-0032 defines the leased replacement.
+//! Mailbox resource policy and explicit mailbox-v1 compatibility wire.
 
-use std::collections::HashMap;
-
-use kult_protocol::Envelope;
-
-/// Resource limits and retention for a node's mailbox service. Relays are
-/// volunteer nodes, so every axis is capped; a deposit beyond a cap is
-/// refused, which the sender's delivery engine surfaces as a failed send and
-/// retries with backoff — honest refusal, never silent loss.
+/// Resource limits and retention for a durable mailbox-v2 service.
 #[derive(Clone, Copy, Debug)]
 pub struct MailboxConfig {
-    /// Registered-token cap across all clients. Tokens beyond it are not
-    /// registered (deposits for them are refused); already-registered tokens
-    /// always refresh.
+    /// Registered-token cap across all clients.
     pub max_tokens: usize,
+    /// Registered-token cap owned by one transport client.
+    pub max_tokens_per_client: usize,
     /// Queued-envelope cap per token.
     pub max_per_token: usize,
+    /// Queued ciphertext-byte cap per token.
+    pub max_bytes_per_token: usize,
+    /// Queued-envelope cap attributed to one depositing transport client.
+    pub max_per_client: usize,
+    /// Queued ciphertext-byte cap attributed to one depositing client.
+    pub max_bytes_per_client: usize,
+    /// Total queued-envelope cap across all tokens.
+    pub max_total_items: usize,
     /// Total queued bytes across all tokens.
     pub max_total_bytes: usize,
-    /// Queued envelopes expire after this many seconds — sized for
-    /// human-scale latency, like every other retention window in the system.
+    /// Maximum relay retention for one deposited envelope.
     pub envelope_ttl_secs: u64,
-    /// Registrations expire after this many seconds unless a check-in
-    /// refreshes them; expiry drops the token's queue with it.
+    /// Registration lifetime without a recipient refresh.
     pub registration_ttl_secs: u64,
+    /// Lifetime of one idempotent collection lease.
+    pub lease_ttl_secs: u64,
+    /// Live collection leases allowed for one client.
+    pub max_live_leases_per_client: usize,
+    /// Live collection leases allowed to cover one token.
+    pub max_live_leases_per_token: usize,
+    /// Live collection leases across the complete relay.
+    pub max_live_leases: usize,
+    /// Fixed-window request budget per transport client and minute.
+    pub max_requests_per_client_per_minute: usize,
+    /// Fixed-window request budget across the complete relay and minute.
+    pub max_requests_per_minute: usize,
 }
 
 impl Default for MailboxConfig {
     fn default() -> Self {
         Self {
             max_tokens: 65_536,
+            max_tokens_per_client: 4_096,
             max_per_token: 256,
+            max_bytes_per_token: 16 * 1024 * 1024,
+            max_per_client: 4_096,
+            max_bytes_per_client: 32 * 1024 * 1024,
+            max_total_items: 65_536,
             max_total_bytes: 64 * 1024 * 1024,
             envelope_ttl_secs: 30 * 86_400,
             registration_ttl_secs: 60 * 86_400,
+            lease_ttl_secs: 120,
+            max_live_leases_per_client: 4,
+            max_live_leases_per_token: 2,
+            max_live_leases: 4_096,
+            max_requests_per_client_per_minute: 2_048,
+            max_requests_per_minute: 8_192,
         }
     }
 }
 
-/// What a mailbox currently stores: each registered token with the sealed
-/// envelope blobs queued under it.
-pub type MailboxContents = Vec<([u8; 32], Vec<Vec<u8>>)>;
-
-/// Byte budget per check-in response, kept comfortably under the
-/// request-response codec's response cap. A backlog larger than this is
-/// drained across successive check-ins.
-pub(crate) const CHECKIN_BATCH_BYTES: usize = 2 * 1024 * 1024;
 /// Maximum delivery-token filters accepted in one check-in request.
-///
-/// Registrations can span repeated check-ins. Bounding one request prevents a
-/// remote peer from forcing an unbounded token walk before mailbox admission.
 pub const MAX_MAILBOX_CHECKIN_TOKENS: usize = 4_096;
-/// Maximum envelope rows returned by one mailbox-v1 check-in page.
-///
-/// This is an interim compatibility bound. ADR-0032 replaces destructive v1
-/// collection with leased pages acknowledged after durable endpoint staging.
+/// Maximum envelope rows in one explicitly enabled destructive v1 page.
 pub const MAX_MAILBOX_CHECKIN_ENVELOPES: usize = 512;
 
-/// Wire request on `/komms/mailbox/1`.
+/// Compatibility wire request on `/komms/mailbox/1`.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum MailboxRequest {
-    /// Register these tokens as accept-filters (refreshing their TTL) and
-    /// return one count/byte-bounded destructive v1 page queued under them.
+    /// Register tokens and return one destructive compatibility page.
     Checkin { tokens: Vec<[u8; 32]> },
-    /// Deposit one sealed envelope; its delivery token must be registered.
+    /// Deposit one sealed envelope.
     Deposit { envelope: Vec<u8> },
 }
 
-/// Wire response on `/komms/mailbox/1`.
+/// Compatibility wire response on `/komms/mailbox/1`.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum MailboxResponse {
-    /// `serving` is false when this node runs no mailbox service — an honest
-    /// refusal, distinct from "serving but nothing queued".
+    /// `serving` is false unless the operator explicitly enabled v1.
     Checkin {
         serving: bool,
         envelopes: Vec<Vec<u8>>,
     },
-    Deposit {
-        accepted: bool,
-    },
-}
-
-struct QueuedEnvelope {
-    expires_at: u64,
-    bytes: Vec<u8>,
-}
-
-/// The relay-side state: registered token filters and the sealed envelopes
-/// queued under them. Pure data structure — the caller supplies the clock,
-/// the swarm task supplies the wire.
-pub(crate) struct MailboxStore {
-    config: MailboxConfig,
-    /// token → registration expiry.
-    registered: HashMap<[u8; 32], u64>,
-    /// token → queued deposits, oldest first.
-    queued: HashMap<[u8; 32], Vec<QueuedEnvelope>>,
-    total_bytes: usize,
-}
-
-impl MailboxStore {
-    pub(crate) fn new(config: MailboxConfig) -> Self {
-        Self {
-            config,
-            registered: HashMap::new(),
-            queued: HashMap::new(),
-            total_bytes: 0,
-        }
-    }
-
-    /// Register (or refresh) `tokens` and drain their queues, up to the
-    /// per-response byte budget — leftovers surface on the next check-in.
-    pub(crate) fn checkin(&mut self, tokens: &[[u8; 32]], now: u64) -> Vec<Vec<u8>> {
-        self.sweep(now);
-        let expiry = now + self.config.registration_ttl_secs;
-        let mut out = Vec::new();
-        let mut budget = CHECKIN_BATCH_BYTES;
-        let mut items_left = MAX_MAILBOX_CHECKIN_ENVELOPES;
-        for token in tokens.iter().take(MAX_MAILBOX_CHECKIN_TOKENS) {
-            if items_left == 0 {
-                break;
-            }
-            if let Some(current) = self.registered.get_mut(token) {
-                *current = expiry;
-            } else if self.registered.len() < self.config.max_tokens {
-                self.registered.insert(*token, expiry);
-            } else {
-                // Token cap reached: best-effort, skip (deposits for this
-                // token stay refused until capacity frees up).
-                continue;
-            }
-            let Some(queue) = self.queued.get_mut(token) else {
-                continue;
-            };
-            let take = queue
-                .iter()
-                .take(items_left)
-                .scan(0usize, |used, q| {
-                    *used += q.bytes.len();
-                    (*used <= budget).then_some(())
-                })
-                .count();
-            for q in queue.drain(..take) {
-                budget -= q.bytes.len();
-                self.total_bytes -= q.bytes.len();
-                out.push(q.bytes);
-            }
-            items_left -= take;
-            if queue.is_empty() {
-                self.queued.remove(token);
-            }
-        }
-        out
-    }
-
-    /// Queue one sealed envelope under `token`. Returns whether the deposit
-    /// was accepted; refusals (unregistered token, caps) are the sender's
-    /// signal to retry elsewhere or later.
-    pub(crate) fn deposit(&mut self, token: [u8; 32], bytes: Vec<u8>, now: u64) -> bool {
-        self.sweep(now);
-        if !self.registered.contains_key(&token) {
-            return false;
-        }
-        let queue = self.queued.entry(token).or_default();
-        // Multipath and retry duplicates are normal; one copy suffices (the
-        // recipient deduplicates by content id anyway).
-        if queue.iter().any(|q| q.bytes == bytes) {
-            return true;
-        }
-        let policy_expiry = now.saturating_add(self.config.envelope_ttl_secs);
-        let expires_at = Envelope::decode(&bytes)
-            .ok()
-            .and_then(|envelope| envelope.retention_until)
-            .map_or(policy_expiry, |hint| hint.min(policy_expiry));
-        // The hint is a deletion instruction, not sender authentication.
-        // Treat an already-expired valid deposit as accepted-and-discarded
-        // so retries cannot keep it alive at another relay.
-        if expires_at <= now {
-            return true;
-        }
-        if queue.len() >= self.config.max_per_token
-            || self.total_bytes + bytes.len() > self.config.max_total_bytes
-        {
-            return false;
-        }
-        self.total_bytes += bytes.len();
-        queue.push(QueuedEnvelope { expires_at, bytes });
-        true
-    }
-
-    /// Whether `token` is currently a registered accept-filter. Decides
-    /// where a refused deposit may go on a bridging node (ADR-0009): a
-    /// registered token's mail belongs to a libp2p collector even when its
-    /// queue is momentarily full, so only *unregistered* tokens fall through
-    /// to the mesh-transit buffer.
-    pub(crate) fn is_registered(&mut self, token: &[u8; 32], now: u64) -> bool {
-        self.sweep(now);
-        self.registered.contains_key(token)
-    }
-
-    /// Everything currently stored, per token — relay-operator transparency,
-    /// and how the M3 inspection test verifies the relay holds nothing but
-    /// sealed envelopes.
-    pub(crate) fn contents(&self) -> MailboxContents {
-        self.queued
-            .iter()
-            .map(|(token, queue)| (*token, queue.iter().map(|q| q.bytes.clone()).collect()))
-            .collect()
-    }
-
-    fn sweep(&mut self, now: u64) {
-        self.registered.retain(|_, expiry| *expiry > now);
-        let registered = &self.registered;
-        let total = &mut self.total_bytes;
-        self.queued.retain(|token, queue| {
-            queue.retain(|q| {
-                let live = q.expires_at > now && registered.contains_key(token);
-                if !live {
-                    *total -= q.bytes.len();
-                }
-                live
-            });
-            !queue.is_empty()
-        });
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const NOW: u64 = 1_800_000_000;
-
-    fn store() -> MailboxStore {
-        MailboxStore::new(MailboxConfig {
-            max_tokens: 4,
-            max_per_token: 2,
-            max_total_bytes: 1024,
-            envelope_ttl_secs: 100,
-            registration_ttl_secs: 1_000,
-        })
-    }
-
-    #[test]
-    fn deposit_requires_registration() {
-        let mut s = store();
-        assert!(!s.deposit([1; 32], vec![0xAA], NOW));
-        assert!(s.checkin(&[[1; 32]], NOW).is_empty());
-        assert!(s.deposit([1; 32], vec![0xAA], NOW));
-        assert_eq!(s.checkin(&[[1; 32]], NOW + 1), vec![vec![0xAA]]);
-        // Collection deletes.
-        assert!(s.checkin(&[[1; 32]], NOW + 2).is_empty());
-    }
-
-    #[test]
-    fn duplicates_stored_once_and_caps_refuse() {
-        let mut s = store();
-        s.checkin(&[[1; 32]], NOW);
-        assert!(s.deposit([1; 32], vec![1], NOW));
-        assert!(s.deposit([1; 32], vec![1], NOW), "duplicate is a no-op ok");
-        assert!(s.deposit([1; 32], vec![2], NOW));
-        assert!(!s.deposit([1; 32], vec![3], NOW), "per-token cap");
-        assert_eq!(s.checkin(&[[1; 32]], NOW).len(), 2);
-
-        s.checkin(&[[2; 32]], NOW);
-        assert!(!s.deposit([2; 32], vec![0; 2048], NOW), "byte cap");
-    }
-
-    #[test]
-    fn token_cap_is_best_effort() {
-        let mut s = store();
-        let tokens: Vec<[u8; 32]> = (0u8..6).map(|i| [i; 32]).collect();
-        s.checkin(&tokens, NOW);
-        assert!(s.deposit([3; 32], vec![1], NOW), "within cap: registered");
-        assert!(!s.deposit([5; 32], vec![1], NOW), "beyond cap: refused");
-    }
-
-    #[test]
-    fn envelopes_and_registrations_expire() {
-        let mut s = store();
-        s.checkin(&[[1; 32]], NOW);
-        assert!(s.deposit([1; 32], vec![7], NOW));
-        // Envelope TTL passes: the deposit is gone, registration remains.
-        assert!(s.checkin(&[[1; 32]], NOW + 101).is_empty());
-        assert!(s.deposit([1; 32], vec![8], NOW + 101));
-        // Registration TTL passes without a refresh: deposits refused again.
-        assert!(!s.deposit([1; 32], vec![9], NOW + 1_500));
-        assert_eq!(s.total_bytes, 0, "expiry returned every byte");
-    }
-
-    #[test]
-    fn v2_hint_shortens_but_never_extends_relay_policy() {
-        let mut s = store();
-        let token = [9; 32];
-        s.checkin(&[token], NOW);
-        let early = Envelope::new_retained(
-            kult_protocol::EnvelopeKind::Message,
-            token,
-            NOW - (NOW % 3_600) + 3_600,
-            vec![1],
-        )
-        .unwrap()
-        .encode();
-        assert!(s.deposit(token, early, NOW));
-        assert!(s.checkin(&[token], NOW + 3_601).is_empty());
-
-        let late = Envelope::new_retained(
-            kult_protocol::EnvelopeKind::Message,
-            token,
-            NOW - (NOW % 3_600) + 36_000,
-            vec![2],
-        )
-        .unwrap()
-        .encode();
-        assert!(s.deposit(token, late, NOW));
-        assert!(s.checkin(&[token], NOW + 101).is_empty());
-    }
-
-    #[test]
-    fn checkin_batches_by_bytes() {
-        let mut s = MailboxStore::new(MailboxConfig {
-            max_total_bytes: 32 * 1024 * 1024,
-            max_per_token: 16,
-            ..MailboxConfig::default()
-        });
-        s.checkin(&[[1; 32]], NOW);
-        for i in 0..3 {
-            assert!(s.deposit([1; 32], vec![i; 1024 * 1024], NOW));
-        }
-        // 3 MiB queued, 2 MiB budget: two now, one on the next check-in.
-        assert_eq!(s.checkin(&[[1; 32]], NOW).len(), 2);
-        assert_eq!(s.checkin(&[[1; 32]], NOW).len(), 1);
-    }
-
-    #[test]
-    fn checkin_pages_are_bounded_by_row_count() {
-        let mut s = MailboxStore::new(MailboxConfig {
-            max_total_bytes: 32 * 1024 * 1024,
-            max_per_token: MAX_MAILBOX_CHECKIN_ENVELOPES + 100,
-            ..MailboxConfig::default()
-        });
-        let token = [2; 32];
-        s.checkin(&[token], NOW);
-        for i in 0..(MAX_MAILBOX_CHECKIN_ENVELOPES + 100) {
-            assert!(s.deposit(token, (i as u64).to_le_bytes().to_vec(), NOW));
-        }
-        assert_eq!(
-            s.checkin(&[token], NOW).len(),
-            MAX_MAILBOX_CHECKIN_ENVELOPES
-        );
-        assert_eq!(s.checkin(&[token], NOW).len(), 100);
-    }
+    /// `true` means the durable v2 store committed the deposit.
+    Deposit { accepted: bool },
 }

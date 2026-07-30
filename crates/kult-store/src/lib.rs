@@ -78,13 +78,13 @@ pub use commit::{
     GroupChainTransition, GroupMessageDelete, GroupMessageTransition, GroupReceivePlan,
     GroupSendPlan, GroupStatePlan, GroupStateTransition, GroupTransition, HandshakeReceivePlan,
     MaintenancePlan, MediaDelete, MediaObjectTransition, MediaTransferTransition, MessageDelete,
-    MessageTransition, PairwiseReceivePlan, PairwiseSendPlan, PendingDelete, PrekeyPublishPlan,
-    PrekeyTransition, QueueDelete, QueueTransition, ReceiptReceivePlan, SessionDelete,
-    SessionTransition, MAX_ATTACHMENT_STAGE_MUTATIONS, MAX_COMMIT_MUTATIONS, MAX_COMMIT_QUEUE_ROWS,
-    MAX_DEFERRED_CONTROLS, MAX_DEVICE_CONTROL_MUTATIONS, MAX_DEVICE_LINK_MUTATIONS,
-    MAX_DEVICE_PROJECTION_MUTATIONS, MAX_GROUP_COMMIT_MUTATIONS, MAX_GROUP_COMMIT_QUEUE_ROWS,
-    MAX_GROUP_STATE_MUTATIONS, MAX_MAINTENANCE_TRANSITIONS, MAX_PAIRWISE_COMMIT_DEVICES,
-    MAX_PROFILE_GROUPS,
+    MessageTransition, PairwiseReceivePlan, PairwiseSendPlan, PendingDelete, PendingStagePlan,
+    PrekeyPublishPlan, PrekeyTransition, QueueDelete, QueueTransition, ReceiptReceivePlan,
+    SessionDelete, SessionTransition, MAX_ATTACHMENT_STAGE_MUTATIONS, MAX_COMMIT_MUTATIONS,
+    MAX_COMMIT_QUEUE_ROWS, MAX_DEFERRED_CONTROLS, MAX_DEVICE_CONTROL_MUTATIONS,
+    MAX_DEVICE_LINK_MUTATIONS, MAX_DEVICE_PROJECTION_MUTATIONS, MAX_GROUP_COMMIT_MUTATIONS,
+    MAX_GROUP_COMMIT_QUEUE_ROWS, MAX_GROUP_STATE_MUTATIONS, MAX_MAINTENANCE_TRANSITIONS,
+    MAX_PAIRWISE_COMMIT_DEVICES, MAX_PROFILE_GROUPS,
 };
 #[cfg(feature = "test-failpoints")]
 pub use commit::{CommitFailpoint, CommitFailure};
@@ -1238,8 +1238,8 @@ impl Store {
             row.verify_indexes(&store_v2::IndexKeys::none())
         })?;
         self.validate_rows::<store_v2::PendingRows, _>(|row| {
-            row.verify_indexes(&store_v2::IndexKeys::none())?;
-            let _ = decode_pending_envelope(&row.payload)?;
+            let (envelope, _, _) = decode_pending_envelope(&row.payload)?;
+            row.verify_pending_indexes(&store_v2::ContentKey::new(envelope.content_id()))?;
             Ok(())
         })?;
         self.validate_rows::<store_v2::ResetRows, _>(|row| {
@@ -1786,6 +1786,16 @@ impl Store {
         }
 
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let content = store_v2::ContentKey::new(env.content_id());
+        if let Some(existing) = self.row_by_unique::<store_v2::PendingContentIndex>(&content)? {
+            let (stored, _, _) = decode_pending_envelope(&existing.payload)?;
+            if stored != *env {
+                tx.rollback()?;
+                return Err(StoreError::LogicalKeyMismatch);
+            }
+            tx.commit()?;
+            return Ok(existing.rowid);
+        }
         let count = usize::try_from(self.count_rows_on::<store_v2::PendingRows>(&tx)?)
             .map_err(|_| StoreError::Serialization)?;
         if count >= MAX_PENDING_ENVELOPES {
@@ -1796,7 +1806,7 @@ impl Store {
             &tx,
             None,
             &plain,
-            store_v2::IndexKeys::none(),
+            store_v2::IndexKeys::pending(&content),
             rng,
         )?;
         if self.sealed_bytes_on::<store_v2::PendingRows>(&tx)? > MAX_PENDING_BYTES as u64 {
@@ -2486,6 +2496,18 @@ mod queue_tests {
         let second = Envelope::new(EnvelopeKind::Receipt, [3; 32], vec![4]);
 
         let first_sequence = store.pending_push(&first, 100, &mut rng).unwrap();
+        assert_eq!(
+            store
+                .pending_push_with_transport(
+                    &first,
+                    101,
+                    AdmissionTransportClass::Mailbox,
+                    &mut rng,
+                )
+                .unwrap(),
+            first_sequence,
+            "exact duplicate staging keeps the first durable row"
+        );
         let second_sequence = store
             .pending_push_with_transport(&second, 200, AdmissionTransportClass::Mailbox, &mut rng)
             .unwrap();

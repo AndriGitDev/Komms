@@ -77,6 +77,7 @@ enum Target {
     PrekeyPublish,
     PairwiseSend,
     HandshakeReceive,
+    PendingStage,
     AdmissionStage,
     AdmissionAccept,
     AdmissionDiscard,
@@ -98,18 +99,35 @@ enum Target {
     DeviceProjection,
 }
 
-#[derive(Default)]
 struct StagedDirectTransport {
     inbox: Mutex<Vec<ReceivedEnvelope>>,
     settled: Mutex<Vec<bool>>,
+    ingress: IngressClass,
+}
+
+impl Default for StagedDirectTransport {
+    fn default() -> Self {
+        Self {
+            inbox: Mutex::new(Vec::new()),
+            settled: Mutex::new(Vec::new()),
+            ingress: IngressClass::Direct,
+        }
+    }
 }
 
 impl StagedDirectTransport {
+    fn mailbox() -> Self {
+        Self {
+            ingress: IngressClass::Mailbox,
+            ..Self::default()
+        }
+    }
+
     fn push(&self, envelope: Envelope, receipt: u64) {
         self.inbox.lock().unwrap().push(ReceivedEnvelope {
             envelope,
             receipt: Some(InboundReceipt::new(receipt)),
-            ingress: IngressClass::Direct,
+            ingress: self.ingress,
         });
     }
 
@@ -130,7 +148,7 @@ impl Transport for StagedDirectTransport {
     }
 
     fn ingress_class(&self) -> IngressClass {
-        IngressClass::Direct
+        self.ingress
     }
 
     async fn reachable(&self, _hint: &DeliveryHint) -> Reachability {
@@ -531,6 +549,7 @@ fn run_store_case(
         Target::PrekeyPublish => run_prekey_publish(point, failure, seed),
         Target::PairwiseSend => run_pairwise_send(point, failure, seed),
         Target::HandshakeReceive => run_handshake_receive(point, failure, seed),
+        Target::PendingStage => run_pending_stage(point, failure, seed),
         Target::AdmissionStage => run_admission_stage(point, failure, seed),
         Target::AdmissionAccept => run_admission_accept(point, failure, seed),
         Target::AdmissionDiscard => run_admission_discard(point, failure, seed),
@@ -935,6 +954,69 @@ fn run_handshake_receive(point: CommitFailpoint, failure: CommitFailure, seed: u
     .unwrap();
     assert_eq!(bob.store.messages_with(&alice_id).unwrap().len(), 1);
     assert!(!pending_contains(&bob, pending_sequence, content_id));
+    result_ok
+}
+
+fn run_pending_stage(point: CommitFailpoint, failure: CommitFailure, seed: u64) -> bool {
+    let mut fixture = Fixture::new(seed);
+    let envelope = Envelope::new(EnvelopeKind::Receipt, [0x32; 32], vec![0x33; 64]);
+    fixture.alice.arm_commit_failpoint(point, failure);
+    let result = fixture.alice.store.commit_plan(
+        CommitPlan::PendingStage(PendingStagePlan {
+            envelope: &envelope,
+            first_seen: NOW + 1,
+            transport: AdmissionTransportClass::Mailbox,
+        }),
+        &mut fixture.rng,
+    );
+    let result_ok = result.is_ok();
+    let committed = fixture
+        .alice
+        .store
+        .pending_all_with_transport()
+        .unwrap()
+        .iter()
+        .any(|(_, candidate, first_seen, transport)| {
+            candidate == &envelope
+                && *first_seen == NOW + 1
+                && *transport == AdmissionTransportClass::Mailbox
+        });
+    assert_eq!(committed, expected_committed(result_ok, point));
+
+    let Fixture {
+        _directory,
+        alice_path,
+        bob_path: _,
+        alice,
+        bob: _,
+        alice_id: _,
+        bob_id: _,
+        mut rng,
+    } = fixture;
+    drop(alice);
+    let alice = Node::open(&alice_path, b"alice").unwrap();
+    let receipt = alice
+        .store
+        .commit_plan(
+            CommitPlan::PendingStage(PendingStagePlan {
+                envelope: &envelope,
+                first_seen: NOW + 1,
+                transport: AdmissionTransportClass::Mailbox,
+            }),
+            &mut rng,
+        )
+        .unwrap();
+    assert_eq!(receipt.records.pending_sequences.len(), 1);
+    assert_eq!(
+        alice
+            .store
+            .pending_all_with_transport()
+            .unwrap()
+            .iter()
+            .filter(|(_, candidate, _, _)| candidate == &envelope)
+            .count(),
+        1
+    );
     result_ok
 }
 
@@ -2933,6 +3015,7 @@ fn every_transaction_statement_is_all_or_nothing_after_restart() {
         Target::PrekeyPublish,
         Target::PairwiseSend,
         Target::HandshakeReceive,
+        Target::PendingStage,
         Target::AdmissionStage,
         Target::AdmissionAccept,
         Target::AdmissionDiscard,
@@ -3513,6 +3596,7 @@ fn disk_constraint_and_duplicate_failures_leave_retryable_inputs() {
         Target::PrekeyPublish,
         Target::PairwiseSend,
         Target::HandshakeReceive,
+        Target::PendingStage,
         Target::AdmissionStage,
         Target::AdmissionAccept,
         Target::AdmissionDiscard,
@@ -3627,6 +3711,48 @@ async fn direct_admission_accepts_only_the_first_durably_staged_candidate() {
     assert_eq!(requests[0].transport, AdmissionTransportClass::Direct);
     assert!(fixture.bob.store.is_seen(&invalid_id).unwrap());
     assert!(fixture.bob.store.pending_all().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn mailbox_custody_ends_only_after_durable_endpoint_staging() {
+    for (offset, point) in [CommitFailpoint::BeforeCommit, CommitFailpoint::AfterCommit]
+        .into_iter()
+        .enumerate()
+    {
+        let mut rng = StdRng::seed_from_u64(0xa280_9010 + offset as u64);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("endpoint.db");
+        let mut node = Node::create(&path, b"endpoint", TEST_KDF, &mut rng).unwrap();
+        let envelope = Envelope::new(EnvelopeKind::Receipt, [0x91; 32], vec![0x92; 64]);
+        let transport = Arc::new(StagedDirectTransport::mailbox());
+        transport.push(envelope.clone(), 1);
+        node.add_transport(Arc::clone(&transport) as Arc<dyn Transport>);
+        node.arm_commit_failpoint(point, CommitFailure::Interrupted);
+
+        assert!(node.tick(NOW + 1, &mut rng).await.is_err());
+        assert_eq!(transport.settled(), vec![false]);
+        assert_eq!(
+            node.store.pending_all().unwrap().len(),
+            usize::from(point == CommitFailpoint::AfterCommit)
+        );
+
+        drop(node);
+        let mut node = Node::open(&path, b"endpoint").unwrap();
+        transport.push(envelope.clone(), 2);
+        node.add_transport(Arc::clone(&transport) as Arc<dyn Transport>);
+        let _ = node.tick(NOW + 2, &mut rng).await;
+
+        assert_eq!(transport.settled(), vec![false, true]);
+        assert!(
+            node.store
+                .pending_all()
+                .unwrap()
+                .iter()
+                .filter(|(_, candidate, _)| candidate == &envelope)
+                .count()
+                <= 1
+        );
+    }
 }
 
 #[test]

@@ -13,12 +13,18 @@ fn test_envelope(fill: u8) -> Envelope {
     Envelope::new(EnvelopeKind::Message, [fill; 32], vec![fill; 300])
 }
 
-/// Poll `recv` until envelopes arrive (or 10 s passes).
+/// Poll staged receive until envelopes arrive, then explicitly accept each
+/// exact direct response handle (or time out after 10 seconds).
 async fn recv_within(t: &Libp2pTransport) -> Vec<Envelope> {
     for _ in 0..1000 {
-        let got = t.recv().await.unwrap();
+        let got = t.recv_staged().await.unwrap();
         if !got.is_empty() {
-            return got;
+            let mut envelopes = Vec::with_capacity(got.len());
+            for item in got {
+                t.settle_recv(item.receipt.unwrap(), true).await.unwrap();
+                envelopes.push(item.envelope);
+            }
+            return envelopes;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }

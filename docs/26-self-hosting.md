@@ -13,13 +13,12 @@ supports `linux/amd64` and `linux/arm64`. Pull the immutable release tag with:
 docker pull ghcr.io/andrigitdev/komms-kultd:0.3.0
 ```
 
-> **Alpha mailbox warning:** `--serve-mailbox` currently keeps accepted mailbox
-> ciphertext in process memory, and mailbox fetch removes a returned page before
-> endpoint-level acknowledgement. Restart, process loss, or a receiver that
-> cannot admit the fetched page can therefore lose that relay copy. This role is
-> suitable for interoperability testing, not durable or production mailbox
-> custody. ADR-0032 defines the leased persistent design required before that
-> claim.
+> **Artifact boundary:** the historical `0.3.0` image shown below predates
+> mailbox v2 and must not be used to claim durable custody. Builds from a source
+> revision that includes accepted ADR-0032 use persistent leased
+> `/komms/mailbox/2`; verify the image revision and reported mailbox schema
+> rather than relying on an Alpha tag. No current public operator has been
+> qualified as stable infrastructure.
 
 The `0.3-alpha` and `alpha` tags are moving Alpha aliases; the committed Compose
 file tracks `0.3-alpha`, while automation should pin `0.3.0` or an image digest.
@@ -95,6 +94,15 @@ services:
       - --no-mdns
 ```
 
+`--serve-mailbox` creates three owner-only files beside `node.db`:
+`mailbox-v2.db`, `mailbox-v2.key`, and
+`mailbox-v2.transport.key`. They form a separate service role. The row/index
+key protects the relay database, while the transport key keeps the published
+libp2p mailbox address stable across restart. Neither is a user account,
+directory, recovery, or release key, and neither enters a Komms `KKR9` user
+backup. Startup rejects final-component symlinks for these service files and
+keeps the database, WAL/shared-memory sidecars, and keys owner-only.
+
 For a network-attached Meshtastic radio, append `--meshtastic-tcp HOST:4403`.
 For USB serial, pass the device through to the container and append
 `--meshtastic-serial /dev/ttyACM0`; device names and host permissions vary by
@@ -107,6 +115,148 @@ the passphrase in `KULTD_PASSPHRASE` for long-lived deployments: environment
 variables can be exposed by process and container inspection tools. A direct
 `docker run` deployment should instead mount an owner-only file at
 `/run/komms-secrets/passphrase` and persistent storage at `/var/lib/komms`.
+
+## Mailbox v2 custody and limits
+
+The current source profile returns deposit acceptance only after a durable
+SQLite commit with full synchronization. Check-in creates a 120-second
+idempotent lease. A recipient commits each complete envelope to its bounded
+sealed pending domain before acknowledging the exact lease and row ids; the
+relay then deletes only those ids transactionally. Response loss, duplicate
+pages, duplicate acknowledgements, receiver refusal, or a process stop does not
+delete unacknowledged rows. The sender retains its original ciphertext until an
+authenticated end-to-end receipt or the terminal retry deadline.
+
+Bridge transit is deliberately weaker. An unregistered deposit may be copied
+into the bounded in-memory mesh queue, but the service returns refusal and the
+sender retains custody. Do not count best-effort bridge forwarding as a
+mailbox deposit, sent state, or durable capacity.
+
+Default limits are:
+
+| Axis | Default |
+|---|---:|
+| Envelope retention | 30 days maximum, shortened by an authenticated earlier retention bucket |
+| Registration without refresh | 60 days |
+| Lease lifetime | 120 seconds |
+| One lease page | 128 rows and 1 MiB ciphertext |
+| One check-in | 4,096 token filters |
+| Registrations | 65,536 total; 4,096 per transport client |
+| One token | 256 rows; 16 MiB |
+| One depositing transport client | 4,096 rows; 32 MiB |
+| Whole relay | 65,536 rows; 64 MiB ciphertext |
+| Live leases | 4,096 relay-wide; 4 per client; 2 covering one token |
+| Request budget | 2,048 per client and 8,192 relay-wide per fixed minute |
+| Protocol concurrency | 8 mailbox streams; 128 total pending outbound operations |
+
+Request/response codecs, command queues, endpoint collection inboxes, local
+pending rows, and lifecycle work have independent bounds. One lifecycle
+interval requests one page from at most eight selected mailboxes, rotates
+larger mailbox/token sets, and applies jittered backoff capped at one hour. A
+hostile relay cannot force a loop-until-empty.
+
+“Per client” means the pseudonymous libp2p transport peer observed by this
+operator, not a Komms account or a Sybil-resistant identity. A caller can
+rotate it; relay-wide item/byte/lease/request and connection bounds remain the
+hard containment boundary.
+
+`kult status` reports only aggregate mailbox fields: stored/capacity
+items and bytes, configured retention and request budgets, current filesystem
+reserve, registration and live-lease counts, oldest lease age,
+rejection/expiry counters, and schema version. Mailbox logs contain only an
+aggregate collected row count or a context-free failure; they omit tokens,
+locators, ciphertext, row/lease ids, peer identities, and social labels.
+
+Destructive `/komms/mailbox/1` compatibility is disabled by default and the
+packaged daemon has no flag to enable it. A custom embedding that explicitly
+sets `allow_v1_compat` accepts the known delete-before-response risk; clients
+do not fall back automatically, and v1 never satisfies durable-custody
+evidence.
+
+## Capacity and cost model
+
+The 64 MiB limit counts encoded ciphertext, not SQLite indexes, seals, WAL,
+filesystem metadata, container layers, logs, or backup copies. Reserve at
+least 256 MiB of persistent writable space for the default mailbox role and
+monitor the reported filesystem reserve. The service rejects work rather than
+claim custody when any item, byte, rate, registration, lease, codec, stream, or
+disk write bound is reached.
+
+Memory is bounded principally by active protocol pages and connections; the
+database remains the durable queue. CPU cost scales with accepted requests,
+AEAD verification/sealing, keyed-index work, and synchronous SQLite commits.
+Network cost is ingress plus repeated leased egress until acknowledgement;
+multi-operator deposits intentionally multiply both durability and cost.
+
+Before volunteering, record the operator-specific monthly figures rather than
+publishing a guessed universal price:
+
+| Cost input | Record |
+|---|---|
+| Compute | Instance/host price and reserved CPU/RAM |
+| Persistent storage | Allocated GiB, snapshot GiB, and IOPS charges |
+| Network | Included transfer, metered ingress/egress, and overage |
+| Operations | Monitoring, incident response, upgrades, abuse handling, and on-call time |
+
+P0-08 remains open until a revision-bound deployment records observed
+utilization, overload behavior, backup/restore, upgrade/rollback, incidents,
+and multi-operator behavior.
+
+## Backup, restore, upgrade, and rollback
+
+Mailbox custody and endpoint recovery are different promises. A `KKR9` export
+backs up eligible user history and authority state only. It intentionally
+excludes the mailbox database, both mailbox service keys, live delivery
+tokens, deposits, leases, queues, and resumable custody.
+
+For an operator custody backup:
+
+1. Stop `kultd` cleanly and confirm the process has closed the SQLite files.
+2. Copy `mailbox-v2.db`, `mailbox-v2.key`, and
+   `mailbox-v2.transport.key` as one encrypted snapshot. If `-wal` or `-shm`
+   files remain, include them rather than copying only the main database.
+3. Keep that snapshot separate from endpoint passphrases and user backups.
+   Restrict it as relay-visible metadata and ciphertext, not harmless cache.
+4. Restore the complete set into an owner-only directory before startup.
+   Confirm schema 2, the expected libp2p peer id, aggregate row/byte counts,
+   and a lease/ack smoke test.
+
+Restoring only a database or only one key fails closed. Generating a new
+transport key changes the mailbox address and requires clients to learn the
+replacement; generating a new row key makes old rows unreadable. Starting with
+an empty directory is a new service and must not be described as preserving
+old custody.
+
+For an upgrade, pin the old and new source revisions/image digests, stop the
+service, take the complete snapshot, start the new build, and verify the schema
+and smoke test before reopening traffic. An unknown schema is refused. If the
+new build fails before a schema migration, stop it and restore the old
+revision with the exact snapshot. No rolling downgrade or hot-copy guarantee
+is made.
+
+## Incidents and service replacement
+
+- **Disk full or overload:** acceptance is false; do not report the envelope
+  as sent. Restore reserve or capacity, verify integrity and metrics, then
+  resume. Unacknowledged leased rows remain relay work.
+- **Database corruption or lost row key:** isolate the service, retain the
+  failed files for investigation, restore the last complete snapshot if its
+  custody window is acceptable, and disclose the possible row-loss interval.
+  Otherwise publish a replacement address and state that old relay custody was
+  lost.
+- **Transport-key compromise:** withdraw the old mailbox address, generate a
+  new dedicated service identity, distribute the replacement through
+  authenticated configuration, and treat the old address as attacker
+  controlled. Do not reuse directory or release keys.
+- **Database plus row-key disclosure:** assume tokens, timing relationships,
+  and stored end-to-end ciphertext were exposed. The ciphertext is not message
+  plaintext, but that does not erase the metadata incident. Rotate to a new
+  service set, preserve sender retry semantics, notify affected users through
+  the published incident channel, and record scope and dates.
+- **Operator seizure or hostile control:** an operator can inspect live
+  memory, correlate network activity, suppress, delay, replay, or destroy
+  work. Multi-operator redundancy and sender retention improve recovery; they
+  do not make an operator unable to observe or interfere.
 
 ## Alpha limits and upgrades
 

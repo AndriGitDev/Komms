@@ -638,6 +638,13 @@ impl IndexKeys {
         }
     }
 
+    pub(crate) fn pending(content: &ContentKey) -> Self {
+        Self {
+            unique: Some(content.encode()),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn group_chain(group: &GroupKey) -> Self {
         Self {
             a: Some(group.encode()),
@@ -726,6 +733,13 @@ lookup_index!(QueuePeerIndex, QueueRows, AccountKey, 2, "index_a");
 lookup_index!(QueueMessageIndex, QueueRows, ContentKey, 3, "index_b");
 lookup_index!(QueueGroupMessageIndex, QueueRows, ContentKey, 4, "index_c");
 lookup_index!(QueueEnvelopeIndex, QueueRows, ContentKey, 5, "index_d");
+lookup_index!(
+    PendingContentIndex,
+    PendingRows,
+    ContentKey,
+    1,
+    "unique_index"
+);
 lookup_index!(GroupChainGroupIndex, GroupChainRows, GroupKey, 2, "index_a");
 lookup_index!(
     GroupMessageIdIndex,
@@ -797,6 +811,14 @@ impl RawRow {
 
     pub(crate) fn verify_indexes(&self, expected: &IndexKeys) -> Result<()> {
         if &self.indexes == expected {
+            Ok(())
+        } else {
+            Err(StoreError::LogicalKeyMismatch)
+        }
+    }
+
+    pub(crate) fn verify_pending_indexes(&self, content: &ContentKey) -> Result<()> {
+        if self.indexes == IndexKeys::none() || self.indexes == IndexKeys::pending(content) {
             Ok(())
         } else {
             Err(StoreError::LogicalKeyMismatch)
@@ -1870,6 +1892,7 @@ fn validate_index_shape(domain: u8, indexes: &IndexKeys) -> Result<()> {
     let expected = match domain {
         MessageRows::DOMAIN => [true, true, false, false, false],
         QueueRows::DOMAIN => [false, true, shape[2], shape[3], true],
+        PendingRows::DOMAIN => [shape[0], false, false, false, false],
         GroupChainRows::DOMAIN => [false, true, false, false, false],
         GroupMessageRows::DOMAIN => [true, true, false, false, false],
         MediaObjectRows::DOMAIN => [false, true, false, false, false],

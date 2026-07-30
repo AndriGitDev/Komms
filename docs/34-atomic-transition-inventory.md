@@ -17,7 +17,7 @@ atomicity.
 
 ## 1. Transaction contract
 
-The store exposes twenty-three bounded protocol plan kinds. Some retain
+The store exposes twenty-four bounded protocol plan kinds. Some retain
 explicit legacy profile/migration support; current stable-profile authority
 paths use the `Authority*` variants:
 
@@ -30,6 +30,7 @@ paths use the `Authority*` variants:
 | `PairwiseSend` | Advance up to eight device sessions and retain every resulting ciphertext with its history, delivery, schedule, attachment, or control consequence | 8 sessions, 128 queue rows, 512 mutations |
 | `PairwiseReceive` | Accept one pairwise plaintext/control and advance its receiving and optional receipt-sending state | 128 queue rows, 512 mutations |
 | `HandshakeReceive` | Consume an optional one-time prekey and establish the exact session and accepted first-flight consequence | 8 device records, 128 queue rows, 512 mutations |
+| `PendingStage` | Seal one complete carrier envelope and its ingress class before next-hop acknowledgement | 2,048 rows / 64 MiB pending domain; one exact idempotent row |
 | `AdmissionStage` | Consume an optional one-time prekey and seal one verified stranger/session/first-content candidate in the provisional request domain | 32 rows / 512 KiB domain; 4 KiB first content; 2 KiB preview |
 | `AdmissionAccept` | Promote one exact provisional request into a contact, session, normal history, delivery and receipt consequence | One request and exact candidate state |
 | `AdmissionDiscard` | Delete or block one exact provisional request, retire its provisional keys, and retain only bounded replay/block state | 4,096 replay tombstones; 4,096 block rules |
@@ -112,8 +113,10 @@ that transition commits and restart reconciliation removes abandoned files.
 | Scheduled-message activation | Schedule row, ratchet or sender chain, history, delivery and ciphertext | `PairwiseSend` / `GroupSend` | No transport or activation event occurs before commit; failed activation retains the schedule |
 | Schedule create/edit/cancel | One sealed local outbox row | Single-row store operation | No cryptographic state, queue row or transport work exists before activation |
 | Call-control send/receive | Pairwise ratchet and encrypted transient control | Pairwise send/receive plans | Signalling commits before in-memory call state or call events; live call/media state is intentionally process-local |
-| Direct next-hop settlement | Complete sealed carrier envelope or verified introduction | Typed consuming plan, `AdmissionStage`, or bounded idempotent `pending_push` | The fixed response is held until exact durable staging/consumption; invalid, duplicate and over-budget introductions are refused without generic pending state |
-| Deferred inbox acceptance | Complete sealed carrier envelope plus ingress class | Bounded idempotent `pending_push` admission | Admission advances no cryptographic state; the consuming plan deletes the exact named row and applies the preserved carrier budget after restart |
+| Direct next-hop settlement | Complete sealed carrier envelope or verified introduction | Typed consuming plan, `AdmissionStage`, or `PendingStage` | The fixed response is held until exact durable staging/consumption; invalid, duplicate and over-budget introductions are refused without generic pending state |
+| Mailbox-v2 lease settlement | Complete encoded envelope, ingress class, lease id and random relay row id | `PendingStage`, followed by exact transport acknowledgement | The relay row is acknowledged only after endpoint commit; failed endpoint commit, response loss, duplicate page, partial capacity, or acknowledgement loss leaves it retryable |
+| Best-effort bridge transit | Complete encoded envelope and bounded volatile transit slot | No custody transition | An unregistered internet deposit may be copied for mesh forwarding but receives a fixed refusal; only registered durable mailbox or endpoint acceptance advances next-hop custody |
+| Deferred inbox acceptance | Complete sealed carrier envelope plus ingress class | `PendingStage` | Staging advances no cryptographic state; the consuming plan deletes the exact named row and applies the preserved carrier budget after restart |
 | Retry, expiry, terminal rejection and stale-session reset | Queue schedule/removal, delivery state, replay, session/capability reset | `Maintenance` | Work is paged at 256 mutations; retryable input remains durable |
 | Event-delivery recovery | Sealed presentation marker | Visible plan plus `Maintenance` acknowledgement | Reopen emits `StateResyncRequired`; acknowledgement follows delivery |
 | Media restart reconciliation | Missing-file object state and abandoned filesystem rows | Paged `AttachmentState` | Metadata repair commits before orphan cleanup; each page is bounded |
@@ -142,7 +145,6 @@ write. The remaining direct calls fall into these categories:
 |---|---|
 | Labels, folders, pins, icons, theme, petnames and note-to-self | Local sealed presentation/organization state; no ratchet, sender chain, replay, delivery or carrier consequence |
 | Schedule create/edit/cancel | One local row; activation is typed |
-| Complete-envelope `pending_push` | Bounded idempotent ingress staging before parsing or cryptographic work |
 | Media garbage collection after semantic commit | Physical cleanup after the durable tombstone/progress transition |
 | Explicit outgoing contact import, hint/verification changes | User-selected local destination/presentation state; inbound unknown identities can enter only through `AdmissionStage` and explicit `AdmissionAccept` |
 | Pre-C2 contact-device alias/manifest migration | Explicitly delimited ADR-0030 compatibility quarantine; its route/session retarget sequence is not stable-v1 evidence |
@@ -164,12 +166,16 @@ These boundaries keep ADR-0028 Proposed:
 2. **Live call state is process-local by design.** Ratchet-protected signalling
    is covered; ringing, active-call and media state are not restored after a
    process stop and are not stable persisted state.
-3. **Mailbox-v1 relay custody remains outside this node/store transaction.**
-   Endpoint inbox acceptance is covered, but leased relay deletion only after
-   endpoint acknowledgement remains proposed in ADR-0032.
-4. **Independent and physical evidence remains open.** The deterministic
+3. **Independent and physical evidence remains open.** The deterministic
    matrix is not independent protocol review or supported-platform sudden
    power-loss qualification.
+
+Mailbox v2 uses a separate service database, so it is not one node-store
+transaction. Its custody chain is nevertheless explicit: the relay's durable
+deposit transaction precedes acceptance, endpoint `PendingStage` precedes
+`AckLease`, and exact relay deletion is one transaction. Failure injection
+covers each boundary; this is local implementation evidence, not operator or
+physical-filesystem qualification.
 
 The intentionally excluded P2 paths are live video, groups above 64 accounts,
 advanced moderation, high-bandwidth media, Freenet-style or other additional
@@ -181,7 +187,7 @@ or against stable-v1 atomicity.
 
 `crates/kult-node/src/atomic_tests.rs` applies every transaction failpoint to
 every current stable-profile plan plus the legacy bootstrap and explicit
-authority-migration boundaries, using twenty-five fixtures where maintenance
+authority-migration boundaries, using twenty-six fixtures where maintenance
 and admission have separate terminal, reset, stage, accept, discard, and
 expiry cases:
 
@@ -200,6 +206,10 @@ Admission fixtures cover invalid proof, duplicate/replay refusal, one-time
 prekey consumption, provisional count/byte exhaustion, disk-full rollback,
 per-carrier/work ceilings, exact Accept/Delete/Block effects, direct response
 settlement, and expiry/restart.
+Mailbox custody fixtures cover endpoint failure before and after
+`PendingStage`, response and acknowledgement loss, restart, exact partial
+acknowledgement, duplicate pages/acks, wrong-client refusal, expiry, overload,
+disk-full injection, and multi-operator duplicate delivery.
 The linked-device suite also proves selective initial transfer, root-free
 return-value recovery, strict-majority authority, contact projection
 all-or-nothing behavior, exact convergence-event compaction, group

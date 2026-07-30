@@ -38,7 +38,7 @@ product promise merely because the file exists.
 | [0029](0029-recipient-authenticated-groups.md) | Accepted; implemented for Alpha | Per-recipient origin authentication for sender-key group messages and author-sensitive state |
 | [0030](0030-first-contact-admission.md) | Accepted; implemented for Alpha | Bounded public introductions, provisional message requests, blocking, and group-invite consent |
 | [0031](0031-capability-scoped-dht-discovery.md) | Proposed | Capability-scoped, encrypted DHT first contact with mailbox-only public routes |
-| [0032](0032-leased-mailbox-delivery.md) | Proposed | Durable deposits, leased collection pages, and acknowledgement-after-endpoint-commit |
+| [0032](0032-leased-mailbox-delivery.md) | Accepted; implemented for Alpha | Durable deposits, leased collection pages, and acknowledgement-after-endpoint-commit |
 | [0033](0033-nonprofit-founder-stewardship.md) | Accepted | Nonprofit public-benefit mission, founder-directed incubation, AGPL reciprocity limits, and adoption-triggered governance evolution |
 | [0034](0034-operator-minimized-reference-discovery.md) | Proposed | RAM-backed, content-blind, replaceable reference bootstrap/DHT/rendezvous deployment with explicit operator limits |
 

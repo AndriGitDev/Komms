@@ -56,22 +56,33 @@ Confiscation of relays, takedown of bootstrap nodes, or a regional internet blac
 **Defense**: no single point of failure exists in the core. Any node can relay;
 discovery is DHT-based with multiple bootstrap paths; the Meshtastic/LoRa
 fallback functions with zero internet infrastructure. Loss of any relay loses
-nothing but its queued ciphertexts, which are sealed and padded. Loss of every
-optional rendezvous or native-wake service removes convenience only and must
-fall back to the same direct, DHT, mailbox, LAN, mesh, and sneakernet paths.
+that relay's queued ciphertext copy, which is sealed and padded; the sender
+retains its original until an encrypted receipt and can retry another route.
+Loss of every optional rendezvous or native-wake service removes convenience
+only and must fall back to the same direct, DHT, mailbox, LAN, mesh, and
+sneakernet paths.
 
 ### A5: Malicious peer, relay, or optional service
 A participant in the network (a relay holding mailboxes, a DHT node, a mesh
 repeater, rendezvous provider, or native-wake gateway) that logs, drops,
 replays, correlates, or forges traffic.
 
-**Defense**: relays only ever see sealed envelopes (no sender identity, padded
-sizes, opaque recipient tokens). Rendezvous stores fixed-size encrypted route
+**Defense**: relays receive sealed envelopes rather than message plaintext or
+an encoded sender identity. Mailbox v2 durably commits row-bound records under
+opaque indexes, leases bounded pages, and deletes only exact rows acknowledged
+after endpoint commit. Replay and response loss therefore do not create a
+false custody acknowledgement. Rendezvous stores fixed-size encrypted route
 records, and native push carries only a static wake shape. AEAD, ratchet
 ordering, rendezvous generation/expiry checks, and bounded wake capabilities
-defeat accepted-content forgery and stale-state rollback. Services can still
-observe their network metadata and deny work. Redundant core delivery and
-encrypted receipts make total dropping degrade into adversary A4.
+defeat accepted-content forgery and stale-state rollback.
+
+These are not anonymity or operator-inability claims. A mailbox operator sees
+network sources, opaque recipient tokens, padded sizes, timing, volume,
+expiry, pseudonymous client activity, random row/lease ids, and quota outcomes;
+it controls live memory and can log, correlate, refuse, delay, replay, or
+destroy work. At-rest row sealing protects a copied database without its
+separate key, not the running operator. Redundant delivery, sender retention,
+and encrypted receipts make total dropping degrade into adversary A4.
 
 ### A6: Retrospective decryption ("harvest now, decrypt later")
 An actor recording ciphertext today, hoping to decrypt it with a future
