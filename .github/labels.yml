@@ -1,0 +1,35 @@
+schema: komms-labels/v1
+labels:
+  - name: good first change
+    color: "7057ff"
+    description: Bounded, documented newcomer task with one contributor profile
+  - name: help wanted
+    color: "008672"
+    description: Accepted scope where additional contribution is welcome
+  - name: accessibility
+    color: "1d76db"
+    description: Semantics, navigation, scalable presentation, contrast, motion, or assistive technology
+  - name: localization
+    color: "0e8a16"
+    description: Catalog, translation, Unicode, bidi, plural, interpolation, or locale behavior
+  - name: documentation
+    color: "0075ca"
+    description: Documentation-only change
+  - name: tests
+    color: "bfdadc"
+    description: Deterministic test, fixture, harness, or evidence-contract work
+  - name: security-sensitive
+    color: "b60205"
+    description: Requires recorded security-surface owner review
+  - name: protocol-compatibility
+    color: "d93f0b"
+    description: Wire, state, storage, downgrade, migration, or conformance compatibility impact
+  - name: platform-desktop
+    color: "c5def5"
+    description: Desktop shell or packaging surface
+  - name: platform-android
+    color: "3ddc84"
+    description: Android shell, lifecycle, or packaging surface
+  - name: platform-ios
+    color: "a2aaad"
+    description: iOS shell, lifecycle, or packaging surface

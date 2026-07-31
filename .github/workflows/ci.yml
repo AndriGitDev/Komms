@@ -37,6 +37,8 @@ jobs:
         run: python3 scripts/check-docs.py
       - name: message-request accessibility contract
         run: python3 scripts/check-message-request-accessibility.py
+      - name: contributor profile controls
+        run: python3 scripts/test-contributor-check.py
       - name: release engineering controls
         run: |
           python3 scripts/check-release-engineering.py

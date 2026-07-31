@@ -182,6 +182,7 @@ Platform build instructions:
 | how to read or run the stand-alone stable-v1 protocol kit | [Stable-v1 Protocol Conformance](41-protocol-conformance.md) |
 | what an independent reviewer receives and what evidence remains open | [Independent Security-Review Readiness](42-independent-security-review.md) |
 | how physical devices, real networks, accessibility, and radios are qualified | [Field Qualification](43-field-qualification.md) |
+| how to build and validate one bounded contribution target | [Contributor Path](44-contributor-path.md) |
 | how the optional content-free phone-wake gateway is bounded and operated | [Native-Wake Operations](37-native-wake-operations.md) |
 | what evidence is required before stable or wire v1 | [Stabilization Program](29-stabilization-program.md) |
 | which persisted protocol transitions are atomic and which remain open | [Atomic Transition Inventory](34-atomic-transition-inventory.md) |
@@ -195,7 +196,9 @@ Platform build instructions:
 - **Organizer / activist?** Read the [threat model](02-threat-model.md) and tell us
   where it doesn't match your reality on the ground.
 - **Developer?** Start with [CONTRIBUTING](../CONTRIBUTING.md) and the
-  [implementation guide](09-implementation-guide.md).
+  [bounded contributor path](44-contributor-path.md), then use the
+  [implementation guide](09-implementation-guide.md) for the relevant
+  architectural boundary.
 - **Cryptographer?** Attack the [crypto spec](04-cryptography.md). Please.
 
 ## Why does this exist?

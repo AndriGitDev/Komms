@@ -40,7 +40,8 @@ The script runs:
    tests, `no_std` crypto/protocol builds, `cargo-deny`, release-policy and
    dependency-integrity checks, deterministic security-review package
    validation, plus release-evidence/signing/release-qualification and
-   field-qualification regression tests;
+   field-qualification regression tests and bounded contributor-profile
+   safety tests;
 2. the ADR-0027 100,000- and 1,000,000-message migration, unlock, indexed page,
    exact edit/delete, memory, and database-growth budgets;
 3. the desktop workspace's independent format, clippy, test, and deny gates;

@@ -34,6 +34,16 @@ improvements are welcome without first running the full release matrix. An
 issue is useful for design or ambiguous scope, but a focused, noncontroversial
 fix does not require advance permission.
 
+The [bounded contributor path](docs/44-contributor-path.md) provides named
+profiles for protocol, storage/node, desktop, Android core, iOS core, and
+documentation work. A newcomer can inspect and run one profile without release
+credentials:
+
+```sh
+python3 scripts/contributor-check.py --list
+python3 scripts/contributor-check.py PROFILE
+```
+
 ## Implementation changes
 
 - Install Rust 1.88 or newer; CI compiles the workspace at exactly 1.88 to keep
@@ -50,6 +60,10 @@ fix does not require advance permission.
   [local release gate](docs/24-local-release-gate.md)—all targets, generated
   bindings, fuzz smoke, dependency policy, and platform evidence—is required
   for a publication candidate, not every contributor edit.
+- Start with one checked-in contributor profile when it fits. These profiles
+  build or validate one bounded target, strip signing/provider credentials from
+  child processes, and contain no push, tag, signing, upload, merge, or release
+  action.
 - Update the README/status table, affected design or feature contract, platform
   guide, and ADR index whenever behavior, requirements, compatibility, or a
   release gate changes. Documentation claims must distinguish automated build
@@ -63,6 +77,9 @@ fix does not require advance permission.
 ## Process
 
 - **Issues** for design discussion; **PRs** for concrete text/code changes.
+- Issues labelled `good first change` name exact scope, exclusions, acceptance
+  criteria, the recommended contributor profile, and sensitive review routing.
+  The repository issue form and label definitions preserve that contract.
 - ADRs follow [docs/adr/template.md](docs/adr/template.md) and appear in the
   [ADR index](docs/adr/README.md). New ADRs are numbered sequentially.
   Normative decisions in an accepted ADR change through a superseding ADR;
