@@ -564,6 +564,64 @@ ingress, non-colluding OHTTP, production gateway operation, and independent
 review remain open. Sovereign and provider-failure fallback retain the
 ordinary direct, mailbox, and other configured delivery paths in local tests.
 
+### Session 16 local development validation
+
+On 2026-07-31, commit
+`00be156710b262b03de592424e20619e903ca03e` was exercised on arm64 macOS
+26.5.2 with Rust 1.97.0, Xcode 26.6, OpenJDK 17.0.20, Gradle 9.6.1, Android
+API 35/NDK 27.2.12479018, and Docker client 29.5.2.
+
+- The required-platform local release matrix completed without a deferred
+  software gate. Release/version, documentation, message-request
+  accessibility, formatting, warnings-denied lint, all-feature workspace
+  tests, documentation tests, crypto/protocol `no_std`, root and desktop
+  dependency policy, and whitespace checks passed. All 22 UniFFI and 19
+  daemon RPC end-to-end cases passed with loopback networking available.
+- The release-record suite passed 34 regression and end-to-end cases covering
+  exact inventories, deterministic packing and safe extraction, malformed and
+  oversized archives, semantic SBOM/dependency verification, artifact-class
+  signing, canonical qualification matrices, independent-reproduction claims,
+  residual-risk disposition, channel promotion, and publication preflight.
+  Workflow, shell, and Python static validation also passed.
+- A revision-bound Android inventory resolved 152 locked declarations with
+  zero unknown licenses, zero policy-only declarations, 62 POM chains, and
+  zero POM mismatches. The generated license, dependency, and 872-component
+  CycloneDX records had SHA-256 digests
+  `6f6fb802cc6b4694887180600a61178e57f37819456e9d85885e89da2f49a60e`,
+  `9ec4cf44ad0849845d0185c3c48b47b0c197fbbc1dcdc29e237d956b992083e7`,
+  and
+  `782fdef853625a831620b8e770d3b8c38d874437b9e4f426d58aed41c92c5e49`.
+  These are local generated records under ignored temporary storage, not
+  signed retained release evidence.
+- The 100,000-row opaque-store gate migrated in 13.796 seconds, unlocked in
+  2.147 seconds, completed page/edit/delete in 604/1,672/473 microseconds,
+  and used 52,363,680 bytes. The 1,000,000-row gate migrated in 241.176
+  seconds, unlocked in 23.056 seconds, completed page/edit/delete in
+  3.292/3.782/1.743 milliseconds, and used 525,595,040 bytes. Every value
+  remained within the published budget.
+- Desktop passed 10 unit and 26 end-to-end tests. Android core passed all 36
+  tests; Play and Google-free app tests, debug assembly, lint, and the
+  Google-free dependency/binary inspection passed. The iOS host suite passed
+  all 34 tests in 293.791 seconds; all native slices assembled into the
+  XCFramework and the unsigned arm64 Simulator app built.
+- All 10 crypto and 20 protocol fuzz entry points completed a short
+  exact-revision wiring run without a crash or sanitizer artifact. Each target
+  had already completed a 60-second cumulative run before the Session 16
+  release-only changes. The physical two-radio HIL case remained deliberately
+  ignored.
+- The pinned `docker/dockerfile:1.7` frontend resolved to a 22-platform OCI
+  index. A local container build was unavailable because this host had no
+  reachable Docker runtime or Buildx installation; the digest-pinned hosted
+  image jobs remain the runnable validation path.
+
+No production release key, recovery copy, platform signing credential, store
+account, notarization path, or publication authorization was used. No
+production package was signed or published. Hosted attestations, a second
+controlled build at this exact revision, independently administered
+reproduction, named install/upgrade/rollback systems, and physical-device
+qualification remain open. Existing Swift concurrency/audio and Gradle
+migration warnings also remain visible.
+
 ## 2. Stable public claim register
 
 These are the complete stable public claims authorized by the frozen profile.
