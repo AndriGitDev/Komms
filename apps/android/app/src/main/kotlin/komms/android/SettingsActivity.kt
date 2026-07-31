@@ -1,8 +1,11 @@
 package komms.android
 
+import android.Manifest
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.widget.Button
@@ -12,9 +15,11 @@ import android.widget.Switch
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import java.io.File
+import komms.core.NativeWakePreference
 import komms.core.NetworkSettings
 import komms.core.RendezvousSetting
 import komms.core.SettingsException
+import komms.core.WakeSetting
 import komms.core.androidIncognitoKeyboardPolicy
 import komms.core.androidScreenSecurityPolicy
 import uniffi.kult_ffi.ThemePreference
@@ -33,6 +38,11 @@ class SettingsActivity : SecureActivity() {
     private val createBackup =
         registerForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
             if (uri != null) exportBackup(uri)
+        }
+
+    private val requestNotifications =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            NativeWakeManager.onPermissionChanged(this)
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -87,6 +97,25 @@ class SettingsActivity : SecureActivity() {
         findViewById<TextView>(R.id.incognito_keyboard_mechanism).text = inputPrivacy.mechanism
         findViewById<TextView>(R.id.incognito_keyboard_limits).text =
             inputPrivacy.limitations.joinToString(separator = "\n") { "• $it" }
+        val nativeWake = findViewById<RadioGroup>(R.id.set_native_wake)
+        nativeWake.check(
+            when (NativeWakePreferences(this).load()) {
+                NativeWakePreference.BACKGROUND_ONLY -> R.id.set_native_wake_background
+                NativeWakePreference.GENERIC_VISIBLE -> R.id.set_native_wake_visible
+                NativeWakePreference.DISABLED -> R.id.set_native_wake_disabled
+            },
+        )
+        val wakeSupported = NativeWakePlatform.supported(this)
+        for (index in 0 until nativeWake.childCount) {
+            nativeWake.getChildAt(index).isEnabled = wakeSupported
+        }
+        findViewById<TextView>(R.id.native_wake_limitations).setText(
+            if (wakeSupported) {
+                R.string.native_wake_android_limits
+            } else {
+                R.string.native_wake_google_free
+            },
+        )
         val loaded = try {
             NetworkSettings.load(dataDir)
         } catch (e: SettingsException) {
@@ -109,6 +138,7 @@ class SettingsActivity : SecureActivity() {
         val providerDirectory = findViewById<EditText>(R.id.set_provider_directory)
         val providerRoots = findViewById<EditText>(R.id.set_provider_roots)
         val rendezvous = findViewById<EditText>(R.id.set_rendezvous)
+        val wake = findViewById<EditText>(R.id.set_wake)
         val torProxy = findViewById<EditText>(R.id.set_tor_proxy)
         val serveMailbox = findViewById<Switch>(R.id.set_serve_mailbox)
         val mdns = findViewById<Switch>(R.id.set_mdns)
@@ -127,6 +157,16 @@ class SettingsActivity : SecureActivity() {
         providerRoots.setText(loaded.providerDirectoryRoots.joinToString("\n"))
         rendezvous.setText(
             loaded.rendezvous.joinToString("\n") { entry ->
+                val access = when {
+                    entry.standard && entry.privateViaTor -> "both"
+                    entry.standard -> "standard"
+                    else -> "private"
+                }
+                "${entry.origin},${entry.staticKey},$access"
+            },
+        )
+        wake.setText(
+            loaded.wake.joinToString("\n") { entry ->
                 val access = when {
                     entry.standard && entry.privateViaTor -> "both"
                     entry.standard -> "standard"
@@ -169,6 +209,7 @@ class SettingsActivity : SecureActivity() {
                     providerDirectory = blankToNull(providerDirectory),
                     providerDirectoryRoots = lines(providerRoots),
                     rendezvous = rendezvousLines(rendezvous),
+                    wake = wakeLines(wake),
                     torProxy = blankToNull(torProxy),
                     listen = lines(listen),
                     bootstrap = lines(bootstrap),
@@ -192,12 +233,40 @@ class SettingsActivity : SecureActivity() {
                     edited.torProxy == null &&
                     (
                         edited.providerDirectory != null ||
-                            edited.rendezvous.any { it.privateViaTor }
+                            edited.rendezvous.any { it.privateViaTor } ||
+                            edited.wake.any { it.privateViaTor }
                     )
                 ) {
                     throw SettingsException(getString(R.string.set_private_tor_required))
                 }
+                val nativeWakeRuntimeChanged =
+                    edited.mode != loaded.mode ||
+                        edited.providerDirectory != loaded.providerDirectory ||
+                        edited.providerDirectoryRoots != loaded.providerDirectoryRoots ||
+                        edited.wake != loaded.wake ||
+                        edited.torProxy != loaded.torProxy
                 edited.save(dataDir)
+                val wakePreference = when (nativeWake.checkedRadioButtonId) {
+                    R.id.set_native_wake_background -> NativeWakePreference.BACKGROUND_ONLY
+                    R.id.set_native_wake_visible -> NativeWakePreference.GENERIC_VISIBLE
+                    else -> NativeWakePreference.DISABLED
+                }
+                NativeWakePreferences(this).save(
+                    if (wakeSupported) wakePreference else NativeWakePreference.DISABLED,
+                )
+                if (
+                    wakePreference == NativeWakePreference.GENERIC_VISIBLE &&
+                    Build.VERSION.SDK_INT >= 33 &&
+                    checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+                    PackageManager.PERMISSION_GRANTED
+                ) {
+                    requestNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }
+                if (nativeWakeRuntimeChanged) {
+                    NativeWakeManager.onNetworkSettingsChanged(this)
+                } else {
+                    NativeWakeManager.onPermissionChanged(this)
+                }
                 toast(getString(R.string.settings_saved))
                 finish()
             } catch (e: Exception) {
@@ -264,6 +333,32 @@ class SettingsActivity : SecureActivity() {
                 )
             }
             RendezvousSetting(
+                origin = parts[0],
+                staticKey = parts[1],
+                standard = access.first,
+                privateViaTor = access.second,
+            )
+        }
+
+    private fun wakeLines(field: EditText): List<WakeSetting> =
+        lines(field).mapIndexed { index, line ->
+            val parts = line.split(',').map(String::trim)
+            if (
+                parts.size != 3 ||
+                !parts[0].startsWith("https://") ||
+                !parts[1].matches(Regex("[0-9a-f]{64}"))
+            ) {
+                throw SettingsException(getString(R.string.set_wake_invalid, index + 1))
+            }
+            val access = when (parts[2]) {
+                "standard" -> true to false
+                "private" -> false to true
+                "both" -> true to true
+                else -> throw SettingsException(
+                    getString(R.string.set_wake_invalid, index + 1),
+                )
+            }
+            WakeSetting(
                 origin = parts[0],
                 staticKey = parts[1],
                 standard = access.first,

@@ -273,7 +273,40 @@ reviewed immutable digest, start with a fresh state epoch and key id, and
 publish the timing and metadata risk. Do not retain request/body captures or
 memory dumps as routine diagnostics.
 
-## 8. Self-hosting, replacement, and deployment status
+## 8. Mobile enrollment and artifact boundary
+
+The iOS app uses the ordinary APNs application entitlement and
+`UIApplicationDelegate` token callbacks. Debug builds select the APNs sandbox
+environment; Release builds select production. Provider credentials remain
+gateway-only, and the application never contains an APNs signing key. PushKit
+is not linked or entitled.
+
+The Android build has separate `play` and `googleFree` flavors. Play compiles
+the Firebase Messaging SDK and takes the non-secret Firebase application
+coordinates from ignored `apps/android/native-wake.properties` or
+`KOMMS_FCM_APPLICATION_ID`, `KOMMS_FCM_PROJECT_ID`, `KOMMS_FCM_API_KEY`, and
+`KOMMS_FCM_SENDER_ID`. Do not put provider service-account credentials in these
+fields; the service account remains gateway-only. Google-free has no FCM
+source, SDK, manifest service, or advertised capability. Run:
+
+```sh
+scripts/check-android-google-free.sh \
+  apps/android/app/build/outputs/apk/googleFree/debug/app-googleFree-debug.apk
+```
+
+Mobile settings store only the user-selected static profile and secret-free
+gateway origin/pin/mode policy. Native tokens remain in process memory and pass
+only through the fixed register request. Complete per-contact capability sets
+rotate after launch, token, permission, device/session/relationship, mode, or
+provider change. Ineligibility publishes an authenticated empty generation and
+queues bounded gateway revocation without modifying delivery state.
+
+Host policy tests and application compilation are not provider or physical
+evidence. Run and retain the exact
+[mobile qualification matrix](38-native-wake-mobile-qualification.md) before
+claiming APNs/FCM background behavior on any device.
+
+## 9. Self-hosting, replacement, and deployment status
 
 An operator of a custom app can deploy the same gateway with its own native
 provider credentials, service keys, topics, domain, limits, and public record.

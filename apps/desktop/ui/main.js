@@ -628,6 +628,19 @@ function readSettings() {
       private_via_tor: access === "private" || access === "both",
     };
   });
+  const wake = lines($("#set-wake")).map((line) => {
+    const [origin, static_key, access, extra] = line.split(",").map((part) => part.trim());
+    if (!origin?.startsWith("https://") || !/^[0-9a-f]{64}$/.test(static_key || "") ||
+        !["standard", "private", "both"].includes(access) || extra !== undefined) {
+      throw new Error("Each wake-gateway line must be origin, 64-character lowercase certificate digest, and standard, private, or both.");
+    }
+    return {
+      origin,
+      static_key,
+      standard: access === "standard" || access === "both",
+      private_via_tor: access === "private" || access === "both",
+    };
+  });
   return {
     mode: document.querySelector('input[name="set-mode"]:checked')?.value ?? "standard",
     standard_disclosure_confirmed: $("#set-standard-disclosure").checked,
@@ -635,6 +648,7 @@ function readSettings() {
     provider_directory: opt($("#set-provider-directory")),
     provider_directory_roots: lines($("#set-provider-roots")),
     rendezvous,
+    wake,
     tor_proxy: opt($("#set-tor-proxy")),
     listen: lines($("#set-listen")),
     bootstrap: lines($("#set-bootstrap")),
@@ -662,6 +676,11 @@ function fillSettings(s) {
       ? "both" : provider.private_via_tor ? "private" : "standard";
     return `${provider.origin},${provider.static_key},${access}`;
   }).join("\n");
+  $("#set-wake").value = (s.wake ?? []).map((provider) => {
+    const access = provider.standard && provider.private_via_tor
+      ? "both" : provider.private_via_tor ? "private" : "standard";
+    return `${provider.origin},${provider.static_key},${access}`;
+  }).join("\n");
   $("#set-tor-proxy").value = s.tor_proxy ?? "";
   $("#set-listen").value = s.listen.join("\n");
   $("#set-bootstrap").value = s.bootstrap.join("\n");
@@ -680,8 +699,8 @@ function updateModeDisclosure() {
   const mode = document.querySelector('input[name="set-mode"]:checked')?.value ?? "standard";
   const text = {
     standard: "Standard uses disclosed, replaceable providers when configured. Providers can observe network addresses, timing, and availability—not message content.",
-    private: "Private sends optional rendezvous through your local Tor proxy. It does not claim provider non-collusion or hide every DHT and mailbox metadata surface.",
-    sovereign: "Sovereign disables directory defaults and optional rendezvous. Direct, DHT, user-selected mailboxes, LAN, mesh, and file transfer remain available.",
+    private: "Private sends optional rendezvous and native-wake requests through your local Tor proxy. It does not claim provider non-collusion or hide every DHT and mailbox metadata surface.",
+    sovereign: "Sovereign disables directory defaults, optional rendezvous, and native wake. Direct, DHT, user-selected mailboxes, LAN, mesh, and file transfer remain available.",
   };
   $("#mode-disclosure").textContent = text[mode];
   $("#standard-disclosure-row").hidden = mode !== "standard";

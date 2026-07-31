@@ -18,6 +18,7 @@ class KommsApp : Application() {
                 NotificationManager.IMPORTANCE_LOW,
             ),
         )
+        NativeWakeManager.onApplicationStart(this)
     }
 
     companion object {

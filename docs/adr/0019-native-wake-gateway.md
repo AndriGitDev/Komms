@@ -1,6 +1,6 @@
 # ADR-0019: Native push is a capability-gated best-effort wake
 
-- **Status**: Accepted; gateway and core implemented for Alpha
+- **Status**: Accepted; gateway, core, and mobile clients implemented for Alpha; physical/deployment gates open
 - **Date**: 2026-07-15
 
 ## Context
@@ -222,17 +222,29 @@ The accepted Alpha implementation includes:
   export, attachment autoplay, call setup, and outbound flushing;
 - direct pinned-TLS Standard and loopback-Tor Private client adapters, strict
   RPC/UniFFI collection front doors, and no Sovereign wake client;
+- direct APNs integration on iOS with process-only token lifecycle,
+  background-only/static-visible profiles, permission and Background App
+  Refresh handling, a bounded callback, and no PushKit;
+- a Play-only FCM Android source set with static-payload validation, bounded
+  callback/WorkManager continuation, permission/token lifecycle, and a
+  separately built and inspected Google-free flavor with no Firebase, FCM, or
+  Play Services code;
+- complete per-contact capability refresh or revocation after launch, token,
+  permission, device/session/relationship, provider, or mode changes through
+  the shared atomic capability-control path;
 - a hardened container/configuration/smoke profile, non-secret operator record,
-  and the [native-wake runbook](../37-native-wake-operations.md); and
+  the [native-wake runbook](../37-native-wake-operations.md), and a
+  fail-closed [physical-device evidence harness](../38-native-wake-mobile-qualification.md);
 - codec vectors, a dedicated fuzz target, malformed/replay/flood/coalescing,
   rotation/revocation/restart, provider outage/error/blackhole, backup boundary,
   delivery-state, and transaction failpoint tests.
 
-This evidence is local software evidence. APNs token lifecycle, FCM SDK flavor
-integration, background handlers, permission/force-quit/Doze behavior, and
-named physical-device qualification remain the separate mobile integration and
-field gates. No production gateway, provider credential, Private OHTTP path, or
-independent operator/reviewer is claimed.
+This evidence is local software evidence: pure policy/FFI tests, Android
+Play/Google-free compilation and lint, Google-free APK inspection, generated
+Swift bindings, and an unsigned iOS Simulator build. No real APNs/FCM delivery,
+physical background/force-quit/Doze/battery observation, or named-device
+qualification is claimed. No production gateway, provider credential, Private
+OHTTP path, or independent operator/reviewer is claimed.
 
 ## Alternatives considered
 

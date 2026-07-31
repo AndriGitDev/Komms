@@ -1,0 +1,77 @@
+{
+  "schema": "komms-native-wake-mobile-field-v1",
+  "rows": [
+    {
+      "id": "permission-denial",
+      "platforms": ["android", "ios"],
+      "requires_physical": true,
+      "expected": "Visible wake is not advertised after notification denial; ordinary direct and mailbox delivery remain usable and delivery state is unchanged."
+    },
+    {
+      "id": "token-rotation",
+      "platforms": ["android", "ios"],
+      "requires_physical": true,
+      "expected": "A native token change produces fresh per-contact capabilities, queues revocation of the former set, and never exposes either token in evidence."
+    },
+    {
+      "id": "force-stop-or-force-quit",
+      "platforms": ["android", "ios"],
+      "requires_physical": true,
+      "expected": "The documented platform limitation is observed without a delivery claim; queued work remains durable until a later execution opportunity."
+    },
+    {
+      "id": "background-refresh-off",
+      "platforms": ["ios"],
+      "requires_physical": true,
+      "expected": "Background-only capability is revoked while Background App Refresh is unavailable; a static visible profile remains optional and ordinary delivery is unaffected."
+    },
+    {
+      "id": "doze-and-oem-delay",
+      "platforms": ["android"],
+      "requires_physical": true,
+      "expected": "Normal-priority background wake may be delayed; generic visible high priority is static and user-visible, and bounded continuation never becomes an unbounded foreground loop."
+    },
+    {
+      "id": "provider-deprioritization",
+      "platforms": ["android"],
+      "requires_physical": true,
+      "expected": "FCM deprioritization or delayed delivery leaves mailbox/direct retry authoritative and does not advance sent or delivered state."
+    },
+    {
+      "id": "provider-outage",
+      "platforms": ["android", "ios"],
+      "requires_physical": true,
+      "expected": "Native-provider refusal or blackhole is reduced to optional wake failure; ciphertext, retries, and authenticated receipts retain their ordinary semantics."
+    },
+    {
+      "id": "gateway-restart",
+      "platforms": ["android", "ios"],
+      "requires_physical": true,
+      "expected": "A committed capability remains usable across an ordinary gateway restart and a revoked capability remains revoked; no stale-state restore is used."
+    },
+    {
+      "id": "replay-and-flood",
+      "platforms": ["android", "ios"],
+      "requires_physical": true,
+      "expected": "Duplicate/flood triggers stay within gateway quotas and generic responses; the device receives no sender- or message-specific notification data."
+    },
+    {
+      "id": "coalescing",
+      "platforms": ["android", "ios"],
+      "requires_physical": true,
+      "expected": "Multiple accepted envelopes inside the coalescing window produce at most the bounded destination wake shape while every envelope remains independently receipted."
+    },
+    {
+      "id": "static-payload",
+      "platforms": ["android", "ios"],
+      "requires_physical": true,
+      "expected": "The received provider payload is exactly one documented static background or generic-visible shape with no sender, account, conversation, message, media, unread, or timestamp field."
+    },
+    {
+      "id": "delivery-semantics",
+      "platforms": ["android", "ios"],
+      "requires_physical": true,
+      "expected": "Provider/gateway acceptance and app wake never advance queued, sent, or delivered; only existing next-hop rules and an authenticated end-to-end receipt do."
+    }
+  ]
+}

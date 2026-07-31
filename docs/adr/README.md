@@ -25,7 +25,7 @@ product promise merely because the file exists.
 | [0016](0016-group-mention-content.md) | Accepted | Canonical group-mention content |
 | [0017](0017-optional-hybrid-modes.md) | Accepted; operating modes implemented for Alpha | Optional service modes and trust boundary |
 | [0018](0018-pairwise-rendezvous.md) | Accepted; implemented for Alpha | Rotating pairwise rendezvous |
-| [0019](0019-native-wake-gateway.md) | Accepted; gateway and core implemented for Alpha | Capability-gated native wake |
+| [0019](0019-native-wake-gateway.md) | Accepted; gateway, core, and mobile clients implemented for Alpha | Capability-gated native wake |
 | [0020](0020-authenticated-message-edits.md) | Accepted | Immutable edit events, pairwise/group authorization, and deterministic convergence |
 | [0021](0021-ephemeral-retention.md) | Accepted | Authenticated local expiry, view-once consumption, and coarse relay retention |
 | [0022](0022-convergent-group-polls.md) | Accepted | Visible-vote group polls, recipient-authenticated voters, and deterministic convergence |

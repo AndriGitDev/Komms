@@ -214,7 +214,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO build
 
   android-app:
-    name: android app (assembleDebug)
+    name: android apps (Play + Google-free)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -234,10 +234,21 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.14.3"
-      - name: assemble debug APK (cross-compiles kult-ffi via cargo-ndk)
-        run: gradle :app:assembleDebug -Pkomms.androidApp=true
-      - name: upload APK artifact
+      - name: build, test, and lint both distribution flavors
+        run: |
+          gradle \
+            :app:assemblePlayDebug :app:assembleGoogleFreeDebug \
+            :app:testPlayDebugUnitTest :app:testGoogleFreeDebugUnitTest \
+            :app:lintPlayDebug :app:lintGoogleFreeDebug \
+            -Pkomms.androidApp=true
+          ../../scripts/check-android-google-free.sh
+      - name: upload Play APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: komms-android-debug
-          path: apps/android/app/build/outputs/apk/debug/app-debug.apk
+          name: komms-android-play-debug
+          path: apps/android/app/build/outputs/apk/play/debug/app-play-debug.apk
+      - name: upload Google-free APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: komms-android-google-free-debug
+          path: apps/android/app/build/outputs/apk/googleFree/debug/app-googleFree-debug.apk

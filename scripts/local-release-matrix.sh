@@ -47,7 +47,12 @@ fi
 
 android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
 if [[ -n "$android_sdk" && -d "$android_sdk" ]] && command -v cargo-ndk >/dev/null 2>&1; then
-    run_in "$root/apps/android" gradle :app:assembleDebug :app:lintDebug -Pkomms.androidApp=true
+    run_in "$root/apps/android" gradle \
+        :app:assemblePlayDebug :app:assembleGoogleFreeDebug \
+        :app:testPlayDebugUnitTest :app:testGoogleFreeDebugUnitTest \
+        :app:lintPlayDebug :app:lintGoogleFreeDebug \
+        -Pkomms.androidApp=true
+    run_in "$root" scripts/check-android-google-free.sh
 else
     printf '\nDEFERRED: Android APK/lint gate needs Android SDK/NDK and cargo-ndk.\n'
     if [[ "$android_required" == "1" ]]; then

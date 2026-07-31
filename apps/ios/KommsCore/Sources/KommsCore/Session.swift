@@ -135,6 +135,31 @@ public final class Session: @unchecked Sendable {
     /// Permanently retire mailbox-only stable-address discovery compatibility.
     public func retireLegacyDiscovery() throws -> String { try node.retireLegacyDiscovery() }
 
+    /// Mint distinct capabilities for a bounded batch of authenticated
+    /// contact devices using the current native provider token.
+    public func registerNativeWake(
+        platform: NativeWakePlatform,
+        environment: NativeWakeEnvironment,
+        profile: NativeWakeProfile,
+        providerToken: Data,
+        appTopic: String
+    ) throws -> NativeWakeRegistration {
+        try node.registerNativeWake(
+            platform: platform,
+            environment: environment,
+            profile: profile,
+            providerToken: providerToken,
+            appTopic: appTopic)
+    }
+
+    /// Revoke every capability this installation previously issued.
+    public func revokeNativeWake() throws -> UInt32 { try node.revokeNativeWake() }
+
+    /// Run one deadline-bounded generic collection pass after platform wake.
+    public func collectAfterNativeWake(budgetMs: UInt32) throws -> UInt32 {
+        try node.collectAfterNativeWake(budgetMs: budgetMs)
+    }
+
     /// This node's peer id (hex).
     public var peer: String { node.peer() }
 
@@ -1175,6 +1200,13 @@ public final class Session: @unchecked Sendable {
         config.providerDirectoryRoots = settings.providerDirectoryRoots
         config.rendezvous = settings.rendezvous.map {
             RendezvousProviderConfig(
+                origin: $0.origin,
+                staticKey: $0.staticKey,
+                standard: $0.standard,
+                privateViaTor: $0.privateViaTor)
+        }
+        config.wake = settings.wake.map {
+            WakeProviderConfig(
                 origin: $0.origin,
                 staticKey: $0.staticKey,
                 standard: $0.standard,

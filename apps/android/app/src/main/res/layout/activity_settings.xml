@@ -136,6 +136,45 @@
                 android:layout_height="wrap_content" />
 
             <TextView
+                android:text="@string/native_wake_title"
+                android:textStyle="bold"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+
+            <RadioGroup
+                android:id="@+id/set_native_wake"
+                android:contentDescription="@string/native_wake_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <RadioButton
+                    android:id="@+id/set_native_wake_disabled"
+                    android:text="@string/native_wake_disabled"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content" />
+
+                <RadioButton
+                    android:id="@+id/set_native_wake_background"
+                    android:text="@string/native_wake_background"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content" />
+
+                <RadioButton
+                    android:id="@+id/set_native_wake_visible"
+                    android:text="@string/native_wake_visible"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content" />
+            </RadioGroup>
+
+            <TextView
+                android:id="@+id/native_wake_limitations"
+                android:textSize="12sp"
+                android:layout_marginBottom="20dp"
+                android:accessibilityLiveRegion="polite"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <TextView
                 android:text="@string/screen_security_title"
                 android:textStyle="bold"
                 android:layout_width="wrap_content"
@@ -294,6 +333,22 @@
                 android:fontFamily="monospace"
                 android:minLines="2"
                 android:hint="@string/set_rendezvous_hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <TextView
+                android:text="@string/set_wake"
+                android:textStyle="bold"
+                android:layout_marginTop="16dp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+
+            <komms.android.IncognitoEditText
+                android:id="@+id/set_wake"
+                android:inputType="textMultiLine|textNoSuggestions"
+                android:fontFamily="monospace"
+                android:minLines="2"
+                android:hint="@string/set_wake_hint"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content" />
 

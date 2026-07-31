@@ -6,10 +6,12 @@
 // node's own words (`reasonText`), key changes are surfaced as banners,
 // never hidden, and the backup mnemonic passes through exactly once.
 
+import CryptoKit
 import Foundation
 import KommsCore
 import SwiftUI
 import UIKit
+import UserNotifications
 
 private enum ThemePreferenceStore {
     static let key = "komms.appearance.theme"
@@ -80,6 +82,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var requiresRecoveryAuthorityExport = false
     @Published private(set) var calls: [KommsCore.Call] = []
     @Published private(set) var callAvailability: [String: CallAvailability] = [:]
+    @Published private(set) var nativeWakePreference = NativeWakePreferenceStore.load()
     /// Surfaced node happenings: key changes, held-for-faster-link verdicts.
     @Published var notices: [String] = []
 
@@ -95,6 +98,12 @@ final class AppModel: ObservableObject {
     private var lifecycleObservers: [NSObjectProtocol] = []
     private var callAudio: CallAudioController?
     private var callAudioAllowed = true
+    private var nativeWakeToken: Data?
+    private var nativeWakeSnapshot: NativeWakeSnapshot?
+    private var nativeWakeSyncInFlight = false
+    private var nativeWakeSyncPending = false
+    private var nativeWakeCollectionInFlight = false
+    private var nativeWakeNetworkConfigurationStale = false
 
     init() {
         callAudioAllowed = UIApplication.shared.applicationState == .active
@@ -138,6 +147,13 @@ final class AppModel: ObservableObject {
         entries?.filter { url in
             transientPrefixes.contains { url.lastPathComponent.hasPrefix($0) }
         }.forEach { try? FileManager.default.removeItem(at: $0) }
+        NativeWakeBridge.shared.install(
+            tokenHandler: { [weak self] token in
+                Task { @MainActor in await self?.receivedNativeWakeToken(token) }
+            },
+            wakeHandler: { [weak self] completion in
+                Task { @MainActor in self?.collectAfterNativeWake(completion: completion) }
+            })
     }
 
     deinit {
@@ -179,6 +195,156 @@ final class AppModel: ObservableObject {
         try await withCheckedThrowingContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
                 cont.resume(with: Result { try work() })
+            }
+        }
+    }
+
+    func setNativeWakePreference(_ preference: NativeWakePreference) async {
+        nativeWakePreference = preference
+        NativeWakePreferenceStore.save(preference)
+        if preference == .genericVisible {
+            _ = try? await UNUserNotificationCenter.current().requestAuthorization(
+                options: [.alert, .sound])
+        }
+        NativeWakeBridge.shared.requestCurrentToken()
+        await synchronizeNativeWake(forceRefresh: true)
+    }
+
+    func nativeWakeBecameActive() async {
+        NativeWakeBridge.shared.requestCurrentToken()
+        await synchronizeNativeWake(forceRefresh: false)
+    }
+
+    func nativeWakeNetworkSettingsChanged() async {
+        guard session != nil else { return }
+        nativeWakeNetworkConfigurationStale = true
+        await synchronizeNativeWake(forceRefresh: false)
+    }
+
+    private func receivedNativeWakeToken(_ token: Data?) async {
+        nativeWakeToken = token
+        await synchronizeNativeWake(forceRefresh: true)
+    }
+
+    private func collectAfterNativeWake(
+        completion: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        guard let session, !nativeWakeCollectionInFlight else {
+            completion(.noData)
+            return
+        }
+        nativeWakeCollectionInFlight = true
+        Task {
+            let count = (try? await run {
+                try session.collectAfterNativeWake(budgetMs: 20_000)
+            }) ?? 0
+            nativeWakeCollectionInFlight = false
+            completion(count > 0 ? .newData : .noData)
+        }
+    }
+
+    private func synchronizeNativeWake(forceRefresh: Bool) async {
+        guard let session else { return }
+        if nativeWakeSyncInFlight {
+            nativeWakeSyncPending = nativeWakeSyncPending || forceRefresh
+            return
+        }
+        nativeWakeSyncInFlight = true
+        var scheduleContinuation = false
+        defer {
+            nativeWakeSyncInFlight = false
+            let pending = nativeWakeSyncPending || scheduleContinuation
+            nativeWakeSyncPending = false
+            if pending, UIApplication.shared.applicationState == .active {
+                Task {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    await self.synchronizeNativeWake(forceRefresh: true)
+                }
+            }
+        }
+
+        if nativeWakeNetworkConfigurationStale {
+            do {
+                _ = try await run { try session.revokeNativeWake() }
+                nativeWakeSnapshot = nativeWakeSnapshot?.withAdvertised(false)
+            } catch {
+                if notices.last !=
+                    "Native wake is unavailable right now. Ordinary delivery and fallbacks remain active." {
+                    notices.append(
+                        "Native wake is unavailable right now. "
+                        + "Ordinary delivery and fallbacks remain active.")
+                }
+            }
+            return
+        }
+
+        let settings = (try? NetworkSettings.load(from: dataDir)) ?? NetworkSettings()
+        let notificationSettings =
+            await UNUserNotificationCenter.current().notificationSettings()
+        let permission: NativeWakePermission
+        if nativeWakePreference != .genericVisible {
+            permission = .notRequired
+        } else {
+            permission = switch notificationSettings.authorizationStatus {
+            case .authorized, .provisional, .ephemeral: .granted
+            default: .denied
+            }
+        }
+        let digest = nativeWakeToken.map {
+            SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined()
+        }
+        let current = NativeWakeSnapshot(
+            mode: settings.mode,
+            gatewayCount: settings.wake.count,
+            preference: nativeWakePreference,
+            permission: permission,
+            backgroundRefreshAvailable:
+                UIApplication.shared.backgroundRefreshStatus == .available,
+            tokenDigest: digest,
+            // A fresh process conservatively assumes sealed issued state may
+            // exist so an unavailable path publishes explicit revocation.
+            advertised: nativeWakeSnapshot?.advertised ?? true)
+        let decision = NativeWakePolicy.decide(
+            previous: nativeWakeSnapshot,
+            current: current,
+            forceRefresh: forceRefresh)
+
+        do {
+            switch decision.action {
+            case .register:
+                guard let token = nativeWakeToken,
+                      let topic = Bundle.main.bundleIdentifier else { return }
+                #if DEBUG
+                let environment = NativeWakeEnvironment.development
+                #else
+                let environment = NativeWakeEnvironment.production
+                #endif
+                let profile: NativeWakeProfile =
+                    nativeWakePreference == .genericVisible
+                    ? .genericVisible
+                    : .backgroundOnly
+                let result = try await run {
+                    try session.registerNativeWake(
+                        platform: .apns,
+                        environment: environment,
+                        profile: profile,
+                        providerToken: token,
+                        appTopic: topic)
+                }
+                nativeWakeSnapshot = current.withAdvertised(true)
+                scheduleContinuation = result.remaining
+            case .revoke:
+                _ = try await run { try session.revokeNativeWake() }
+                nativeWakeSnapshot = current.withAdvertised(false)
+            case .none:
+                nativeWakeSnapshot = current.withAdvertised(decision.advertise)
+            }
+        } catch {
+            if notices.last !=
+                "Native wake is unavailable right now. Ordinary delivery and fallbacks remain active." {
+                notices.append(
+                    "Native wake is unavailable right now. "
+                    + "Ordinary delivery and fallbacks remain active.")
             }
         }
     }
@@ -302,6 +468,10 @@ final class AppModel: ObservableObject {
         callAudio?.stop()
         session?.stop()
         session = nil
+        nativeWakeToken = nil
+        nativeWakeSnapshot = nil
+        nativeWakeSyncPending = false
+        nativeWakeCollectionInFlight = false
         contacts = []
         messageRequests = []
         histories = [:]
@@ -343,6 +513,9 @@ final class AppModel: ObservableObject {
             }
         }
         self.session = session
+        nativeWakeNetworkConfigurationStale = false
+        NativeWakeBridge.shared.requestCurrentToken()
+        await synchronizeNativeWake(forceRefresh: true)
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) {
             [weak self] _ in
             Task { @MainActor in await self?.refresh() }
@@ -367,7 +540,10 @@ final class AppModel: ObservableObject {
         case .callUpdated(let call):
             receive(call)
         case .devicesChanged:
-            Task { await refreshDevices() }
+            Task {
+                await refreshDevices()
+                await synchronizeNativeWake(forceRefresh: true)
+            }
         case .deviceAuthorityFork(_, _, let recoveryEpoch):
             notices.append(
                 "A device-authority fork was detected in recovery epoch \(recoveryEpoch). "
@@ -382,6 +558,7 @@ final class AppModel: ObservableObject {
             Task {
                 await refreshDevices()
                 await refresh()
+                await synchronizeNativeWake(forceRefresh: true)
             }
         case .rendezvousConflict:
             notices.append(
@@ -411,7 +588,10 @@ final class AppModel: ObservableObject {
             Task { await refresh() }
         case .messageRequestAccepted, .messageRequestDeleted,
              .messageRequestBlocked, .messageRequestExpired:
-            Task { await refresh() }
+            Task {
+                await refresh()
+                await synchronizeNativeWake(forceRefresh: true)
+            }
         case .groupInvitationReceived:
             notices.append("New group invitation.")
             Task { await refresh() }
@@ -426,7 +606,10 @@ final class AppModel: ObservableObject {
                 : "The owner rejected your group administration request (reason \(reason)).")
             Task { await refresh() }
         case .contactAdded, .contactRenamed:
-            Task { await refresh() }
+            Task {
+                await refresh()
+                await synchronizeNativeWake(forceRefresh: true)
+            }
         case .sessionEstablished(let peer):
             // A re-establishment for a known contact means their key or
             // device changed — say so, next to their name.
@@ -435,7 +618,10 @@ final class AppModel: ObservableObject {
                     "Session with \(known.name) re-established — their key or device "
                     + "may have changed. Verify safety numbers again.")
             }
-            Task { await refresh() }
+            Task {
+                await refresh()
+                await synchronizeNativeWake(forceRefresh: true)
+            }
         case .awaitingFasterLink:
             notices.append("A message is held — will send when a faster link exists.")
         }
@@ -1906,6 +2092,14 @@ private func outputImageName(_ filename: String?) -> String {
     guard let filename, !filename.isEmpty else { return "edited-image.png" }
     let stem = (filename as NSString).deletingPathExtension
     return (stem.isEmpty ? "edited-image" : stem) + ".png"
+}
+
+private extension NativeWakeSnapshot {
+    func withAdvertised(_ advertised: Bool) -> NativeWakeSnapshot {
+        var copy = self
+        copy.advertised = advertised
+        return copy
+    }
 }
 
 /// One error string for any failure the UI shows: the node's words for FFI

@@ -12,6 +12,7 @@ apps/android/build
 apps/android/local.properties
 # Release signing material never enters the repository.
 apps/android/keystore.properties
+apps/android/native-wake.properties
 apps/android/**/*.jks
 apps/android/**/*.keystore
 # Downloaded CI/release binaries are handoff artifacts, never source inputs.

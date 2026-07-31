@@ -68,6 +68,10 @@ import uniffi.kult_ffi.ImageInfo
 import uniffi.kult_ffi.Message
 import uniffi.kult_ffi.MessageRequest
 import uniffi.kult_ffi.MentionSpan
+import uniffi.kult_ffi.NativeWakeEnvironment
+import uniffi.kult_ffi.NativeWakePlatform
+import uniffi.kult_ffi.NativeWakeProfile
+import uniffi.kult_ffi.NativeWakeRegistration
 import uniffi.kult_ffi.NetworkMode
 import uniffi.kult_ffi.NoteMessage
 import uniffi.kult_ffi.RendezvousProviderConfig
@@ -77,6 +81,7 @@ import uniffi.kult_ffi.Status
 import uniffi.kult_ffi.ThemeInfo
 import uniffi.kult_ffi.ThemePreference
 import uniffi.kult_ffi.TextFormatHighlight
+import uniffi.kult_ffi.WakeProviderConfig
 import uniffi.kult_ffi.defaultConfig
 import uniffi.kult_ffi.canonicalizeRecordedAudio
 import uniffi.kult_ffi.editImage as ffiEditImage
@@ -219,6 +224,31 @@ class Session private constructor(private val node: KultNode) {
 
     /** Permanently retire mailbox-only stable-address discovery compatibility. */
     fun retireLegacyDiscovery(): String = node.retireLegacyDiscovery()
+
+    /**
+     * Mint distinct capabilities for a bounded batch of authenticated
+     * contact devices using the current native provider token.
+     */
+    fun registerNativeWake(
+        platform: NativeWakePlatform,
+        environment: NativeWakeEnvironment,
+        profile: NativeWakeProfile,
+        providerToken: ByteArray,
+        appTopic: String,
+    ): NativeWakeRegistration = node.registerNativeWake(
+        platform = platform,
+        environment = environment,
+        profile = profile,
+        providerToken = providerToken,
+        appTopic = appTopic,
+    )
+
+    /** Revoke every capability this installation previously issued. */
+    fun revokeNativeWake(): UInt = node.revokeNativeWake()
+
+    /** Run one deadline-bounded generic collection pass after platform wake. */
+    fun collectAfterNativeWake(budgetMs: UInt): UInt =
+        node.collectAfterNativeWake(budgetMs)
 
     /** This node's peer id (hex). */
     val peer: String get() = node.peer()
@@ -1079,6 +1109,14 @@ class Session private constructor(private val node: KultNode) {
                 providerDirectoryRoots = settings.providerDirectoryRoots,
                 rendezvous = settings.rendezvous.map {
                     RendezvousProviderConfig(
+                        origin = it.origin,
+                        staticKey = it.staticKey,
+                        standard = it.standard,
+                        privateViaTor = it.privateViaTor,
+                    )
+                },
+                wake = settings.wake.map {
+                    WakeProviderConfig(
                         origin = it.origin,
                         staticKey = it.staticKey,
                         standard = it.standard,

@@ -239,6 +239,82 @@ pub struct RendezvousProviderConfig {
     pub private_via_tor: bool,
 }
 
+/// One user-selected native-wake gateway, separately keyed from rendezvous.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct WakeProviderConfig {
+    /// Canonical HTTPS origin with no path.
+    pub origin: String,
+    /// SHA-256 of the leaf TLS certificate, lowercase hexadecimal.
+    pub static_key: String,
+    /// Whether direct Standard-mode access is allowed.
+    pub standard: bool,
+    /// Whether Private mode may reach it through Tor.
+    pub private_via_tor: bool,
+}
+
+/// Native notification provider owning the current platform token.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum NativeWakePlatform {
+    /// Apple Push Notification service.
+    Apns,
+    /// Firebase Cloud Messaging in the Google Play Android flavor.
+    Fcm,
+}
+
+/// Native provider environment selected by the signed application build.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum NativeWakeEnvironment {
+    /// Development or sandbox provider environment.
+    Development,
+    /// Production provider environment.
+    Production,
+}
+
+/// Static content-free notification profile selected by the recipient.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum NativeWakeProfile {
+    /// Best-effort background hint with no visible content.
+    BackgroundOnly,
+    /// Static visible “New activity” notice plus bounded collection.
+    GenericVisible,
+}
+
+/// Bounded progress from one native-token registration call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct NativeWakeRegistration {
+    /// Contact-device capability sets replaced atomically in this call.
+    pub updated: u32,
+    /// More relationships remain for a later platform-scheduled continuation.
+    pub remaining: bool,
+}
+
+impl NativeWakePlatform {
+    fn protocol(self) -> kult_protocol::WakePlatform {
+        match self {
+            Self::Apns => kult_protocol::WakePlatform::Apns,
+            Self::Fcm => kult_protocol::WakePlatform::Fcm,
+        }
+    }
+}
+
+impl NativeWakeEnvironment {
+    fn protocol(self) -> kult_protocol::WakeEnvironment {
+        match self {
+            Self::Development => kult_protocol::WakeEnvironment::Development,
+            Self::Production => kult_protocol::WakeEnvironment::Production,
+        }
+    }
+}
+
+impl NativeWakeProfile {
+    fn protocol(self) -> kult_protocol::WakeProfile {
+        match self {
+            Self::BackgroundOnly => kult_protocol::WakeProfile::BackgroundOnly,
+            Self::GenericVisible => kult_protocol::WakeProfile::GenericVisible,
+        }
+    }
+}
+
 /// One inert inline presentation token produced by the shared formatter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum TextFormatStyle {
@@ -387,6 +463,9 @@ pub struct Config {
     /// User-selected rendezvous providers retained independently of the
     /// signed directory.
     pub rendezvous: Vec<RendezvousProviderConfig>,
+    /// User-selected native-wake gateways. These use distinct service keys
+    /// and are never inferred from rendezvous configuration.
+    pub wake: Vec<WakeProviderConfig>,
     /// Loopback Tor SOCKS5 address for Private rendezvous, such as
     /// `127.0.0.1:9050`.
     pub tor_proxy: Option<String>,
@@ -439,6 +518,7 @@ pub fn default_config(data_dir: String, passphrase: String) -> Config {
         provider_directory: None,
         provider_directory_roots: Vec::new(),
         rendezvous: Vec::new(),
+        wake: Vec::new(),
         tor_proxy: None,
         listen: vec![
             "/ip4/0.0.0.0/udp/0/quic-v1".to_owned(),
@@ -5060,6 +5140,45 @@ impl KultNode {
         self.call(|resp| Msg::RendezvousConversationActive { peer, active, resp })
     }
 
+    /// Register the current native provider token and distribute a distinct
+    /// capability to a bounded batch of authenticated contact devices.
+    ///
+    /// The token goes only to the separately configured wake gateways. It is
+    /// not stored in settings, sent to contacts, or included in backups.
+    pub fn register_native_wake(
+        &self,
+        platform: NativeWakePlatform,
+        environment: NativeWakeEnvironment,
+        profile: NativeWakeProfile,
+        provider_token: Vec<u8>,
+        app_topic: String,
+    ) -> Result<NativeWakeRegistration, FfiError> {
+        if provider_token.is_empty() || app_topic.is_empty() {
+            return Err(FfiError::Node {
+                reason: "native wake requires a provider token and application topic".to_owned(),
+            });
+        }
+        self.call(|resp| Msg::WakeRegister {
+            platform: platform.protocol(),
+            environment: environment.protocol(),
+            profile: profile.protocol(),
+            provider_token,
+            app_topic: app_topic.into_bytes(),
+            resp,
+        })
+        .map(|result| NativeWakeRegistration {
+            updated: u32::try_from(result.updated).unwrap_or(u32::MAX),
+            remaining: result.remaining,
+        })
+    }
+
+    /// Publish complete empty generations and durably queue revocation of all
+    /// capabilities this installation previously issued.
+    pub fn revoke_native_wake(&self) -> Result<u32, FfiError> {
+        self.call(|resp| Msg::WakeRevoke { resp })
+            .map(|updated| u32::try_from(updated).unwrap_or(u32::MAX))
+    }
+
     /// Run one bounded generic collection pass after a native platform wake.
     ///
     /// The supplied platform budget is clamped to 25 seconds. Core checks
@@ -5695,6 +5814,47 @@ fn runtime_config(
                 .to_owned(),
         });
     }
+    let mut wake = Vec::new();
+    for provider in config.wake {
+        if !provider.standard && !provider.private_via_tor {
+            return Err(FfiError::Startup {
+                reason: "wake provider must allow Standard, Private, or both".to_owned(),
+            });
+        }
+        let eligible = match mode {
+            kult_transport::OperatingMode::Standard => provider.standard,
+            kult_transport::OperatingMode::Private => provider.private_via_tor,
+            kult_transport::OperatingMode::Sovereign => false,
+        };
+        if !eligible {
+            continue;
+        }
+        let static_key =
+            parse_fixed_lower_hex::<32>(&provider.static_key).map_err(|_| FfiError::Startup {
+                reason: "wake provider TLS pin must be exactly 64 lowercase hex characters"
+                    .to_owned(),
+            })?;
+        wake.push(
+            kult_transport::WakeProvider::new(provider.origin, static_key).map_err(|_| {
+                FfiError::Startup {
+                    reason: "wake provider must use a canonical HTTPS origin and non-zero TLS pin"
+                        .to_owned(),
+                }
+            })?,
+        );
+    }
+    wake.sort_by(|left, right| {
+        (left.origin(), left.static_key()).cmp(&(right.origin(), right.static_key()))
+    });
+    wake.dedup_by(|left, right| left.provider_id() == right.provider_id());
+    if wake.len() > kult_transport::MAX_WAKE_PROVIDERS {
+        return Err(FfiError::Startup {
+            reason: format!(
+                "at most {} native-wake gateways may be configured",
+                kult_transport::MAX_WAKE_PROVIDERS
+            ),
+        });
+    }
     let tor_proxy = config
         .tor_proxy
         .map(|value| {
@@ -5713,11 +5873,11 @@ fn runtime_config(
         })
         .transpose()?;
     if mode == kult_transport::OperatingMode::Private
-        && !resolution.providers.rendezvous.is_empty()
+        && (!resolution.providers.rendezvous.is_empty() || !wake.is_empty())
         && tor_proxy.is_none()
     {
         return Err(FfiError::Startup {
-            reason: "Private rendezvous requires an explicit loopback Tor proxy".to_owned(),
+            reason: "Private optional providers require an explicit loopback Tor proxy".to_owned(),
         });
     }
     let provider_directory = if !directory_configured {
@@ -5762,6 +5922,7 @@ fn runtime_config(
             publish_direct_routes: config.sovereign_publish_direct_routes,
         },
         rendezvous: effective.rendezvous,
+        wake,
         tor_proxy,
         fallback_ready,
         listen: config.listen,
@@ -6274,6 +6435,49 @@ mod tests {
         assert_eq!(runtime.mode, kult_transport::OperatingMode::Private);
         assert_eq!(runtime.rendezvous.len(), 1);
         assert_eq!(runtime.tor_proxy, Some("127.0.0.1:9050".parse().unwrap()));
+    }
+
+    #[test]
+    fn native_wake_gateway_is_separately_keyed_and_private_ingress_is_fail_closed() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = default_config(
+            directory.path().display().to_string(),
+            "test-passphrase".to_owned(),
+        );
+        config.mode = NetworkMode::Private;
+        config.wake = vec![WakeProviderConfig {
+            origin: "https://wake.example.org".to_owned(),
+            static_key: "33".repeat(32),
+            standard: true,
+            private_via_tor: true,
+        }];
+        assert!(matches!(
+            runtime_config(config.clone(), None),
+            Err(FfiError::Startup { reason }) if reason.contains("loopback Tor proxy")
+        ));
+        config.tor_proxy = Some("127.0.0.1:9050".to_owned());
+        let runtime = runtime_config(config, None).unwrap();
+        assert_eq!(runtime.wake.len(), 1);
+        assert_eq!(runtime.wake[0].origin(), "https://wake.example.org");
+        assert!(runtime.rendezvous.is_empty());
+    }
+
+    #[test]
+    fn sovereign_mode_ignores_configured_wake_gateways() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = default_config(
+            directory.path().display().to_string(),
+            "test-passphrase".to_owned(),
+        );
+        config.mode = NetworkMode::Sovereign;
+        config.wake = vec![WakeProviderConfig {
+            origin: "https://wake.example.org".to_owned(),
+            static_key: "33".repeat(32),
+            standard: true,
+            private_via_tor: true,
+        }];
+        let runtime = runtime_config(config, None).unwrap();
+        assert!(runtime.wake.is_empty());
     }
 
     #[test]

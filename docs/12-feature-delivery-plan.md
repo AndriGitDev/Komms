@@ -30,8 +30,8 @@ Komms has a strong transport and security foundation plus shared versioned
 content, attachment, carrier-capability, replicated-conversation, and linked-
 device front doors. C7 direct-QUIC audio calls are implemented across the full
 stack under accepted ADR-0013. ADR-0017 modes, ADR-0018 rendezvous, and the
-ADR-0019 wake gateway/core are implemented for Alpha; native mobile
-integration plus the external/deployment/field gates remain open.
+ADR-0019 wake gateway/core and native Android/iOS clients are implemented for
+Alpha; external/deployment/physical-field gates remain open.
 
 | Feature from scope | Current status | Main gap |
 |---|---|---|
@@ -62,7 +62,7 @@ integration plus the external/deployment/field gates remain open.
 | Group polls | Implemented Alpha | ADR-0022 fixed-electorate visible votes, deterministic heads/tallies, recipient-authenticated voter/creator origins, creator snapshot closure, and every front door/shell. Independent and physical qualification remain open. |
 | Admin/role controls | Implemented | ADR-0023 owner-serialized signed roles, transfer, re-keying, and poll moderation through every shell. |
 | Live voice/video calls | Implemented (audio alpha) | Preserve direct-QUIC-only gating, transient ratcheted control, authenticated Opus media, and zero history/backup/mesh work; real-network/device qualification precedes stable enablement and video. |
-| Optional hybrid reachability/wake | Partial Alpha | ADR-0017 modes, signed replaceable providers, ADR-0018 rendezvous, and ADR-0019 gateway/core are implemented with fixed codecs, sealed non-backup state, durable identity-free revoke retries, pinned HTTPS/Tor clients, bounded orchestration/collection, dedicated least-authority service artifacts, and strict front doors. Android/iOS native token/background integration, qualified deployment/Private ingress, external review, and physical field evidence remain open. |
+| Optional hybrid reachability/wake | Implemented Alpha; external gates open | ADR-0017 modes, signed replaceable providers, ADR-0018 rendezvous, and ADR-0019 gateway/core/mobile clients are implemented with fixed codecs, sealed non-backup state, durable identity-free revoke retries, pinned HTTPS/Tor clients, bounded orchestration/collection, direct APNs, Play-only FCM, an inspected Google-free flavor, dedicated least-authority service artifacts, and strict front doors. Qualified deployment/Private ingress, external review, and named physical field evidence remain open. |
 
 ## 3. Shared foundations
 
@@ -926,18 +926,20 @@ Deliver this as a feature-gated module over the unchanged core:
 8. publish service hardening, deployment, key-rotation, no-log, incident, and
    independent-operation runbooks before a production default is offered.
 
-Items 1–5 and the gateway/core portions of 7–8 are implemented for Alpha. The
+Items 1–8 are implemented for the local Alpha profile. The
 rendezvous and wake clients support pinned TLS 1.3 directly or through an
 explicit loopback Tor SOCKS5 endpoint. The dedicated reference and native-wake
 service binaries, images, hardened deployment profiles, signed/versioned
 provider directory, last-valid/fork handling, canonical mode policy, familiar
 status language, bounded generic collection, next-hop-only wake scheduling,
-durable revocation retry, and strict RPC/UniFFI front doors are present. No
+durable revocation retry, strict RPC/UniFFI front doors, direct APNs lifecycle,
+Play-only FCM callbacks, and a separately inspected Google-free Android
+artifact are present. No
 production directory, default operator, deployed service, production APNs/FCM
 credential, qualified Tor/OHTTP ingress, or non-collusion evidence is included.
-Item 6 and the native mobile parts of 7 remain the Session 15 work.
 See [Operating modes and provider configuration](36-operating-modes-and-provider-directory.md)
-and the [native-wake runbook](37-native-wake-operations.md).
+the [native-wake runbook](37-native-wake-operations.md), and the
+[mobile qualification matrix](38-native-wake-mobile-qualification.md).
 
 Rendezvous is post-pairing only and never replaces kult-address/QR first contact.
 Native push carries no sender, recipient Komms identity, conversation, message,

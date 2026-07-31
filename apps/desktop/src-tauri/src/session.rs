@@ -60,8 +60,9 @@ use kult_ffi::{
     RendezvousProviderConfig as FfiRendezvousProviderConfig, ScheduledConversation,
     StaleFolder as FfiStaleFolder, StaleLabel as FfiStaleLabel,
     TextFormatBlockKind as FfiTextFormatBlockKind, TextFormatHighlight as FfiTextFormatHighlight,
-    TextFormatStyle as FfiTextFormatStyle, ThemePreference as FfiThemePreference, AUDIO_MAX_BYTES,
-    AUDIO_MEDIA_TYPE, IMAGE_MAX_INPUT_BYTES, IMAGE_MEDIA_TYPE,
+    TextFormatStyle as FfiTextFormatStyle, ThemePreference as FfiThemePreference,
+    WakeProviderConfig as FfiWakeProviderConfig, AUDIO_MAX_BYTES, AUDIO_MEDIA_TYPE,
+    IMAGE_MAX_INPUT_BYTES, IMAGE_MEDIA_TYPE,
 };
 
 use crate::qr;
@@ -373,6 +374,8 @@ pub struct NetworkSettings {
     pub provider_directory_roots: Vec<String>,
     /// User-selected rendezvous providers.
     pub rendezvous: Vec<RendezvousSetting>,
+    /// User-selected native-wake gateways, never inferred from rendezvous.
+    pub wake: Vec<RendezvousSetting>,
     /// Explicit loopback Tor SOCKS5 endpoint for Private rendezvous.
     pub tor_proxy: Option<String>,
     /// Multiaddrs to listen on. The default binds QUIC + TCP on
@@ -411,6 +414,7 @@ impl Default for NetworkSettings {
             provider_directory: None,
             provider_directory_roots: Vec::new(),
             rendezvous: Vec::new(),
+            wake: Vec::new(),
             tor_proxy: None,
             listen: vec![
                 "/ip4/0.0.0.0/udp/0/quic-v1".to_owned(),
@@ -5094,6 +5098,16 @@ fn build_config(
             private_via_tor: provider.private_via_tor,
         })
         .collect();
+    config.wake = settings
+        .wake
+        .iter()
+        .map(|provider| FfiWakeProviderConfig {
+            origin: provider.origin.clone(),
+            static_key: provider.static_key.clone(),
+            standard: provider.standard,
+            private_via_tor: provider.private_via_tor,
+        })
+        .collect();
     config.tor_proxy = settings.tor_proxy.clone();
     // An emptied-out listen list falls back to the baseline rather than
     // silently starting a node nothing can dial.
@@ -5223,6 +5237,9 @@ mod tests {
         );
         assert!(settings.rendezvous[0].standard);
         assert!(settings.rendezvous[0].private_via_tor);
+        assert_eq!(settings.wake[0].origin, "https://wake.example.org");
+        assert!(settings.wake[0].standard);
+        assert!(settings.wake[0].private_via_tor);
         assert_eq!(settings.tor_proxy.as_deref(), Some("127.0.0.1:9050"));
         assert_eq!(settings.mailboxes.len(), 1);
     }

@@ -510,6 +510,12 @@
     <string name="theme_light">Light</string>
     <string name="theme_dark">Dark</string>
     <string name="theme_note">System follows Android live. The choice is private, sealed locally, and restored from encrypted backups. Color is never the only security or delivery cue.</string>
+    <string name="native_wake_title">Best-effort native wake</string>
+    <string name="native_wake_disabled">Off — ordinary delivery remains available</string>
+    <string name="native_wake_background">Background-only generic wake</string>
+    <string name="native_wake_visible">Static “New activity” notification</string>
+    <string name="native_wake_android_limits">Wake is optional and carries no sender, message, conversation, unread count, or timestamp. Android may delay it in Doze, after force-stop, under OEM restrictions, or after provider deprioritization. It never changes sent or delivered state; mailbox and direct retry remain authoritative.</string>
+    <string name="native_wake_google_free">This Google-free build contains no FCM SDK and advertises no native-wake capability. Direct, mailbox, LAN, mesh, and file fallbacks remain available.</string>
     <string name="screen_security_title">Screen security · always on</string>
     <string name="incognito_keyboard_title">Input privacy · always on</string>
     <string name="settings_note">Same knobs as kultd\'s flags; stored without secrets in settings.json. Applied when the node next starts (lock, then unlock).</string>
@@ -529,6 +535,9 @@
     <string name="set_rendezvous">Manual rendezvous providers (one per line)</string>
     <string name="set_rendezvous_hint">https://host,leaf_sha256,standard|private|both</string>
     <string name="set_rendezvous_invalid">Rendezvous line %1$d must be https://host, 64 lowercase hex characters, and standard, private, or both.</string>
+    <string name="set_wake">Manual native-wake gateways (one per line; separate service keys)</string>
+    <string name="set_wake_hint">https://host,leaf_sha256,standard|private|both</string>
+    <string name="set_wake_invalid">Wake-gateway line %1$d must be https://host, 64 lowercase hex characters, and standard, private, or both.</string>
     <string name="set_tor_proxy">Private Tor SOCKS5 endpoint (loopback host:port)</string>
     <string name="set_listen">Listen multiaddrs (one per line)</string>
     <string name="set_bootstrap">DHT bootstrap peers (one per line)</string>

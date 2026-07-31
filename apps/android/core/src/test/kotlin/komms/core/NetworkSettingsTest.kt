@@ -50,6 +50,8 @@ class NetworkSettingsTest {
         assertEquals(1, s.providerDirectoryRoots.size)
         assertEquals("https://rendezvous.example.org", s.rendezvous.single().origin)
         assertTrue(s.rendezvous.single().standard && s.rendezvous.single().privateViaTor)
+        assertEquals("https://wake.example.org", s.wake.single().origin)
+        assertTrue(s.wake.single().standard && s.wake.single().privateViaTor)
         assertEquals("127.0.0.1:9050", s.torProxy)
         assertEquals(listOf("/ip4/0.0.0.0/udp/7001/quic-v1"), s.listen)
         assertEquals("radio.local:4403", s.meshtasticTcp)

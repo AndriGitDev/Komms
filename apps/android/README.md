@@ -175,6 +175,15 @@ own, verbatim.
 - **Network settings** persist as secret-free `settings.json` in the data
   directory: the same file format as the desktop app and the same knobs
   as `kultd`'s flags.
+- **Use optional best-effort native wake** through a separately pinned gateway.
+  The Play flavor keeps its FCM token in process memory, accepts only the static
+  background or “New activity” shapes, rotates per-contact capabilities on
+  token/permission/relationship changes, and runs bounded collection plus one
+  ordinary WorkManager continuation. Doze, force-stop, OEM policy, provider
+  deprioritization, and notification denial remain visible limitations. The
+  Google-free flavor links no FCM/Play Services code and advertises no wake
+  capability. Native wake never changes delivery state or replaces ordinary
+  direct/mailbox/fallback delivery.
 - A **foreground service** keeps the node delivering while the app is
   backgrounded; **Lock** stops the node and returns to the gate.
 
@@ -208,9 +217,9 @@ rendering glue.
 
 Mention acceptance pins byte-for-byte Rust/UniFFI semantics, invalid Unicode
 range rejection, exact peer targeting, and zero signal for plain text or similar
-petnames. Android notifications use only a generic private preview and remain
-subject to the existing user-controlled notification permission and platform
-policy; they do not provide server push or an online-delivery guarantee.
+petnames. Android notifications remain subject to user-controlled permission
+and platform policy. Native wake carries only a static generic shape and offers
+no online-delivery guarantee.
 
 Label acceptance drives the same deterministic fixture through Rust RPC,
 UniFFI, Kotlin, and Swift, including exact Unicode, duplicate names, typed
@@ -250,11 +259,11 @@ selection and deletes its app-private transient after the blocking core call.
 
 This is deliberately its own Gradle build, outside the cargo workspace:
 the Android dependency tree stays out of the core crates' lockfile and
-cargo-deny surface. The runtime footprint is small and auditable: JNA
-(the UniFFI transport), kotlinx-serialization (settings.json), androidx
-basics, CameraX, and ZXing core (pure-Java QR encode/decode: no Google
-Play Services, no ML Kit, F-Droid friendly). JVM dependencies are pinned
-by `core/gradle.lockfile`.
+cargo-deny surface. The common runtime footprint is JNA (the UniFFI transport),
+kotlinx-serialization, AndroidX, CameraX, WorkManager, and ZXing core. The
+Google-free flavor has no Firebase, FCM, Play Services, or ML Kit dependency.
+The Play flavor adds only the pinned Firebase Messaging client for native wake.
+JVM dependencies are pinned by `core/gradle.lockfile`.
 
 ## Install the published Alpha
 
@@ -287,7 +296,11 @@ The APK additionally needs the Android SDK, NDK, and cargo-ndk:
 rustup target add aarch64-linux-android x86_64-linux-android
 cargo install cargo-ndk --locked
 cd apps/android
-gradle :app:assembleDebug        # cross-compiles kult-ffi per ABI
+gradle \
+  :app:assemblePlayDebug :app:assembleGoogleFreeDebug \
+  :app:testPlayDebugUnitTest :app:testGoogleFreeDebugUnitTest \
+  :app:lintPlayDebug :app:lintGoogleFreeDebug
+../../scripts/check-android-google-free.sh
 ```
 
 ABIs default to `arm64-v8a,x86_64` (real phones + emulator); widen with
@@ -296,9 +309,11 @@ feature-gated off, mirroring `kult-ffi`'s default (a radio's network API
 can be attached from a `meshtastic`-featured build).
 
 The local release matrix runs the `:core` JVM e2e and, on a host with the full
-SDK/NDK, debug-APK assembly plus lint. Per-push CI also assembles the real debug
-APK. Neither compilation path replaces the hands-on lifecycle, accessibility,
-audio-route, background, and physical-device qualification matrix.
+SDK/NDK, builds/tests/lints both distribution flavors and inspects the
+Google-free APK. Per-push CI does the same. Neither compilation path replaces
+the hands-on lifecycle, accessibility, audio-route, background, native-provider,
+and physical-device qualification matrix in
+[38: Native-wake mobile qualification](../../docs/38-native-wake-mobile-qualification.md).
 
 The `v0.3.0` prerelease includes that installable debug APK alongside
 the desktop packages and checksums. Future tagged candidates begin as drafts;
@@ -334,6 +349,6 @@ M6 work.
 
 ## Not yet
 
-Mobile push-style wake-ups after the foreground service itself is stopped,
-BLE radios, and store distribution (M6). The iOS shell
-lives in [`apps/ios`](../ios/).
+Production FCM credentials/default gateway, named physical-device native-wake
+qualification, BLE radios, and store distribution (M6). The iOS shell lives in
+[`apps/ios`](../ios/).

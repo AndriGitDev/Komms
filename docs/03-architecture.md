@@ -295,9 +295,11 @@ dedicated network/TLS reference-service wrapper are implemented for Alpha but
 are not configured as a default or deployed service. ADR-0019's fixed codecs,
 sealed per-session state, durable identity-free revoke retries, bounded core
 collection, pinned direct/Tor client, dedicated APNs/FCM gateway, and hardened
-deployment artifacts are also implemented for Alpha; native Android/iOS
-lifecycle integration and real-device qualification remain open. No wake
-gateway is deployed. Their bounded but non-zero metadata surfaces are listed in
+deployment artifacts are also implemented for Alpha. Direct APNs, Play-only
+FCM, a separately inspected Google-free artifact, and bounded mobile lifecycle
+handlers are present; real provider/deployed-gateway and named physical-device
+qualification remain open. No wake gateway is deployed. Their bounded but
+non-zero metadata surfaces are listed in
 [02: Threat Model](02-threat-model.md),
 [ADR-0017](adr/0017-optional-hybrid-modes.md), and
 [ADR-0034](adr/0034-operator-minimized-reference-discovery.md); the gateway

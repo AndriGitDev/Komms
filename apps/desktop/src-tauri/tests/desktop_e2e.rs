@@ -494,6 +494,7 @@ fn operating_mode_contract_and_familiar_status_are_present_in_every_shell() {
     .unwrap();
     assert_eq!(fixture["mode"], "private");
     assert_eq!(fixture["rendezvous"][0]["private_via_tor"], true);
+    assert_eq!(fixture["wake"][0]["private_via_tor"], true);
 
     let html = include_str!("../../ui/index.html");
     let frontend = include_str!("../../ui/main.js");
@@ -504,6 +505,7 @@ fn operating_mode_contract_and_familiar_status_are_present_in_every_shell() {
         "set-provider-directory",
         "set-provider-roots",
         "set-rendezvous",
+        "set-wake",
         "set-tor-proxy",
         "set-standard-disclosure",
         "set-sovereign-direct",
@@ -863,7 +865,7 @@ fn desktop_incognito_keyboard_covers_every_editable_text_field_before_unlock() {
         - html
             .matches("<textarea class=\"share-hex\" rows=\"4\" readonly")
             .count();
-    assert_eq!(50, editable_text_fields);
+    assert_eq!(51, editable_text_fields);
     assert_eq!(
         editable_text_fields,
         html.matches("data-incognito-input=").count()

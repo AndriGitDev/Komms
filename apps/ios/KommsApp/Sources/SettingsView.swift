@@ -129,8 +129,30 @@ private struct SettingsActionRow: View {
 }
 
 private struct PrivacySecurityView: View {
+    @EnvironmentObject private var model: AppModel
+
     var body: some View {
         Form {
+            Section {
+                Picker("Best-effort native wake", selection: Binding(
+                    get: { model.nativeWakePreference },
+                    set: { preference in
+                        Task { await model.setNativeWakePreference(preference) }
+                    }
+                )) {
+                    Text("Off").tag(NativeWakePreference.disabled)
+                    Text("Background only").tag(NativeWakePreference.backgroundOnly)
+                    Text("Static “New activity” notice").tag(NativeWakePreference.genericVisible)
+                }
+            } header: {
+                Text("Native wake")
+            } footer: {
+                Text(
+                    "Wake carries no sender, conversation, message, unread count, or timestamp and never changes sent or delivered state. "
+                    + "iOS may suppress background execution after force-quit, when Background App Refresh is off, or under system limits. "
+                    + "Mailbox and direct retry remain authoritative.")
+            }
+
             let screenSecurity = screenSecurityPolicy(platform: .ios)
             Section {
                 Text(screenSecurity.mechanism)
@@ -180,6 +202,7 @@ struct AdvancedNetworkSettingsView: View {
     @State private var providerDirectory = ""
     @State private var providerRoots = ""
     @State private var rendezvous = ""
+    @State private var wake = ""
     @State private var torProxy = ""
     @State private var serveMailbox = false
     @State private var mdns = true
@@ -248,6 +271,18 @@ struct AdvancedNetworkSettingsView: View {
                 Text("One per line: https://host,leaf_sha256,standard|private|both. Private access requires an explicit loopback Tor endpoint.")
             }
 
+            Section {
+                TextEditor(text: $wake)
+                    .font(.caption.monospaced())
+                    .frame(minHeight: 60)
+                    .incognitoKeyboard()
+                    .accessibilityLabel("Manual native-wake gateways, one per line")
+            } header: {
+                Text("Native-wake gateways")
+            } footer: {
+                Text("Separately keyed from rendezvous. One per line: https://host,leaf_sha256,standard|private|both. Provider tokens go only to the selected gateway.")
+            }
+
             Section("Listen multiaddrs (one per line)") {
                 TextEditor(text: $listen)
                     .font(.caption.monospaced())
@@ -311,6 +346,12 @@ struct AdvancedNetworkSettingsView: View {
                     : (entry.standard ? "standard" : "private")
                 return "\(entry.origin),\(entry.staticKey),\(access)"
             }.joined(separator: "\n")
+            wake = s.wake.map { entry in
+                let access = entry.standard && entry.privateViaTor
+                    ? "both"
+                    : (entry.standard ? "standard" : "private")
+                return "\(entry.origin),\(entry.staticKey),\(access)"
+            }.joined(separator: "\n")
             torProxy = s.torProxy ?? ""
             listen = s.listen.joined(separator: "\n")
             bootstrap = s.bootstrap.joined(separator: "\n")
@@ -327,7 +368,9 @@ struct AdvancedNetworkSettingsView: View {
         error = nil
         do {
             // Keep knobs this screen doesn't edit (radios, spool, bridge).
-            var s = (try? NetworkSettings.load(from: model.dataDir)) ?? NetworkSettings()
+            let previous =
+                (try? NetworkSettings.load(from: model.dataDir)) ?? NetworkSettings()
+            var s = previous
             s.mode = mode
             s.standardDisclosureConfirmed = standardDisclosureConfirmed
             s.sovereignPublishDirectRoutes = sovereignPublishDirectRoutes
@@ -335,6 +378,7 @@ struct AdvancedNetworkSettingsView: View {
             s.providerDirectory = directory.isEmpty ? nil : directory
             s.providerDirectoryRoots = Self.lines(providerRoots)
             s.rendezvous = try parseRendezvous()
+            s.wake = try parseWake()
             let proxy = torProxy.trimmingCharacters(in: .whitespaces)
             s.torProxy = proxy.isEmpty ? nil : proxy
             if s.mode == "standard",
@@ -345,7 +389,9 @@ struct AdvancedNetworkSettingsView: View {
             }
             if s.mode == "private",
                s.torProxy == nil,
-               s.providerDirectory != nil || s.rendezvous.contains(where: \.privateViaTor) {
+               s.providerDirectory != nil
+                || s.rendezvous.contains(where: \.privateViaTor)
+                || s.wake.contains(where: \.privateViaTor) {
                 throw SettingsError(
                     "Private optional providers require an explicit loopback Tor SOCKS5 endpoint.")
             }
@@ -356,7 +402,16 @@ struct AdvancedNetworkSettingsView: View {
             s.mailboxes = Self.lines(mailboxes)
             s.serveMailbox = serveMailbox
             s.mdns = mdns
+            let nativeWakeRuntimeChanged =
+                s.mode != previous.mode
+                || s.providerDirectory != previous.providerDirectory
+                || s.providerDirectoryRoots != previous.providerDirectoryRoots
+                || s.wake != previous.wake
+                || s.torProxy != previous.torProxy
             try s.save(to: model.dataDir)
+            if nativeWakeRuntimeChanged {
+                Task { await model.nativeWakeNetworkSettingsChanged() }
+            }
             dismiss()
         } catch {
             self.error = errorText(error)
@@ -401,6 +456,35 @@ struct AdvancedNetworkSettingsView: View {
                 standard: access.0,
                 privateViaTor: access.1
             )
+        }
+    }
+
+    private func parseWake() throws -> [WakeSetting] {
+        try Self.lines(wake).enumerated().map { index, line in
+            let parts = line.split(separator: ",", omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 3,
+                  parts[0].hasPrefix("https://"),
+                  parts[1].count == 64,
+                  parts[1].allSatisfy({ $0.isNumber || ("a"..."f").contains(String($0)) })
+            else {
+                throw SettingsError(
+                    "Wake-gateway line \(index + 1) must contain an HTTPS origin, 64 lowercase hex characters, and standard, private, or both.")
+            }
+            let access: (Bool, Bool)
+            switch parts[2] {
+            case "standard": access = (true, false)
+            case "private": access = (false, true)
+            case "both": access = (true, true)
+            default:
+                throw SettingsError(
+                    "Wake-gateway line \(index + 1) must end in standard, private, or both.")
+            }
+            return WakeSetting(
+                origin: parts[0],
+                staticKey: parts[1],
+                standard: access.0,
+                privateViaTor: access.1)
         }
     }
 }

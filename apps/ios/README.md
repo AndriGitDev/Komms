@@ -176,6 +176,14 @@ are the node's own, verbatim.
 - **Network settings** persist as secret-free `settings.json` in the data
   directory: the same file format as the desktop and Android apps and
   the same knobs as `kultd`'s flags.
+- **Use optional best-effort native wake** through APNs directly and a
+  separately pinned gateway. The APNs token remains in process memory, only the
+  exact background or static “New activity” profile is accepted, per-contact
+  capabilities rotate on token/permission/relationship changes, and one
+  20-second generic collection pass runs when iOS grants execution. Background
+  App Refresh off, force-quit, throttling, and provider failure are explicit
+  limitations. PushKit is not used. Native wake never changes delivery state or
+  replaces ordinary direct/mailbox/fallback delivery.
 
 QR rendering is CoreImage, scanning is AVFoundation metadata; no
 third-party dependencies anywhere in the app: the only library it links
@@ -215,9 +223,9 @@ UI-only document-picker, recorder, and rendering glue.
 
 Mention acceptance pins byte-for-byte Rust/UniFFI semantics, invalid Unicode
 range rejection, exact peer targeting, restoration, and zero signal for plain
-text or similar petnames. Rendering requests no contacts or notification
-permission. Any notification remains on the existing user-controlled path, uses
-a private generic preview, and offers no server-push or online-delivery guarantee.
+text or similar petnames. Native wake uses only its user-selected static
+profile, remains subject to notification authorization and iOS scheduling, and
+offers no online-delivery guarantee.
 
 Label acceptance uses the same deterministic fixture as Rust RPC, UniFFI, and
 Kotlin, covering exact Unicode, stable ids/order, duplicate names, typed targets,
@@ -295,7 +303,9 @@ attached from a `meshtastic`-featured build).
 The local release matrix runs the `KommsCore` host e2e and, on a full Xcode
 host, assembles the XCFramework and unsigned simulator app. Per-push hosted CI
 also assembles the unsigned Simulator app as build evidence; neither path is a
-physical-device or distribution qualification.
+physical-device, APNs, or distribution qualification. The exact open physical
+rows and evidence form are in
+[38: Native-wake mobile qualification](../../docs/38-native-wake-mobile-qualification.md).
 
 ## Version and distribution boundary
 
@@ -308,6 +318,6 @@ repository; those remain M6 distribution work.
 
 ## Not yet
 
-Push-style wake-ups and continuous background delivery (iOS offers no
-equivalent of Android's foreground service), BLE radios, and store
-distribution (M6).
+Production APNs credentials/default gateway, named physical-device native-wake
+qualification, continuous background delivery (iOS offers no equivalent of
+Android's foreground service), BLE radios, and store distribution (M6).

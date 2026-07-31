@@ -45,6 +45,36 @@ public struct RendezvousSetting: Codable, Equatable {
     }
 }
 
+/// One separately keyed native-wake gateway.
+public struct WakeSetting: Codable, Equatable {
+    /// Canonical HTTPS provider origin.
+    public var origin: String
+    /// SHA-256 of the provider leaf TLS certificate, lowercase hex.
+    public var staticKey: String
+    /// Whether direct Standard-mode access is allowed.
+    public var standard: Bool
+    /// Whether Private mode may reach it through Tor.
+    public var privateViaTor: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case origin, standard
+        case staticKey = "static_key"
+        case privateViaTor = "private_via_tor"
+    }
+
+    public init(
+        origin: String,
+        staticKey: String,
+        standard: Bool,
+        privateViaTor: Bool
+    ) {
+        self.origin = origin
+        self.staticKey = staticKey
+        self.standard = standard
+        self.privateViaTor = privateViaTor
+    }
+}
+
 /// The network knobs, mirroring `kultd`'s flags and the other shells.
 public struct NetworkSettings: Codable, Equatable {
     /// `standard`, `private`, or `sovereign`.
@@ -59,6 +89,8 @@ public struct NetworkSettings: Codable, Equatable {
     public var providerDirectoryRoots: [String]
     /// User-selected rendezvous providers.
     public var rendezvous: [RendezvousSetting]
+    /// User-selected native-wake gateways, never inferred from rendezvous.
+    public var wake: [WakeSetting]
     /// Explicit loopback Tor SOCKS5 endpoint for Private rendezvous.
     public var torProxy: String?
     /// Multiaddrs to listen on. The default binds QUIC + TCP on OS-assigned
@@ -88,7 +120,7 @@ public struct NetworkSettings: Codable, Equatable {
     public var bridge: Bool
 
     enum CodingKeys: String, CodingKey {
-        case mode, rendezvous
+        case mode, rendezvous, wake
         case standardDisclosureConfirmed = "standard_disclosure_confirmed"
         case sovereignPublishDirectRoutes = "sovereign_publish_direct_routes"
         case providerDirectory = "provider_directory"
@@ -109,6 +141,7 @@ public struct NetworkSettings: Codable, Equatable {
         providerDirectory: String? = nil,
         providerDirectoryRoots: [String] = [],
         rendezvous: [RendezvousSetting] = [],
+        wake: [WakeSetting] = [],
         torProxy: String? = nil,
         listen: [String] = ["/ip4/0.0.0.0/udp/0/quic-v1", "/ip4/0.0.0.0/tcp/0"],
         bootstrap: [String] = [],
@@ -127,6 +160,7 @@ public struct NetworkSettings: Codable, Equatable {
         self.providerDirectory = providerDirectory
         self.providerDirectoryRoots = providerDirectoryRoots
         self.rendezvous = rendezvous
+        self.wake = wake
         self.torProxy = torProxy
         self.listen = listen
         self.bootstrap = bootstrap
@@ -165,6 +199,7 @@ public struct NetworkSettings: Codable, Equatable {
         rendezvous =
             try c.decodeIfPresent([RendezvousSetting].self, forKey: .rendezvous)
             ?? d.rendezvous
+        wake = try c.decodeIfPresent([WakeSetting].self, forKey: .wake) ?? d.wake
         torProxy = try c.decodeIfPresent(String.self, forKey: .torProxy)
         listen = try c.decodeIfPresent([String].self, forKey: .listen) ?? d.listen
         bootstrap = try c.decodeIfPresent([String].self, forKey: .bootstrap) ?? d.bootstrap

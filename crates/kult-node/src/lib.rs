@@ -67,12 +67,12 @@ use kult_protocol::{
     Ephemeral, FormatCapabilities, MailboxKey, Reassembler, ReceiptPayload,
     RendezvousLookupRequest, RendezvousProviderControl, RendezvousProviderDescriptor,
     RendezvousRegisterRequest, RendezvousRoute, RendezvousRouteRecord, WakeCapabilityControl,
-    WakeCapabilityDescriptor, WakeTriggerRequest, CONTENT_FORMAT_V1, CONTENT_KIND_ATTACHMENT,
-    CONTENT_KIND_CALL_CONTROL, CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL,
-    CONTENT_KIND_GROUP_AUTHORITY, CONTENT_KIND_MENTION, CONTENT_KIND_POLL, CONTENT_KIND_TEXT,
-    ENVELOPE_HEADER_LEN, MAX_ADMISSION_PUZZLE_ATTEMPTS, MAX_EDIT_TEXT_LEN,
-    MAX_EPHEMERAL_LIFETIME_SECS, MIN_EPHEMERAL_LIFETIME_SECS, REASSEMBLY_WINDOW_SECS,
-    WAKE_CAPABILITY_MAX_LIFETIME_SECS,
+    WakeCapabilityDescriptor, WakeEnvironment, WakePlatform, WakeProfile, WakeRegisterRequest,
+    WakeTriggerRequest, CONTENT_FORMAT_V1, CONTENT_KIND_ATTACHMENT, CONTENT_KIND_CALL_CONTROL,
+    CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL, CONTENT_KIND_GROUP_AUTHORITY, CONTENT_KIND_MENTION,
+    CONTENT_KIND_POLL, CONTENT_KIND_TEXT, ENVELOPE_HEADER_LEN, MAX_ADMISSION_PUZZLE_ATTEMPTS,
+    MAX_EDIT_TEXT_LEN, MAX_EPHEMERAL_LIFETIME_SECS, MIN_EPHEMERAL_LIFETIME_SECS,
+    REASSEMBLY_WINDOW_SECS, WAKE_CAPABILITY_MAX_LIFETIME_SECS,
 };
 use kult_store::{
     AdmissionAcceptPlan, AdmissionDiscardPlan, AdmissionReplayTombstone, AdmissionStagePlan,
@@ -101,6 +101,7 @@ use kult_transport::{
     rendezvous_record_route, rendezvous_route_hint, CostClass, DeliveryHint, Discovery,
     DiscoveryNamespace, IngressClass, Reachability, ReceivedEnvelope, RendezvousClient,
     RendezvousProvider, SendReceipt, Transport, WakeClient, WakeProvider, MAX_RENDEZVOUS_PROVIDERS,
+    MAX_WAKE_PROVIDERS,
 };
 
 mod api;
@@ -243,6 +244,10 @@ const MAX_WAKE_REVOCATIONS_PER_TICK: usize = 4;
 const MAX_WAKE_REVOCATION_CHANGES_PER_TICK: usize = 32;
 /// All gateway trigger and revoke work shares one bounded heartbeat deadline.
 const WAKE_MAINTENANCE_BUDGET: Duration = Duration::from_secs(5);
+/// Maximum contact-device capability sets minted by one platform callback.
+const MAX_WAKE_REGISTRATION_RELATIONSHIPS_PER_CALL: usize = 8;
+/// All registration work owned by one platform callback shares this deadline.
+const WAKE_REGISTRATION_BUDGET: Duration = Duration::from_secs(20);
 /// Maximum platform-owned background collection duration accepted by core.
 pub const MAX_WAKE_COLLECTION_DURATION: Duration = Duration::from_secs(25);
 /// Smaller receive domain used for a native-wake collection pass.
@@ -276,6 +281,34 @@ pub struct DiscoveryPublicationPolicy {
     /// Advanced Sovereign-only acknowledgement that Connect-code holders can
     /// poll any included direct route.
     pub publish_direct_routes: bool,
+}
+
+/// Bounded result of one native-token capability registration pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NativeWakeRegistrationResult {
+    /// Contact-device capability sets replaced atomically in this pass.
+    pub updated: usize,
+    /// More relationships remain for a later platform-scheduled pass.
+    pub remaining: bool,
+}
+
+/// Borrowed platform destination and provider set for one bounded registration
+/// pass.
+pub struct NativeWakeDestinationRegistration<'a> {
+    /// Native notification provider family.
+    pub platform: WakePlatform,
+    /// Provider sandbox or production environment.
+    pub environment: WakeEnvironment,
+    /// Fixed generic payload profile requested for this destination.
+    pub profile: WakeProfile,
+    /// Opaque APNs or FCM destination token kept only for this call.
+    pub provider_token: &'a [u8],
+    /// Exact application topic or package identifier.
+    pub app_topic: &'a [u8],
+    /// Complete eligible gateway set for the current operating mode.
+    pub providers: &'a [WakeProvider],
+    /// Current Unix time in seconds.
+    pub now: u64,
 }
 
 impl DiscoveryPublicationPolicy {
@@ -805,6 +838,7 @@ pub struct Node {
     rendezvous_rehandshake_requested: HashSet<[u8; 32]>,
     rendezvous_inflight: HashSet<([u8; 32], [u8; 32], RendezvousOperationKind)>,
     wake_client: Option<Arc<dyn WakeClient>>,
+    wake_registration_cursor: usize,
     wake_collection_deadline: Option<Instant>,
     media_reconciled: bool,
     attachment_request_at: HashMap<[u8; 16], u64>,
@@ -1494,6 +1528,7 @@ impl Node {
             rendezvous_rehandshake_requested: HashSet::new(),
             rendezvous_inflight: HashSet::new(),
             wake_client: None,
+            wake_registration_cursor: 0,
             wake_collection_deadline: None,
             media_reconciled: false,
             attachment_request_at: HashMap::new(),
@@ -1640,6 +1675,232 @@ impl Node {
         }
         self.wake_client = client;
         Ok(())
+    }
+
+    /// Remove issued capabilities for gateways that are no longer eligible.
+    ///
+    /// This runs when a node starts with a new mode or provider set. It never
+    /// removes remote capabilities supplied by contacts, and gateway failure
+    /// cannot disturb ordinary delivery.
+    pub fn reconcile_wake_providers(
+        &mut self,
+        providers: &[WakeProvider],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<usize> {
+        if now == 0 || providers.len() > MAX_WAKE_PROVIDERS {
+            return Err(NodeError::WakeUnavailable);
+        }
+        let allowed = providers
+            .iter()
+            .map(WakeProvider::provider_id)
+            .collect::<HashSet<_>>();
+        let mut devices = self.sessions.keys().copied().collect::<Vec<_>>();
+        devices.sort_unstable();
+        let mut updated = 0usize;
+        for peer_device in devices {
+            let state = self
+                .store
+                .get_wake_service_state(&peer_device)?
+                .ok_or(NodeError::CorruptState)?;
+            let issued_count = state.issued().count();
+            if issued_count == 0 {
+                continue;
+            }
+            let capabilities = state
+                .issued()
+                .filter(|capability| {
+                    allowed.contains(&capability.provider_id) && capability.expires_at > now
+                })
+                .map(|capability| {
+                    Ok(WakeCapabilityDescriptor {
+                        origin: capability.origin.clone(),
+                        static_key: capability.static_key,
+                        expires_at: capability.expires_at,
+                        capability: capability.decoded_capability()?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            if capabilities.len() == issued_count {
+                continue;
+            }
+            let generation = state
+                .issued_generation
+                .checked_add(1)
+                .ok_or(NodeError::CorruptState)?;
+            self.publish_wake_capabilities(peer_device, generation, capabilities, now, rng)?;
+            updated = updated.saturating_add(1);
+        }
+        Ok(updated)
+    }
+
+    /// Mint and publish fresh per-contact capabilities for one native token.
+    ///
+    /// Provider registration is bounded by relationship count and wall-clock
+    /// budget. A relationship changes only after every configured gateway
+    /// returned a valid fresh capability; refusal or outage preserves its
+    /// prior complete capability set. The cursor rotates across later calls
+    /// so a large contact set cannot monopolize one platform callback.
+    pub async fn register_native_wake_destination(
+        &mut self,
+        registration: NativeWakeDestinationRegistration<'_>,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<NativeWakeRegistrationResult> {
+        let NativeWakeDestinationRegistration {
+            platform,
+            environment,
+            profile,
+            provider_token,
+            app_topic,
+            providers,
+            now,
+        } = registration;
+        let Some(client) = self.wake_client.clone() else {
+            return Err(NodeError::WakeUnavailable);
+        };
+        if now == 0 || providers.is_empty() || providers.len() > MAX_WAKE_PROVIDERS {
+            return Err(NodeError::WakeUnavailable);
+        }
+        let mut provider_ids = providers
+            .iter()
+            .map(WakeProvider::provider_id)
+            .collect::<Vec<_>>();
+        provider_ids.sort_unstable();
+        if provider_ids.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(NodeError::WakeUnavailable);
+        }
+        let mut validation = WakeRegisterRequest {
+            platform,
+            environment,
+            profile,
+            provider_token: provider_token.to_vec(),
+            app_topic: app_topic.to_vec(),
+            request_nonce: [1u8; 16],
+        };
+        let validated = validation.encode();
+        validation.provider_token.fill(0);
+        validated?;
+
+        let mut devices = self.sessions.keys().copied().collect::<Vec<_>>();
+        devices.sort_unstable();
+        if devices.is_empty() {
+            self.wake_registration_cursor = 0;
+            return Ok(NativeWakeRegistrationResult::default());
+        }
+        if self.wake_registration_cursor >= devices.len() {
+            self.wake_registration_cursor = 0;
+        }
+        let start = self.wake_registration_cursor;
+        let end = start
+            .saturating_add(MAX_WAKE_REGISTRATION_RELATIONSHIPS_PER_CALL)
+            .min(devices.len());
+        let deadline = Instant::now() + WAKE_REGISTRATION_BUDGET;
+        let mut attempted = 0usize;
+        let mut updated = 0usize;
+
+        for peer_device in devices[start..end].iter().copied() {
+            if Instant::now() >= deadline {
+                break;
+            }
+            attempted = attempted.saturating_add(1);
+            let mut descriptors = Vec::with_capacity(providers.len());
+            for provider in providers {
+                let mut request_nonce = [0u8; 16];
+                rng.fill_bytes(&mut request_nonce);
+                if request_nonce == [0u8; 16] {
+                    request_nonce[15] = 1;
+                }
+                let mut request = WakeRegisterRequest {
+                    platform,
+                    environment,
+                    profile,
+                    provider_token: provider_token.to_vec(),
+                    app_topic: app_topic.to_vec(),
+                    request_nonce,
+                };
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let outcome = if remaining.is_zero() {
+                    None
+                } else {
+                    before_timeout(remaining, client.register(provider, &request)).await
+                };
+                request.provider_token.fill(0);
+                let Some(Ok(response)) = outcome else {
+                    descriptors.clear();
+                    break;
+                };
+                let Some(capability) = response.capability else {
+                    descriptors.clear();
+                    break;
+                };
+                if !response.accepted
+                    || response.expires_at <= now
+                    || response.expires_at > now.saturating_add(WAKE_CAPABILITY_MAX_LIFETIME_SECS)
+                {
+                    descriptors.clear();
+                    break;
+                }
+                descriptors.push(WakeCapabilityDescriptor {
+                    origin: provider.origin().to_owned(),
+                    static_key: provider.static_key(),
+                    expires_at: response.expires_at,
+                    capability,
+                });
+            }
+            if descriptors.len() != providers.len() {
+                continue;
+            }
+            let state = self
+                .store
+                .get_wake_service_state(&peer_device)?
+                .ok_or(NodeError::CorruptState)?;
+            let generation = state
+                .issued_generation
+                .checked_add(1)
+                .ok_or(NodeError::CorruptState)?;
+            self.publish_wake_capabilities(peer_device, generation, descriptors, now, rng)?;
+            updated = updated.saturating_add(1);
+        }
+
+        let next = start.saturating_add(attempted);
+        let remaining = next < devices.len();
+        self.wake_registration_cursor = if remaining { next } else { 0 };
+        Ok(NativeWakeRegistrationResult { updated, remaining })
+    }
+
+    /// Revoke every capability this installation issued to current contacts.
+    ///
+    /// Empty complete generations travel over the existing authenticated
+    /// pairwise sessions. Durable gateway revocations are queued by the same
+    /// atomic transition; remote capabilities and message delivery state are
+    /// untouched.
+    pub fn revoke_native_wake_capabilities(
+        &mut self,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<usize> {
+        if now == 0 {
+            return Err(NodeError::WakeUnavailable);
+        }
+        let mut devices = self.sessions.keys().copied().collect::<Vec<_>>();
+        devices.sort_unstable();
+        let mut updated = 0usize;
+        for peer_device in devices {
+            let Some(state) = self.store.get_wake_service_state(&peer_device)? else {
+                continue;
+            };
+            if state.issued().next().is_none() {
+                continue;
+            }
+            let generation = state
+                .issued_generation
+                .checked_add(1)
+                .ok_or(NodeError::CorruptState)?;
+            self.publish_wake_capabilities(peer_device, generation, Vec::new(), now, rng)?;
+            updated = updated.saturating_add(1);
+        }
+        self.wake_registration_cursor = 0;
+        Ok(updated)
     }
 
     /// Replace the complete capability generation this installation issued
@@ -10492,8 +10753,10 @@ mod wake_tests {
 
     #[derive(Default)]
     struct RecordingWakeClient {
+        registrations: AtomicUsize,
         triggers: AtomicUsize,
         revokes: AtomicUsize,
+        issue_registrations: AtomicBool,
         fail_revokes: AtomicBool,
     }
 
@@ -10502,9 +10765,24 @@ mod wake_tests {
         async fn register(
             &self,
             _provider: &WakeProvider,
-            _request: &WakeRegisterRequest,
+            request: &WakeRegisterRequest,
         ) -> TransportResult<WakeRegisterResponse> {
-            Ok(WakeRegisterResponse::refused())
+            request.encode().map_err(TransportError::Protocol)?;
+            let registration = self.registrations.fetch_add(1, Ordering::SeqCst) + 1;
+            if !self.issue_registrations.load(Ordering::SeqCst) {
+                return Ok(WakeRegisterResponse::refused());
+            }
+            let byte = u8::try_from(registration).unwrap_or(u8::MAX).max(1);
+            WakeRegisterResponse::issued(
+                NOW + 3_600,
+                WakeCapability::from_parts(
+                    1,
+                    [byte; 24],
+                    &[byte; WAKE_CAPABILITY_PLAINTEXT_LEN + 16],
+                )
+                .map_err(TransportError::Protocol)?,
+            )
+            .map_err(TransportError::Protocol)
         }
 
         async fn trigger(
@@ -10897,6 +11175,221 @@ mod wake_tests {
                 Some(Arc::new(RecordingWakeClient::default()) as Arc<dyn WakeClient>),
             )
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn native_token_registration_rotates_and_permission_revocation_is_complete() {
+        let mut rng = StdRng::seed_from_u64(0x1901_0015);
+        let directory = tempfile::tempdir().unwrap();
+        let (mut sender, account, peer_device) = add_sender_contact(&directory, &mut rng);
+        sender
+            .send_message(&account, b"establish session", NOW, &mut rng)
+            .unwrap();
+        let wake = Arc::new(RecordingWakeClient::default());
+        wake.issue_registrations.store(true, Ordering::SeqCst);
+        sender
+            .configure_wake(
+                DiscoveryMode::Standard,
+                Some(Arc::clone(&wake) as Arc<dyn WakeClient>),
+            )
+            .unwrap();
+        let provider = WakeProvider::new("https://wake.example".into(), [5u8; 32]).unwrap();
+
+        let first = sender
+            .register_native_wake_destination(
+                NativeWakeDestinationRegistration {
+                    platform: WakePlatform::Fcm,
+                    environment: WakeEnvironment::Production,
+                    profile: WakeProfile::GenericVisible,
+                    provider_token: b"fcm-registration-token",
+                    app_topic: b"is.andri.komms",
+                    providers: core::slice::from_ref(&provider),
+                    now: NOW,
+                },
+                &mut rng,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            first,
+            NativeWakeRegistrationResult {
+                updated: 1,
+                remaining: false
+            }
+        );
+        let first_state = sender
+            .store
+            .get_wake_service_state(&peer_device)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first_state.issued_generation, 1);
+        assert_eq!(first_state.issued().count(), 1);
+
+        let second = sender
+            .register_native_wake_destination(
+                NativeWakeDestinationRegistration {
+                    platform: WakePlatform::Fcm,
+                    environment: WakeEnvironment::Production,
+                    profile: WakeProfile::GenericVisible,
+                    provider_token: b"rotated-fcm-registration-token",
+                    app_topic: b"is.andri.komms",
+                    providers: core::slice::from_ref(&provider),
+                    now: NOW + 1,
+                },
+                &mut rng,
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.updated, 1);
+        let second_state = sender
+            .store
+            .get_wake_service_state(&peer_device)
+            .unwrap()
+            .unwrap();
+        assert_eq!(second_state.issued_generation, 2);
+        assert_eq!(second_state.issued().count(), 1);
+        assert_eq!(
+            sender
+                .store
+                .wake_revocations(MAX_WAKE_REVOCATION_ROWS)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        assert_eq!(
+            sender
+                .revoke_native_wake_capabilities(NOW + 2, &mut rng)
+                .unwrap(),
+            1
+        );
+        let revoked = sender
+            .store
+            .get_wake_service_state(&peer_device)
+            .unwrap()
+            .unwrap();
+        assert_eq!(revoked.issued_generation, 3);
+        assert_eq!(revoked.issued().count(), 0);
+    }
+
+    #[test]
+    fn native_wake_revocation_skips_a_legacy_session_without_service_state() {
+        let mut rng = StdRng::seed_from_u64(0x1901_0018);
+        let directory = tempfile::tempdir().unwrap();
+        let (mut sender, account, peer_device) = add_sender_contact(&directory, &mut rng);
+        sender
+            .send_message(&account, b"establish session", NOW, &mut rng)
+            .unwrap();
+        sender.store.delete_session(&peer_device).unwrap();
+
+        assert_eq!(
+            sender
+                .revoke_native_wake_capabilities(NOW + 1, &mut rng)
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn partial_gateway_registration_preserves_prior_complete_set() {
+        struct PartialRegistrationClient {
+            calls: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl WakeClient for PartialRegistrationClient {
+            async fn register(
+                &self,
+                _provider: &WakeProvider,
+                _request: &WakeRegisterRequest,
+            ) -> TransportResult<WakeRegisterResponse> {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                if call % 2 == 1 {
+                    return Ok(WakeRegisterResponse::refused());
+                }
+                WakeRegisterResponse::issued(
+                    NOW + 3_600,
+                    WakeCapability::from_parts(
+                        1,
+                        [31u8; 24],
+                        &[32u8; WAKE_CAPABILITY_PLAINTEXT_LEN + 16],
+                    )
+                    .map_err(TransportError::Protocol)?,
+                )
+                .map_err(TransportError::Protocol)
+            }
+
+            async fn trigger(
+                &self,
+                _provider: &WakeProvider,
+                _request: &WakeTriggerRequest,
+            ) -> TransportResult<()> {
+                Ok(())
+            }
+
+            async fn revoke(
+                &self,
+                _provider: &WakeProvider,
+                _request: &WakeTriggerRequest,
+            ) -> TransportResult<()> {
+                Ok(())
+            }
+        }
+
+        let mut rng = StdRng::seed_from_u64(0x1901_0016);
+        let directory = tempfile::tempdir().unwrap();
+        let (mut sender, account, peer_device) = add_sender_contact(&directory, &mut rng);
+        sender
+            .send_message(&account, b"establish session", NOW, &mut rng)
+            .unwrap();
+        let client = Arc::new(PartialRegistrationClient {
+            calls: AtomicUsize::new(0),
+        });
+        sender
+            .configure_wake(DiscoveryMode::Standard, Some(client as Arc<dyn WakeClient>))
+            .unwrap();
+        let existing = WakeCapabilityDescriptor {
+            origin: "https://wake-a.example".into(),
+            static_key: [41u8; 32],
+            expires_at: NOW + 3_600,
+            capability: WakeCapability::from_parts(
+                1,
+                [42u8; 24],
+                &[43u8; WAKE_CAPABILITY_PLAINTEXT_LEN + 16],
+            )
+            .unwrap(),
+        };
+        sender
+            .publish_wake_capabilities(peer_device, 1, vec![existing], NOW, &mut rng)
+            .unwrap();
+        let providers = vec![
+            WakeProvider::new("https://wake-a.example".into(), [41u8; 32]).unwrap(),
+            WakeProvider::new("https://wake-b.example".into(), [44u8; 32]).unwrap(),
+        ];
+
+        let result = sender
+            .register_native_wake_destination(
+                NativeWakeDestinationRegistration {
+                    platform: WakePlatform::Apns,
+                    environment: WakeEnvironment::Development,
+                    profile: WakeProfile::BackgroundOnly,
+                    provider_token: &[9u8; 32],
+                    app_topic: b"is.andri.komms",
+                    providers: &providers,
+                    now: NOW + 1,
+                },
+                &mut rng,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.updated, 0);
+        let after = sender
+            .store
+            .get_wake_service_state(&peer_device)
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.issued_generation, 1);
+        assert_eq!(after.issued().count(), 1);
     }
 
     #[tokio::test]

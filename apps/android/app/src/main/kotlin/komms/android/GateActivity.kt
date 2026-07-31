@@ -166,6 +166,7 @@ class GateActivity : SecureActivity() {
             ) { session ->
                 hideStartupDialog()
                 NodeHolder.attach(session)
+                NativeWakeManager.onSessionAvailable(this)
                 if (storeExists) {
                     if (
                         getSharedPreferences(PREFS, MODE_PRIVATE)
@@ -252,6 +253,7 @@ class GateActivity : SecureActivity() {
             ) { session ->
                 hideStartupDialog()
                 NodeHolder.attach(session)
+                NativeWakeManager.onSessionAvailable(this)
                 getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                     .putBoolean(PENDING_RECOVERY_AUTHORITY, false)
                     .apply()
@@ -608,6 +610,7 @@ class GateActivity : SecureActivity() {
             prepared.staged.delete()
             pendingAuthorityUpgrade = null
             NodeHolder.attach(session)
+            NativeWakeManager.onSessionAvailable(this)
             proceed()
         }
     }

@@ -697,7 +697,7 @@ final class SessionE2eTests: XCTestCase {
         let text = try files.map { try String(contentsOf: $0, encoding: .utf8) }.joined(separator: "\n")
         let occurrences = { (needle: String) in text.components(separatedBy: needle).count - 1 }
         let editors = occurrences("TextField(") + occurrences("SecureField(") + occurrences("TextEditor(")
-        XCTAssertEqual(40, editors)
+        XCTAssertEqual(41, editors)
         XCTAssertEqual(editors, occurrences(".incognitoKeyboard("))
         let gate = try String(contentsOf: source.appendingPathComponent("GateView.swift"), encoding: .utf8)
         XCTAssertTrue(gate.contains("SecureField(\"24-word backup mnemonic\""))

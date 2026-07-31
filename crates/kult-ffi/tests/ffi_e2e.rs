@@ -25,9 +25,10 @@ use kult_ffi::{
     FolderSelectionKind, FolderTarget, FolderTargetKind, GroupRole, GroupSecurityLevel, Hint,
     ImageCrop, ImageEditRecipe, ImageEditRegion, ImageEditRegionKind, IncognitoKeyboardLevel,
     IncognitoKeyboardPlatform, KdfChoice, KultNode, LabelErrorCode, LabelMatchMode, LabelTarget,
-    LabelTargetKind, MentionSpan, MessageRequestTransport, NetworkMode, PinErrorCode, PinTarget,
-    PinTargetKind, ProviderDirectoryVerdict, ScheduledConversation, ScreenSecurityLevel,
-    ScreenSecurityPlatform, TextFormatBlockKind, TextFormatHighlight, ThemePreference,
+    LabelTargetKind, MentionSpan, MessageRequestTransport, NativeWakeEnvironment,
+    NativeWakePlatform, NativeWakeProfile, NetworkMode, PinErrorCode, PinTarget, PinTargetKind,
+    ProviderDirectoryVerdict, ScheduledConversation, ScreenSecurityLevel, ScreenSecurityPlatform,
+    TextFormatBlockKind, TextFormatHighlight, ThemePreference,
 };
 use kult_store::{DeviceStateRecord, Store};
 use rand::{rngs::StdRng, RngCore, SeedableRng};
@@ -336,6 +337,18 @@ fn native_wake_collection_is_bounded_and_never_changes_delivery_state() {
         Err(FfiError::Node { reason })
             if reason == "native-wake collection budget must be positive"
     ));
+    assert!(matches!(
+        node.register_native_wake(
+            NativeWakePlatform::Fcm,
+            NativeWakeEnvironment::Development,
+            NativeWakeProfile::BackgroundOnly,
+            Vec::new(),
+            "is.andri.komms".to_owned(),
+        ),
+        Err(FfiError::Node { reason })
+            if reason == "native wake requires a provider token and application topic"
+    ));
+    assert_eq!(node.revoke_native_wake().unwrap(), 0);
     let before_state = node
         .messages_with(peer.clone())
         .unwrap()

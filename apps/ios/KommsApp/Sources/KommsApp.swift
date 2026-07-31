@@ -7,6 +7,7 @@ import SwiftUI
 
 @main
 struct KommsApp: App {
+    @UIApplicationDelegateAdaptor(KommsAppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model = AppModel()
     @StateObject private var screenSecurity = ScreenSecurityController()
@@ -38,7 +39,10 @@ struct KommsApp: App {
             .onChange(of: scenePhase) { phase in
                 screenSecurity.update(scenePhase: phase)
                 if phase == .active {
-                    Task { await model.refresh() }
+                    Task {
+                        await model.nativeWakeBecameActive()
+                        await model.refresh()
+                    }
                 }
             }
         }

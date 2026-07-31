@@ -26,7 +26,8 @@ use kult_node::{
     FolderSelection, GroupAuthorityInfo, GroupInfo, GroupInvitationInfo, GroupMentionCapability,
     GroupRole, GroupSecurityInfo, LabelConversationInfo, LabelFilterInfo, LabelInfo,
     LabelMatchMode, LinkedDeviceInfo, MentionSpan, MessageDeviceDeliveryInfo, MessageRequestInfo,
-    Node, PinConversationList, PinInfo, ScheduledMessageInfo, StaleFolderInfo, StaleLabelInfo,
+    NativeWakeDestinationRegistration, Node, PinConversationList, PinInfo, ScheduledMessageInfo,
+    StaleFolderInfo, StaleLabelInfo,
 };
 use kult_store::{ContactRecord, ConversationId, NoteMessageRecord, AUTHORITY_BACKUP_MAGIC};
 use kult_transport::{
@@ -92,6 +93,7 @@ pub(crate) struct RuntimeConfig {
     pub provider_directory: crate::ProviderDirectoryVerdict,
     pub discovery_policy: kult_node::DiscoveryPublicationPolicy,
     pub rendezvous: Vec<kult_transport::RendezvousProvider>,
+    pub wake: Vec<kult_transport::WakeProvider>,
     pub tor_proxy: Option<std::net::SocketAddr>,
     pub fallback_ready: bool,
     /// Restore the store from a backup instead of creating a fresh
@@ -752,6 +754,17 @@ pub(crate) enum Msg {
         budget_ms: u32,
         resp: Resp<u32>,
     },
+    WakeRegister {
+        platform: kult_protocol::WakePlatform,
+        environment: kult_protocol::WakeEnvironment,
+        profile: kult_protocol::WakeProfile,
+        provider_token: Vec<u8>,
+        app_topic: Vec<u8>,
+        resp: Resp<kult_node::NativeWakeRegistrationResult>,
+    },
+    WakeRevoke {
+        resp: Resp<usize>,
+    },
     BridgeRelays(Vec<DeliveryHint>),
 }
 
@@ -1015,6 +1028,8 @@ impl Runtime {
         };
         node.configure_wake(cfg.discovery_policy.mode, wake_client)
             .map_err(|error| format!("native-wake configuration: {error}"))?;
+        node.reconcile_wake_providers(&cfg.wake, now(), &mut OsRng)
+            .map_err(|error| format!("native-wake provider reconciliation: {error}"))?;
 
         let address = node.address();
         let peer = node.peer_id();
@@ -1295,7 +1310,6 @@ async fn actor(
             biased;
             _ = shutdown.changed() => break,
             msg = rx.recv() => {
-                check_discovery = true;
                 match msg {
                     None => break,
                     Some(msg) => handle(&mut node, &cfg, &net, &events, msg).await,
@@ -2372,6 +2386,38 @@ async fn handle(
                     });
                 let _ = resp.send(result);
             }
+        }
+        Msg::WakeRegister {
+            platform,
+            environment,
+            profile,
+            mut provider_token,
+            app_topic,
+            resp,
+        } => {
+            let result = node
+                .register_native_wake_destination(
+                    NativeWakeDestinationRegistration {
+                        platform,
+                        environment,
+                        profile,
+                        provider_token: &provider_token,
+                        app_topic: &app_topic,
+                        providers: &cfg.wake,
+                        now,
+                    },
+                    &mut OsRng,
+                )
+                .await
+                .map_err(fail);
+            provider_token.fill(0);
+            let _ = resp.send(result);
+        }
+        Msg::WakeRevoke { resp } => {
+            let _ = resp.send(
+                node.revoke_native_wake_capabilities(now, &mut OsRng)
+                    .map_err(fail),
+            );
         }
         Msg::BridgeRelays(relays) => node.set_bridge(Some(relays)),
     }

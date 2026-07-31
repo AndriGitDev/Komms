@@ -110,6 +110,7 @@ object NodeHolder {
         stagedRecoveryAuthorityMnemonic = null
         recoveryAuthorityWritten = false
         recoveryAuthorityOnboardingPending = false
+        NativeWakeManager.clearToken()
         stopping?.let { executor.execute { it.stop() } }
     }
 

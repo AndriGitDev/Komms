@@ -93,8 +93,16 @@ class MainActivity : SecureActivity() {
     private val listener: (Event) -> Unit = { event ->
         runOnUiThread {
             when (event) {
-                is Event.ContactAdded, is Event.ContactRenamed -> refreshLabelsAndLists(false)
-                is Event.SessionEstablished -> onSessionEstablished(event.peer)
+                is Event.ContactAdded, is Event.ContactRenamed -> {
+                    refreshLabelsAndLists(false)
+                    NativeWakeManager.onRelationshipChanged(this)
+                }
+                is Event.SessionEstablished -> {
+                    onSessionEstablished(event.peer)
+                    NativeWakeManager.onRelationshipChanged(this)
+                }
+                is Event.DevicesChanged, is Event.DeviceLinkCompleted ->
+                    NativeWakeManager.onRelationshipChanged(this)
                 is Event.MessageReceived -> refreshLabelsAndLists(false)
                 is Event.MessageRequestReceived -> {
                     toast(getString(R.string.message_request_received))
@@ -106,6 +114,7 @@ class MainActivity : SecureActivity() {
                 is Event.MessageRequestExpired -> {
                     refreshLabelsAndLists(false)
                     invalidateOptionsMenu()
+                    NativeWakeManager.onRelationshipChanged(this)
                 }
                 is Event.GroupUpdated -> refreshLabelsAndLists(false)
                 is Event.GroupInvitationReceived -> {
@@ -136,7 +145,9 @@ class MainActivity : SecureActivity() {
     private var knownPeers = setOf<String>()
 
     private val requestNotifications =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            NativeWakeManager.onPermissionChanged(this)
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -211,6 +222,7 @@ class MainActivity : SecureActivity() {
             requestNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         NodeHolder.addListener(listener)
+        NativeWakeManager.handleVisibleWakeIntent(this, intent)
     }
 
     override fun onDestroy() {
@@ -220,6 +232,7 @@ class MainActivity : SecureActivity() {
 
     override fun onResume() {
         super.onResume()
+        NativeWakeManager.onPermissionChanged(this)
         refreshAuthorityResetHistory()
         refreshLabelsAndLists(false)
         tick.post(refreshLoop)
@@ -228,6 +241,12 @@ class MainActivity : SecureActivity() {
     override fun onPause() {
         tick.removeCallbacks(refreshLoop)
         super.onPause()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        NativeWakeManager.handleVisibleWakeIntent(this, intent)
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {

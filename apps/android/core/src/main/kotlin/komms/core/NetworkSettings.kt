@@ -32,6 +32,19 @@ data class RendezvousSetting(
     @SerialName("private_via_tor") val privateViaTor: Boolean,
 )
 
+/** One separately keyed native-wake gateway. */
+@Serializable
+data class WakeSetting(
+    /** Canonical HTTPS provider origin. */
+    val origin: String,
+    /** SHA-256 of the provider leaf TLS certificate, lowercase hex. */
+    @SerialName("static_key") val staticKey: String,
+    /** Whether direct Standard access is allowed. */
+    val standard: Boolean,
+    /** Whether Private mode may reach it through Tor. */
+    @SerialName("private_via_tor") val privateViaTor: Boolean,
+)
+
 /** The network knobs, mirroring `kultd`'s flags and the desktop app. */
 @Serializable
 data class NetworkSettings(
@@ -50,6 +63,8 @@ data class NetworkSettings(
     val providerDirectoryRoots: List<String> = emptyList(),
     /** User-selected rendezvous providers. */
     val rendezvous: List<RendezvousSetting> = emptyList(),
+    /** User-selected native-wake gateways, never inferred from rendezvous. */
+    val wake: List<WakeSetting> = emptyList(),
     /** Explicit loopback Tor SOCKS5 endpoint for Private rendezvous. */
     @SerialName("tor_proxy") val torProxy: String? = null,
     /**
