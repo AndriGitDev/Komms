@@ -230,22 +230,25 @@ targets cover every desktop platform (`.deb`, `.rpm`, AppImage, `.app`,
 `.dmg`, `.msi`, NSIS); Tauri builds only the targets native to the host OS
 and skips the rest.
 
-The `v0.3.0` prerelease is built in those formats on native Linux,
-macOS, and Windows runners with checksums. Future tag-driven candidates begin as
-drafts. Follow the [release runbook](../../docs/25-release-runbook.md); a
-successful build alone is not permission to publish or a claim that an unsigned
-package is production-ready.
+The `v0.3.0` prerelease was built in those formats on native Linux, macOS, and
+Windows runners with checksums. It predates the current evidence design. Future
+tag pushes create read-only validation artifacts, public builder records, a
+second controlled Linux measurement, an SBOM, and hosted attestations; they do
+not create a draft or access a signing credential. Follow the
+[release runbook](../../docs/25-release-runbook.md); a successful build alone
+is not permission to publish or a claim that an unsigned package is
+production-ready.
 
-## Packaging and signing (scaffold)
+## Packaging and signing boundary
 
 The package identifier is `is.andri.komms` and the current version is `0.3.0`,
 aligned with the Rust, Android, and iOS surfaces.
 
 The 0.3 Alpha desktop packages are not release-signed or notarized: macOS and
-Windows are unsigned, and the Linux package artifacts are unsigned. Production
-signing remains scaffold-only and no certificates or keys enter the tree. When
-they exist, Tauri picks
-credentials up from the environment at `cargo tauri build` time:
+Windows are unsigned, and the Linux package artifacts have no release-manifest
+signature. No production certificate or key enters the tree. Local Tauri
+packaging can read credentials from the environment when a maintainer
+deliberately exercises a test identity:
 
 - **macOS**: `APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD` (base64
   Developer ID .p12) or `APPLE_SIGNING_IDENTITY`, plus `APPLE_ID` /
@@ -262,11 +265,17 @@ The icon set in `icons/` is generated from `icons/icon.png` with
 current source is 512×512; regenerate from a 1024×1024 master when one
 exists — macOS upscales the 512 source for its largest slot.
 
-An in-app updater is **intentionally absent**: update channels are part of
-the M6 reproducible-distribution work (see
-[08: Roadmap](../../docs/08-roadmap.md)), and an
-updater endpoint would be the kind of project-operated service the core
-must never depend on. Store/package-manager channels will carry updates.
+Production use requires the separate macOS, Windows, Linux-manifest, and
+release-manifest roles in
+[release security and recovery](../../docs/39-release-security-and-recovery.md).
+The hardware-backed Windows provider and Apple notarization role are not
+enrolled. Named-system signed install, upgrade, failed-upgrade recovery,
+rollback, and compatibility rows remain open.
+
+An in-app updater is **intentionally absent**. Direct desktop distribution uses
+the bounded manual signature-and-digest procedure until a safer authenticated
+channel is implemented and qualified; store or package-manager channels may be
+added only with separately scoped signing and rollback evidence.
 
 ## Security notes
 

@@ -1046,11 +1046,15 @@ No feature is **Stable** until all applicable gates pass. “Implemented” or
    quotas fail safely and visibly.
 9. **Documentation:** user promise, limitations, threat-model effect, and manual
    test instructions are current.
-10. **Local release matrix:** format, clippy with denied warnings, tests,
-    no_std, fuzz smoke, generated bindings, shell tests/builds, and `cargo-deny`
-    are green before publication; platform-specific behavior has device/
-    simulator evidence where host tests cannot prove it. Hosted CI is a later,
-    explicitly authorized repetition, not the development loop.
+10. **Release controls:** format, clippy with denied warnings, tests, `no_std`,
+    fuzz smoke, generated bindings, shell tests/builds, `cargo-deny`,
+    dependency-integrity metadata, and evidence-tool regression tests are green
+    before publication. The exact tag has an SBOM, provenance, checksums,
+    signing and qualification records, and measured reproduction. Platform
+    behavior has named device/simulator evidence at its honest level. Hosted CI
+    is a later authorized repetition, not the development loop; production
+    signing, empty-draft creation, completed-asset upload, and publication
+    remain separate protected actions.
 
 ## 9. Implemented foundation inventory
 

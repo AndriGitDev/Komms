@@ -176,6 +176,9 @@ Platform build instructions:
 | how one account authorizes, syncs, revokes, and recovers devices | [Linked Devices](22-linked-devices.md) |
 | when live audio calls work—and when they deliberately do not | [Live Audio Calls](23-live-audio-calls.md) |
 | how a release is validated locally before any hosted run | [Local Release Gate](24-local-release-gate.md) |
+| how a tagged candidate becomes a protected draft or public release | [Release Runbook](25-release-runbook.md) |
+| how release keys are separated, recovered, rotated, and revoked | [Release Security and Recovery](39-release-security-and-recovery.md) |
+| what a revision-bound release evidence bundle contains | [Release Evidence Bundles](40-release-evidence-bundles.md) |
 | how the optional content-free phone-wake gateway is bounded and operated | [Native-Wake Operations](37-native-wake-operations.md) |
 | what evidence is required before stable or wire v1 | [Stabilization Program](29-stabilization-program.md) |
 | which persisted protocol transitions are atomic and which remain open | [Atomic Transition Inventory](34-atomic-transition-inventory.md) |

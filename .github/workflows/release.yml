@@ -7,16 +7,42 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing vMAJOR.MINOR.PATCH tag to build
+        description: Existing vMAJOR.MINOR.PATCH tag
         required: true
         type: string
-      publish:
-        description: Publish the completed draft as a public prerelease
+      channel:
+        description: Channel for an already completed evidence bundle
+        required: true
+        default: alpha
+        type: choice
+        options:
+          - alpha
+          - stable
+      production_signing:
+        description: Enter the protected production-signing enrollment boundary
         required: true
         default: false
         type: boolean
+      create_draft:
+        description: Create an empty-tag draft after validation succeeds
+        required: true
+        default: false
+        type: boolean
+      draft_confirmation:
+        description: Exact phrase DRAFT vMAJOR.MINOR.PATCH
+        required: false
+        type: string
+      publish:
+        description: Publish an existing, externally completed draft
+        required: true
+        default: false
+        type: boolean
+      publication_confirmation:
+        description: Exact phrase PUBLISH vMAJOR.MINOR.PATCH
+        required: false
+        type: string
       visual_approval:
-        description: I reviewed current Android, iOS, macOS, and Linux previews
+        description: Current candidate previews were reviewed
         required: true
         default: false
         type: boolean
@@ -25,6 +51,9 @@ on:
         required: false
         type: string
 
+permissions:
+  contents: read
+
 concurrency:
   group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
   cancel-in-progress: false
@@ -32,352 +61,932 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  RELEASE_RUST: "1.88.0"
 
 jobs:
   prepare:
-    name: validate tag and prepare draft
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    name: validate immutable source
+    runs-on: ubuntu-24.04
     outputs:
-      release_id: ${{ steps.release.outputs.id }}
+      revision: ${{ steps.source.outputs.revision }}
+      source_date_epoch: ${{ steps.source.outputs.source_date_epoch }}
+      version: ${{ steps.source.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
-      - name: Validate aligned application versions
-        run: python3 scripts/check-release-version.py "$RELEASE_TAG"
-      - name: Require an existing annotated or lightweight tag
-        run: git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"
-      - name: Create or reuse a draft prerelease
-        id: release
-        env:
-          GH_TOKEN: ${{ github.token }}
+          persist-credentials: false
+      - name: Validate tag, version, and checked-out revision
+        id: source
+        shell: bash
         run: |
-          release_row="$(
-            gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-              --jq ".[] | select(.tag_name == \"$RELEASE_TAG\") | [.id, .draft] | @tsv" \
-              | head -n 1
-          )"
-          if [[ -n "$release_row" ]]; then
-            read -r release_id is_draft <<< "$release_row"
-            if [[ "$is_draft" != "true" ]]; then
-              echo "Release $RELEASE_TAG is already public; refusing to replace its assets." >&2
-              exit 1
-            fi
-          else
-            version="${RELEASE_TAG#v}"
-            series="${version%.*}"
-            gh release create "$RELEASE_TAG" \
-              --verify-tag \
-              --draft \
-              --prerelease \
-              --title "Komms $series Alpha" \
-              --notes-file .github/release-body.md
-            release_id="$(
-              gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-                --jq ".[] | select(.tag_name == \"$RELEASE_TAG\" and .draft == true) | .id" \
-                | head -n 1
-            )"
-          fi
-          if [[ -z "$release_id" ]]; then
-            echo "Draft $RELEASE_TAG was not found after creation." >&2
+          set -euo pipefail
+          python3 scripts/check-release-version.py "$RELEASE_TAG"
+          git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"
+          if [[ "$(git cat-file -t "refs/tags/$RELEASE_TAG")" != "tag" ]]; then
+            echo "Release source must use an annotated tag." >&2
             exit 1
           fi
-          echo "id=$release_id" >> "$GITHUB_OUTPUT"
+          revision="$(git rev-list -n 1 "$RELEASE_TAG")"
+          if [[ "$(git rev-parse HEAD)" != "$revision" ]]; then
+            echo "Checked-out revision does not match $RELEASE_TAG." >&2
+            exit 1
+          fi
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "Release checkout is not clean." >&2
+            exit 1
+          fi
+          {
+            echo "revision=$revision"
+            echo "source_date_epoch=$(git show -s --format=%ct "$revision")"
+            echo "version=${RELEASE_TAG#v}"
+          } >> "$GITHUB_OUTPUT"
+      - name: Reject contradictory manual operations
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          CREATE_DRAFT: ${{ inputs.create_draft }}
+          PRODUCTION_SIGNING: ${{ inputs.production_signing }}
+          PUBLISH: ${{ inputs.publish }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$PUBLISH" == "true" && "$CREATE_DRAFT" == "true" ]]; then
+            echo "Draft creation and publication are separate runs." >&2
+            exit 1
+          fi
+          if [[ "$PUBLISH" == "true" && "$PRODUCTION_SIGNING" == "true" ]]; then
+            echo "Publication verifies existing artifacts and never rebuilds or signs them." >&2
+            exit 1
+          fi
+          if [[ "$CREATE_DRAFT" == "true" && "$PRODUCTION_SIGNING" == "true" ]]; then
+            echo "Draft creation and production-signing enrollment are separate runs." >&2
+            exit 1
+          fi
 
   desktop:
-    name: desktop (${{ matrix.name }})
+    name: desktop validation (${{ matrix.label }})
     needs: prepare
-    if: github.event_name != 'workflow_dispatch' || inputs.publish != true
+    if: github.event_name == 'push' || inputs.publish != true
     permissions:
-      contents: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: Linux x86_64
+          - label: Linux x86-64
+            kind: linux-x86_64
             runner: ubuntu-22.04
+            python: python3
             rust_targets: ""
             args: --bundles deb,rpm,appimage
-          - name: macOS universal
+            bundle_dir: apps/desktop/src-tauri/target/release/bundle
+          - label: macOS universal
+            kind: macos-universal
             runner: macos-15
+            python: python3
             rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
             args: --target universal-apple-darwin --bundles app,dmg
-          - name: Windows x86_64
-            runner: windows-latest
+            bundle_dir: apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle
+          - label: Windows x86-64
+            kind: windows-x86_64
+            runner: windows-2025
+            python: python
             rust_targets: ""
             args: --bundles msi,nsis
+            bundle_dir: apps/desktop/src-tauri/target/release/bundle
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+      - name: Select pinned Xcode
+        if: runner.os == 'macOS'
+        run: |
+          echo "DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer" \
+            >> "$GITHUB_ENV"
+          xcode_info="$(
+            /Applications/Xcode_16.4.app/Contents/Developer/usr/bin/xcodebuild \
+              -version
+          )"
+          if [[ "$xcode_info" != $'Xcode 16.4\nBuild version 16F6' ]]; then
+            echo "Pinned Xcode build is unavailable." >&2
+            exit 1
+          fi
+          printf '%s\n' "$xcode_info"
       - name: Install Linux bundle dependencies
         if: runner.os == 'Linux'
+        shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev libgtk-3-dev \
             libayatana-appindicator3-dev librsvg2-dev patchelf rpm \
             dbus-x11 xvfb
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
+          toolchain: ${{ env.RELEASE_RUST }}
           targets: ${{ matrix.rust_targets }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           workspaces: apps/desktop/src-tauri
-      - name: Validate optional Apple signing inputs
-        if: runner.os == 'macOS' && vars.KOMMS_APPLE_SIGNING_ENABLED == '1'
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: |
-          for required in \
-            APPLE_CERTIFICATE \
-            APPLE_CERTIFICATE_PASSWORD \
-            APPLE_SIGNING_IDENTITY; do
-            if [[ -z "${!required}" ]]; then
-              echo "$required is required when KOMMS_APPLE_SIGNING_ENABLED=1" >&2
-              exit 1
-            fi
-          done
-      - name: Build and upload unsigned native installers
-        if: runner.os != 'macOS' || vars.KOMMS_APPLE_SIGNING_ENABLED != '1'
-        uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+      - name: Build native validation packages
+        id: tauri
+        uses: tauri-apps/tauri-action@944946e3e4cac6603d1fe8f514171e9ecd3c78aa # v1
         with:
           projectPath: apps/desktop/src-tauri
-          releaseId: ${{ needs.prepare.outputs.release_id }}
-          tagName: ${{ env.RELEASE_TAG }}
-          releaseDraft: true
-          prerelease: true
           args: ${{ matrix.args }}
-          releaseAssetNamePattern: Komms-[version]-[platform]-[arch][setup][ext]
-      - name: Build and upload signed macOS installers
-        if: runner.os == 'macOS' && vars.KOMMS_APPLE_SIGNING_ENABLED == '1'
-        uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        with:
-          projectPath: apps/desktop/src-tauri
-          releaseId: ${{ needs.prepare.outputs.release_id }}
-          tagName: ${{ env.RELEASE_TAG }}
-          releaseDraft: true
-          prerelease: true
-          args: ${{ matrix.args }}
-          releaseAssetNamePattern: Komms-[version]-[platform]-[arch][setup][ext]
-      - name: Launch packaged Linux desktop shell under Xvfb
+      - name: Exercise Linux binary
         if: runner.os == 'Linux'
+        shell: bash
         run: scripts/smoke-linux-desktop.sh apps/desktop/src-tauri/target/release/komms-desktop
+      - name: Stage bounded package set
+        shell: bash
+        run: |
+          "${{ matrix.python }}" scripts/stage-release-artifacts.py \
+            --source "${{ matrix.bundle_dir }}" \
+            --output release-assets \
+            --kind "${{ matrix.kind }}" \
+            --version "${{ needs.prepare.outputs.version }}"
+      - name: Record build environment
+        shell: bash
+        run: |
+          mkdir -p build-records
+          "${{ matrix.python }}" scripts/release-evidence.py builder-record \
+            --revision "${{ needs.prepare.outputs.revision }}" \
+            --builder-id "github-${{ matrix.kind }}-${{ github.run_id }}-${{ github.run_attempt }}" \
+            --os "${{ runner.os }}" \
+            --architecture "${{ runner.arch }}" \
+            --environment "GitHub-hosted native package build" \
+            --runner-image "${{ matrix.runner }}:${ImageVersion:?missing ImageVersion}" \
+            --isolated \
+            --tool "rustc=$(rustc --version)" \
+            --tool "cargo=$(cargo --version)" \
+            --output "build-records/${{ matrix.kind }}.json"
+      - name: Create primary Linux measurement
+        if: matrix.kind == 'linux-x86_64'
+        shell: bash
+        run: |
+          python3 scripts/release-evidence.py bundle \
+            --artifact-dir release-assets \
+            --output-dir linux-primary-evidence \
+            --revision "${{ needs.prepare.outputs.revision }}" \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --tag "$RELEASE_TAG" \
+            --source-date-epoch "${{ needs.prepare.outputs.source_date_epoch }}" \
+            --builder build-records/linux-x86_64.json \
+            --channel validation
+          python3 scripts/release-evidence.py verify \
+            --bundle-dir linux-primary-evidence \
+            --expected-revision "${{ needs.prepare.outputs.revision }}"
+      - name: Upload candidate packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: candidate-${{ matrix.kind }}
+          path: release-assets
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload build record
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: build-record-${{ matrix.kind }}
+          path: build-records/${{ matrix.kind }}.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload primary Linux measurement
+        if: matrix.kind == 'linux-x86_64'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: repro-linux-primary
+          path: linux-primary-evidence
+          if-no-files-found: error
+          retention-days: 90
 
-  android:
-    name: Android APK
+  linux-rebuild:
+    name: Linux second controlled build
     needs: prepare
-    if: github.event_name != 'workflow_dispatch' || inputs.publish != true
-    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || inputs.publish != true
+    runs-on: ubuntu-24.04
     permissions:
-      contents: write
-    env:
-      KOMMS_ANDROID_SIGNING_ENABLED: ${{ vars.KOMMS_ANDROID_SIGNING_ENABLED }}
-      KOMMS_ANDROID_KEYSTORE_BASE64: ${{ vars.KOMMS_ANDROID_SIGNING_ENABLED == '1' && secrets.KOMMS_ANDROID_KEYSTORE_BASE64 || '' }}
-      KOMMS_ANDROID_KEYSTORE_PASSWORD: ${{ vars.KOMMS_ANDROID_SIGNING_ENABLED == '1' && secrets.KOMMS_ANDROID_KEYSTORE_PASSWORD || '' }}
-      KOMMS_ANDROID_KEY_ALIAS: ${{ vars.KOMMS_ANDROID_SIGNING_ENABLED == '1' && secrets.KOMMS_ANDROID_KEY_ALIAS || '' }}
-      KOMMS_ANDROID_KEY_PASSWORD: ${{ vars.KOMMS_ANDROID_SIGNING_ENABLED == '1' && secrets.KOMMS_ANDROID_KEY_PASSWORD || '' }}
+      contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ env.RELEASE_TAG }}
-      - uses: dtolnay/rust-toolchain@stable
+          persist-credentials: false
+      - name: Install bundle dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev patchelf rpm \
+            dbus-x11 xvfb
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
+          toolchain: ${{ env.RELEASE_RUST }}
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - name: Build Linux packages
+        uses: tauri-apps/tauri-action@944946e3e4cac6603d1fe8f514171e9ecd3c78aa # v1
+        with:
+          projectPath: apps/desktop/src-tauri
+          args: --bundles deb,rpm,appimage
+      - name: Stage and record second build
+        run: |
+          python3 scripts/stage-release-artifacts.py \
+            --source apps/desktop/src-tauri/target/release/bundle \
+            --output release-assets \
+            --kind linux-x86_64 \
+            --version "${{ needs.prepare.outputs.version }}"
+          mkdir -p build-records
+          python3 scripts/release-evidence.py builder-record \
+            --revision "${{ needs.prepare.outputs.revision }}" \
+            --builder-id "github-linux-rebuild-${{ github.run_id }}-${{ github.run_attempt }}" \
+            --os "${{ runner.os }}" \
+            --architecture "${{ runner.arch }}" \
+            --environment "Second controlled GitHub-hosted Linux build" \
+            --runner-image "ubuntu-24.04:${ImageVersion:?missing ImageVersion}" \
+            --isolated \
+            --tool "rustc=$(rustc --version)" \
+            --tool "cargo=$(cargo --version)" \
+            --output build-records/linux-rebuild.json
+          python3 scripts/release-evidence.py bundle \
+            --artifact-dir release-assets \
+            --output-dir linux-rebuild-evidence \
+            --revision "${{ needs.prepare.outputs.revision }}" \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --tag "$RELEASE_TAG" \
+            --source-date-epoch "${{ needs.prepare.outputs.source_date_epoch }}" \
+            --builder build-records/linux-rebuild.json \
+            --channel validation
+          python3 scripts/release-evidence.py verify \
+            --bundle-dir linux-rebuild-evidence \
+            --expected-revision "${{ needs.prepare.outputs.revision }}"
+      - name: Upload second measurement
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: repro-linux-secondary
+          path: linux-rebuild-evidence
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload second build record
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: build-record-linux-secondary
+          path: build-records/linux-rebuild.json
+          if-no-files-found: error
+          retention-days: 90
+
+  android-validation:
+    name: Android validation packages
+    needs: prepare
+    if: github.event_name == 'push' || inputs.publish != true
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: ${{ env.RELEASE_RUST }}
           targets: aarch64-linux-android,x86_64-linux-android
-      - uses: Swatinem/rust-cache@v2
-      - name: Install cargo-ndk
-        run: cargo install cargo-ndk --locked
-      - uses: actions/setup-java@v4
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Install pinned cargo-ndk
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
         with:
           distribution: temurin
           java-version: "21"
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
         with:
           gradle-version: "8.14.3"
-      - name: Assemble test APK and optional signed release artifacts
+      - name: Install pinned Android platform and NDK
+        run: |
+          sdkmanager --install \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.2.12479018"
+          android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:?}}"
+          echo "ANDROID_NDK_HOME=$android_sdk/ndk/27.2.12479018" \
+            >> "$GITHUB_ENV"
+      - name: Build, test, lint, and inspect both flavors
         working-directory: apps/android
         run: |
-          version="${RELEASE_TAG#v}"
-          mkdir -p release-assets
           gradle \
-            :app:assemblePlayDebug :app:assembleGoogleFreeDebug \
+            :app:assemblePlayRelease :app:bundlePlayRelease \
+            :app:assembleGoogleFreeRelease \
             :app:testPlayDebugUnitTest :app:testGoogleFreeDebugUnitTest \
             :app:lintPlayDebug :app:lintGoogleFreeDebug \
             -Pkomms.androidApp=true
-          ../../scripts/check-android-google-free.sh
-          install -m 0644 app/build/outputs/apk/play/debug/app-play-debug.apk \
-            "release-assets/Komms-$version-android-play-debug.apk"
-          install -m 0644 \
-            app/build/outputs/apk/googleFree/debug/app-googleFree-debug.apk \
-            "release-assets/Komms-$version-android-google-free-debug.apk"
+          google_free_apk="$(
+            find app/build/outputs/apk/googleFree/release -type f -name '*.apk' \
+              -print -quit
+          )"
+          ../../scripts/check-android-google-free.sh "$google_free_apk"
+          git diff --exit-code -- app/gradle.lockfile core/gradle.lockfile \
+            settings-gradle.lockfile gradle/verification-metadata.xml
+      - name: Stage Android validation artifacts
+        run: |
+          python3 scripts/stage-release-artifacts.py \
+            --source apps/android/app/build/outputs/apk/play/release \
+            --output release-assets \
+            --kind android-play-arm64 \
+            --version "${{ needs.prepare.outputs.version }}"
+          python3 scripts/stage-release-artifacts.py \
+            --source apps/android/app/build/outputs/bundle/playRelease \
+            --output release-assets \
+            --kind android-play-arm64 \
+            --version "${{ needs.prepare.outputs.version }}"
+          python3 scripts/stage-release-artifacts.py \
+            --source apps/android/app/build/outputs/apk/googleFree/release \
+            --output release-assets \
+            --kind android-google-free-arm64 \
+            --version "${{ needs.prepare.outputs.version }}"
+          mkdir -p build-records
+          python3 scripts/release-evidence.py builder-record \
+            --revision "${{ needs.prepare.outputs.revision }}" \
+            --builder-id "github-android-${{ github.run_id }}-${{ github.run_attempt }}" \
+            --os "${{ runner.os }}" \
+            --architecture "${{ runner.arch }}" \
+            --environment "GitHub-hosted unsigned Android release build" \
+            --runner-image "ubuntu-24.04:${ImageVersion:?missing ImageVersion}" \
+            --isolated \
+            --tool "rustc=$(rustc --version)" \
+            --tool "java=$(java -version 2>&1 | head -n 1)" \
+            --tool "gradle=$(gradle --version | sed -n '3p')" \
+            --tool "cargo-ndk=$(cargo ndk --version)" \
+            --output build-records/android.json
+          python3 scripts/android-license-evidence.py inventory \
+            --repository . \
+            --policy release/android-license-policy-v1.json \
+            --gradle-cache "$HOME/.gradle/caches/modules-2/files-2.1" \
+            --revision "${{ needs.prepare.outputs.revision }}" \
+            --output android-licenses.json
+          python3 scripts/android-license-evidence.py validate \
+            --repository . \
+            --policy release/android-license-policy-v1.json \
+            --record android-licenses.json \
+            --expected-revision "${{ needs.prepare.outputs.revision }}" \
+            --require-complete
+      - name: Upload Android candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: candidate-android-validation
+          path: release-assets
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload Android build record
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: build-record-android
+          path: build-records/android.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload Android declared-license evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: android-license-report
+          path: android-licenses.json
+          if-no-files-found: error
+          retention-days: 90
 
-          if [[ "$KOMMS_ANDROID_SIGNING_ENABLED" == "1" ]]; then
-            for required in \
-              KOMMS_ANDROID_KEYSTORE_BASE64 \
-              KOMMS_ANDROID_KEYSTORE_PASSWORD \
-              KOMMS_ANDROID_KEY_ALIAS \
-              KOMMS_ANDROID_KEY_PASSWORD; do
-              if [[ -z "${!required}" ]]; then
-                echo "$required is required when KOMMS_ANDROID_KEYSTORE_BASE64 is set" >&2
-                exit 1
-              fi
-            done
-            keystore="$RUNNER_TEMP/komms-release.jks"
-            printf '%s' "$KOMMS_ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
-            export KOMMS_ANDROID_KEYSTORE="$keystore"
-            gradle \
-              :app:assemblePlayRelease :app:bundlePlayRelease \
-              :app:assembleGoogleFreeRelease :app:bundleGoogleFreeRelease \
-              -Pkomms.androidApp=true
-            ../../scripts/check-android-google-free.sh \
-              app/build/outputs/apk/googleFree/release/app-googleFree-release.apk
-            install -m 0644 app/build/outputs/apk/play/release/app-play-release.apk \
-              "release-assets/Komms-$version-android-play-release.apk"
-            install -m 0644 \
-              app/build/outputs/bundle/playRelease/app-play-release.aab \
-              "release-assets/Komms-$version-android-play-release.aab"
-            install -m 0644 \
-              app/build/outputs/apk/googleFree/release/app-googleFree-release.apk \
-              "release-assets/Komms-$version-android-google-free-release.apk"
-            install -m 0644 \
-              app/build/outputs/bundle/googleFreeRelease/app-googleFree-release.aab \
-              "release-assets/Komms-$version-android-google-free-release.aab"
-          fi
-      - name: Upload Android artifacts
-        working-directory: apps/android
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$RELEASE_TAG" release-assets/* --clobber
-
-  container-candidate:
-    name: validate kultd container
+  ios-validation:
+    name: iOS Simulator validation
     needs: prepare
-    if: github.event_name != 'workflow_dispatch' || inputs.publish != true
+    if: github.event_name == 'push' || inputs.publish != true
+    runs-on: macos-15
     permissions:
       contents: read
-    uses: ./.github/workflows/container.yml
-    with:
-      push: false
-      release_tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+      - name: Select pinned Xcode
+        run: |
+          echo "DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer" \
+            >> "$GITHUB_ENV"
+          xcode_info="$(
+            /Applications/Xcode_16.4.app/Contents/Developer/usr/bin/xcodebuild \
+              -version
+          )"
+          if [[ "$xcode_info" != $'Xcode 16.4\nBuild version 16F6' ]]; then
+            echo "Pinned Xcode build is unavailable." >&2
+            exit 1
+          fi
+          printf '%s\n' "$xcode_info"
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: ${{ env.RELEASE_RUST }}
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Install XcodeGen
+        run: |
+          scripts/install-xcodegen.sh "$RUNNER_TEMP/xcodegen"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Build unsigned Simulator application
+        run: |
+          apps/ios/scripts/build-xcframework.sh
+          cd apps/ios/KommsApp
+          xcodegen generate
+          xcodebuild \
+            -project KommsApp.xcodeproj \
+            -scheme KommsApp \
+            -configuration Release \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath ../../../target/ios-release-validation \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+      - name: Package validation app and record environment
+        run: |
+          mkdir -p release-assets build-records
+          ditto -c -k --sequesterRsrc --keepParent \
+            target/ios-release-validation/Build/Products/Release-iphonesimulator/KommsApp.app \
+            "release-assets/Komms-${{ needs.prepare.outputs.version }}-ios-simulator-validation.zip"
+          python3 scripts/release-evidence.py builder-record \
+            --revision "${{ needs.prepare.outputs.revision }}" \
+            --builder-id "github-ios-simulator-${{ github.run_id }}-${{ github.run_attempt }}" \
+            --os "${{ runner.os }}" \
+            --architecture "${{ runner.arch }}" \
+            --environment "GitHub-hosted unsigned iOS Simulator build" \
+            --runner-image "macos-15:${ImageVersion:?missing ImageVersion}" \
+            --isolated \
+            --tool "rustc=$(rustc --version)" \
+            --tool "swift=$(swift --version | head -n 1)" \
+            --tool "xcode=$(xcodebuild -version | tr '\n' ' ')" \
+            --output build-records/ios-simulator.json
+      - name: Upload iOS validation artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: candidate-ios-simulator
+          path: release-assets
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload iOS build record
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: build-record-ios-simulator
+          path: build-records/ios-simulator.json
+          if-no-files-found: error
+          retention-days: 90
 
-  finalize:
-    name: checksum draft
-    needs: [prepare, desktop, android, container-candidate]
-    if: github.event_name != 'workflow_dispatch' || inputs.publish != true
-    runs-on: ubuntu-latest
+  reproducibility:
+    name: compare controlled Linux builds
+    needs: [prepare, desktop, linux-rebuild]
+    if: github.event_name == 'push' || inputs.publish != true
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: repro-linux-primary
+          path: primary
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: repro-linux-secondary
+          path: secondary
+      - name: Record exact and normalized results
+        run: |
+          python3 scripts/release-evidence.py compare \
+            --first primary/release-evidence.json \
+            --second secondary/release-evidence.json \
+            --output reproducibility.json \
+            --require none
+      - name: Upload reproducibility measurement
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: reproducibility-report
+          path: reproducibility.json
+          if-no-files-found: error
+          retention-days: 90
+
+  evidence:
+    name: assemble validation evidence
+    needs:
+      - prepare
+      - desktop
+      - linux-rebuild
+      - android-validation
+      - ios-validation
+      - reproducibility
+    if: github.event_name == 'push' || inputs.publish != true
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: ${{ env.RELEASE_RUST }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: candidate-*
+          path: target/release-artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: build-record-*
+          path: target/build-records
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: reproducibility-report
+          path: target/reproducibility
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: android-license-report
+          path: target/android-license
+      - name: Enforce Cargo dependency policy
+        uses: EmbarkStudios/cargo-deny-action@b66acf5e9fe20f8aba065be86778a8a4c846f902 # v2
+      - name: Enforce desktop Cargo dependency policy
+        uses: EmbarkStudios/cargo-deny-action@b66acf5e9fe20f8aba065be86778a8a4c846f902 # v2
+        with:
+          manifest-path: apps/desktop/src-tauri/Cargo.toml
+      - name: Create revision-bound public records
+        run: |
+          python3 scripts/release-evidence.py inventory \
+            --artifact-dir target/release-artifacts \
+            --revision "${{ needs.prepare.outputs.revision }}" \
+            --output target/artifacts.json
+          python3 scripts/release-qualification.py prepare \
+            --revision "${{ needs.prepare.outputs.revision }}" \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --artifact-manifest target/artifacts.json \
+            --output target/qualification.json
+          python3 scripts/release-qualification.py validate \
+            --record target/qualification.json \
+            --artifact-manifest target/artifacts.json \
+            --expected-revision "${{ needs.prepare.outputs.revision }}" \
+            --expected-version "${{ needs.prepare.outputs.version }}"
+          python3 scripts/release-signing.py prepare \
+            --revision "${{ needs.prepare.outputs.revision }}" \
+            --artifact-manifest target/artifacts.json \
+            --output target/signing.json
+          python3 scripts/release-signing.py validate \
+            --record target/signing.json \
+            --artifact-manifest target/artifacts.json \
+            --expected-revision "${{ needs.prepare.outputs.revision }}" \
+            --channel validation
+          python3 scripts/release-evidence.py sbom \
+            --repository . \
+            --revision "${{ needs.prepare.outputs.revision }}" \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --android-license-report target/android-license/android-licenses.json \
+            --output target/komms.cdx.json
+          python3 scripts/release-evidence.py dependency-record \
+            --repository . \
+            --revision "${{ needs.prepare.outputs.revision }}" \
+            --root-cargo-deny passed \
+            --desktop-cargo-deny passed \
+            --android-dependency-locking passed \
+            --android-dependency-verification passed \
+            --android-license-report target/android-license/android-licenses.json \
+            --output target/dependency-policy.json
+          python3 scripts/release-evidence.py builder-record \
+            --revision "${{ needs.prepare.outputs.revision }}" \
+            --builder-id "github-evidence-${{ github.run_id }}-${{ github.run_attempt }}" \
+            --os "${{ runner.os }}" \
+            --architecture "${{ runner.arch }}" \
+            --environment "GitHub-hosted evidence collector" \
+            --runner-image "ubuntu-24.04:${ImageVersion:?missing ImageVersion}" \
+            --isolated \
+            --tool "python=$(python3 --version)" \
+            --tool "cargo=$(cargo --version)" \
+            --output target/evidence-builder.json
+      - name: Assemble and verify evidence bundle
+        run: |
+          python3 scripts/release-evidence.py bundle \
+            --artifact-dir target/release-artifacts \
+            --output-dir target/release-evidence \
+            --revision "${{ needs.prepare.outputs.revision }}" \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --tag "$RELEASE_TAG" \
+            --source-date-epoch "${{ needs.prepare.outputs.source_date_epoch }}" \
+            --builder target/evidence-builder.json \
+            --build-record-dir target/build-records \
+            --channel validation \
+            --sbom target/komms.cdx.json \
+            --android-licenses target/android-license/android-licenses.json \
+            --dependency-policy target/dependency-policy.json \
+            --qualification target/qualification.json \
+            --reproducibility target/reproducibility/reproducibility.json \
+            --signing target/signing.json \
+            --residual-risks release/residual-risks-v1.json \
+            --release-notes .github/release-body.md
+          python3 scripts/release-evidence.py verify \
+            --bundle-dir target/release-evidence \
+            --expected-revision "${{ needs.prepare.outputs.revision }}"
+      - name: Prepare retained validation candidate
+        run: |
+          mkdir -p target/validation-assets
+          cp -p target/release-artifacts/* target/validation-assets/
+          python3 scripts/release-evidence.py pack \
+            --bundle-dir target/release-evidence \
+            --output "target/validation-assets/Komms-${{ needs.prepare.outputs.version }}-validation-evidence.tar.gz"
+          (
+            cd target/validation-assets
+            find . -maxdepth 1 -type f ! -name VALIDATION-SHA256SUMS -printf '%f\0' \
+              | sort -z \
+              | xargs -0 -r sha256sum
+          ) > target/validation-assets/VALIDATION-SHA256SUMS
+      - name: Upload evidence bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-evidence-bundle
+          path: target/release-evidence
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload retained validation candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: validation-candidate-assets
+          path: target/validation-assets
+          if-no-files-found: error
+          retention-days: 90
+      - name: Attest candidate files
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
+        with:
+          subject-path: target/validation-assets/*
+
+  production-signing-boundary:
+    name: production-signing enrollment boundary
+    needs: prepare
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.production_signing &&
+      inputs.publish != true
+    runs-on: ubuntu-24.04
+    environment: release-signing-enrollment
+    permissions:
+      contents: read
+    steps:
+      - name: Require completed credential enrollment
+        run: |
+          echo "Production signing remains blocked until the protected Android, Apple, Windows, and offline manifest roles are enrolled and exercised." >&2
+          echo "No production key is generated, imported, or printed by this validation workflow." >&2
+          exit 1
+
+  create-draft:
+    name: create empty qualified release draft
+    needs: [prepare, evidence, production-signing-boundary]
+    if: >-
+      always() &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.create_draft &&
+      inputs.publish != true &&
+      needs.evidence.result == 'success' &&
+      (needs.production-signing-boundary.result == 'success' ||
+       needs.production-signing-boundary.result == 'skipped')
+    runs-on: ubuntu-24.04
+    environment: release-draft
     permissions:
       contents: write
     steps:
-      - name: Download uploaded assets and create checksums
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+      - name: Require explicit draft authorization
+        env:
+          DRAFT_CONFIRMATION: ${{ inputs.draft_confirmation }}
+        run: |
+          if [[ "$DRAFT_CONFIRMATION" != "DRAFT $RELEASE_TAG" ]]; then
+            echo "Draft confirmation must exactly match DRAFT $RELEASE_TAG." >&2
+            exit 1
+          fi
+      - name: Create an empty draft or require an existing empty draft
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir release-assets
-          gh release download "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --dir release-assets
-          # The output is in the parent directory, not the searched directory.
-          # shellcheck disable=SC2094
-          (
-            cd release-assets
-            find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' \
-              | sort -z \
-              | xargs -0 -r sha256sum
-          ) > SHA256SUMS
-          gh release upload "$RELEASE_TAG" SHA256SUMS \
-            --repo "$GITHUB_REPOSITORY" \
-            --clobber
-      - name: Report draft release
-        run: echo "Release $RELEASE_TAG is complete and remains a draft for maintainer review."
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            is_draft="$(
+              gh release view "$RELEASE_TAG" \
+                --repo "$GITHUB_REPOSITORY" \
+                --json isDraft \
+                --jq .isDraft
+            )"
+            asset_count="$(
+              gh release view "$RELEASE_TAG" \
+                --repo "$GITHUB_REPOSITORY" \
+                --json assets \
+                --jq '.assets | length'
+            )"
+            if [[ "$is_draft" != "true" || "$asset_count" != "0" ]]; then
+              echo "Existing release must be an empty draft; assets are never replaced." >&2
+              exit 1
+            fi
+          else
+            gh release create "$RELEASE_TAG" \
+              --verify-tag \
+              --draft \
+              --prerelease \
+              --title "Komms ${{ needs.prepare.outputs.version }} validation candidate" \
+              --notes-file .github/release-body.md
+          fi
+          echo "Empty release draft created. Completed signed packages and evidence must be uploaded together through the protected offline procedure."
 
-  visual-approval:
-    name: human visual approval
+  publish:
+    name: publish an externally completed draft
     needs: prepare
     if: github.event_name == 'workflow_dispatch' && inputs.publish
-    runs-on: ubuntu-latest
-    environment: release-visual-approval
+    runs-on: ubuntu-24.04
+    environment: release-publication
+    permissions:
+      contents: write
     steps:
-      - name: Require reviewed Android, iOS, macOS, and Linux evidence
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+      - name: Require explicit publication and visual evidence
         env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLICATION_CONFIRMATION: ${{ inputs.publication_confirmation }}
           VISUAL_APPROVAL: ${{ inputs.visual_approval }}
           VISUAL_EVIDENCE: ${{ inputs.visual_evidence }}
         run: |
+          set -euo pipefail
+          if [[ "$PUBLICATION_CONFIRMATION" != "PUBLISH $RELEASE_TAG" ]]; then
+            echo "Publication confirmation must exactly match PUBLISH $RELEASE_TAG." >&2
+            exit 1
+          fi
           if [[ "$VISUAL_APPROVAL" != "true" ]]; then
-            echo "Publication requires explicit human approval of current Android, iOS, macOS, and Linux previews." >&2
+            echo "Publication requires explicit review of current platform previews." >&2
             exit 1
           fi
           expected="https://github.com/$GITHUB_REPOSITORY/issues/"
           if [[ "$VISUAL_EVIDENCE" != "$expected"* ]]; then
-            echo "Visual evidence must be a Komms repository issue created from the release visual approval template." >&2
+            echo "Visual evidence must be a Komms release-approval issue." >&2
             exit 1
           fi
-          echo "Human visual approval recorded at $VISUAL_EVIDENCE"
-
-  publish-container:
-    name: publish kultd container
-    needs: [prepare, visual-approval]
-    if: github.event_name == 'workflow_dispatch' && inputs.publish
-    permissions:
-      contents: read
-      packages: write
-    uses: ./.github/workflows/container.yml
-    with:
-      push: true
-      release_tag: ${{ inputs.tag }}
-
-  publish:
-    name: publish qualified prerelease
-    needs: [prepare, visual-approval, publish-container]
-    if: github.event_name == 'workflow_dispatch' && inputs.publish
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Require a complete candidate and publish it
+          issue_number="${VISUAL_EVIDENCE##*/}"
+          if [[ ! "$issue_number" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Visual evidence has no valid issue number." >&2
+            exit 1
+          fi
+          gh issue view "$issue_number" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json state,url,title,body,labels \
+            --jq '{state, url, title, body, labels: [.labels[].name] | sort}' \
+            > visual-approval.json
+          python3 - visual-approval.json "$VISUAL_EVIDENCE" "$RELEASE_TAG" <<'PY'
+          import json
+          import re
+          import sys
+          evidence = json.load(open(sys.argv[1], encoding="utf-8"))
+          expected_url, tag = sys.argv[2:]
+          labels = evidence.get("labels", [])
+          body = evidence.get("body")
+          if evidence.get("url") != expected_url:
+              raise SystemExit("Visual evidence URL does not match the requested issue.")
+          if evidence.get("state") != "CLOSED":
+              raise SystemExit("Visual approval issue must be closed.")
+          if "release-visual-approval" not in labels:
+              raise SystemExit("Visual approval issue has no release-visual-approval label.")
+          if not isinstance(body, str) or tag not in body:
+              raise SystemExit("Visual approval issue is not bound to the release tag.")
+          if re.search(r"(?m)^- \[ \]", body):
+              raise SystemExit("Visual approval issue still has unchecked requirements.")
+          PY
+          echo "VISUAL_ISSUE_NUMBER=$issue_number" >> "$GITHUB_ENV"
+      - name: Bound and download the immutable completed asset set
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          assets="$(gh release view "$RELEASE_TAG" \
+          set -euo pipefail
+          gh release view "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --json assets \
-            --jq '.assets[].name')"
-          for pattern in \
-            'SHA256SUMS$' \
-            '\.apk$' \
-            '\.dmg$' \
-            '\.(msi|exe)$' \
-            '\.AppImage$' \
-            '\.deb$' \
-            '\.rpm$'; do
-            if ! grep -Eq "$pattern" <<< "$assets"; then
-              echo "Draft $RELEASE_TAG is incomplete: no asset matches $pattern" >&2
-              exit 1
-            fi
-          done
-          version="${RELEASE_TAG#v}"
-          image="ghcr.io/andrigitdev/komms-kultd:$version"
-          if ! docker manifest inspect "$image" >/dev/null; then
-            echo "$image is not anonymously pullable." >&2
-            echo "On its first publication, change the linked GHCR package visibility to Public, then rerun this publish job." >&2
+            --json isDraft,assets \
+            --jq '{isDraft, assets: [.assets[] | {name, size, digest}] | sort_by(.name)}' \
+            > draft-release.json
+          python3 scripts/release-evidence.py preflight-release-assets \
+            --metadata draft-release.json \
+            --version "${{ needs.prepare.outputs.version }}"
+          mkdir -p published-assets
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir published-assets
+          mkdir -p completed-evidence
+          mv \
+            "published-assets/Komms-${{ needs.prepare.outputs.version }}-release-evidence.tar.gz" \
+            completed-evidence/
+      - name: Verify bundle, offline manifest signature, and channel gates
+        env:
+          RELEASE_CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          archive="completed-evidence/Komms-${{ needs.prepare.outputs.version }}-release-evidence.tar.gz"
+          python3 scripts/release-evidence.py unpack \
+            --archive "$archive" \
+            --output-dir unpacked
+          bundle="unpacked/release-evidence"
+          python3 scripts/release-evidence.py verify \
+            --bundle-dir "$bundle" \
+            --expected-revision "${{ needs.prepare.outputs.revision }}"
+          if [[ ! -f release/keys/allowed_signers ]]; then
+            echo "The offline release-manifest public key has not been enrolled." >&2
             exit 1
           fi
-          gh release edit "$RELEASE_TAG" \
+          if [[ ! -f "$bundle/SHA256SUMS.sig" ]]; then
+            echo "Completed evidence has no offline release-manifest signature." >&2
+            exit 1
+          fi
+          ssh-keygen -Y verify \
+            -f release/keys/allowed_signers \
+            -I komms-release-v1 \
+            -n komms-release \
+            -s "$bundle/SHA256SUMS.sig" \
+            < "$bundle/SHA256SUMS"
+          python3 scripts/release-signing.py validate \
+            --record "$bundle/signing.json" \
+            --artifact-manifest "$bundle/artifacts.json" \
+            --expected-revision "${{ needs.prepare.outputs.revision }}" \
+            --channel "$RELEASE_CHANNEL"
+          qualification_args=()
+          if [[ "$RELEASE_CHANNEL" == "stable" ]]; then
+            qualification_args+=(--require-complete)
+          fi
+          python3 scripts/release-qualification.py validate \
+            --record "$bundle/qualification.json" \
+            --artifact-manifest "$bundle/artifacts.json" \
+            --expected-revision "${{ needs.prepare.outputs.revision }}" \
+            --expected-version "${{ needs.prepare.outputs.version }}" \
+            "${qualification_args[@]}"
+          python3 scripts/release-evidence.py verify-published-artifacts \
+            --artifact-dir published-assets \
+            --manifest "$bundle/artifacts.json" \
+            --expected-revision "${{ needs.prepare.outputs.revision }}"
+          python3 - "$bundle/release-evidence.json" "$RELEASE_CHANNEL" <<'PY'
+          import json
+          import sys
+          evidence = json.load(open(sys.argv[1], encoding="utf-8"))
+          channel = sys.argv[2]
+          if evidence.get("channel") != channel:
+              raise SystemExit("Evidence channel does not match the requested publication channel.")
+          claims = evidence.get("claims", {})
+          if channel == "stable" and not all(
+              claims.get(name) is True
+              for name in (
+                  "production_signed",
+                  "independently_reproduced",
+                  "qualified_for_stable",
+              )
+          ):
+              raise SystemExit("Stable evidence claims are incomplete.")
+          PY
+      - name: Recheck and publish the unchanged package set
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          gh release view "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --draft=false \
-            --prerelease
+            --json isDraft,assets \
+            --jq '{isDraft, assets: [.assets[] | {name, size, digest}] | sort_by(.name)}' \
+            > current-release.json
+          gh issue view "$VISUAL_ISSUE_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json state,url,title,body,labels \
+            --jq '{state, url, title, body, labels: [.labels[].name] | sort}' \
+            > current-visual-approval.json
+          if ! cmp -s visual-approval.json current-visual-approval.json; then
+            echo "Visual approval evidence changed after verification." >&2
+            exit 1
+          fi
+          if ! cmp -s draft-release.json current-release.json; then
+            echo "Draft metadata or assets changed after verification." >&2
+            exit 1
+          fi
+          if [[ "$RELEASE_CHANNEL" == "stable" ]]; then
+            gh release edit "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Komms ${{ needs.prepare.outputs.version }}" \
+              --notes-file unpacked/release-evidence/release-notes.md \
+              --draft=false \
+              --prerelease=false
+          else
+            gh release edit "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Komms ${{ needs.prepare.outputs.version }} alpha" \
+              --notes-file unpacked/release-evidence/release-notes.md \
+              --draft=false \
+              --prerelease
+          fi

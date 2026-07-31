@@ -1,0 +1,97 @@
+{
+  "schema": "komms-release-qualification-matrix/v1",
+  "matrix_version": 1,
+  "rows": [
+    {
+      "id": "windows-x86_64",
+      "artifact_class": "windows-x86_64",
+      "environment": "Named supported Windows 10 or 11 x86-64 system",
+      "required_cases": [
+        "clean-install",
+        "authenticated-upgrade",
+        "failed-upgrade-rollback",
+        "old-version-compatibility",
+        "manual-update",
+        "signing-key-compromise-response"
+      ]
+    },
+    {
+      "id": "macos-apple-silicon",
+      "artifact_class": "macos-universal",
+      "environment": "Named supported Apple-silicon Mac and macOS release",
+      "required_cases": [
+        "clean-install",
+        "authenticated-upgrade",
+        "failed-upgrade-rollback",
+        "old-version-compatibility",
+        "manual-update",
+        "signing-key-compromise-response"
+      ]
+    },
+    {
+      "id": "macos-intel",
+      "artifact_class": "macos-universal",
+      "environment": "Named supported Intel Mac and macOS release",
+      "required_cases": [
+        "clean-install",
+        "authenticated-upgrade",
+        "failed-upgrade-rollback",
+        "old-version-compatibility",
+        "manual-update",
+        "signing-key-compromise-response"
+      ]
+    },
+    {
+      "id": "linux-x86_64",
+      "artifact_class": "linux-x86_64",
+      "environment": "Named supported distribution, release, desktop, and filesystem",
+      "required_cases": [
+        "clean-install",
+        "authenticated-upgrade",
+        "failed-upgrade-rollback",
+        "old-version-compatibility",
+        "manual-update",
+        "signing-key-compromise-response"
+      ]
+    },
+    {
+      "id": "android-play-arm64",
+      "artifact_class": "android-play-arm64",
+      "environment": "Named physical arm64 Android device and supported OS release",
+      "required_cases": [
+        "clean-install",
+        "authenticated-upgrade",
+        "failed-upgrade-rollback",
+        "old-version-compatibility",
+        "store-update",
+        "signing-key-compromise-response"
+      ]
+    },
+    {
+      "id": "android-google-free-arm64",
+      "artifact_class": "android-google-free-arm64",
+      "environment": "Named physical arm64 Android device and supported OS release",
+      "required_cases": [
+        "clean-install",
+        "authenticated-upgrade",
+        "failed-upgrade-rollback",
+        "old-version-compatibility",
+        "manual-update",
+        "signing-key-compromise-response"
+      ]
+    },
+    {
+      "id": "ios-arm64",
+      "artifact_class": "ios-arm64",
+      "environment": "Named physical iPhone and supported iOS release",
+      "required_cases": [
+        "clean-install",
+        "authenticated-upgrade",
+        "failed-upgrade-rollback",
+        "old-version-compatibility",
+        "store-update",
+        "signing-key-compromise-response"
+      ]
+    }
+  ]
+}

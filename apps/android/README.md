@@ -263,7 +263,10 @@ cargo-deny surface. The common runtime footprint is JNA (the UniFFI transport),
 kotlinx-serialization, AndroidX, CameraX, WorkManager, and ZXing core. The
 Google-free flavor has no Firebase, FCM, Play Services, or ML Kit dependency.
 The Play flavor adds only the pinned Firebase Messaging client for native wake.
-JVM dependencies are pinned by `core/gradle.lockfile`.
+JVM/core and every application/flavor configuration have separate checked-in
+lock state. `gradle/verification-metadata.xml` also binds every resolved
+Android build artifact to reviewed SHA-256 values; the release-control check
+ensures no Firebase or Play coordinate enters a Google-free configuration.
 
 ## Install the published Alpha
 
@@ -315,17 +318,23 @@ the hands-on lifecycle, accessibility, audio-route, background, native-provider,
 and physical-device qualification matrix in
 [38: Native-wake mobile qualification](../../docs/38-native-wake-mobile-qualification.md).
 
-The `v0.3.0` prerelease includes that installable debug APK alongside
-the desktop packages and checksums. Future tagged candidates begin as drafts;
-optional keystore secrets add a signed release APK and AAB. The exact secret
-names, qualification steps, and explicit publication control are in the
+The `v0.3.0` prerelease includes that installable debug APK alongside the
+desktop packages and checksums. It predates the current release-evidence
+design. Future tag pushes produce retained unsigned validation APK/AAB
+artifacts and a revision-bound evidence bundle, but do not create a draft or
+access a keystore. Production signing begins only after the separate Play and
+Google-free roles are enrolled and exercised. The qualification and explicit
+publication boundaries are in the
 [release runbook](../../docs/25-release-runbook.md).
 
-## Version and release signing (scaffold)
+## Version and release signing boundary
 
 The application id is `is.andri.komms`, the minimum Android version is API 26,
-and the current `versionName` is `0.3.0`, aligned with the Rust, desktop, and iOS
-surfaces. Release signing is optional and deliberately keyless by default.
+and the current `versionName` is `0.3.0`, aligned with the Rust, desktop, and
+iOS surfaces. Local release signing is optional and deliberately keyless by
+default. A local keystore can exercise packaging, but it is not production
+evidence unless its public fingerprint, custody, recovery, upgrade, and
+rollback records satisfy the source-controlled release policy.
 
 To configure a future signed release, create the git-ignored
 `apps/android/keystore.properties`:
@@ -337,15 +346,18 @@ keyAlias=...
 keyPassword=...
 ```
 
-The equivalent local/service inputs are `KOMMS_ANDROID_KEYSTORE`,
+The equivalent local inputs are `KOMMS_ANDROID_KEYSTORE`,
 `KOMMS_ANDROID_KEYSTORE_PASSWORD`, `KOMMS_ANDROID_KEY_ALIAS`, and
 `KOMMS_ANDROID_KEY_PASSWORD`. Keystores and `keystore.properties` are ignored by
-Git and must never be committed. GitHub Actions receives a keystore only through
-the `KOMMS_ANDROID_KEYSTORE_BASE64` secret described in the release runbook; it
-is decoded into the runner's temporary directory. If no store is supplied, the
-test APK is still produced and all ordinary debug/CI behavior is unchanged.
-Store publication, provenance, and reproducible signed APK/AAB artifacts remain
-M6 work.
+Git and must never be committed. Ordinary and tag-triggered workflows never
+receive one. The protected production-signing boundary remains disabled until
+a maintainer enrolls the Play upload and direct Google-free roles, records
+their public fingerprints and recovery plans, and exercises signed install,
+upgrade, failure, rollback, and compatibility.
+
+See [release security and recovery](../../docs/39-release-security-and-recovery.md)
+and [release evidence bundles](../../docs/40-release-evidence-bundles.md).
+Store publication and production-signed APK/AAB qualification remain open.
 
 ## Not yet
 

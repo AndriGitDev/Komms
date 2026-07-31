@@ -1,0 +1,39 @@
+{
+  "schema": "komms-release-toolchain/v1",
+  "policy_version": 1,
+  "rust": {
+    "release": "1.88.0",
+    "msrv": "1.88.0",
+    "rustup_init": {
+      "version": "1.28.2",
+      "target": "x86_64-unknown-linux-gnu",
+      "sha256": "20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c"
+    }
+  },
+  "android": {
+    "java": "21",
+    "gradle": "8.14.3",
+    "cargo_ndk": "4.1.2",
+    "compile_sdk": 35,
+    "build_tools": "35.0.0",
+    "ndk": "27.2.12479018"
+  },
+  "apple": {
+    "xcode": "16.4",
+    "xcode_build": "16F6",
+    "xcodegen": {
+      "version": "2.45.4",
+      "archive_sha256": "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef"
+    }
+  },
+  "validation_tools": {
+    "cargo_fuzz": "0.13.2",
+    "cargo_llvm_cov": "0.8.7",
+    "swift_container": "swift:6.1-noble@sha256:e1cdaf7ddc9de37d8561da7a260535236694fca8c1b67d3129d47d8b180a9394"
+  },
+  "container_bases": {
+    "dockerfile_frontend": "docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e",
+    "rust": "rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0",
+    "debian": "debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818"
+  }
+}

@@ -312,9 +312,14 @@ rows and evidence form are in
 The generated app targets iOS 16 or newer, uses bundle identifier
 `is.andri.komms`, and reports short version `0.3.0` / build `3`, aligned with the
 Rust, desktop, and Android surfaces. The documented gate is an unsigned
-Simulator build. No distribution certificate, provisioning profile, App Store
-metadata, notarized artifact, or supported update channel is configured in this
-repository; those remain M6 distribution work.
+Simulator build. Tagged validation runs retain that exact artifact, its builder
+record, SBOM, checksums, and hosted attestation, but never treat it as an IPA or
+physical-device result. No distribution certificate, provisioning profile, App
+Store role, production IPA, or supported update channel is enrolled. The
+protected credential boundary and required named-device
+install/upgrade/rollback evidence are in
+[release security and recovery](../../docs/39-release-security-and-recovery.md)
+and [release evidence bundles](../../docs/40-release-evidence-bundles.md).
 
 ## Not yet
 

@@ -10,6 +10,10 @@ plugins {
     alias(libs.plugins.kotlin.android)
 }
 
+// Pin every app and flavor dependency graph. Refresh deliberately with:
+//   gradle :app:dependencies --write-locks -Pkomms.androidApp=true
+dependencyLocking { lockAllConfigurations() }
+
 // The cargo workspace this build is embedded in (apps/android → repo root).
 val repoRoot = rootDir.resolve("../..").normalize()
 val rustJniLibs = layout.buildDirectory.dir("rustJniLibs")
@@ -65,6 +69,8 @@ fun buildString(value: String): String =
 android {
     namespace = "komms.android"
     compileSdk = 35
+    buildToolsVersion = "35.0.0"
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
         // Matches the desktop app's bundle identifier family.

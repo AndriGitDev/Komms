@@ -1,0 +1,180 @@
+{
+  "schema": "komms-release-policy/v1",
+  "policy_version": 1,
+  "artifact_retention_days": 90,
+  "source": {
+    "require_clean_tag": true,
+    "require_full_revision": true,
+    "tag_pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+  },
+  "channels": {
+    "validation": {
+      "publication_allowed": false,
+      "stable_claim_allowed": false,
+      "require_artifact_signing_roles": false,
+      "required_signing_roles": []
+    },
+    "alpha": {
+      "publication_allowed": true,
+      "stable_claim_allowed": false,
+      "require_artifact_signing_roles": true,
+      "required_signing_roles": [
+        "release-manifest"
+      ]
+    },
+    "stable": {
+      "publication_allowed": true,
+      "stable_claim_allowed": true,
+      "require_artifact_signing_roles": true,
+      "required_signing_roles": [
+        "release-manifest",
+        "android-play",
+        "android-google-free",
+        "apple-ios",
+        "apple-macos",
+        "windows-authenticode"
+      ]
+    }
+  },
+  "signing_roles": [
+    {
+      "id": "release-manifest",
+      "scope": "Evidence manifest, checksums, and release notes",
+      "custody": "Offline hardware-backed key with two encrypted recovery copies",
+      "workflow_access": "No unattended access",
+      "rotation": "Publish old-key authorization of the new public key and retain both during one release overlap",
+      "compromise": "Freeze publication, revoke the public key in project channels, rebuild from reviewed source, and issue a new signed manifest"
+    },
+    {
+      "id": "android-play",
+      "scope": "Play App Signing upload identity for is.andri.komms",
+      "custody": "Dedicated upload key; app-signing key held by the configured store boundary",
+      "workflow_access": "Protected android-release-signing environment",
+      "rotation": "Use the store key-upgrade process and retain legacy-device compatibility evidence",
+      "compromise": "Revoke or reset the upload key, preserve the app-signing lineage, and stop uploads until enrollment is reviewed"
+    },
+    {
+      "id": "android-google-free",
+      "scope": "Direct-distribution APK for is.andri.komms",
+      "custody": "Dedicated offline or HSM-backed Android signing key",
+      "workflow_access": "Protected android-release-signing environment",
+      "rotation": "Use an Android-supported signing lineage only after upgrade and rollback testing",
+      "compromise": "Withdraw affected artifacts, publish the exact affected digest, and require a reviewed migration plan"
+    },
+    {
+      "id": "apple-ios",
+      "scope": "Apple Distribution and App Store submission for is.andri.komms",
+      "custody": "Apple role-scoped distribution identity and provisioning assets",
+      "workflow_access": "Protected ios-release-signing environment",
+      "rotation": "Rotate through the Apple account with overlap and a test submission before revocation",
+      "compromise": "Revoke the affected certificate or credential, halt submissions, and re-enroll from a trusted host"
+    },
+    {
+      "id": "apple-macos",
+      "scope": "Developer ID signing and notarization for is.andri.komms",
+      "custody": "Dedicated Developer ID identity with protected notarization credentials",
+      "workflow_access": "Protected macos-release-signing environment",
+      "rotation": "Create and validate the replacement before revoking the prior certificate",
+      "compromise": "Revoke, stop distribution, notarize a rebuilt replacement, and publish affected digests"
+    },
+    {
+      "id": "windows-authenticode",
+      "scope": "MSI and NSIS Authenticode signatures",
+      "custody": "Hardware-backed code-signing identity through a least-privilege signing provider",
+      "workflow_access": "Protected windows-release-signing environment",
+      "rotation": "Dual-verify old and new certificate chains during one release overlap",
+      "compromise": "Request certificate revocation, withdraw affected installers, and rebuild with a reviewed replacement"
+    }
+  ],
+  "artifact_classes": [
+    {
+      "id": "windows-x86_64",
+      "formats": [
+        "msi",
+        "exe"
+      ],
+      "signing_role": "windows-authenticode",
+      "reproducibility": "measured-after-platform-signing",
+      "update_path": "bounded-manual"
+    },
+    {
+      "id": "macos-universal",
+      "formats": [
+        "dmg",
+        "app.tar.gz"
+      ],
+      "signing_role": "apple-macos",
+      "reproducibility": "measured-after-platform-signing",
+      "update_path": "bounded-manual"
+    },
+    {
+      "id": "linux-x86_64",
+      "formats": [
+        "AppImage",
+        "deb",
+        "rpm"
+      ],
+      "signing_role": "release-manifest",
+      "reproducibility": "exact-or-explained",
+      "update_path": "bounded-manual"
+    },
+    {
+      "id": "android-play-arm64",
+      "formats": [
+        "apk",
+        "aab"
+      ],
+      "signing_role": "android-play",
+      "reproducibility": "measured-after-platform-signing",
+      "update_path": "authenticated-store"
+    },
+    {
+      "id": "android-google-free-arm64",
+      "formats": [
+        "apk"
+      ],
+      "signing_role": "android-google-free",
+      "reproducibility": "measured-after-platform-signing",
+      "update_path": "bounded-manual"
+    },
+    {
+      "id": "ios-arm64",
+      "formats": [
+        "ipa"
+      ],
+      "signing_role": "apple-ios",
+      "reproducibility": "measured-after-platform-signing",
+      "update_path": "authenticated-store"
+    }
+  ],
+  "publishable_required_records": [
+    "source.json",
+    "builders.json",
+    "artifacts.json",
+    "SHA256SUMS",
+    "komms.cdx.json",
+    "android-licenses.json",
+    "dependency-policy.json",
+    "provenance.json",
+    "reproducibility.json",
+    "qualification.json",
+    "signing.json",
+    "residual-risks.json",
+    "release-notes.md"
+  ],
+  "stable_required_records": [
+    "source.json",
+    "builders.json",
+    "artifacts.json",
+    "SHA256SUMS",
+    "komms.cdx.json",
+    "android-licenses.json",
+    "dependency-policy.json",
+    "provenance.json",
+    "reproducibility.json",
+    "qualification.json",
+    "signing.json",
+    "residual-risks.json",
+    "release-notes.md"
+  ]
+}

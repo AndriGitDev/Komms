@@ -224,7 +224,7 @@ This table prevents a prior concern from disappearing into roadmap prose.
 | Feature breadth presented ahead of audit, distribution, field qualification, and stable core profile | P0-01, P0-03, P0-09 |
 | Fresh installs have no practical internet bootstrap/mailbox defaults; hybrid reachability is design-only | P0-04 |
 | ADR-0030 now confines a valid first payload to bounded provisional state with explicit consent; independent adversarial, physical-device, accessibility, discovery, and mailbox-operator qualification remain open | P0-05 |
-| Unsigned/debug packages, no updater, incomplete reproducibility and store distribution | P0-07 |
+| Revision-bound release/SBOM/signing/qualification controls now fail closed, but production keys, store paths, signed install/upgrade/rollback evidence, independent reproduction, and a safe authenticated or bounded manual update execution remain open | P0-07 |
 | Absolute blocking, erasure, cryptographic-audit, and current-law wording exceeds demonstrated guarantees | P0-01, P0-06, P1-07 |
 | Mailbox v2 has local durable-custody evidence, but no public operator, upgrade/backup/cost record, abuse exercise, or real-network path is yet qualified as production infrastructure | P0-08, P1-04 |
 | Simulator/CI evidence is described beside unresolved device, NAT, radio, background, and accessibility work | P0-01, P0-09 |

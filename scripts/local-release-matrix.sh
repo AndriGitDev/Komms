@@ -23,6 +23,13 @@ export RUSTFLAGS="${RUSTFLAGS:--D warnings}"
 run_in "$root" python3 scripts/check-release-version.py
 run_in "$root" python3 scripts/check-docs.py
 run_in "$root" python3 scripts/check-message-request-accessibility.py
+run_in "$root" python3 scripts/check-release-engineering.py
+run_in "$root" python3 scripts/test-android-license-evidence.py
+run_in "$root" python3 scripts/test-release-evidence.py
+run_in "$root" python3 scripts/test-release-qualification.py
+run_in "$root" python3 scripts/test-release-signing.py
+run_in "$root" python3 scripts/test-stage-release-artifacts.py
+run_in "$root" bash -n scripts/install-xcodegen.sh
 run_in "$root" cargo fmt --all -- --check
 run_in "$root" cargo clippy --workspace --all-targets --all-features
 run_in "$root" cargo test --workspace --all-features

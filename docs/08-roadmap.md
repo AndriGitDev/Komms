@@ -359,10 +359,21 @@ currently authorized iOS Simulator build; a weekly workflow rechecks advisories
 for both Cargo workspaces, the core on macOS, and an informational coverage
 snapshot. All build surfaces identify as `0.3.0`. The Komms 0.3 Alpha candidate
 adds a required human visual gate for Android, iOS, macOS, and Linux alongside
-native desktop packages, the debug-signed Android APK, and checksums. No
-production signing key, updater, reproducible-artifact claim, or store release
-is claimed. See [24: Local Release Gate](24-local-release-gate.md) and
-[27: Alpha Testing](27-alpha-testing.md).
+native desktop packages, the debug-signed Android APK, and checksums.
+
+The next release-control slice is also implemented locally: immutable action,
+container, bootstrap, and packaging-tool pins; read-only tag builds; Android
+application dependency locks and artifact verification; exact-class
+builder/signing/qualification records; aggregate CycloneDX SBOM; deterministic
+safe evidence archives; controlled and independently administered reproduction
+records; hosted-attestation wiring; empty draft creation; exact completed-asset
+verification; and separately protected publication.
+Production keys, store roles, signed platform artifacts, independent
+reproduction, supported-system upgrade/rollback evidence, and publication
+remain open. No updater, bit-for-bit reproducibility, or stable distribution
+claim is made. See [24: Local Release Gate](24-local-release-gate.md),
+[39: Release Security and Recovery](39-release-security-and-recovery.md), and
+[40: Release Evidence Bundles](40-release-evidence-bundles.md).
 
 C2 multi-device and ADR-0026 authority are implemented with automated local
 evidence: the stable root is separately held offline, `KDA2` transitions

@@ -34,8 +34,10 @@ jobs:
       KOMMS_HIL_SERIAL_A: ${{ vars.HIL_SERIAL_A || '/dev/ttyUSB0' }}
       KOMMS_HIL_SERIAL_B: ${{ vars.HIL_SERIAL_B || '/dev/ttyUSB1' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: stable
       - name: radios present
         run: ls -l "$KOMMS_HIL_SERIAL_A" "$KOMMS_HIL_SERIAL_B"
       - name: hardware-in-loop acceptance
