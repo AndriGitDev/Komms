@@ -233,3 +233,19 @@ real APNs/FCM delivery, OEM scheduling, cellular handoff, audio routing,
 biometrics, real NATs, or device-specific accessibility.
 
 Closing the field gate requires genuine runs, not changing these labels.
+
+## 9. Current retained development evidence
+
+Revision `440a410a5d5a9373935cef8eb3728efe5ed91e64` has a retained
+[canonical summary](../field-qualification/v1/evidence/440a410/summary.json)
+for the locally available Android API-35 emulator and iOS 26.5 Simulators.
+
+- Android clean install and screen security are `simulator-pass`.
+- iPhone 17 Pro clean install is `simulator-pass`.
+- iPhone 17e clean install is `simulator-pass`; its screen-security row is
+  `observed` because the Simulator recording did not surface the UIKit
+  live-capture notification.
+
+Every other applicable row is open and every target remains
+`qualified: false`. These records do not establish physical-device, provider,
+accessibility, cellular, real-network, audio, or radio support.
