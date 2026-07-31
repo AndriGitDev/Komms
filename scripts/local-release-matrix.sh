@@ -24,6 +24,8 @@ run_in "$root" python3 scripts/check-release-version.py
 run_in "$root" python3 scripts/check-docs.py
 run_in "$root" python3 scripts/check-message-request-accessibility.py
 run_in "$root" python3 scripts/check-release-engineering.py
+run_in "$root" python3 scripts/test_security_review_package.py
+run_in "$root" python3 scripts/security_review_package.py --check
 run_in "$root" python3 scripts/test-android-license-evidence.py
 run_in "$root" python3 scripts/test-release-evidence.py
 run_in "$root" python3 scripts/test-release-qualification.py

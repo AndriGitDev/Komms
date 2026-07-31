@@ -38,8 +38,8 @@ The script runs:
 
 1. workspace formatting, all-target/all-feature warnings-as-errors clippy, all
    tests, `no_std` crypto/protocol builds, `cargo-deny`, release-policy and
-   dependency-integrity checks, plus release-evidence/signing/qualification
-   regression tests;
+   dependency-integrity checks, deterministic security-review package
+   validation, plus release-evidence/signing/qualification regression tests;
 2. the ADR-0027 100,000- and 1,000,000-message migration, unlock, indexed page,
    exact edit/delete, memory, and database-growth budgets;
 3. the desktop workspace's independent format, clippy, test, and deny gates;

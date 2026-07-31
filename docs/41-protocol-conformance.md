@@ -100,6 +100,9 @@ qualification, or optional-service availability.
 The remaining P1-03 action is one retained execution by a separately produced
 implementation or fixture producer. P0-06 additionally requires a qualified
 external security review with published findings, dispositions, retest
-results, and residual risks. Until those events occur, both gates remain
-visibly open in the
+results, and residual risks. The prepared scope and deterministic review-source
+handoff are in
+[Independent Security-Review Readiness](42-independent-security-review.md);
+preparation is not independent evidence. Until those external events occur,
+both gates remain visibly open in the
 [release evidence ledger](31-release-evidence-ledger.md).

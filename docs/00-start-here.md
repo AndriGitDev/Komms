@@ -180,6 +180,7 @@ Platform build instructions:
 | how release keys are separated, recovered, rotated, and revoked | [Release Security and Recovery](39-release-security-and-recovery.md) |
 | what a revision-bound release evidence bundle contains | [Release Evidence Bundles](40-release-evidence-bundles.md) |
 | how to read or run the stand-alone stable-v1 protocol kit | [Stable-v1 Protocol Conformance](41-protocol-conformance.md) |
+| what an independent reviewer receives and what evidence remains open | [Independent Security-Review Readiness](42-independent-security-review.md) |
 | how the optional content-free phone-wake gateway is bounded and operated | [Native-Wake Operations](37-native-wake-operations.md) |
 | what evidence is required before stable or wire v1 | [Stabilization Program](29-stabilization-program.md) |
 | which persisted protocol transitions are atomic and which remain open | [Atomic Transition Inventory](34-atomic-transition-inventory.md) |
