@@ -78,6 +78,16 @@ version, required inputs, and the explicit unassigned/no-findings/no-assurance
 state. The duplicated source archive is locally generated; its compact digest
 report is retained with project evidence.
 
+The prepared target is commit
+`5a08e8e2e5cea4a2cad1ec511e97ab16cac53c85`, tree
+`626d47e8c79252f592fd13782347b9dc686a55d1`. Its 678 tracked files total
+15,509,820 bytes. The deterministic archive is 6,712,258 bytes with SHA-256
+`36f1cab72fcaa76efa29134dbe705775afbccd76cf30a7db2d3ffa2ae4ff831e`.
+The retained
+[package report](../security-review/stable-v1/evidence/komms-security-review-5a08e8e2e5ce.json)
+has SHA-256
+`b15c7420b9a07abae7804eb49479af391a152b02d734ba0bba4aa62c6f5a254f`.
+
 ## 3. Candidate research
 
 The unranked research shortlist is:

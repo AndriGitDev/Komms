@@ -653,6 +653,44 @@ qualified external security reviewer supplied findings, dispositions, or
 retest evidence. Independent interoperability and P0-06 security assurance
 therefore remain open.
 
+### Session 18 review-readiness validation
+
+On 2026-07-31, commit
+`5a08e8e2e5cea4a2cad1ec511e97ab16cac53c85` was prepared and exercised on
+arm64 macOS 26.5.2 with Python 3.12.13.
+
+- The external-review scope maps the complete minimum P0-06 surface into four
+  work packages: protocol/cryptographic composition; device authority,
+  recovery, storage and atomicity; admission/discovery/custody/services; and
+  malformed-input/RPC/FFI/shell integration.
+- The prepared RFP fixes independence, conflict, named-team, data-handling,
+  public finding/disposition, coordinated-disclosure, residual-risk and retest
+  requirements. The finding format preserves original severity and both
+  reviewer and maintainer positions.
+- A four-candidate shortlist cites first-party service descriptions and public
+  comparable work. No candidate was contacted, assigned, or authorized to
+  spend project funds.
+- Six package-builder regression tests passed. Documentation links and public
+  evidence terminology passed. The builder rejected special tree entries and
+  unsafe/missing inputs in its negative tests.
+- Two separate invocations of the package builder produced byte-identical
+  output for the exact commit. The 678-file, 15,509,820-byte tree became a
+  6,712,258-byte archive with SHA-256
+  `36f1cab72fcaa76efa29134dbe705775afbccd76cf30a7db2d3ffa2ae4ff831e`.
+  A separate verification invocation accepted the archive/report pair.
+- The retained
+  [package report](../security-review/stable-v1/evidence/komms-security-review-5a08e8e2e5ce.json)
+  has SHA-256
+  `b15c7420b9a07abae7804eb49479af391a152b02d734ba0bba4aa62c6f5a254f`
+  and explicitly records `reviewer: "unassigned"`,
+  `findings_received: false`, and
+  `independent_security_review_claimed: false`.
+
+This is review-readiness and reproducible-handoff evidence only. P0-06 remains
+open and waiting on a named conflict-checked external reviewer, a complete
+public finding/disposition/retest/residual-risk record, and separately
+produced interoperability evidence.
+
 ## 2. Stable public claim register
 
 These are the complete stable public claims authorized by the frozen profile.

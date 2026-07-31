@@ -16,6 +16,7 @@ package report, not a moving branch or an uncommitted working tree.
 | [`REVIEWERS.md`](REVIEWERS.md) | researched candidate shortlist and unresolved diligence |
 | [`FINDINGS.md`](FINDINGS.md) | finding, severity, disposition, publication, and retest format |
 | [`package.json`](package.json) | bounded source-archive policy and required review inputs |
+| [`evidence/komms-security-review-5a08e8e2e5ce.json`](evidence/komms-security-review-5a08e8e2e5ce.json) | retained report for the prepared exact-revision source archive |
 | [`../../docs/42-independent-security-review.md`](../../docs/42-independent-security-review.md) | project-facing status and reproduction guide |
 
 The portable protocol contract is
