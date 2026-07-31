@@ -622,6 +622,37 @@ reproduction, named install/upgrade/rollback systems, and physical-device
 qualification remain open. Existing Swift concurrency/audio and Gradle
 migration warnings also remain visible.
 
+### Session 17 local development validation
+
+On 2026-07-31, commit
+`071e71334f1a9dea6f8ea0f71b37eb33f3bcf862` was exercised on arm64 macOS
+26.5.2 with Rust 1.97.0 and Python 3.12.13.
+
+- `CARGO_INCREMENTAL=0 cargo test --offline --workspace --all-features`
+  completed successfully against the exact commit. Every executed workspace
+  unit, integration, end-to-end, and documentation test passed. The large
+  million-row qualification and physical two-radio HIL cases remained
+  deliberately ignored under their existing explicit gates.
+- Formatting and warnings-denied lint passed for the conformance, transport,
+  and node targets with all targets and features. Documentation, kit-manifest,
+  generated-artifact, and fixture-drift checks passed.
+- The retained
+  [Komms self-run](../conformance/v1/evidence/komms-self-run-071e713.json)
+  passed all 51 stable-v1 cases. Its SHA-256 digest is
+  `246252edacdc307eae712866b3757e5dd1129c93bed89e8b974125c43a5173ad`;
+  it binds kit-manifest digest
+  `2e8cd849b3cc3e831aa4a603baed01320569712e5cd6f2bff8630e584383bca2`
+  and adapter digest
+  `df5f418ab658fb0b4c40165ed71f0d64dd3aa775b8845cb0efba5f077b98a30c`.
+- The report explicitly records `independent_execution_claimed: false`. All
+  current fixtures and the adapter share the Komms implementation process, so
+  this is revision-bound local compatibility evidence only.
+
+No separately produced implementation or fixture producer ran this kit. No
+qualified external security reviewer supplied findings, dispositions, or
+retest evidence. Independent interoperability and P0-06 security assurance
+therefore remain open.
+
 ## 2. Stable public claim register
 
 These are the complete stable public claims authorized by the frozen profile.
