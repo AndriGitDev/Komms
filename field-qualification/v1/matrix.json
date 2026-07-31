@@ -1,0 +1,577 @@
+{
+  "schema": "komms-field-qualification-matrix/v1",
+  "matrix_version": 1,
+  "target_cells": [
+    {
+      "id": "macbook-air-m1-macos-26-5-2",
+      "platform": "macos",
+      "environment_kind": "physical-host",
+      "device": "MacBook Air (M1, 2020)",
+      "os_version": "macOS 26.5.2 (25F84)",
+      "architecture": "arm64",
+      "qualification_candidate": true,
+      "availability": "available"
+    },
+    {
+      "id": "mac-mini-2018-macos-15",
+      "platform": "macos",
+      "environment_kind": "physical-host",
+      "device": "Mac mini (2018)",
+      "os_version": "macOS 15 current security release",
+      "architecture": "x86_64",
+      "qualification_candidate": true,
+      "availability": "open-hardware"
+    },
+    {
+      "id": "dell-latitude-5440-windows-11",
+      "platform": "windows",
+      "environment_kind": "physical-host",
+      "device": "Dell Latitude 5440",
+      "os_version": "Windows 11 24H2 current security release",
+      "architecture": "x86_64",
+      "qualification_candidate": true,
+      "availability": "open-hardware"
+    },
+    {
+      "id": "dell-latitude-5440-ubuntu-24-04",
+      "platform": "linux",
+      "environment_kind": "physical-host",
+      "device": "Dell Latitude 5440",
+      "os_version": "Ubuntu 24.04 LTS / GNOME Wayland / ext4",
+      "architecture": "x86_64",
+      "qualification_candidate": true,
+      "availability": "open-hardware"
+    },
+    {
+      "id": "pixel-8-android-15",
+      "platform": "android",
+      "environment_kind": "physical-device",
+      "device": "Google Pixel 8, stock build",
+      "os_version": "Android 15 current security patch",
+      "architecture": "arm64-v8a",
+      "qualification_candidate": true,
+      "availability": "open-hardware"
+    },
+    {
+      "id": "galaxy-s24-android-15",
+      "platform": "android",
+      "environment_kind": "physical-device",
+      "device": "Samsung Galaxy S24, stock build",
+      "os_version": "Android 15 current security patch",
+      "architecture": "arm64-v8a",
+      "qualification_candidate": true,
+      "availability": "open-hardware"
+    },
+    {
+      "id": "iphone-15-ios-26-5",
+      "platform": "ios",
+      "environment_kind": "physical-device",
+      "device": "iPhone 15",
+      "os_version": "iOS 26.5 current security release",
+      "architecture": "arm64",
+      "qualification_candidate": true,
+      "availability": "open-hardware"
+    },
+    {
+      "id": "iphone-se3-ios-26-5",
+      "platform": "ios",
+      "environment_kind": "physical-device",
+      "device": "iPhone SE (3rd generation)",
+      "os_version": "iOS 26.5 current security release",
+      "architecture": "arm64",
+      "qualification_candidate": true,
+      "availability": "open-hardware"
+    },
+    {
+      "id": "android-api35-arm64-emulator",
+      "platform": "android",
+      "environment_kind": "simulator",
+      "device": "sdk_gphone64_arm64 / komms-api35",
+      "os_version": "Android 15 / API 35",
+      "architecture": "arm64",
+      "qualification_candidate": false,
+      "availability": "available"
+    },
+    {
+      "id": "iphone-17-pro-ios-26-5-simulator",
+      "platform": "ios",
+      "environment_kind": "simulator",
+      "device": "iPhone 17 Pro Simulator",
+      "os_version": "iOS 26.5 Simulator",
+      "architecture": "arm64",
+      "qualification_candidate": false,
+      "availability": "available"
+    },
+    {
+      "id": "iphone-17e-ios-26-5-simulator",
+      "platform": "ios",
+      "environment_kind": "simulator",
+      "device": "iPhone 17e Simulator",
+      "os_version": "iOS 26.5 Simulator",
+      "architecture": "arm64",
+      "qualification_candidate": false,
+      "availability": "available"
+    },
+    {
+      "id": "distinct-ordinary-nat-pair",
+      "platform": "network",
+      "environment_kind": "network-pair",
+      "device": "Two named physical supported clients",
+      "os_version": "Exact endpoint OS builds recorded in the run",
+      "architecture": "Exact endpoint architectures recorded in the run",
+      "qualification_candidate": true,
+      "availability": "open-network"
+    },
+    {
+      "id": "cgnat-ipv6-network-pair",
+      "platform": "network",
+      "environment_kind": "network-pair",
+      "device": "Two named physical supported clients",
+      "os_version": "Exact endpoint OS builds recorded in the run",
+      "architecture": "Exact endpoint architectures recorded in the run",
+      "qualification_candidate": true,
+      "availability": "open-network"
+    },
+    {
+      "id": "meshtastic-stock-radio-bench",
+      "platform": "meshtastic",
+      "environment_kind": "hil-bench",
+      "device": "Two endpoint stock-firmware radios plus one stock repeater",
+      "os_version": "Exact board models, firmware releases, and legal region recorded in the run",
+      "architecture": "Stock supported Meshtastic hardware",
+      "qualification_candidate": true,
+      "availability": "open-hardware"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "clean-install-and-first-run",
+      "category": "installation",
+      "platforms": ["macos", "windows", "linux", "android", "ios"],
+      "qualifying_environment_kinds": ["physical-host", "physical-device"],
+      "simulator_applicable": true,
+      "procedure": [
+        {"id": "remove", "instruction": "Remove every prior application/profile copy using the platform procedure and verify the application data location is absent."},
+        {"id": "install", "instruction": "Install the exact recorded artifact without a release credential or manual configuration edit."},
+        {"id": "launch", "instruction": "Cold-launch and complete the disclosed first-run identity and recovery-authority flow."}
+      ],
+      "expected": "A fresh user reaches an ordinary ready state, sees accurate provider/mode disclosure, and is not shown a false stable or production claim."
+    },
+    {
+      "id": "first-contact-and-first-message",
+      "category": "golden-path",
+      "platforms": ["macos", "windows", "linux", "android", "ios", "network"],
+      "qualifying_environment_kinds": ["physical-host", "physical-device", "network-pair"],
+      "simulator_applicable": true,
+      "procedure": [
+        {"id": "share", "instruction": "Exchange a Connect code between two fresh identities without editing a route or address."},
+        {"id": "consent", "instruction": "Complete the message-request or invitation consent flow and compare the displayed trust information."},
+        {"id": "message", "instruction": "Exchange a first message and retain timing for contact establishment and authenticated delivery."}
+      ],
+      "expected": "Two fresh users establish consent and exchange an authenticated first message with honest queued, sent, and delivered states."
+    },
+    {
+      "id": "message-request-delete-block",
+      "category": "consent",
+      "platforms": ["macos", "windows", "linux", "android", "ios"],
+      "qualifying_environment_kinds": ["physical-host", "physical-device"],
+      "simulator_applicable": true,
+      "procedure": [
+        {"id": "request", "instruction": "Receive an unknown-sender request and confirm it is separate from contacts and ordinary history."},
+        {"id": "delete", "instruction": "Delete one request and confirm only the bounded replay tombstone remains."},
+        {"id": "block", "instruction": "Block another exact identity and confirm local queues/capabilities are removed without remote-deletion wording."}
+      ],
+      "expected": "Unknown senders remain provisional and Accept, Delete, and Block have distinct, accurately described effects."
+    },
+    {
+      "id": "group-invitation-consent",
+      "category": "consent",
+      "platforms": ["macos", "windows", "linux", "android", "ios"],
+      "qualifying_environment_kinds": ["physical-host", "physical-device"],
+      "simulator_applicable": true,
+      "procedure": [
+        {"id": "invite", "instruction": "Receive a group invitation from an authenticated contact."},
+        {"id": "inspect", "instruction": "Inspect the bounded invitation without joining or downloading group media."},
+        {"id": "accept-reject", "instruction": "Exercise one accept and one reject path and inspect resulting membership/history."}
+      ],
+      "expected": "Group membership is created only by explicit consent, and rejection does not create ordinary group history."
+    },
+    {
+      "id": "offline-mailbox-delivery",
+      "category": "delivery",
+      "platforms": ["macos", "windows", "linux", "android", "ios", "network"],
+      "qualifying_environment_kinds": ["physical-host", "physical-device", "network-pair"],
+      "simulator_applicable": true,
+      "procedure": [
+        {"id": "offline", "instruction": "Take the receiving endpoint offline after contact establishment."},
+        {"id": "deposit", "instruction": "Send through a durable mailbox and record sender state after relay commit."},
+        {"id": "collect", "instruction": "Reconnect the receiver, collect and commit the exact envelope, then observe the authenticated receipt."}
+      ],
+      "expected": "The relay retains ciphertext until exact endpoint commit/ack; reconnect produces one visible message and one honest authenticated receipt."
+    },
+    {
+      "id": "backup-recovery-clean-device",
+      "category": "recovery",
+      "platforms": ["macos", "windows", "linux", "android", "ios"],
+      "qualifying_environment_kinds": ["physical-host", "physical-device"],
+      "simulator_applicable": true,
+      "procedure": [
+        {"id": "export", "instruction": "Export a root-free backup and separately held offline recovery authority using throwaway qualification identities."},
+        {"id": "restore", "instruction": "Restore onto a clean profile and verify a higher recovery epoch with one fresh device."},
+        {"id": "verify", "instruction": "Verify eligible history/petnames remain, excluded live secrets do not, and contacts require honest re-verification/re-handshake."}
+      ],
+      "expected": "Clean-device recovery preserves only declared portable state, revokes the former device set, and does not restore live rendezvous, ratchet, wake, group-chain, or delivery secrets."
+    },
+    {
+      "id": "stale-backup-and-recovery-conflict",
+      "category": "recovery",
+      "platforms": ["macos", "windows", "linux", "android", "ios"],
+      "qualifying_environment_kinds": ["physical-host", "physical-device"],
+      "simulator_applicable": false,
+      "procedure": [
+        {"id": "stale", "instruction": "Attempt to introduce a descendant from an older recovery epoch after a newer recovery."},
+        {"id": "conflict", "instruction": "Present conflicting recovery descendants without ordering one as authoritative."},
+        {"id": "inspect", "instruction": "Confirm both cases fail closed and surface a visible recovery conflict."}
+      ],
+      "expected": "Old-epoch descendants and recovery forks are rejected visibly; no ordering rule silently selects authority."
+    },
+    {
+      "id": "linked-device-loss-and-revocation",
+      "category": "device-authority",
+      "platforms": ["macos", "windows", "linux", "android", "ios"],
+      "qualifying_environment_kinds": ["physical-host", "physical-device"],
+      "simulator_applicable": true,
+      "procedure": [
+        {"id": "link", "instruction": "Link an additional installation through scan, compare, confirm, and any required quorum approval."},
+        {"id": "loss", "instruction": "Make one linked installation unavailable and revoke it with the remaining quorum."},
+        {"id": "replay", "instruction": "Bring the revoked installation back and confirm its descendants, sync, rendezvous, wake, and delivery capabilities remain rejected."}
+      ],
+      "expected": "Device authority follows the accepted manifest chain and revoked or old-epoch installations cannot resume authority."
+    },
+    {
+      "id": "safe-attachment-presentation",
+      "category": "attachments",
+      "platforms": ["macos", "windows", "linux", "android", "ios"],
+      "qualifying_environment_kinds": ["physical-host", "physical-device"],
+      "simulator_applicable": true,
+      "procedure": [
+        {"id": "receive", "instruction": "Receive recognized, mismatched, unknown, and potentially active file types."},
+        {"id": "inspect", "instruction": "Confirm no attachment autoplays or opens and unsafe hints receive bounded warnings."},
+        {"id": "export", "instruction": "Exercise protected export/open and verify screen-reader labels and cancellation."}
+      ],
+      "expected": "Attachments remain inert until an explicit protected action and are never described as malware-free or remotely erasable."
+    },
+    {
+      "id": "audio-call-direct-and-fallback",
+      "category": "calls",
+      "platforms": ["macos", "windows", "linux", "android", "ios", "network"],
+      "qualifying_environment_kinds": ["physical-host", "physical-device", "network-pair"],
+      "simulator_applicable": false,
+      "procedure": [
+        {"id": "direct", "instruction": "Place, answer, exchange audio, and end one call over a verified direct route."},
+        {"id": "fallback", "instruction": "Repeat with direct path unavailable and the declared supported relay/fallback path."},
+        {"id": "failure", "instruction": "Blackhole the optional path and verify no false connected state or delivery-state change."}
+      ],
+      "expected": "Call state and audio follow authenticated sessions; route failure is visible and does not relabel message delivery."
+    },
+    {
+      "id": "screen-security-lifecycle",
+      "category": "privacy-ui",
+      "platforms": ["macos", "windows", "linux", "android", "ios"],
+      "qualifying_environment_kinds": ["physical-host", "physical-device"],
+      "simulator_applicable": true,
+      "procedure": [
+        {"id": "background", "instruction": "Background, lock, switch tasks, and capture the platform app-switcher/overview from sensitive screens."},
+        {"id": "return", "instruction": "Return through the configured lock gate and verify sensitive content is not exposed early."},
+        {"id": "capture", "instruction": "Exercise the documented screenshot/screen-recording boundary and retain only synthetic content."}
+      ],
+      "expected": "Sensitive content follows the declared platform protection boundary and limitations remain explicit."
+    },
+    {
+      "id": "accessibility-screen-reader-and-announcements",
+      "category": "accessibility",
+      "platforms": ["macos", "windows", "linux", "android", "ios"],
+      "qualifying_environment_kinds": ["physical-host", "physical-device"],
+      "simulator_applicable": true,
+      "procedure": [
+        {"id": "navigate", "instruction": "Navigate onboarding, requests, conversation, groups, attachments, calls, recovery, modes, delivery states, and errors with the platform screen reader."},
+        {"id": "labels", "instruction": "Confirm controls, headings, state changes, and destructive actions have unique meaningful labels."},
+        {"id": "announce", "instruction": "Confirm new request, delivery, failure, call, and recovery-conflict changes are announced without exposing content on a locked surface."}
+      ],
+      "expected": "Every critical flow is operable and understandable with the platform screen reader, with no content-only or color-only state."
+    },
+    {
+      "id": "accessibility-focus-keyboard-touch",
+      "category": "accessibility",
+      "platforms": ["macos", "windows", "linux", "android", "ios"],
+      "qualifying_environment_kinds": ["physical-host", "physical-device"],
+      "simulator_applicable": true,
+      "procedure": [
+        {"id": "focus", "instruction": "Traverse each critical flow in logical focus order and confirm focus remains visible after dialogs and navigation."},
+        {"id": "keyboard", "instruction": "Complete desktop flows using keyboard alone, including cancel and destructive confirmations."},
+        {"id": "touch", "instruction": "Measure mobile interactive targets and exercise adjacent controls without accidental activation."}
+      ],
+      "expected": "Critical actions have deterministic focus order, full keyboard access where applicable, and platform-sized touch targets."
+    },
+    {
+      "id": "accessibility-scaled-text-bidi-contrast-motion",
+      "category": "accessibility",
+      "platforms": ["macos", "windows", "linux", "android", "ios"],
+      "qualifying_environment_kinds": ["physical-host", "physical-device"],
+      "simulator_applicable": true,
+      "procedure": [
+        {"id": "scale", "instruction": "Run critical flows at the largest supported text/display scale and inspect clipping, overlap, and hidden actions."},
+        {"id": "bidi", "instruction": "Exercise mixed-direction synthetic names/messages and verify controls and security identifiers remain unambiguous."},
+        {"id": "visual", "instruction": "Enable reduced motion and high-contrast/dark settings and verify state remains perceivable."}
+      ],
+      "expected": "Scaled and bidirectional text does not hide security decisions; contrast and reduced-motion settings preserve complete operation."
+    },
+    {
+      "id": "mobile-background-lock-collection",
+      "category": "mobile-lifecycle",
+      "platforms": ["android", "ios"],
+      "qualifying_environment_kinds": ["physical-device"],
+      "simulator_applicable": true,
+      "procedure": [
+        {"id": "background", "instruction": "Background and lock the receiving device after contact establishment."},
+        {"id": "trigger", "instruction": "Deposit durable work and invoke only the configured bounded wake/collection opportunity."},
+        {"id": "remainder", "instruction": "Observe deadline handling, durable remainder, notification shape, and authenticated receipt after collection."}
+      ],
+      "expected": "Background work is bounded, durable remainder survives, and wake never advances message delivery state."
+    },
+    {
+      "id": "mobile-force-stop-or-force-quit",
+      "category": "mobile-lifecycle",
+      "platforms": ["android", "ios"],
+      "qualifying_environment_kinds": ["physical-device"],
+      "simulator_applicable": true,
+      "procedure": [
+        {"id": "terminate", "instruction": "Force-stop Android or force-quit iOS using the documented platform action."},
+        {"id": "send", "instruction": "Send while the application has no execution opportunity and observe optional wake behavior."},
+        {"id": "relaunch", "instruction": "Relaunch manually and verify bounded collection of durable work with honest prior state."}
+      ],
+      "expected": "The platform no-execution limitation is stated accurately and no message is lost or falsely marked delivered."
+    },
+    {
+      "id": "mobile-notification-permission-denial",
+      "category": "mobile-lifecycle",
+      "platforms": ["android", "ios"],
+      "qualifying_environment_kinds": ["physical-device"],
+      "simulator_applicable": true,
+      "procedure": [
+        {"id": "deny", "instruction": "Deny visible notification permission and inspect advertised wake profiles."},
+        {"id": "receive", "instruction": "Exercise ordinary direct/mailbox receipt while permission remains denied."},
+        {"id": "restore", "instruction": "Restore permission and verify a fresh eligible capability generation without stale reuse."}
+      ],
+      "expected": "Visible wake becomes ineligible when permission requires it; ordinary delivery remains functional."
+    },
+    {
+      "id": "mobile-wifi-cellular-handoff",
+      "category": "network-handoff",
+      "platforms": ["android", "ios"],
+      "qualifying_environment_kinds": ["physical-device"],
+      "simulator_applicable": false,
+      "procedure": [
+        {"id": "wifi", "instruction": "Establish a conversation and queued work over Wi-Fi behind an ordinary NAT."},
+        {"id": "cellular", "instruction": "Move to cellular during active/queued work without restarting the identity or editing configuration."},
+        {"id": "return", "instruction": "Return to Wi-Fi and verify deduplication, route refresh, receipts, and call/message state."}
+      ],
+      "expected": "Network handoff refreshes routes without identity change, duplicate history, lost durable work, or false delivery."
+    },
+    {
+      "id": "android-doze-oem-and-deprioritization",
+      "category": "mobile-lifecycle",
+      "platforms": ["android"],
+      "qualifying_environment_kinds": ["physical-device"],
+      "simulator_applicable": false,
+      "procedure": [
+        {"id": "doze", "instruction": "Enter Doze with the stock device locked and exercise normal-priority background wake."},
+        {"id": "visible", "instruction": "Exercise high priority only with the exact static immediately visible notification."},
+        {"id": "delay", "instruction": "Observe OEM/provider delay or deprioritization and verify ordinary mailbox/direct retry remains authoritative."}
+      ],
+      "expected": "Android background restrictions remain honest, continuation is bounded, and optional wake failure never alters delivery semantics."
+    },
+    {
+      "id": "ios-background-refresh-and-apns-boundary",
+      "category": "mobile-lifecycle",
+      "platforms": ["ios"],
+      "qualifying_environment_kinds": ["physical-device"],
+      "simulator_applicable": false,
+      "procedure": [
+        {"id": "refresh-off", "instruction": "Disable Background App Refresh and confirm background-only eligibility is removed."},
+        {"id": "profiles", "instruction": "Exercise background and generic-visible APNs profiles with the required push type, priority, and collapse behavior."},
+        {"id": "token", "instruction": "Rotate the APNs token and verify old capability revocation without recording either token."}
+      ],
+      "expected": "APNs is used directly without PushKit; platform limitations, token rotation, and static content-free payloads are accurately enforced."
+    },
+    {
+      "id": "distinct-ordinary-nat-ipv4",
+      "category": "real-network",
+      "platforms": ["network"],
+      "qualifying_environment_kinds": ["network-pair"],
+      "simulator_applicable": false,
+      "procedure": [
+        {"id": "separate", "instruction": "Place two named physical clients behind separately administered ordinary IPv4 NATs."},
+        {"id": "contact", "instruction": "Complete Standard first contact without manual address or configuration edits."},
+        {"id": "exchange", "instruction": "Exchange messages, offline mailbox delivery, and an audio call while recording route class and timings."}
+      ],
+      "expected": "The clean-install golden path works across distinct ordinary NATs with honest fallback and delivery state."
+    },
+    {
+      "id": "ipv6-path",
+      "category": "real-network",
+      "platforms": ["network"],
+      "qualifying_environment_kinds": ["network-pair"],
+      "simulator_applicable": false,
+      "procedure": [
+        {"id": "ipv6", "instruction": "Use two named endpoints with real IPv6 reachability and record the provider/network conditions."},
+        {"id": "exchange", "instruction": "Exercise contact, message, attachment, and call paths."},
+        {"id": "failure", "instruction": "Remove the IPv6 path and verify bounded rediscovery/fallback without duplicate history."}
+      ],
+      "expected": "IPv6 operation and failure preserve protocol semantics and bounded route selection."
+    },
+    {
+      "id": "cgnat-path",
+      "category": "real-network",
+      "platforms": ["network"],
+      "qualifying_environment_kinds": ["network-pair"],
+      "simulator_applicable": false,
+      "procedure": [
+        {"id": "confirm", "instruction": "Confirm one named endpoint is behind carrier-grade NAT and record the carrier without subscriber identifiers."},
+        {"id": "message", "instruction": "Exercise first contact, message, and offline mailbox delivery."},
+        {"id": "call", "instruction": "Exercise call setup and the declared relay/fallback result."}
+      ],
+      "expected": "CGNAT limitations and fallback are measured on a real carrier path rather than inferred from a local namespace."
+    },
+    {
+      "id": "hole-punch-and-relay-fallback",
+      "category": "real-network",
+      "platforms": ["network"],
+      "qualifying_environment_kinds": ["network-pair"],
+      "simulator_applicable": false,
+      "procedure": [
+        {"id": "punch", "instruction": "Record a real successful or failed DCUtR/hole-punch attempt across the named NAT pair."},
+        {"id": "relay", "instruction": "Force the supported relay path and exchange message/call traffic."},
+        {"id": "blackhole", "instruction": "Blackhole the relay and verify mailbox/queued fallback remains honest."}
+      ],
+      "expected": "Direct and relay paths are distinguished; relay failure does not lose queued ciphertext or imply delivery."
+    },
+    {
+      "id": "default-domain-blackhole",
+      "category": "operator-failure",
+      "platforms": ["network"],
+      "qualifying_environment_kinds": ["network-pair"],
+      "simulator_applicable": false,
+      "procedure": [
+        {"id": "blackhole", "instruction": "Blackhole every disclosed default provider domain at both endpoints."},
+        {"id": "observe", "instruction": "Observe bounded failure, status language, and retained queued work without busy loops."},
+        {"id": "recover", "instruction": "Select an alternate route/operator and complete delivery without identity change."}
+      ],
+      "expected": "Default-provider failure is visible and replaceable, with no mandatory-domain dependency."
+    },
+    {
+      "id": "alternate-bootstrap-and-replacement-operator",
+      "category": "operator-replacement",
+      "platforms": ["network"],
+      "qualifying_environment_kinds": ["network-pair"],
+      "simulator_applicable": false,
+      "procedure": [
+        {"id": "alternate", "instruction": "Use a separately configured bootstrap path after the default is unavailable."},
+        {"id": "replace", "instruction": "Replace directory, mailbox, and optional rendezvous/wake endpoints with qualified alternatives."},
+        {"id": "exchange", "instruction": "Complete first contact, offline delivery, recovery, and provider rotation."}
+      ],
+      "expected": "No single provider is mandatory and replacement does not change identity, message format, trust, or delivery semantics."
+    },
+    {
+      "id": "pure-core-self-hosted",
+      "category": "operator-replacement",
+      "platforms": ["network"],
+      "qualifying_environment_kinds": ["network-pair"],
+      "simulator_applicable": false,
+      "procedure": [
+        {"id": "sovereign", "instruction": "Select Sovereign behavior with optional rendezvous and wake disabled."},
+        {"id": "configure", "instruction": "Use user-selected DHT/bootstrap, mailbox, direct/LAN, QR/file, and self-hosted routes."},
+        {"id": "exchange", "instruction": "Complete contact, offline delivery, fallback, and recovery without a project-operated service."}
+      ],
+      "expected": "Pure-core operation retains the same cryptographic trust and delivery meanings while optional services remain absent."
+    },
+    {
+      "id": "mailbox-restart-overload-expiry",
+      "category": "operator-failure",
+      "platforms": ["network"],
+      "qualifying_environment_kinds": ["network-pair"],
+      "simulator_applicable": false,
+      "procedure": [
+        {"id": "restart", "instruction": "Restart a mailbox after durable deposit and during an active lease, then collect exactly once."},
+        {"id": "overload", "instruction": "Reach declared item/byte/rate capacity and observe bounded uniform refusal without capacity disclosure."},
+        {"id": "expiry", "instruction": "Exercise expiry and duplicate acknowledgement while proving unrelated rows remain."}
+      ],
+      "expected": "Durable rows survive restart, leases are idempotent, overload is bounded, and only exact acknowledged/expired rows disappear."
+    },
+    {
+      "id": "all-optional-services-unavailable",
+      "category": "operator-failure",
+      "platforms": ["network"],
+      "qualifying_environment_kinds": ["network-pair"],
+      "simulator_applicable": false,
+      "procedure": [
+        {"id": "disable", "instruction": "Blackhole rendezvous and wake, then remove every optional convenience service."},
+        {"id": "send", "instruction": "Use direct, DHT, durable mailbox, LAN, mesh, or carried-file routes that remain in the selected mode."},
+        {"id": "restore", "instruction": "Restore optional services and verify coalesced refresh without duplicate history or authority change."}
+      ],
+      "expected": "Optional-service loss reduces convenience only; identity, cryptographic trust, queued work, and ordinary fallback remain intact."
+    },
+    {
+      "id": "two-radio-isolated-e2ee",
+      "category": "meshtastic-hil",
+      "platforms": ["meshtastic"],
+      "qualifying_environment_kinds": ["hil-bench"],
+      "simulator_applicable": false,
+      "procedure": [
+        {"id": "isolate", "instruction": "Attach two stock-firmware endpoint radios, disable every non-loopback internet/LAN route, and record board/firmware/region."},
+        {"id": "pair", "instruction": "Pair two fresh test identities out of band with mesh-broadcast hints only."},
+        {"id": "exchange", "instruction": "Exchange PQXDH first message, authenticated delivered receipt, and ratcheted reply over RF."}
+      ],
+      "expected": "Real stock radios carry only sealed Komms envelopes and complete a two-way authenticated exchange with no alternate network path."
+    },
+    {
+      "id": "meshtastic-frame-count-and-duty-cycle",
+      "category": "meshtastic-hil",
+      "platforms": ["meshtastic"],
+      "qualifying_environment_kinds": ["hil-bench"],
+      "simulator_applicable": false,
+      "procedure": [
+        {"id": "capture", "instruction": "Retain the content-free KOMMS_HIL_RESULT emitted by the real-radio harness."},
+        {"id": "frames", "instruction": "Record exact handed/received frame counts and decoded/malformed aggregate counts for both endpoints."},
+        {"id": "airtime", "instruction": "Record radio-reported region/modem parameters, estimated airtime, and any pre-transmission duty-cycle refusals."}
+      ],
+      "expected": "Measured frames and airtime are revision-bound; a duty-limited region refuses excess work before transmission rather than silently queueing it."
+    },
+    {
+      "id": "meshtastic-isolated-multi-hop",
+      "category": "meshtastic-hil",
+      "platforms": ["meshtastic"],
+      "qualifying_environment_kinds": ["hil-bench"],
+      "simulator_applicable": false,
+      "procedure": [
+        {"id": "topology", "instruction": "Add one stock-firmware repeater and physically isolate/attenuate endpoint radios so direct endpoint reception is independently ruled out."},
+        {"id": "prove", "instruction": "Retain secret-free topology and Meshtastic routing evidence showing the repeater path."},
+        {"id": "exchange", "instruction": "Run the two-way E2EE harness and record frames, airtime, timings, failures, and retest disposition."}
+      ],
+      "expected": "A real isolated multi-hop stock-radio route completes the same E2EE exchange without exposing message content to the mesh."
+    },
+    {
+      "id": "meshtastic-internet-bridge",
+      "category": "meshtastic-hil",
+      "platforms": ["meshtastic"],
+      "qualifying_environment_kinds": ["hil-bench"],
+      "simulator_applicable": false,
+      "procedure": [
+        {"id": "topology", "instruction": "Configure one bounded bridge with a real radio side and a separately reachable durable mailbox/internet side."},
+        {"id": "both-directions", "instruction": "Exchange sealed traffic mesh-to-internet and internet-to-mesh, including authenticated receipts."},
+        {"id": "failure", "instruction": "Restart/blackhole each side and verify custody, deduplication, duty cycle, and unrelated rows remain correct."}
+      ],
+      "expected": "The bridge forwards only sealed envelopes, obeys airtime and durable-custody limits, and does not become an identity or plaintext authority."
+    }
+  ]
+}

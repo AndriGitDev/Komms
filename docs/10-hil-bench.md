@@ -18,13 +18,26 @@ What only hardware can prove, and what the nightly therefore exercises, is the
 real path: USB-serial framing against actual firmware, the radio configuration
 handshake (node number, modem params, and the reported region that sizes the
 duty-cycle budget), and end-to-end delivery over actual RF, including the
-firmware's own queueing and rebroadcast behavior.
+firmware's own queueing and rebroadcast behavior. The carrier also exposes
+content-free aggregate counters for frames handed to and received from the
+radio, envelope bytes, estimated airtime, pre-transmission duty refusals,
+decoded envelopes, and malformed private-port frames.
 
 The test is `crates/kultd/tests/hil.rs`: two `kultd` daemons, each attached to a
 real radio, mDNS off, no bootstrap peers. The radios are the only shared medium.
 Alice's first message to Bob (carrying the PQXDH handshake, so ~10 frames of
 fragments) must arrive and produce a `delivered` receipt back over the air; Bob's
-ratcheted reply must round-trip the same way. Timings are printed for the job log.
+ratcheted reply must round-trip the same way. A second ignored case uses one
+endpoint radio and one bridge radio to cross a durable local-QUIC mailbox in
+both directions. Timings and aggregate radio counters are printed for the job
+log.
+
+The first result is emitted on one line beginning `KOMMS_HIL_RESULT=`. The
+mixed bridge result begins `KOMMS_HIL_BRIDGE_RESULT=` and explicitly labels its
+scope `physical-rf-plus-local-quic`. Neither line contains serial paths, radio
+node numbers, delivery tokens, peer identifiers, ciphertext, or message
+identifiers. The second result does not by itself qualify a separately
+administered Internet path.
 
 ## Hardware
 
@@ -87,14 +100,21 @@ The workflow (`.github/workflows/hil-nightly.yml`) then runs nightly and on
 manual dispatch:
 
 ```sh
-cargo test -p kultd --test hil -- --ignored --nocapture
+cargo test -p kultd --test hil -- --ignored --nocapture --test-threads=1
 ```
 
 A missing environment variable, an unreachable radio, or a silent mesh all fail
 loudly: the test never reports green on a misconfigured bench.
 
 Run the same command by hand (with `KOMMS_HIL_SERIAL_A`/`_B` exported) to use
-the bench interactively.
+the bench interactively. The tests share the two serial devices and must remain
+single-threaded.
+
+Retain the complete log as a redacted field-evidence file. Before retaining
+it, remove host paths, runner names, IP addresses, and serial identifiers;
+preserve the exact `KOMMS_HIL_RESULT` lines. Bind that file to the source
+revision and application/test artifact with the
+[field-qualification form](43-field-qualification.md).
 
 ## Security posture
 
@@ -110,12 +130,57 @@ own. The rules, in force in the workflow and to be kept when editing it:
 - The bench host needs no secrets: the job checks out public code, builds it,
   and talks to two radios. Don't give it any.
 
-## Optional: multi-hop
+## Multi-hop field row
 
-The M4 acceptance's multi-hop criterion can use the same bench: add a third
+The multi-hop field criterion uses the same endpoint bench: add a third
 stock-firmware radio on the same channel as a pure repeater (no USB connection:
 powered, in range of both endpoints, with the endpoint radios' RF attenuated or
 separated so they only reach each other through it). The test is unchanged:
 routing is the mesh firmware's business, and Komms neither knows nor cares how
-many hops a sealed frame took. This is a physical-setup upgrade, not a software
-one, so it is not automated here.
+many hops a sealed frame took.
+
+To call the row passed, do not infer multi-hop merely because the repeater was
+powered:
+
+1. With the repeater off, verify the endpoint radios cannot exchange ordinary
+   Meshtastic traffic or the Komms HIL flight across the attenuated/separated
+   setup.
+2. Record the endpoint and repeater board models, stock firmware releases,
+   region and modem preset without retaining hardware serial identifiers.
+3. Power the repeater without attaching it to the Komms host. Retain
+   secret-free Meshtastic routing/neighbor evidence that the repeater
+   forwarded the test flight.
+4. Run the HIL cases serially and retain exact frame/airtime output.
+5. Turn the repeater off again and repeat the negative control.
+
+A shielded box, legal RF attenuator, or sufficient physical separation is
+preferable to reducing a region/power setting below legal or
+firmware-supported operation. The field form records the topology, negative
+controls, timings, failures, and retest disposition.
+
+## Internet-bridge field row
+
+The ignored bridge HIL case proves that real serial/RF traffic crosses the
+production bridge and durable mailbox path to a local QUIC endpoint in both
+directions. The stronger Internet-bridge row additionally requires a
+separately reachable physical endpoint/network:
+
+1. Keep the mesh endpoint radio-only: loopback listener, mDNS disabled, no
+   bootstrap, direct, LAN, or alternate mailbox route.
+2. Attach the second radio to the bridge. Give the bridge one publicly
+   recorded test listen route and a dedicated mailbox-v2 store; retain no user
+   identity or contact on the bridge.
+3. Put the Internet endpoint on a separately administered network. Configure
+   only the bridge mailbox route for the mesh contact.
+4. Exchange a PQXDH first message and receipt mesh-to-Internet, then a
+   ratcheted reply and receipt Internet-to-mesh.
+5. Restart the bridge after deposit, during a lease, and before exact
+   acknowledgement. Then blackhole each side. Verify deduplication, durable
+   custody, unrelated rows, duty-cycle accounting, and delivery states.
+6. Retain aggregate mailbox and `KOMMS_HIL_RESULT` evidence, source and image
+   digests, network conditions, and timings through the field form.
+
+The bridge sees route metadata, timing, volume, opaque tokens, and ciphertext.
+It is not described as unable to observe or interfere. A same-host local-QUIC
+run remains `observed`; only the separately reachable physical run may pass
+the Internet-bridge row.

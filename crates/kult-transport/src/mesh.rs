@@ -23,6 +23,7 @@
 //! the radio's LoRa config (modem preset, region) drives per-frame
 //! time-on-air and the regulatory duty-cycle budget ([`crate::airtime`]).
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -88,13 +89,63 @@ struct Sender {
     budget: Option<AirtimeBudget>,
 }
 
+/// Content-free aggregate counters and radio parameters for field
+/// qualification. The snapshot contains no delivery token, envelope,
+/// peer/address, channel key, or message identifier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MeshtasticStats {
+    /// Numeric Meshtastic region code reported during the radio handshake.
+    pub region_code: i32,
+    /// Regulatory duty-cycle limit applied by the carrier.
+    pub duty_cycle_percent: u8,
+    /// Modem parameters used for airtime accounting.
+    pub modem_params: ModemParams,
+    /// Frames successfully handed to the radio client.
+    pub handed_frames: u64,
+    /// Encoded envelope bytes successfully handed to the radio client.
+    pub handed_envelope_bytes: u64,
+    /// Estimated airtime of frames successfully handed to the radio.
+    pub handed_airtime_micros: u64,
+    /// Sends refused before transmission by the rolling airtime budget.
+    pub airtime_refusals: u64,
+    /// Frames observed on Komms' private application port.
+    pub received_private_frames: u64,
+    /// Bytes observed on Komms' private application port.
+    pub received_private_bytes: u64,
+    /// Private-port frames decoded as structurally valid envelopes.
+    pub decoded_envelopes: u64,
+    /// Private-port frames rejected as malformed envelopes.
+    pub malformed_private_frames: u64,
+}
+
+#[derive(Default)]
+struct Counters {
+    handed_frames: AtomicU64,
+    handed_envelope_bytes: AtomicU64,
+    handed_airtime_micros: AtomicU64,
+    airtime_refusals: AtomicU64,
+    received_private_frames: AtomicU64,
+    received_private_bytes: AtomicU64,
+    decoded_envelopes: AtomicU64,
+    malformed_private_frames: AtomicU64,
+}
+
+fn saturating_add(counter: &AtomicU64, value: u64) {
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        Some(current.saturating_add(value))
+    });
+}
+
 /// The Meshtastic carrier. See the module docs for the contract mapping.
 pub struct MeshtasticTransport {
     sender: Mutex<Sender>,
     incoming: Mutex<PacketReceiver>,
     node_num: u32,
     channel: u32,
+    region_code: i32,
+    duty_cycle_percent: u8,
     params: ModemParams,
+    counters: Counters,
     started: Instant,
 }
 
@@ -178,8 +229,10 @@ impl MeshtasticTransport {
             ));
         };
 
+        let region_code = lora.region;
         let params = modem_params(&lora);
-        let budget = match duty_cycle_percent(lora.region()) {
+        let duty_cycle_percent = duty_cycle_percent(lora.region());
+        let budget = match duty_cycle_percent {
             100 => None,
             percent => Some(AirtimeBudget::new(percent, DUTY_CYCLE_WINDOW)),
         };
@@ -189,7 +242,10 @@ impl MeshtasticTransport {
             incoming: Mutex::new(packets),
             node_num,
             channel: options.channel,
+            region_code,
+            duty_cycle_percent,
             params,
+            counters: Counters::default(),
             started,
         })
     }
@@ -203,6 +259,29 @@ impl MeshtasticTransport {
     /// airtime accounting.
     pub fn modem_params(&self) -> ModemParams {
         self.params
+    }
+
+    /// Return one content-free aggregate qualification snapshot.
+    pub fn stats(&self) -> MeshtasticStats {
+        MeshtasticStats {
+            region_code: self.region_code,
+            duty_cycle_percent: self.duty_cycle_percent,
+            modem_params: self.params,
+            handed_frames: self.counters.handed_frames.load(Ordering::Relaxed),
+            handed_envelope_bytes: self.counters.handed_envelope_bytes.load(Ordering::Relaxed),
+            handed_airtime_micros: self.counters.handed_airtime_micros.load(Ordering::Relaxed),
+            airtime_refusals: self.counters.airtime_refusals.load(Ordering::Relaxed),
+            received_private_frames: self
+                .counters
+                .received_private_frames
+                .load(Ordering::Relaxed),
+            received_private_bytes: self.counters.received_private_bytes.load(Ordering::Relaxed),
+            decoded_envelopes: self.counters.decoded_envelopes.load(Ordering::Relaxed),
+            malformed_private_frames: self
+                .counters
+                .malformed_private_frames
+                .load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -246,18 +325,20 @@ impl Transport for MeshtasticTransport {
         };
 
         let mut sender = self.sender.lock().await;
+        // On-air frame = fixed packet header + the encoded Data proto
+        // (Meshtastic's channel cipher preserves length).
+        let frame_len = PACKET_HEADER_LEN + data.encoded_len();
+        let airtime = time_on_air(&self.params, frame_len).ok_or_else(|| {
+            handshake_failed("radio reported a modem config airtime cannot be computed for")
+        })?;
         if let Some(budget) = &mut sender.budget {
-            // On-air frame = fixed packet header + the encoded Data proto
-            // (Meshtastic's channel cipher preserves length).
-            let frame_len = PACKET_HEADER_LEN + data.encoded_len();
-            let airtime = time_on_air(&self.params, frame_len).ok_or_else(|| {
-                handshake_failed("radio reported a modem config airtime cannot be computed for")
-            })?;
-            budget
-                .try_reserve(airtime, self.started.elapsed())
-                .map_err(|retry_after| TransportError::AirtimeExhausted { retry_after })?;
+            if let Err(retry_after) = budget.try_reserve(airtime, self.started.elapsed()) {
+                saturating_add(&self.counters.airtime_refusals, 1);
+                return Err(TransportError::AirtimeExhausted { retry_after });
+            }
         }
 
+        let envelope_bytes = data.payload.len() as u64;
         let packet = protobufs::MeshPacket {
             from: self.node_num,
             to: *destination,
@@ -272,6 +353,12 @@ impl Transport for MeshtasticTransport {
             .send_to_radio_packet(Some(to_radio::PayloadVariant::Packet(packet)))
             .await
             .map_err(link_error)?;
+        saturating_add(&self.counters.handed_frames, 1);
+        saturating_add(&self.counters.handed_envelope_bytes, envelope_bytes);
+        saturating_add(
+            &self.counters.handed_airtime_micros,
+            u64::try_from(airtime.as_micros()).unwrap_or(u64::MAX),
+        );
         Ok(SendReceipt::HandedToLink)
     }
 
@@ -292,10 +379,18 @@ impl Transport for MeshtasticTransport {
             if data.portnum != PortNum::PrivateApp as i32 {
                 continue;
             }
+            saturating_add(&self.counters.received_private_frames, 1);
+            saturating_add(
+                &self.counters.received_private_bytes,
+                data.payload.len() as u64,
+            );
             // The mesh is a public medium: anything undecodable on our port
             // is noise and is skipped, never an error.
             if let Ok(envelope) = Envelope::decode(&data.payload) {
+                saturating_add(&self.counters.decoded_envelopes, 1);
                 out.push(envelope);
+            } else {
+                saturating_add(&self.counters.malformed_private_frames, 1);
             }
         }
         Ok(out)

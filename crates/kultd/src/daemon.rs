@@ -32,9 +32,10 @@ use kult_crypto::KdfProfile;
 use kult_node::{DeviceLinkSelection, FolderSelection, LabelMatchMode, Node, NodeError};
 use kult_transport::{
     DeliveryHint, Discovery, HttpsRendezvousClient, HttpsWakeClient, Libp2pTransport,
-    MailboxConfig, MailboxServiceConfig, ManualProviderSet, MeshtasticOptions, MeshtasticTransport,
-    NatStatus, OperatingMode, ProviderDirectoryStatus, ProviderRendezvous, RendezvousClient,
-    RendezvousProvider, Transport, TransportOptions, WakeClient, MAX_MAILBOX_CHECKIN_TOKENS,
+    MailboxConfig, MailboxServiceConfig, ManualProviderSet, MeshtasticOptions, MeshtasticStats,
+    MeshtasticTransport, NatStatus, OperatingMode, ProviderDirectoryStatus, ProviderRendezvous,
+    RendezvousClient, RendezvousProvider, Transport, TransportOptions, WakeClient,
+    MAX_MAILBOX_CHECKIN_TOKENS,
 };
 
 use crate::wire::{self, Hint, Op, Request};
@@ -369,6 +370,7 @@ pub struct Daemon {
     pub socket_path: PathBuf,
     /// The internet transport (exposed for tests and status).
     pub net: Arc<Libp2pTransport>,
+    meshtastic: Vec<Arc<MeshtasticTransport>>,
     shutdown: watch::Sender<bool>,
     tasks: Vec<JoinHandle<()>>,
     socket_guard: RpcSocketGuard,
@@ -549,6 +551,7 @@ impl Daemon {
         let net = Arc::new(net);
         node.add_transport(Arc::clone(&net) as Arc<dyn Transport>);
         node.add_discovery(Arc::clone(&net) as Arc<dyn Discovery>);
+        let mut meshtastic = Vec::new();
         if let Some(spool) = &cfg.spool {
             let sneaker = kult_transport::SneakernetTransport::new(spool)?;
             node.add_transport(Arc::new(sneaker));
@@ -561,15 +564,19 @@ impl Daemon {
                 MeshtasticTransport::connect_serial(port, None, MeshtasticOptions::default())
                     .await
                     .map_err(|e| DaemonError::Io(io::Error::other(e.to_string())))?;
-            tracing::info!("meshtastic radio on {port} is node {}", radio.node_num());
-            node.add_transport(Arc::new(radio));
+            tracing::info!("meshtastic serial radio connected");
+            let radio = Arc::new(radio);
+            node.add_transport(Arc::clone(&radio) as Arc<dyn Transport>);
+            meshtastic.push(radio);
         }
         if let Some(addr) = &cfg.meshtastic_tcp {
             let radio = MeshtasticTransport::connect_tcp(addr, MeshtasticOptions::default())
                 .await
                 .map_err(|e| DaemonError::Io(io::Error::other(e.to_string())))?;
-            tracing::info!("meshtastic radio at {addr} is node {}", radio.node_num());
-            node.add_transport(Arc::new(radio));
+            tracing::info!("meshtastic TCP radio connected");
+            let radio = Arc::new(radio);
+            node.add_transport(Arc::clone(&radio) as Arc<dyn Transport>);
+            meshtastic.push(radio);
         }
         if bridging {
             // Mesh-heard transit is offered to the same relays this node
@@ -724,10 +731,19 @@ impl Daemon {
             peer,
             socket_path: cfg.socket_path,
             net,
+            meshtastic,
             shutdown,
             tasks,
             socket_guard,
         })
+    }
+
+    /// Content-free aggregate radio snapshots, in configuration order.
+    pub fn meshtastic_stats(&self) -> Vec<MeshtasticStats> {
+        self.meshtastic
+            .iter()
+            .map(|transport| transport.stats())
+            .collect()
     }
 
     /// Stop every task and remove the socket.

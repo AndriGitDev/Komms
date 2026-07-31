@@ -41,4 +41,4 @@ jobs:
       - name: radios present
         run: ls -l "$KOMMS_HIL_SERIAL_A" "$KOMMS_HIL_SERIAL_B"
       - name: hardware-in-loop acceptance
-        run: cargo test -p kultd --test hil -- --ignored --nocapture
+        run: cargo test -p kultd --test hil -- --ignored --nocapture --test-threads=1

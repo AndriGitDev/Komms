@@ -39,7 +39,8 @@ The script runs:
 1. workspace formatting, all-target/all-feature warnings-as-errors clippy, all
    tests, `no_std` crypto/protocol builds, `cargo-deny`, release-policy and
    dependency-integrity checks, deterministic security-review package
-   validation, plus release-evidence/signing/qualification regression tests;
+   validation, plus release-evidence/signing/release-qualification and
+   field-qualification regression tests;
 2. the ADR-0027 100,000- and 1,000,000-message migration, unlock, indexed page,
    exact edit/delete, memory, and database-growth budgets;
 3. the desktop workspace's independent format, clippy, test, and deny gates;
@@ -82,6 +83,11 @@ test:
 - production-signed/store artifacts and a separately administered
   reproducibility execution; and
 - an independent security audit.
+
+The canonical target/scenario inventory and evidence-level validator are in
+[field qualification](43-field-qualification.md). Their local regression test
+is part of this script. That green regression result proves the record format
+fails closed; it does not turn any open physical row green.
 
 ## 4. Hosted evidence
 

@@ -66,6 +66,12 @@ The canonical scenario inventory is
 [`native-wake-mobile-field-v1.json`](../fixtures/native-wake-mobile-field-v1.json).
 Do not remove open or failed rows from a retained result.
 
+Stable-beta device evidence also enters the complete
+[field-qualification matrix](43-field-qualification.md), which binds install,
+consent, recovery, accessibility, network, and wake rows to the same exact
+artifact and source revision. This wake-specific form can support those rows;
+it does not replace or weaken the complete matrix.
+
 ## 3. Shared two-user setup
 
 1. Record the source revision, application digest, OS build, device model,

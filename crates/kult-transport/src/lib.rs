@@ -47,7 +47,7 @@ pub use mailbox_v2::{
 #[doc(hidden)]
 pub use mesh::testutil as mesh_testutil;
 #[cfg(feature = "meshtastic")]
-pub use mesh::{MeshtasticOptions, MeshtasticTransport, MESH_BROADCAST};
+pub use mesh::{MeshtasticOptions, MeshtasticStats, MeshtasticTransport, MESH_BROADCAST};
 pub use provider_directory::{
     resolve_provider_directory, EffectiveProviderSet, ManualProviderSet, OperatingMode,
     ProviderDirectory, ProviderDirectoryError, ProviderDirectoryResolution,

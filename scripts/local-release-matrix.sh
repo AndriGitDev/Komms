@@ -29,6 +29,7 @@ run_in "$root" python3 scripts/security_review_package.py --check
 run_in "$root" python3 scripts/test-android-license-evidence.py
 run_in "$root" python3 scripts/test-release-evidence.py
 run_in "$root" python3 scripts/test-release-qualification.py
+run_in "$root" python3 scripts/test-field-qualification.py
 run_in "$root" python3 scripts/test-release-signing.py
 run_in "$root" python3 scripts/test-stage-release-artifacts.py
 run_in "$root" cargo build --locked -p kult-conformance

@@ -62,6 +62,12 @@ async fn handshake_yields_runtime_profile() {
     // LongFast per the firmware preset table.
     assert_eq!(transport.modem_params().spreading_factor, 11);
     assert_eq!(transport.modem_params().bandwidth_hz, 250_000);
+    let stats = transport.stats();
+    assert_eq!(stats.region_code, RegionCode::Us as i32);
+    assert_eq!(stats.duty_cycle_percent, 100);
+    assert_eq!(stats.modem_params, transport.modem_params());
+    assert_eq!(stats.handed_frames, 0);
+    assert_eq!(stats.received_private_frames, 0);
 
     assert_eq!(
         transport
@@ -96,6 +102,14 @@ async fn envelopes_flood_between_radios() {
     assert_eq!(got, vec![envelope]);
     // No self-echo.
     assert!(alpha.recv().await.unwrap().is_empty());
+    let sent = alpha.stats();
+    assert_eq!(sent.handed_frames, 1);
+    assert!(sent.handed_envelope_bytes > 0);
+    assert!(sent.handed_airtime_micros > 0);
+    let received = beta.stats();
+    assert_eq!(received.received_private_frames, 1);
+    assert_eq!(received.decoded_envelopes, 1);
+    assert_eq!(received.malformed_private_frames, 0);
 }
 
 /// Traffic on other ports and garbage on ours is mesh noise: skipped, never
@@ -134,6 +148,11 @@ async fn foreign_ports_and_noise_are_ignored() {
         recv_within(&transport, Duration::from_secs(5)).await,
         vec![envelope]
     );
+    let stats = transport.stats();
+    assert_eq!(stats.received_private_frames, 2);
+    assert_eq!(stats.decoded_envelopes, 1);
+    assert_eq!(stats.malformed_private_frames, 1);
+    assert!(stats.received_private_bytes > 40);
 }
 
 /// Oversized envelopes are the delivery engine's job to fragment; the
@@ -238,6 +257,8 @@ async fn ratcheted_192_bucket_message_needs_at_most_two_frames() {
         kult_protocol::unpad(&plaintext).unwrap(),
         b"meet at the old bridge at nine, bring the radio"
     );
+    assert_eq!(alpha.stats().handed_frames, frames.len() as u64);
+    assert_eq!(beta.stats().decoded_envelopes, frames.len() as u64);
 }
 
 /// Duty-cycle enforcement (M4 acceptance): in a 10 %-limited region the
@@ -281,4 +302,10 @@ async fn duty_cycle_budget_is_enforced() {
         }
         other => panic!("expected airtime refusal, got {other:?}"),
     }
+    let stats = transport.stats();
+    assert_eq!(stats.region_code, RegionCode::Eu868 as i32);
+    assert_eq!(stats.duty_cycle_percent, 10);
+    assert_eq!(stats.handed_frames, 12);
+    assert_eq!(stats.airtime_refusals, 1);
+    assert!(stats.handed_airtime_micros > 0);
 }

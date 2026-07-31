@@ -62,8 +62,10 @@ The current unsigned or debug-signed 0.3 packages remain Alpha artifacts and do
 not satisfy this section. The implemented validation, signing-role, evidence,
 reproduction-measurement, and qualification contracts are documented in
 [release security and recovery](39-release-security-and-recovery.md) and
-[release evidence bundles](40-release-evidence-bundles.md); their credential,
-physical, supported-system, and independent rows remain open.
+[release evidence bundles](40-release-evidence-bundles.md). The canonical
+[field matrix](43-field-qualification.md) names physical candidate cells and
+keeps simulator observations separate; its credential, physical,
+supported-system, real-network, and independent rows remain open.
 
 ## 2. Identity and contact establishment
 
