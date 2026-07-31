@@ -1681,6 +1681,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "kult-conformance"
+version = "0.3.0"
+dependencies = [
+ "argon2",
+ "blake3",
+ "chacha20poly1305",
+ "ed25519-dalek",
+ "hex",
+ "hkdf",
+ "kult-crypto",
+ "kult-protocol",
+ "kult-store",
+ "kult-transport",
+ "postcard",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "x25519-dalek",
+]
+
+[[package]]
 name = "kult-crypto"
 version = "0.3.0"
 dependencies = [
@@ -1697,6 +1720,7 @@ dependencies = [
  "rand 0.8.7",
  "rand_core 0.6.4",
  "serde",
+ "serde_json",
  "sha2",
  "subtle",
  "x25519-dalek",
@@ -1827,6 +1851,7 @@ version = "0.3.0"
 dependencies = [
  "async-trait",
  "atomicwrites",
+ "cbor4ii",
  "ed25519-dalek",
  "fs2",
  "futures",

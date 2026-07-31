@@ -153,10 +153,10 @@ const MAILBOX_CBOR_REQUEST_MAX_BYTES: u64 = 320 * 1024;
 const MAILBOX_CBOR_RESPONSE_MAX_BYTES: u64 = 5 * 1024 * 1024;
 /// Mailbox-v2 carries the same bounded token filter plus exact row-id
 /// acknowledgements and one envelope per deposit request.
-const MAILBOX_V2_CBOR_REQUEST_MAX_BYTES: u64 = 320 * 1024;
+const MAILBOX_V2_CBOR_REQUEST_MAX_BYTES: u64 = crate::MAILBOX_V2_REQUEST_MAX_BYTES as u64;
 /// One 1 MiB raw leased page remains bounded under CBOR's byte-array
 /// representation and fixed row metadata.
-const MAILBOX_V2_CBOR_RESPONSE_MAX_BYTES: u64 = 3 * 1024 * 1024;
+const MAILBOX_V2_CBOR_RESPONSE_MAX_BYTES: u64 = crate::MAILBOX_V2_RESPONSE_MAX_BYTES as u64;
 const ENVELOPE_MAX_CONCURRENT_STREAMS: usize = 16;
 const MAILBOX_MAX_CONCURRENT_STREAMS: usize = 8;
 /// Commands waiting for the single swarm owner. Backpressure reaches callers

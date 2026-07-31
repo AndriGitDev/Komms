@@ -45,6 +45,14 @@ jobs:
           python3 scripts/test-release-qualification.py
           python3 scripts/test-release-signing.py
           python3 scripts/test-stage-release-artifacts.py
+      - name: stable-v1 conformance
+        run: |
+          cargo build --locked -p kult-conformance
+          python3 scripts/update-conformance-vectors.py \
+            --check --adapter target/debug/kult-conformance
+          python3 scripts/build-conformance-kit.py --check
+          python3 conformance/v1/run.py \
+            --adapter target/debug/kult-conformance
       - name: clippy
         run: cargo clippy --workspace --all-targets --all-features
       - name: tests

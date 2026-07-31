@@ -613,6 +613,7 @@ async fn provider_control_registration_lookup_and_source_merge_recover_a_route()
                 .provider_id(),
         )
         .unwrap();
+    let recovered_generation = recovered_provider.accepted_generation;
     assert!(
         recovered_provider.conflict_generation.is_none(),
         "record fork did not resolve: accepted before={accepted_generation}, state={recovered_provider:?}"
@@ -635,10 +636,111 @@ async fn provider_control_registration_lookup_and_source_merge_recover_a_route()
         .configure_rendezvous(
             DiscoveryMode::Standard,
             Some(Arc::clone(&client) as Arc<dyn RendezvousClient>),
+            vec![provider_id.clone()],
+            1,
+        )
+        .unwrap();
+
+    // A replacement arriving in a later lookup is still a fork. Detection
+    // cannot depend on seeing both variants in one three-epoch response.
+    let sequential_conflict_at = NOW + 20_000;
+    let sequential_epoch = rendezvous_epoch(sequential_conflict_at);
+    let sequential_keys = derive_rendezvous_epoch_keys(
+        &exporter,
+        &provider_id.provider_id(),
+        &certificate.device,
+        sequential_epoch,
+    )
+    .unwrap();
+    let sequential_record = RendezvousRouteRecord {
+        epoch: sequential_epoch,
+        generation: recovered_generation,
+        issued_at: sequential_conflict_at,
+        expires_at: sequential_conflict_at + u64::from(RENDEZVOUS_MAX_TTL_SECS),
+        routes: vec![RendezvousRoute {
+            kind: RendezvousRouteKind::Multiaddr,
+            value: BOB_BOOT.into(),
+        }],
+    };
+    let sequential_plaintext = sequential_record.encode().unwrap();
+    let sequential_request = RendezvousRegisterRequest {
+        slot: sequential_keys.slot(),
+        epoch: sequential_epoch,
+        ttl_seconds: RENDEZVOUS_MAX_TTL_SECS,
+        sealed_record: seal_rendezvous_record(
+            &sequential_keys,
+            &sequential_plaintext,
+            &mut setup_rng,
+        ),
+    };
+    let response = client.service.handle(
+        RENDEZVOUS_REGISTER_PATH,
+        RENDEZVOUS_MEDIA_TYPE,
+        &sequential_request.encode().unwrap(),
+        ClientAdmissionKey([0x52; 16]),
+        sequential_conflict_at,
+        &mut setup_rng,
+    );
+    assert_eq!(response.status, 200);
+    alice.request_rendezvous_refresh(&bob_id).unwrap();
+    let events = tick(
+        &mut alice,
+        &client,
+        sequential_conflict_at + 1,
+        &mut alice_rng,
+    )
+    .await;
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            Event::RendezvousConflict {
+                peer,
+                device,
+                provider,
+            } if *peer == bob_id
+                && *device == bob_device
+                && *provider == provider_id.provider_id()
+        )
+    }));
+    drop(alice);
+    let inspection = Store::open(&alice_path, b"alice").unwrap();
+    let sequential_state = inspection
+        .get_rendezvous_service_state(&bob_device)
+        .unwrap()
+        .unwrap();
+    let sequential_provider = sequential_state
+        .provider(&provider_id.provider_id())
+        .unwrap();
+    assert_eq!(
+        sequential_provider.conflict_generation,
+        Some(recovered_generation)
+    );
+    assert!(sequential_provider.routes.is_empty());
+    drop(inspection);
+
+    // A strictly newer publication clears the sequential conflict floor.
+    let mut alice = Node::open(&alice_path, b"alice").unwrap();
+    alice.add_transport(Arc::new(RouteTransport::new(
+        &[ALICE_BOOT, ALICE_FRESH],
+        Arc::clone(&bus),
+    )));
+    alice
+        .configure_rendezvous(
+            DiscoveryMode::Standard,
+            Some(Arc::clone(&client) as Arc<dyn RendezvousClient>),
             vec![provider_id],
             1,
         )
         .unwrap();
+    tick(&mut bob, &client, sequential_conflict_at + 10, &mut bob_rng).await;
+    alice.request_rendezvous_refresh(&bob_id).unwrap();
+    tick(
+        &mut alice,
+        &client,
+        sequential_conflict_at + 11,
+        &mut alice_rng,
+    )
+    .await;
 
     // A hostile or unavailable provider cannot make a heartbeat loop until a
     // hit appears. Each explicit attempt performs exactly the three bounded
@@ -646,11 +748,11 @@ async fn provider_control_registration_lookup_and_source_merge_recover_a_route()
     client.blackhole.store(true, Ordering::Release);
     let before_blackhole = client.lookups.load(Ordering::Relaxed);
     for at in [
-        NOW + 6_000,
-        NOW + 6_010,
-        NOW + 6_030,
-        NOW + 6_070,
-        NOW + 6_150,
+        NOW + 30_000,
+        NOW + 30_010,
+        NOW + 30_030,
+        NOW + 30_070,
+        NOW + 30_150,
     ] {
         alice.request_rendezvous_refresh(&bob_id).unwrap();
         tick(&mut alice, &client, at, &mut alice_rng).await;

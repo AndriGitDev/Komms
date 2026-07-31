@@ -1,0 +1,308 @@
+{
+  "files": [
+    {
+      "bytes": 9496,
+      "media_type": "text/markdown; charset=utf-8",
+      "path": "ADAPTER.md",
+      "sha256": "4628a97efc5e859fd7e423c7151d21a04c4ed2b4bd8ba520c3ba43feb9399699"
+    },
+    {
+      "bytes": 4093,
+      "media_type": "text/markdown; charset=utf-8",
+      "path": "README.md",
+      "sha256": "5647ad7d27ae725662791604db7431c956e193205206861084aac8d2078c4b81"
+    },
+    {
+      "bytes": 59272,
+      "media_type": "text/markdown; charset=utf-8",
+      "path": "SPECIFICATION.md",
+      "sha256": "39f693350836a1ac08ba2da6c24b600ba4e8edcad6dbf25533fd39ecea822518"
+    },
+    {
+      "bytes": 8321,
+      "media_type": "application/json",
+      "path": "artifacts.json",
+      "sha256": "e2820b56dba3ebf632da110138aabb785bf32bba90b7e350c49f6991e54f9537"
+    },
+    {
+      "bytes": 9943,
+      "media_type": "application/json",
+      "path": "cases/content.json",
+      "sha256": "f03087f29eb431b4cb23abdaabae17bd02290dad55d1d9e211d93195890169d7"
+    },
+    {
+      "bytes": 10641,
+      "media_type": "application/json",
+      "path": "cases/malformed.json",
+      "sha256": "fd19c9de6d39d0d9c7fe469ab3f49286e9b80e7558c44b9655f01a4bc92af813"
+    },
+    {
+      "bytes": 5427,
+      "media_type": "application/json",
+      "path": "cases/primitives.json",
+      "sha256": "684741ed87328a94f73ca6798e3a3fb8a2e64beeddc3643a9dd10d0236345c21"
+    },
+    {
+      "bytes": 2428899,
+      "media_type": "application/json",
+      "path": "cases/services.json",
+      "sha256": "944719f7996a1e210a4b1b778e78c3ee93e219395bf69e86ce090e917939f091"
+    },
+    {
+      "bytes": 39047,
+      "media_type": "application/json",
+      "path": "cases/state.json",
+      "sha256": "c667b27e14fbe9f2bec51d1c458625d6c9a0a3fdf312f93e2ff66508e3989266"
+    },
+    {
+      "bytes": 37,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/compat/envelope-v1.bin",
+      "sha256": "b6f79d2fdc9726f5d7314d378e7a98c573076d913860d5898efbd80e2e438dee"
+    },
+    {
+      "bytes": 28,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/malformed/content-length-mismatch.bin",
+      "sha256": "9e664b8b79b8aec476915d6e5fcf07fb419ee61fe2e026d30cde5634edeb3e35"
+    },
+    {
+      "bytes": 4,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/malformed/content-truncated-magic.bin",
+      "sha256": "662172ea6c9ae05ea06908ef4333debd321be6f13fc63b36724c971c36ca0566"
+    },
+    {
+      "bytes": 2307,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/malformed/device-authority-tampered.bin",
+      "sha256": "6d2039c7fa64a6226b7d9b43cfd2be4a9c64ada83897dc06779cd01acc4b80b4"
+    },
+    {
+      "bytes": 42,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/malformed/envelope-retention-noncanonical.bin",
+      "sha256": "9150a0dd91c16e6764748739adecb9a7b20407944fc46ed76a32b50951d3417b"
+    },
+    {
+      "bytes": 1,
+      "media_type": "application/cbor",
+      "path": "fixtures/malformed/mailbox-v2-truncated.cbor",
+      "sha256": "8a8950f7623663222542c9469c73be3c4c81bbdf019e2c577590a61f2ce9a157"
+    },
+    {
+      "bytes": 1948,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/admission-invitation-kfa1.bin",
+      "sha256": "3eb338b2f38f70458d7e9ac7a9e61b47b8fcd30fb9b12aaca6bb1d67f622ffd1"
+    },
+    {
+      "bytes": 1736,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/admission-public-prekey-bundle-v1.bin",
+      "sha256": "ca9a689e82576dd81f687d4858002d4df6a38032742b0f3419273eef03f37ec5"
+    },
+    {
+      "bytes": 1948,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/admission-puzzle-kfa1.bin",
+      "sha256": "555646869fcdff0d24ef18e59d967778bfa9d3d5f0ce4b7973260bf87568064e"
+    },
+    {
+      "bytes": 165,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/content-attachment-v1.bin",
+      "sha256": "c517445df6192919b1890ca5b66dc314c7fa670c0bf40f2db4f0586ea2709cab"
+    },
+    {
+      "bytes": 118,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/content-call-offer-v1.bin",
+      "sha256": "e8f1c216585bbee49c69263409b3db6f493ad822d897db8219064d456928e22f"
+    },
+    {
+      "bytes": 102,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/content-edit-v1.bin",
+      "sha256": "43aea836e74a02a975ca2108961bb41c96ed4555dbe8bf4319e2c4dfdb1d849b"
+    },
+    {
+      "bytes": 66,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/content-ephemeral-v1.bin",
+      "sha256": "d689a327677641452bd09c635c41ca7bad5cc26576dee1efbb55db380512e0cb"
+    },
+    {
+      "bytes": 83,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/content-mention-v1.bin",
+      "sha256": "faed477d92e93a5f5ee21f5cad7b8f34f0e3eaf5a6180cbe0388e712fbf3baac"
+    },
+    {
+      "bytes": 157,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/content-poll-create-v1.bin",
+      "sha256": "f18ed53e86ca191832c31ab546fede1d34af20ddfdebbeda0d3e3087288c4788"
+    },
+    {
+      "bytes": 104,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/content-poll-vote-v1.bin",
+      "sha256": "17965c4a7e5296ac6ef13d9ec754bc4abf4a217c64e98d3fd38c8adee8fd78e6"
+    },
+    {
+      "bytes": 47,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/content-text-v1.bin",
+      "sha256": "3530c46384f3389c0f6c6295877eb989ff14de42c57b45fb11ae8174713942d0"
+    },
+    {
+      "bytes": 959,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/device-authority-genesis-kda2.bin",
+      "sha256": "7a6c0cb60229a8f35ffc8d6c089ecdc778949ddabf29190dea75bd9ed22889d1"
+    },
+    {
+      "bytes": 2307,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/device-authority-linked-kda2.bin",
+      "sha256": "a5a3d6016e860c10983777ee686d26883bb2da45ae6da79776fe54c930972d43"
+    },
+    {
+      "bytes": 4011,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/device-authority-recovered-kda2.bin",
+      "sha256": "c59ea1ff6abb5fd36d19d5f14be2a44a3147aa536d11581dd25c9accdc1c104d"
+    },
+    {
+      "bytes": 1179648,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/discovery-record-v2.bin",
+      "sha256": "197b7ae62322afd0b59b3a9c2c7adc2cbaa4f3ec0bf676561fabe8009e869b51"
+    },
+    {
+      "bytes": 45,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/envelope-v2.bin",
+      "sha256": "9c94564372de66f1e5b1e8f6624a28e4b97df8f1c85846c68ea7c5b52246fc7b"
+    },
+    {
+      "bytes": 1447,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/group-authority-v2.bin",
+      "sha256": "8fb4052baa90003a09a491ee8462ec696db41fd921acb09f6fe1f5643acc5ceb"
+    },
+    {
+      "bytes": 182,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/group-origin-wrapper-v2.bin",
+      "sha256": "5c348bee933a091c6f056900ccb9df9b400f81c291de11a89e7538f238311a3a"
+    },
+    {
+      "bytes": 59,
+      "media_type": "application/cbor",
+      "path": "fixtures/valid/mailbox-v2-deposit.cbor",
+      "sha256": "547a2088e9545a85bd5d2f1148f4ba9a312d1c409de11ca83e6df9416380d092"
+    },
+    {
+      "bytes": 61,
+      "media_type": "application/cbor",
+      "path": "fixtures/valid/mailbox-v2-lease-miss.cbor",
+      "sha256": "edde04a3563f885306282ecf23c86fd820aa0a1667cfcd4212756ada391eb6a6"
+    },
+    {
+      "bytes": 171,
+      "media_type": "application/cbor",
+      "path": "fixtures/valid/mailbox-v2-lease-page.cbor",
+      "sha256": "6e8c102c9cfd585d0209f2565699de3b2033d2f64d277b207dfc666279b6bd02"
+    },
+    {
+      "bytes": 1398,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/pqxdh-initial-message-v2.bin",
+      "sha256": "2f2a9898df4e75c7c2684ae9800cfd5799979e27e389c24b54518966c64055af"
+    },
+    {
+      "bytes": 1584,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/prekey-bundle-v2.bin",
+      "sha256": "8a8ee0c86a3e3694021af0f44a8c5b00a89961f8576e8a8651fed11e8f25cf96"
+    },
+    {
+      "bytes": 370,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/recovery-authority-kra1.bin",
+      "sha256": "78fed875e0b71226cc084b4680b13b168ea81131b002a8e38a1792f9401a12a7"
+    },
+    {
+      "bytes": 4136,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/rendezvous-record-v1.bin",
+      "sha256": "d21c3ee1bd3280eb3ef80fde4ec59b13e827b573f12ef3ff808fb67a6d0164df"
+    },
+    {
+      "bytes": 1212,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/root-free-backup-kkr10.bin",
+      "sha256": "4fcbda5d7a1ae6c3789a810ebf579609bd2aeeeafdaa0bccd16fc494f89817e8"
+    },
+    {
+      "bytes": 967,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/wake-capability-control-v1.bin",
+      "sha256": "a2d926c0ea6c534433115c10ddc264d6d0b8a9be2a96807174b660663274d7e1"
+    },
+    {
+      "bytes": 748,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/wake-capability-v1.bin",
+      "sha256": "d2c1f066c0b71fd28b0234c387570e9462912c3db3a528a0930d8bea3533eecb"
+    },
+    {
+      "bytes": 768,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/wake-register-request-v1.bin",
+      "sha256": "d90ad09e4bc52fc5b26a7c692d27abe22a5e226d54a2aac9bad0ae8fd285cf77"
+    },
+    {
+      "bytes": 1024,
+      "media_type": "application/octet-stream",
+      "path": "fixtures/valid/wake-trigger-request-v1.bin",
+      "sha256": "be0b7878a54db95487ccf304d8ea5a8328b85964ae7c0decba92aeb4d2c5398d"
+    },
+    {
+      "bytes": 277,
+      "media_type": "application/json",
+      "path": "kit.json",
+      "sha256": "e42063b62396365436cc8a345e09ec7a47b931a44a27e0f47444e75dc2f572b3"
+    },
+    {
+      "bytes": 16320,
+      "media_type": "text/x-python; charset=utf-8",
+      "path": "kitlib.py",
+      "sha256": "f29aac131dc8e299ce2b621e8420e57effd109dd990947d18c98431eae60ee4f"
+    },
+    {
+      "bytes": 3424,
+      "media_type": "application/json",
+      "path": "packets/reference-v1.json",
+      "sha256": "10ec51fd84d7ed13f5ec488964024e6af49ed22d1eedc952b2bf8fa9d761627f"
+    },
+    {
+      "bytes": 1189020,
+      "media_type": "application/vnd.tcpdump.pcap",
+      "path": "packets/reference-v1.pcapng",
+      "sha256": "91a2fd576adbb84ba96a9e97d8c9427e0b91cb217b95520d4d5533dda3b724b7"
+    },
+    {
+      "bytes": 8524,
+      "media_type": "text/x-python; charset=utf-8",
+      "path": "run.py",
+      "sha256": "7e693d97be37f78676620e1eec45c10c22561a117d61033d44cd7547e6841265"
+    }
+  ],
+  "format": "komms-conformance-manifest",
+  "format_version": 1,
+  "kit_version": "1.0.0",
+  "profile": "komms-stable-v1"
+}

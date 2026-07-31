@@ -38,7 +38,10 @@ mod wake;
 pub use internet::{CallStream, Libp2pTransport, NatStatus, TransportOptions};
 pub use mailbox::{MailboxConfig, MAX_MAILBOX_CHECKIN_ENVELOPES, MAX_MAILBOX_CHECKIN_TOKENS};
 pub use mailbox_v2::{
-    MailboxMetrics, MailboxServiceConfig, MAILBOX_V2_PAGE_MAX_BYTES, MAILBOX_V2_PAGE_MAX_ROWS,
+    decode_mailbox_v2_request, decode_mailbox_v2_response, encode_mailbox_v2_request,
+    encode_mailbox_v2_response, MailboxMetrics, MailboxServiceConfig, MailboxV2LeasedRow,
+    MailboxV2Request, MailboxV2Response, MAILBOX_V2_ACK_MAX_ROWS, MAILBOX_V2_PAGE_MAX_BYTES,
+    MAILBOX_V2_PAGE_MAX_ROWS, MAILBOX_V2_REQUEST_MAX_BYTES, MAILBOX_V2_RESPONSE_MAX_BYTES,
 };
 #[cfg(feature = "meshtastic")]
 #[doc(hidden)]

@@ -232,7 +232,7 @@ This table prevents a prior concern from disappearing into roadmap prose.
 | Contribution rules require release-scale validation and maintainer authorization for ordinary work | P1-01 |
 | AGPL reciprocity and the nonprofit mission are clear, but software/documentation/artwork scope, trademark use, contribution rights, and exact section-13 obligations still need a policy | P0-02, P1-05 |
 | No durable nonprofit funding, plural-operator, incident, or transparency program is established | P1-04, P1-06, P1-07 |
-| No stand-alone conformance suite or independent implementation yet supports a durable ecosystem claim | P0-06, P1-03 |
+| A stand-alone versioned conformance kit now fixes the candidate wire/state contract and Komms consumes its fixtures; no separately produced implementation or external execution yet supports an independent ecosystem claim | P0-06, P1-03 |
 | Video, large groups, new carriers, federation, and governance expansion could distract from everyday reliability | P0-03, P2 |
 | Direct transport now holds its fixed response until exact durable admission/consumption and refuses invalid, duplicate, or over-budget introductions; independent network/adversarial qualification remains open | P0-05 |
 | Stable identity-derived DHT locators and public route hints permit polling and network-location correlation | P0-04, P0-05, P0-06 |

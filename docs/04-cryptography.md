@@ -204,37 +204,49 @@ keys and decoded packets zeroize on terminal/drop paths. The normative contract
 and limitations are [ADR-0013](adr/0013-real-time-calls.md) and
 [23: Live Audio Calls](23-live-audio-calls.md).
 
-## 6. Group messaging (v1: sender keys)
+## 6. Group messaging (sender keys with recipient-authenticated origins)
 
-Per group, each member generates a **sender key**: a chain key + Ed25519-free MAC scheme
-(chain key ratchets forward per message; message key = HKDF(chain key)). Sender keys are
-distributed to each member over the existing pairwise Double Ratchet sessions. A group
-message = one XChaCha20-Poly1305 ciphertext under the sender's current message key,
-delivered to all members (single ciphertext, critical for mesh bandwidth).
+Per group, each sending physical device generates a sender chain:
+`(key_id: 16 random bytes, chain_key: 32, iteration: u32)`. The chain advances
+with `ck' = HKDF(ck, "KK-group-chain")` and derives
+`mk = HKDF(ck, "KK-group-msg")`. Receiving chains reuse the pairwise
+delay-tolerance bounds: at most 1,000 skipped keys per advance, 2,000 retained
+keys under LRU eviction, and a 30-day TTL.
 
-- Member removal ⇒ all remaining members rotate sender keys.
-- Forward secrecy per sender via chain ratcheting; PCS via periodic rotation.
-- Group size guidance: ≤ 64 members in v1. Beyond that, MLS (M6+).
+The original v1 body is
+`version(1) ‖ enc_header(60) ‖ nonce(24) ‖ ciphertext+tag`. Its sealed header
+contains `key_id ‖ iteration`. That format authenticates membership, not an
+individual sender; it is accepted only as visibly labelled legacy history.
 
-Concrete construction ([ADR-0012](adr/0012-sender-key-groups.md)): a sender key is
-`(key_id: 16 random bytes, chain_key: 32, iteration: u32)` with
-`ck' = HKDF(ck, "KK-group-chain")` and `mk = HKDF(ck, "KK-group-msg")`; receiving
-chains reuse the pairwise delay-tolerance bounds (`MAX_SKIP` 1000, 2000 stored skipped
-keys LRU, 30-day TTL). The group message body is
-`version(1) ‖ enc_header(60) ‖ nonce(24) ‖ ct`, where the header
-(`key_id ‖ iteration`, the only routing metadata) is AEAD-sealed under
-`K_hdr = HKDF(group_secret, "KK-group-hdr")` (intermediaries see uniformly random
-bytes) and the payload binds group id, protocol version, and sealed header as
-associated data. The single ciphertext fans out in per-member envelopes under the
-ordinary pairwise delivery tokens (§7), so relays and receipts need no group
-awareness. Distribution, membership (legacy creator-managed or C6
-owner-serialized, generation-counted), rotation
-triggers, and the announce-until-acked reliability rule are specified in ADR-0012,
-along with the documented trade: authenticity is membership-level (any member could
-forge ordinary sender-key content as another, no signatures, by design).
+The stable v2 body remains one shared XChaCha20-Poly1305 ciphertext, preserving
+the encrypt-once mesh property. Its sealed 76-byte header additionally binds the
+16-byte content id. For each sender account/device, sender chain, recipient
+account/device tuple, the sender distributes a separate random 32-byte
+`origin_key` over the authenticated pairwise device session. Every recipient
+wrapper adds:
 
-C6 adds identity signatures only where durable authority requires third-party
-verification. Canonical full authority state uses
+```text
+HMAC-SHA-256(origin_key,
+    "Komms-Group-Origin-v1" ||
+    group_id || sender_account || sender_device ||
+    recipient_account || recipient_device ||
+    sender_chain_key_id || content_id ||
+    u64_le(authenticated_retention_or_zero) ||
+    SHA-256(shared_group_ciphertext))
+```
+
+The receiver verifies this tag in constant time before advancing or decrypting
+the sender chain. It derives the stored author only from the verified pairwise
+device certificate and accepted device-authority chain. Text, attachments,
+edits, votes, polls, expiry, roles, moderation, ownership, and device-sync
+imports use the same rule. Roster, device, session, authority, or group
+generation changes rotate sender chains and origin capabilities. Exact
+distribution, rotation, upgrade, replay, and deniability rules are in
+[ADR-0029](adr/0029-recipient-authenticated-groups.md); the sender-key
+construction remains in [ADR-0012](adr/0012-sender-key-groups.md).
+
+C6 authority state adds identity/device signatures where durable authority
+requires third-party verification. Canonical full authority state uses
 `Komms-group-authority-state-v1`; ordered ownership certificates use
 `Komms-group-owner-transfer-v1`; generation-bound admin requests use
 `Komms-group-admin-request-v1`; and owner poll-moderation snapshots use
@@ -251,9 +263,11 @@ fork, and verification rules are in
 Goal: intermediaries learn neither sender nor recipient identity
 ([02: Threat Model §5](02-threat-model.md), adversary A5).
 
-- **Delivery token**: `token_i = HMAC-SHA-256(K_mailbox, epoch_i ‖ IK_recipient)` truncated
-  to 32 B, where `K_mailbox` is a per-contact-pair secret derived from the session root,
-  `epoch_i` rotates daily, and `IK_recipient` (the addressee's Ed25519 identity key) splits
+- **Delivery token**:
+  `token_i = HMAC-SHA-256(K_mailbox, "KK-token-v1" ‖ u64_le(epoch_i) ‖ IK_recipient)`.
+  The complete 32-byte HMAC is used. `K_mailbox` is a per-contact-pair secret
+  derived from the session root, `epoch_i` rotates daily, and `IK_recipient`
+  (the addressee's Ed25519 identity key) splits
   each pair's tokens into two disjoint per-direction sequences, so when both parties use
   the same collect-and-delete relay, neither's check-in can drain mail addressed to the
   other ([ADR-0007](adr/0007-recipient-scoped-delivery-tokens.md)). Only sender and

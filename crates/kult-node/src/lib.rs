@@ -8715,6 +8715,8 @@ impl Node {
         let clock_floor = provider_state.clock_floor;
         let accepted_generation = provider_state.accepted_generation;
         let conflict_floor = provider_state.conflict_generation;
+        let accepted_routes_expires_at = provider_state.routes_expires_at;
+        let accepted_routes = provider_state.routes.clone();
         let current_epoch = rendezvous_epoch(now);
         let Some(previous_epoch) = current_epoch.checked_sub(1) else {
             return Ok(());
@@ -8781,14 +8783,26 @@ impl Node {
         if let Some(floor) = conflict_floor {
             candidates.retain(|(record, _)| record.generation > floor);
         }
-        let mut conflict_generation = None;
+        let mut conflict_generation = candidates
+            .iter()
+            .filter(|(record, stored)| {
+                record.generation == accepted_generation
+                    && accepted_generation != 0
+                    && if accepted_routes.is_empty() {
+                        !stored.is_empty()
+                    } else {
+                        stored != &accepted_routes
+                            || record.expires_at != accepted_routes_expires_at
+                    }
+            })
+            .map(|(record, _)| record.generation)
+            .max();
         for left in 0..candidates.len() {
             for right in left + 1..candidates.len() {
                 let left_record = &candidates[left].0;
                 let right_record = &candidates[right].0;
                 if left_record.generation == right_record.generation
-                    && (left_record.issued_at != right_record.issued_at
-                        || left_record.expires_at != right_record.expires_at
+                    && (left_record.expires_at != right_record.expires_at
                         || left_record.routes != right_record.routes)
                 {
                     conflict_generation =

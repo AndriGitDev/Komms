@@ -29,6 +29,12 @@ run_in "$root" python3 scripts/test-release-evidence.py
 run_in "$root" python3 scripts/test-release-qualification.py
 run_in "$root" python3 scripts/test-release-signing.py
 run_in "$root" python3 scripts/test-stage-release-artifacts.py
+run_in "$root" cargo build --locked -p kult-conformance
+run_in "$root" python3 scripts/update-conformance-vectors.py \
+    --check --adapter target/debug/kult-conformance
+run_in "$root" python3 scripts/build-conformance-kit.py --check
+run_in "$root" python3 conformance/v1/run.py \
+    --adapter target/debug/kult-conformance
 run_in "$root" bash -n scripts/install-xcodegen.sh
 run_in "$root" cargo fmt --all -- --check
 run_in "$root" cargo clippy --workspace --all-targets --all-features

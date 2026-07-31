@@ -58,7 +58,11 @@ pub const MAILBOX_V2_PAGE_MAX_BYTES: usize = 1024 * 1024;
 /// Maximum rows returned by one mailbox-v2 lease page.
 pub const MAILBOX_V2_PAGE_MAX_ROWS: usize = 128;
 /// Maximum exact row ids accepted by one acknowledgement.
-pub(crate) const MAILBOX_V2_ACK_MAX_ROWS: usize = MAILBOX_V2_PAGE_MAX_ROWS;
+pub const MAILBOX_V2_ACK_MAX_ROWS: usize = MAILBOX_V2_PAGE_MAX_ROWS;
+/// Maximum canonical CBOR request bytes accepted on `/komms/mailbox/2`.
+pub const MAILBOX_V2_REQUEST_MAX_BYTES: usize = 320 * 1024;
+/// Maximum canonical CBOR response bytes accepted on `/komms/mailbox/2`.
+pub const MAILBOX_V2_RESPONSE_MAX_BYTES: usize = 3 * 1024 * 1024;
 
 /// Persistent service paths and resource policy for one mailbox-v2 relay.
 #[derive(Clone, Debug)]
@@ -140,40 +144,116 @@ pub struct MailboxMetrics {
 }
 
 /// One random-id row in a leased page.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct MailboxV2LeasedRow {
-    pub(crate) row_id: [u8; 16],
-    pub(crate) envelope: Vec<u8>,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailboxV2LeasedRow {
+    /// Relay-local random non-zero row identifier.
+    pub row_id: [u8; 16],
+    /// Exact opaque Komms envelope retained by the relay.
+    pub envelope: Vec<u8>,
 }
 
 /// Wire request on `/komms/mailbox/2`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) enum MailboxV2Request {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MailboxV2Request {
     /// Persist a content-blind sealed envelope.
-    Deposit { envelope: Vec<u8> },
+    Deposit {
+        /// Exact bounded opaque Komms envelope.
+        envelope: Vec<u8>,
+    },
     /// Refresh bounded token registrations and obtain one idempotent lease.
-    Lease { tokens: Vec<[u8; 32]> },
+    Lease {
+        /// Opaque rotating delivery tokens to register and collect.
+        tokens: Vec<[u8; 32]>,
+    },
     /// Delete only the named, durably staged rows from one lease.
     AckLease {
+        /// Exact non-zero live lease identifier.
         lease_id: [u8; 16],
+        /// Distinct exact relay row identifiers staged by the endpoint.
         row_ids: Vec<[u8; 16]>,
     },
 }
 
 /// Wire response on `/komms/mailbox/2`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) enum MailboxV2Response {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MailboxV2Response {
     /// Uniform deposit result. `true` means the durable transaction committed.
-    Deposit { accepted: bool },
+    Deposit {
+        /// Whether the exact deposit committed durably.
+        accepted: bool,
+    },
     /// Uniform lease result. Refusal has `serving = false` and an empty page.
     Lease {
+        /// Whether this response represents one live idempotent lease.
         serving: bool,
+        /// Exact lease id, or all zeroes for a bounded refusal/miss.
         lease_id: [u8; 16],
+        /// Lease expiry in Unix seconds, or zero for a refusal/miss.
         expires_at: u64,
+        /// Bounded leased rows; empty for a refusal/miss.
         rows: Vec<MailboxV2LeasedRow>,
     },
     /// Uniform exact-row acknowledgement result.
-    AckLease { accepted: bool },
+    AckLease {
+        /// Whether the exact row deletion transaction committed.
+        accepted: bool,
+    },
+}
+
+/// Encode one mailbox-v2 request using the exact canonical CBOR wire shape.
+pub fn encode_mailbox_v2_request(request: &MailboxV2Request) -> io::Result<Vec<u8>> {
+    encode_mailbox_v2(request, MAILBOX_V2_REQUEST_MAX_BYTES)
+}
+
+/// Decode one exact canonical mailbox-v2 request and reject alternate CBOR
+/// encodings, trailing data, and values above the fixed request bound.
+pub fn decode_mailbox_v2_request(bytes: &[u8]) -> io::Result<MailboxV2Request> {
+    decode_mailbox_v2(bytes, MAILBOX_V2_REQUEST_MAX_BYTES)
+}
+
+/// Encode one mailbox-v2 response using the exact canonical CBOR wire shape.
+pub fn encode_mailbox_v2_response(response: &MailboxV2Response) -> io::Result<Vec<u8>> {
+    encode_mailbox_v2(response, MAILBOX_V2_RESPONSE_MAX_BYTES)
+}
+
+/// Decode one exact canonical mailbox-v2 response and reject alternate CBOR
+/// encodings, trailing data, and values above the fixed response bound.
+pub fn decode_mailbox_v2_response(bytes: &[u8]) -> io::Result<MailboxV2Response> {
+    decode_mailbox_v2(bytes, MAILBOX_V2_RESPONSE_MAX_BYTES)
+}
+
+fn encode_mailbox_v2<T: Serialize>(value: &T, limit: usize) -> io::Result<Vec<u8>> {
+    let encoded = cbor4ii::serde::to_vec(Vec::new(), value)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    if encoded.len() > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "mailbox-v2 wire value exceeds its fixed bound",
+        ));
+    }
+    Ok(encoded)
+}
+
+fn decode_mailbox_v2<T>(bytes: &[u8], limit: usize) -> io::Result<T>
+where
+    T: Serialize + DeserializeOwned,
+{
+    if bytes.is_empty() || bytes.len() > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "mailbox-v2 wire value has an invalid length",
+        ));
+    }
+    let decoded: T = cbor4ii::serde::from_slice(bytes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    let canonical = encode_mailbox_v2(&decoded, limit)?;
+    if canonical != bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "mailbox-v2 wire value is not canonical",
+        ));
+    }
+    Ok(decoded)
 }
 
 #[derive(Clone, Debug)]

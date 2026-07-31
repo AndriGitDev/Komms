@@ -27,6 +27,11 @@ public statement must use one of the claim identifiers below and must satisfy
 the corresponding entry in the
 [release evidence ledger](31-release-evidence-ledger.md).
 
+The language-neutral wire/state contract and compatibility rules are the
+[stable-v1 protocol and conformance kit](41-protocol-conformance.md). Freezing
+that candidate contract does not close the independent interoperability,
+external security review, distribution, operator, or field gates.
+
 ## 1. Installation and supported systems
 
 **Claims:** `SV1-C01`, `SV1-C11`
@@ -204,9 +209,11 @@ are not stable-v1 claims.
 Current root-free `KKR10` round trips, secret-exclusion checks, recovery epochs,
 fork/conflict cases, crash failpoints, cross-shell host tests, and Android/iOS
 simulator builds are Alpha implementation evidence for accepted
-[ADR-0026](adr/0026-revocable-device-authority.md). They do not freeze stable
-wire/state v1 or close physical-device, sudden-power-loss, independent-review,
-or independent-interoperability gates.
+[ADR-0026](adr/0026-revocable-device-authority.md). They do not freeze
+wire/state semantics beyond the
+[published candidate kit](41-protocol-conformance.md), or close
+physical-device, sudden-power-loss, independent-review, or
+independent-interoperability gates.
 
 ## 7. Blocking and deletion
 

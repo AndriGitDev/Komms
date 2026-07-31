@@ -9,6 +9,7 @@ members = [
     "crates/kult-rendezvous",
     "crates/kult-reference-service",
     "crates/kult-wake",
+    "crates/kult-conformance",
     "crates/kult-ffi",
     "crates/kultd",
 ]

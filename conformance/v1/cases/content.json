@@ -1,0 +1,323 @@
+{
+  "cases": [
+    {
+      "arguments": {
+        "content_id_hex": "00112233445566778899aabbccddeeff",
+        "text": "Halló, heimur 👋"
+      },
+      "expected": {
+        "ok": true,
+        "result": {
+          "encoded_hex": "ff4b4d430101000000112233445566778899aabbccddeeff1300000048616c6cc3b32c206865696d757220f09f918b"
+        }
+      },
+      "id": "content-text-v1",
+      "operation": "content.encode_text",
+      "purpose": "Canonical content-v1 UTF-8 text encoding with a fixed content identifier."
+    },
+    {
+      "arguments": {
+        "encoded_hex": {
+          "$case": {
+            "id": "content-text-v1",
+            "pointer": "/result/encoded_hex"
+          }
+        }
+      },
+      "expected": {
+        "ok": true,
+        "result": {
+          "classification": "text",
+          "content_id_hex": "00112233445566778899aabbccddeeff",
+          "text": "Halló, heimur 👋"
+        }
+      },
+      "id": "content-text-v1-decode",
+      "operation": "content.decode",
+      "purpose": "Canonical content-v1 text decoding preserves exact UTF-8 and identifier bytes."
+    },
+    {
+      "arguments": {
+        "encoded_hex": {
+          "$utf8_hex": "legacy Alpha text"
+        }
+      },
+      "expected": {
+        "ok": true,
+        "result": {
+          "classification": "legacy_text",
+          "text": "legacy Alpha text"
+        }
+      },
+      "id": "content-legacy-utf8",
+      "operation": "content.decode",
+      "purpose": "Unframed valid UTF-8 remains the permanent legacy read path."
+    },
+    {
+      "arguments": {
+        "encoded_hex": "ff4b4d4302"
+      },
+      "expected": {
+        "ok": true,
+        "result": {
+          "classification": "unsupported",
+          "format_version": 2,
+          "kind": null
+        }
+      },
+      "id": "content-future-version",
+      "operation": "content.decode",
+      "purpose": "A future typed content version is retained as unsupported and never guessed as text."
+    },
+    {
+      "arguments": {
+        "encoded_hex": {
+          "$concat_hex": [
+            "ff4b4d4301",
+            "9900",
+            "00",
+            {
+              "$repeat_hex": {
+                "byte_hex": "a5",
+                "bytes": 16
+              }
+            },
+            "00000000"
+          ]
+        }
+      },
+      "expected": {
+        "ok": true,
+        "result": {
+          "classification": "unsupported",
+          "format_version": 1,
+          "kind": 153
+        }
+      },
+      "id": "content-future-kind",
+      "operation": "content.decode",
+      "purpose": "An unknown kind in the known framing version is retained as unsupported."
+    },
+    {
+      "arguments": {
+        "attachment_bytes_hex": {
+          "$utf8_hex": "synthetic attachment"
+        },
+        "attachment_content_id_hex": {
+          "$repeat_hex": {
+            "byte_hex": "21",
+            "bytes": 16
+          }
+        },
+        "attachment_filename": "vector.bin",
+        "attachment_key_hex": {
+          "$repeat_hex": {
+            "byte_hex": "22",
+            "bytes": 32
+          }
+        },
+        "attachment_media_type": "application/octet-stream",
+        "attachment_object_id_hex": {
+          "$repeat_hex": {
+            "byte_hex": "23",
+            "bytes": 16
+          }
+        },
+        "call_content_id_hex": {
+          "$repeat_hex": {
+            "byte_hex": "61",
+            "bytes": 16
+          }
+        },
+        "call_expires_at": 1800000600,
+        "call_id_hex": {
+          "$repeat_hex": {
+            "byte_hex": "62",
+            "bytes": 16
+          }
+        },
+        "call_initiator_device_hex": {
+          "$repeat_hex": {
+            "byte_hex": "63",
+            "bytes": 32
+          }
+        },
+        "call_master_secret_hex": {
+          "$repeat_hex": {
+            "byte_hex": "64",
+            "bytes": 32
+          }
+        },
+        "edit_content_id_hex": {
+          "$repeat_hex": {
+            "byte_hex": "31",
+            "bytes": 16
+          }
+        },
+        "edit_revision": 2,
+        "edit_target_author_hex": {
+          "$repeat_hex": {
+            "byte_hex": "32",
+            "bytes": 32
+          }
+        },
+        "edit_target_content_id_hex": {
+          "$repeat_hex": {
+            "byte_hex": "33",
+            "bytes": 16
+          }
+        },
+        "edit_text": "corrected text",
+        "ephemeral_content_id_hex": {
+          "$repeat_hex": {
+            "byte_hex": "41",
+            "bytes": 16
+          }
+        },
+        "ephemeral_expires_at": 1800000001,
+        "ephemeral_text": "temporary text",
+        "mention_content_id_hex": {
+          "$repeat_hex": {
+            "byte_hex": "24",
+            "bytes": 16
+          }
+        },
+        "mention_end": 6,
+        "mention_start": 3,
+        "mention_target_hex": {
+          "$repeat_hex": {
+            "byte_hex": "25",
+            "bytes": 32
+          }
+        },
+        "mention_text": "Hi Bob",
+        "poll_author_hex": {
+          "$repeat_hex": {
+            "byte_hex": "51",
+            "bytes": 32
+          }
+        },
+        "poll_content_id_hex": {
+          "$repeat_hex": {
+            "byte_hex": "52",
+            "bytes": 16
+          }
+        },
+        "poll_generation": 4,
+        "poll_option_one_id_hex": {
+          "$repeat_hex": {
+            "byte_hex": "53",
+            "bytes": 16
+          }
+        },
+        "poll_option_one_text": "Yes",
+        "poll_option_two_id_hex": {
+          "$repeat_hex": {
+            "byte_hex": "54",
+            "bytes": 16
+          }
+        },
+        "poll_option_two_text": "No",
+        "poll_question": "Proceed?",
+        "poll_vote_content_id_hex": {
+          "$repeat_hex": {
+            "byte_hex": "55",
+            "bytes": 16
+          }
+        },
+        "poll_vote_revision": 1,
+        "poll_voter_one_hex": {
+          "$repeat_hex": {
+            "byte_hex": "11",
+            "bytes": 32
+          }
+        },
+        "poll_voter_two_hex": {
+          "$repeat_hex": {
+            "byte_hex": "22",
+            "bytes": 32
+          }
+        }
+      },
+      "expected": {
+        "ok": true,
+        "result": {
+          "all_round_trip": true,
+          "attachment_hex": "ff4b4d4301020000212121212121212121212121212121218900000001002222222222222222222222222222222222222222222222222222222222222222010023232323232323232323232323232323140000000000000000c0000001000000f5eba300da1d096f3c93a1a84c8dd5d8f1c5c23c7900952b5e4100882fd7602d186170706c69636174696f6e2f6f637465742d73747265616d0a00766563746f722e62696e",
+          "call_offer_hex": "ff4b4d4301080000616161616161616161616161616161615a000000010162626262626262626262626262626262636363636363636363636363636363636363636363636363636363636363636358d4496b000000006464646464646464646464646464646464646464646464646464646464646464",
+          "edit_hex": "ff4b4d4301040000313131313131313131313131313131314a00000032323232323232323232323232323232323232323232323232323232323232323333333333333333333333333333333302000000000000000e000000636f727265637465642074657874",
+          "ephemeral_hex": "ff4b4d430105000041414141414141414141414141414141260000000101000001d2496b0000000010e0496b000000000e00000074656d706f726172792074657874",
+          "mention_hex": "ff4b4d4301030000242424242424242424242424242424243700000001000101060000002525252525252525252525252525252525252525252525252525252525252525486920426f62030000000600000000",
+          "poll_create_hex": "ff4b4d430106000052525252525252525252525252525252810000000101010004000000000000000800020250726f636565643f5353535353535353535353535353535303005965735454545454545454545454545454545402004e6f11111111111111111111111111111111111111111111111111111111111111112222222222222222222222222222222222222222222222222222222222222222",
+          "poll_vote_hex": "ff4b4d4301060000555555555555555555555555555555554c00000001020000515151515151515151515151515151515151515151515151515151515151515152525252525252525252525252525252535353535353535353535353535353530100000000000000"
+        }
+      },
+      "id": "content-v1-canonical-suite",
+      "operation": "content.suite",
+      "purpose": "Language-neutral canonical attachment, mention, edit, ephemeral, poll, and call-control frames."
+    },
+    {
+      "arguments": {
+        "encoded_hex": {
+          "$concat_hex": [
+            "01",
+            "01",
+            {
+              "$repeat_hex": {
+                "byte_hex": "11",
+                "bytes": 32
+              }
+            },
+            "c00102"
+          ]
+        }
+      },
+      "expected": {
+        "ok": true,
+        "result": {
+          "body_hex": "c00102",
+          "content_id_hex": "c2166dd4fd4093031899f7873479929b",
+          "kind": "message",
+          "retention_until": null,
+          "token_hex": "1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      },
+      "id": "envelope-v1-message",
+      "operation": "envelope.decode",
+      "purpose": "Legacy ordinary envelope framing stays byte-exact and decodable."
+    },
+    {
+      "arguments": {
+        "encoded_hex": {
+          "$concat_hex": [
+            "02",
+            "01",
+            {
+              "$repeat_hex": {
+                "byte_hex": "22",
+                "bytes": 32
+              }
+            },
+            "10e0496b00000000",
+            "c00304"
+          ]
+        }
+      },
+      "expected": {
+        "ok": true,
+        "result": {
+          "body_hex": "c00304",
+          "content_id_hex": "bb2ec1a182828a5d28932bf4ee9142d0",
+          "kind": "message",
+          "retention_until": 1800003600,
+          "token_hex": "2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "id": "envelope-v2-retained",
+      "operation": "envelope.decode",
+      "purpose": "Retained envelope v2 binds an hour-aligned little-endian retention bucket."
+    }
+  ],
+  "format_version": 1,
+  "profile": "komms-stable-v1"
+}

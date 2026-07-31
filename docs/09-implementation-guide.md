@@ -301,7 +301,9 @@ buffers. The complete contract is [23: Live Audio Calls](23-live-audio-calls.md)
 
 ## 4. Testing strategy (beyond per-milestone acceptance)
 
-- **KATs**: primitive test vectors vendored under `crates/kult-crypto/tests/vectors/`.
+- **KATs and conformance**: primitive tests consume the published cases under
+  `conformance/v1/cases/`; the stand-alone specification, fixtures, transition
+  traces, adapter contract, and runner live under `conformance/v1/`.
 - **Property tests** (`proptest`): ratchet loss/reorder/dup within bounds ⇒ decrypts;
   outside bounds ⇒ typed failure. Padding round-trips. Fragment/reassemble = identity.
 - **Fuzz targets** (`cargo-fuzz`): crypto envelope, handshake, bundle, mnemonic,
