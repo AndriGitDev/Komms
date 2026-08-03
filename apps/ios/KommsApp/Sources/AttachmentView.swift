@@ -78,7 +78,7 @@ final class AudioRecorderModel: NSObject, ObservableObject {
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(
             .playAndRecord, mode: .spokenAudio,
-            options: [.defaultToSpeaker, .allowBluetoothHFP])
+            options: [.defaultToSpeaker, .allowBluetooth])
         try session.setActive(true)
         let source = FileManager.default.temporaryDirectory
             .appendingPathComponent("komms-audio-\(UUID().uuidString).native.wav")
