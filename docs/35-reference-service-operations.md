@@ -1,13 +1,18 @@
 # 35: Operator-minimized reference service
 
 The `kult-reference-service` artifact implements the narrow service boundary in
-[ADR-0034](adr/0034-operator-minimized-reference-discovery.md). It has exactly
-two roles:
+[ADR-0034](adr/0034-operator-minimized-reference-discovery.md). It exposes
+exactly two possible roles:
 
 1. libp2p bootstrap and a bounded, ordinary Kademlia cache for Komms discovery
    records; and
 2. the short-lived, fixed-shape post-pairing rendezvous service from
    [ADR-0018](adr/0018-pairwise-rendezvous.md).
+
+The original combined profile enables both. The split profile runs one
+least-authority process per role: `--roles bootstrap-kad-cache` does not open
+or require the TLS private key, and `--roles pairwise-rendezvous` does not open
+or require the libp2p private key. A process cannot enable any third role.
 
 It cannot be configured as a Komms endpoint, mailbox, wake gateway, account
 directory, updater, analytics collector, or plaintext bridge. It has no API or
@@ -103,7 +108,8 @@ log, issue, or support transcript.
 
 The host boundary matters. Before starting the container:
 
-1. dedicate a small host or VM to these two roles;
+1. dedicate a small host or VM to the selected role set; distinct operators
+   should use distinct hosts and administrative domains;
 2. disable swap and verify `swapon --show` is empty;
 3. disable hibernation and suspend targets;
 4. set `kernel.core_pattern`/systemd-coredump policy so no core body is
@@ -127,7 +133,8 @@ process memory and disappear on restart.
 
 ## 4. Configure and start
 
-Copy the example config and Compose file, then edit only documented values:
+Copy the example config and Compose file, then edit only documented values.
+The combined profile retains the ADR-0034 two-role deployment:
 
 ```sh
 install -d -m 0755 /opt/komms-reference
@@ -140,6 +147,26 @@ export REFERENCE_SERVICE_IMAGE=ghcr.io/andrigitdev/komms-reference-service@sha25
 docker compose -f /opt/komms-reference/compose.yaml config --quiet
 docker compose -f /opt/komms-reference/compose.yaml up -d --wait
 ```
+
+For independent process authority, use
+[`compose-split.yaml`](../deploy/reference-service/compose-split.yaml). Give
+the bootstrap container a key directory containing only `libp2p.key`, and give
+the rendezvous container a different key directory containing only `tls.crt`
+and `tls.key`:
+
+```sh
+export REFERENCE_DHT_CONFIG=/opt/komms-reference/reference-service.toml
+export REFERENCE_DHT_KEYS_DIR=/etc/komms-reference/dht-keys
+export REFERENCE_RENDEZVOUS_CONFIG=/opt/komms-reference/reference-service.toml
+export REFERENCE_RENDEZVOUS_KEYS_DIR=/etc/komms-reference/rendezvous-keys
+docker compose -f /opt/komms-reference/compose-split.yaml config --quiet
+docker compose -f /opt/komms-reference/compose-split.yaml up -d --wait
+```
+
+The strict configuration retains bounds for both possible roles, but a
+one-role command ignores the other listener and does not inspect or require
+the other credential. Keep the unused file absent from that container rather
+than mounting extra authority.
 
 The default bounds are:
 
@@ -170,9 +197,10 @@ normative fixed shape.
 
 ## 5. Health, overload, restart, and blackhole checks
 
-The only health response is loopback-only aggregate JSON. It reports the two
-role names, source revision, DHT row/value totals, and rendezvous row/accounting
-totals. It contains no peer id, client address, capability, locator, slot,
+The only health response is loopback-only aggregate JSON. It reports the exact
+enabled role name or names, source revision, DHT row/value totals, and
+rendezvous row/accounting totals. Disabled-role totals are zero. It contains
+no peer id, client address, capability, locator, slot,
 ciphertext, identity, or social label.
 
 ```sh
@@ -189,6 +217,8 @@ REFERENCE_SERVICE_IMAGE=<immutable-image> \
   deploy/reference-service/smoke-test.sh
 ```
 
+The smoke test also starts the split profile with mutually exclusive key
+mounts and verifies each process can inspect only its selected credential.
 The Rust matrix additionally covers exact HTTP/TLS shapes, malformed requests,
 memory/row/rate/concurrency overload, expiry, state loss on restart, and a
 blackholed bootstrap peer. Blackholing an optional upstream must not prevent

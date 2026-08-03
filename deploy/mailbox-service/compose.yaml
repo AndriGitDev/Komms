@@ -1,0 +1,62 @@
+name: komms-mailbox
+
+services:
+  mailbox:
+    image: ${MAILBOX_SERVICE_IMAGE:?set MAILBOX_SERVICE_IMAGE to an immutable digest}
+    build:
+      context: ../..
+      dockerfile: deploy/mailbox-service/Dockerfile
+      args:
+        KOMMS_SOURCE_REVISION: ${KOMMS_SOURCE_REVISION:-unbound-local-build}
+        SOURCE_DATE_EPOCH: ${SOURCE_DATE_EPOCH:-0}
+    restart: unless-stopped
+    read_only: true
+    user: "${MAILBOX_SERVICE_UID:-10004}:${MAILBOX_SERVICE_GID:-10004}"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    pids_limit: 128
+    mem_limit: 384m
+    memswap_limit: 384m
+    mem_swappiness: 0
+    cpus: 2.0
+    ulimits:
+      core:
+        soft: 0
+        hard: 0
+      nofile:
+        soft: 4096
+        hard: 4096
+    ports:
+      - "${MAILBOX_SERVICE_PORT:-4406}:4406/tcp"
+      - "${MAILBOX_SERVICE_PORT:-4406}:4406/udp"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=${MAILBOX_SERVICE_UID:-10004},gid=${MAILBOX_SERVICE_GID:-10004},mode=0700
+    volumes:
+      - type: bind
+        source: ${MAILBOX_SERVICE_CONFIG:-./mailbox-service.toml}
+        target: /etc/komms-mailbox/config.toml
+        read_only: true
+      - type: bind
+        source: ${MAILBOX_SERVICE_KEYS_DIR:?set MAILBOX_SERVICE_KEYS_DIR}
+        target: /run/komms-mailbox-keys
+        read_only: true
+      - type: bind
+        source: ${MAILBOX_SERVICE_STATE_DIR:?set MAILBOX_SERVICE_STATE_DIR}
+        target: /var/lib/komms-mailbox
+    logging:
+      driver: none
+    stop_grace_period: 15s
+    healthcheck:
+      test:
+        - CMD
+        - kult-mailbox
+        - probe
+        - --address
+        - 127.0.0.1:8083
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3

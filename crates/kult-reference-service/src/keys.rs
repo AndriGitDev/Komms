@@ -7,7 +7,7 @@ use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, PrivatePk
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::config::Config;
+use crate::config::{Config, RoleSelection};
 use crate::runtime::ServiceError;
 
 const MAX_LIBP2P_KEY_BYTES: u64 = 1024;
@@ -19,14 +19,16 @@ const MAX_CERTIFICATES: usize = 8;
 /// record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceKeyInfo {
-    /// Stable libp2p service peer id.
+    /// Stable libp2p service peer id, or empty when that role is disabled.
     pub libp2p_peer_id: String,
-    /// SHA-256 of the protobuf-encoded libp2p public key.
+    /// SHA-256 of the protobuf-encoded libp2p public key, or empty when that
+    /// role is disabled.
     pub libp2p_public_key_sha256: String,
-    /// SHA-256 of the first TLS certificate's DER encoding.
+    /// SHA-256 of the first TLS certificate's DER encoding, or empty when
+    /// rendezvous is disabled.
     pub tls_certificate_sha256: String,
     /// ADR-0018 provider static key, currently the same 32-byte digest as the
-    /// leaf TLS certificate.
+    /// leaf TLS certificate, or empty when rendezvous is disabled.
     pub provider_static_key: String,
 }
 
@@ -66,7 +68,7 @@ pub fn generate_libp2p_identity(path: &Path) -> Result<ServiceKeyInfo, ServiceEr
             .map_err(|error| ServiceError::io("commit identity directory", error))?;
     }
     encoded.zeroize();
-    Ok(key_info(&key, None))
+    Ok(key_info(Some(&key), None))
 }
 
 /// Load a distinct owner-only Ed25519 service identity.
@@ -85,10 +87,33 @@ pub fn load_libp2p_identity(path: &Path) -> Result<libp2p::identity::Keypair, Se
 /// Load and cross-check all service credentials, returning only non-secret
 /// fingerprints.
 pub fn inspect_service_keys(config: &Config) -> Result<ServiceKeyInfo, ServiceError> {
-    let identity = load_libp2p_identity(&config.libp2p_identity_file)?;
-    let (certificates, private_key) = load_tls_material(config)?;
-    build_server_config(certificates.clone(), private_key)?;
-    Ok(key_info(&identity, certificates.first()))
+    inspect_selected_service_keys(config, RoleSelection::Both)
+}
+
+/// Load only the credential domains required by the selected role set.
+///
+/// A one-role process neither opens nor requires the other role's private-key
+/// file.
+pub fn inspect_selected_service_keys(
+    config: &Config,
+    roles: RoleSelection,
+) -> Result<ServiceKeyInfo, ServiceError> {
+    config.validate()?;
+    let identity = roles
+        .includes_dht()
+        .then(|| load_libp2p_identity(&config.libp2p_identity_file))
+        .transpose()?;
+    let certificates = if roles.includes_rendezvous() {
+        let (certificates, private_key) = load_tls_material(config)?;
+        build_server_config(certificates.clone(), private_key)?;
+        Some(certificates)
+    } else {
+        None
+    };
+    Ok(key_info(
+        identity.as_ref(),
+        certificates.as_ref().and_then(|chain| chain.first()),
+    ))
 }
 
 pub(crate) fn load_tls_server_config(
@@ -151,19 +176,26 @@ fn build_server_config(
 }
 
 fn key_info(
-    identity: &libp2p::identity::Keypair,
+    identity: Option<&libp2p::identity::Keypair>,
     leaf: Option<&CertificateDer<'static>>,
 ) -> ServiceKeyInfo {
-    let public = identity.public();
-    let libp2p_digest = Sha256::digest(public.encode_protobuf());
+    let (libp2p_peer_id, libp2p_public_key_sha256) = identity
+        .map(|identity| {
+            let public = identity.public();
+            (
+                public.to_peer_id().to_string(),
+                hex::encode(Sha256::digest(public.encode_protobuf())),
+            )
+        })
+        .unwrap_or_default();
     let certificate_digest = leaf
-        .map(|certificate| Sha256::digest(certificate.as_ref()))
+        .map(|certificate| hex::encode(Sha256::digest(certificate.as_ref())))
         .unwrap_or_default();
     ServiceKeyInfo {
-        libp2p_peer_id: public.to_peer_id().to_string(),
-        libp2p_public_key_sha256: hex::encode(libp2p_digest),
-        tls_certificate_sha256: hex::encode(certificate_digest),
-        provider_static_key: hex::encode(certificate_digest),
+        libp2p_peer_id,
+        libp2p_public_key_sha256,
+        tls_certificate_sha256: certificate_digest.clone(),
+        provider_static_key: certificate_digest,
     }
 }
 
@@ -289,6 +321,49 @@ mod tests {
             std::fs::set_permissions(&private_key, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
         assert!(inspect_service_keys(&config).is_err());
+    }
+
+    #[test]
+    fn one_role_inspection_never_requires_the_other_roles_key() {
+        let directory = tempfile::tempdir().unwrap();
+        let identity = directory.path().join("libp2p.key");
+        generate_libp2p_identity(&identity).unwrap();
+        let missing_certificate = directory.path().join("absent-tls.crt");
+        let missing_tls_key = directory.path().join("absent-tls.key");
+        let dht_only = credential_config(identity.clone(), missing_certificate, missing_tls_key);
+        let dht =
+            inspect_selected_service_keys(&dht_only, RoleSelection::BootstrapKadCache).unwrap();
+        assert!(!dht.libp2p_peer_id.is_empty());
+        assert!(dht.tls_certificate_sha256.is_empty());
+        assert!(
+            inspect_selected_service_keys(&dht_only, RoleSelection::PairwiseRendezvous).is_err()
+        );
+
+        let CertifiedKey { cert, key_pair } =
+            generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let certificate = directory.path().join("tls.crt");
+        let private_key = directory.path().join("tls.key");
+        std::fs::write(&certificate, cert.pem()).unwrap();
+        std::fs::write(&private_key, key_pair.serialize_pem()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&private_key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let rendezvous_only = credential_config(
+            directory.path().join("absent-libp2p.key"),
+            certificate,
+            private_key,
+        );
+        let rendezvous =
+            inspect_selected_service_keys(&rendezvous_only, RoleSelection::PairwiseRendezvous)
+                .unwrap();
+        assert!(rendezvous.libp2p_peer_id.is_empty());
+        assert!(!rendezvous.tls_certificate_sha256.is_empty());
+        assert!(
+            inspect_selected_service_keys(&rendezvous_only, RoleSelection::BootstrapKadCache)
+                .is_err()
+        );
     }
 
     fn credential_config(

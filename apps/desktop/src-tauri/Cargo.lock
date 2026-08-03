@@ -2672,6 +2672,7 @@ version = "0.3.0"
 dependencies = [
  "async-trait",
  "atomicwrites",
+ "cbor4ii",
  "fs2",
  "futures",
  "kult-crypto",

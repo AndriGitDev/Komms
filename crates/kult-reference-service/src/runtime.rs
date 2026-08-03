@@ -2,10 +2,10 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use crate::config::Config;
+use crate::config::{Config, RoleSelection};
 use crate::dht::DhtService;
 use crate::http::{probe_health as probe, run_health, RendezvousNetwork};
-use crate::keys::{inspect_service_keys, load_libp2p_identity, load_tls_server_config};
+use crate::keys::{inspect_selected_service_keys, load_libp2p_identity, load_tls_server_config};
 
 /// One aggregate, content-free service health snapshot.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -46,35 +46,56 @@ impl fmt::Display for ServiceError {
 
 impl std::error::Error for ServiceError {}
 
-/// Run both bounded roles until SIGINT or SIGTERM, then tear down all mutable
-/// in-memory state within the configured grace period.
+/// Run the original combined two-role profile until SIGINT or SIGTERM, then
+/// tear down all mutable in-memory state within the configured grace period.
 pub async fn run(config: Config) -> Result<(), ServiceError> {
+    run_selected(config, RoleSelection::Both).await
+}
+
+/// Run only the selected bounded role set. A one-role process does not load,
+/// open, or require the other role's service credential.
+pub async fn run_selected(config: Config, roles: RoleSelection) -> Result<(), ServiceError> {
     config.validate()?;
-    let key_info = inspect_service_keys(&config)?;
-    let identity = load_libp2p_identity(&config.libp2p_identity_file)?;
-    let tls = load_tls_server_config(&config)?;
-    let dht = DhtService::new(config.dht.clone(), identity)?;
-    let dht_metrics = dht.metrics();
-    let rendezvous = RendezvousNetwork::new(config.rendezvous.clone())?;
-    let rendezvous_metrics = rendezvous.service();
+    let key_info = inspect_selected_service_keys(&config, roles)?;
+    let dht = if roles.includes_dht() {
+        let identity = load_libp2p_identity(&config.libp2p_identity_file)?;
+        Some(DhtService::new(config.dht.clone(), identity)?)
+    } else {
+        None
+    };
+    let dht_metrics = dht.as_ref().map(DhtService::metrics);
+    let (rendezvous, rendezvous_metrics, tls) = if roles.includes_rendezvous() {
+        let network = RendezvousNetwork::new(config.rendezvous.clone())?;
+        let metrics = network.service();
+        let tls = load_tls_server_config(&config)?;
+        (Some(network), Some(metrics), Some(tls))
+    } else {
+        (None, None, None)
+    };
     let health_address = config.rendezvous.health_listen;
     let shutdown_grace = Duration::from_secs(config.runtime.shutdown_grace_seconds);
     let (shutdown_sender, shutdown_receiver) = tokio::sync::watch::channel(false);
     let mut tasks = tokio::task::JoinSet::new();
-    tasks.spawn(dht.run(shutdown_receiver.clone()));
-    tasks.spawn(rendezvous.run(tls, shutdown_receiver.clone()));
+    if let Some(dht) = dht {
+        tasks.spawn(dht.run(shutdown_receiver.clone()));
+    }
+    if let (Some(rendezvous), Some(tls)) = (rendezvous, tls) {
+        tasks.spawn(rendezvous.run(tls, shutdown_receiver.clone()));
+    }
     tasks.spawn(run_health(
         health_address,
+        roles,
         dht_metrics,
         rendezvous_metrics,
         shutdown_receiver,
     ));
 
     eprintln!(
-        "reference service starting: peer_id={} libp2p_public_key_sha256={} tls_certificate_sha256={}",
-        key_info.libp2p_peer_id,
-        key_info.libp2p_public_key_sha256,
-        key_info.tls_certificate_sha256
+        "reference service starting: roles={} peer_id={} libp2p_public_key_sha256={} tls_certificate_sha256={}",
+        roles.log_label(),
+        present_or_disabled(&key_info.libp2p_peer_id),
+        present_or_disabled(&key_info.libp2p_public_key_sha256),
+        present_or_disabled(&key_info.tls_certificate_sha256),
     );
 
     let mut early_failure = None;
@@ -105,6 +126,14 @@ pub async fn run(config: Config) -> Result<(), ServiceError> {
         result?;
     }
     Ok(())
+}
+
+fn present_or_disabled(value: &str) -> &str {
+    if value.is_empty() {
+        "disabled"
+    } else {
+        value
+    }
 }
 
 /// Probe the loopback-only aggregate health endpoint.

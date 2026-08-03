@@ -2,9 +2,13 @@
 set -eu
 
 compose_file=${COMPOSE_FILE:-deploy/reference-service/compose.yaml}
+split_compose_file=${SPLIT_COMPOSE_FILE:-deploy/reference-service/compose-split.yaml}
 image=${REFERENCE_SERVICE_IMAGE:-ghcr.io/andrigitdev/komms-reference-service:reference-service-ci}
-temp_root=${REFERENCE_SERVICE_TEMP_ROOT:-${TMPDIR:-/tmp}}
+project_root=$(unset CDPATH; cd "$(dirname "$0")/../.." && pwd -P)
+temp_root=${REFERENCE_SERVICE_TEMP_ROOT:-$project_root/target}
+mkdir -p "$temp_root"
 keys_dir=$(mktemp -d "$temp_root/komms-reference-smoke.XXXXXX")
+keys_dir=$(cd "$keys_dir" && pwd -P)
 
 if docker compose version >/dev/null 2>&1; then
     compose() {
@@ -20,6 +24,12 @@ else
 fi
 
 cleanup() {
+    REFERENCE_DHT_CONFIG="${REFERENCE_DHT_CONFIG:-$project_root/deploy/reference-service/reference-service.toml}" \
+    REFERENCE_DHT_KEYS_DIR="${REFERENCE_DHT_KEYS_DIR:-$keys_dir}" \
+    REFERENCE_RENDEZVOUS_CONFIG="${REFERENCE_RENDEZVOUS_CONFIG:-$project_root/deploy/reference-service/reference-service.toml}" \
+    REFERENCE_RENDEZVOUS_KEYS_DIR="${REFERENCE_RENDEZVOUS_KEYS_DIR:-$keys_dir}" \
+    REFERENCE_SERVICE_IMAGE="$image" \
+    compose -f "$split_compose_file" down --timeout 15 >/dev/null 2>&1 || true
     REFERENCE_SERVICE_KEYS_DIR="$keys_dir" \
     REFERENCE_SERVICE_IMAGE="$image" \
     compose -f "$compose_file" down --timeout 15 >/dev/null 2>&1 || true
@@ -64,3 +74,45 @@ if [ -z "$container_id" ] ||
     echo "reference-service container does not use the disabled log driver" >&2
     exit 1
 fi
+
+compose -f "$compose_file" down --timeout 15
+dht_keys_dir="$keys_dir/dht-only"
+rendezvous_keys_dir="$keys_dir/rendezvous-only"
+mkdir -p "$dht_keys_dir" "$rendezvous_keys_dir"
+cp "$keys_dir/libp2p.key" "$dht_keys_dir/libp2p.key"
+cp "$keys_dir/tls.key" "$rendezvous_keys_dir/tls.key"
+cp "$keys_dir/tls.crt" "$rendezvous_keys_dir/tls.crt"
+chmod 600 "$dht_keys_dir/libp2p.key" "$rendezvous_keys_dir/tls.key"
+chmod 644 "$rendezvous_keys_dir/tls.crt"
+
+export REFERENCE_DHT_CONFIG="$project_root/deploy/reference-service/reference-service.toml"
+export REFERENCE_DHT_KEYS_DIR="$dht_keys_dir"
+export REFERENCE_RENDEZVOUS_CONFIG="$project_root/deploy/reference-service/reference-service.toml"
+export REFERENCE_RENDEZVOUS_KEYS_DIR="$rendezvous_keys_dir"
+
+compose -f "$split_compose_file" config --quiet
+compose -f "$split_compose_file" up -d --wait --wait-timeout 90
+compose -f "$split_compose_file" exec -T bootstrap \
+    kult-reference-service probe --address 127.0.0.1:8081
+compose -f "$split_compose_file" exec -T rendezvous \
+    kult-reference-service probe --address 127.0.0.1:8081
+dht_inspection=$(compose -f "$split_compose_file" exec -T bootstrap \
+    kult-reference-service inspect \
+    --config /etc/komms-reference/config.toml \
+    --roles bootstrap-kad-cache)
+rendezvous_inspection=$(compose -f "$split_compose_file" exec -T rendezvous \
+    kult-reference-service inspect \
+    --config /etc/komms-reference/config.toml \
+    --roles pairwise-rendezvous)
+case "$dht_inspection" in
+    *tls_certificate_sha256*)
+        echo "DHT-only process inspected an unavailable rendezvous key" >&2
+        exit 1
+        ;;
+esac
+case "$rendezvous_inspection" in
+    *peer_id=*)
+        echo "rendezvous-only process inspected an unavailable libp2p key" >&2
+        exit 1
+        ;;
+esac

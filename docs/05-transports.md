@@ -207,10 +207,13 @@ uses Tor or a non-colluding Oblivious HTTP ingress; Standard mode uses direct
 HTTPS. The Alpha gateway/core implementation has fixed codecs, pinned clients,
 sealed per-session capabilities, durable identity-free revoke retries, bounded
 generic collection, a dedicated service binary, and hardened deployment
-artifacts. Native mobile token/background integration and physical
+artifacts. A separate fixed-mapping RFC 9458 relay artifact strips client
+metadata and holds no gateway HPKE key, but no client/gateway integration,
+deployment, or non-collusion evidence exists. Native mobile token/background integration and physical
 qualification remain open. Complete failure falls back to the unchanged
 transports in this document. See the
-[native-wake runbook](37-native-wake-operations.md).
+[native-wake runbook](37-native-wake-operations.md) and
+[OHTTP relay runbook](52-ohttp-relay-operations.md).
 
 [ADR-0034](adr/0034-operator-minimized-reference-discovery.md) defines the
 validated but undeployed Standard-mode bootstrap/DHT cache and post-pairing

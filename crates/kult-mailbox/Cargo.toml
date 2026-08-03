@@ -1,0 +1,39 @@
+[package]
+name = "kult-mailbox"
+description = "Komms dedicated least-authority durable mailbox-v2 service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "kult-mailbox"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", default-features = false, features = [
+    "derive",
+    "std",
+    "help",
+    "usage",
+    "error-context",
+] }
+kult-transport = { version = "0.3.0", path = "../kult-transport" }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = [
+    "io-util",
+    "macros",
+    "net",
+    "rt",
+    "rt-multi-thread",
+    "signal",
+    "sync",
+    "time",
+] }
+toml = "0.5"
+
+[dev-dependencies]
+tempfile = "3"

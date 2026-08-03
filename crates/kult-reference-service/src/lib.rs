@@ -15,10 +15,12 @@ mod keys;
 mod runtime;
 
 pub use config::{
-    Config, DhtConfig, RendezvousConfig, RuntimeLimits, CONFIG_VERSION, DEFAULT_SOURCE_REVISION,
+    Config, DhtConfig, RendezvousConfig, RoleSelection, RuntimeLimits, CONFIG_VERSION,
+    DEFAULT_SOURCE_REVISION,
 };
 pub use dht::{DhtMetrics, DhtService};
 pub use keys::{
-    generate_libp2p_identity, inspect_service_keys, load_libp2p_identity, ServiceKeyInfo,
+    generate_libp2p_identity, inspect_selected_service_keys, inspect_service_keys,
+    load_libp2p_identity, ServiceKeyInfo,
 };
-pub use runtime::{probe_health, run, HealthSnapshot, ServiceError};
+pub use runtime::{probe_health, run, run_selected, HealthSnapshot, ServiceError};

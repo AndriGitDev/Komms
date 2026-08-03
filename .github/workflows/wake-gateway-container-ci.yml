@@ -1,0 +1,40 @@
+name: wake gateway container CI
+
+on:
+  pull_request:
+    paths:
+      - deploy/wake-gateway/**
+      - crates/kult-wake/**
+      - crates/kult-protocol/src/wake.rs
+      - crates/kult-crypto/src/wake.rs
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/wake-gateway-container-ci.yml
+      - .github/workflows/wake-gateway-container.yml
+  push:
+    branches: [main]
+    paths:
+      - deploy/wake-gateway/**
+      - crates/kult-wake/**
+      - crates/kult-protocol/src/wake.rs
+      - crates/kult-crypto/src/wake.rs
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/wake-gateway-container-ci.yml
+      - .github/workflows/wake-gateway-container.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wake-gateway-container-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  container:
+    name: build, harden, restart
+    permissions:
+      contents: read
+    uses: ./.github/workflows/wake-gateway-container.yml
+    with:
+      push: false

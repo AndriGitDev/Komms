@@ -28,6 +28,46 @@ const MAX_COMBINED_MUTABLE_MEMORY: usize = 384 * 1024 * 1024;
 const MAX_NETWORK_CONNECTIONS: u32 = 512;
 const MAX_RATE_BUCKETS: usize = 65_536;
 
+/// Which subset of the reference service's two least-authority roles a
+/// process enables.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoleSelection {
+    /// Bootstrap and bounded Komms Kademlia cache only.
+    BootstrapKadCache,
+    /// Fixed-shape post-pairing rendezvous only.
+    PairwiseRendezvous,
+    /// Both roles in the original combined reference profile.
+    Both,
+}
+
+impl RoleSelection {
+    /// Whether the process enables the bootstrap/Kademlia role.
+    pub fn includes_dht(self) -> bool {
+        matches!(self, Self::BootstrapKadCache | Self::Both)
+    }
+
+    /// Whether the process enables the pairwise-rendezvous role.
+    pub fn includes_rendezvous(self) -> bool {
+        matches!(self, Self::PairwiseRendezvous | Self::Both)
+    }
+
+    pub(crate) fn log_label(self) -> &'static str {
+        match self {
+            Self::BootstrapKadCache => "bootstrap-kad-cache",
+            Self::PairwiseRendezvous => "pairwise-rendezvous",
+            Self::Both => "bootstrap-kad-cache,pairwise-rendezvous",
+        }
+    }
+
+    pub(crate) fn health_json(self) -> &'static str {
+        match self {
+            Self::BootstrapKadCache => "\"bootstrap-kad-cache\"",
+            Self::PairwiseRendezvous => "\"pairwise-rendezvous\"",
+            Self::Both => "\"bootstrap-kad-cache\",\"pairwise-rendezvous\"",
+        }
+    }
+}
+
 /// Strict versioned service configuration.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -384,6 +424,24 @@ tls_private_key_file = "/run/keys/tls.key"
 mailbox = true
 "#;
         assert!(toml::from_str::<Config>(unknown).is_err());
+    }
+
+    #[test]
+    fn role_selection_has_an_exact_health_and_key_scope() {
+        assert!(RoleSelection::BootstrapKadCache.includes_dht());
+        assert!(!RoleSelection::BootstrapKadCache.includes_rendezvous());
+        assert_eq!(
+            RoleSelection::BootstrapKadCache.health_json(),
+            "\"bootstrap-kad-cache\""
+        );
+        assert!(!RoleSelection::PairwiseRendezvous.includes_dht());
+        assert!(RoleSelection::PairwiseRendezvous.includes_rendezvous());
+        assert_eq!(
+            RoleSelection::PairwiseRendezvous.health_json(),
+            "\"pairwise-rendezvous\""
+        );
+        assert!(RoleSelection::Both.includes_dht());
+        assert!(RoleSelection::Both.includes_rendezvous());
     }
 
     #[test]

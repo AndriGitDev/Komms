@@ -117,9 +117,26 @@ self-hosters; a custom app uses its own topics and credentials. See the
 [current wake operator record](wake-gateway-operator.md). No project wake
 gateway is deployed at the time of that record.
 
+The separate `kult-mailbox` image negotiates only `/komms/mailbox/2`. It has no
+endpoint, direct-envelope, DHT, identify, relay, call, rendezvous, wake,
+directory, update, analytics, bridge, or mailbox-v1 role. Operators should use
+its [dedicated runbook](50-mailbox-service-operations.md), strict configuration,
+and hardened deployment profile. No project mailbox service is deployed or
+qualified.
+
+The separate `kult-ohttp-relay` image exposes one RFC 9458 Oblivious Relay
+Resource mapped to one fixed HTTPS gateway resource. It strips client headers,
+forwards only exact-size encrypted bodies, holds no gateway HPKE key, retains
+no durable state, and cannot be configured as a generic proxy. See the
+[OHTTP relay runbook](52-ohttp-relay-operations.md). Self-hosting this image
+beside the protected gateway under one administrator does not provide
+non-collusion, qualify Private mode, or make the still-Tor-only client path use
+OHTTP.
+
+The older identity-bearing daemon can still volunteer mailbox capacity for a
+personal or mixed-role node. It is not the least-authority operator artifact.
 To add daemon flags, replace the Compose service's command while retaining both
-listen addresses. For example, a volunteer mailbox with an explicit bootstrap
-peer can use:
+listen addresses. For example:
 
 ```yaml
 services:
@@ -135,7 +152,7 @@ services:
       - --no-mdns
 ```
 
-`--serve-mailbox` creates three owner-only files beside `node.db`:
+This mixed-role `--serve-mailbox` path creates three owner-only files beside `node.db`:
 `mailbox-v2.db`, `mailbox-v2.key`, and
 `mailbox-v2.transport.key`. They form a separate service role. The row/index
 key protects the relay database, while the transport key keeps the published

@@ -3,9 +3,10 @@
 Komms is a **local-first, server-independent** messaging system. Every
 installation is a full peer: it holds its own keys, stores its own history, and
 can relay for others. No component that carries or stores messages must be
-operated by the project or any single party. Optional post-pairing rendezvous
-and native-wake services may accelerate mobile reachability under ADR-0017, but
-they are neither message transports nor dependencies of the core.
+operated by the project or any single party. Optional post-pairing rendezvous,
+native-wake, and Private-ingress services may accelerate mobile reachability
+under ADR-0017, but they are neither message transports nor dependencies of the
+core.
 
 The internal Rust crates use the `kult-*` prefix. **KULT** expands to **Komms
 Ubiquitous Link Transmission**: the shared system that carries one protected
@@ -255,8 +256,10 @@ Standard modes over the same core. In the optional modes:
 Pure derivation and record sealing remain in `kult-crypto`; bounded encodings
 remain in `kult-protocol`; I/O adapters receive only opaque requests in
 `kult-transport`; orchestration remains in `kult-node`. Rendezvous and wake
-server binaries are outside the client dependency graph. Blackholing every such
-server must reproduce Sovereign-mode behavior without migration or data loss.
+server binaries are outside the client dependency graph. The separate OHTTP
+relay artifact holds no gateway HPKE key and is not yet a client-selectable
+path. Blackholing every such server must reproduce Sovereign-mode behavior
+without migration or data loss.
 
 ## 5. What intermediaries see
 
@@ -304,7 +307,11 @@ non-zero metadata surfaces are listed in
 [ADR-0017](adr/0017-optional-hybrid-modes.md), and
 [ADR-0034](adr/0034-operator-minimized-reference-discovery.md); the gateway
 boundary and no-stale-restore procedure are in the
-[native-wake runbook](37-native-wake-operations.md).
+[native-wake runbook](37-native-wake-operations.md). A fixed one-to-one RFC
+9458 relay-side artifact, hardened image, and metadata-stripping tests are also
+implemented locally. No compatible gateway/client path, deployment, or
+non-collusion evidence exists; see the
+[OHTTP relay runbook](52-ohttp-relay-operations.md).
 
 ## 6. Groups
 

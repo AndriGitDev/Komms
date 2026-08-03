@@ -914,7 +914,7 @@ Deliver this as a feature-gated module over the unchanged core:
 1. derive and separately seal the post-handshake hybrid service exporter;
 2. retain manual, DHT, LAN, and rendezvous hints by source and expiry instead of
    overwriting one source with another;
-3. add fixed-size direct HTTPS plus Tor/OHTTP rendezvous clients and a bounded,
+3. add fixed-size direct HTTPS plus Tor or OHTTP rendezvous clients and a bounded,
    persistence-disabled rendezvous service;
 4. expose explicit Sovereign, Private, and Standard mode selection and precise
    metadata disclosure through RPC, UniFFI, desktop, Android, and iOS;
@@ -934,7 +934,10 @@ provider directory, last-valid/fork handling, canonical mode policy, familiar
 status language, bounded generic collection, next-hop-only wake scheduling,
 durable revocation retry, strict RPC/UniFFI front doors, direct APNs lifecycle,
 Play-only FCM callbacks, and a separately inspected Google-free Android
-artifact are present. No
+artifact are present. The selected Private client path is loopback Tor. A
+separate fixed-mapping RFC 9458 relay artifact now provides bounded,
+header-stripping relay-side deployment, but no client/gateway integration or
+non-collusion evidence. No
 production directory, default operator, deployed service, production APNs/FCM
 credential, qualified Tor/OHTTP ingress, or non-collusion evidence is included.
 See [Operating modes and provider configuration](36-operating-modes-and-provider-directory.md)

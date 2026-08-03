@@ -649,6 +649,27 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn owner_read_only_storage_key_reopens_without_mutation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = service(dir.path(), MailboxConfig::default());
+        drop(MailboxV2Store::open(&config).unwrap());
+        std::fs::set_permissions(&config.key_path, std::fs::Permissions::from_mode(0o400)).unwrap();
+
+        drop(MailboxV2Store::open(&config).unwrap());
+        assert_eq!(
+            std::fs::metadata(&config.key_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o400
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn database_and_storage_key_symlinks_are_rejected() {
         use std::os::unix::fs::symlink;
 
@@ -2136,7 +2157,7 @@ fn load_or_create_key(path: &Path) -> io::Result<StorageKey> {
             if !file.metadata()?.is_file() {
                 return Err(invalid("mailbox service key is not a regular file"));
             }
-            protect_open_file(&file)?;
+            require_owner_only_open_file(&file)?;
             file.read_exact(&mut bytes)?;
             let mut trailing = [0u8; 1];
             if file.read(&mut trailing)? != 0 {
@@ -2168,6 +2189,23 @@ fn load_or_create_key(path: &Path) -> io::Result<StorageKey> {
         }
         Err(error) => Err(error),
     }
+}
+
+fn require_owner_only_open_file(file: &File) -> io::Result<()> {
+    if !file.metadata()?.is_file() {
+        return Err(invalid("mailbox storage path is not a regular file"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if file.metadata()?.permissions().mode() & 0o077 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "mailbox service key must be owner-only",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn protect_open_file(file: &File) -> io::Result<()> {

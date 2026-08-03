@@ -257,7 +257,9 @@ and degrade honestly, exactly as the delivery ladder already does.
   for the local Alpha profile across the common mode contract, pinned
   HTTPS/Tor clients, signed replaceable provider configuration, direct APNs,
   Play-only FCM, an inspected Google-free artifact, every shell, and dedicated
-  service artifacts. No convenience default ships until deployment,
+  service artifacts. A fixed-mapping OHTTP relay is also implemented as an
+  operator artifact, but no compatible client/gateway path or non-collusion
+  evidence exists. No convenience default ships until deployment,
   Private-ingress, external, and named physical-field qualification gates close.
   See [Operating modes and provider configuration](36-operating-modes-and-provider-directory.md)
   and [Native-wake mobile qualification](38-native-wake-mobile-qualification.md).

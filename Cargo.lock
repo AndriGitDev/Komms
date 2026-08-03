@@ -1746,6 +1746,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "kult-mailbox"
+version = "0.3.0"
+dependencies = [
+ "clap",
+ "kult-transport",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "kult-node"
 version = "0.3.0"
 dependencies = [
@@ -1770,6 +1784,26 @@ dependencies = [
  "tempfile",
  "tokio",
  "unicode-normalization",
+ "zeroize",
+]
+
+[[package]]
+name = "kult-ohttp-relay"
+version = "0.3.0"
+dependencies = [
+ "clap",
+ "hex",
+ "hmac",
+ "libc",
+ "rand_core 0.6.4",
+ "rcgen",
+ "rustls",
+ "serde",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "toml",
  "zeroize",
 ]
 

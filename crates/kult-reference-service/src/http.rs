@@ -18,7 +18,7 @@ use kult_protocol::{
 };
 use kult_rendezvous::{ClientAdmissionKey, RendezvousService, ServiceResponse};
 
-use crate::config::{RendezvousConfig, DEFAULT_SOURCE_REVISION};
+use crate::config::{RendezvousConfig, RoleSelection, DEFAULT_SOURCE_REVISION};
 use crate::dht::DhtMetrics;
 use crate::runtime::{HealthSnapshot, ServiceError};
 
@@ -403,8 +403,9 @@ fn keyed_ip(secret: &[u8; 32], address: IpAddr, window: u64) -> [u8; 16] {
 
 pub(crate) async fn run_health(
     address: SocketAddr,
-    dht: DhtMetrics,
-    rendezvous: Arc<RendezvousService>,
+    roles: RoleSelection,
+    dht: Option<DhtMetrics>,
+    rendezvous: Option<Arc<RendezvousService>>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), ServiceError> {
     if !address.ip().is_loopback() {
@@ -430,14 +431,18 @@ pub(crate) async fn run_health(
                     continue;
                 }
                 let snapshot = HealthSnapshot {
-                    dht_records: dht.record_count(),
-                    dht_value_bytes: dht.value_bytes(),
-                    rendezvous_records: rendezvous.record_count(),
-                    rendezvous_mutable_bytes: rendezvous.accounted_mutable_bytes(),
+                    dht_records: dht.as_ref().map_or(0, DhtMetrics::record_count),
+                    dht_value_bytes: dht.as_ref().map_or(0, DhtMetrics::value_bytes),
+                    rendezvous_records: rendezvous
+                        .as_ref()
+                        .map_or(0, |service| service.record_count()),
+                    rendezvous_mutable_bytes: rendezvous
+                        .as_ref()
+                        .map_or(0, |service| service.accounted_mutable_bytes()),
                 };
                 let _ = tokio::time::timeout(
                     HEALTH_REQUEST_TIMEOUT,
-                    serve_health_request(&mut socket, &snapshot),
+                    serve_health_request(&mut socket, roles, &snapshot),
                 )
                 .await;
             }
@@ -448,6 +453,7 @@ pub(crate) async fn run_health(
 
 async fn serve_health_request(
     socket: &mut TcpStream,
+    roles: RoleSelection,
     snapshot: &HealthSnapshot,
 ) -> Result<(), ServiceError> {
     let mut request = [0u8; HEALTH_REQUEST_BYTES];
@@ -468,7 +474,8 @@ async fn serve_health_request(
     }
     let revision = safe_revision(DEFAULT_SOURCE_REVISION);
     let body = format!(
-        "{{\"status\":\"ready\",\"roles\":[\"bootstrap-kad-cache\",\"pairwise-rendezvous\"],\"source_revision\":\"{revision}\",\"dht_records\":{},\"dht_value_bytes\":{},\"rendezvous_records\":{},\"rendezvous_mutable_bytes\":{}}}\n",
+        "{{\"status\":\"ready\",\"roles\":[{}],\"source_revision\":\"{revision}\",\"dht_records\":{},\"dht_value_bytes\":{},\"rendezvous_records\":{},\"rendezvous_mutable_bytes\":{}}}\n",
+        roles.health_json(),
         snapshot.dht_records,
         snapshot.dht_value_bytes,
         snapshot.rendezvous_records,
@@ -680,7 +687,13 @@ mod tests {
             .unwrap(),
         );
         let (shutdown_sender, shutdown_receiver) = watch::channel(false);
-        let task = tokio::spawn(run_health(address, dht, rendezvous, shutdown_receiver));
+        let task = tokio::spawn(run_health(
+            address,
+            RoleSelection::Both,
+            Some(dht),
+            Some(rendezvous),
+            shutdown_receiver,
+        ));
         for _ in 0..50 {
             if probe_health(address).await.is_ok() {
                 shutdown_sender.send(true).unwrap();

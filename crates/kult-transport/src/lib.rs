@@ -26,6 +26,7 @@ use kult_protocol::Envelope;
 pub mod airtime;
 mod internet;
 mod mailbox;
+mod mailbox_service;
 mod mailbox_v2;
 mod mdns;
 #[cfg(feature = "meshtastic")]
@@ -37,6 +38,10 @@ mod wake;
 
 pub use internet::{CallStream, Libp2pTransport, NatStatus, TransportOptions};
 pub use mailbox::{MailboxConfig, MAX_MAILBOX_CHECKIN_ENVELOPES, MAX_MAILBOX_CHECKIN_TOKENS};
+pub use mailbox_service::{
+    initialize_mailbox_service, inspect_mailbox_service, MailboxServiceInfo, MailboxServiceMetrics,
+    MailboxV2Service, MAILBOX_SERVICE_PROTOCOLS,
+};
 pub use mailbox_v2::{
     decode_mailbox_v2_request, decode_mailbox_v2_response, encode_mailbox_v2_request,
     encode_mailbox_v2_response, MailboxMetrics, MailboxServiceConfig, MailboxV2LeasedRow,

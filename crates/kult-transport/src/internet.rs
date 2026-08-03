@@ -1284,7 +1284,7 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-fn load_or_create_service_identity(
+pub(crate) fn load_or_create_service_identity(
     path: &std::path::Path,
 ) -> io::Result<libp2p::identity::Keypair> {
     const MAX_KEY_BYTES: usize = 1024;
@@ -1317,7 +1317,12 @@ fn load_or_create_service_identity(
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+                if file.metadata()?.permissions().mode() & 0o077 != 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "mailbox transport key must be owner-only",
+                    ));
+                }
             }
             let mut bytes = Vec::with_capacity(MAX_KEY_BYTES);
             file.take((MAX_KEY_BYTES + 1) as u64)
@@ -2484,6 +2489,23 @@ mod tests {
             MailboxServiceConfig::in_directory(directory.path(), crate::MailboxConfig::default());
         assert_ne!(config.transport_key_path, config.key_path);
         let first = load_or_create_service_identity(&config.transport_key_path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&config.transport_key_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            std::fs::set_permissions(
+                &config.transport_key_path,
+                std::fs::Permissions::from_mode(0o400),
+            )
+            .unwrap();
+        }
         let second = load_or_create_service_identity(&config.transport_key_path).unwrap();
         assert_eq!(first.public().to_peer_id(), second.public().to_peer_id());
         #[cfg(unix)]
@@ -2495,7 +2517,7 @@ mod tests {
                     .permissions()
                     .mode()
                     & 0o777,
-                0o600
+                0o400
             );
         }
     }

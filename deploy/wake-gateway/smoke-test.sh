@@ -3,7 +3,7 @@ set -eu
 
 compose_file=${COMPOSE_FILE:-deploy/wake-gateway/compose.yaml}
 image=${WAKE_GATEWAY_IMAGE:-ghcr.io/andrigitdev/komms-wake:wake-ci}
-project_root=$(CDPATH= cd "$(dirname "$0")/../.." && pwd -P)
+project_root=$(unset CDPATH; cd "$(dirname "$0")/../.." && pwd -P)
 temp_root=${WAKE_GATEWAY_TEMP_ROOT:-$project_root/target}
 mkdir -p "$temp_root"
 smoke_root=$(mktemp -d "$temp_root/komms-wake-smoke.XXXXXX")

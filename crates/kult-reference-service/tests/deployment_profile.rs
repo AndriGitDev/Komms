@@ -2,6 +2,7 @@
 
 const DOCKERFILE: &str = include_str!("../../../deploy/reference-service/Dockerfile");
 const COMPOSE: &str = include_str!("../../../deploy/reference-service/compose.yaml");
+const SPLIT_COMPOSE: &str = include_str!("../../../deploy/reference-service/compose-split.yaml");
 const CONFIG: &str = include_str!("../../../deploy/reference-service/reference-service.toml");
 
 #[test]
@@ -76,4 +77,34 @@ fn configuration_exposes_exactly_the_two_service_roles() {
             "configuration can name a forbidden role: {forbidden}"
         );
     }
+}
+
+#[test]
+fn split_profile_gives_each_process_only_its_selected_role_and_keys() {
+    for required in [
+        "--roles",
+        "bootstrap-kad-cache",
+        "pairwise-rendezvous",
+        "REFERENCE_DHT_KEYS_DIR",
+        "REFERENCE_RENDEZVOUS_KEYS_DIR",
+        "read_only: true",
+        "driver: none",
+    ] {
+        assert!(
+            SPLIT_COMPOSE.contains(required),
+            "split profile lacks {required}"
+        );
+    }
+    let bootstrap = SPLIT_COMPOSE
+        .split("  rendezvous:")
+        .next()
+        .expect("bootstrap block");
+    assert!(!bootstrap.contains("REFERENCE_RENDEZVOUS_KEYS_DIR"));
+    assert!(!bootstrap.contains("8443:8443"));
+    let rendezvous = SPLIT_COMPOSE
+        .split("  rendezvous:")
+        .nth(1)
+        .expect("rendezvous block");
+    assert!(!rendezvous.contains("REFERENCE_DHT_KEYS_DIR"));
+    assert!(!rendezvous.contains("4405:4405"));
 }
