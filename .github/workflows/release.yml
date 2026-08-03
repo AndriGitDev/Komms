@@ -241,14 +241,14 @@ jobs:
             --bundle-dir linux-primary-evidence \
             --expected-revision "${{ needs.prepare.outputs.revision }}"
       - name: Upload candidate packages
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: candidate-${{ matrix.kind }}
           path: release-assets
           if-no-files-found: error
           retention-days: 90
       - name: Upload build record
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: build-record-${{ matrix.kind }}
           path: build-records/${{ matrix.kind }}.json
@@ -256,7 +256,7 @@ jobs:
           retention-days: 90
       - name: Upload primary Linux measurement
         if: matrix.kind == 'linux-x86_64'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: repro-linux-primary
           path: linux-primary-evidence
@@ -325,14 +325,14 @@ jobs:
             --bundle-dir linux-rebuild-evidence \
             --expected-revision "${{ needs.prepare.outputs.revision }}"
       - name: Upload second measurement
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: repro-linux-secondary
           path: linux-rebuild-evidence
           if-no-files-found: error
           retention-days: 90
       - name: Upload second build record
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: build-record-linux-secondary
           path: build-records/linux-rebuild.json
@@ -434,21 +434,21 @@ jobs:
             --expected-revision "${{ needs.prepare.outputs.revision }}" \
             --require-complete
       - name: Upload Android candidate
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: candidate-android-validation
           path: release-assets
           if-no-files-found: error
           retention-days: 90
       - name: Upload Android build record
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: build-record-android
           path: build-records/android.json
           if-no-files-found: error
           retention-days: 90
       - name: Upload Android declared-license evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: android-license-report
           path: android-licenses.json
@@ -521,14 +521,14 @@ jobs:
             --tool "xcode=$(xcodebuild -version | tr '\n' ' ')" \
             --output build-records/ios-simulator.json
       - name: Upload iOS validation artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: candidate-ios-simulator
           path: release-assets
           if-no-files-found: error
           retention-days: 90
       - name: Upload iOS build record
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: build-record-ios-simulator
           path: build-records/ios-simulator.json
@@ -563,7 +563,7 @@ jobs:
             --output reproducibility.json \
             --require none
       - name: Upload reproducibility measurement
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: reproducibility-report
           path: reproducibility.json
@@ -719,14 +719,14 @@ jobs:
               | xargs -0 -r sha256sum
           ) > target/validation-assets/VALIDATION-SHA256SUMS
       - name: Upload evidence bundle
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-evidence-bundle
           path: target/release-evidence
           if-no-files-found: error
           retention-days: 90
       - name: Upload retained validation candidate
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: validation-candidate-assets
           path: target/validation-assets
