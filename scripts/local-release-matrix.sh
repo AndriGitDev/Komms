@@ -5,6 +5,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fuzz_seconds="${KOMMS_FUZZ_SECONDS:-60}"
 android_required="${KOMMS_REQUIRE_ANDROID_APP:-0}"
 ios_required="${KOMMS_REQUIRE_IOS_APP:-0}"
+service_containers_required="${KOMMS_REQUIRE_SERVICE_CONTAINERS:-0}"
 
 run() {
     printf '\n==> %s\n' "$*"
@@ -22,8 +23,14 @@ export RUSTFLAGS="${RUSTFLAGS:--D warnings}"
 
 run_in "$root" python3 scripts/check-release-version.py
 run_in "$root" python3 scripts/check-docs.py
+run_in "$root" python3 scripts/localization.py check
+run_in "$root" python3 scripts/check-localization-sources.py
+run_in "$root" python3 scripts/test-localization.py
 run_in "$root" python3 scripts/check-message-request-accessibility.py
+run_in "$root" python3 scripts/check-shell-accessibility.py
 run_in "$root" python3 scripts/test-contributor-check.py
+run_in "$root" python3 scripts/check-stewardship.py
+run_in "$root" python3 scripts/test-stewardship.py
 run_in "$root" python3 scripts/check-release-engineering.py
 run_in "$root" python3 scripts/test_security_review_package.py
 run_in "$root" python3 scripts/security_review_package.py --check
@@ -32,6 +39,7 @@ run_in "$root" python3 scripts/test-release-evidence.py
 run_in "$root" python3 scripts/test-release-qualification.py
 run_in "$root" python3 scripts/test-field-qualification.py
 run_in "$root" python3 scripts/test-release-signing.py
+run_in "$root" python3 scripts/test-stable-beta-readiness.py
 run_in "$root" python3 scripts/test-stage-release-artifacts.py
 run_in "$root" cargo build --locked -p kult-conformance
 run_in "$root" python3 scripts/update-conformance-vectors.py \
@@ -52,6 +60,41 @@ run_in "$desktop" cargo fmt --all -- --check
 run_in "$desktop" cargo clippy --all-targets --all-features
 run_in "$desktop" cargo test --all-features
 run_in "$desktop" cargo deny check
+
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    revision="$(git -C "$root" rev-parse HEAD)"
+    source_date_epoch="$(git -C "$root" show -s --format=%ct HEAD)"
+    run_in "$root" docker build \
+        --build-arg "KOMMS_SOURCE_REVISION=$revision" \
+        --build-arg "SOURCE_DATE_EPOCH=$source_date_epoch" \
+        --tag komms-kultd:local-release .
+    service_images=(
+        "reference-service|deploy/reference-service/Dockerfile|komms-reference-service:local-release|REFERENCE_SERVICE_IMAGE|deploy/reference-service/smoke-test.sh"
+        "mailbox-service|deploy/mailbox-service/Dockerfile|komms-mailbox:local-release|MAILBOX_SERVICE_IMAGE|deploy/mailbox-service/smoke-test.sh"
+        "wake-gateway|deploy/wake-gateway/Dockerfile|komms-wake:local-release|WAKE_GATEWAY_IMAGE|deploy/wake-gateway/smoke-test.sh"
+        "ohttp-relay|deploy/ohttp-relay/Dockerfile|komms-ohttp-relay:local-release|KOMMS_OHTTP_RELAY_IMAGE|deploy/ohttp-relay/smoke-test.sh"
+    )
+    for entry in "${service_images[@]}"; do
+        IFS='|' read -r label dockerfile image image_variable smoke <<<"$entry"
+        run_in "$root" docker build \
+            --build-arg "KOMMS_SOURCE_REVISION=$revision" \
+            --build-arg "SOURCE_DATE_EPOCH=$source_date_epoch" \
+            --file "$dockerfile" \
+            --tag "$image" .
+        printf '\n==> (%s) %s\n' "$root" "$smoke"
+        (
+            cd "$root"
+            export "$image_variable=$image"
+            "$smoke"
+        )
+        printf 'Validated local %s image %s\n' "$label" "$image"
+    done
+else
+    printf '\nDEFERRED: endpoint/service container build and restart gates need an accessible Docker daemon.\n'
+    if [[ "$service_containers_required" == "1" ]]; then
+        exit 1
+    fi
+fi
 
 if command -v gradle >/dev/null 2>&1 && java -version >/dev/null 2>&1; then
     run_in "$root/apps/android" gradle :core:build -Pkomms.androidApp=false --rerun-tasks

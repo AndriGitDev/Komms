@@ -30,6 +30,7 @@ An evidence bundle contains:
 | `qualification.json` | Canonical-matrix digest plus named environment and install/upgrade/rollback case rows |
 | `signing.json` | Public fingerprint, exact artifact digests, verifier, and status for every signing role |
 | `residual-risks.json` | Open risks or the accountable release decision |
+| `stable-beta.json` | Consent-based pilot aggregates, final-candidate reruns, P0 audit, support/update plan, rollback, and candidate-only founder decision |
 | `release-notes.md` | User-visible scope and limitations |
 | `SHA256SUMS.sig` | Detached offline release-manifest signature, added only after promotion |
 
@@ -75,6 +76,13 @@ python3 scripts/release-signing.py prepare \
   --revision "$revision" \
   --artifact-manifest target/artifacts.json \
   --output target/signing.json
+
+python3 scripts/stable-beta-readiness.py prepare \
+  --revision "$revision" \
+  --version 0.3.0 \
+  --artifact-manifest target/artifacts.json \
+  --release-notes .github/release-body.md \
+  --output target/stable-beta.json
 
 python3 scripts/android-license-evidence.py inventory \
   --repository . \
@@ -135,7 +143,9 @@ python3 scripts/release-evidence.py bundle \
   --dependency-policy target/dependency-policy.json \
   --qualification target/qualification.json \
   --signing target/signing.json \
-  --residual-risks release/residual-risks-v1.json
+  --residual-risks release/residual-risks-v1.json \
+  --stable-beta target/stable-beta.json \
+  --release-notes .github/release-body.md
 
 python3 scripts/release-evidence.py verify \
   --bundle-dir target/release-evidence \
@@ -232,9 +242,27 @@ Alpha promotion requires a verified release-manifest role plus the native
 signing role for every platform artifact actually included. Stable promotion
 also requires every policy signing role and artifact class, a completely
 passed qualification matrix, no unexplained reproduction difference, genuine
-independent reproduction evidence, and an authorized residual-risk decision.
-The command copies rather than mutates the validation bundle and recomputes
-every record digest.
+independent reproduction evidence, an authorized residual-risk decision, and a
+passing `stable-beta.json`. The stable-beta record must bind the exact artifact
+manifest and release notes; its consent pilot, eleven final-candidate rows,
+P0-01 through P0-10, support/update window, tested rollback, and candidate-only
+founder decision must all pass. The command copies rather than mutates the
+validation bundle and recomputes every record digest.
+
+Stable promotion supplies the reviewed record explicitly:
+
+```sh
+python3 scripts/release-evidence.py promote \
+  --bundle-dir target/release-evidence \
+  --output-dir target/promoted-evidence \
+  --channel stable \
+  --signing reviewed/signing.json \
+  --qualification reviewed/qualification.json \
+  --reproducibility reviewed/reproducibility.json \
+  --residual-risks reviewed/residual-risks.json \
+  --stable-beta reviewed/stable-beta.json \
+  --release-notes reviewed/release-notes.md
+```
 
 Stable residual-risk authorization names the exact revision, decision owner,
 decision time, durable go/no-go evidence, and a closed or explicitly accepted
@@ -288,8 +316,8 @@ draft, exact tag, archive digest, and maintainer authorization have been
 rechecked. A same-tag asset is never replaced.
 
 No release may be promoted merely by editing the claim booleans. The signing,
-qualification, reproduction, and residual-risk records remain independently
-validated inputs.
+qualification, reproduction, residual-risk, and stable-beta records remain
+separately validated inputs.
 
 ## 6. Hosted evidence and retention
 

@@ -175,6 +175,7 @@
     "qualification.json",
     "signing.json",
     "residual-risks.json",
+    "stable-beta.json",
     "release-notes.md"
   ]
 }

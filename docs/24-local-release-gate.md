@@ -45,13 +45,16 @@ The script runs:
 2. the ADR-0027 100,000- and 1,000,000-message migration, unlock, indexed page,
    exact edit/delete, memory, and database-growth budgets;
 3. the desktop workspace's independent format, clippy, test, and deny gates;
-4. generated Kotlin UniFFI bindings plus the Android JVM/core two-node suite;
-5. generated Swift UniFFI bindings plus the iOS/macOS host two-node suite;
-6. Android APK/lint and the unsigned iOS Simulator application build when their
+4. the endpoint container image build plus dedicated reference, mailbox, wake,
+   and OHTTP service image builds and restart/hardening smokes when a Docker
+   daemon is available;
+5. generated Kotlin UniFFI bindings plus the Android JVM/core two-node suite;
+6. generated Swift UniFFI bindings plus the iOS/macOS host two-node suite;
+7. Android APK/lint and the unsigned iOS Simulator application build when their
    complete SDKs are installed;
-7. every crypto and protocol fuzz target for 60 seconds, including C2 device
+8. every crypto and protocol fuzz target for 60 seconds, including C2 device
    records and C7 call-control/call-media parsers; and
-8. final Git whitespace and worktree review.
+9. final Git whitespace and worktree review.
 
 Run from the repository root:
 
@@ -62,7 +65,8 @@ scripts/local-release-matrix.sh
 `KOMMS_FUZZ_SECONDS` may shorten a developer smoke pass, but the release record
 uses the default 60 seconds. Set `KOMMS_REQUIRE_ANDROID_APP=1` or
 `KOMMS_REQUIRE_IOS_APP=1` when that platform gate must fail rather than be
-reported as deferred.
+reported as deferred. Set `KOMMS_REQUIRE_SERVICE_CONTAINERS=1` to make an
+unavailable container daemon fail instead of defer.
 
 ## 3. Deferred and external gates are explicit
 

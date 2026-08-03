@@ -182,8 +182,11 @@ Platform build instructions:
 | how to read or run the stand-alone stable-v1 protocol kit | [Stable-v1 Protocol Conformance](41-protocol-conformance.md) |
 | what an independent reviewer receives and what evidence remains open | [Independent Security-Review Readiness](42-independent-security-review.md) |
 | how physical devices, real networks, accessibility, and radios are qualified | [Field Qualification](43-field-qualification.md) |
+| how the consent pilot, P0 audit, rollback, and stable-beta decision fit together | [Stable-Beta Pilot and Release Decision](51-stable-beta-pilot-and-release-decision.md) |
 | how to build and validate one bounded contribution target | [Contributor Path](44-contributor-path.md) |
+| how localization and cross-shell accessibility are implemented and bounded | [Localization and Accessibility](45-localization-accessibility.md) |
 | how the optional content-free phone-wake gateway is bounded and operated | [Native-Wake Operations](37-native-wake-operations.md) |
+| how the fixed-mapping OHTTP relay strips metadata and remains unqualified | [Oblivious HTTP Relay Operations](52-ohttp-relay-operations.md) |
 | what evidence is required before stable or wire v1 | [Stabilization Program](29-stabilization-program.md) |
 | which persisted protocol transitions are atomic and which remain open | [Atomic Transition Inventory](34-atomic-transition-inventory.md) |
 | why a technical decision was made | [ADR Index](adr/README.md) |

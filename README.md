@@ -92,12 +92,13 @@ independent interoperability.
 | Area | Current state |
 |---|---|
 | **Core security and storage** | Hybrid PQXDH, Double Ratchet sessions, sealed envelopes, opaque keyed SQLite indexes, row-bound local records, released-schema migration, backup/recovery, RPC/CLI, and UniFFI paths are implemented with repeatable tests. SQLite still reveals approximate row counts/sizes, order, within-domain equality, access patterns, and change timing. Storage has Linux/ext4 test evidence, but independent review and physical macOS, Windows, Android, iOS, power-loss, backup-exclusion, and forensic qualification remain open. |
-| **Internet, LAN, and delayed delivery** | libp2p QUIC/TCP, Kademlia discovery, NAT traversal, mDNS, and durable leased mailbox v2 are implemented. Mailbox deposits commit before acceptance; exact relay rows remain until endpoint staging and acknowledgement, with local restart/failpoint/overload/multi-operator tests and aggregate-only health output. Fresh installs still lack a qualified distinct-NAT golden path: bootstrap/mailbox defaults require deliberate configuration, and no public mailbox operator, upgrade/backup/cost record, or real-network matrix is qualified. [ADR-0034](docs/adr/0034-operator-minimized-reference-discovery.md) proposes an initial founder-operated Hetzner Standard-mode bootstrap/DHT/rendezvous default with RAM-backed mutable state; it is not implemented or a durable mailbox. |
+| **Internet, LAN, and delayed delivery** | libp2p QUIC/TCP, Kademlia discovery, NAT traversal, mDNS, and durable leased mailbox v2 are implemented. Mailbox deposits commit before acceptance; exact relay rows remain until endpoint staging and acknowledgement. A dedicated `/komms/mailbox/2`-only artifact, hardened image, restart tests, failpoints, overload/multi-operator tests, and aggregate-only health are implemented locally. Fresh installs still lack a qualified distinct-NAT golden path: bootstrap/mailbox defaults require deliberate configuration, and no public mailbox operator, observed upgrade/backup/cost record, or real-network matrix is qualified. |
 | **Off-grid delivery** | Sneakernet and the Meshtastic carrier, duty-cycle controls, retransmission, and internet↔mesh bridge paths are implemented with automated evidence. The physical two-radio bench is not yet field-qualified. |
 | **Applications and messaging** | Desktop, Android, and iOS shells expose pairwise/group text and a broad Alpha feature set, including attachments, local organization, linked devices, ephemeral content, polls, roles, and direct audio-call paths. CI and simulator evidence exist; hands-on device, background lifecycle, NAT, accessibility, and localization qualification remain. |
 | **Distribution** | Unsigned desktop packages and a debug-signed Android APK are published for Alpha testing; iOS is source/Simulator-only. A bounded, revision-bound release-evidence and controlled-reproduction path is implemented locally, but has no retained candidate run. Production credentials, signed platform artifacts, authenticated updates, external reproduction, store distribution, upgrade/rollback qualification, and stable support remain open. |
-| **Optional mobile convenience** | ADR-0018 rotating post-pairing rendezvous is implemented for Alpha in crypto, protocol, sealed service state, bounded node orchestration, client front doors, and a persistence-free least-authority service component. It is not configured by default and no reference service is deployed. The complete operating-mode contract, network service wrapper, Private ingress, and ADR-0019 content-free native wake remain open; none is required by the sovereign core. |
+| **Optional mobile convenience** | ADR-0018 rotating post-pairing rendezvous and ADR-0019 content-free native wake are implemented locally across core, services, and clients. Standard, Private, and Sovereign share one mode contract; Private currently uses loopback Tor. A dedicated fixed-mapping RFC 9458 relay artifact is implemented, but no compatible gateway/client path, deployment, distinct administrative domains, or non-collusion evidence exists, so OHTTP is not selectable or qualified. The Play flavor contains FCM support, the Google-free flavor advertises none, and Apple uses APNs directly. No reference/wake/OHTTP service or production provider credential is deployed, and no physical background/force-quit/Doze row is qualified. None of these optional services is required by the Sovereign core. |
 | **Trust and governance** | The project is founder-directed by design during construction and stabilization under a nonprofit public-benefit mission. The founder retains product and release authority. Independent security and interoperability evidence is still missing. The [stabilization program](docs/29-stabilization-program.md) defines the evidence required before stable claims. |
+| **Stable-beta readiness** | A consent, aggregate-only pilot contract and fail-closed P0/candidate decision record are implemented. No pilot has run, all P0 gates remain open, production signing is unenrolled, and no stable-beta candidate, publication, or stable claim is authorized. |
 
 Older `KKR1` through legacy copied-root `KKR7` backups remain explicit
 migration/reset inputs: they never resume the former account, and the guided
@@ -197,12 +198,33 @@ status of any particular proposal.
 | [30: Stable-v1 Product Profile](docs/30-stable-v1-product-profile.md) | Frozen install, messaging, bounds, recovery, delivery, platform, service, and exclusion contract |
 | [31: Release Evidence Ledger](docs/31-release-evidence-ledger.md) | P0 and stable-claim owners, evidence, revisions, gaps, and review dates |
 | [32: Name-risk Decision](docs/32-name-risk-decision.md) | Dated keep-and-monitor decision, observed overlap, migration cost, cadence, and advice triggers |
+| [33: Opaque Store Qualification](docs/33-opaque-store-qualification.md) | Opaque-indexed store migration, remnant controls, scale evidence, and open physical/forensic gates |
+| [34: Atomic Transition Inventory](docs/34-atomic-transition-inventory.md) | Typed protocol/store transitions, crash ownership, and side-effect ordering |
+| [35: Reference Service Operations](docs/35-reference-service-operations.md) | Least-authority bootstrap/DHT/rendezvous image, hardening, rotation, and replacement |
+| [36: Operating Modes and Provider Directory](docs/36-operating-modes-and-provider-directory.md) | Canonical Standard, Private, and Sovereign behavior with replaceable signed providers |
+| [37: Native Wake Operations](docs/37-native-wake-operations.md) | Fixed-shape least-authority wake service, credentials, state, and incident response |
+| [38: Native Wake Mobile Qualification](docs/38-native-wake-mobile-qualification.md) | Android/iOS lifecycle matrix and strict physical-evidence boundary |
+| [39: Release Security and Recovery](docs/39-release-security-and-recovery.md) | Signing roles, key rotation, compromise, updater, and rollback policy |
+| [40: Release Evidence Bundles](docs/40-release-evidence-bundles.md) | Revision/digest-bound SBOM, provenance, reproducibility, and qualification records |
+| [41: Protocol Conformance](docs/41-protocol-conformance.md) | Stand-alone stable-v1 specification, fixtures, runner, and independence limits |
+| [42: Independent Security Review](docs/42-independent-security-review.md) | External-review scope, evidence archive, RFP, findings, and current unassigned status |
+| [43: Field Qualification](docs/43-field-qualification.md) | Named platform/network/radio matrix, capture format, and retained simulator evidence |
+| [44: Contributor Path](docs/44-contributor-path.md) | Bounded target profiles, sensitive review boundaries, and focused handoff |
+| [45: Localization and Accessibility](docs/45-localization-accessibility.md) | Shared English/Icelandic catalogs, semantics, contrast, and open external evidence |
+| [46: Operator Program](docs/46-operator-program.md) | Service roles, capacity/cost, support, abuse, upgrade, and two-operator qualification |
+| [47: License, Trademark, and Assets](docs/47-license-trademark-assets.md) | AGPL scope, section 13, contributions, names, identifiers, and third-party inventory |
+| [48: Funding and Transparency](docs/48-funding-transparency.md) | Mission-aligned funding, conflicts, reporting cadence, and legal-entity limits |
+| [49: Privacy, Legal, and Incident Readiness](docs/49-privacy-legal-incident-readiness.md) | Provider data flows, lawful requests, key incidents, advisories, and dry-runs |
+| [50: Mailbox Service Operations](docs/50-mailbox-service-operations.md) | Dedicated mailbox-v2 artifact, custody, backup, upgrade, incident, and qualification rules |
+| [51: Stable-Beta Pilot and Release Decision](docs/51-stable-beta-pilot-and-release-decision.md) | Consent boundary, aggregate pilot metrics, final matrix, P0 audit, support, rollback, and founder decision |
+| [52: Oblivious HTTP Relay Operations](docs/52-ohttp-relay-operations.md) | Fixed-mapping RFC 9458 relay, metadata stripping, hardening, rotation, and non-collusion boundary |
 | [ADRs](docs/adr/README.md) | Decision index, status, and the alternatives each decision beat |
 
 ## Stack
 
 Rust workspace (`kult-crypto` / `kult-protocol` / `kult-transport` / `kult-store` /
-`kult-node` / `kultd` / `kult-ffi`), UniFFI bindings, Tauri desktop app, native
+`kult-node` / `kultd` / `kult-reference-service` / `kult-mailbox` /
+`kult-wake` / `kult-ohttp-relay` / `kult-ffi`), UniFFI bindings, Tauri desktop app, native
 mobile shells.
 Layout in [Architecture §7](docs/03-architecture.md). Implemented so far:
 `kult-crypto` (hybrid PQXDH, Double Ratchet with encrypted headers,
@@ -278,5 +300,8 @@ prominently offer its remote users an opportunity to receive that version's
 Corresponding Source. The AGPL permits commercial use; Komms's nonprofit
 mission governs official project activity, not independent licensees. See
 [ADR-0006](docs/adr/0006-agplv3.md) and
-[ADR-0033](docs/adr/0033-nonprofit-founder-stewardship.md). This summary is not
-legal advice.
+[ADR-0033](docs/adr/0033-nonprofit-founder-stewardship.md). Repository scope,
+contribution terms, trademark use, package identifiers, and third-party
+material are in the
+[license, trademark, and asset policy](docs/47-license-trademark-assets.md) and
+[third-party notices](THIRD_PARTY_NOTICES.md). This summary is not legal advice.

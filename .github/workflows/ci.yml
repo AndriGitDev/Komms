@@ -35,10 +35,21 @@ jobs:
         run: python3 scripts/check-release-version.py
       - name: documentation controls
         run: python3 scripts/check-docs.py
+      - name: localization contract
+        run: |
+          python3 scripts/localization.py check
+          python3 scripts/check-localization-sources.py
+          python3 scripts/test-localization.py
       - name: message-request accessibility contract
         run: python3 scripts/check-message-request-accessibility.py
+      - name: cross-shell accessibility contract
+        run: python3 scripts/check-shell-accessibility.py
       - name: contributor profile controls
         run: python3 scripts/test-contributor-check.py
+      - name: operator and stewardship controls
+        run: |
+          python3 scripts/check-stewardship.py
+          python3 scripts/test-stewardship.py
       - name: release engineering controls
         run: |
           python3 scripts/check-release-engineering.py
@@ -46,6 +57,7 @@ jobs:
           python3 scripts/test-release-evidence.py
           python3 scripts/test-release-qualification.py
           python3 scripts/test-release-signing.py
+          python3 scripts/test-stable-beta-readiness.py
           python3 scripts/test-stage-release-artifacts.py
       - name: stable-v1 conformance
         run: |

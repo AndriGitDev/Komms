@@ -22,7 +22,7 @@ REQUIRED_CASES = {
     "old-version-compatibility",
     "signing-key-compromise-response",
 }
-STABLE_RECORDS = {
+PUBLISHABLE_RECORDS = {
     "source.json",
     "builders.json",
     "artifacts.json",
@@ -36,6 +36,45 @@ STABLE_RECORDS = {
     "signing.json",
     "residual-risks.json",
     "release-notes.md",
+}
+STABLE_RECORDS = PUBLISHABLE_RECORDS | {"stable-beta.json"}
+STABLE_BETA_MATRIX_IDS = [
+    "clean-install",
+    "distinct-nat",
+    "optional-service-blackhole",
+    "self-hosted-replacement",
+    "mailbox-restart-overload",
+    "backup-recovery",
+    "signed-upgrade-rollback",
+    "supported-device",
+    "physical-radio",
+    "accessibility",
+    "conformance",
+]
+STABLE_BETA_METRIC_IDS = [
+    "install-completion",
+    "contact-establishment-success",
+    "first-message-within-15-minutes",
+    "offline-delivery-success",
+    "fallback-success",
+    "crash-or-recovery-success",
+    "mode-comprehension",
+    "expected-notification-behavior",
+    "critical-accessibility-blockers",
+    "privacy-boundary-incidents",
+    "support-minutes",
+]
+RESIDUAL_RISK_IDS = {
+    "consent-alpha-pilot",
+    "distribution-credentials",
+    "independent-conformance",
+    "independent-reproduction",
+    "independent-security-review",
+    "install-upgrade-rollback",
+    "legal-assets-and-continuity",
+    "operator-qualification",
+    "physical-field-qualification",
+    "stable-beta-go-no-go",
 }
 
 
@@ -111,7 +150,7 @@ def check_policy(errors: list[str]) -> tuple[set[str], set[str]]:
             "measured-after-platform-signing",
         }:
             errors.append(f"{row.get('id')}: invalid reproducibility contract")
-    if set(policy.get("publishable_required_records", [])) != STABLE_RECORDS:
+    if set(policy.get("publishable_required_records", [])) != PUBLISHABLE_RECORDS:
         errors.append("release policy publishable record inventory is incomplete or unexpected")
     if set(policy.get("stable_required_records", [])) != STABLE_RECORDS:
         errors.append("release policy stable record inventory is incomplete or unexpected")
@@ -373,6 +412,8 @@ def check_workflows(errors: list[str]) -> None:
         "artifact-metadata: write",
         "actions/attest@",
         "release-signing.py validate",
+        "stable-beta-readiness.py validate",
+        "--stable-beta target/stable-beta.json",
         "--require-complete",
         "environment: release-signing-enrollment",
         "environment: release-draft",
@@ -425,21 +466,101 @@ def check_public_records(errors: list[str]) -> None:
         or residual.get("decision") != "not-authorized"
     ):
         errors.append("residual-risk template must visibly block stable authorization")
+    else:
+        risks = residual.get("risks")
+        risk_keys = {
+            "id",
+            "status",
+            "statement",
+            "gate",
+            "owner",
+            "next_review",
+            "required_action",
+        }
+        if (
+            not isinstance(risks, list)
+            or {row.get("id") for row in risks if isinstance(row, dict)}
+            != RESIDUAL_RISK_IDS
+            or len(risks) != len(RESIDUAL_RISK_IDS)
+            or any(
+                not isinstance(row, dict)
+                or set(row) != risk_keys
+                or row.get("status") != "open"
+                or not all(
+                    isinstance(row.get(field), str) and row[field].strip()
+                    for field in (
+                        "id",
+                        "statement",
+                        "gate",
+                        "owner",
+                        "next_review",
+                        "required_action",
+                    )
+                )
+                or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", row["next_review"])
+                is None
+                for row in risks
+            )
+        ):
+            errors.append(
+                "residual-risk template must retain every owner, date, gate, and action"
+            )
     scripts = {
         "scripts/release-evidence.py",
         "scripts/android-license-evidence.py",
         "scripts/release-qualification.py",
         "scripts/release-signing.py",
+        "scripts/stable-beta-readiness.py",
+        "scripts/test-stable-beta-readiness.py",
         "scripts/stage-release-artifacts.py",
         "scripts/install-xcodegen.sh",
     }
     for relative in scripts:
         if not (ROOT / relative).is_file():
             errors.append(f"{relative}: required release control is missing")
+    stable_beta = load_json(ROOT / "release/stable-beta-plan-v1.json", errors)
+    stable_beta_gates = (
+        stable_beta.get("gates", []) if isinstance(stable_beta, dict) else []
+    )
+    if not isinstance(stable_beta_gates, list):
+        stable_beta_gates = []
+    stable_beta_matrix = (
+        stable_beta.get("candidate_matrix", [])
+        if isinstance(stable_beta, dict)
+        else []
+    )
+    if not isinstance(stable_beta_matrix, list):
+        stable_beta_matrix = []
+    stable_beta_pilot = (
+        stable_beta.get("pilot", {}) if isinstance(stable_beta, dict) else {}
+    )
+    stable_beta_metrics = (
+        stable_beta_pilot.get("metrics", [])
+        if isinstance(stable_beta_pilot, dict)
+        else []
+    )
+    if (
+        not isinstance(stable_beta, dict)
+        or stable_beta.get("schema") != "komms-stable-beta-plan/v1"
+        or not all(isinstance(row, dict) for row in stable_beta_gates)
+        or [row.get("id") for row in stable_beta_gates]
+        != [f"P0-{number:02d}" for number in range(1, 11)]
+        or not all(isinstance(row, dict) for row in stable_beta_matrix)
+        or [row.get("id") for row in stable_beta_matrix]
+        != STABLE_BETA_MATRIX_IDS
+        or not isinstance(stable_beta_pilot, dict)
+        or not isinstance(stable_beta_metrics, list)
+        or not all(isinstance(row, dict) for row in stable_beta_metrics)
+        or [row.get("id") for row in stable_beta_metrics]
+        != STABLE_BETA_METRIC_IDS
+    ):
+        errors.append("stable-beta plan has incomplete pilot, matrix, or P0 coverage")
     for relative in (
         "Dockerfile",
         "deploy/reference-service/Dockerfile",
+        "deploy/mailbox-service/Dockerfile",
         "deploy/wake-gateway/Dockerfile",
+        "deploy/ohttp-relay/Dockerfile",
     ):
         source = (ROOT / relative).read_text(encoding="utf-8")
         if not source.startswith(

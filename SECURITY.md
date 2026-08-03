@@ -57,6 +57,13 @@ evidence ledger records follow-up and closure. If the founder has a conflict,
 the project seeks an unconflicted external reviewer; none is currently assigned
 in advance.
 
+The role-specific provider data flows, lawful-request sequence, credential
+containment matrix, advisory fields, user-notification boundary, and internal
+policy dry-runs are in
+[Privacy, Legal, and Incident Readiness](docs/49-privacy-legal-incident-readiness.md).
+Those dry-runs are not a live incident, legal opinion, external tabletop, or
+24/7 response claim.
+
 ## Ground rules
 
 - Coordinated disclosure: please allow the initial assessment window and agree

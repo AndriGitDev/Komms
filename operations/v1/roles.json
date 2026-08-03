@@ -1,0 +1,269 @@
+{
+  "schema": "komms-operator-program/v1",
+  "program_version": 1,
+  "as_of": "2026-07-31",
+  "program_status": "prepared-not-qualified",
+  "legal_entity_status": "no-legal-entity-represented",
+  "plural_operation_status": "not-demonstrated",
+  "private_non_collusion_status": "not-demonstrated",
+  "support_policy": {
+    "alpha": {
+      "security_fixes": "best-effort",
+      "compatibility_window": "no-stable-window",
+      "operator_notice_target_days": 14
+    },
+    "stable_candidate": {
+      "minimum_security_notice_days": 90,
+      "minimum_planned_eol_notice_days": 180,
+      "overlap_required": true,
+      "activation_gate": "founder-release-decision"
+    }
+  },
+  "roles": [
+    {
+      "id": "bootstrap-kad-cache",
+      "classification": "core-discovery",
+      "implementation_status": "implemented",
+      "deployment_status": "not-deployed",
+      "deployability": "role-selectable-reference-service",
+      "artifact": "kult-reference-service",
+      "image_profile": "deploy/reference-service",
+      "protocols": [
+        "/komms/kad/1",
+        "/kk/prekeys/1/",
+        "/kk/prekeys/2/"
+      ],
+      "mutable_state": "process-memory-and-tmpfs-only",
+      "retention": "at-most-48-hours-in-the-committed-profile",
+      "credentials": [
+        "dedicated-libp2p-service-identity"
+      ],
+      "observes": [
+        "source-network-address",
+        "timing",
+        "volume",
+        "opaque-discovery-locator",
+        "opaque-fixed-size-discovery-record",
+        "availability"
+      ],
+      "must_not_receive": [
+        "message-plaintext",
+        "message-key",
+        "account-private-key",
+        "recovery-private-key",
+        "contact-label",
+        "mailbox-custody",
+        "release-signing-key",
+        "provider-directory-signing-key"
+      ],
+      "default_resource_model": {
+        "memory_mib": 512,
+        "cpu_cores": 2,
+        "persistent_gib": 0,
+        "public_ports": [
+          "4405/tcp",
+          "4405/udp"
+        ]
+      },
+      "aggregate_health_only": true,
+      "independent_operator_evidence": "unassigned"
+    },
+    {
+      "id": "pairwise-rendezvous",
+      "classification": "optional-post-pairing",
+      "implementation_status": "implemented",
+      "deployment_status": "not-deployed",
+      "deployability": "role-selectable-reference-service",
+      "artifact": "kult-reference-service",
+      "image_profile": "deploy/reference-service",
+      "protocols": [
+        "adr-0018-fixed-shape-https"
+      ],
+      "mutable_state": "process-memory-and-tmpfs-only",
+      "retention": "at-most-2-hours",
+      "credentials": [
+        "dedicated-tls-private-key",
+        "tls-leaf-provider-static-key"
+      ],
+      "observes": [
+        "source-network-address",
+        "timing",
+        "volume",
+        "opaque-rendezvous-slot",
+        "fixed-size-ciphertext",
+        "availability"
+      ],
+      "must_not_receive": [
+        "message-plaintext",
+        "message-key",
+        "account-private-key",
+        "recovery-private-key",
+        "contact-label",
+        "mailbox-custody",
+        "native-push-token",
+        "release-signing-key",
+        "provider-directory-signing-key"
+      ],
+      "default_resource_model": {
+        "memory_mib": 512,
+        "cpu_cores": 2,
+        "persistent_gib": 0,
+        "public_ports": [
+          "8443/tcp"
+        ]
+      },
+      "aggregate_health_only": true,
+      "independent_operator_evidence": "unassigned"
+    },
+    {
+      "id": "mailbox-v2",
+      "classification": "core-durable-custody",
+      "implementation_status": "implemented",
+      "deployment_status": "not-deployed",
+      "deployability": "dedicated-service",
+      "artifact": "kult-mailbox",
+      "image_profile": "deploy/mailbox-service",
+      "protocols": [
+        "/komms/mailbox/2"
+      ],
+      "mutable_state": "durable-encrypted-sqlite-plus-dedicated-service-keys",
+      "retention": "at-most-30-days-in-the-committed-profile",
+      "credentials": [
+        "dedicated-mailbox-row-key",
+        "dedicated-mailbox-libp2p-identity"
+      ],
+      "observes": [
+        "source-network-address",
+        "pseudonymous-libp2p-client",
+        "opaque-delivery-token-index",
+        "timing",
+        "padded-ciphertext-size",
+        "expiry",
+        "quota-outcome",
+        "availability"
+      ],
+      "must_not_receive": [
+        "message-plaintext",
+        "message-key",
+        "account-private-key",
+        "recovery-private-key",
+        "contact-label",
+        "release-signing-key",
+        "provider-directory-signing-key"
+      ],
+      "default_resource_model": {
+        "memory_mib": 384,
+        "cpu_cores": 2,
+        "persistent_gib": 1,
+        "public_ports": [
+          "4406/tcp",
+          "4406/udp"
+        ]
+      },
+      "aggregate_health_only": true,
+      "independent_operator_evidence": "unassigned"
+    },
+    {
+      "id": "ohttp-ingress",
+      "classification": "optional-private-ingress",
+      "implementation_status": "implemented",
+      "deployment_status": "not-deployed",
+      "deployability": "dedicated-service-one-fixed-mapping",
+      "artifact": "kult-ohttp-relay",
+      "image_profile": "deploy/ohttp-relay",
+      "protocols": [
+        "rfc9458-oblivious-relay-resource"
+      ],
+      "mutable_state": "bounded-live-exchange-and-volatile-one-minute-source-buckets",
+      "retention": "no-durable-state; encrypted bodies live only for one bounded exchange",
+      "credentials": [
+        "dedicated-relay-tls-private-key",
+        "pinned-gateway-ca-bundle"
+      ],
+      "observes": [
+        "source-network-address",
+        "fixed-gateway-destination",
+        "timing",
+        "volume",
+        "fixed-encapsulated-body-size",
+        "refusal-outcome",
+        "availability"
+      ],
+      "must_not_receive": [
+        "message-plaintext",
+        "message-key",
+        "account-private-key",
+        "recovery-private-key",
+        "contact-label",
+        "native-push-token",
+        "gateway-hpke-private-key",
+        "client-identifier-to-forward",
+        "target-capability-in-url",
+        "release-signing-key",
+        "provider-directory-signing-key"
+      ],
+      "default_resource_model": {
+        "memory_mib": 256,
+        "cpu_cores": 1,
+        "persistent_gib": 0,
+        "public_ports": [
+          "8445/tcp"
+        ]
+      },
+      "aggregate_health_only": true,
+      "independent_operator_evidence": "unassigned",
+      "open_qualification_gap": "No compatible client/gateway path, deployment, distinct administrative domains, real-network run, or non-collusion evidence exists; implemented Private mode remains loopback Tor."
+    },
+    {
+      "id": "native-wake",
+      "classification": "optional-post-acceptance-wake",
+      "implementation_status": "implemented",
+      "deployment_status": "not-deployed",
+      "deployability": "dedicated-service",
+      "artifact": "kult-wake",
+      "image_profile": "deploy/wake-gateway",
+      "protocols": [
+        "adr-0019-fixed-shape-https"
+      ],
+      "mutable_state": "bounded-durable-revocation-and-replay-only",
+      "retention": "no-longer-than-the-30-day-capability-lifetime",
+      "credentials": [
+        "dedicated-tls-private-key",
+        "versioned-capability-encryption-key",
+        "apns-signing-key-or-fcm-service-account"
+      ],
+      "observes": [
+        "source-network-address",
+        "timing",
+        "volume",
+        "native-provider-token-after-capability-open",
+        "application-topic",
+        "static-payload-profile",
+        "capability-expiry",
+        "availability"
+      ],
+      "must_not_receive": [
+        "message-plaintext",
+        "message-ciphertext",
+        "message-key",
+        "account-private-key",
+        "recovery-private-key",
+        "contact-label",
+        "conversation-id",
+        "sender-identity",
+        "release-signing-key",
+        "provider-directory-signing-key"
+      ],
+      "default_resource_model": {
+        "memory_mib": 384,
+        "cpu_cores": 2,
+        "persistent_gib": 1,
+        "public_ports": [
+          "8444/tcp"
+        ]
+      },
+      "aggregate_health_only": true,
+      "independent_operator_evidence": "unassigned"
+    }
+  ]
+}

@@ -49,7 +49,8 @@ repository permission. It:
 - builds an unsigned iOS Simulator application;
 - inventories every package and build environment;
 - emits dependency policy, CycloneDX SBOM, qualification, signing, residual
-  risk, reproducibility, provenance, and checksum records;
+  risk, reproducibility, stable-beta readiness, provenance, and checksum
+  records;
 - verifies the complete bounded bundle;
 - creates hosted artifact attestations; and
 - retains workflow artifacts for 90 days.
@@ -76,7 +77,7 @@ Review:
 - exact, normalized, explained, different, and missing reproducibility rows;
 - open or observed qualification rows;
 - every open signing role; and
-- residual risks and release notes.
+- residual risks, the honestly open stable-beta record, and release notes.
 
 The first hosted comparison is not independent reproduction. The iOS
 Simulator archive and unsigned packages are validation evidence only.
@@ -122,12 +123,16 @@ For each production artifact:
    by the intended channel.
 
 Complete the public `signing.json`, `qualification.json`,
-`reproducibility.json`, `residual-risks.json`, and release notes. Promote the
-final-artifact validation bundle with the command in
+`reproducibility.json`, `residual-risks.json`, `stable-beta.json`, and release
+notes. The stable-beta record follows the consent, final matrix, gate audit,
+support, rollback, and founder-decision procedure in
+[stable-beta pilot and release decision](51-stable-beta-pilot-and-release-decision.md).
+Promote the final-artifact validation bundle with the command in
 [release evidence bundles](40-release-evidence-bundles.md). Stable promotion
 fails unless every required role and qualification row is closed, reproduction
 has no unexplained difference, genuine independent reproduction is recorded,
-and the release owner authorizes the residual-risk decision.
+the release owner authorizes the residual-risk decision, and the stable-beta
+readiness record passes.
 
 If platform signing or notarization changes any package byte, stage those final
 packages, regenerate `artifacts.json`, signing and qualification records, and a

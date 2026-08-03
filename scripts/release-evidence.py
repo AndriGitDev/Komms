@@ -45,6 +45,7 @@ EVIDENCE_RECORD_NAMES = {
     "qualification.json",
     "signing.json",
     "residual-risks.json",
+    "stable-beta.json",
     "release-notes.md",
 }
 EVIDENCE_CONTROL_NAMES = {
@@ -913,6 +914,7 @@ def make_bundle(args: argparse.Namespace) -> None:
         "reproducibility.json": args.reproducibility,
         "signing.json": args.signing,
         "residual-risks.json": args.residual_risks,
+        "stable-beta.json": args.stable_beta,
         "release-notes.md": args.release_notes,
     }
     for name, supplied in optional_records.items():
@@ -1562,7 +1564,7 @@ def verify_bundle(args: argparse.Namespace) -> None:
     ):
         raise EvidenceError("publishable evidence lacks dependency or SBOM records")
     artifact_manifest_digest = sha256_file(bundle / "artifacts.json")
-    for record_name in ("qualification.json", "signing.json"):
+    for record_name in ("qualification.json", "signing.json", "stable-beta.json"):
         record_path = bundle / record_name
         if not record_path.exists():
             continue
@@ -1653,6 +1655,25 @@ def verify_bundle(args: argparse.Namespace) -> None:
             revision,
             require_authorized=channel == "stable",
         )
+    stable_beta_path = bundle / "stable-beta.json"
+    if stable_beta_path.exists():
+        stable_beta_arguments = [
+            str(Path(__file__).with_name("stable-beta-readiness.py")),
+            "validate",
+            "--record",
+            str(stable_beta_path),
+            "--artifact-manifest",
+            str(bundle / "artifacts.json"),
+            "--release-notes",
+            str(bundle / "release-notes.md"),
+            "--expected-revision",
+            revision,
+            "--expected-version",
+            version,
+        ]
+        if channel == "stable":
+            stable_beta_arguments.append("--require-ready")
+        run_evidence_check(stable_beta_arguments)
     if channel == "stable":
         policy = load_json(Path(args.policy))
         required = (
@@ -2114,6 +2135,10 @@ def promote_bundle(args: argparse.Namespace) -> None:
         "reproducibility.json": Path(args.reproducibility),
         "residual-risks.json": Path(args.residual_risks),
     }
+    if args.stable_beta is not None:
+        replacement_paths["stable-beta.json"] = Path(args.stable_beta)
+    elif args.channel == "stable":
+        raise EvidenceError("stable promotion requires a stable-beta readiness record")
     if args.release_notes is not None:
         replacement_paths["release-notes.md"] = Path(args.release_notes)
     for path in replacement_paths.values():
@@ -2167,6 +2192,24 @@ def promote_bundle(args: argparse.Namespace) -> None:
         revision,
         require_authorized=args.channel == "stable",
     )
+    if "stable-beta.json" in replacement_paths:
+        stable_beta_arguments = [
+            str(Path(__file__).with_name("stable-beta-readiness.py")),
+            "validate",
+            "--record",
+            str(replacement_paths["stable-beta.json"]),
+            "--artifact-manifest",
+            str(source / "artifacts.json"),
+            "--release-notes",
+            str(replacement_paths["release-notes.md"]),
+            "--expected-revision",
+            revision,
+            "--expected-version",
+            str(manifest["version"]),
+        ]
+        if args.channel == "stable":
+            stable_beta_arguments.append("--require-ready")
+        run_evidence_check(stable_beta_arguments)
 
     prepare_output(output)
     for path in sorted(source.rglob("*")):
@@ -2177,11 +2220,20 @@ def promote_bundle(args: argparse.Namespace) -> None:
         relative = safe_relative(path, source)
         if relative in ("SHA256SUMS", "SHA256SUMS.sig"):
             continue
+        if (
+            relative == "stable-beta.json"
+            and "stable-beta.json" not in replacement_paths
+        ):
+            continue
         copy_regular(path, output / relative)
     for name, path in replacement_paths.items():
         copy_regular(path, output / name)
 
-    required = policy.get("publishable_required_records")
+    required = policy.get(
+        "stable_required_records"
+        if args.channel == "stable"
+        else "publishable_required_records"
+    )
     if not isinstance(required, list) or not all(
         isinstance(name, str) for name in required
     ):
@@ -2195,9 +2247,6 @@ def promote_bundle(args: argparse.Namespace) -> None:
         raise EvidenceError(
             f"{args.channel} promotion is missing: " + ", ".join(missing)
         )
-    if args.channel == "stable" and policy.get("stable_required_records") != required:
-        raise EvidenceError("stable required-record policy differs from publication policy")
-
     records = []
     for path in sorted(output.iterdir()):
         if path.is_file() and path.name not in ("release-evidence.json", "SHA256SUMS"):
@@ -2314,6 +2363,7 @@ def parser() -> argparse.ArgumentParser:
     bundle.add_argument("--reproducibility")
     bundle.add_argument("--signing")
     bundle.add_argument("--residual-risks")
+    bundle.add_argument("--stable-beta")
     bundle.add_argument("--release-notes")
     bundle.set_defaults(run=make_bundle)
 
@@ -2396,6 +2446,7 @@ def parser() -> argparse.ArgumentParser:
     promote.add_argument("--qualification", required=True)
     promote.add_argument("--reproducibility", required=True)
     promote.add_argument("--residual-risks", required=True)
+    promote.add_argument("--stable-beta")
     promote.add_argument("--release-notes", required=True)
     promote.set_defaults(run=promote_bundle)
     return root

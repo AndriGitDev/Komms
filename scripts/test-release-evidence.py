@@ -672,6 +672,36 @@ class ReleaseEvidenceTests(unittest.TestCase):
             )
             notes = root / "release-notes.md"
             notes.write_text("Alpha fixture release notes.\n", encoding="utf-8")
+            prepared_artifacts = root / "prepared-artifacts.json"
+            run(
+                "inventory",
+                "--artifact-dir",
+                str(artifacts),
+                "--revision",
+                REVISION,
+                "--output",
+                str(prepared_artifacts),
+            )
+            stable_beta = root / "stable-beta.json"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts/stable-beta-readiness.py"),
+                    "prepare",
+                    "--revision",
+                    REVISION,
+                    "--version",
+                    "0.3.0",
+                    "--artifact-manifest",
+                    str(prepared_artifacts),
+                    "--release-notes",
+                    str(notes),
+                    "--output",
+                    str(stable_beta),
+                ],
+                cwd=ROOT,
+                check=True,
+            )
             validation = root / "validation"
             run(
                 "bundle",
@@ -695,9 +725,12 @@ class ReleaseEvidenceTests(unittest.TestCase):
                 str(licenses),
                 "--dependency-policy",
                 str(dependency),
+                "--stable-beta",
+                str(stable_beta),
                 "--release-notes",
                 str(notes),
             )
+            self.assertTrue((validation / "stable-beta.json").is_file())
             artifact_manifest = validation / "artifacts.json"
             artifact_row = json.loads(
                 artifact_manifest.read_text(encoding="utf-8")
@@ -836,6 +869,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
             )
             self.assertEqual(promoted_record["channel"], "alpha")
             self.assertFalse(promoted_record["claims"]["production_signed"])
+            self.assertFalse((promoted / "stable-beta.json").exists())
             archive = root / "alpha-release-evidence.tar.gz"
             run(
                 "pack",

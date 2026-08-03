@@ -643,6 +643,18 @@ jobs:
             --artifact-manifest target/artifacts.json \
             --expected-revision "${{ needs.prepare.outputs.revision }}" \
             --channel validation
+          python3 scripts/stable-beta-readiness.py prepare \
+            --revision "${{ needs.prepare.outputs.revision }}" \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --artifact-manifest target/artifacts.json \
+            --release-notes .github/release-body.md \
+            --output target/stable-beta.json
+          python3 scripts/stable-beta-readiness.py validate \
+            --record target/stable-beta.json \
+            --artifact-manifest target/artifacts.json \
+            --release-notes .github/release-body.md \
+            --expected-revision "${{ needs.prepare.outputs.revision }}" \
+            --expected-version "${{ needs.prepare.outputs.version }}"
           python3 scripts/release-evidence.py sbom \
             --repository . \
             --revision "${{ needs.prepare.outputs.revision }}" \
@@ -688,6 +700,7 @@ jobs:
             --reproducibility target/reproducibility/reproducibility.json \
             --signing target/signing.json \
             --residual-risks release/residual-risks-v1.json \
+            --stable-beta target/stable-beta.json \
             --release-notes .github/release-body.md
           python3 scripts/release-evidence.py verify \
             --bundle-dir target/release-evidence \

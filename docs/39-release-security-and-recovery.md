@@ -198,9 +198,19 @@ intentionally blocked:
   third-party-asset/legal policy review remains a separate open gate;
 - no externally administered reproducibility run or independent release
   evaluation exists; and
-- physical-device and supported-desktop rows remain open.
+- physical-device and supported-desktop rows remain open;
+- no bounded consent-based Alpha pilot has run against production-like signed
+  artifacts; and
+- the final P0 audit, support/update window, rollback decision, and
+  candidate-only founder go/no-go record remain open.
 
 The exact next external action is a maintainer enrollment decision for the
 first signing role. Until that happens, selecting `production_signing` fails at
 the protected enrollment boundary and no stable distribution claim is
 available.
+
+After signing and field entry conditions are met, the independent final
+decision path is documented in
+[stable-beta pilot and release decision](51-stable-beta-pilot-and-release-decision.md).
+That candidate-only record never substitutes for the separate merge,
+publication, tag, store, deployment, or stable-release authorization.

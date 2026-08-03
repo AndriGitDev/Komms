@@ -16,6 +16,8 @@ rather than private profit distribution. This is a project policy, not a claim
 of registered-charity or tax-exempt status, and it does not restrict the AGPL
 rights of independent operators, including commercial use. The complete
 decision is [ADR-0033](docs/adr/0033-nonprofit-founder-stewardship.md).
+The [funding report and cadence](docs/48-funding-transparency.md) implement the
+mission without inventing a legal entity or narrowing independent AGPL rights.
 
 ## Roles
 
@@ -103,6 +105,12 @@ disclosure. No project-operated bootstrap, mailbox, rendezvous, wake, update, or
 other service may become the authority for a user's identity or receive message
 plaintext or identity private keys. Operational convenience does not override
 the architectural boundaries in the stabilization program.
+
+The [operator program](docs/46-operator-program.md) records deployability,
+capacity, costs, support, abuse, incidents, and the still-unassigned external
+operator slots. The
+[license, trademark, and asset policy](docs/47-license-trademark-assets.md)
+separates copyright permissions from official project identity.
 
 ## Succession and evolution
 

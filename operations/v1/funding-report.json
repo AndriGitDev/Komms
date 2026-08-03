@@ -1,0 +1,35 @@
+{
+  "schema": "komms-funding-transparency/v1",
+  "period": {
+    "start": "2026-01-01",
+    "end": "2026-07-31"
+  },
+  "published_on": "2026-07-31",
+  "reporting_cadence": "quarterly-and-within-30-days-of-a-material-change",
+  "legal_entity": {
+    "exists": false,
+    "name": null,
+    "jurisdiction": null,
+    "charity_or_tax_exempt_status": null
+  },
+  "accounts": {
+    "dedicated_project_account_exists": false,
+    "currency": null,
+    "opening_balance": null,
+    "closing_balance": null,
+    "status": "No dedicated project account or legal entity is represented. Amounts are not inferred from the absence of repository records."
+  },
+  "official_income": [],
+  "official_expenditure": [],
+  "infrastructure_costs": [],
+  "grants": [],
+  "sponsors": [],
+  "paid_work": [],
+  "conflicts": [],
+  "surplus": {
+    "amount": null,
+    "disposition": "Any future official surplus is committed to the public-benefit mission and is not represented as legally restricted without an appropriate entity."
+  },
+  "unreported_personal_activity": "Founder-paid or personally received amounts, if any, are not classified as official project finances until a dated disclosure records them.",
+  "review_status": "initial-structure-complete-financial-attestation-open"
+}

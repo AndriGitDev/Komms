@@ -1,0 +1,179 @@
+{
+  "schema": "komms-provider-data-flow-inventory/v1",
+  "as_of": "2026-07-31",
+  "claim_boundary": "designed-and-implemented-locally-no-production-service-deployed",
+  "flows": [
+    {
+      "id": "direct-libp2p",
+      "actors": [
+        "sender-endpoint",
+        "recipient-endpoint",
+        "network-providers"
+      ],
+      "operator_visibility": [
+        "network-addresses",
+        "timing",
+        "volume",
+        "padded-ciphertext"
+      ],
+      "project_service_retention": "none",
+      "content_plaintext_visible": false,
+      "cross_role_correlation_risk": "network providers or a common administrator can correlate timing and addresses"
+    },
+    {
+      "id": "bootstrap-kad-cache",
+      "actors": [
+        "endpoint",
+        "bootstrap-kad-operator",
+        "hosting-provider"
+      ],
+      "operator_visibility": [
+        "source-network-address",
+        "timing",
+        "volume",
+        "opaque-locator",
+        "fixed-size-encrypted-record",
+        "availability"
+      ],
+      "project_service_retention": "process memory only, at most the configured 48-hour DHT TTL",
+      "content_plaintext_visible": false,
+      "cross_role_correlation_risk": "co-located DHT and rendezvous roles permit timing and source-address correlation"
+    },
+    {
+      "id": "pairwise-rendezvous",
+      "actors": [
+        "endpoint",
+        "rendezvous-operator",
+        "hosting-provider"
+      ],
+      "operator_visibility": [
+        "source-network-address",
+        "timing",
+        "volume",
+        "opaque-slot",
+        "fixed-size-ciphertext",
+        "availability"
+      ],
+      "project_service_retention": "process memory only, at most 2 hours",
+      "content_plaintext_visible": false,
+      "cross_role_correlation_risk": "a common administrator can correlate DHT and rendezvous ingress even when stored values are opaque"
+    },
+    {
+      "id": "mailbox-v2",
+      "actors": [
+        "sender-endpoint",
+        "mailbox-operator",
+        "recipient-endpoint",
+        "hosting-provider"
+      ],
+      "operator_visibility": [
+        "source-network-address",
+        "pseudonymous-transport-client",
+        "opaque-token-index",
+        "timing",
+        "padded-ciphertext-size",
+        "expiry",
+        "lease-and-quota-outcome",
+        "availability"
+      ],
+      "project_service_retention": "durable ciphertext at most 30 days; registrations at most 60 days; leases 120 seconds in the committed profile",
+      "content_plaintext_visible": false,
+      "cross_role_correlation_risk": "a common administrator can correlate deposits and collection timing and can inspect live relay state"
+    },
+    {
+      "id": "native-wake-direct",
+      "actors": [
+        "endpoint",
+        "wake-operator",
+        "hosting-provider",
+        "apns-or-fcm"
+      ],
+      "operator_visibility": [
+        "source-network-address",
+        "timing",
+        "volume",
+        "native-provider-token-after-capability-open",
+        "application-topic",
+        "static-profile",
+        "capability-expiry",
+        "availability"
+      ],
+      "project_service_retention": "bounded replay and revocation rows only, no longer than capability expiry",
+      "content_plaintext_visible": false,
+      "cross_role_correlation_risk": "the gateway can correlate capabilities that open to the same native token; the native provider sees its token and notification timing"
+    },
+    {
+      "id": "native-wake-tor-private",
+      "actors": [
+        "endpoint",
+        "tor-network",
+        "wake-operator",
+        "hosting-provider",
+        "apns-or-fcm"
+      ],
+      "operator_visibility": [
+        "gateway-side-tor-exit-address",
+        "timing",
+        "volume",
+        "native-provider-token-after-capability-open",
+        "application-topic",
+        "static-profile",
+        "capability-expiry",
+        "availability"
+      ],
+      "project_service_retention": "bounded replay and revocation rows only, no longer than capability expiry",
+      "content_plaintext_visible": false,
+      "cross_role_correlation_risk": "Tor does not defeat a global observer or correlation through a compromised endpoint, gateway, or native provider"
+    },
+    {
+      "id": "ohttp-private",
+      "actors": [
+        "endpoint",
+        "ohttp-relay-operator",
+        "ohttp-gateway-operator",
+        "protected-target",
+        "hosting-and-network-providers"
+      ],
+      "operator_visibility": [
+        "relay-sees-client-source-address",
+        "relay-sees-fixed-gateway-destination",
+        "gateway-sees-relay-source-address",
+        "gateway-sees-decapsulated-target-method-uri-headers-and-body",
+        "timing",
+        "volume",
+        "fixed-encapsulated-body-size",
+        "availability"
+      ],
+      "project_service_retention": "relay has no durable state and holds encrypted bodies only for one bounded exchange; no project deployment exists",
+      "content_plaintext_visible": false,
+      "cross_role_correlation_risk": "the local relay artifact is not an end-to-end path; common administration, hosting, network control, logging, or relay/gateway collusion defeats the source-target separation, and no distinct domains are qualified"
+    },
+    {
+      "id": "release-and-update",
+      "actors": [
+        "maintainer",
+        "source-host",
+        "artifact-host-or-store",
+        "user"
+      ],
+      "operator_visibility": [
+        "source-and-artifact-download-address",
+        "download-timing",
+        "artifact-choice",
+        "store-account-metadata"
+      ],
+      "project_service_retention": "subject to the named host or store policy; no project analytics are implemented",
+      "content_plaintext_visible": false,
+      "cross_role_correlation_risk": "a common source, package, or store provider may correlate downloads with ordinary provider metadata"
+    }
+  ],
+  "lawful_request_rule": {
+    "verify_legal_process": true,
+    "minimize_and_preserve_objections": true,
+    "do_not_create_unheld_data": true,
+    "do_not_claim_inability_to_observe": true,
+    "notify_affected_users_when_legally_permitted_and_safe": true,
+    "publish_aggregate_transparency_record": true,
+    "qualified_counsel": "unassigned"
+  }
+}

@@ -12,6 +12,12 @@ profile, store credential, or production signature.
   named supported environments.
 - `residual-risks-v1.json` keeps the current stable decision visibly blocked
   until credential, independent, and physical evidence is supplied.
+- `stable-beta-plan-v1.json` fixes the consent boundary, aggregate pilot
+  metrics, final-candidate reruns, P0 closure evidence, support window,
+  rollback triggers, and candidate-only founder decision.
+- `stable-beta-release-notes-template.md` is deliberately unfilled product
+  copy for a future evidence-bound candidate; it is not a release note or
+  stability claim.
 - `android-license-policy-v1.json` maps the exact locked Android graph to
   upstream declared expressions without treating the inventory as legal
   review. Optional verified POMs are a cross-check, not a host-cache dependency.
@@ -25,3 +31,5 @@ The operational procedure and credential boundaries are in
 [Release security and recovery](../docs/39-release-security-and-recovery.md).
 The evidence format and local commands are in
 [Release evidence bundles](../docs/40-release-evidence-bundles.md).
+The pilot, gate-audit, support, rollback, and go/no-go procedure is in
+[Stable-beta pilot and release decision](../docs/51-stable-beta-pilot-and-release-decision.md).

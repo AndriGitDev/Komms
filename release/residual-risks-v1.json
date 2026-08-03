@@ -6,27 +6,92 @@
     {
       "id": "distribution-credentials",
       "status": "open",
-      "statement": "No production Android, Apple, Windows, Linux manifest, store, or publication credential has been enrolled and exercised for the current revision."
+      "statement": "No production Android, Apple, Windows, Linux manifest, store, or publication credential has been enrolled and exercised for the current revision.",
+      "gate": "P0-07",
+      "owner": "Andri (REL/SEC)",
+      "next_review": "2026-08-09",
+      "required_action": "Enroll each separated signing role at its explicit human boundary and retain exact artifact verification, recovery, install, update, and compromise-response evidence."
     },
     {
       "id": "install-upgrade-rollback",
       "status": "open",
-      "statement": "The named supported-system clean-install, authenticated-upgrade, failed-upgrade rollback, and old-version compatibility matrix is not complete."
+      "statement": "The named supported-system clean-install, authenticated-upgrade, failed-upgrade rollback, and old-version compatibility matrix is not complete.",
+      "gate": "P0-07/P0-09",
+      "owner": "Andri (REL/PROD)",
+      "next_review": "2026-08-09",
+      "required_action": "Run the final signed artifact set on every declared physical support cell and retain the complete transition record."
     },
     {
       "id": "independent-reproduction",
       "status": "open",
-      "statement": "A second controlled build is a reproducibility measurement only; no externally administered reproduction has been supplied."
+      "statement": "A second controlled build is a reproducibility measurement only; no externally administered reproduction has been supplied.",
+      "gate": "P0-07",
+      "owner": "Unassigned external release evaluator",
+      "next_review": "2026-08-09",
+      "required_action": "Obtain a separately administered, revision-bound reproduction report covering every candidate artifact."
     },
     {
       "id": "independent-security-review",
       "status": "open",
-      "statement": "No qualified external security reviewer has completed the stable-v1 scope and retest disposition."
+      "statement": "No qualified external security reviewer has completed the stable-v1 scope and retest disposition.",
+      "gate": "P0-05/P0-06/P0-08",
+      "owner": "Unassigned external security reviewer",
+      "next_review": "2026-08-09",
+      "required_action": "Authorize reviewer contact separately, complete the accepted scope, retain findings and dispositions, and obtain retest evidence for corrections."
     },
     {
       "id": "physical-field-qualification",
       "status": "open",
-      "statement": "Simulator and host evidence do not close named physical mobile, real-network, accessibility, or two-radio qualification rows."
+      "statement": "Simulator and host evidence do not close named physical mobile, real-network, accessibility, or two-radio qualification rows.",
+      "gate": "P0-04/P0-05/P0-09",
+      "owner": "Andri (PROD/NET/REL); external evaluator unassigned",
+      "next_review": "2026-08-09",
+      "required_action": "Run the exact final artifacts on every named physical device, real network, accessibility environment, and stock-radio bench."
+    },
+    {
+      "id": "operator-qualification",
+      "status": "open",
+      "statement": "No public bootstrap, rendezvous, mailbox, wake, or Private-ingress deployment has revision-bound capacity, backup, upgrade, incident, replacement, and independent-operation evidence.",
+      "gate": "P0-04/P0-08",
+      "owner": "Andri (NET); external operators unassigned",
+      "next_review": "2026-08-09",
+      "required_action": "Qualify the exact least-authority deployments and retain evidence from at least two genuinely independent operators before any plural claim."
+    },
+    {
+      "id": "independent-conformance",
+      "status": "open",
+      "statement": "The conformance kit has no separately produced implementation or external fixture producer result.",
+      "gate": "P0-06",
+      "owner": "Unassigned external implementer",
+      "next_review": "2026-08-09",
+      "required_action": "Run the versioned kit through a separately produced path and retain the exact adapter, revision, fixture, and result record."
+    },
+    {
+      "id": "consent-alpha-pilot",
+      "status": "open",
+      "statement": "No consent-based Alpha pilot has run against production-like signed artifacts, and no privacy-preserving aggregate outcome exists.",
+      "gate": "P0-01/P0-04/P0-09",
+      "owner": "Andri (FND/PROD)",
+      "next_review": "2026-08-09",
+      "required_action": "After entry conditions and separate authorization are met, run the bounded pilot and retain only the aggregate record defined by the stable-beta plan."
+    },
+    {
+      "id": "legal-assets-and-continuity",
+      "status": "open",
+      "statement": "Qualified legal review, founder artwork provenance attestation, a backup security steward, and a live human incident/continuity exercise are absent.",
+      "gate": "P0-02/P0-10",
+      "owner": "Andri (FND/LEG/COM); external roles unassigned",
+      "next_review": "2026-10-26",
+      "required_action": "Complete the proportionate legal and provenance review, accept a backup steward, and retain a live incident and continuity disposition."
+    },
+    {
+      "id": "stable-beta-go-no-go",
+      "status": "open",
+      "statement": "The final candidate P0 audit, support/update window, rollback decision, signed evidence archive, and founder go/no-go record do not exist.",
+      "gate": "P0-01/P0-07/P0-10",
+      "owner": "Andri (FND/REL)",
+      "next_review": "2026-08-09",
+      "required_action": "Complete the stable-beta readiness record for one immutable final candidate without treating it as merge, publication, tagging, or stable authorization."
     }
   ],
   "claim": "These risks block a stable claim and public stable release until revision-bound evidence closes them."

@@ -1,0 +1,270 @@
+{
+  "schema": "komms-stable-beta-plan/v1",
+  "plan_version": 1,
+  "profile": "stable-v1",
+  "pilot": {
+    "id": "stable-v1-consent-alpha",
+    "artifact_requirement": "production-like-signed-alpha",
+    "minimum_consented_participants": 8,
+    "maximum_consented_participants": 24,
+    "minimum_completed_participants": 6,
+    "maximum_duration_days": 21,
+    "required_disclosures": [
+      "Alpha software may fail, lose availability, or require recovery.",
+      "The pilot is not suitable for emergency or safety-critical communication.",
+      "Message content, contact graphs, stable user identifiers, and per-user timelines are not collected.",
+      "Participation is voluntary and withdrawal does not claim deletion from peers, platform providers, or already aggregated reports.",
+      "Named limitations, support boundaries, and the exact artifact digest are available before installation."
+    ],
+    "privacy_contract": {
+      "message_content_collected": false,
+      "contact_graph_collected": false,
+      "stable_user_identifiers_collected": false,
+      "per_user_timelines_collected": false,
+      "raw_event_stream_retained": false,
+      "aggregate_only_public_record": true,
+      "consent_records_stored_separately": true
+    },
+    "metrics": [
+      {
+        "id": "install-completion",
+        "kind": "rate",
+        "minimum_samples": 6,
+        "minimum_percent": 90
+      },
+      {
+        "id": "contact-establishment-success",
+        "kind": "rate",
+        "minimum_samples": 6,
+        "minimum_percent": 90
+      },
+      {
+        "id": "first-message-within-15-minutes",
+        "kind": "rate",
+        "minimum_samples": 6,
+        "minimum_percent": 80
+      },
+      {
+        "id": "offline-delivery-success",
+        "kind": "rate",
+        "minimum_samples": 6,
+        "minimum_percent": 90
+      },
+      {
+        "id": "fallback-success",
+        "kind": "rate",
+        "minimum_samples": 4,
+        "minimum_percent": 80
+      },
+      {
+        "id": "crash-or-recovery-success",
+        "kind": "rate",
+        "minimum_samples": 2,
+        "minimum_percent": 90
+      },
+      {
+        "id": "mode-comprehension",
+        "kind": "rate",
+        "minimum_samples": 6,
+        "minimum_percent": 80
+      },
+      {
+        "id": "expected-notification-behavior",
+        "kind": "rate",
+        "minimum_samples": 6,
+        "minimum_percent": 80
+      },
+      {
+        "id": "critical-accessibility-blockers",
+        "kind": "count",
+        "maximum_count": 0
+      },
+      {
+        "id": "privacy-boundary-incidents",
+        "kind": "count",
+        "maximum_count": 0
+      },
+      {
+        "id": "support-minutes",
+        "kind": "average",
+        "minimum_samples": 6,
+        "maximum_average": 60
+      }
+    ]
+  },
+  "candidate_matrix": [
+    {
+      "id": "clean-install",
+      "required_evidence_kinds": [
+        "field-run"
+      ]
+    },
+    {
+      "id": "distinct-nat",
+      "required_evidence_kinds": [
+        "field-run"
+      ]
+    },
+    {
+      "id": "optional-service-blackhole",
+      "required_evidence_kinds": [
+        "field-run"
+      ]
+    },
+    {
+      "id": "self-hosted-replacement",
+      "required_evidence_kinds": [
+        "operator-run",
+        "field-run"
+      ]
+    },
+    {
+      "id": "mailbox-restart-overload",
+      "required_evidence_kinds": [
+        "operator-run"
+      ]
+    },
+    {
+      "id": "backup-recovery",
+      "required_evidence_kinds": [
+        "field-run"
+      ]
+    },
+    {
+      "id": "signed-upgrade-rollback",
+      "required_evidence_kinds": [
+        "release-bundle",
+        "field-run"
+      ]
+    },
+    {
+      "id": "supported-device",
+      "required_evidence_kinds": [
+        "field-run"
+      ]
+    },
+    {
+      "id": "physical-radio",
+      "required_evidence_kinds": [
+        "physical-radio-run"
+      ]
+    },
+    {
+      "id": "accessibility",
+      "required_evidence_kinds": [
+        "accessibility-review"
+      ]
+    },
+    {
+      "id": "conformance",
+      "required_evidence_kinds": [
+        "independent-conformance"
+      ]
+    }
+  ],
+  "gates": [
+    {
+      "id": "P0-01",
+      "owner": "FND/SEC/PROD",
+      "required_evidence_kinds": [
+        "release-bundle",
+        "public-copy-audit"
+      ]
+    },
+    {
+      "id": "P0-02",
+      "owner": "FND/LEG",
+      "required_evidence_kinds": [
+        "decision-record",
+        "asset-attestation"
+      ]
+    },
+    {
+      "id": "P0-03",
+      "owner": "FND/PROD/SEC",
+      "required_evidence_kinds": [
+        "ci-run",
+        "conformance-run"
+      ]
+    },
+    {
+      "id": "P0-04",
+      "owner": "NET/PROD/EXT",
+      "required_evidence_kinds": [
+        "field-run",
+        "operator-run"
+      ]
+    },
+    {
+      "id": "P0-05",
+      "owner": "SEC/NET/PROD/EXT",
+      "required_evidence_kinds": [
+        "ci-run",
+        "independent-review",
+        "field-run"
+      ]
+    },
+    {
+      "id": "P0-06",
+      "owner": "SEC/EXT",
+      "required_evidence_kinds": [
+        "independent-review",
+        "independent-conformance"
+      ]
+    },
+    {
+      "id": "P0-07",
+      "owner": "REL/SEC/EXT",
+      "required_evidence_kinds": [
+        "release-bundle",
+        "independent-reproduction",
+        "field-run"
+      ]
+    },
+    {
+      "id": "P0-08",
+      "owner": "NET/SEC/EXT",
+      "required_evidence_kinds": [
+        "operator-run",
+        "independent-review",
+        "field-run"
+      ]
+    },
+    {
+      "id": "P0-09",
+      "owner": "PROD/NET/REL/EXT",
+      "required_evidence_kinds": [
+        "field-run",
+        "physical-radio-run",
+        "accessibility-review"
+      ]
+    },
+    {
+      "id": "P0-10",
+      "owner": "FND/COM/SEC",
+      "required_evidence_kinds": [
+        "decision-record",
+        "incident-exercise",
+        "continuity-acceptance"
+      ]
+    }
+  ],
+  "support": {
+    "minimum_support_days": 90,
+    "minimum_eol_notice_days": 30,
+    "required_contacts": [
+      "general-support",
+      "security"
+    ]
+  },
+  "rollback": {
+    "required_triggers": [
+      "release-signing-key-compromise",
+      "critical-security-regression",
+      "store-or-backup-migration-corruption",
+      "widespread-install-or-upgrade-failure",
+      "delivery-custody-or-receipt-regression",
+      "provider-change-breaks-sovereign-fallback"
+    ]
+  }
+}
